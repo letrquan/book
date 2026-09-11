@@ -18,7 +18,6 @@ describe('ConfigMenu', () => {
           model="9router/qc/qwen3.7-max"
           compactModel="9router/ag/gemini-3.6-flash-high"
           effort="high"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking
           agentCount={3}
@@ -35,7 +34,7 @@ describe('ConfigMenu', () => {
     expect(view.lastFrame()).toContain('Subagent profiles');
     expect(view.lastFrame()).toContain('Compact model');
     view.stdin.write('a');
-    expect(onOpen).toHaveBeenCalledWith('agents', 7);
+    expect(onOpen).toHaveBeenCalledWith('agents', 6);
   });
 
   it('opens compact model settings from the keyboard shortcut', () => {
@@ -44,7 +43,6 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="gpt-5"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking
           agentCount={3}
@@ -67,7 +65,6 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="gpt-5"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking
           agentCount={3}
@@ -92,7 +89,6 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="gpt-5"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking
           agentCount={3}
@@ -109,7 +105,7 @@ describe('ConfigMenu', () => {
     expect(view.lastFrame()).toContain('Default permissions');
     expect(view.lastFrame()).toContain('accept-edits');
     view.stdin.write('p');
-    expect(onOpen).toHaveBeenCalledWith('permission-mode', 6);
+    expect(onOpen).toHaveBeenCalledWith('permission-mode', 5);
   });
 
   it('starts on the row a sub-picker was opened from', () => {
@@ -121,13 +117,12 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="gpt-5"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking
           agentCount={3}
           skillCount={4}
           defaultPermissionMode="default"
-          initialSelection={8}
+          initialSelection={7}
           onOpen={onOpen}
           onToggleMemory={() => {}}
           onToggleThinking={() => {}}
@@ -138,7 +133,7 @@ describe('ConfigMenu', () => {
 
     expect(stripAnsi(view.lastFrame())).toContain('› S  Skills');
     view.stdin.write('\r');
-    expect(onOpen).toHaveBeenCalledWith('skills', 8);
+    expect(onOpen).toHaveBeenCalledWith('skills', 7);
   });
 
   it('opens skill management from settings', () => {
@@ -147,7 +142,6 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="gpt-5"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking
           agentCount={3}
@@ -163,7 +157,7 @@ describe('ConfigMenu', () => {
 
     expect(view.lastFrame()).toContain('4 discovered');
     view.stdin.write('s');
-    expect(onOpen).toHaveBeenCalledWith('skills', 8);
+    expect(onOpen).toHaveBeenCalledWith('skills', 7);
   });
 
   it('shows and toggles model thinking from the keyboard shortcut', () => {
@@ -172,7 +166,6 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="gpt-5"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking={false}
           agentCount={3}
@@ -198,7 +191,6 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="gpt-5"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking
           startupAnimation={false}
@@ -225,7 +217,6 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="gpt-5"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking
           agentCount={3}
@@ -246,7 +237,6 @@ describe('ConfigMenu', () => {
       ['E', 'Effort'],
       ['I', 'Show thinking'],
       ['F', 'Startup fire'],
-      ['T', 'Theme'],
       ['P', 'Default permissions'],
       ['A', 'Subagent profiles'],
       ['S', 'Skills'],
@@ -264,7 +254,6 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="gpt-5"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking
           startupAnimation={false}
@@ -296,7 +285,6 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="gpt-5"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking
           agentCount={3}
@@ -327,7 +315,6 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="gpt-5"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking
           agentCount={3}
@@ -355,7 +342,6 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="gpt-5"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking
           agentCount={3}
@@ -384,7 +370,6 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="9router/qc/qwen3.7-max"
-          themeName="dark"
           memoryAutoSave={false}
           showThinking
           agentCount={3}

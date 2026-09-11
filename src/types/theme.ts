@@ -110,106 +110,108 @@ export interface ThemeTokens {
 }
 
 /**
- * Warm editorial dark palette.
+ * Apple-inspired default palette: near-black neutral surfaces, bright grey
+ * text, and one blue action accent. Every other hue is a system colour that
+ * appears only when a state needs attention, so ordinary chrome never competes
+ * with the work.
  *
- * Roles are kept visually distinct on purpose: sage belongs to the agent, clay
- * to product chrome, teal to references, and the amber/rust/green trio to
- * status. A token that reuses another role's hue makes the two indistinguishable
- * on screen, which is exactly what this palette exists to prevent.
+ * Roles stay distinct: blue is the user and the composer (the things you act
+ * on), cyan is the agent speaking, indigo is product chrome, teal carries
+ * references, and the orange/red/green trio is status.
  */
 export const DEFAULT_THEME: ThemeTokens = {
-  brand: '#D3A17E',
-  brandShimmer: '#E5BB9B',
+  brand: '#5E5CE6',
+  brandShimmer: '#8E8CFF',
 
-  text: '#E7E1D4',
-  inverseText: '#171815',
-  inactive: '#6D6961',
-  subtle: '#938E84',
-  suggestion: '#7E7A72',
-  permission: '#D1AA6C',
-  remember: '#C09CAD',
+  text: '#F5F5F7',
+  inverseText: '#111113',
+  inactive: '#6E6E73',
+  subtle: '#98989D',
+  suggestion: '#8E8E93',
+  permission: '#FF9F0A',
+  remember: '#BF5AF2',
 
-  surface: '#20221D',
-  surfaceActive: '#30362B',
-  border: '#4B4D45',
-  selectionText: '#F3EEE4',
-  userAccent: '#D3A17E',
-  assistantAccent: '#AFC19D',
-  toolRail: '#5C6156',
+  surface: '#1C1C1E',
+  surfaceActive: '#2C2C2E',
+  border: '#3A3A3C',
+  selectionText: '#FFFFFF',
+  userAccent: '#0A84FF',
+  assistantAccent: '#64D2FF',
+  toolRail: '#636366',
 
-  success: '#91B77C',
-  error: '#D68174',
-  warning: '#D1AA6C',
-  merged: '#7FA89C',
+  success: '#30D158',
+  error: '#FF453A',
+  warning: '#FF9F0A',
+  merged: '#66D4CF',
 
-  promptBorder: '#8C9A86',
-  planMode: '#C09CAD',
-  autoAccept: '#91B77C',
-  bashBorder: '#D1AA6C',
+  promptBorder: '#0A84FF',
+  planMode: '#BF5AF2',
+  autoAccept: '#30D158',
+  bashBorder: '#FF9F0A',
 
-  // `default` is the quiet mode: desaturated so the sage of an agent turn never
-  // reads as a permission-mode signal.
-  modeDefault: '#8C9A86',
-  modePlan: '#C09CAD',
-  modeAcceptEdits: '#91B77C',
-  modeAuto: '#7FA89C',
-  modeDontAsk: '#D68174',
-  modeBypass: '#D1AA6C',
+  // `default` is the quiet mode: neutral grey, so an ordinary session carries
+  // no permission-mode signal at all.
+  modeDefault: '#98989D',
+  modePlan: '#BF5AF2',
+  modeAcceptEdits: '#30D158',
+  modeAuto: '#66D4CF',
+  modeDontAsk: '#FF453A',
+  modeBypass: '#FF9F0A',
 
-  diffAdded: '#243326',
-  diffRemoved: '#382624',
-  diffAddedWord: '#36523A',
-  diffRemovedWord: '#5B3430',
-  diffAddedDimmed: '#1D2B20',
-  diffRemovedDimmed: '#302120',
+  diffAdded: '#173A28',
+  diffRemoved: '#3A1E22',
+  diffAddedWord: '#24633D',
+  diffRemovedWord: '#6B2932',
+  diffAddedDimmed: '#122B1E',
+  diffRemovedDimmed: '#2B181C',
 
-  usageMeter: '#7FA89C',
-  usageMeterHigh: '#D1AA6C',
-  usageMeterCritical: '#D68174',
+  usageMeter: '#66D4CF',
+  usageMeterHigh: '#FF9F0A',
+  usageMeterCritical: '#FF453A',
 
-  // The spinner is the agent speaking, so it keeps the sage identity.
-  shimmerPair: ['#AFC19D', '#C4D3B5'],
+  // The spinner is the agent speaking, so it keeps the cyan identity.
+  shimmerPair: ['#64D2FF', '#A5E3FF'],
 
   subagentColors: [
-    '#D68174',
-    '#7FA89C',
-    '#91B77C',
-    '#D1AA6C',
-    '#C09CAD',
-    '#D3A17E',
-    '#B88FA4',
-    '#AFC19D',
+    '#FF453A',
+    '#FF9F0A',
+    '#FFD60A',
+    '#30D158',
+    '#64D2FF',
+    '#0A84FF',
+    '#BF5AF2',
+    '#5E5CE6',
   ],
 
-  mdCodeBackground: '#1B1D1A',
-  mdCodeBorder: '#3A3C36',
-  mdCodeText: '#E7E1D4',
-  mdCodeKeyword: '#C09CAD',
-  mdCodeString: '#91B77C',
-  mdCodeComment: '#6D6961',
-  mdCodeNumber: '#D1AA6C',
-  mdCodeFunction: '#7FA89C',
-  mdCodeLineNumber: '#5C6156',
-  mdInlineCodeBg: '#2B2C27',
-  mdInlineCodeText: '#D3A17E',
+  mdCodeBackground: '#161618',
+  mdCodeBorder: '#3A3A3C',
+  mdCodeText: '#F5F5F7',
+  mdCodeKeyword: '#BF5AF2',
+  mdCodeString: '#30D158',
+  mdCodeComment: '#6E6E73',
+  mdCodeNumber: '#FF9F0A',
+  mdCodeFunction: '#64D2FF',
+  mdCodeLineNumber: '#636366',
+  mdInlineCodeBg: '#2C2C2E',
+  mdInlineCodeText: '#66D4CF',
   // A three-step brightness ramp, all bold. Depth is legible only if these
   // differ from each other *and* from `text` — otherwise a heading is
   // indistinguishable from a bold run in body copy.
-  mdHeadingH1: '#F7F3EA',
-  mdHeadingH2: '#EFEADC',
-  mdHeading: '#B4AE9F',
-  mdBlockquoteBorder: '#5C6156',
-  mdBlockquoteText: '#938E84',
-  mdLink: '#7FA89C',
-  mdListMarker: '#8C9A86',
+  mdHeadingH1: '#FFFFFF',
+  mdHeadingH2: '#E5E5EA',
+  mdHeading: '#AEAEB2',
+  mdBlockquoteBorder: '#636366',
+  mdBlockquoteText: '#98989D',
+  mdLink: '#66D4CF',
+  mdListMarker: '#0A84FF',
   mdHr: '#3A3C36',
   mdTableBorder: '#3A3C36',
-  mdThinkBg: '#1E201C',
+  mdThinkBg: '#161618',
   mdThinkBorder: '#3A3C36',
-  mdThinkText: '#7E7A72',
-  mdTurnSeparator: '#4B4D45',
-  mdCheckboxChecked: '#91B77C',
-  mdCheckboxUnchecked: '#6D6961',
+  mdThinkText: '#8E8E93',
+  mdTurnSeparator: '#3A3A3C',
+  mdCheckboxChecked: '#30D158',
+  mdCheckboxUnchecked: '#6E6E73',
 
-  userBg: '#262220',
+  userBg: '#202022',
 };

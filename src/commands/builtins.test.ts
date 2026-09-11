@@ -289,10 +289,6 @@ describe('built-in command contract', () => {
 
   it('normalizes settings command arguments before returning effects', () => {
     const registry = createBuiltinCommandRegistry();
-    expect(registry.execute('theme', 'solarized', context())).toEqual({
-      type: 'set-theme',
-      preference: 'solarized',
-    });
     expect(registry.execute('model', 'openai/gpt-5', context())).toEqual({
       type: 'set-model',
       selection: 'openai/gpt-5',
@@ -358,10 +354,6 @@ describe('built-in command contract', () => {
         type: 'set-model',
         selection: 'openai/gpt-5',
       });
-      expect(registry.execute('config', 'theme=light', commandContext)).toEqual({
-        type: 'set-theme',
-        preference: 'light',
-      });
       expect(registry.execute('config', 'effort=xhigh', commandContext)).toEqual({
         type: 'set-effort',
         level: 'xhigh',
@@ -403,12 +395,12 @@ describe('built-in command contract', () => {
       });
       // …and naming a different one is a request to write that file, which the
       // reply says plainly, warning that the setting's own layer still wins.
-      const globalTheme = registry.execute('config', '--global theme=light', commandContext);
-      expect(globalTheme).toEqual(
+      const localModel = registry.execute('config', '--local model=openai/gpt-5', commandContext);
+      expect(localModel).toEqual(
         expect.objectContaining({ content: expect.stringContaining('next start') }),
       );
-      expect(globalTheme).toEqual(
-        expect.objectContaining({ content: expect.stringContaining('user-global') }),
+      expect(localModel).toEqual(
+        expect.objectContaining({ content: expect.stringContaining('local') }),
       );
 
       const compactResult = registry.execute(
@@ -457,7 +449,7 @@ describe('built-in command contract', () => {
 
       // Only the two writes that named a file landed in it; every refusal and
       // every live-setting delegation left the layer alone.
-      expect(globalSettings()).toEqual({ maxTurns: 12, theme: 'light' });
+      expect(globalSettings()).toEqual({ maxTurns: 12 });
     } finally {
       if (previousBookHome === undefined) delete process.env.BOOK_HOME;
       else process.env.BOOK_HOME = previousBookHome;

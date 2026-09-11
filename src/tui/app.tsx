@@ -22,7 +22,6 @@ import { AgentTodoList, shouldShowAgentPlan } from './components/AgentTodoList.j
 import { ModelPicker, type ProviderRemovalResult } from './components/ModelPicker.js';
 import { EffortPicker } from './components/EffortPicker.js';
 import { PermissionModePicker } from './components/PermissionModePicker.js';
-import { ThemePicker } from './components/ThemePicker.js';
 import { ConfigMenu, type ConfigSection } from './components/ConfigMenu.js';
 import { SkillManager } from './components/SkillManager.js';
 import { AgentProfilePicker } from './components/AgentProfilePicker.js';
@@ -47,7 +46,6 @@ import { projectManagedAgentTraces } from './managed-agent-transcript.js';
 import { inlineCode } from './markdown-inline.js';
 import {
   ThemeContext,
-  listCustomThemes,
   resolveTheme,
   APPLE_THEME,
   type ThemeTokens,
@@ -76,7 +74,6 @@ import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
-import { persistSettingLocal } from './persist.js';
 import { buildModelOptions } from './model-options.js';
 import { createUiDebugLogger } from '../debug-log.js';
 import { createDefaultRegistry } from '../tools/registry.js';
@@ -123,7 +120,6 @@ export function ownsModalInput(
   showSessionPicker = false,
   pendingUserQuestion?: unknown,
   showEffortPicker = false,
-  showThemePicker = false,
   showRewindPicker = false,
   showConfigPicker = false,
   showAgentProfilePicker = false,
@@ -141,7 +137,6 @@ export function ownsModalInput(
     showSessionPicker ||
     showEffortPicker ||
     showPermissionModePicker ||
-    showThemePicker ||
     showRewindPicker ||
     showConfigPicker ||
     showAgentProfilePicker ||
@@ -168,8 +163,6 @@ function containsDraftInput(input: string): boolean {
   });
 }
 
-type ApplyThemeResult = { ok: true; theme: ResolvedTheme } | { ok: false; error: string };
-
 /**
  * The read-only reference sheets, at most one of which is open at a time.
  *
@@ -178,13 +171,6 @@ type ApplyThemeResult = { ok: true; theme: ResolvedTheme } | { ok: false; error:
  * boolean each.
  */
 type ReferencePanel = 'help' | 'status' | 'permissions' | 'shortcuts';
-
-function themeAppliedMessage(theme: ResolvedTheme): string {
-  if (theme.preference === 'auto') {
-    return `Theme set to auto (currently ${theme.resolvedName}) and saved as default.`;
-  }
-  return `Switched to ${theme.preference} theme (saved as default).`;
-}
 
 export function providerRemovalMessage(
   result: Extract<ProviderRemovalResult, { ok: true }>,
@@ -418,7 +404,6 @@ export function App({
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showEffortPicker, setShowEffortPicker] = useState(false);
   const [showPermissionModePicker, setShowPermissionModePicker] = useState(false);
-  const [showThemePicker, setShowThemePicker] = useState(false);
   const [showConfigPicker, setShowConfigPicker] = useState(false);
   const [showAgentProfilePicker, setShowAgentProfilePicker] = useState(false);
   /**
@@ -505,7 +490,7 @@ export function App({
   const queueDrainPausedRef = useRef(false);
   const queueInterruptEpochRef = useRef(0);
   const queueSessionRef = useRef(sessionId);
-  const [currentTheme, setCurrentTheme] = useState<ResolvedTheme>(
+  const [currentTheme] = useState<ResolvedTheme>(
     () =>
       interactiveAssets?.initialTheme ??
       resolveTheme(config.workspace, config.settings.theme ?? 'apple') ?? {
@@ -513,9 +498,6 @@ export function App({
         resolvedName: 'apple',
         tokens: APPLE_THEME,
       },
-  );
-  const [customThemes, setCustomThemes] = useState<string[]>(
-    () => interactiveAssets?.customThemes ?? listCustomThemes(config.workspace),
   );
   const { tasks, addTask, updateTaskStatus, removeTask, clearTasks } = useTasks();
   const theme = currentTheme.tokens;
@@ -893,7 +875,6 @@ export function App({
       showSessionPicker,
       pendingUserQuestion,
       showEffortPicker,
-      showThemePicker,
       showRewindPicker,
       showConfigPicker,
       showAgentProfilePicker,
@@ -1177,7 +1158,6 @@ export function App({
   useDebugValueChange(uiLog, 'showPermissionModePicker', showPermissionModePicker, (v) =>
     String(v),
   );
-  useDebugValueChange(uiLog, 'showThemePicker', showThemePicker, (v) => String(v));
   useDebugValueChange(uiLog, 'showConfigPicker', showConfigPicker, (v) => String(v));
   useDebugValueChange(uiLog, 'showAgentProfilePicker', showAgentProfilePicker, (v) => String(v));
 
@@ -1220,7 +1200,6 @@ export function App({
         showSessionPicker,
         pendingUserQuestion,
         showEffortPicker,
-        showThemePicker,
         showRewindPicker,
         showConfigPicker,
         showAgentProfilePicker,
@@ -1497,28 +1476,6 @@ export function App({
     [focusTool, updateToolExpansionOverrides],
   );
 
-  const applyThemePreference = useCallback(
-    (preference: string): ApplyThemeResult => {
-      const resolved = resolveTheme(config.workspace, preference);
-      if (!resolved) {
-        return {
-          ok: false,
-          error: `Theme "${preference}" was not found. Choose apple, dark, light, auto, catppuccin, nord, gruvbox, solarized-dark, or a theme from .book/themes.`,
-        };
-      }
-      const persisted = persistSettingLocal(config.workspace, 'theme', resolved.preference);
-      if (!persisted.ok) {
-        return {
-          ok: false,
-          error: `Could not save theme: ${persisted.error ?? 'unknown settings error'}`,
-        };
-      }
-      setCurrentTheme(resolved);
-      return { ok: true, theme: resolved };
-    },
-    [config.workspace],
-  );
-
   const handleSubmit = useCallback(
     async (value: string, attachments: ImageAttachment[] = []) => {
       if (attachments.length > 0 && liveConfig.modelInfo?.vision === false) {
@@ -1686,15 +1643,7 @@ export function App({
             setShowModelPicker(true);
           } else if (effect.modal === 'rewind') setShowRewindPicker(true);
           else if (effect.modal === 'skills') setShowSkills(true);
-          else if (effect.modal === 'theme') {
-            setCustomThemes(listCustomThemes(config.workspace));
-            setShowThemePicker(true);
-          } else setShowEffortPicker(true);
-          return;
-        }
-        if (effect?.type === 'set-theme') {
-          const result = applyThemePreference(effect.preference);
-          addLocalMessage(result.ok ? themeAppliedMessage(result.theme) : `✕ ${result.error}`);
+          else setShowEffortPicker(true);
           return;
         }
         if (effect?.type === 'set-model') {
@@ -1793,7 +1742,6 @@ export function App({
               }),
           );
           setSkillWatcherError(runtime?.skillWatcherError);
-          setCustomThemes(listCustomThemes(config.workspace));
           setAgentProfiles(withBuiltInAgents(discoverAgents(config.workspace)));
           addLocalMessage('Commands and skills have been reloaded.');
           return;
@@ -1954,7 +1902,6 @@ export function App({
       stdout,
       isThinking,
       redrawViewport,
-      applyThemePreference,
       builtinCommandRegistry,
       managedAgentManager,
       managedAgents,
@@ -1991,7 +1938,6 @@ export function App({
         showModelPicker ||
         showEffortPicker ||
         showPermissionModePicker ||
-        showThemePicker ||
         showRewindPicker ||
         showConfigPicker ||
         showAgentProfilePicker ||
@@ -2067,7 +2013,6 @@ export function App({
       showEffortPicker,
       showPermissionModePicker,
       showModelPicker,
-      showThemePicker,
       showRewindPicker,
       showConfigPicker,
       showAgentProfilePicker,
@@ -2092,7 +2037,6 @@ export function App({
     showSessionPicker,
     pendingUserQuestion,
     showEffortPicker,
-    showThemePicker,
     showRewindPicker,
     showConfigPicker,
     showAgentProfilePicker,
@@ -2119,7 +2063,6 @@ export function App({
     showModelPicker ||
     showEffortPicker ||
     showPermissionModePicker ||
-    showThemePicker ||
     showSessionPicker ||
     showRewindPicker ||
     showConfigPicker ||
@@ -2294,11 +2237,6 @@ export function App({
                     <HelpRow
                       label="/agents"
                       description="Show subagent configuration guidance"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/theme [apple|dark|light|auto|name]"
-                      description="Choose and save a color theme"
                       theme={theme}
                     />
                     <HelpRow
@@ -2752,7 +2690,6 @@ export function App({
                 model={liveConfig.modelSelection ?? liveConfig.model}
                 compactModel={liveConfig.compactModel ?? liveConfig.settings.compactModel}
                 effort={liveConfig.effort}
-                themeName={currentTheme.preference}
                 memoryAutoSave={liveConfig.settings.memory.autoSave}
                 showThinking={liveConfig.settings.ui.showThinking}
                 startupAnimation={liveConfig.settings.ui.startupAnimation}
@@ -2781,9 +2718,6 @@ export function App({
                     setShowModelPicker(true);
                   } else if (section === 'effort') {
                     setShowEffortPicker(true);
-                  } else if (section === 'theme') {
-                    setCustomThemes(listCustomThemes(config.workspace));
-                    setShowThemePicker(true);
                   } else if (section === 'permission-mode') {
                     setShowPermissionModePicker(true);
                   } else if (section === 'skills') {
@@ -2972,24 +2906,6 @@ export function App({
                 }}
                 onCancel={() => {
                   setShowPermissionModePicker(false);
-                  returnToConfig();
-                }}
-              />
-            ) : null}
-            {showThemePicker ? (
-              <ThemePicker
-                current={currentTheme.preference}
-                customThemes={customThemes}
-                onSelect={(name) => {
-                  const result = applyThemePreference(name);
-                  if (!result.ok) return result;
-                  addLocalMessage(themeAppliedMessage(result.theme));
-                  setShowThemePicker(false);
-                  returnToConfig();
-                  return { ok: true };
-                }}
-                onCancel={() => {
-                  setShowThemePicker(false);
                   returnToConfig();
                 }}
               />

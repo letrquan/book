@@ -86,6 +86,19 @@ export function resolveEditFormat(model: string, override?: EditFormat): EditFor
 export const DEFAULT_CONTEXT_WINDOW = 272_000;
 
 /**
+ * Strips provider and routing prefixes from a model name for display,
+ * keeping the model's terminal identifier and original casing
+ * (e.g. `9router/ag/gemini-3.8-flash-high` -> `gemini-3.8-flash-high`,
+ * `openai/gpt-4o` -> `gpt-4o`, `claude-opus-5` -> `claude-opus-5`).
+ */
+export function stripProvider(model: string): string {
+  const trimmed = model.trim();
+  if (!trimmed) return '';
+  const last = trimmed.split('/').pop()?.trim();
+  return last || trimmed;
+}
+
+/**
  * Normalizes a model identifier by extracting the terminal model name and
  * stripping version/date stamps (e.g. `9router/ag/gemini-3.8-flash-high` ->
  * `gemini-3.8-flash-high`, `claude-haiku-4-5-20251001` -> `claude-haiku-4-5`).

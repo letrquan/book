@@ -165,8 +165,8 @@ describe('DiffBlock', () => {
   });
 
   it('keeps the configured background-token palette for added and removed lines', () => {
-    expect(DEFAULT_THEME.diffRemoved).toBe('#382624');
-    expect(DEFAULT_THEME.diffAdded).toBe('#243326');
+    expect(DEFAULT_THEME.diffRemoved).toBe('#3A1E22');
+    expect(DEFAULT_THEME.diffAdded).toBe('#173A28');
   });
 
   it('wraps long diff lines without hiding content', () => {

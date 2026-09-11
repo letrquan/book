@@ -1,10 +1,10 @@
 import { Box, Text } from 'ink';
 import { useMemo } from 'react';
-import { usePulse, useTimedFlash } from '../hooks/useAnimation.js';
+import { useTimedFlash } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import type { PermissionMode } from '../../types/runtime.js';
 import type { ContextWindowSource } from '../../types/messages.js';
-import { DEFAULT_CONTEXT_WINDOW } from '../../models.js';
+import { stripProvider } from '../../models.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
 import { modeColorToken, modeLabel } from '../mode-style.js';
@@ -30,7 +30,7 @@ const SEGMENT_SEPARATOR = '   ';
 
 interface StatusLineProps {
   model: string;
-  tokenCount: number;
+  tokenCount?: number;
   maxTokens?: number;
   maxTokensSource?: ContextWindowSource;
   mode: PermissionMode;
@@ -83,9 +83,9 @@ export function buildColoredSegments(
  */
 export function StatusLine({
   model,
-  tokenCount,
-  maxTokens = DEFAULT_CONTEXT_WINDOW,
-  maxTokensSource,
+  tokenCount: _tokenCount,
+  maxTokens: _maxTokens,
+  maxTokensSource: _maxTokensSource,
   mode,
   taskCount,
   activeTaskCount,
@@ -106,22 +106,13 @@ export function StatusLine({
   const horizontalInset = CONTENT_COLUMN;
   const contentWidth = Math.max(8, width - horizontalInset - 1);
 
-  const usageFraction = maxTokens > 0 ? tokenCount / maxTokens : 0;
-  const usagePercent = Math.round(usageFraction * 100);
-  const usageNearLimit = usageFraction > 0.8;
-  const usageCritical = usageFraction > 0.95;
   const motionDisabled = reducedMotion || screenReader;
-  const usageBlink = usePulse(usageCritical && tokenCount > 0 && !motionDisabled, 500);
   const modeFlash = useTimedFlash(mode, 260, motionDisabled);
 
-  const costEstimate = tokenCount > 0 ? (tokenCount / 1_000_000) * 5 : 0;
   useDebugRender(renderLog, {
     width,
     contentWidth,
     compact,
-    usagePercent,
-    tokenCount,
-    maxTokensSource,
     mode,
     taskCount,
     activeTaskCount,
@@ -133,42 +124,25 @@ export function StatusLine({
   // grey as the model name beside it, whatever the palette's `modeDefault` is.
   const modeColor = mode === 'default' ? theme.subtle : (theme[modeColorToken(mode)] as string);
   const activeModeColor = modeFlash ? theme.brandShimmer : modeColor;
-  // Context pressure earns colour only when it is close to the limit. Healthy
-  // usage stays quiet so the footer does not compete with the active turn.
-  const contextColor =
-    usageCritical && usageBlink
-      ? theme.usageMeterCritical
-      : usageCritical
-        ? theme.error
-        : usageNearLimit
-          ? theme.warning
-          : theme.subtle;
 
   const coloredRuns = useMemo(() => {
     // The branch outranks the model when the row gets tight. Both are identity,
     // but the branch is the one that changes under you — you chose the model and
     // it stays chosen, while a rebase or a checkout in another worktree moves
-    // the branch without asking. At 56 columns the old budgets cut
-    // `research/next-task` to `research/ne…` and left `scripted/scripted` whole,
-    // which is the wrong thing to be sure about.
+    // the branch without asking.
     //
     // Both shrink together rather than one taking the row: packing is first-fit
     // and skips what will not fit, so a branch budget generous enough to crowd
     // the model drops the model entirely instead of shortening it.
-    const modelBudget = width < 44 ? 8 : width < 72 ? 12 : 30;
+    const modelBudget = width < 44 ? 8 : width < 72 ? 14 : 32;
     const branchBudget = width < 44 ? 10 : width < 72 ? 16 : 24;
+    const displayModel = stripProvider(model);
+
     // Ordered by what the reader needs first. Packing is first-fit, not
     // truncating: a segment too wide for the remaining space is skipped and
     // later, shorter ones still get their turn.
     const segments: Array<{ text: string; color?: string }> = [
       { text: `${MODE_CHIP} ${modeLabel(mode)}`, color: activeModeColor },
-      // Packing skips a segment it cannot fit and keeps later short ones, so a
-      // long label here loses the number entirely while the branch behind it
-      // survives. Drop the word before dropping the figure.
-      {
-        text: contentWidth < 40 ? `${usagePercent}%` : `ctx ${usagePercent}%`,
-        color: contextColor,
-      },
     ];
 
     if (gitBranch && gitBranch !== '?') {
@@ -179,17 +153,7 @@ export function StatusLine({
       });
     }
 
-    segments.push({ text: truncateDisplay(model, modelBudget), color: theme.subtle });
-
-    // Qualifies the ctx% two segments back: it says that number rests on a
-    // family guess or the bare default rather than a declared window. That
-    // makes it worth more than the cost estimate when the row gets tight, so
-    // it is packed before cost, not after it. The gate matches its neighbours'
-    // — the old bare `width >= 72` was the actual defect, dropping the
-    // annotation between 64 and 71 columns while `$0.003` sailed through.
-    if (!compact && width >= 64 && maxTokensSource && maxTokensSource !== 'declared') {
-      segments.push({ text: `(${maxTokensSource})`, color: theme.subtle });
-    }
+    segments.push({ text: truncateDisplay(displayModel, modelBudget), color: theme.subtle });
 
     if (taskCount > 0) {
       segments.push({
@@ -208,10 +172,6 @@ export function StatusLine({
       });
     }
 
-    if (tokenCount > 0 && !compact && width >= 64) {
-      segments.push({ text: `$${costEstimate.toFixed(3)}`, color: theme.subtle });
-    }
-
     return buildColoredSegments(segments, contentWidth, SEGMENT_SEPARATOR);
   }, [
     gitBranch,
@@ -219,19 +179,14 @@ export function StatusLine({
     activeTaskCount,
     activeAgentCount,
     agentCount,
-    compact,
     contentWidth,
-    costEstimate,
-    maxTokens,
     mode,
     activeModeColor,
-    contextColor,
     model,
     taskCount,
     needsInputAgentCount,
-    maxTokensSource,
-    tokenCount,
-    usagePercent,
+    theme.subtle,
+    theme.warning,
     width,
   ]);
 

@@ -5,13 +5,12 @@ import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chr
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 export type ConfigSection =
-  'model' | 'compact-model' | 'effort' | 'theme' | 'agents' | 'skills' | 'permission-mode';
+  'model' | 'compact-model' | 'effort' | 'agents' | 'skills' | 'permission-mode';
 
 interface ConfigMenuProps {
   model: string;
   compactModel?: string;
   effort?: string;
-  themeName: string;
   memoryAutoSave: boolean;
   showThinking: boolean;
   startupAnimation?: boolean;
@@ -52,7 +51,6 @@ const ROWS = [
   { row: 'effort', key: 'e' },
   { row: 'thinking', key: 'i' },
   { row: 'startup-animation', key: 'f' },
-  { row: 'theme', key: 't' },
   { row: 'permission-mode', key: 'p' },
   { row: 'agents', key: 'a' },
   { row: 'skills', key: 's' },
@@ -73,7 +71,6 @@ export function ConfigMenu({
   model,
   compactModel,
   effort,
-  themeName,
   memoryAutoSave,
   showThinking,
   startupAnimation = true,
@@ -157,7 +154,6 @@ export function ConfigMenu({
       value: startupAnimation ? 'on' : 'off',
       description: 'Burn the terminal into the Book welcome screen',
     },
-    theme: { label: 'Theme', value: themeName, description: 'Terminal color palette' },
     'permission-mode': {
       label: 'Default permissions',
       value: defaultPermissionMode,

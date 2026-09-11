@@ -96,6 +96,12 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Streamlined status line footer.** Dropped the remaining context window percentage, window source
+  annotations, and estimated session cost from the interactive footer to reduce visual clutter and
+  keep chrome unobtrusive. Router and provider prefixes are now stripped from the displayed model
+  name (e.g. `9router/ag/gemini-3.8-flash-high` displays as `gemini-3.8-flash-high`), preventing
+  unnecessary truncation on standard-width terminals. Detailed context breakdown and token costs
+  remain available on demand via `/context` and `/cost`.
 - **New default theme: `apple`.** The interactive TUI now opens on a calmer, Apple-inspired
   palette — near-black neutral surfaces, bright grey text, and one blue accent for the things you
   act on (the composer and your own turns). Every other hue is a status colour that appears only
