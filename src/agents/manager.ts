@@ -829,6 +829,7 @@ export class AgentManager {
       parentSessionId: request.parentSessionId ?? plan.parentSessionId,
       rootRunId: request.rootRunId ?? plan.rootRunId ?? runId,
       parentRunId: request.parentRunId ?? plan.parentRunId,
+      parentToolCallId: request.parentToolCallId,
       notifyParentOnCompletion: request.notifyParentOnCompletion,
       runId,
       planId: plan.id,

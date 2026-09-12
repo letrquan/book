@@ -20,6 +20,13 @@ export interface ManagedAgentTrace {
   startedAt: number;
   finishedAt?: number;
   toolUses: ManagedAgentToolUse[];
+  /**
+   * The parent turn is blocked on this child rather than running alongside it —
+   * foreground delegation, where the lead has genuinely stopped. Drives the
+   * "lead paused" wording; a background spawn leaves this false and the lead
+   * keeps working.
+   */
+  blocking?: boolean;
 }
 
 function spawnAgentId(result: ToolResult | undefined): string | undefined {
@@ -110,8 +117,14 @@ function projectChildToolUses(
 const EMPTY_TRACES: ReadonlyMap<string, ManagedAgentTrace> = new Map();
 
 /**
- * Build UI-only traces for managed AgentSpawn calls. Parent Message objects are
- * left untouched so child activity never enters provider context or persistence.
+ * Build UI-only traces for managed delegation. Parent Message objects are left
+ * untouched so child activity never enters provider context or persistence.
+ *
+ * Two linkages, because the two delegation modes publish the child id at
+ * different times. Background (`AgentSpawn`) returns it in the settled tool
+ * result. Foreground (`Task`) does not settle until the child is finished, so it
+ * stamps `parentToolCallId` on the record at spawn time instead — the only link
+ * available during the window the child is actually running.
  */
 export function projectManagedAgentTraces(
   messages: Message[],
@@ -121,25 +134,41 @@ export function projectManagedAgentTraces(
   // Traces require a live agent record; skip the transcript scan entirely (and
   // keep a stable identity) while no managed agents exist.
   if (records.size === 0) return EMPTY_TRACES;
+  const byParentToolCall = new Map<string, AgentRecord>();
+  for (const record of records.values()) {
+    if (record.parentToolCallId) byParentToolCall.set(record.parentToolCallId, record);
+  }
   const traces = new Map<string, ManagedAgentTrace>();
+  const add = (callId: string, record: AgentRecord, blocking: boolean): void => {
+    traces.set(callId, {
+      agentId: record.id,
+      parentToolCallId: callId,
+      profile: record.profile ?? record.name,
+      purpose: record.displayName ?? record.purpose ?? record.prompt,
+      status: record.status,
+      startedAt: record.startedAt ?? record.createdAt,
+      finishedAt: record.finishedAt,
+      toolUses: projectChildToolUses(record, activities.get(record.id) ?? []),
+      blocking,
+    });
+  };
   for (const message of messages) {
     if (message.role !== 'assistant') continue;
     for (const call of message.toolCalls ?? []) {
+      const foreground = byParentToolCall.get(call.id);
+      if (foreground) {
+        // The parent row is still open exactly while its result is absent, which
+        // is the same condition as the lead still being blocked on the child.
+        const settled = message.toolResults?.some((candidate) => candidate.toolCallId === call.id);
+        add(call.id, foreground, !settled);
+        continue;
+      }
       if (call.name !== 'AgentSpawn') continue;
       const result = message.toolResults?.find((candidate) => candidate.toolCallId === call.id);
       const agentId = spawnAgentId(result);
       const record = agentId ? records.get(agentId) : undefined;
       if (!agentId || !record) continue;
-      traces.set(call.id, {
-        agentId,
-        parentToolCallId: call.id,
-        profile: record.profile ?? record.name,
-        purpose: record.displayName ?? record.purpose ?? record.prompt,
-        status: record.status,
-        startedAt: record.startedAt ?? record.createdAt,
-        finishedAt: record.finishedAt,
-        toolUses: projectChildToolUses(record, activities.get(agentId) ?? []),
-      });
+      add(call.id, record, false);
     }
   }
   return traces;

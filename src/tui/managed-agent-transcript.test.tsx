@@ -207,3 +207,55 @@ describe('managed agent transcript projection', () => {
     expect(output).toContain('Press Tab to open');
   });
 });
+
+describe('foreground delegation', () => {
+  // `Task` blocks until the child finishes, so its tool result — and with it the
+  // agent id — does not exist for the whole time the child is running. The link
+  // has to come off the record instead, or the transcript shows a bare spinner
+  // during the only window the user cares about.
+  const blockingCall: Message = {
+    id: 'root-message',
+    role: 'assistant',
+    content: 'Handing off a brief.',
+    includeInContext: true,
+    timestamp: 1,
+    toolCalls: [{ id: 'task-1', name: 'Task', arguments: { agent: 'explorer' } }],
+  };
+
+  function foregroundRecord(status: AgentRecord['status'] = 'running'): AgentRecord {
+    return { ...childRecord(), status, parentToolCallId: 'task-1' };
+  }
+
+  it('links a running child to its blocking parent call before any result exists', () => {
+    const traces = projectManagedAgentTraces(
+      [blockingCall],
+      new Map([['agent-1', foregroundRecord()]]),
+      new Map(),
+    );
+    expect(traces.get('task-1')).toMatchObject({ agentId: 'agent-1', blocking: true });
+  });
+
+  it('stops reporting the lead as paused once the call settles', () => {
+    const settled: Message = {
+      ...blockingCall,
+      toolResults: [
+        { version: 2, toolCallId: 'task-1', status: 'success', content: 'subagent result' },
+      ],
+    };
+    const traces = projectManagedAgentTraces(
+      [settled],
+      new Map([['agent-1', foregroundRecord('completed')]]),
+      new Map(),
+    );
+    expect(traces.get('task-1')).toMatchObject({ blocking: false });
+  });
+
+  it('leaves a background spawn unblocking so the lead is not described as paused', () => {
+    const traces = projectManagedAgentTraces(
+      [rootMessage],
+      new Map([['agent-1', childRecord()]]),
+      new Map(),
+    );
+    expect(traces.get('spawn-1')).toMatchObject({ blocking: false });
+  });
+});
