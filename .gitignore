@@ -19,6 +19,8 @@ _research/
 .tmp_research/
 __pycache__/
 *.pyc
+.pytest_cache/
+*.egg-info/
 .pi/
 .agents/
 
