@@ -38,6 +38,17 @@ export interface SessionStateInput {
   planUnrestored?: boolean;
   /** Milliseconds since this run began, rendered coarsely. */
   runElapsedMs?: number;
+  /**
+   * Agents this session delegated to that have not reached a terminal status.
+   *
+   * A background spawn returns as soon as the child is queued, so the turn that
+   * delegated continues immediately with nothing in context to say the child is
+   * still working. What the model does with that is narrate the handoff it
+   * intended rather than the one that happened -- announcing a result it has
+   * never seen, in a transcript that offers the user nothing to contradict it.
+   * Restating the outstanding set every turn is the grounding that stops it.
+   */
+  outstandingAgents?: Array<{ label: string; status: string }>;
 }
 
 function todoLines(todos: NonNullable<SessionStateInput['todos']>): string[] {
@@ -50,6 +61,17 @@ function todoLines(todos: NonNullable<SessionStateInput['todos']>): string[] {
       const active = todo.status === 'in_progress' && todo.activeForm;
       return `${mark} ${todo.content}${active ? ` (now: ${todo.activeForm})` : ''}`;
     }),
+  ];
+}
+
+function outstandingAgentLines(
+  agents: NonNullable<SessionStateInput['outstandingAgents']>,
+): string[] {
+  if (agents.length === 0) return [];
+  return [
+    '## Delegated agents still running',
+    ...agents.map((agent) => `- ${agent.label} - ${agent.status}`),
+    'No result from these has arrived yet. Do not state, summarize, or imply what they found until a completion is delivered to you.',
   ];
 }
 
@@ -93,6 +115,7 @@ export function renderSessionState(input: SessionStateInput): string {
           '- No task list was restored from the previous process, though this session has earlier work. Re-establish the plan before continuing.',
         ]
       : []),
+    ...outstandingAgentLines(input.outstandingAgents ?? []),
     ...todoLines(input.todos ?? []),
     '</session-state>',
   ].join('\n');

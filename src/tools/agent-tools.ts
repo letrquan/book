@@ -10,11 +10,26 @@ import type {
 import { toolFailure, toolSuccess } from './result.js';
 import { projectAgentResult, projectAgentSummary } from '../agents/projections.js';
 
+/**
+ * What a spawn actually returns, said in words.
+ *
+ * The result is otherwise a bare record whose only hint is `"status": "queued"`,
+ * and a model reading it goes on to announce findings the child has not produced
+ * -- observed in the TUI as a lead printing "Sidekick reported. Done." 1.8s into
+ * a 6.1s run. The record stays machine-readable; this rides in front of it.
+ */
+const SPAWN_PENDING_NOTE =
+  'This agent has only been queued. Its result is NOT in this response and does not exist yet. ' +
+  'A completion is delivered to you when it finishes. Until that arrives, do not state, summarize, ' +
+  'or imply anything it found. Call AgentWait to block on it, or continue with other work.';
+
 function ok(
   output: unknown,
   presentation?: { summary: string; target?: string; metadata?: string[] },
+  note?: string,
 ): ToolResult {
-  const content = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
+  const body = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
+  const content = note ? `${note}\n\n${body}` : body;
   return toolSuccess(content, {
     data: output,
     presentation: presentation
@@ -140,7 +155,7 @@ async function agentSpawn(args: Record<string, unknown>, ctx: ToolContext): Prom
       parentRunId: ctx.runContext?.runId,
     });
     const summary = projectAgentSummary(record);
-    return ok(summary, agentStatusPresentation(summary, 'Spawned'));
+    return ok(summary, agentStatusPresentation(summary, 'Spawned'), SPAWN_PENDING_NOTE);
   } catch (error) {
     return fail(error);
   }
