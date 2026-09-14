@@ -529,6 +529,7 @@ async function connectMcpServer(
   name: string,
   cfg: McpServerConfig,
   options: ResolvedConnectionOptions,
+  failure?: { error?: unknown },
 ): Promise<McpConnection | null> {
   let handle: TransportHandle | undefined;
   let liveConnection: LiveConnection | undefined;
@@ -628,6 +629,7 @@ async function connectMcpServer(
 
     return conn;
   } catch (error) {
+    if (failure) failure.error = error;
     const message = redact(error instanceof Error ? error.message : String(error));
     options.onDiagnostic({
       level: 'warn',
@@ -642,6 +644,42 @@ async function connectMcpServer(
     await handle?.transport.close().catch(() => {});
     return null;
   }
+}
+
+/**
+ * A Streamable HTTP endpoint that is really a legacy SSE one answers the initial
+ * POST with 404 or 405 rather than anything protocol-shaped.
+ *
+ * `book mcp add <name> <url>` infers `http` from the URL having a scheme, which
+ * is right for most servers and silently wrong for the older ones; the stored
+ * config cannot distinguish an inferred `http` from one the user chose, so the
+ * only signal available is the server's own rejection. Retry once as SSE when
+ * that is what came back, and say so, rather than leaving a working server
+ * looking broken with `--transport sse` as an undiscoverable fix.
+ */
+function rejectedStreamableHttp(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(404|405)\b|Not Found|Method Not Allowed/i.test(message);
+}
+
+async function connectRemoteWithSseFallback(
+  name: string,
+  cfg: McpServerConfig,
+  options: ResolvedConnectionOptions,
+): Promise<McpConnection | null> {
+  const eligible = isRemoteConfig(cfg) && cfg.type !== 'sse';
+  if (!eligible) return connectMcpServer(name, cfg, options);
+
+  const failure: { error?: unknown } = {};
+  const connection = await connectMcpServer(name, cfg, options, failure);
+  if (connection || !rejectedStreamableHttp(failure.error)) return connection;
+
+  options.onDiagnostic({
+    level: 'warn',
+    message: `MCP server "${name}" rejected Streamable HTTP; retrying as legacy SSE. Set "type": "sse" to skip this.`,
+    server: name,
+  });
+  return connectMcpServer(name, { ...cfg, type: 'sse' }, options);
 }
 
 function buildToolDefinition(
@@ -739,7 +777,7 @@ export async function connectMcpServers(
   }
 
   const results = await Promise.allSettled(
-    servers.map(({ name, config }) => connectMcpServer(name, config, resolved)),
+    servers.map(({ name, config }) => connectRemoteWithSseFallback(name, config, resolved)),
   );
   const connections: McpConnection[] = [];
   for (const [index, result] of results.entries()) {

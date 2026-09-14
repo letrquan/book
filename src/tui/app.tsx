@@ -1570,6 +1570,21 @@ export function App({
           skillSnapshot: runtime?.inspectSkills(currentTurn),
           mcpSnapshot,
           toolCallStats: runtime?.toolCallStats,
+          // Records, not `summaries`: that list drops a terminal agent once its
+          // completion has been delivered, which is right for the agent panel and
+          // wrong for a bill. A finished agent's tokens were still spent.
+          delegatedUsage: [...managedAgents.records.values()].flatMap((record) => {
+            const usage = record.runUsage ?? record.usage;
+            return usage
+              ? [
+                  {
+                    label: `${record.profile ?? record.name} "${record.displayName ?? record.name}"`,
+                    model: record.resolvedModel ?? 'unknown',
+                    usage,
+                  },
+                ]
+              : [];
+          }),
           resolveAmbientContext: () => ({
             subagentCount: discoverAgents(config.workspace).length,
             hasMemoryIndex: Boolean(

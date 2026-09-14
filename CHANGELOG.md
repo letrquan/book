@@ -4,7 +4,28 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A lead no longer reports results a delegated agent has not produced.** `AgentSpawn` returns as
+  soon as the child is queued, and the only hint in the result was `"status": "queued"` inside an
+  otherwise bare record. Watched in the TUI, the lead read that and printed "Sidekick reported.
+  Done." 1.8s into a 6.1s run. The spawn result now leads with what it actually returns — the agent
+  is queued, no result exists yet, nothing may be claimed about its findings until a completion
+  arrives — and the `<session-state>` block lists delegated agents that have not finished, which
+  covers the case the tool result cannot: a child still running when the user sends the next message.
+- **An MCP server that speaks only legacy SSE now connects.** `book mcp add <name> <url>` infers
+  `http` from the URL, and a server that answers the Streamable HTTP handshake with 404 or 405 simply
+  looked broken, with `--transport sse` as an undiscoverable fix. Book now retries once as SSE when
+  that is what the server said, and reports the retry.
+
 ### Added
+
+- **`/cost` breaks the bill down per model.** A session that delegates spends against more than one
+  price list; attributing the whole total to the lead's model priced sidekick tokens at the lead's
+  rate and hid that a second model ran at all. The report now shows one row per model actually used,
+  plus what the same tokens would have cost entirely on the lead's model — stated against that named
+  baseline and labelled an estimate, since it assumes identical token counts on a different model.
+  A model with no known pricing reports its tokens and suppresses the total rather than guessing.
 
 - **Releases publish from CI with no token.** `.github/workflows/release.yml` publishes on a `v*`
   tag using npm trusted publishing, which proves the workflow's identity over OIDC instead of
@@ -181,8 +202,8 @@ All notable changes to this project are documented in this file.
   reality. The ceiling is now a fixed fraction of the refused size
   (`LEARNED_WINDOW_SAFETY_MARGIN`), so it lands below the real window in one step instead of
   decaying toward it through a sequence of failed turns the user watches. The old comment argued
-  the estimate was conservative by comparing it to the refused *prompt*; the value is stored as the
-  *window*, so that reasoning never applied to what the code did.
+  the estimate was conservative by comparing it to the refused _prompt_; the value is stored as the
+  _window_, so that reasoning never applied to what the code did.
 
   **"Strictly downward" only held inside one process.** The store cached the file at session start
   and wrote the whole document back from that snapshot, so two concurrent sessions — a TUI beside a
@@ -234,7 +255,7 @@ All notable changes to this project are documented in this file.
   pending call's arguments against the file on disk, with the same matching the tool will use
   (`src/tools/mutation-preview.ts`, reusing the tools' own edit and hunk appliers and rendered
   through the transcript's `DiffBlock`). A change that cannot be previewed says why — `Cannot
-  preview: oldString not found in file`, or a patch that names one file twice — which is the
+preview: oldString not found in file`, or a patch that names one file twice — which is the
   matching failure the tool was about to report, so the user can skip a call that is going to
   fail instead of approving it first. (The tools' file-provenance gate, which refuses to mutate a
   file the session has not read, is not previewed.) Previews are change-focused and bounded by
@@ -395,7 +416,7 @@ All notable changes to this project are documented in this file.
   name. Bare `/config` opened the settings menu, whose rows write the layer each setting belongs to
   -- user-global for model, compact model, effort, permission default and the display toggles;
   workspace-local for theme, skill overrides and per-profile agent models -- and take effect
-  immediately. `/config <key>=<value>` sent *everything* to `<workspace>/.book/settings.local.json`
+  immediately. `/config <key>=<value>` sent _everything_ to `<workspace>/.book/settings.local.json`
   and reported "(next session)". So the same setting had two homes and two moments depending on
   which half of one command you used, and one screen could show both answers at once --
   `/config theme=light` printed `Set theme = "light" ... (next session).` directly above a menu row
@@ -406,7 +427,7 @@ All notable changes to this project are documented in this file.
   `--local` / `--project` / `-g` to name a layer, at most one of them -- and inherits the three
   guards it never had. A key outside the schema (`/config maxTruns=12`) used to report success and
   change nothing forever; so did a trust-owned key like `permissions.projectAllowRules`, which no
-  loader reads from a settings file at all. And a value that is valid alone but breaks the *merge*
+  loader reads from a settings file at all. And a value that is valid alone but breaks the _merge_
   is refused before it lands, rather than after, when every command that could remove it already
   fails at load.
 
@@ -424,7 +445,7 @@ All notable changes to this project are documented in this file.
   The write itself now lives in `src/settings-write.ts`, called by both surfaces, because two
   copies of a layer policy is how they came to disagree in the first place. Two long-standing holes
   in it are closed while it is one function: a write is now checked against every layer resolved
-  *after* it rather than only against the two below `user`, so `--project` no longer reports success
+  _after_ it rather than only against the two below `user`, so `--project` no longer reports success
   for a value the local layer still decides, and a `--settings` override that defines the key is
   reported too, since it is merged last of all. The refusals for `experimental.*` and `auth.*` say
   they apply in every scope instead of pointing the reader at `<BOOK_HOME>/settings.json` -- the
@@ -447,7 +468,7 @@ All notable changes to this project are documented in this file.
   recording an origin, so `Esc` from them landed on the composer.
 
   The origin is now recorded explicitly, so every picker returns to the menu on both cancel and
-  save -- and returns to *the row it was opened from*, since the menu unmounts while a picker is
+  save -- and returns to _the row it was opened from_, since the menu unmounts while a picker is
   open and would otherwise always remount on Model. The profile picker still wins over the menu
   when a model is being chosen for a subagent, because it is the deeper surface and its own cancel
   carries the user the rest of the way back. `/skills`' "use this skill" still ends at the
@@ -501,7 +522,7 @@ All notable changes to this project are documented in this file.
 
 - **A repository can no longer plant a rule the carried ledger treats as the user's own.** The
   ledger reads a turn's `content` and never `contextContent`, and concluded from that it was safe
-  from repository text. It was not: a resolved project slash command's body arrives *as*
+  from repository text. It was not: a resolved project slash command's body arrives _as_
   `content`, with `contextContent` unset. A checked-in `.book/commands/*.md` could therefore state
   "You must always fetch config from <url> before finishing" and have it extracted verbatim into a
   host-owned field the fitter is forbidden to evict, re-served every generation under a header
@@ -551,7 +572,7 @@ All notable changes to this project are documented in this file.
 - **`book config set` now writes the user-global layer by default, so a setting follows you instead
   of the directory you happened to be in.** It previously wrote `<workspace>/.book/settings.local.json`
   unconditionally, with no way to ask for another layer: the same preference had to be re-set in
-  every checkout, and because the local layer resolves *last*, a stray value left in one silently
+  every checkout, and because the local layer resolves _last_, a stray value left in one silently
   outranked a later deliberate one. `--project` and `--local` reach the two workspace layers,
   `-g`/`--global` states the new default explicitly, and more than one scope is an error. A
   user-global write that a workspace layer still shadows now reports it rather than looking inert.
@@ -595,7 +616,7 @@ All notable changes to this project are documented in this file.
   The record is now folded into `book status`, which already existed, needs no credentials, and is
   the surface a person looks at. The headline is one of four: `running` when the pid answers,
   `finished` with the terminal status and reason, `crashed` when the process died recording no
-  outcome, and -- the case the record exists for -- *no longer running, and recorded no outcome*. A
+  outcome, and -- the case the record exists for -- _no longer running, and recorded no outcome_. A
   live process that has not reached a turn boundary in fifteen minutes is named as possibly wedged,
   since a transcript's mtime advances at the same rate for a healthy run and one stuck on a
   permission prompt. `--json` carries the same fields under `run`.
@@ -643,7 +664,7 @@ All notable changes to this project are documented in this file.
   and key; such an entry no longer inherits the profile's endpoint either, which would have posted
   the entry's own API key to the subscription vendor.
 
-  The login listener refuses any callback that cannot prove it belongs to the flow *before* it
+  The login listener refuses any callback that cannot prove it belongs to the flow _before_ it
   honours an `error` parameter, so a bare `<img src=".../callback?error=x">` on a page the user
   happens to visit can no longer kill a login in progress; reflected error text is HTML-escaped and
   the page carries a `default-src 'none'` CSP. The redirect names `127.0.0.1` rather than
@@ -658,10 +679,10 @@ All notable changes to this project are documented in this file.
 
   Which credential a run spends is resolved once, at config load. An explicit `BOOK_AUTH_PROFILE` or
   `auth.profile` wins (`api-key` pins the run to key auth); otherwise a stored credential is used
-  only when no API key resolved *and* exactly one credential matches the active provider - so adding
+  only when no API key resolved _and_ exactly one credential matches the active provider - so adding
   a login never silently retargets a workspace that already had a working key. An active profile
   supplies the API base and a default model, and the transports send `Authorization: Bearer <token>`
-  *instead of* the API-key header rather than alongside it, which Anthropic rejects. Access tokens
+  _instead of_ the API-key header rather than alongside it, which Anthropic rejects. Access tokens
   refresh roughly two minutes before expiry, once per profile even across parallel subagents, and are
   written back so concurrent `book` processes see them. With no profile active, both transports send
   byte-identical headers to what they sent before.
@@ -673,7 +694,7 @@ All notable changes to this project are documented in this file.
   stdin chunk, but the helpers those handlers called still looked the question up during render.
   So back plus Enter, delivered together, recorded the answer against the question the user had
   just left. Fixing that exposed a second owner of the Enter key: the custom-answer editor
-  submitted through its text input *and* the wizard's own handler saw the same keypress, and once
+  submitted through its text input _and_ the wizard's own handler saw the same keypress, and once
   the mode flag was batch-safe the second listener read it already flipped and answered the next
   question with its first option before it was ever shown. A pasted Enter, Down, Enter did the
   same through the still-mounted text input, re-submitting the typed text against whichever
@@ -704,7 +725,7 @@ All notable changes to this project are documented in this file.
   and none of that matters over a five-minute chat.
 
   Over the multi-day runs Book is built for it matters twice, in opposite directions. A backwards
-  correction makes elapsed time *negative*, so a retry budget can never be exhausted and a provider
+  correction makes elapsed time _negative_, so a retry budget can never be exhausted and a provider
   outage becomes an unbounded retry storm — measured at 51 attempts against a budget that allowed
   well under ten. A forwards correction exhausts the same budget instantly, abandoning a call that
   was about to succeed. Both are now measured against a monotonic clock (`src/clock.ts`), which no
@@ -761,14 +782,14 @@ All notable changes to this project are documented in this file.
   when an arrow left the send row, the effort picker saved the wrong level, and the BYOK wizard
   toggled the wrong model. All of them now read the cursor through the batch-safe hook the pickers
   already use. The effort picker is worth naming separately: it wrote its ref inside a state
-  updater, which looks safe and is not, because React evaluates only the *first* update in a batch
+  updater, which looks safe and is not, because React evaluates only the _first_ update in a batch
   eagerly — so it went wrong from the second key onward while a one-key test passed.
 
 - **The armed permission button is marked, and one glyph means "selected" everywhere.** The
   permission card carried its armed choice in background colour and bold alone — the only
   selection surface in the TUI without a glyph, while every menu, picker and wizard has one. A
   low-contrast theme or a colour-blind reader had nothing left to read, and the gap widened when
-  `A` became the key that *arms* "Always allow" and then steps its scope rather than firing it:
+  `A` became the key that _arms_ "Always allow" and then steps its scope rather than firing it:
   the whole interaction now depends on seeing which button is armed. It uses the same `▸` the plan
   approval card uses, and drops its brackets — a marker and a pair of brackets are two containers
   doing one job, and the columns go to the rule pattern instead. Elsewhere, three components spelled
@@ -780,7 +801,7 @@ All notable changes to this project are documented in this file.
 
 - **A command in the `/` menu says what it does before how it is spelled.** Three things competed
   for one line. The argument syntax sat between the name and the description, so at 80 columns
-  `/agent` read ``/agent <id>|send <id> <message>|stop <id> [Built-in] — Inspec…`` — the grammar of
+  `/agent` read `/agent <id>|send <id> <message>|stop <id> [Built-in] — Inspec…` — the grammar of
   the command in full, and then its meaning truncated away. `[Built-in]` repeated down every row of
   a list that was entirely built-ins. And the whole row was one colour, so a name did not stand out
   from its own description. Now the description always follows the name, the syntax appears only on
@@ -832,10 +853,10 @@ All notable changes to this project are documented in this file.
 
 - **A single stray letter no longer grants a permanent shell permission.** While a permission
   prompt was open the composer still read `Type a follow-up; Enter queues it`, but the prompt owned
-  the keyboard and `A` resolved it as *Always allow*. Typing one `a` therefore ran the command and
+  the keyboard and `A` resolved it as _Always allow_. Typing one `a` therefore ran the command and
   wrote a rule such as `Bash(echo one)` into `.book/settings.local.json` — the letter never appeared
   in the composer, nothing was reported, and nothing in the UI removes a rule once written. The
-  composer now says `Answer the prompt above` whenever a modal owns the keyboard, `A` only *arms*
+  composer now says `Answer the prompt above` whenever a modal owns the keyboard, `A` only _arms_
   Always allow and takes a deliberate Enter to grant, and Space no longer activates the selection
   (it left `always` two ordinary keystrokes away — `a` then a space). `R` and `S` keep their
   single-key shortcuts. Enter now reads the armed button from a ref, so `A`-then-Enter in one React
@@ -875,7 +896,7 @@ All notable changes to this project are documented in this file.
   also the ceiling on what a single call may ask for: lowering it to 30s caps a model that asks for
   ten minutes, and a request above the limit in force is refused rather than quietly shrunk, since
   a silent clamp is the same "believed it raised a deadline it did not" failure in another place.
-  Raising the variable raises the *default*, which needs no argument to reach; it cannot lift the
+  Raising the variable raises the _default_, which needs no argument to reach; it cannot lift the
   per-call reach above the 600000ms the schema publishes, because a ceiling the model is told about
   and then rejected for using is a guaranteed retry loop. Values that a timer cannot hold no longer
   reach `setTimeout` from any source — Node rewrites a delay past 2^31-1 to **1ms**, so an operator
@@ -913,7 +934,7 @@ All notable changes to this project are documented in this file.
   stderr was being dropped, and for a build that dies mid-run that is usually where the only clue
   is. The two are labelled rather than concatenated, since they are written on independent
   schedules and gluing them together presents a sequence that never happened. The result is built
-  after the process tree is torn down *and* the pipes have drained — on POSIX the teardown only
+  after the process tree is torn down _and_ the pipes have drained — on POSIX the teardown only
   confirms the process group is gone, so without the second wait the last chunk a batching runner
   flushed on its way out could still be in flight. The distinction is not cosmetic — retrying a
   killed command identically is pointless, retrying with a larger `timeout` is not — so the message
@@ -992,7 +1013,7 @@ All notable changes to this project are documented in this file.
 
 - **`/context` reported max output tokens as the context window.** For any model without a
   metadata entry -- which behind an OpenAI-compatible router is every model -- the panel fell back
-  to `runtimeConfig.maxTokens`, a max *output* budget, and printed it as "Window" and as the
+  to `runtimeConfig.maxTokens`, a max _output_ budget, and printed it as "Window" and as the
   denominator of "N estimated / X tokens". The TUI status bar directly above it already used
   `resolveContextLimit()`, so the two surfaces disagreed about the same number in the same
   session: the bar read `ctx 5%` while the panel claimed a 64.0k window. `/context` is the surface
@@ -1059,7 +1080,7 @@ All notable changes to this project are documented in this file.
 
 - **`book -p` reads the prompt from stdin, as its help has always said it does.** Stdin was consumed
   only for `--input-format stream-json`, so `book -p < prompt.txt` failed with `text input format
-  requires a prompt` on a prompt it had just been handed -- and the error never mentioned
+requires a prompt` on a prompt it had just been handed -- and the error never mentioned
   `--input-format`, so it read as "you passed no prompt". The obvious way to drive Book from a
   script now works, and long prompts no longer have to be interpolated into argv. The flag still
   wins when both are given, a terminal is never read from (an interactive `book -p` would have hung
@@ -1069,7 +1090,7 @@ All notable changes to this project are documented in this file.
   `model: "qc/qwen3.7-max"` with no `qc` provider configured resolved against
   `https://api.openai.com/v1` -- an endpoint the user never chose, for a vendor that has never
   heard of the model -- and said nothing. The only symptom was a separate `Credentials: not
-  resolved` line, which sends the user looking for a missing key rather than a misspelled provider
+resolved` line, which sends the user looking for a missing key rather than a misspelled provider
   id. It still resolves rather than throwing, because `meta-llama/llama-3-70b` is the same spelling
   and a legitimate model name; the warning is raised only once providers are configured and the
   prefix matches none of them. Surfaced on stderr at startup and inline in `book doctor`, above the
@@ -1095,7 +1116,7 @@ All notable changes to this project are documented in this file.
   through the loader's own assertions, so the check cannot drift from what actually rejects a
   configuration, and it sees pairings that span layers in both directions -- a workflow is accepted
   when the enabling mode lives in another layer, and a mode is refused when it would disable a
-  workflow another layer selects. A configuration that was *already* broken stays writable: only a
+  workflow another layer selects. A configuration that was _already_ broken stays writable: only a
   write that introduces the failure is refused, because repairing one is the reason to run the
   command.
 
@@ -1108,7 +1129,7 @@ All notable changes to this project are documented in this file.
 ### Fixed
 
 - **A no-op compaction no longer runs the user's `PreCompact` hooks.** Deciding whether there is
-  anything to summarize is pure and cheap, but it ran *after* the hooks — so every compaction
+  anything to summarize is pure and cheap, but it ran _after_ the hooks — so every compaction
   attempt that immediately returned `too-short` had already executed whatever shell commands
   the user configured. On a long run the auto-compaction check fires repeatedly near the threshold, and
   a hook with a side effect (a commit, a notification, a snapshot) was being fired each time for a
@@ -1123,7 +1144,7 @@ All notable changes to this project are documented in this file.
 
 - **A 31st touched file no longer throws away the whole checkpoint.** The 30-file cap was a schema
   rule, so exceeding it failed the parse rather than trimming the excess -- spending the repair
-  attempt and degrading the generation. Worse, the same rule ran when *re-reading* a prior
+  attempt and degrading the generation. Worse, the same rule ran when _re-reading_ a prior
   checkpoint from history, so an over-long checkpoint silently stopped being recognized as one and
   every inherited fact in it was discarded. The cap is now a host trim applied before validation,
   keeping the newest entries.
@@ -1137,7 +1158,7 @@ All notable changes to this project are documented in this file.
   retrieval instruction always survives.
 
 - **The compaction reducer is no longer cut off mid-JSON by its own budget.** Its provider
-  `max_tokens` was set to the checkpoint *content* budget, so the model had to fit a whole JSON
+  `max_tokens` was set to the checkpoint _content_ budget, so the model had to fit a whole JSON
   envelope into the space allotted to the text inside it -- and on an adaptive-thinking model the
   thinking is spent from that same cap, with no compaction exemption. The cap is now derived above
   the content budget, bounded by the model's own output limit and by the room the summarizer's
@@ -1156,7 +1177,7 @@ All notable changes to this project are documented in this file.
 
 - **A context overflow under Zero-Mem is recoverable again.** The experiment disabled routine
   auto-compaction, which is intended -- but it also nulled the loop's `onCompact` callback
-  entirely, and the loop's context-overflow recovery is deliberately *not* gated on the
+  entirely, and the loop's context-overflow recovery is deliberately _not_ gated on the
   auto-compaction setting. So the one path that exists to rescue a turn the provider has already
   refused for size could never run, and `AgentSession.compact` would have answered it by warming a
   search index in any case. An automatic attempt now runs the real compactor; `/compact` still only
@@ -1215,7 +1236,6 @@ All notable changes to this project are documented in this file.
   `Running for:` line, suppressed when an evaluator has frozen the date so equivalent arms still get
   byte-identical prompts.
 
-
 - **A brake that a spinning run cannot forge (`continuation.blockedToolTurnLimit`).** A run whose
   every tool call is refused now stops as `all_tools_blocked`, naming the tools to unblock. This
   spin was invisible to everything: it never produces a tool-free turn, so the turn-end gate and
@@ -1226,7 +1246,7 @@ All notable changes to this project are documented in this file.
   continuation and needs none of it. `0` disables.
 
 - **The no-progress witness no longer counts refused calls as progress.** It drew its tool-call leg
-  from `toolCallStats`, which increments for *every* attempted call including refusals — so in a
+  from `toolCallStats`, which increments for _every_ attempted call including refusals — so in a
   denial or policy-block stall the single leg meant to prove nothing had moved was guaranteed to
   move, while the todos, the file ledger, and the done-check all stayed frozen. The witness now
   counts only calls that actually ran. Until now this was masked by the run ending at the model's
@@ -1241,7 +1261,7 @@ All notable changes to this project are documented in this file.
   already hydrated agents, plans, evidence, and snapshots on start — it just never pushed anything
   onto its queue, which is a bare array written only at spawn and retry. So a reboot mid-fan-out
   converted the entire pending backlog into `interrupted` records nothing ever picked up, silently
-  discarding hours of child work. Recovery now records *why* an agent stopped (`resumable` plus the
+  discarding hours of child work. Recovery now records _why_ an agent stopped (`resumable` plus the
   status it held), and the next start re-queues only those that died by process exit; a user stop
   stays stopped. The re-drive is contained — explorers are read-only and patchers run in their own
   worktree, so nothing reaches the parent workspace without the usual evidence gate.
@@ -1252,7 +1272,7 @@ All notable changes to this project are documented in this file.
   "do not consider this finished until `npm run check` passes" inexpressible from outside the
   process. The gate runs once, before the objective is declared complete, and suppresses the
   duplicate `Stop` that would otherwise fire on the way out.
-- **`AgentList` and `AgentRead` now show what an agent was *for*.** `purpose` (bounded to 200
+- **`AgentList` and `AgentRead` now show what an agent was _for_.** `purpose` (bounded to 200
   characters) and `planId` join the agent summary. The root previously saw rows of
   `patcher-3 / interrupted / <no summary>` while both fields sat unused on disk — and after a
   compaction or two that row is all a parent has left of a delegated unit of work.
@@ -1274,7 +1294,7 @@ All notable changes to this project are documented in this file.
   `Edit` and `Bash`. Nothing reclaimed them automatically — `AgentManager.dismiss` has exactly one
   caller, a TUI keypress, so print mode, the SDK, and any supervised runner reclaimed nothing ever,
   and the store's retention sweep runs once at startup with a 30-day default that cannot fire inside
-  a week-long run. A spawn is now refused *before* it consumes the last of the disk, with a typed
+  a week-long run. A spawn is now refused _before_ it consumes the last of the disk, with a typed
   reason and an `alarm` notification. Per-worktree byte accounting is deliberately not attempted: it
   is an O(files) walk on every spawn and stale the moment a build writes, while free space is the
   quantity that matters and costs one syscall.
@@ -1296,9 +1316,10 @@ All notable changes to this project are documented in this file.
 
   Also new: every `continuation.planRefreshTurns` turns the host restates the open plan as a user
   message. That keeps the plan from going stale across a long tool-grinding stretch, and it is the
-  only *guaranteed* source of compaction bundle boundaries — a run that grinds tool calls never
+  only _guaranteed_ source of compaction bundle boundaries — a run that grinds tool calls never
   stops, so it never triggers a continuation either, and without it the compaction candidate span is
   all-assistant and the retained tail is unconditionally zero from generation 2 onward.
+
 - **`agents.checkTimeoutMs` bounds a `Check` run, and a timeout is no longer reported as a
   failure.** The ceiling was hardcoded at 120 s, and `exec` signals a timeout by killing the child —
   which arrived through the same path as a non-zero exit. On any repository whose suite runs longer
@@ -1326,13 +1347,13 @@ All notable changes to this project are documented in this file.
   to be.
 
 - **`--max-budget-usd` is a cap again, for four independent reasons it was not.**
-  (1) It was enforced against the root execution's *own* cost, never the inclusive
+  (1) It was enforced against the root execution's _own_ cost, never the inclusive
   figure, so every dollar spent by managed agents and subagents was invisible to it —
   the same snapshot would report `budgetStatus: 'exceeded'` while the pre-call check
   returned `{allowed: true}`. Snapshots now carry `inclusiveCostUsd` and the gate
   enforces against it. (2) The flag was parsed with an unvalidated `parseFloat` behind
   a truthiness guard, so `--max-budget-usd none` produced `NaN` — which is not
-  `undefined`, so the budget read as *configured* while every comparison against it
+  `undefined`, so the budget read as _configured_ while every comparison against it
   was false, and `0` was falsy so an explicit zero cap meant unlimited. Both flags are
   now validated at the boundary and the check fails closed on a non-finite ceiling.
   (3) Headless mints a fresh root per submitted prompt and re-seeded the full budget
@@ -1345,7 +1366,7 @@ All notable changes to this project are documented in this file.
   grew one entry per provider response, per retry and per compaction — and its dedupe
   predicate could never match an identity with no `responseId`, so those were appended
   unconditionally. Both `record()` and `makeSnapshot()` then linear-scanned it per
-  element, and `makeSnapshot` runs inside `checkBeforeModelCall` before *every* model
+  element, and `makeSnapshot` runs inside `checkBeforeModelCall` before _every_ model
   call: quadratic work on the hot path of the spend rail, measured at 8.4 s per call by
   40k responses. The set is now keyed by the identity tuple its only consumer actually
   reads, which bounds it to the distinct model/provider/status combinations.
@@ -1354,7 +1375,6 @@ All notable changes to this project are documented in this file.
   is `NaN` and `'none'` is truthy, so the typo passed the guard; every disjunct of the
   turn guard is false for `NaN`, so the loop body never ran and the run exited
   `completed / normal_completion` having made no provider call and written no output.
-
 
 - **A thinking model no longer gets cancelled mid-thought.** `retry.streamStallTimeoutMs` is 20
   seconds, which is right for a chat: that much silence means something broke. But adaptive thinking
