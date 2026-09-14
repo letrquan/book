@@ -108,6 +108,34 @@ function requiresToolPermission(mode: string, persistentBackgroundShell: boolean
   return needsPermissionCheck(mode) || (persistentBackgroundShell && mode !== 'bypassPermissions');
 }
 
+const AGENT_TERMINAL_STATUSES = new Set(['completed', 'failed', 'stopped', 'interrupted']);
+
+/**
+ * Delegated agents that have not finished, for the turn's session-state block.
+ *
+ * Resolved here rather than in `agent/context.ts` because the loop owns the
+ * manager and the context builder must stay clear of `agents/`. Failures are
+ * swallowed: a listing error must never take down the turn that merely wanted to
+ * mention it, and an empty list degrades to the pre-existing behaviour.
+ */
+async function outstandingAgentLabels(
+  manager: ToolContext['agentManager'] | undefined,
+  isChildRun: boolean,
+): Promise<Array<{ label: string; status: string }>> {
+  if (!manager || isChildRun) return [];
+  try {
+    const records = await manager.list();
+    return records
+      .filter((record) => !AGENT_TERMINAL_STATUSES.has(record.status))
+      .map((record) => ({
+        label: `${record.profile ?? record.name} "${record.displayName ?? record.purpose ?? record.name}"`,
+        status: record.status,
+      }));
+  } catch {
+    return [];
+  }
+}
+
 export async function runAgentLoop(
   config: AgentConfig,
   registry: ToolRegistry,
@@ -713,6 +741,12 @@ export async function runAgentLoop(
       toolContext.currentTurn = turn;
       syncSkillRestrictions(turn);
       const activeDefinitions = toolSurface.activeDefinitions();
+      // Resolved once per turn. The session-state block is memoized on the newest
+      // user message, so a rebuild below reuses these bytes rather than re-listing.
+      const outstandingAgents = await outstandingAgentLabels(
+        runtime.agentManager,
+        Boolean(options?.agentId),
+      );
       let messages = await buildMessages(
         effectiveConfig,
         newHistory,
@@ -727,6 +761,7 @@ export async function runAgentLoop(
           planMode: effectiveMode === 'plan',
           planUnrestored: runtime.planUnrestored,
           runElapsedMs: clock.monotonicNowMs() - runStartedAt,
+          outstandingAgents,
         },
         runtime.agentContextCache,
         options?.resolveAttachment,
@@ -747,6 +782,7 @@ export async function runAgentLoop(
             planMode: effectiveMode === 'plan',
             planUnrestored: runtime.planUnrestored,
             runElapsedMs: clock.monotonicNowMs() - runStartedAt,
+            outstandingAgents,
           },
           runtime.agentContextCache,
           options?.resolveAttachment,

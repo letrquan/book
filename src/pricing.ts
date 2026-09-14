@@ -200,9 +200,114 @@ export function estimateUsageCost(
  * Per-skill/subagent attribution breakdown is deferred (genuinely needs
  * accounting plumbing); surfaced honestly instead of silently omitted.
  */
+
+export interface DelegatedUsage {
+  /** Human label for the delegation, e.g. `explorer "map the auth module"`. */
+  label: string;
+  model: string;
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+}
+
+interface ModelTotal {
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  agents: number;
+  usd: number | null;
+}
+
+function usdFor(
+  model: string,
+  usage: { promptTokens: number; completionTokens: number },
+): number | null {
+  const rate = resolveModelPricing(model)?.rate;
+  if (!rate) return null;
+  return (usage.promptTokens * rate.in + usage.completionTokens * rate.out) / 1e6;
+}
+
+/**
+ * Fold the session's own usage and every delegation into one row per model.
+ *
+ * A session that delegates spends against more than one price list, and a single
+ * total attributed to the lead's model is wrong in both directions -- it bills
+ * sidekick tokens at the lead's rate and hides that a second model ran at all.
+ */
+function modelTotals(
+  leadModel: string,
+  leadUsage: { promptTokens: number; completionTokens: number } | null,
+  delegated: readonly DelegatedUsage[],
+): ModelTotal[] {
+  const byModel = new Map<string, ModelTotal>();
+  const bump = (model: string, prompt: number, completion: number, isAgent: boolean): void => {
+    const row = byModel.get(model) ?? {
+      model,
+      promptTokens: 0,
+      completionTokens: 0,
+      agents: 0,
+      usd: null,
+    };
+    row.promptTokens += prompt;
+    row.completionTokens += completion;
+    if (isAgent) row.agents += 1;
+    byModel.set(model, row);
+  };
+  if (leadUsage) bump(leadModel, leadUsage.promptTokens, leadUsage.completionTokens, false);
+  for (const entry of delegated) {
+    bump(entry.model, entry.usage.promptTokens, entry.usage.completionTokens, true);
+  }
+  return [...byModel.values()].map((row) => ({ ...row, usd: usdFor(row.model, row) }));
+}
+
+/**
+ * Per-model breakdown, plus what the same tokens would have cost on the lead's
+ * model alone.
+ *
+ * The counterfactual is the only way a two-model session is legible -- otherwise
+ * the user sees a bill and cannot tell whether delegating helped. It is stated
+ * against an explicit baseline and labelled an estimate, never as a headline
+ * saving: it assumes the same token counts on a different model, which is an
+ * assumption, not a measurement.
+ */
+export function modelBreakdownLines(
+  leadModel: string,
+  leadUsage: { promptTokens: number; completionTokens: number } | null,
+  delegated: readonly DelegatedUsage[],
+): string[] {
+  const rows = modelTotals(leadModel, leadUsage, delegated);
+  if (rows.length <= 1) return [];
+
+  const lines = ['Per model'];
+  for (const row of rows) {
+    const who = row.agents > 0 ? `${row.agents} delegated` : 'session';
+    const cost = row.usd === null ? 'pricing unknown' : `$${row.usd.toFixed(4)}`;
+    lines.push(
+      `  ${row.model} (${who}) - prompt ${row.promptTokens.toLocaleString()}, completion ${row.completionTokens.toLocaleString()} - ${cost}`,
+    );
+  }
+
+  if (rows.some((row) => row.usd === null)) return lines;
+  const actual = rows.reduce((sum, row) => sum + (row.usd ?? 0), 0);
+  lines.push(`  Total - $${actual.toFixed(4)}`);
+
+  const allOnLead = rows.reduce((sum, row) => sum + (usdFor(leadModel, row) ?? Number.NaN), 0);
+  if (!Number.isFinite(allOnLead)) return lines;
+  const delta = allOnLead - actual;
+  const pct = allOnLead > 0 ? Math.round((delta / allOnLead) * 100) : 0;
+  lines.push('');
+  lines.push(
+    `Same tokens entirely on ${leadModel}: $${allOnLead.toFixed(4)} ` +
+      `(${delta >= 0 ? 'est. saving' : 'est. extra'} $${Math.abs(delta).toFixed(4)}, ${Math.abs(pct)}%).`,
+  );
+  lines.push(
+    'Estimate only: it assumes identical token counts on the other model, which is an assumption, not a measurement.',
+  );
+  return lines;
+}
+
 export function costReport(
   model: string,
   usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null,
+  delegated: readonly DelegatedUsage[] = [],
 ): string {
   if (!usage) {
     return 'No token usage recorded for this session yet.\n\n(USD estimate available after the first model response.)';
@@ -217,13 +322,10 @@ export function costReport(
     usd !== null
       ? `Est. cost: $${usd}  (estimate computed locally; may differ from your actual bill)`
       : `Est. cost: (pricing unknown for "${model}" — add it to PRICING in src/pricing.ts)`;
-  return [
-    modelLine,
-    tokenLine,
-    usdLine,
-    '',
-    '(Per-skill/subagent attribution breakdown — not yet implemented.)',
-  ].join('\n');
+  const breakdown = modelBreakdownLines(model, usage, delegated);
+  return [modelLine, tokenLine, usdLine, ...(breakdown.length ? ['', ...breakdown] : [])].join(
+    '\n',
+  );
 }
 
 /**

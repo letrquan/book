@@ -4,6 +4,43 @@ import { toolFailure, toolSuccess } from './result.js';
 import { deriveAgentDisplayName } from '../agents/naming.js';
 import { projectAgentCompletion } from '../agents/projections.js';
 
+/**
+ * Wall-clock breakdown of one foreground delegation round trip.
+ *
+ * `overheadMs` is the part the harness owns — admission, profile resolution,
+ * store writes, isolation setup and the wait plumbing — as distinct from the
+ * child's own run. It is the number that decides whether a lead/sidekick split
+ * is affordable interactively, and the one no vendor publishes.
+ */
+function delegationTiming(
+  requestedAt: number,
+  spawnedAt: number,
+  settledAt: number,
+  completed: { startedAt?: number; finishedAt?: number },
+): {
+  requestedAt: number;
+  spawnMs: number;
+  queuedMs: number;
+  childRunMs: number;
+  roundTripMs: number;
+  overheadMs: number;
+} {
+  const roundTripMs = Math.max(0, settledAt - requestedAt);
+  const spawnMs = Math.max(0, spawnedAt - requestedAt);
+  const childStart = completed.startedAt ?? spawnedAt;
+  const childEnd = completed.finishedAt ?? settledAt;
+  const queuedMs = Math.max(0, childStart - spawnedAt);
+  const childRunMs = Math.max(0, childEnd - childStart);
+  return {
+    requestedAt,
+    spawnMs,
+    queuedMs,
+    childRunMs,
+    roundTripMs,
+    overheadMs: Math.max(0, roundTripMs - childRunMs),
+  };
+}
+
 async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const agentName = args.agent as string;
   const prompt = args.prompt as string;
@@ -35,6 +72,7 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
       runtime: ctx.runtime,
       permissionMode: ctx.currentMode,
     });
+    const requestedAt = Date.now();
     const spawned = await manager.spawn({
       agent: agentName,
       description: deriveAgentDisplayName(prompt, agentName),
@@ -42,8 +80,14 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
       parentSessionId: ctx.parentSessionId,
       rootRunId: ctx.runContext?.rootRunId,
       parentRunId: ctx.runContext?.runId,
+      // Publish the link before blocking. `wait` below does not return until the
+      // child is finished, so this is the only moment at which the transcript can
+      // learn which child this row is waiting on.
+      parentToolCallId: ctx.currentToolTraceId,
     });
+    const spawnedAt = Date.now();
     const completed = await manager.wait(spawned.id);
+    const settledAt = Date.now();
     if (['completed', 'failed', 'stopped', 'interrupted'].includes(completed.status)) {
       await manager.acknowledgeCompletion(`${completed.id}:${completed.completionSequence ?? 0}`);
     }
@@ -71,7 +115,12 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
     }
     return toolSuccess(
       `## Subagent result: ${completed.displayName ?? completed.name}\n\n${resultText || '(no output)'}${recovery}`,
-      { data: projection },
+      {
+        data: {
+          ...projection,
+          delegation: delegationTiming(requestedAt, spawnedAt, settledAt, completed),
+        },
+      },
     );
   } catch (error) {
     if (error instanceof AgentManagerError) {

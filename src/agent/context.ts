@@ -392,6 +392,12 @@ export interface SystemPromptOverrides {
    */
   planUnrestored?: boolean;
   /**
+   * Task state like `planMode`: delegated agents that have not finished, so the
+   * session-state block can say a result has not arrived. Resolved by the caller
+   * because it owns the agent manager; `agent/` must not reach into `agents/`.
+   */
+  outstandingAgents?: Array<{ label: string; status: string }>;
+  /**
    * How long this run has been going, so the session-state block can say so.
    * Task state like `planMode`: it must not reach the cached prefix.
    *
@@ -536,6 +542,7 @@ async function ensureSessionState(
   planMode: boolean,
   planUnrestored: boolean,
   runElapsedMs: number | undefined,
+  outstandingAgents: Array<{ label: string; status: string }>,
   signal?: AbortSignal,
   cache?: AgentContextCache,
 ): Promise<void> {
@@ -555,6 +562,7 @@ async function ensureSessionState(
     git: await (cache?.git(config.workspace, signal) ?? gitContext(config.workspace, signal)),
     planMode,
     planUnrestored,
+    outstandingAgents,
     todos,
     staleFiles: checkpoint
       ? await collectStaleCheckpointFiles(
@@ -584,6 +592,7 @@ export async function buildMessages(
     systemOverrides?.planMode ?? false,
     systemOverrides?.planUnrestored ?? false,
     systemOverrides?.runElapsedMs,
+    systemOverrides?.outstandingAgents ?? [],
     signal,
     cache,
   );

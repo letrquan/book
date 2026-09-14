@@ -21,7 +21,7 @@ import {
   listMemoryCandidates,
   loadMemoryContext,
 } from '../memory-store.js';
-import { costReport, failureTotal, PRICING, usageReport } from '../pricing.js';
+import { costReport, failureTotal, PRICING, usageReport, type DelegatedUsage } from '../pricing.js';
 import { buildContextBreakdown, buildContextReport, sourceLabel } from '../context-report.js';
 import { resolveContextWindow } from '../models.js';
 import type { SkillRegistrySnapshot } from '../skill-registry.js';
@@ -61,6 +61,14 @@ export interface BuiltinCommandContext {
   mcpSnapshot?: McpHostSnapshot;
   /** Per-session tool call/failure counters keyed by canonical tool name. */
   toolCallStats?: ReadonlyMap<string, { calls: number; failures: Record<string, number> }>;
+  /**
+   * Usage from delegated agents, attributed to the model each actually ran on.
+   *
+   * Kept separate from `usage`, which counts only this session's own turns: a
+   * child's tokens reach its agent record and never the parent's counter, so
+   * these are additive rather than a subset.
+   */
+  delegatedUsage?: readonly DelegatedUsage[];
   resolveAmbientContext: () => {
     subagentCount: number;
     hasMemoryIndex: boolean;
@@ -753,7 +761,7 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     description: 'Show token usage and cost',
     execute: (_invocation, context) => ({
       type: 'local-message',
-      content: costReport(context.runtimeConfig.model, context.usage),
+      content: costReport(context.runtimeConfig.model, context.usage, context.delegatedUsage ?? []),
     }),
   },
   {

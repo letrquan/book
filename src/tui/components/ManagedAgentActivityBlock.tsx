@@ -63,6 +63,14 @@ export function ManagedAgentActivityBlock({
   const elapsed = durationFor(trace, now);
   const visible = trace.toolUses.slice(-MAX_VISIBLE_TOOL_USES);
   const hiddenCount = Math.max(0, trace.toolUses.length - visible.length);
+  // A blocked lead is a different situation from a background spawn and reads
+  // wrong under the same words: "Running in background" next to a stopped parent
+  // tells the user work is proceeding alongside their turn when nothing is.
+  const footer = terminal
+    ? 'Transcript retained · Tab to open'
+    : trace.blocking
+      ? 'Lead paused · sidekick working · Tab to open'
+      : 'Running in background · Tab to open';
   const grid = transcriptGrid(terminalWidth);
   // A managed-agent block fills the same transcript slot as a tool row — it is
   // the other branch of the same ternary — so it sits on the same indented
@@ -91,6 +99,7 @@ export function ManagedAgentActivityBlock({
           );
         })}
         {hiddenCount > 0 ? <Text>{hiddenCount} earlier tool uses hidden.</Text> : null}
+        <Text>{footer}.</Text>
         <Text>Press Tab to open the complete subagent transcript.</Text>
       </Box>
     );
@@ -161,7 +170,7 @@ export function ManagedAgentActivityBlock({
       ) : null}
       <Text color={theme.subtle} dimColor>
         {'  '}
-        {terminal ? 'Transcript retained · Tab to open' : 'Running in background · Tab to open'}
+        {footer}
       </Text>
     </Box>
   );

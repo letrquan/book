@@ -109,6 +109,8 @@ export interface AgentRecord {
   parentSessionId?: string;
   rootRunId?: string;
   parentRunId?: string;
+  /** See {@link AgentSpawnRequest.parentToolCallId}. */
+  parentToolCallId?: string;
   /** See {@link AgentSpawnRequest.notifyParentOnCompletion}. Defaults to true. */
   notifyParentOnCompletion?: boolean;
   runId?: string;
@@ -285,6 +287,17 @@ export interface AgentSpawnRequest {
   parentSessionId?: string;
   rootRunId?: string;
   parentRunId?: string;
+  /**
+   * Tool call in the parent transcript that this spawn belongs to.
+   *
+   * Background delegation (`AgentSpawn`) returns the agent id in its tool result,
+   * so the transcript can link child to parent as soon as the call settles.
+   * Foreground delegation (`Task`) does not settle until the child is *finished*,
+   * so without this the parent row has no way to name its child for the whole
+   * time the child is actually running — which is exactly when the user is
+   * watching. Recorded at spawn time so the link exists before the wait begins.
+   */
+  parentToolCallId?: string;
   /**
    * Whether this agent's terminal result is delivered to `parentSessionId` as a
    * completion notification. Defaults to true.
