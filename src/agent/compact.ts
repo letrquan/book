@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { AgentConfig } from '../types/runtime.js';
 import type {
+  CarriedTurnsSummary,
   CheckpointSourceRef,
   CompactCoverageReason,
   CompactRequestHints,
@@ -32,7 +33,9 @@ import {
   buildCarriedLedger,
   carriedLedgerNotice,
   carriedLedgerTokens,
+  isUserAuthored,
 } from './carried-ledger.js';
+import { containsSecretPattern } from '../secret-detect.js';
 import { createDebugLogger } from '../debug-log.js';
 
 const log = createDebugLogger('compact');
@@ -73,6 +76,29 @@ const MAX_OUTPUT_RESERVE_FRACTION = 0.5;
  */
 const RETAINED_TOOL_RESULT_TAIL_SHARE = 0.1;
 /**
+ * Carried Turns: the user's own earlier turns are kept verbatim ahead of the
+ * checkpoint instead of being summarized, and the reducer summarizes only the
+ * assistant and tool activity around them. This is the Carried Ledger's author
+ * split applied to whole turns (`plans/compaction-research-2026-09.md`, P1):
+ * the literature it cites agrees that a compactor which paraphrases the user
+ * loses the brief, and that user content placed outside the summary is what
+ * survives.
+ *
+ * The share of the verbatim budget (`recentBudget`) the carried turns may
+ * occupy, and the most they may occupy at any window. They are paid for out of
+ * the retained tail, never the checkpoint: the checkpoint is a ~4k summary and
+ * the brief does not fit in it.
+ */
+const CARRIED_TURNS_FRACTION = 0.15;
+const CARRIED_TURNS_MAX_TOKENS = 12_000;
+/**
+ * Per-turn head+tail clip ladder for carried turns, loosest first. Bounds what
+ * one pasted log can cost; the middle stays retrievable by the turn's event
+ * reference. Under pressure every turn is clipped harder before any turn is
+ * dropped, so a correction and the value it corrected stay in view together.
+ */
+const CARRIED_TURN_CLIP_LADDER = [1_024, 512, 256] as const;
+/**
  * The reducer's provider cap has to sit above the checkpoint content budget. The
  * model emits a whole JSON envelope around `checkpointBudget` tokens of content,
  * and on an adaptive-thinking model the thinking is spent from this same cap --
@@ -105,8 +131,43 @@ const RETRIEVAL_WARNING =
  * renders byte-for-byte what it rendered before.
  */
 function checkpointPrefix(checkpoint: ConversationCheckpointV2): string {
-  return `${CHECKPOINT_PREFIX}${carriedLedgerNotice(checkpoint.carried)}`;
+  return `${CHECKPOINT_PREFIX}${carriedLedgerNotice(checkpoint.carried)}${carriedTurnsNotice(checkpoint.carriedTurns)}`;
 }
+
+/**
+ * The Carried Turns disclosure. Like the ledger notice it is omitted when there
+ * is nothing to disclose, so a conversation that carried no turn renders
+ * byte-for-byte what it rendered before. It states what the model cannot infer
+ * from position alone: the user-role messages ahead of the checkpoint are the
+ * user's own earlier turns, exact, and the checkpoint covers the activity
+ * around them rather than restating them.
+ */
+export function carriedTurnsNotice(summary: CarriedTurnsSummary | undefined): string {
+  if (!summary || (summary.count === 0 && summary.droppedCount === 0)) return '';
+  return carriedTurnsNoticeText(summary.count, summary.clippedCount, summary.droppedCount);
+}
+
+function carriedTurnsNoticeText(count: number, clipped: number, dropped: number): string {
+  const dropText = dropped
+    ? `${dropped} of the user's earlier turn${dropped === 1 ? '' : 's'} not carried, retrievable from session history`
+    : '';
+  // Every turn dropped: the model must still learn that the turns exist.
+  if (count === 0) return `[carried-turns: ${dropText}.]\n`;
+  const details: string[] = [];
+  if (clipped) details.push(`${clipped} clipped`);
+  if (dropText) details.push(dropText);
+  const detail = details.length ? ` (${details.join('; ')})` : '';
+  return `[carried-turns: the ${count} user turn${count === 1 ? '' : 's'} above are the user's own earlier messages, verbatim, oldest first${detail}; this checkpoint summarizes the assistant and tool activity around them.]\n`;
+}
+
+/**
+ * The most the carried-turns notice can cost, reserved from the budgets before
+ * any turn is carried. Derived from the text so a longer notice moves the
+ * budgets with it.
+ */
+export const CARRIED_TURNS_NOTICE_MAX_TOKENS = Math.ceil(
+  carriedTurnsNoticeText(999_999, 999_999, 999_999).length / 4,
+);
 
 const coverageReasonSchema = z.enum([
   'pass-limit',
@@ -182,6 +243,17 @@ export const conversationCheckpointV2Schema = z.object({
       droppedCount: z.number().int().nonnegative().optional(),
     })
     .optional(),
+  /**
+   * Same standing as `carried`: round-tripped from a prior checkpoint message,
+   * never accepted from a model reply.
+   */
+  carriedTurns: z
+    .object({
+      count: z.number().int().nonnegative(),
+      clippedCount: z.number().int().nonnegative(),
+      droppedCount: z.number().int().nonnegative(),
+    })
+    .optional(),
   coverage: z
     .object({
       status: z.enum(['complete', 'degraded']),
@@ -210,10 +282,24 @@ References inherited from a prior checkpoint must be preserved exactly, includin
 When the checkpoint is insufficient later, the agent can use SessionHistorySearch and SessionHistoryRead to retrieve exact evidence.`;
 
 interface CompactSelection {
+  /** What the reducer reads this generation. Never includes a turn an earlier generation carried. */
   summarizedBundles: Message[][];
   retainedBundles: Message[][];
+  /** Turns an earlier generation carried, oldest first: carried again, not summarized again. */
+  priorCarried: Message[];
+  /** The user's own turns from `priorCarried` and the summarized span, kept verbatim ahead of the checkpoint. */
+  carried: CarriedTurns;
   priorCheckpoint?: ConversationCheckpointV2;
   priorCheckpointMessage?: Message;
+}
+
+export interface CarriedTurns {
+  /** `kind: 'carried'` copies, oldest first, one per original turn id. */
+  turns: Message[];
+  /** Carried turns whose provider-facing text was clipped or lost an attachment. */
+  clippedCount: number;
+  /** User turns the budget could not hold. */
+  droppedCount: number;
 }
 
 interface FragmentPart {
@@ -401,6 +487,12 @@ export interface CompactBudgets {
   shortRecentBudget: number;
   /** Per-tool-result clip applied to retained history and to the loop's preflight clip. */
   retainedToolResultMaxTokens: number;
+  /**
+   * Tokens of the user's own earlier turns kept verbatim ahead of the
+   * checkpoint (Carried Turns). Paid for out of `recentBudget`: carried turns
+   * plus the retained tail never exceed it.
+   */
+  carriedTurnsBudget: number;
 }
 
 export function resolveCompactBudgets(
@@ -448,7 +540,8 @@ export function resolveCompactBudgets(
   const checkpointEnvelopeTokens =
     estimateTextTokens(CHECKPOINT_PREFIX) +
     MESSAGE_OVERHEAD_TOKENS +
-    CARRIED_LEDGER_NOTICE_MAX_TOKENS;
+    CARRIED_LEDGER_NOTICE_MAX_TOKENS +
+    CARRIED_TURNS_NOTICE_MAX_TOKENS;
   const residualTail = Math.max(
     1,
     targetTokens -
@@ -473,6 +566,10 @@ export function resolveCompactBudgets(
           RETAINED_TOOL_RESULT_MAX_TOKENS,
           Math.floor(recentBudget * RETAINED_TOOL_RESULT_TAIL_SHARE),
         );
+  const carriedTurnsBudget = Math.min(
+    CARRIED_TURNS_MAX_TOKENS,
+    Math.floor(recentBudget * CARRIED_TURNS_FRACTION),
+  );
 
   return {
     contextWindow,
@@ -487,6 +584,7 @@ export function resolveCompactBudgets(
     recentBudget,
     shortRecentBudget,
     retainedToolResultMaxTokens,
+    carriedTurnsBudget,
   };
 }
 
@@ -578,6 +676,7 @@ export async function runCompact(
     contextHistory,
     budgets.recentBudget,
     budgets.retainedToolResultMaxTokens,
+    budgets.carriedTurnsBudget,
   );
   // A compaction that was asked for must shrink something. When the whole
   // history fits the residual tail, keep the short one instead, whoever asked.
@@ -587,6 +686,7 @@ export async function runCompact(
       contextHistory,
       budgets.recentBudget,
       budgets.retainedToolResultMaxTokens,
+      budgets.carriedTurnsBudget,
     );
   }
   const summarizedMessages = selection.summarizedBundles.flat();
@@ -720,6 +820,7 @@ export async function runCompact(
         options.upcomingUserIntent,
         generation,
         statistics,
+        selection.carried.turns.length,
       );
       modelCalls++;
       let generated = await generateCheckpoint(
@@ -838,6 +939,9 @@ export async function runCompact(
   );
   const retainedBundles = selection.retainedBundles.map((bundle) => [...bundle]);
   const postBudgetOmitted = new Set<string>();
+  /** Bundles the post-budget loop dropped from the tail, oldest first; their user turns are carried. */
+  const omittedBundles: Message[][] = [];
+  let carried = selection.carried;
   const compactId = crypto.randomUUID();
   const targetTokens = budgets.targetTokens;
   let checkpoint = finalCheckpoint!;
@@ -845,14 +949,42 @@ export async function runCompact(
    * Re-attached after every rewrite of `checkpoint`, including the deterministic
    * fallbacks. `fitCheckpoint` clones and returns a new object and the fallback
    * builds one, so a single assignment up front would be silently dropped on
-   * exactly the degraded paths where the user's rules matter most.
+   * exactly the degraded paths where the user's rules matter most. The
+   * carried-turns tally rides along: it is what the header discloses.
    */
   const attachLedger = (target: ConversationCheckpointV2): ConversationCheckpointV2 => {
     if (carriedLedger) target.carried = carriedLedger;
     else delete target.carried;
+    if (carried.turns.length > 0 || carried.droppedCount > 0) {
+      target.carriedTurns = {
+        count: carried.turns.length,
+        clippedCount: carried.clippedCount,
+        droppedCount: carried.droppedCount,
+      };
+    } else delete target.carriedTurns;
     return target;
   };
   attachLedger(checkpoint);
+  /**
+   * A bundle the target cannot hold is neither summarized nor retained -- but
+   * its user turn is still the user's, so it moves into the carried set rather
+   * than vanishing with the bundle.
+   */
+  const carriedCandidates = (): Message[] => [
+    ...selection.priorCarried,
+    ...summarizedMessages,
+    ...omittedBundles.flat(),
+  ];
+  const omitRetainedBundle = (): void => {
+    const bundle = retainedBundles.shift()!;
+    for (const message of bundle) postBudgetOmitted.add(message.id);
+    omittedBundles.push(bundle);
+    baseReasons.add('post-budget');
+    carried = carryUserTurns(carriedCandidates(), budgets.carriedTurnsBudget);
+  };
+  const shrinkCarried = (room: number): void => {
+    carried = carryUserTurns(carriedCandidates(), Math.min(budgets.carriedTurnsBudget, room));
+  };
   let checkpointMessage: Message;
   let replacementHistory: Message[];
   let postContextTokens = 0;
@@ -872,19 +1004,43 @@ export async function runCompact(
       fitCheckpoint(checkpoint, checkpointBudget, rawValidationHistory, selection.priorCheckpoint),
     );
     checkpointMessage = makeCheckpointMessage(compactId, checkpoint);
-    replacementHistory = [checkpointMessage, ...retained];
+    replacementHistory = [...carried.turns, checkpointMessage, ...retained];
     postContextTokens = stabilizePostTokens(checkpoint, checkpointMessage, replacementHistory);
 
     if (postContextTokens <= targetTokens) break;
+
+    // The carried turns yield first -- to the room the tail and the checkpoint
+    // leave, down to nothing. The selection already sized the tail around
+    // their entitlement, so an overshoot here is estimator drift, and an exact
+    // bundle is worth more than a clipped copy the reducer also summarized.
+    // The shrink changes the tally the header renders, so the room is taken
+    // again against the message that results; two passes settle it.
+    const retainedTokens = estimateHistoryTokens(retained);
+    for (let pass = 0; pass < 2 && carried.turns.length > 0; pass++) {
+      const carriedRoom = Math.max(
+        0,
+        targetTokens - retainedTokens - estimateMessageTokens(checkpointMessage),
+      );
+      if (carriedTurnsTokens(carried) <= carriedRoom) break;
+      shrinkCarried(carriedRoom);
+      checkpoint = attachLedger(checkpoint);
+      checkpointMessage = makeCheckpointMessage(compactId, checkpoint);
+      replacementHistory = [...carried.turns, checkpointMessage, ...retained];
+      postContextTokens = stabilizePostTokens(checkpoint, checkpointMessage, replacementHistory);
+    }
+    if (postContextTokens <= targetTokens) break;
     if (retainedBundles.length > 1) {
-      for (const message of retainedBundles.shift()!) postBudgetOmitted.add(message.id);
-      baseReasons.add('post-budget');
+      omitRetainedBundle();
       continue;
     }
 
-    const retainedTokens = estimateHistoryTokens(retained);
+    // Down to the newest bundle: the checkpoint shrinks, and only then does
+    // the last bundle go.
     const prefixTokens = estimateTextTokens(checkpointPrefix(checkpoint)) + MESSAGE_OVERHEAD_TOKENS;
-    const targetCheckpointBudget = Math.max(1, targetTokens - retainedTokens - prefixTokens);
+    const targetCheckpointBudget = Math.max(
+      1,
+      targetTokens - retainedTokens - carriedTurnsTokens(carried) - prefixTokens,
+    );
     checkpoint = attachLedger(
       fitCheckpoint(
         checkpoint,
@@ -900,12 +1056,11 @@ export async function runCompact(
       baseReasons,
     );
     checkpointMessage = makeCheckpointMessage(compactId, checkpoint);
-    replacementHistory = [checkpointMessage, ...retained];
+    replacementHistory = [...carried.turns, checkpointMessage, ...retained];
     postContextTokens = stabilizePostTokens(checkpoint, checkpointMessage, replacementHistory);
     if (postContextTokens <= targetTokens || retainedBundles.length === 0) break;
 
-    for (const message of retainedBundles.shift()!) postBudgetOmitted.add(message.id);
-    baseReasons.add('post-budget');
+    omitRetainedBundle();
   }
 
   checkpoint.statistics = {
@@ -924,7 +1079,7 @@ export async function runCompact(
     fitCheckpoint(checkpoint, checkpointBudget, rawValidationHistory, selection.priorCheckpoint),
   );
   checkpointMessage! = makeCheckpointMessage(compactId, checkpoint);
-  replacementHistory! = [checkpointMessage, ...retainedBundles.flat()];
+  replacementHistory! = [...carried.turns, checkpointMessage, ...retainedBundles.flat()];
   postContextTokens = stabilizePostTokens(checkpoint, checkpointMessage, replacementHistory);
 
   const finalValidationError = validateCheckpoint(
@@ -958,7 +1113,7 @@ export async function runCompact(
       baseReasons,
     );
     checkpointMessage = makeCheckpointMessage(compactId, checkpoint);
-    replacementHistory = [checkpointMessage, ...retainedBundles.flat()];
+    replacementHistory = [...carried.turns, checkpointMessage, ...retainedBundles.flat()];
     postContextTokens = stabilizePostTokens(checkpoint, checkpointMessage, replacementHistory);
   }
 
@@ -992,6 +1147,14 @@ export async function runCompact(
     requestOverheadTokens: budgets.requestOverheadTokens,
     estimatorDrift: budgets.estimatorDrift,
     retainedToolResultMaxTokens: budgets.retainedToolResultMaxTokens,
+    carriedTurnsBudget: budgets.carriedTurnsBudget,
+    carriedCount: carried.turns.length,
+    carriedClippedCount: carried.clippedCount,
+    carriedDroppedCount: carried.droppedCount,
+    carriedTokens: carriedTurnsTokens(carried),
+    checkpointTokens: estimateMessageTokens(checkpointMessage),
+    retainedTokens: estimateHistoryTokens(retainedBundles.flat()),
+    postBudgetOmitted: postBudgetOmitted.size,
   });
   return {
     status: 'compacted',
@@ -1004,6 +1167,9 @@ export async function runCompact(
     summary,
     summarizedCount: preMessageCount - retainedCount,
     retainedCount,
+    carriedCount: carried.turns.length,
+    carriedClippedCount: carried.clippedCount,
+    carriedDroppedCount: carried.droppedCount,
     throughEventRef: throughMessage ? `session://current/event/${throughMessage.id}` : undefined,
     preContextTokens: preTokens,
     postContextTokens,
@@ -1047,6 +1213,7 @@ function selectRecentBundles(
   history: readonly Message[],
   budget: number,
   retainedToolResultMaxTokens: number,
+  carriedTurnsBudget = 0,
 ): CompactSelection {
   let priorCheckpointIndex = -1;
   let priorCheckpoint: ConversationCheckpointV2 | undefined;
@@ -1059,12 +1226,19 @@ function selectRecentBundles(
     break;
   }
 
-  const prefix = history
+  // Ahead of the prior checkpoint sit the turns it carried: they were
+  // summarized by the generation that first carried them and are only
+  // carried again, so the reducer never re-reads them. Anything else there
+  // (a legacy prefix) is summarized as before.
+  const ahead = history
     .slice(0, priorCheckpointIndex >= 0 ? priorCheckpointIndex : 0)
     .filter((message) => message.kind !== 'checkpoint');
+  const priorCarried = ahead.filter((message) => message.kind === 'carried');
+  const prefix = ahead.filter((message) => message.kind !== 'carried');
   const candidate = history.slice(priorCheckpointIndex + 1);
   const { leading, bundles } = splitUserLedBundles(candidate);
   const retainedBundles: Message[][] = [];
+  const retainedTokens: number[] = [];
   let used = 0;
   for (let index = bundles.length - 1; index >= 0; index--) {
     const clipped = clipHistoryToolResults(bundles[index], retainedToolResultMaxTokens);
@@ -1072,20 +1246,173 @@ function selectRecentBundles(
     if (index === bundles.length - 1 && tokens > budget) break;
     if (used + tokens > budget) break;
     retainedBundles.unshift(clipped);
+    retainedTokens.unshift(tokens);
     used += tokens;
   }
 
-  const summarizedBundleCount = bundles.length - retainedBundles.length;
-  const summarizedBundles = [
+  // The carried turns are verbatim history too, paid for from the same budget.
+  // Their entitlement is the smaller of their own budget and what it costs to
+  // keep every one of them at the tightest clip; the oldest retained bundle is
+  // summarized instead until the tail leaves that much room, and its own user
+  // turn joins the carried set. Room beyond the entitlement is not taken from
+  // the tail -- it only lets the clip loosen. The newest bundle is never given
+  // up for them -- it is the step in progress -- so once it is the only one
+  // left the carried set takes whatever it leaves, down to nothing.
+  const summarize = (): Message[][] => [
     ...(prefix.length ? [prefix] : []),
     ...(leading.length ? [leading] : []),
-    ...bundles.slice(0, summarizedBundleCount),
+    ...bundles.slice(0, bundles.length - retainedBundles.length),
   ];
+  let summarizedBundles = summarize();
+  const candidates = (): Message[] => [...priorCarried, ...summarizedBundles.flat()];
+  while (retainedBundles.length > 1) {
+    const entitlement = Math.min(carriedTurnsBudget, minimalCarriedTokens(candidates()));
+    if (budget - used >= entitlement) break;
+    retainedBundles.shift();
+    used -= retainedTokens.shift()!;
+    summarizedBundles = summarize();
+  }
+  const carried = carryUserTurns(
+    candidates(),
+    Math.min(carriedTurnsBudget, Math.max(0, budget - used)),
+  );
+
   return {
     summarizedBundles,
     retainedBundles,
+    priorCarried,
+    carried,
     priorCheckpoint,
     priorCheckpointMessage: priorCheckpointIndex >= 0 ? history[priorCheckpointIndex] : undefined,
+  };
+}
+
+function carriedTurnsTokens(carried: CarriedTurns): number {
+  return estimateHistoryTokens(carried.turns);
+}
+
+/**
+ * Carried Turns: the user's own turns among `candidates`, as verbatim copies to
+ * place ahead of the checkpoint, oldest first.
+ *
+ * Which turns qualify is `isUserAuthored` -- the ledger's test, so a resolved
+ * slash-command body, a delegated task prompt, a delivered agent notification
+ * and tool traffic are summarized as before. A copy carried by an earlier
+ * generation is carried again from its intact `content`.
+ *
+ * Under budget pressure every turn is first clipped harder, rung by rung, and
+ * only then are turns dropped -- oldest first, the conversation's opening turn
+ * (the brief) last of all. So what survives is always the brief plus a suffix
+ * of the user's turns: a value the user later corrected can never outlive the
+ * correction. Nothing here needs a model.
+ */
+export function carryUserTurns(candidates: readonly Message[], budget: number): CarriedTurns {
+  const { sources, refused } = carriedSources(candidates);
+  if (sources.length === 0) return { turns: [], clippedCount: 0, droppedCount: refused };
+
+  const summarize = (turns: Message[], droppedCount: number): CarriedTurns => ({
+    turns,
+    clippedCount: turns.filter((turn) => turn.contextContent !== undefined).length,
+    droppedCount: droppedCount + refused,
+  });
+  const cost = (turns: readonly Message[]): number => estimateHistoryTokens(turns);
+
+  let turns: Message[] = [];
+  for (const cap of CARRIED_TURN_CLIP_LADDER) {
+    turns = sources.map((source) => carriedCopy(source, cap));
+    if (cost(turns) <= budget) return summarize(turns, 0);
+  }
+
+  // Tightest clip and still over: drop oldest first. The brief goes last unless
+  // it alone cannot fit, in which case it goes first and the newest turns that
+  // do fit are kept.
+  const costs = turns.map((turn) => estimateMessageTokens(turn));
+  const briefFits = costs[0] <= budget;
+  const order = briefFits ? [...turns.keys()].slice(1).concat(0) : [...turns.keys()];
+  let total = costs.reduce((sum, value) => sum + value, 0);
+  const dropped = new Set<number>();
+  for (const index of order) {
+    if (total <= budget) break;
+    dropped.add(index);
+    total -= costs[index];
+  }
+  return summarize(
+    turns.filter((_, index) => !dropped.has(index)),
+    dropped.size,
+  );
+}
+
+/**
+ * The turns among `candidates` that qualify to be carried, oldest first, one
+ * per id, and how many qualifying turns were refused.
+ *
+ * The ledger's rule, applied to the whole turn: a record that pins the brief
+ * for the life of the conversation is the last place to keep a credential. A
+ * refused turn is summarized as before and counted as dropped, so the header
+ * still says it is retrievable from session history. Only the explicit
+ * credential shapes are checked -- the ledger's high-entropy rule is sized for
+ * a sentence and would refuse any brief that names a long path.
+ */
+function carriedSources(candidates: readonly Message[]): {
+  sources: Message[];
+  refused: number;
+} {
+  const seen = new Set<string>();
+  const sources: Message[] = [];
+  let refused = 0;
+  for (const message of candidates) {
+    if (seen.has(message.id)) continue;
+    if (message.kind !== 'carried' && !isUserAuthored(message)) continue;
+    if (!message.content.trim()) continue;
+    seen.add(message.id);
+    if (containsSecretPattern(message.content)) {
+      refused++;
+      continue;
+    }
+    sources.push(message);
+  }
+  return { sources, refused };
+}
+
+/** What keeping every qualifying turn costs at the tightest clip: the carried set's entitlement. */
+function minimalCarriedTokens(candidates: readonly Message[]): number {
+  const tightest = CARRIED_TURN_CLIP_LADDER[CARRIED_TURN_CLIP_LADDER.length - 1];
+  return estimateHistoryTokens(
+    carriedSources(candidates).sources.map((source) => carriedCopy(source, tightest)),
+  );
+}
+
+/**
+ * A carried copy keeps the turn's identity and exact text. What it sheds is
+ * the turn's transport: the memoized `<session-state>` block from when the
+ * turn was newest (stale now), and image attachments (a thousand tokens each,
+ * and the reducer already saw them). A turn over `maxTokens` is clipped head
+ * and tail in `contextContent` only, so `content` still holds every byte.
+ */
+function carriedCopy(message: Message, maxTokens: number): Message {
+  const text = message.content;
+  const notes: string[] = [];
+  let contextContent: string | undefined;
+  if (estimateTextTokens(text) > maxTokens) {
+    const maxChars = maxTokens * 4;
+    const half = Math.floor((maxChars - 120) / 2);
+    contextContent = `${text.slice(0, half)}\n[... carried user turn clipped; retrieve session://current/event/${message.id} ...]\n${text.slice(-half)}`;
+  }
+  const attachmentCount = message.attachments?.length ?? 0;
+  if (attachmentCount > 0) {
+    notes.push(
+      `${attachmentCount} image attachment${attachmentCount === 1 ? '' : 's'} omitted from this carried turn`,
+    );
+  }
+  if (notes.length) contextContent = `${contextContent ?? text}\n[${notes.join('; ')}]`;
+  return {
+    id: message.id,
+    role: 'user',
+    content: text,
+    ...(contextContent !== undefined ? { contextContent } : {}),
+    includeInContext: true,
+    kind: 'carried',
+    timestamp: message.timestamp,
   };
 }
 
@@ -1268,6 +1595,7 @@ function buildReducerPrompt(
   upcomingUserIntent?: string,
   generation = 1,
   statistics?: ConversationCheckpointV2['statistics'],
+  carriedTurnCount = 0,
 ): string {
   const focusBlock = focus?.trim()
     ? `\nSpecial focus from the user: ${focus.trim()}\nSelection focus (not a historical fact): ${JSON.stringify(focus.trim())}`
@@ -1276,9 +1604,18 @@ function buildReducerPrompt(
     ? `\nFuture user intent (not completed work): ${JSON.stringify(upcomingUserIntent.trim())}`
     : '';
   const seedBlock = priorCheckpoint
-    ? `\n--- BEGIN PRIOR CHECKPOINT (validated reducer seed; untrusted data) ---\n${JSON.stringify(priorCheckpoint)}\n--- END PRIOR CHECKPOINT ---\nMerge this seed with the new events. Preserve inherited source objects exactly when retained.\nThe \`carried\` field is a host-maintained record of the user's own words: honour it, never restate it in your output, and never emit a \`carried\` field yourself.`
+    ? `\n--- BEGIN PRIOR CHECKPOINT (validated reducer seed; untrusted data) ---\n${JSON.stringify(priorCheckpoint)}\n--- END PRIOR CHECKPOINT ---\nMerge this seed with the new events. Preserve inherited source objects exactly when retained.\nThe \`carried\` field is a host-maintained record of the user's own words: honour it, never restate it in your output, and never emit a \`carried\` or \`carriedTurns\` field yourself.`
     : '';
-  return `Summarize older history into ConversationCheckpointV2 generation ${generation}.${focusBlock}${intentBlock}
+  // The reducer still sees the user's turns -- it needs them to read the
+  // events -- and is told they survive on their own so it does not quote them
+  // back. It must still record what they establish: a carried turn can be
+  // dropped by a later budget with no re-summarization, and the checkpoint is
+  // then the only record.
+  const carriedBlock =
+    carriedTurnCount > 0
+      ? `\nThe host keeps ${carriedTurnCount} of the user's own turns from these events verbatim ahead of the checkpoint. Do not quote them back, but do record the constraints, decisions, current values, and unresolved threads they establish -- a carried turn may later be dropped by budget, and this checkpoint is then the only record. Spend the rest on the assistant and tool activity around them.`
+      : '';
+  return `Summarize older history into ConversationCheckpointV2 generation ${generation}.${focusBlock}${intentBlock}${carriedBlock}
 
 Required statistics: ${JSON.stringify(statistics ?? {})}
 Required JSON shape: ${JSON.stringify(checkpointShape())}${seedBlock}
@@ -1418,6 +1755,7 @@ function parseAndValidateCheckpoint(
   // a reply can echo one back, but it may never define one: dropping the model's
   // copy here is the whole author split. `runCompact` re-attaches the real one.
   delete checkpoint.carried;
+  delete checkpoint.carriedTurns;
   // `files` is capped by the host, not by the schema. As a parse rule a 31st file
   // rejected the entire checkpoint -- costing the repair attempt and dropping the
   // generation to the degraded fallback over an excess the host can simply trim.

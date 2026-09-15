@@ -47,6 +47,12 @@ export type CompactResult =
       checkpointVersion: 2;
       summarizedCount: number;
       retainedCount: number;
+      /** Earlier user turns kept verbatim ahead of the checkpoint (Carried Turns). */
+      carriedCount: number;
+      /** Of those, how many were clipped or had attachments omitted. */
+      carriedClippedCount: number;
+      /** User turns the carried-turns budget could not hold; retrievable from session history. */
+      carriedDroppedCount: number;
       postContextTokens: number;
       throughEventRef?: string;
       preContextTokens?: number;
@@ -84,6 +90,8 @@ export interface CompactBoundary {
   generation: number;
   checkpointVersion: 1 | 2;
   timestamp: number;
+  /** Earlier user turns kept verbatim ahead of the checkpoint; absent on records written before Carried Turns. */
+  carriedCount?: number;
 }
 
 export type RewindAction = 'conversation' | 'code' | 'both';
@@ -309,6 +317,12 @@ export interface CarriedLedger {
   droppedCount?: number;
 }
 
+export interface CarriedTurnsSummary {
+  count: number;
+  clippedCount: number;
+  droppedCount: number;
+}
+
 export interface ConversationCheckpointV2 {
   version: 2;
   generation: number;
@@ -350,6 +364,14 @@ export interface ConversationCheckpointV2 {
    * the Carried Ledger, and absent when the conversation stated no constraint.
    */
   carried?: CarriedLedger;
+  /**
+   * Host-owned tally of the Carried Turns placed ahead of this checkpoint: the
+   * user's own earlier turns kept verbatim instead of summarized. The turns
+   * themselves are `kind: 'carried'` messages in the replacement history; this
+   * is what the checkpoint header discloses. Absent when nothing was carried
+   * and on checkpoints written before Carried Turns.
+   */
+  carriedTurns?: CarriedTurnsSummary;
 }
 
 export interface CompactRecordDataV2 {
@@ -365,6 +387,8 @@ export interface CompactRecordDataV2 {
   throughEventRef?: string;
   summarizedCount: number;
   retainedCount: number;
+  /** Absent on records written before Carried Turns. */
+  carriedCount?: number;
   preContextTokens?: number;
   postContextTokens?: number;
   strategy?: 'single-pass' | 'multi-pass' | 'degraded-fallback';

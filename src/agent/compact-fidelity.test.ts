@@ -89,7 +89,6 @@ const EPISODE_PADDING = 'Context recorded during the handoff investigation. '.re
  */
 function scriptedReducer(
   facts: readonly PlantedFact[],
-  history: readonly Message[],
   /**
    * Carried across generations by the caller. Declaring it inside would reset
    * it on every re-install, and the summary this double claims to rewrite each
@@ -97,11 +96,18 @@ function scriptedReducer(
    */
   counter: { call: number },
 ): void {
-  const observed = new Set(history.map((message) => message.id));
   mockedStream.mockImplementation(async function* (...args: unknown[]) {
     const messages = args[1] as { role: string; content: string }[];
     const prompt = messages.at(-1)?.content ?? '';
     const seed = readSeed(prompt);
+    // A reducer can ground a fact only on an event it was shown. Grounding on
+    // the whole live context instead let this double record facts from the
+    // retained tail the reducer never read, and re-record evicted ones from
+    // turns the host carries verbatim -- churn that measured the double, not
+    // Book.
+    const observed = new Set(
+      [...prompt.matchAll(/\[event:session:\/\/current\/event\/([^\]]+)\]/g)].map((m) => m[1]),
+    );
     counter.call++;
 
     // Inherited episodes are re-emitted verbatim, as the prompt instructs.
@@ -111,6 +117,11 @@ function scriptedReducer(
     const carriedText = JSON.stringify(carried);
     const added = facts
       .filter((fact) => !factRetained(carriedText, fact))
+      // A cue-less preference or a rule in another language is exactly what a
+      // real reducer drops (17% retention in the literature the research note
+      // cites), so this double never records one: if it survives, the host
+      // kept the turn.
+      .filter((fact) => fact.kind !== 'user-statement')
       .filter((fact) => fact.sourceMessageIds.some((id) => observed.has(id)))
       .map((fact) => ({
         task: `Record ${fact.kind}`,
@@ -180,7 +191,7 @@ async function runGenerations(
   let current = history;
 
   for (let generation = 1; generation <= GENERATIONS; generation++) {
-    scriptedReducer(facts, current, counter);
+    scriptedReducer(facts, counter);
     const result = await runCompact(makeConfig(arm), current, { trigger: 'auto' });
     if (result.status !== 'compacted') {
       throw new Error(`generation ${generation} did not compact: ${result.status}`);
@@ -308,7 +319,14 @@ describe('compaction fidelity baseline', () => {
           preflightThreshold: preflightGate(arm),
           metrics,
           postTokens: records.map((r) => r.postContextTokens),
-          retained: records.map((r) => r.replacementHistory.length - 1),
+          retained: records.map(
+            (r) =>
+              r.replacementHistory.filter((m) => m.kind !== 'checkpoint' && m.kind !== 'carried')
+                .length,
+          ),
+          carried: records.map(
+            (r) => r.replacementHistory.filter((m) => m.kind === 'carried').length,
+          ),
         });
         console.info(line);
         if (printTarget !== '1') appendFileSync(printTarget, `${line}\n`);
@@ -320,6 +338,7 @@ describe('compaction fidelity baseline', () => {
       expect(metrics.verbatimUserRetention).toBeGreaterThanOrEqual(
         arm.floors.minVerbatimUserRetention,
       );
+      expect(metrics.userTurnRetention).toBeGreaterThanOrEqual(arm.floors.minUserTurnRetention);
       expect(metrics.supersessionCorrectness).toBeGreaterThanOrEqual(
         arm.floors.minSupersessionCorrectness,
       );
@@ -350,7 +369,7 @@ describe('compaction fidelity baseline', () => {
     const arm32k = FIDELITY_ARMS[0];
     const { history, turns } = buildToolHeavyFixtureHistory();
     const facts = buildToolHeavyPlantedFacts(turns);
-    scriptedReducer(facts, history, { call: 0 });
+    scriptedReducer(facts, { call: 0 });
 
     const result = await runCompact(makeConfig(arm32k), history, { trigger: 'auto' });
 

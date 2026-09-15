@@ -736,6 +736,7 @@ export class AgentSession {
       generation: result.generation,
       checkpointVersion: 2,
       timestamp,
+      carriedCount: result.carriedCount,
     };
     const data: CompactRecordData = {
       version: 2,
@@ -752,6 +753,7 @@ export class AgentSession {
       throughEventRef: result.throughEventRef,
       summarizedCount: result.summarizedCount,
       retainedCount: result.retainedCount,
+      carriedCount: result.carriedCount,
       strategy: result.strategy,
       modelCalls: result.modelCalls,
       degraded: result.degraded,

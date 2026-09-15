@@ -295,6 +295,16 @@ describe('SessionStore', () => {
         summary: 'Reduced fidelity',
         replacementHistory: [
           {
+            id: 'u-brief',
+            role: 'user',
+            content: 'the brief, every byte',
+            contextContent:
+              'the brief\n[... carried user turn clipped; retrieve session://current/event/u-brief ...]\nbyte',
+            includeInContext: true,
+            kind: 'carried',
+            timestamp: 1,
+          },
+          {
             id: 'checkpoint-2',
             role: 'user',
             content: JSON.stringify(checkpoint),
@@ -308,7 +318,8 @@ describe('SessionStore', () => {
           trigger: 'auto',
           transcriptOrdinal: 0,
           preContextCount: 4,
-          postContextCount: 1,
+          postContextCount: 2,
+          carriedCount: 1,
           preContextTokens: 900,
           postContextTokens: 100,
           generation: 2,
@@ -317,6 +328,7 @@ describe('SessionStore', () => {
         },
         summarizedCount: 4,
         retainedCount: 0,
+        carriedCount: 1,
         strategy: 'multi-pass',
         modelCalls: 15,
         degraded: true,
@@ -330,9 +342,19 @@ describe('SessionStore', () => {
       strategy: 'multi-pass',
       modelCalls: 15,
       degraded: true,
+      carriedCount: 1,
       warning: 'Exact history remains searchable.',
     });
-    expect(s.load(id).contextHistory[0].kind).toBe('checkpoint');
+    // A carried turn round-trips ahead of its checkpoint with its kind, its exact
+    // content and its clipped provider-facing text intact.
+    const loaded = s.load(id);
+    expect(loaded.contextHistory.map((message) => message.kind)).toEqual(['carried', 'checkpoint']);
+    expect(loaded.contextHistory[0]).toMatchObject({
+      id: 'u-brief',
+      content: 'the brief, every byte',
+      contextContent: expect.stringContaining('carried user turn clipped'),
+    });
+    expect(loaded.compactBoundaries.at(-1)?.carriedCount).toBe(1);
   });
 
   it('preserves hidden context content for resumed user messages', () => {

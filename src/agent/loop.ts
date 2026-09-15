@@ -1410,6 +1410,9 @@ export async function runAgentLoop(
                     : '[continuation] The connection dropped before your previous message finished. Continue from exactly where you stopped. Do not restart or repeat what you already wrote.',
                 includeInContext: true,
                 kind: 'conversation',
+                // Host-authored: neither the ledger nor Carried Turns may treat
+                // this as the user's own words.
+                derivedContent: true,
                 timestamp: Date.now(),
               };
               newHistory.push(resume);
@@ -2377,6 +2380,9 @@ export async function runAgentLoop(
             // Load-bearing: `splitUserLedBundles` opens a compaction bundle on
             // `role === 'user' && kind !== 'checkpoint'`.
             kind: 'conversation',
+            // Host-authored: neither the ledger nor Carried Turns may treat
+            // this as the user's own words.
+            derivedContent: true,
             timestamp: Date.now(),
           };
           newHistory.push(message);
@@ -2426,6 +2432,9 @@ export async function runAgentLoop(
               ].join('\n'),
               includeInContext: true,
               kind: 'conversation',
+              // Host-authored: neither the ledger nor Carried Turns may treat
+              // this as the user's own words.
+              derivedContent: true,
               timestamp: Date.now(),
             };
             newHistory.push(message);

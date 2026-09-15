@@ -122,7 +122,13 @@ export interface Message {
   attachments?: ImageAttachment[];
   /** Whether this message is included in provider and compaction context. */
   includeInContext: boolean;
-  kind?: 'conversation' | 'checkpoint' | 'local' | 'agent-notification';
+  /**
+   * `carried`: a copy of an earlier user turn that compaction kept verbatim
+   * ahead of its checkpoint instead of summarizing it (Carried Turns,
+   * `agent/compact.ts`). Same id and `content` as the original; the
+   * provider-facing text may be clipped in `contextContent`.
+   */
+  kind?: 'conversation' | 'checkpoint' | 'local' | 'agent-notification' | 'carried';
   /**
    * The content was produced by resolving something -- a slash command's body, a
    * delegated task prompt -- rather than typed by the user. The role still reads

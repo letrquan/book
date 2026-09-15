@@ -52,7 +52,10 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
       revised 2026-09-06 after review: the retained tail is the residual of a target set at half
       the preflight gate (~79k tokens at 272k instead of a flat 20k), the loop and the compactor
       share one budget resolver, and the overflow recovery keeps the short tail; measured on a
-      272k fidelity arm. Phase 3 remains proposed.
+      272k fidelity arm. Phase 3 landed 2026-09-14 as Carried Turns: the user's own turns are
+      kept verbatim ahead of the checkpoint and only assistant and tool activity is summarized;
+      at 272k final retention on the revised fidelity corpus went from 0.571 to 1.0 and
+      cue-less/non-English user statements from 0.5 to 1.0 (`plans/compaction-research-2026-09.md`).
 - [ ] A control surface for a run in flight - at hour 30 the only interventions are `kill` and wait.
 - [x] Monotonic clock for every duration decided **inside one process** — the provider retry
       budget and model-discovery budget, the background-shell start/stop budgets, the

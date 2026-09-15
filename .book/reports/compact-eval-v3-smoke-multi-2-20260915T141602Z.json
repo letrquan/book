@@ -1,0 +1,1527 @@
+{
+  "version": 3,
+  "createdAt": "2026-09-15T14:16:02.965Z",
+  "options": {
+    "suite": "smoke",
+    "contextWindow": 24000,
+    "repetitions": 1,
+    "includeNoHistory": false
+  },
+  "controls": [
+    {
+      "evaluationDate": "2026-09-15",
+      "randomSeed": "384b4825-7dbb-451b-83bf-820320646501",
+      "runtimeRevision": "git:8db80381ae849b09809b08b0ee653b0d9b2c4cd4:state:1acb0bfeed0282f241493efc6d521218a9cf605b17b726d07b67e261baa7f5ea",
+      "fixtureRevision": "f064941b556c83e74c27b90dfce5a2db241cbd0563bc8b5fe64f416ba36c3f9a",
+      "fixtureRevisionStatus": "captured",
+      "model": "9router/ag/gemini-3.8-flash-high",
+      "compactModel": "9router/ag/gemini-3.8-flash-high",
+      "repetition": 1
+    },
+    {
+      "evaluationDate": "2026-09-15",
+      "randomSeed": "8158bafe-bc12-469b-9a5f-00fd03bc5d98",
+      "runtimeRevision": "git:8db80381ae849b09809b08b0ee653b0d9b2c4cd4:state:1acb0bfeed0282f241493efc6d521218a9cf605b17b726d07b67e261baa7f5ea",
+      "fixtureRevision": "f064941b556c83e74c27b90dfce5a2db241cbd0563bc8b5fe64f416ba36c3f9a",
+      "fixtureRevisionStatus": "captured",
+      "model": "9router/cmc/deepseek/deepseek-v4-flash",
+      "compactModel": "9router/cmc/deepseek/deepseek-v4-flash",
+      "repetition": 1
+    }
+  ],
+  "runs": [
+    {
+      "version": 3,
+      "model": "9router/ag/gemini-3.8-flash-high",
+      "repetition": 1,
+      "suite": "smoke",
+      "fixture": "handoff-state-and-history",
+      "historyTokens": 7993,
+      "historyMessages": 74,
+      "compact": {
+        "status": "compacted",
+        "preContextTokens": 7993,
+        "postContextTokens": 8003,
+        "compressionRatio": 1.0012510947078694,
+        "summarizedCount": 24,
+        "retainedCount": 50,
+        "modelCalls": 2,
+        "strategy": "single-pass",
+        "degraded": false,
+        "usage": {
+          "promptTokens": 10447,
+          "completionTokens": 7132,
+          "totalTokens": 17579
+        },
+        "estimatedPromptTokens": 7730,
+        "costUsd": null,
+        "checkpointTokens": 2491,
+        "checkpoint": {
+          "version": 2,
+          "generation": 1,
+          "state": {
+            "summary": "Project handoff initialized. Constraints mandate Node.js 20 or newer, preserving the public query() function signature, staying on the Fastify adapter for now, and avoiding changes to the vendor directory. Architectural decisions: accepted cache key 'workspaceHash:modelId:v3' and rejected Redis due to offline execution requirements. Current configuration values include staging region 'us-east-1' (pending migration) and assumed package manager 'npm' (pending maintainer confirmation). Unrelated investigations 1 through 6 were completed with no changes required. The Windows CRLF fixture failure remains an open thread.",
+            "status": "active"
+          },
+          "constraints": [
+            {
+              "text": "The runtime must remain Node.js 20 or newer.",
+              "scope": "task",
+              "sources": [
+                {
+                  "eventRef": "session://current/event/compact-eval-0",
+                  "quote": "The runtime must remain Node.js 20 or newer."
+                }
+              ]
+            },
+            {
+              "text": "Do not change the public query() function signature.",
+              "scope": "task",
+              "sources": [
+                {
+                  "eventRef": "session://current/event/compact-eval-0",
+                  "quote": "Do not change the public query() function signature."
+                }
+              ]
+            },
+            {
+              "text": "Đừng đụng vào thư mục vendor.",
+              "scope": "task",
+              "sources": [
+                {
+                  "eventRef": "session://current/event/compact-eval-2",
+                  "quote": "Đừng đụng vào thư mục vendor."
+                }
+              ]
+            },
+            {
+              "text": "It'd be good if we stayed on the Fastify adapter for now.",
+              "scope": "task",
+              "sources": [
+                {
+                  "eventRef": "session://current/event/compact-eval-2",
+                  "quote": "It'd be good if we stayed on the Fastify adapter for now."
+                }
+              ]
+            }
+          ],
+          "files": [],
+          "episodes": [
+            {
+              "task": "Unrelated investigation 1",
+              "outcome": "Inspected an unrelated implementation detail; no change required.",
+              "status": "complete",
+              "sources": [
+                {
+                  "eventRef": "session://current/event/compact-eval-12"
+                },
+                {
+                  "eventRef": "session://current/event/compact-eval-13"
+                }
+              ]
+            },
+            {
+              "task": "Unrelated investigation 2",
+              "outcome": "Inspected an unrelated implementation detail; no change required.",
+              "status": "complete",
+              "sources": [
+                {
+                  "eventRef": "session://current/event/compact-eval-14"
+                },
+                {
+                  "eventRef": "session://current/event/compact-eval-15"
+                }
+              ]
+            },
+            {
+              "task": "Unrelated investigation 3",
+              "outcome": "Inspected an unrelated implementation detail; no change required.",
+              "status": "complete",
+              "sources": [
+                {
+                  "eventRef": "session://current/event/compact-eval-16"
+                },
+                {
+                  "eventRef": "session://current/event/compact-eval-17"
+                }
+              ]
+            },
+            {
+              "task": "Unrelated investigation 4",
+              "outcome": "Inspected an unrelated implementation detail; no change required.",
+              "status": "complete",
+              "sources": [
+                {
+                  "eventRef": "session://current/event/compact-eval-18"
+                },
+                {
+                  "eventRef": "session://current/event/compact-eval-19"
+                }
+              ]
+            },
+            {
+              "task": "Unrelated investigation 5",
+              "outcome": "Inspected an unrelated implementation detail; no change required.",
+              "status": "complete",
+              "sources": [
+                {
+                  "eventRef": "session://current/event/compact-eval-20"
+                },
+                {
+                  "eventRef": "session://current/event/compact-eval-21"
+                }
+              ]
+            },
+            {
+              "task": "Unrelated investigation 6",
+              "outcome": "Inspected an unrelated implementation detail; no change required.",
+              "status": "complete",
+              "sources": [
+                {
+                  "eventRef": "session://current/event/compact-eval-22"
+                },
+                {
+                  "eventRef": "session://current/event/compact-eval-23"
+                }
+              ]
+            }
+          ],
+          "openThreads": [
+            {
+              "text": "The Windows CRLF fixture still fails and must remain an open thread until verified.",
+              "sources": [
+                {
+                  "eventRef": "session://current/event/compact-eval-6"
+                },
+                {
+                  "eventRef": "session://current/event/compact-eval-7"
+                }
+              ]
+            }
+          ],
+          "statistics": {
+            "summarizedMessages": 24,
+            "retainedMessages": 50,
+            "preTokens": 7993,
+            "postTokens": 8003
+          },
+          "coverage": {
+            "status": "complete",
+            "reasons": [],
+            "lifetime": {
+              "status": "complete",
+              "reasons": []
+            },
+            "processedMessages": 24,
+            "omittedMessages": 0,
+            "partiallyProcessedMessages": 0,
+            "firstProcessedEventRef": "session://current/event/compact-eval-0",
+            "lastProcessedEventRef": "session://current/event/compact-eval-23"
+          },
+          "carried": {
+            "version": 1,
+            "constraints": [
+              {
+                "id": "cfc79f416",
+                "text": "The runtime must remain Node.js 20 or newer.",
+                "strength": "strong",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-0"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "c7c2bcfdd",
+                "text": "Do not change the public query() function signature.",
+                "strength": "strong",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-0"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "c3cb60389",
+                "text": "We rejected Redis because the benchmark must work offline and without a service dependency.",
+                "strength": "strong",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-4"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "ce3450125",
+                "text": "There is one unresolved issue from the last run: the Windows CRLF fixture still fails and must remain an open thread until verified.",
+                "strength": "strong",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-6"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "c9509a571",
+                "text": "Keep the discussion scoped to the handoff, preserve existing behavior, and report evidence before claiming completion.",
+                "strength": "weak",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-12"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "c16f3dd81",
+                "text": "Maintainer correction: this repository requires pnpm 9.",
+                "strength": "strong",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-30"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "c3ad2e905",
+                "text": "The earlier npm assumption was wrong and must not be used.",
+                "strength": "strong",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-30"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "cf50c2c26",
+                "text": "Summarize only new evidence from this latest inspection.",
+                "strength": "weak",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-70"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "cb20a91ae",
+                "text": "Before the next check, keep current values, accepted conventions, and unresolved verification items in view.",
+                "strength": "weak",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-72"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              }
+            ]
+          },
+          "carriedTurns": {
+            "count": 6,
+            "clippedCount": 0,
+            "droppedCount": 6
+          }
+        },
+        "model": "9router/ag/gemini-3.8-flash-high",
+        "timeMs": 84303,
+        "attribution": {
+          "eligible": false,
+          "reasons": [
+            "cost_unknown"
+          ],
+          "rootRunId": "2acc0d07-12f3-4eda-b0a8-1d8a0a07210e",
+          "ambientFingerprint": "8ff8dcc92619c67cc00272eac19f83e11740f6e588880c9b0a63c969fd543439",
+          "pricingVersion": "book-local-2026-08-27",
+          "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+        }
+      },
+      "probes": [
+        {
+          "name": "runtime-constraint",
+          "category": "static-recall",
+          "evidencePosition": "early",
+          "evidenceMessageIds": [
+            "compact-eval-0",
+            "compact-eval-1"
+          ],
+          "control": {
+            "pass": false,
+            "answer": "Node.js 20 or newer",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"Node.js 20 or newer\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 8722,
+              "completionTokens": 325,
+              "totalTokens": 9047
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "597b63a4-f0a4-4a33-a451-0fd46767ecbe",
+              "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+            }
+          },
+          "treatment": {
+            "pass": false,
+            "answer": "Node.js 20 or newer",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"Node.js 20 or newer\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 9612,
+              "completionTokens": 621,
+              "totalTokens": 10233
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "accounting_partial:provider_attempt_usage",
+                "cost_unknown",
+                "model_identity_unverified"
+              ],
+              "rootRunId": "db0504c7-dd9c-4ea9-bb30-371c0165d736",
+              "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "ab5108922330ac4db64e856e2503e7239c49bac20d95c577b6d3aa86c0e28e50"
+            }
+          },
+          "comparison": {
+            "eligible": false,
+            "reasons": [
+              "arm_1_ineligible:cost_unknown",
+              "arm_2_ineligible:accounting_partial:provider_attempt_usage,cost_unknown,model_identity_unverified",
+              "comparison_model_identity_mismatch"
+            ],
+            "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+            "pricingVersion": "book-local-2026-08-27",
+            "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+          }
+        },
+        {
+          "name": "public-api-constraint",
+          "category": "static-recall",
+          "evidencePosition": "early",
+          "evidenceMessageIds": [
+            "compact-eval-0",
+            "compact-eval-1"
+          ],
+          "control": {
+            "pass": false,
+            "answer": "Do not change the public query() function signature.",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\": \"Do not change the public query() function signature.\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 8718,
+              "completionTokens": 1051,
+              "totalTokens": 9769
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "a3129969-5306-4b07-8eb6-17dd09e43de7",
+              "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+            }
+          },
+          "treatment": {
+            "pass": false,
+            "answer": "Do not change the public query() function signature.",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\": \"Do not change the public query() function signature.\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 9251,
+              "completionTokens": 595,
+              "totalTokens": 9846
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "07681bdf-3af3-472c-8d0c-4474fecb486c",
+              "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+            }
+          },
+          "comparison": {
+            "eligible": false,
+            "reasons": [
+              "arm_1_ineligible:cost_unknown",
+              "arm_2_ineligible:cost_unknown"
+            ],
+            "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+            "pricingVersion": "book-local-2026-08-27",
+            "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+          }
+        },
+        {
+          "name": "accepted-decision",
+          "category": "static-recall",
+          "evidencePosition": "early",
+          "evidenceMessageIds": [
+            "compact-eval-4",
+            "compact-eval-5"
+          ],
+          "control": {
+            "pass": false,
+            "answer": "workspaceHash:modelId:v3",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"workspaceHash:modelId:v3\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 8721,
+              "completionTokens": 298,
+              "totalTokens": 9019
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "60231452-3e7e-4b71-8e54-3b767464b4d5",
+              "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+            }
+          },
+          "treatment": {
+            "pass": false,
+            "answer": "workspaceHash:modelId:v3",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"workspaceHash:modelId:v3\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 9254,
+              "completionTokens": 668,
+              "totalTokens": 9922
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "12ac95e4-e512-4a79-9502-b77a74d976aa",
+              "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+            }
+          },
+          "comparison": {
+            "eligible": false,
+            "reasons": [
+              "arm_1_ineligible:cost_unknown",
+              "arm_2_ineligible:cost_unknown"
+            ],
+            "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+            "pricingVersion": "book-local-2026-08-27",
+            "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+          }
+        },
+        {
+          "name": "rejected-decision",
+          "category": "static-recall",
+          "evidencePosition": "early",
+          "evidenceMessageIds": [
+            "compact-eval-4",
+            "compact-eval-5"
+          ],
+          "control": {
+            "pass": false,
+            "answer": "Redis was rejected because the benchmark must work offline and without a service dependency.",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"Redis was rejected because the benchmark must work offline and without a service dependency.\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 8714,
+              "completionTokens": 362,
+              "totalTokens": 9076
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "1ed5ed03-0252-4fea-b3b2-65844ecafde0",
+              "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+            }
+          },
+          "treatment": {
+            "pass": false,
+            "answer": "Redis was rejected because the benchmark must work offline and without a service dependency.",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\": \"Redis was rejected because the benchmark must work offline and without a service dependency.\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 9247,
+              "completionTokens": 415,
+              "totalTokens": 9662
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "4d803ea6-5b2a-4399-8c73-46afd8e31752",
+              "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+            }
+          },
+          "comparison": {
+            "eligible": false,
+            "reasons": [
+              "arm_1_ineligible:cost_unknown",
+              "arm_2_ineligible:cost_unknown"
+            ],
+            "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+            "pricingVersion": "book-local-2026-08-27",
+            "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+          }
+        },
+        {
+          "name": "open-thread",
+          "category": "static-recall",
+          "evidencePosition": "early",
+          "evidenceMessageIds": [
+            "compact-eval-6",
+            "compact-eval-7"
+          ],
+          "control": {
+            "pass": false,
+            "answer": "The \"Windows CRLF fixture\" still fails and must remain an open thread until verified.",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\": \"The \\\"Windows CRLF fixture\\\" still fails and must remain an open thread until verified.\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 8718,
+              "completionTokens": 1588,
+              "totalTokens": 10306
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "616cc1a6-33ef-4d46-bd05-7dfd130f4793",
+              "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+            }
+          },
+          "treatment": {
+            "pass": false,
+            "answer": "The Windows CRLF fixture still fails and must remain an open thread until verified.",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\": \"The Windows CRLF fixture still fails and must remain an open thread until verified.\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 9251,
+              "completionTokens": 1668,
+              "totalTokens": 10919
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "81169ef1-4e39-492b-bbd3-60024c19e785",
+              "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+            }
+          },
+          "comparison": {
+            "eligible": false,
+            "reasons": [
+              "arm_1_ineligible:cost_unknown",
+              "arm_2_ineligible:cost_unknown"
+            ],
+            "ambientFingerprint": "4aa730564c1109330f0b1edfd0792af0742e0658ccc2a378dd3a18833bbb3636",
+            "pricingVersion": "book-local-2026-08-27",
+            "modelIdentityFingerprint": "00f86898932782cebd7aafe5d404673bf168f3928f8fa7031d7ab9a62fd87bd0"
+          }
+        }
+      ],
+      "control": {
+        "calls": [
+          {
+            "estimatedPromptTokens": 9779,
+            "usage": {
+              "promptTokens": 8722,
+              "completionTokens": 325,
+              "totalTokens": 9047
+            },
+            "responseModel": "gemini-3.8-flash"
+          },
+          {
+            "estimatedPromptTokens": 9771,
+            "usage": {
+              "promptTokens": 8718,
+              "completionTokens": 1051,
+              "totalTokens": 9769
+            },
+            "responseModel": "gemini-3.8-flash"
+          },
+          {
+            "estimatedPromptTokens": 9771,
+            "usage": {
+              "promptTokens": 8721,
+              "completionTokens": 298,
+              "totalTokens": 9019
+            },
+            "responseModel": "gemini-3.8-flash"
+          },
+          {
+            "estimatedPromptTokens": 9766,
+            "usage": {
+              "promptTokens": 8714,
+              "completionTokens": 362,
+              "totalTokens": 9076
+            },
+            "responseModel": "gemini-3.8-flash"
+          },
+          {
+            "estimatedPromptTokens": 9772,
+            "usage": {
+              "promptTokens": 8718,
+              "completionTokens": 1588,
+              "totalTokens": 10306
+            },
+            "responseModel": "gemini-3.8-flash"
+          }
+        ],
+        "usage": {
+          "promptTokens": 43593,
+          "completionTokens": 3624,
+          "totalTokens": 47217
+        },
+        "costUsd": null,
+        "costStatus": "unknown"
+      },
+      "treatment": {
+        "calls": [
+          {
+            "estimatedPromptTokens": 3249,
+            "usage": {
+              "promptTokens": 4525,
+              "completionTokens": 4723,
+              "totalTokens": 9248
+            },
+            "responseModel": "gemini-3.8-flash"
+          },
+          {
+            "estimatedPromptTokens": 4481,
+            "usage": {
+              "promptTokens": 5922,
+              "completionTokens": 2409,
+              "totalTokens": 8331
+            },
+            "responseModel": "gemini-3.8-flash"
+          },
+          {
+            "estimatedPromptTokens": 9789
+          },
+          {
+            "estimatedPromptTokens": 9858,
+            "usage": {
+              "promptTokens": 9612,
+              "completionTokens": 621,
+              "totalTokens": 10233
+            },
+            "responseModel": "gemini-3.8-flash"
+          },
+          {
+            "estimatedPromptTokens": 9781,
+            "usage": {
+              "promptTokens": 9251,
+              "completionTokens": 595,
+              "totalTokens": 9846
+            },
+            "responseModel": "gemini-3.8-flash"
+          },
+          {
+            "estimatedPromptTokens": 9781,
+            "usage": {
+              "promptTokens": 9254,
+              "completionTokens": 668,
+              "totalTokens": 9922
+            },
+            "responseModel": "gemini-3.8-flash"
+          },
+          {
+            "estimatedPromptTokens": 9776,
+            "usage": {
+              "promptTokens": 9247,
+              "completionTokens": 415,
+              "totalTokens": 9662
+            },
+            "responseModel": "gemini-3.8-flash"
+          },
+          {
+            "estimatedPromptTokens": 9782,
+            "usage": {
+              "promptTokens": 9251,
+              "completionTokens": 1668,
+              "totalTokens": 10919
+            },
+            "responseModel": "gemini-3.8-flash"
+          }
+        ],
+        "usage": {
+          "promptTokens": 57062,
+          "completionTokens": 11099,
+          "totalTokens": 68161
+        },
+        "costUsd": null,
+        "costStatus": "unknown"
+      }
+    },
+    {
+      "version": 3,
+      "model": "9router/cmc/deepseek/deepseek-v4-flash",
+      "repetition": 1,
+      "suite": "smoke",
+      "fixture": "handoff-state-and-history",
+      "historyTokens": 7993,
+      "historyMessages": 74,
+      "compact": {
+        "status": "compacted",
+        "preContextTokens": 7993,
+        "postContextTokens": 7259,
+        "compressionRatio": 0.9081696484423871,
+        "summarizedCount": 24,
+        "retainedCount": 50,
+        "modelCalls": 1,
+        "strategy": "degraded-fallback",
+        "degraded": true,
+        "usage": {
+          "promptTokens": 2564,
+          "completionTokens": 2400,
+          "totalTokens": 4964
+        },
+        "estimatedPromptTokens": 3249,
+        "costUsd": null,
+        "checkpointTokens": 1747,
+        "checkpoint": {
+          "version": 2,
+          "generation": 1,
+          "state": {
+            "summary": "The summarizer returned no usable structured checkpoint. Exact history remains searchable with SessionHistorySearch and SessionHistoryRead.",
+            "status": "unknown"
+          },
+          "constraints": [],
+          "files": [],
+          "episodes": [],
+          "openThreads": [],
+          "statistics": {
+            "summarizedMessages": 24,
+            "retainedMessages": 50,
+            "preTokens": 7993,
+            "postTokens": 7259
+          },
+          "coverage": {
+            "status": "degraded",
+            "reasons": [
+              "invalid-checkpoint"
+            ],
+            "lifetime": {
+              "status": "degraded",
+              "reasons": [
+                "invalid-checkpoint"
+              ]
+            },
+            "processedMessages": 24,
+            "omittedMessages": 0,
+            "partiallyProcessedMessages": 0,
+            "firstProcessedEventRef": "session://current/event/compact-eval-0",
+            "lastProcessedEventRef": "session://current/event/compact-eval-23"
+          },
+          "carried": {
+            "version": 1,
+            "constraints": [
+              {
+                "id": "cfc79f416",
+                "text": "The runtime must remain Node.js 20 or newer.",
+                "strength": "strong",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-0"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "c7c2bcfdd",
+                "text": "Do not change the public query() function signature.",
+                "strength": "strong",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-0"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "c3cb60389",
+                "text": "We rejected Redis because the benchmark must work offline and without a service dependency.",
+                "strength": "strong",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-4"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "ce3450125",
+                "text": "There is one unresolved issue from the last run: the Windows CRLF fixture still fails and must remain an open thread until verified.",
+                "strength": "strong",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-6"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "c9509a571",
+                "text": "Keep the discussion scoped to the handoff, preserve existing behavior, and report evidence before claiming completion.",
+                "strength": "weak",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-12"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "c16f3dd81",
+                "text": "Maintainer correction: this repository requires pnpm 9.",
+                "strength": "strong",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-30"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "c3ad2e905",
+                "text": "The earlier npm assumption was wrong and must not be used.",
+                "strength": "strong",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-30"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "cf50c2c26",
+                "text": "Summarize only new evidence from this latest inspection.",
+                "strength": "weak",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-70"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              },
+              {
+                "id": "cb20a91ae",
+                "text": "Before the next check, keep current values, accepted conventions, and unresolved verification items in view.",
+                "strength": "weak",
+                "source": {
+                  "eventRef": "session://current/event/compact-eval-72"
+                },
+                "firstSeenGeneration": 1,
+                "lastSeenGeneration": 1
+              }
+            ]
+          },
+          "carriedTurns": {
+            "count": 6,
+            "clippedCount": 0,
+            "droppedCount": 6
+          }
+        },
+        "model": "9router/cmc/deepseek/deepseek-v4-flash",
+        "timeMs": 14048,
+        "attribution": {
+          "eligible": false,
+          "reasons": [
+            "cost_unknown"
+          ],
+          "rootRunId": "6984e62c-5ac8-4bee-b2ef-98945042f1c1",
+          "ambientFingerprint": "603c089503e4e88bcdafaa22978806a46cb188375f380468e4237b75cdec490c",
+          "pricingVersion": "book-local-2026-08-27",
+          "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+        }
+      },
+      "probes": [
+        {
+          "name": "runtime-constraint",
+          "category": "static-recall",
+          "evidencePosition": "early",
+          "evidenceMessageIds": [
+            "compact-eval-0",
+            "compact-eval-1"
+          ],
+          "control": {
+            "pass": false,
+            "answer": "Node.js 20 or newer",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"Node.js 20 or newer\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 6946,
+              "completionTokens": 26,
+              "totalTokens": 6972
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "5d58ce40-39a4-4e2e-9099-9713f3d0ebc0",
+              "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          "treatment": {
+            "pass": false,
+            "answer": "Node.js 20 or newer — \"The runtime must remain Node.js 20 or newer.\"",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"Node.js 20 or newer — \\\"The runtime must remain Node.js 20 or newer.\\\"\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 6724,
+              "completionTokens": 54,
+              "totalTokens": 6778
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "426bbadd-058e-4764-a14d-d8928a49c932",
+              "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          "comparison": {
+            "eligible": false,
+            "reasons": [
+              "arm_1_ineligible:cost_unknown",
+              "arm_2_ineligible:cost_unknown"
+            ],
+            "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+            "pricingVersion": "book-local-2026-08-27",
+            "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+          }
+        },
+        {
+          "name": "public-api-constraint",
+          "category": "static-recall",
+          "evidencePosition": "early",
+          "evidenceMessageIds": [
+            "compact-eval-0",
+            "compact-eval-1"
+          ],
+          "control": {
+            "pass": false,
+            "answer": "The public query() function signature must not change. Exact recorded constraint: \"Do not change the public query() function signature.\"",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"The public query() function signature must not change. Exact recorded constraint: \\\"Do not change the public query() function signature.\\\"\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 6942,
+              "completionTokens": 135,
+              "totalTokens": 7077
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "ffd7667d-5ba1-4c2c-9b4d-92085a88e9f0",
+              "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          "treatment": {
+            "pass": false,
+            "answer": "Do not change the public query() function signature.",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"Do not change the public query() function signature.\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 6720,
+              "completionTokens": 61,
+              "totalTokens": 6781
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "7e59872b-4191-4d94-93bc-1f65a4b88572",
+              "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          "comparison": {
+            "eligible": false,
+            "reasons": [
+              "arm_1_ineligible:cost_unknown",
+              "arm_2_ineligible:cost_unknown"
+            ],
+            "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+            "pricingVersion": "book-local-2026-08-27",
+            "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+          }
+        },
+        {
+          "name": "accepted-decision",
+          "category": "static-recall",
+          "evidencePosition": "early",
+          "evidenceMessageIds": [
+            "compact-eval-4",
+            "compact-eval-5"
+          ],
+          "control": {
+            "pass": false,
+            "answer": "workspaceHash:modelId:v3",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"workspaceHash:modelId:v3\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 6944,
+              "completionTokens": 24,
+              "totalTokens": 6968
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "e63b7c84-5ec1-4440-90f6-750aa44702b0",
+              "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          "treatment": {
+            "pass": false,
+            "answer": "No cache-key format was accepted anywhere in the established record. No cache-key design, proposal, or agreed format appears in the carried constraints, decisions, current values, or open threads, so there is nothing to report and no format should be inferred or invented.",
+            "formatCompliant": true,
+            "missingTerms": [
+              "workspaceHash:modelId:v3"
+            ],
+            "semanticPass": false,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"No cache-key format was accepted anywhere in the established record. No cache-key design, proposal, or agreed format appears in the carried constraints, decisions, current values, or open threads, so there is nothing to report an",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 6722,
+              "completionTokens": 107,
+              "totalTokens": 6829
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "6fb98787-b48c-4b1a-8cc0-40e912af25c7",
+              "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          "comparison": {
+            "eligible": false,
+            "reasons": [
+              "arm_1_ineligible:cost_unknown",
+              "arm_2_ineligible:cost_unknown"
+            ],
+            "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+            "pricingVersion": "book-local-2026-08-27",
+            "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+          }
+        },
+        {
+          "name": "rejected-decision",
+          "category": "static-recall",
+          "evidencePosition": "early",
+          "evidenceMessageIds": [
+            "compact-eval-4",
+            "compact-eval-5"
+          ],
+          "control": {
+            "pass": false,
+            "answer": "{\" was the rejected dependency. It was rejected because the benchmark must work offline and without a service dependency.\"}",
+            "formatCompliant": false,
+            "missingTerms": [
+              "Redis"
+            ],
+            "semanticPass": false,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\" was the rejected dependency. It was rejected because the benchmark must work offline and without a service dependency.\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 6938,
+              "completionTokens": 26,
+              "totalTokens": 6964
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "d9725d3d-7107-4a94-a857-df28994118ce",
+              "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          "treatment": {
+            "pass": false,
+            "answer": "Redis was rejected because the benchmark must work offline and without a service dependency.",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"Redis was rejected because the benchmark must work offline and without a service dependency.\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 6716,
+              "completionTokens": 35,
+              "totalTokens": 6751
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "cff6cf8e-47e4-400b-9aaf-02930a82bd05",
+              "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          "comparison": {
+            "eligible": false,
+            "reasons": [
+              "arm_1_ineligible:cost_unknown",
+              "arm_2_ineligible:cost_unknown"
+            ],
+            "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+            "pricingVersion": "book-local-2026-08-27",
+            "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+          }
+        },
+        {
+          "name": "open-thread",
+          "category": "static-recall",
+          "evidencePosition": "early",
+          "evidenceMessageIds": [
+            "compact-eval-6",
+            "compact-eval-7"
+          ],
+          "control": {
+            "pass": false,
+            "answer": "The Windows CRLF fixture still fails and must remain an open thread until verified. The specific fixture named in the record is the \"Windows CRLF fixture\".",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"The Windows CRLF fixture still fails and must remain an open thread until verified. The specific fixture named in the record is the \\\"Windows CRLF fixture\\\".\"}",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 6942,
+              "completionTokens": 89,
+              "totalTokens": 7031
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "85d3e82f-1da8-4144-8d22-d0eae7f66ebb",
+              "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          "treatment": {
+            "pass": false,
+            "answer": "The open verification issue is the Windows CRLF fixture failure from the last run, which still fails and must remain an open thread until verified. (The adapter-patch verification item is closed: it passed Wednesday and was then reverted Thursday, so it is no longer active.)",
+            "formatCompliant": true,
+            "missingTerms": [],
+            "semanticPass": true,
+            "failureKind": "ineligible-evidence",
+            "outputPreview": "{\"answer\":\"The open verification issue is the Windows CRLF fixture failure from the last run, which still fails and must remain an open thread until verified. (The adapter-patch verification item is closed: it passed Wednesday and was then ",
+            "toolCalls": [],
+            "errors": [],
+            "terminalStatus": "completed",
+            "terminalReason": "normal_completion",
+            "usage": {
+              "promptTokens": 6720,
+              "completionTokens": 224,
+              "totalTokens": 6944
+            },
+            "attribution": {
+              "eligible": false,
+              "reasons": [
+                "cost_unknown"
+              ],
+              "rootRunId": "5f9c30a3-c792-4f0e-98f9-30ff9024258f",
+              "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+              "pricingVersion": "book-local-2026-08-27",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          "comparison": {
+            "eligible": false,
+            "reasons": [
+              "arm_1_ineligible:cost_unknown",
+              "arm_2_ineligible:cost_unknown"
+            ],
+            "ambientFingerprint": "89e0045758f59372ffba59e1ddab6d108db00ed51a90fa63b26a530af573e1b2",
+            "pricingVersion": "book-local-2026-08-27",
+            "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+          }
+        }
+      ],
+      "control": {
+        "calls": [
+          {
+            "estimatedPromptTokens": 9779,
+            "usage": {
+              "promptTokens": 6946,
+              "completionTokens": 26,
+              "totalTokens": 6972
+            },
+            "responseModel": "deepseek/deepseek-v4-flash"
+          },
+          {
+            "estimatedPromptTokens": 9771,
+            "usage": {
+              "promptTokens": 6942,
+              "completionTokens": 135,
+              "totalTokens": 7077
+            },
+            "responseModel": "deepseek/deepseek-v4-flash"
+          },
+          {
+            "estimatedPromptTokens": 9771,
+            "usage": {
+              "promptTokens": 6944,
+              "completionTokens": 24,
+              "totalTokens": 6968
+            },
+            "responseModel": "deepseek/deepseek-v4-flash"
+          },
+          {
+            "estimatedPromptTokens": 9766,
+            "usage": {
+              "promptTokens": 6938,
+              "completionTokens": 26,
+              "totalTokens": 6964
+            },
+            "responseModel": "deepseek/deepseek-v4-flash"
+          },
+          {
+            "estimatedPromptTokens": 9772,
+            "usage": {
+              "promptTokens": 6942,
+              "completionTokens": 89,
+              "totalTokens": 7031
+            },
+            "responseModel": "deepseek/deepseek-v4-flash"
+          }
+        ],
+        "usage": {
+          "promptTokens": 34712,
+          "completionTokens": 300,
+          "totalTokens": 35012
+        },
+        "costUsd": null,
+        "costStatus": "unknown"
+      },
+      "treatment": {
+        "calls": [
+          {
+            "estimatedPromptTokens": 3249,
+            "usage": {
+              "promptTokens": 2564,
+              "completionTokens": 2400,
+              "totalTokens": 4964
+            },
+            "responseModel": "deepseek/deepseek-v4-flash"
+          },
+          {
+            "estimatedPromptTokens": 9045,
+            "usage": {
+              "promptTokens": 6724,
+              "completionTokens": 54,
+              "totalTokens": 6778
+            },
+            "responseModel": "deepseek/deepseek-v4-flash"
+          },
+          {
+            "estimatedPromptTokens": 9037,
+            "usage": {
+              "promptTokens": 6720,
+              "completionTokens": 61,
+              "totalTokens": 6781
+            },
+            "responseModel": "deepseek/deepseek-v4-flash"
+          },
+          {
+            "estimatedPromptTokens": 9037,
+            "usage": {
+              "promptTokens": 6722,
+              "completionTokens": 107,
+              "totalTokens": 6829
+            },
+            "responseModel": "deepseek/deepseek-v4-flash"
+          },
+          {
+            "estimatedPromptTokens": 9032,
+            "usage": {
+              "promptTokens": 6716,
+              "completionTokens": 35,
+              "totalTokens": 6751
+            },
+            "responseModel": "deepseek/deepseek-v4-flash"
+          },
+          {
+            "estimatedPromptTokens": 9038,
+            "usage": {
+              "promptTokens": 6720,
+              "completionTokens": 224,
+              "totalTokens": 6944
+            },
+            "responseModel": "deepseek/deepseek-v4-flash"
+          }
+        ],
+        "usage": {
+          "promptTokens": 36166,
+          "completionTokens": 2881,
+          "totalTokens": 39047
+        },
+        "costUsd": null,
+        "costStatus": "unknown"
+      }
+    }
+  ]
+}

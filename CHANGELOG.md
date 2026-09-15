@@ -20,6 +20,21 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **Compaction keeps your own turns verbatim (Carried Turns).** The summarizer used to paraphrase
+  every older user turn; only cue-matched sentences survived through the carried ledger, so a rule
+  phrased without a directive word, or in Vietnamese, was gone one generation in. Every turn you
+  typed in the compacted span is now kept as a `carried` message ahead of the checkpoint, and the
+  reducer summarizes only the assistant and tool activity around them. Carried turns come out of
+  the retained tail (15%, capped at 12k tokens), are clipped rung by rung before any is dropped,
+  and are dropped oldest first with the brief last, so a corrected value never outlives its
+  correction. The checkpoint header discloses the count; `CompactResult` and the compact boundary
+  report `carriedCount`, and the stream-json `compact_boundary` event `carried_messages`. Measured
+  at the 272k window on the revised fidelity corpus (two cue-less/Vietnamese user statements added,
+  reducer double grounded on the prompt it is shown), final retention went from 0.571 to 1.0 and
+  retention of those user statements from 0.5 to 1.0, with post-compaction utilization unchanged
+  (0.48 → 0.49); the 32k arm is neutral. The literature this rests on is
+  `plans/compaction-research-2026-09.md` (P1).
+
 - **`/cost` breaks the bill down per model.** A session that delegates spends against more than one
   price list; attributing the whole total to the lead's model priced sidekick tokens at the lead's
   rate and hid that a second model ran at all. The report now shows one row per model actually used,

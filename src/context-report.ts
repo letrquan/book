@@ -23,6 +23,9 @@ interface ContextBreakdown {
   toolResults: number;
   estimatedTokens: number;
   byRole: { user: number; assistant: number };
+  /** Earlier user turns compaction kept verbatim ahead of its checkpoint, and their tokens. */
+  carriedMessages: number;
+  carriedTokens: number;
 }
 
 /** Summarize the live history into a context-window breakdown. */
@@ -33,6 +36,8 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
   let assistantMsgs = 0;
   let toolCalls = 0;
   let toolResults = 0;
+  let carriedMsgs = 0;
+  let carriedTokens = 0;
 
   for (const m of messages) {
     if (!m.includeInContext) continue;
@@ -44,6 +49,10 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
     if (m.role === 'user') {
       userMsgs++;
       userTokens += msgTokens;
+      if (m.kind === 'carried') {
+        carriedMsgs++;
+        carriedTokens += msgTokens;
+      }
     } else {
       assistantMsgs++;
       assistantTokens += msgTokens;
@@ -69,6 +78,8 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
     toolResults,
     estimatedTokens: userTokens + assistantTokens,
     byRole: { user: userTokens, assistant: assistantTokens },
+    carriedMessages: carriedMsgs,
+    carriedTokens,
   };
 }
 
@@ -123,6 +134,11 @@ export function buildContextReport(
   lines.push('Estimated tokens:');
   lines.push(`  Conversation total : ~${b.estimatedTokens.toLocaleString()}`);
   lines.push(`    user turns       : ~${b.byRole.user.toLocaleString()}`);
+  if (b.carriedMessages > 0) {
+    lines.push(
+      `      carried verbatim past compaction: ${b.carriedMessages} turn${b.carriedMessages === 1 ? '' : 's'}, ~${b.carriedTokens.toLocaleString()}`,
+    );
+  }
   lines.push(`    assistant turns  : ~${b.byRole.assistant.toLocaleString()}`);
   lines.push('');
   if (latestBoundary) {

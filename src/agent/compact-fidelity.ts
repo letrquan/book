@@ -18,7 +18,7 @@ import type { PlantedFact } from '../test/compact-fixture.js';
 export interface GenerationRecord {
   generation: number;
   checkpoint: ConversationCheckpointV2;
-  /** History the compaction handed back: checkpoint message plus retained tail. */
+  /** History the compaction handed back: carried turns, checkpoint message, retained tail. */
   replacementHistory: readonly Message[];
   /** Reducer calls this compaction spent. */
   modelCalls: number;
@@ -27,17 +27,36 @@ export interface GenerationRecord {
 
 export interface FidelityMetrics {
   /**
-   * For each planted fact, the generation at which it first went missing, or
-   * `null` if it survived every generation. The headline number: a fact that
-   * disappears at generation 2 is one the agent forgets within hours.
+   * For each planted fact, the generation at which it first went missing from
+   * the whole replacement history -- compacted representation and retained
+   * tail alike -- or `null` if it survived every generation. The headline
+   * number: a fact that disappears at generation 2 is one the agent forgets
+   * within hours. A fact still sitting verbatim in the tail is not lost, even
+   * though the retention metrics below do not count it yet.
    */
   lostAtGeneration: Record<string, number | null>;
-  /** Facts still present in the final generation, over all planted facts. */
+  /**
+   * Facts still present in the final generation's compacted representation --
+   * the checkpoint plus the user turns carried verbatim ahead of it, never the
+   * retained tail -- over all planted facts.
+   */
   finalRetention: number;
   /** Mean retention across every generation. Degrades earlier than the final. */
   meanRetention: number;
-  /** Retention restricted to facts a user stated as a constraint. */
+  /**
+   * Retention restricted to facts a user stated as a constraint, scored on the
+   * checkpoint alone: this is the Carried Ledger's guarantee, and it must hold
+   * even when no turn is carried.
+   */
   verbatimUserRetention: number;
+  /**
+   * Retention of what the user said in their own words -- constraints and the
+   * cue-less or non-English `user-statement` facts the ledger cannot extract
+   * and the reducer double never records -- in the final compacted
+   * representation. Zero before Carried Turns; a floor on the whole user turn
+   * surviving, where `verbatimUserRetention` is a floor on the ledger.
+   */
+  userTurnRetention: number;
   /**
    * Fraction of `current-value` facts whose current term is present, counting a
    * generation as wrong only when the superseded term is present WITHOUT it.
@@ -65,6 +84,7 @@ export interface FidelityFloors {
   minFinalRetention: number;
   minMeanRetention: number;
   minVerbatimUserRetention: number;
+  minUserTurnRetention: number;
   minSupersessionCorrectness: number;
   minGroundedSourceRecall: number;
   minRetentionPrecision: number;
@@ -125,6 +145,39 @@ export interface FidelityArm {
  * the metric counts every retained turn that carries no planted fact, which
  * in this corpus is the filler by design. Each arm records its own floors.
  *
+ * What Carried Turns changed (2026-09-14, `plans/compaction-research-2026-09.md`
+ * P1). Retention is now scored on the compacted representation -- the
+ * checkpoint plus the user turns carried verbatim ahead of it -- because that
+ * is what survives when the tail is gone. The corpus gained two
+ * `user-statement` facts the ledger's cues cannot catch (a hedged preference
+ * and a rule in Vietnamese), and the reducer double was corrected to ground
+ * only on events in the prompt it is shown, as a reducer can; before, it
+ * recorded facts from the retained tail it never read. So the floors below
+ * are NOT comparable with the 2026-09-06 numbers. Measured on the same corpus
+ * and double immediately before and after the change:
+ *
+ *   arm    metric                  before   after
+ *   32k    finalRetention          0.643    0.643
+ *   32k    meanRetention           0.625    0.634
+ *   32k    userTurnRetention       0.5      0.5
+ *   32k    supersessionCorrectness 0.938    1.0
+ *   32k    retentionPrecision      0.026    0.143
+ *   32k    postHistoryUtilization  0.470    0.476
+ *   272k   finalRetention          0.571    1.0
+ *   272k   meanRetention           0.571    0.804
+ *   272k   userTurnRetention       0.5      1.0
+ *   272k   supersessionCorrectness 0.938    0.938
+ *   272k   retentionPrecision      0.176    0.240
+ *   272k   postHistoryUtilization  0.480    0.488
+ *
+ * At the 272k window the owner's sessions compact at, every planted fact is
+ * in the final compacted representation; the corpus states them all in user
+ * turns, and the turns are now kept. The 32k arm is neutral: its tail is one
+ * ~7.5k bundle in a ~7.8k budget, the newest bundle is never given up for
+ * carried turns, so they get the ~270 tokens it leaves -- the brief and the
+ * newest few. `userTurnRetention` there is the ledger's two constraints, not
+ * the two statements.
+ *
  * To re-measure after a change: run the fidelity test with
  * `BOOK_FIDELITY_PRINT=<file>` (the arm test appends one JSON line of metrics
  * per arm to that file; vitest swallows console output of passing tests, so
@@ -143,31 +196,36 @@ export const FIDELITY_ARMS: readonly FidelityArm[] = [
      */
     fillerRepeat: 5,
     floors: {
-      /** Measured 0.667 on 2026-09-06. */
-      minFinalRetention: 0.66,
-      /** Measured 0.677 across the eight generations on 2026-09-06. */
-      minMeanRetention: 0.67,
-      /** Measured 1.0 on 2026-09-06. */
+      /** Measured 0.643 on 2026-09-14 (14-fact corpus, prompt-grounded double). */
+      minFinalRetention: 0.64,
+      /** Measured 0.634 across the eight generations on 2026-09-14. */
+      minMeanRetention: 0.63,
+      /** Measured 1.0 on 2026-09-14. */
       minVerbatimUserRetention: 1,
-      /** Measured 1.0 on 2026-09-06. */
+      /**
+       * Measured 0.5 on 2026-09-14: the two constraints through the ledger; the
+       * two statements do not fit the ~270 tokens the newest bundle leaves.
+       */
+      minUserTurnRetention: 0.5,
+      /** Measured 1.0 on 2026-09-14. */
       minSupersessionCorrectness: 1,
-      /** Measured 1.0 on 2026-09-06. */
+      /** Measured 1.0 on 2026-09-14. */
       minGroundedSourceRecall: 1,
       /**
-       * Measured 0.026 on 2026-09-06. Not a regression against the old 0.898:
-       * that figure came from seven generations that retained nothing (an
-       * empty tail scores 1.0), and the ~7.9k tail here keeps two filler turns
-       * per generation by construction. See the module comment.
+       * Measured 0.143 on 2026-09-14. Carried turns count as retained
+       * messages, and the ones that carry a fact lift this from 0.026; the
+       * ~7.9k tail still keeps filler by construction. Not comparable with the
+       * pre-ledger 0.898, which mostly measured the absence of a tail.
        */
-      minRetentionPrecision: 0.02,
-      /** Measured 8 on 2026-09-06 -- one reducer call per generation, no repairs spent. */
+      minRetentionPrecision: 0.14,
+      /** Measured 8 on 2026-09-14 -- one reducer call per generation, no repairs spent. */
       maxReducerCalls: 8,
       /**
-       * Floor, not ceiling: dead budget reclaimed. Measured 0.470 against the
-       * loop's 22,323-token gate on 2026-09-06; post-compaction history sits at
+       * Floor, not ceiling: dead budget reclaimed. Measured 0.476 against the
+       * loop's 22,323-token gate on 2026-09-14; post-compaction history sits at
        * the target, which is half the gate.
        */
-      minPostHistoryUtilization: 0.46,
+      minPostHistoryUtilization: 0.47,
     },
   },
   {
@@ -175,35 +233,69 @@ export const FIDELITY_ARMS: readonly FidelityArm[] = [
     reservedOutputTokens: 64_000,
     fillerRepeat: 60,
     floors: {
-      /** Measured 0.833 on 2026-09-06. */
-      minFinalRetention: 0.83,
-      /** Measured 0.823 across the eight generations on 2026-09-06. */
-      minMeanRetention: 0.82,
-      /** Measured 1.0 on 2026-09-06. */
+      /** Measured 1.0 on 2026-09-14 (14-fact corpus, prompt-grounded double); 0.571 before Carried Turns. */
+      minFinalRetention: 1,
+      /** Measured 0.804 across the eight generations on 2026-09-14; 0.571 before. */
+      minMeanRetention: 0.8,
+      /** Measured 1.0 on 2026-09-14. */
       minVerbatimUserRetention: 1,
-      /** Measured 1.0 on 2026-09-06. */
-      minSupersessionCorrectness: 1,
-      /** Measured 1.0 on 2026-09-06. */
+      /** Measured 1.0 on 2026-09-14; 0.5 before -- the cue-less and Vietnamese statements. */
+      minUserTurnRetention: 1,
+      /**
+       * Measured 0.9375 on 2026-09-14, before and after: at generation 1 the
+       * corrected double records the old region from the events it is shown
+       * while the correction still sits in the retained tail, which this
+       * metric does not read. The 2026-09-06 floor of 1 came from the double
+       * grounding on the tail.
+       */
+      minSupersessionCorrectness: 0.93,
+      /** Measured 1.0 on 2026-09-14. */
       minGroundedSourceRecall: 1,
       /**
-       * Measured 0.176 on 2026-09-06. A ~79k tail keeps the fixture's unrelated
-       * filler turns by construction, so precision is not comparable across
-       * arms and must not be rescued by shrinking the filler.
+       * Measured 0.240 on 2026-09-14 (0.176 before). A ~79k tail keeps the
+       * fixture's unrelated filler turns by construction, so precision is not
+       * comparable across arms and must not be rescued by shrinking the filler.
        */
-      minRetentionPrecision: 0.17,
-      /** Measured 8 on 2026-09-06 -- one reducer call per generation, no repairs spent. */
+      minRetentionPrecision: 0.23,
+      /** Measured 8 on 2026-09-14 -- one reducer call per generation, no repairs spent. */
       maxReducerCalls: 8,
       /**
-       * Floor, not ceiling: dead budget reclaimed. Measured 0.480 against the
-       * loop's 166,400-token gate on 2026-09-06 (post-compaction history 77k-82k).
+       * Floor, not ceiling: dead budget reclaimed. Measured 0.488 against the
+       * loop's 166,400-token gate on 2026-09-14 (post-compaction history 79k-82k).
        */
-      minPostHistoryUtilization: 0.47,
+      minPostHistoryUtilization: 0.48,
     },
   },
 ];
 
 function checkpointText(checkpoint: ConversationCheckpointV2): string {
   return JSON.stringify(checkpoint);
+}
+
+/**
+ * The compacted representation: what survives when the retained tail is gone.
+ * The checkpoint, plus the user turns compaction carried verbatim ahead of it
+ * (`kind: 'carried'`); a carried turn's provider-facing text is what counts.
+ */
+function compactedText(record: GenerationRecord): string {
+  const carried = record.replacementHistory
+    .filter((message) => message.kind === 'carried')
+    .map((message) => message.contextContent ?? message.content);
+  return [checkpointText(record.checkpoint), ...carried].join('\n');
+}
+
+/** Everything the model would see after this compaction: the compacted representation plus the tail. */
+function replacementText(record: GenerationRecord): string {
+  const tail = record.replacementHistory
+    .filter((message) => message.kind !== 'checkpoint' && message.kind !== 'carried')
+    .map((message) =>
+      [
+        message.contextContent ?? message.content ?? '',
+        ...(message.toolCalls ?? []).map((call) => JSON.stringify(call.arguments ?? {})),
+        ...(message.toolResults ?? []).map((result) => result.content),
+      ].join(' '),
+    );
+  return [compactedText(record), ...tail].join('\n');
 }
 
 /**
@@ -338,12 +430,12 @@ export function scoreFidelity(
   let reducerCalls = 0;
 
   for (const record of generations) {
-    const text = checkpointText(record.checkpoint);
+    const text = compactedText(record);
+    const inContext = replacementText(record);
     let retainedCount = 0;
     for (const fact of facts) {
-      if (factRetained(text, fact)) {
-        retainedCount++;
-      } else if (lostAtGeneration[fact.id] === null) {
+      if (factRetained(text, fact)) retainedCount++;
+      if (!factRetained(inContext, fact) && lostAtGeneration[fact.id] === null) {
         lostAtGeneration[fact.id] = record.generation;
       }
     }
@@ -371,7 +463,12 @@ export function scoreFidelity(
   }
 
   const constraintFacts = facts.filter((fact) => fact.kind === 'user-constraint');
-  const finalText = checkpointText(generations[generations.length - 1].checkpoint);
+  const userFacts = facts.filter(
+    (fact) => fact.kind === 'user-constraint' || fact.kind === 'user-statement',
+  );
+  const finalRecord = generations[generations.length - 1];
+  const finalCheckpointText = checkpointText(finalRecord.checkpoint);
+  const finalCompactedText = compactedText(finalRecord);
 
   return {
     lostAtGeneration,
@@ -380,8 +477,13 @@ export function scoreFidelity(
     verbatimUserRetention:
       constraintFacts.length === 0
         ? 1
-        : constraintFacts.filter((fact) => factRetained(finalText, fact)).length /
+        : constraintFacts.filter((fact) => factRetained(finalCheckpointText, fact)).length /
           constraintFacts.length,
+    userTurnRetention:
+      userFacts.length === 0
+        ? 1
+        : userFacts.filter((fact) => factRetained(finalCompactedText, fact)).length /
+          userFacts.length,
     supersessionCorrectness: mean(supersessionPerGeneration),
     groundedSourceRecall: mean(groundedPerGeneration),
     retentionPrecision: mean(precisionPerGeneration),

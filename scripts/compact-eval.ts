@@ -761,9 +761,15 @@ async function runFixture(options: {
       estimatedPromptTokens: compactEstimatedPromptTokens,
       costUsd: compactCostUsd,
       outputCapTokens: options.checkpointTokens,
+      // The compacted representation: the checkpoint message plus the user
+      // turns carried verbatim ahead of it, never the retained tail.
       checkpointTokens:
         compact.status === 'compacted'
-          ? estimateHistoryTokens([compact.replacementHistory[0]!])
+          ? estimateHistoryTokens(
+              compact.replacementHistory.filter(
+                (message) => message.kind === 'checkpoint' || message.kind === 'carried',
+              ),
+            )
           : undefined,
       checkpoint: compact.status === 'compacted' ? compact.checkpoint : undefined,
       effort: options.compactEffort,

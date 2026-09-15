@@ -44,6 +44,12 @@ export function compactTestConfig(overrides: Partial<AgentConfig> = {}): AgentCo
  */
 export type PlantedFactKind =
   | 'user-constraint'
+  /**
+   * Something the user stated in their own words that the ledger's cue list
+   * cannot catch -- a cue-less preference, or a rule in another language.
+   * The fidelity double never records these, so only Carried Turns keep them.
+   */
+  | 'user-statement'
   | 'accepted-decision'
   | 'rejected-decision'
   | 'current-value'
@@ -101,6 +107,13 @@ export function buildCompactFixtureHistory(
   const runtime = addTurn(
     'Record the project constraints for the handoff. The runtime must remain Node.js 20 or newer. Do not change the public query() function signature.',
     'Recorded constraints: runtime is Node.js 20 or newer; the public query() function signature must remain unchanged.',
+  );
+  // Two things the user said that carry no directive cue: a hedged preference
+  // and a rule in Vietnamese. The ledger cannot extract either; a compactor that
+  // paraphrases the user loses both.
+  const statements = addTurn(
+    "It'd be good if we stayed on the Fastify adapter for now. Đừng đụng vào thư mục vendor.",
+    'Noted: staying on the Fastify adapter; the vendor directory stays as it is.',
   );
   const cache = addTurn(
     'The accepted cache key is workspaceHash:modelId:v3. We rejected Redis because the benchmark must work offline and without a service dependency.',
@@ -184,6 +197,7 @@ export function buildCompactFixtureHistory(
     history,
     turns: {
       runtime,
+      statements,
       cache,
       openThread,
       oldRegion,
@@ -219,6 +233,18 @@ export function buildPlantedFacts(turns: CompactFixtureHistory['turns']): Plante
       kind: 'user-constraint',
       terms: ['query()'],
       sourceMessageIds: [turns.runtime.userId, turns.runtime.assistantId],
+    },
+    {
+      id: 'adapter-preference',
+      kind: 'user-statement',
+      terms: ['Fastify'],
+      sourceMessageIds: [turns.statements.userId, turns.statements.assistantId],
+    },
+    {
+      id: 'vendor-rule-vietnamese',
+      kind: 'user-statement',
+      terms: ['vendor'],
+      sourceMessageIds: [turns.statements.userId, turns.statements.assistantId],
     },
     {
       id: 'cache-key-decision',
