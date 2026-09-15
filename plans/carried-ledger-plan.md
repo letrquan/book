@@ -137,7 +137,9 @@ are no longer directive cues on their own, is not an entry either. An after-cue 
 that opens like an order or carries a non-rescission cue — so "the function returned null
 instead of an empty array" withdraws nothing. And the token that links the withdrawn phrase to
 the earlier entry must name a thing, not a bare generic verb: "we no longer deploy on Fridays"
-leaves "always deploy with the blue-green script" in force.
+leaves "always deploy with the blue-green script" in force. Finally a negation ahead of an
+after-cue turns it around: "never use tabs instead of spaces" is a rule about spaces, and "do not
+switch from npm to pnpm yet" keeps the npm rule; both are entries, neither is a withdrawal.
 
 ### The cap
 

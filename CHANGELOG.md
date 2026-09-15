@@ -33,8 +33,9 @@ All notable changes to this project are documented in this file.
   rule, the cues are guarded: "is wrong" must judge a prior rule rather than program output, and
   is no longer an entry on its own; "instead of" must sit in an instruction rather than a
   report; a bare generic verb never links a withdrawal to a rule ("we no longer deploy on
-  Fridays" leaves "always deploy with the blue-green script" in force). Plain negation is not a
-  withdrawal. The fidelity corpus's package-manager correction now exercises this path.
+  Fridays" leaves "always deploy with the blue-green script" in force); and a negated cue
+  reinforces rather than withdraws ("never use tabs instead of spaces", "do not switch from npm
+  to pnpm yet"). Plain negation is not a withdrawal. The fidelity corpus's package-manager correction now exercises this path.
 
 - **Compaction keeps your own turns verbatim (Carried Turns).** The summarizer used to paraphrase
   every older user turn; only cue-matched sentences survived through the carried ledger, so a rule

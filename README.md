@@ -709,8 +709,10 @@ compaction -- it is recomputed each time, and the line goes away once the withdr
 left the tail. Because a wrong withdrawal now hides a live rule, the cues are guarded: "is wrong"
 must judge a prior rule, not program output ("the output is wrong for empty input" withdraws
 nothing); "instead of" must sit in an instruction, not a report ("the function returned null
-instead of an empty array" withdraws nothing); and a bare generic verb never links the two ("we
-no longer deploy on Fridays" leaves "always deploy with the blue-green script" in force). Plain
+instead of an empty array" withdraws nothing); a bare generic verb never links the two ("we no
+longer deploy on Fridays" leaves "always deploy with the blue-green script" in force); and a
+negated cue reinforces rather than withdraws ("never use tabs instead of spaces" is a rule about
+spaces, and "do not switch from npm to pnpm yet" keeps the npm rule). Plain
 negation is not a withdrawal ("don't run tests on CI" leaves "always run tests before commit" in
 force), and a change of value stated without any cue ("always use npm" then "always use pnpm") is
 not detected: both entries stay, and the checkpoint states the rule for reading them -- where two

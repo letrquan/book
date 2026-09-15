@@ -130,7 +130,10 @@ const WEAK_CUES = [
  * returned null instead of an empty array" does not (`isDirective`). And the
  * token that links the withdrawn phrase to the earlier entry must name a
  * thing, not a bare generic verb: "we no longer deploy on Fridays" does not
- * withdraw "always deploy with the blue-green script" (`GENERIC_VERBS`).
+ * withdraw "always deploy with the blue-green script" (`GENERIC_VERBS`). And a
+ * negated after-cue reinforces rather than withdraws: "never use tabs instead
+ * of spaces" and "do not switch from npm to pnpm yet" keep the rule they name
+ * (`NEGATION_BEFORE_CUE`).
  */
 const RESCISSION_CUES: ReadonlyArray<{ cue: string; subject: 'after' | 'before' }> = [
   { cue: 'instead of', subject: 'after' },
@@ -209,6 +212,15 @@ const GENERIC_VERBS = new Set([
   'returned',
   'work',
 ]);
+
+/**
+ * A negation ahead of an after-cue turns the withdrawal around: "never use tabs
+ * instead of spaces" is a rule about spaces, not a withdrawal of one. Bare
+ * "no" is left out so "the old rule no longer applies; use pnpm instead of
+ * npm" keeps its after-cue.
+ */
+const NEGATION_BEFORE_CUE =
+  /\b(?:never|not|don't|doesn't|cannot|can't|shouldn't|mustn't|won't|avoid)\b/i;
 
 /** An opening that makes a sentence an instruction rather than a report. */
 const IMPERATIVE_OPENER =
@@ -438,6 +450,7 @@ function withdrawnPhrases(text: string): Array<{ subject: 'after' | 'before'; to
         continue;
       }
       if (subject === 'after' && !isDirective(text)) continue;
+      if (subject === 'after' && NEGATION_BEFORE_CUE.test(text.slice(0, at))) continue;
       // The words that made the phrase qualify are references, not the topic.
       const tokens = near.filter(
         (token) => !PRIOR_REFERENCE_WORDS.has(token) && !GENERIC_VERBS.has(token),

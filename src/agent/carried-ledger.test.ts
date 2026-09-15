@@ -565,6 +565,26 @@ describe('carried ledger supersession by rescission', () => {
     expect(merged.constraints[0].supersededBy).toBeUndefined();
   });
 
+  it('treats a negated after-cue as a rule about its topic, not a withdrawal of it', () => {
+    const merged = ledgerFor([
+      user('u1', 'Always indent with two spaces.'),
+      user('u2', 'Never use tabs instead of spaces.'),
+    ]);
+    expect(merged.constraints.map((item) => item.text)).toEqual([
+      'Always indent with two spaces.',
+      'Never use tabs instead of spaces.',
+    ]);
+    expect(merged.constraints.every((item) => item.supersededBy === undefined)).toBe(true);
+  });
+
+  it('does not let "do not switch from X" withdraw the rule that keeps X', () => {
+    const merged = ledgerFor([
+      user('u1', 'Always use npm for installs.'),
+      user('u2', 'Do not switch from npm to pnpm yet.'),
+    ]);
+    expect(merged.constraints[0].supersededBy).toBeUndefined();
+  });
+
   it('withdraws only the noun phrase beside the cue, not the rest of the sentence', () => {
     const merged = ledgerFor([
       user('u1', 'Always run installs in CI.'),
