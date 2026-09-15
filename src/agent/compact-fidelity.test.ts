@@ -333,6 +333,14 @@ describe('compaction fidelity baseline', () => {
       }
 
       expect(records).toHaveLength(GENERATIONS);
+
+      // P2: the ledger the model reads carries the maintainer's correction and
+      // not the rule it withdrew. The withdrawn turn is still in session
+      // history; it is not presented as a rule in force.
+      const finalLedger = JSON.stringify(records[records.length - 1].checkpoint.carried ?? {});
+      expect(finalLedger).toContain('requires pnpm 9');
+      expect(finalLedger).not.toContain('always assume npm');
+
       expect(metrics.finalRetention).toBeGreaterThanOrEqual(arm.floors.minFinalRetention);
       expect(metrics.meanRetention).toBeGreaterThanOrEqual(arm.floors.minMeanRetention);
       expect(metrics.verbatimUserRetention).toBeGreaterThanOrEqual(

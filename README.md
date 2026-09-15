@@ -697,14 +697,32 @@ output are not part of the carried text.
 Node 20", "never touch the vendored parser", "only use pnpm" -- are copied verbatim into a
 host-owned **carried ledger** on the checkpoint. The summarizer sees it and is told to honour it,
 but cannot write to it: a `carried` field in a model reply is discarded. The fitter cannot evict
-from it. It accumulates across generations and is never reordered, and the checkpoint states the
-rule for reading it: where two entries conflict, the later one wins.
+from it. It accumulates across generations and is never reordered.
+
+A rule you later withdrew is not carried alongside its replacement. When a later sentence
+restates an earlier entry, or withdraws it in as many words -- "use pnpm instead of npm",
+"rather than", "no longer", "stop using", "switch from", "the earlier npm assumption was wrong",
+"is obsolete", "no longer applies" -- the earlier entry is withheld from the ledger the model
+reads, and the header says how many were: a model shown a withdrawn rule and its replacement with
+equal standing acts on the withdrawn one often enough to matter. The count is for this
+compaction -- it is recomputed each time, and the line goes away once the withdrawing turn has
+left the tail. Because a wrong withdrawal now hides a live rule, the cues are guarded: "is wrong"
+must judge a prior rule, not program output ("the output is wrong for empty input" withdraws
+nothing); "instead of" must sit in an instruction, not a report ("the function returned null
+instead of an empty array" withdraws nothing); and a bare generic verb never links the two ("we
+no longer deploy on Fridays" leaves "always deploy with the blue-green script" in force). Plain
+negation is not a withdrawal ("don't run tests on CI" leaves "always run tests before commit" in
+force), and a change of value stated without any cue ("always use npm" then "always use pnpm") is
+not detected: both entries stay, and the checkpoint states the rule for reading them -- where two
+entries conflict, the later one wins. The withdrawn turn itself stays retrievable from session
+history, and while the carried-turns budget holds it, it is still in context verbatim as
+conversation.
 
 The ledger is bounded rather than unlimited -- at most 32 entries, 1024 tokens, and 35% of the
-checkpoint budget. When the cap binds it evicts restatements first, then softer steers ("prefer",
-"avoid"), then explicit rules, never the newest entry, and the checkpoint discloses how many
-entries were dropped. The exact turns stay retrievable with `SessionHistorySearch` and
-`SessionHistoryRead`.
+checkpoint budget. Withdrawn entries are already gone by the time the cap runs; when it binds it
+evicts softer steers ("prefer", "avoid") first, then explicit rules, never the newest entry, and
+the checkpoint discloses how many entries were dropped. The exact turns stay retrievable with
+`SessionHistorySearch` and `SessionHistoryRead`.
 
 Two things are deliberately excluded. Only the text you typed is read -- never `@file` expansions
 or `!`-shell output -- so a repository cannot plant a rule in a record Book is bound to keep. And

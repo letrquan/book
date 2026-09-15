@@ -20,6 +20,22 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **The carried ledger withholds a rule you withdrew instead of listing it beside its
+  replacement.** A later sentence that restates an earlier ledger entry, or withdraws it in as
+  many words ("use pnpm instead of npm", "rather than", "no longer", "stop using", "switch
+  from", "the earlier npm assumption was wrong", "is obsolete", "no longer applies"), now
+  removes the earlier entry from the ledger the model reads; the checkpoint header says how many
+  were withheld. The reading rule "where two conflict the later one wins" stays for the change
+  the host cannot detect (a new value stated with no cue), but the literature is clear that the
+  rule alone is weak: presenting a withdrawn rule and its replacement with equal standing was
+  acted on in 43% of trials, the instruction cut that to 37%, withholding to 0%
+  (`plans/compaction-research-2026-09.md`, P2). Because a wrong withdrawal now hides a live
+  rule, the cues are guarded: "is wrong" must judge a prior rule rather than program output, and
+  is no longer an entry on its own; "instead of" must sit in an instruction rather than a
+  report; a bare generic verb never links a withdrawal to a rule ("we no longer deploy on
+  Fridays" leaves "always deploy with the blue-green script" in force). Plain negation is not a
+  withdrawal. The fidelity corpus's package-manager correction now exercises this path.
+
 - **Compaction keeps your own turns verbatim (Carried Turns).** The summarizer used to paraphrase
   every older user turn; only cue-matched sentences survived through the carried ledger, so a rule
   phrased without a directive word, or in Vietnamese, was gone one generation in. Every turn you

@@ -241,6 +241,7 @@ export const conversationCheckpointV2Schema = z.object({
         }),
       ),
       droppedCount: z.number().int().nonnegative().optional(),
+      supersededCount: z.number().int().nonnegative().optional(),
     })
     .optional(),
   /**

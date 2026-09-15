@@ -103,7 +103,116 @@ const WEAK_CUES = [
   'keep',
   'prefer',
   'should',
+  // Rescission phrases whose sentence is directive on its own ("switch from X
+  // to Y"): captured as entries so they can supersede the rule they withdraw
+  // (`RESCISSION_CUES`). The ones that only pass judgement ("X was wrong") are
+  // admitted by `classify` under a guard instead.
+  'rather than',
+  'stop using',
+  'switch from',
 ];
+
+/**
+ * Phrases by which a user withdraws an earlier rule, and where in the sentence
+ * the withdrawn subject sits: after the cue ("use pnpm instead of npm") or
+ * before it ("the earlier npm assumption was wrong"). A later entry whose
+ * withdrawn span names an earlier entry's topic supersedes that entry -- the
+ * one contradiction the host can decide without a model, because the user
+ * said so in as many words. Plain negation is deliberately not a cue:
+ * "don't run tests on CI" does not withdraw "always run tests before commit".
+ *
+ * Under P2 a wrong supersession withholds a live rule, so each form carries a
+ * guard against the ordinary sentences that share its words. A before-cue
+ * must be passing judgement on a prior rule, not on program output: "the
+ * earlier npm assumption was wrong" withdraws, "the output is wrong for empty
+ * input" does not (`PRIOR_REFERENCE_WORDS`). An after-cue must sit in a
+ * directive sentence: "use pnpm instead of npm" withdraws, "the function
+ * returned null instead of an empty array" does not (`isDirective`). And the
+ * token that links the withdrawn phrase to the earlier entry must name a
+ * thing, not a bare generic verb: "we no longer deploy on Fridays" does not
+ * withdraw "always deploy with the blue-green script" (`GENERIC_VERBS`).
+ */
+const RESCISSION_CUES: ReadonlyArray<{ cue: string; subject: 'after' | 'before' }> = [
+  { cue: 'instead of', subject: 'after' },
+  { cue: 'rather than', subject: 'after' },
+  { cue: 'no longer', subject: 'after' },
+  { cue: 'stop using', subject: 'after' },
+  { cue: 'switch from', subject: 'after' },
+  { cue: 'was wrong', subject: 'before' },
+  { cue: 'were wrong', subject: 'before' },
+  { cue: 'is wrong', subject: 'before' },
+  { cue: 'is obsolete', subject: 'before' },
+  { cue: 'is superseded', subject: 'before' },
+  { cue: 'no longer applies', subject: 'before' },
+];
+
+/** Words that mark a before-cue phrase as being about a prior rule rather than about output. */
+const PRIOR_REFERENCE_WORDS = new Set([
+  'earlier',
+  'previous',
+  'previously',
+  'old',
+  'original',
+  'initial',
+  'prior',
+  'former',
+  'existing',
+  'rule',
+  'rules',
+  'assumption',
+  'constraint',
+  'requirement',
+  'instruction',
+  'convention',
+  'decision',
+  'policy',
+  'approach',
+  'default',
+  'plan',
+  'setting',
+  'guideline',
+]);
+
+/** Verbs too generic to link a withdrawal to a rule on their own. */
+const GENERIC_VERBS = new Set([
+  'use',
+  'using',
+  'run',
+  'running',
+  'deploy',
+  'test',
+  'build',
+  'install',
+  'change',
+  'add',
+  'remove',
+  'update',
+  'set',
+  'make',
+  'write',
+  'read',
+  'call',
+  'get',
+  'put',
+  'keep',
+  'move',
+  'check',
+  'open',
+  'close',
+  'start',
+  'stop',
+  'create',
+  'delete',
+  'edit',
+  'fix',
+  'return',
+  'returned',
+  'work',
+]);
+
+/** An opening that makes a sentence an instruction rather than a report. */
+const IMPERATIVE_OPENER =
+  /^(?:(?:please|from now on|going forward|for now|now)[,\s]+)*(?:use|switch|prefer|stop|go|move|keep|run|install|set|drop|replace|migrate|always|never|do|don't|only|stick|avoid|make|ensure)\b/i;
 
 const CUE_PATTERNS: Array<{ pattern: RegExp; strength: CarriedConstraint['strength'] }> = [
   ...STRONG_CUES.map((cue) => ({ pattern: cuePattern(cue), strength: 'strong' as const })),
@@ -111,6 +220,14 @@ const CUE_PATTERNS: Array<{ pattern: RegExp; strength: CarriedConstraint['streng
   // Restrictive `only` has to govern something: "use only pnpm" is a rule,
   // "the result was informational only" is a sentence that happens to end in it.
   { pattern: /\bonly\b(?=\s+\S)/i, strength: 'weak' },
+];
+
+/** The cue patterns that make a sentence a rule on their own, i.e. every cue that is not a rescission. */
+const DIRECTIVE_PATTERNS: RegExp[] = [
+  ...[...STRONG_CUES, ...WEAK_CUES]
+    .filter((cue) => !RESCISSION_CUES.some((entry) => entry.cue === cue))
+    .map(cuePattern),
+  /\bonly\b(?=\s+\S)/i,
 ];
 
 function cuePattern(cue: string): RegExp {
@@ -133,6 +250,7 @@ const TOPIC_STOPWORDS = new Set([
   // the supersession threshold for every contraction cue.
   ...STRONG_CUES.flatMap((cue) => normalizeForId(cue).split(' ')),
   ...WEAK_CUES.flatMap((cue) => normalizeForId(cue).split(' ')),
+  ...RESCISSION_CUES.flatMap((entry) => normalizeForId(entry.cue).split(' ')),
   'only',
   'required',
   'the',
@@ -231,6 +349,9 @@ function classify(sentence: string): CarriedConstraint['strength'] | undefined {
   for (const { pattern, strength } of CUE_PATTERNS) {
     if (pattern.test(sentence)) return strength;
   }
+  // "The earlier npm assumption was wrong": no directive cue, but a judgement
+  // on a prior rule, kept so it can withdraw that rule.
+  if (withdrawnPhrases(sentence).some((phrase) => phrase.subject === 'before')) return 'weak';
   return undefined;
 }
 
@@ -269,6 +390,67 @@ function overlap(left: Set<string>, right: Set<string>): number {
   let shared = 0;
   for (const token of left) if (right.has(token)) shared++;
   return shared / (left.size + right.size - shared);
+}
+
+/**
+ * Where the withdrawn noun phrase ends: at punctuation, a conjunction, or a
+ * preposition. "use pnpm instead of npm for the CI installs" withdraws npm,
+ * not every earlier rule that mentions CI or installs.
+ */
+const RESCINDED_PHRASE_BOUNDARY =
+  /[,;.:!?]|\b(?:but|and|or|for|to|in|on|with|when|because|since|as|at|from|by|under|after|before|until|unless|about|of|that|which|so)\b/;
+/** And at most this many topic tokens beside the cue, whatever the phrase. */
+const RESCINDED_SPAN_TOKENS = 3;
+
+/** A sentence that instructs: it opens like an order, or carries a cue that is not itself a rescission. */
+function isDirective(sentence: string): boolean {
+  const trimmed = sentence.trim();
+  return (
+    IMPERATIVE_OPENER.test(trimmed) || DIRECTIVE_PATTERNS.some((pattern) => pattern.test(trimmed))
+  );
+}
+
+/**
+ * The withdrawals a sentence makes, each as the topic tokens of the noun
+ * phrase beside its rescission cue -- after the guards in `RESCISSION_CUES`'
+ * comment. Empty for a sentence that only states a rule.
+ */
+function withdrawnPhrases(text: string): Array<{ subject: 'after' | 'before'; tokens: string[] }> {
+  const phrases: Array<{ subject: 'after' | 'before'; tokens: string[] }> = [];
+  const lower = text.toLowerCase();
+  for (const { cue, subject } of RESCISSION_CUES) {
+    const pattern = new RegExp(`\\b${cue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
+    for (const match of lower.matchAll(pattern)) {
+      const at = match.index ?? 0;
+      let phrase: string;
+      if (subject === 'after') {
+        phrase = lower.slice(at + cue.length).split(RESCINDED_PHRASE_BOUNDARY)[0] ?? '';
+      } else {
+        const parts = lower.slice(0, at).split(RESCINDED_PHRASE_BOUNDARY);
+        phrase = parts[parts.length - 1] ?? '';
+      }
+      const ordered = [...topicTokens(phrase)];
+      const near =
+        subject === 'after'
+          ? ordered.slice(0, RESCINDED_SPAN_TOKENS)
+          : ordered.slice(-RESCINDED_SPAN_TOKENS);
+      if (subject === 'before' && !near.some((token) => PRIOR_REFERENCE_WORDS.has(token))) {
+        continue;
+      }
+      if (subject === 'after' && !isDirective(text)) continue;
+      // The words that made the phrase qualify are references, not the topic.
+      const tokens = near.filter(
+        (token) => !PRIOR_REFERENCE_WORDS.has(token) && !GENERIC_VERBS.has(token),
+      );
+      if (tokens.length > 0) phrases.push({ subject, tokens });
+    }
+  }
+  return phrases;
+}
+
+/** The topic an entry withdraws, if it withdraws one. */
+function rescindedTopic(text: string): Set<string> {
+  return new Set(withdrawnPhrases(text).flatMap((phrase) => phrase.tokens));
 }
 
 function truncate(text: string): string {
@@ -354,14 +536,19 @@ export function mergeCarriedLedger(
 }
 
 /**
- * Mark an entry as superseded when another entry restates it more recently.
+ * Mark an entry as superseded when a more recent entry restates it or
+ * withdraws it in as many words.
  *
- * This is the only supersession the host can decide without a model, and it is
- * intentionally narrow: near-identical topic wording. Genuine contradictions
- * the wording does not reveal ("use npm" then "use pnpm") are NOT detected
- * here, and are not meant to be. They are resolved by the ledger's ordering
- * rule instead -- both entries stay, oldest first, and the reader is told that
- * later entries win. Marking is an eviction hint, never a deletion.
+ * Two rules, both decidable without a model. Restatement: near-identical topic
+ * wording. Rescission: the later entry carries a rescission cue and the span
+ * it withdraws names the earlier entry's topic ("use pnpm instead of npm"
+ * supersedes "always use npm for installs"). A contradiction the wording does
+ * not reveal ("use npm" then "use pnpm", with no cue) is still NOT detected:
+ * both entries stay, oldest first, and the reader is told that later entries
+ * win. The mark is what `withholdSuperseded` acts on -- a superseded entry is
+ * not carried alongside its replacement, because a model shown a withdrawn
+ * rule and its replacement with equal standing acts on the withdrawn one
+ * often enough to matter.
  *
  * "More recently" is `lastSeenGeneration`, with ledger position as the
  * tie-break. Position alone is wrong: an entry the user restates keeps its
@@ -371,20 +558,49 @@ export function mergeCarriedLedger(
  */
 function markSupersessions(constraints: CarriedConstraint[]): void {
   const tokens = constraints.map((entry) => topicTokens(entry.text));
+  const rescinded = constraints.map((entry) => rescindedTopic(entry.text));
   const isLater = (candidate: number, subject: number): boolean =>
     constraints[candidate].lastSeenGeneration === constraints[subject].lastSeenGeneration
       ? candidate > subject
       : constraints[candidate].lastSeenGeneration > constraints[subject].lastSeenGeneration;
+  const withdraws = (candidate: number, subject: number): boolean => {
+    if (rescinded[candidate].size === 0) return false;
+    for (const token of rescinded[candidate]) if (tokens[subject].has(token)) return true;
+    return false;
+  };
 
   for (let subject = 0; subject < constraints.length; subject++) {
     delete constraints[subject].supersededBy;
     for (let candidate = constraints.length - 1; candidate >= 0; candidate--) {
       if (candidate === subject || !isLater(candidate, subject)) continue;
-      if (overlap(tokens[subject], tokens[candidate]) < SUPERSESSION_OVERLAP) continue;
+      if (
+        overlap(tokens[subject], tokens[candidate]) < SUPERSESSION_OVERLAP &&
+        !withdraws(candidate, subject)
+      ) {
+        continue;
+      }
       constraints[subject].supersededBy = constraints[candidate].id;
       break;
     }
   }
+}
+
+/**
+ * Drop every superseded entry from the ledger the model will read, and say how
+ * many. The restatement or rescission that displaced each one is still in the
+ * ledger; the exact turn is still in session history. Counts this generation's
+ * withholding only, like `droppedCount`: a superseded rule whose turn is still
+ * in the window is re-extracted and withheld again next generation.
+ */
+export function withholdSuperseded(ledger: CarriedLedger): CarriedLedger {
+  const live = ledger.constraints.filter((entry) => entry.supersededBy === undefined);
+  const supersededCount = ledger.constraints.length - live.length;
+  return {
+    version: 1,
+    constraints: live,
+    ...(ledger.droppedCount ? { droppedCount: ledger.droppedCount } : {}),
+    ...(supersededCount ? { supersededCount } : {}),
+  };
 }
 
 /** Serialized cost of a ledger, for callers that must budget around it. */
@@ -420,7 +636,9 @@ export function carriedLedgerBudget(checkpointBudget: number): number {
  * next overflow", and it is the only place entries are ever removed.
  *
  * Eviction order, oldest first within each tier:
- *   1. superseded entries -- a restatement of them is already in the ledger,
+ *   1. superseded entries -- a restatement of them is already in the ledger.
+ *      `buildCarriedLedger` withholds these before capping, so on that path
+ *      the tier is empty; it stays as a safety net for a raw merged ledger,
  *   2. weak entries -- softer steers,
  *   3. strong entries -- last resort, and counted in `droppedCount` so a lossy
  *      ledger is legible rather than silent.
@@ -437,6 +655,7 @@ export function capCarriedLedger(ledger: CarriedLedger, budgetTokens: number): C
   // was re-counted every generation and the disclosure grew without bound.
   let dropped = 0;
 
+  const supersededCount = ledger.supersededCount;
   const fits = (): boolean => {
     // Length alone settles it, and settling it here matters: `ledgerTokens`
     // serializes the whole ledger, so consulting it once per eviction is
@@ -446,6 +665,7 @@ export function capCarriedLedger(ledger: CarriedLedger, budgetTokens: number): C
       version: 1,
       constraints,
       ...(dropped ? { droppedCount: dropped } : {}),
+      ...(supersededCount ? { supersededCount } : {}),
     };
     return ledgerTokens(candidate) <= budgetTokens;
   };
@@ -481,11 +701,12 @@ export function capCarriedLedger(ledger: CarriedLedger, budgetTokens: number): C
     version: 1,
     constraints,
     ...(dropped ? { droppedCount: dropped } : {}),
+    ...(supersededCount ? { supersededCount } : {}),
   };
 }
 
 /**
- * Build the ledger for one compaction: inherit, extract, merge, cap.
+ * Build the ledger for one compaction: inherit, extract, merge, withhold, cap.
  *
  * Returns `undefined` when there is nothing to carry, so a conversation that
  * stated no constraint pays no bytes for the feature.
@@ -496,10 +717,8 @@ export function buildCarriedLedger(
   generation: number,
   checkpointBudget: number,
 ): CarriedLedger | undefined {
-  const merged = mergeCarriedLedger(
-    prior,
-    extractUserConstraints(messages, generation),
-    generation,
+  const merged = withholdSuperseded(
+    mergeCarriedLedger(prior, extractUserConstraints(messages, generation), generation),
   );
   if (merged.constraints.length === 0) return undefined;
   return capCarriedLedger(merged, carriedLedgerBudget(checkpointBudget));
@@ -515,14 +734,25 @@ export function buildCarriedLedger(
  */
 export function carriedLedgerNotice(ledger: CarriedLedger | undefined): string {
   if (!ledger || ledger.constraints.length === 0) return '';
-  return carriedLedgerNoticeText(ledger.constraints.length, ledger.droppedCount ?? 0);
+  return carriedLedgerNoticeText(
+    ledger.constraints.length,
+    ledger.droppedCount ?? 0,
+    ledger.supersededCount ?? 0,
+  );
 }
 
-function carriedLedgerNoticeText(constraintCount: number, droppedCount: number): string {
+function carriedLedgerNoticeText(
+  constraintCount: number,
+  droppedCount: number,
+  supersededCount: number,
+): string {
+  const withheld = supersededCount
+    ? ` ${supersededCount} earlier entr${supersededCount === 1 ? 'y' : 'ies'} the user later restated or rescinded ${supersededCount === 1 ? 'is' : 'are'} omitted.`
+    : '';
   const lossy = droppedCount
     ? ` ${droppedCount} older entr${droppedCount === 1 ? 'y was' : 'ies were'} dropped by the ledger cap and can be retrieved from session history.`
     : '';
-  return `[carried: ${constraintCount} constraint(s) quoted verbatim from the user's own turns, oldest first; they remain in force, and where two conflict the later one wins.${lossy}]\n`;
+  return `[carried: ${constraintCount} constraint(s) quoted verbatim from the user's own turns, oldest first; they remain in force, and where two conflict the later one wins.${withheld}${lossy}]\n`;
 }
 
 /**
@@ -531,5 +761,5 @@ function carriedLedgerNoticeText(constraintCount: number, droppedCount: number):
  * Derived from the text so a longer notice moves the budgets with it.
  */
 export const CARRIED_LEDGER_NOTICE_MAX_TOKENS = Math.ceil(
-  carriedLedgerNoticeText(CARRIED_LEDGER_MAX_ENTRIES, 999_999).length / 4,
+  carriedLedgerNoticeText(CARRIED_LEDGER_MAX_ENTRIES, 999_999, 999_999).length / 4,
 );

@@ -127,8 +127,11 @@ export function buildCompactFixtureHistory(
     'Initial deployment note: the staging region is us-east-1. This value may change after the migration.',
     'The initial staging region is recorded as us-east-1, pending migration.',
   );
+  // A rule with a directive cue, so it enters the ledger -- and is later
+  // withdrawn in as many words by `packageCorrection`, which is what the ledger's
+  // rescission rule has to catch.
   const wrongPackageManager = addTurn(
-    'For now, assume npm is the package manager until the maintainer confirms the repository convention.',
+    'For now, always assume npm is the package manager until the maintainer confirms the repository convention.',
     'Temporary assumption recorded: npm, awaiting an authoritative maintainer correction.',
   );
 

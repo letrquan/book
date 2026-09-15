@@ -2,7 +2,10 @@
 
 - **Date:** 2026-09-14
 - **Status:** research note. **P1 landed 2026-09-14** (Carried Turns, `carryUserTurns` in
-  `src/agent/compact.ts`); P2–P6 remain proposals.
+  `src/agent/compact.ts`); **P2 landed 2026-09-16** (`withholdSuperseded` and the rescission
+  rule in `src/agent/carried-ledger.ts` — explicit rescission cues rather than the object-swap
+  heuristic sketched below, which cannot tell "npm → pnpm" from "tests" and "lint"); P3–P6
+  remain proposals.
 - **Scope:** `src/agent/compact.ts`, `src/agent/carried-ledger.ts`, `src/agent/compact-fidelity.ts`,
   `scripts/compact-eval.ts`, `src/agent/loop.ts` (compaction call site)
 - **Method:** literature retrieval through the OpenResearch CLI (`orx discover` over alphaXiv and

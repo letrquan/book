@@ -13,6 +13,7 @@ import {
   carryUserTurns,
   carriedTurnsNotice,
 } from './compact.js';
+import { CARRIED_LEDGER_NOTICE_MAX_TOKENS } from './carried-ledger.js';
 import { DEFAULT_CONTEXT_WINDOW, resolveContextLimit } from '../models.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message, Usage } from '../types/messages.js';
@@ -135,8 +136,8 @@ describe('resolveContextLimit', () => {
 
 describe('resolveCompactBudgets', () => {
   // Checkpoint header (16) + message overhead (6) + the largest carried-ledger
-  // notice (62) + the largest carried-turns notice.
-  const ENVELOPE = 84 + CARRIED_TURNS_NOTICE_MAX_TOKENS;
+  // notice + the largest carried-turns notice.
+  const ENVELOPE = 22 + CARRIED_LEDGER_NOTICE_MAX_TOKENS + CARRIED_TURNS_NOTICE_MAX_TOKENS;
 
   it('sizes the production window against the preflight gate', () => {
     const budgets = resolveCompactBudgets({

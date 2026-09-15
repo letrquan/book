@@ -311,10 +311,16 @@ export interface CarriedConstraint {
  */
 export interface CarriedLedger {
   version: 1;
-  /** Oldest first. Later entries win over earlier ones on conflict. */
+  /**
+   * Oldest first, every entry live: an entry a later one restated or rescinded
+   * is withheld rather than carried alongside its replacement. Later entries
+   * win over earlier ones on a conflict the host could not detect.
+   */
   constraints: CarriedConstraint[];
   /** Entries the cap had to drop. Non-zero means the ledger is lossy. */
   droppedCount?: number;
+  /** Entries withheld this generation because a later entry restated or rescinded them. */
+  supersededCount?: number;
 }
 
 export interface CarriedTurnsSummary {
