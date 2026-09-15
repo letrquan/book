@@ -22,7 +22,18 @@ import { AgentStore } from './store.js';
  */
 
 const tempRoots: string[] = [];
-const UNCONTENDED = { writerOptions: { sleep: () => {} } } as const;
+/**
+ * No lock back-off and no fsync. Every persisted write in a delegation fsyncs
+ * its lock, its temp file and the directory, and what that costs is the disk's
+ * business, not the harness's: ~10ms on the ubuntu runners, ~20ms on the
+ * Windows runners, and ~100ms on a laptop SSD, which put the 200ms median
+ * ceiling below the floor of a machine that was doing nothing wrong. With
+ * fsync stubbed the number left is the harness alone, which is what the
+ * ceilings below are about.
+ */
+const UNCONTENDED = {
+  writerOptions: { sleep: () => {}, fs: { fsyncSync: () => {} } },
+} as const;
 
 function tempRoot(): string {
   const root = mkdtempSync(join(tmpdir(), 'book-delegation-latency-'));
