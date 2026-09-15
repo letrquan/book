@@ -1046,6 +1046,7 @@ function emitCompactBoundary(
     generation: result.generation,
     pre_messages: result.preMessageCount,
     post_messages: result.replacementHistory.length,
+    carried_messages: result.carriedCount,
     post_tokens: result.postContextTokens,
     checkpoint_version: 2,
     strategy: result.strategy,

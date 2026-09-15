@@ -15,6 +15,17 @@ export const SECRET_PATTERNS = [
 ];
 
 /**
+ * Whether `text` contains an explicit credential shape (a private key, an
+ * `api_key=`/`token=` assignment, basic-auth in a URL, a GitHub or `sk-` token).
+ * Unlike `looksLikeSecretOrUnfit` this does not apply the high-entropy rule,
+ * which is sized for a sentence and flags any run of text that names a long
+ * path -- the wrong test for a whole user turn.
+ */
+export function containsSecretPattern(text: string): boolean {
+  return SECRET_PATTERNS.some((re) => re.test(text));
+}
+
+/**
  * Returns a short reason string when `text` looks like a secret or is
  * otherwise unfit to persist, or `null` when the text is acceptable.
  */

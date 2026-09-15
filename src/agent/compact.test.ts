@@ -9,6 +9,9 @@ import {
   resolveCompactBudgets,
   IMAGE_TOKEN_ESTIMATE,
   estimateProviderRequestTokens,
+  CARRIED_TURNS_NOTICE_MAX_TOKENS,
+  carryUserTurns,
+  carriedTurnsNotice,
 } from './compact.js';
 import { DEFAULT_CONTEXT_WINDOW, resolveContextLimit } from '../models.js';
 import type { AgentConfig } from '../types/runtime.js';
@@ -131,8 +134,9 @@ describe('resolveContextLimit', () => {
 });
 
 describe('resolveCompactBudgets', () => {
-  // Checkpoint header (16) + message overhead (6) + the largest carried-ledger notice (62).
-  const ENVELOPE = 84;
+  // Checkpoint header (16) + message overhead (6) + the largest carried-ledger
+  // notice (62) + the largest carried-turns notice.
+  const ENVELOPE = 84 + CARRIED_TURNS_NOTICE_MAX_TOKENS;
 
   it('sizes the production window against the preflight gate', () => {
     const budgets = resolveCompactBudgets({
@@ -146,9 +150,9 @@ describe('resolveCompactBudgets', () => {
     expect(budgets.targetTokens).toBe(83_200);
     expect(budgets.checkpointBudget).toBe(4_096);
     expect(budgets.recentBudget).toBe(83_200 - 4_096 - ENVELOPE);
-    expect(budgets.recentBudget).toBe(79_020);
     expect(budgets.shortRecentBudget).toBe(20_000);
-    expect(budgets.retainedToolResultMaxTokens).toBe(7_902);
+    expect(budgets.retainedToolResultMaxTokens).toBe(Math.floor(budgets.recentBudget * 0.1));
+    expect(budgets.carriedTurnsBudget).toBe(Math.floor(budgets.recentBudget * 0.15));
     expect(budgets.tail).toBe('residual');
   });
 
@@ -159,8 +163,8 @@ describe('resolveCompactBudgets', () => {
     );
     expect(budgets.targetTokens).toBe(Math.floor((166_400 - 11_805) * 0.5));
     expect(budgets.targetTokens).toBe(77_297);
-    expect(budgets.recentBudget).toBe(73_117);
-    expect(budgets.retainedToolResultMaxTokens).toBe(7_311);
+    expect(budgets.recentBudget).toBe(77_297 - 4_096 - ENVELOPE);
+    expect(budgets.retainedToolResultMaxTokens).toBe(Math.floor(budgets.recentBudget * 0.1));
   });
 
   it('shrinks the target by the measured estimator drift and never grows it', () => {
@@ -171,7 +175,7 @@ describe('resolveCompactBudgets', () => {
     });
     expect(undercount.estimatorDrift).toBe(2);
     expect(undercount.targetTokens).toBe(41_600);
-    expect(undercount.recentBudget).toBe(37_420);
+    expect(undercount.recentBudget).toBe(41_600 - 4_096 - ENVELOPE);
 
     const overcount = resolveCompactBudgets(config, {
       measuredRequestTokens: 50_000,
@@ -208,7 +212,6 @@ describe('resolveCompactBudgets', () => {
     expect(budgets.targetTokens).toBe(11_161);
     expect(budgets.checkpointBudget).toBe(3_200);
     expect(budgets.recentBudget).toBe(11_161 - 3_200 - ENVELOPE);
-    expect(budgets.recentBudget).toBe(7_877);
     expect(budgets.shortRecentBudget).toBe(6_400);
     expect(budgets.retainedToolResultMaxTokens).toBe(2_000);
   });
@@ -226,8 +229,7 @@ describe('resolveCompactBudgets', () => {
     expect(budgets.preflightThreshold).toBe(12_800);
     expect(budgets.targetTokens).toBe(6_400);
     expect(budgets.recentBudget).toBe(6_400 - 3_200 - ENVELOPE);
-    expect(budgets.recentBudget).toBe(3_116);
-    expect(budgets.shortRecentBudget).toBe(3_116);
+    expect(budgets.shortRecentBudget).toBe(budgets.recentBudget);
     expect(budgets.recentBudget + budgets.checkpointBudget + ENVELOPE).toBeLessThanOrEqual(
       budgets.targetTokens,
     );
@@ -241,7 +243,7 @@ describe('resolveCompactBudgets', () => {
     expect(budgets.reservedOutputTokens).toBe(4_096);
     expect(budgets.targetTokens).toBe(1_638);
     expect(budgets.checkpointBudget).toBe(819);
-    expect(budgets.recentBudget).toBe(735);
+    expect(budgets.recentBudget).toBe(1_638 - 819 - ENVELOPE);
     expect(budgets.recentBudget + budgets.checkpointBudget + ENVELOPE).toBeLessThanOrEqual(
       budgets.targetTokens,
     );
@@ -256,7 +258,6 @@ describe('resolveCompactBudgets', () => {
     expect(smaller.recentBudget).toBe(production.recentBudget);
     expect(larger.checkpointBudget).toBe(16_000);
     expect(larger.recentBudget).toBe(83_200 - 16_000 - ENVELOPE);
-    expect(larger.recentBudget).toBe(67_116);
   });
 
   it('scales the per-result clip with the tail on a 1M window', () => {
@@ -265,8 +266,10 @@ describe('resolveCompactBudgets', () => {
       maxTokens: 64_000,
     });
     expect(budgets.targetTokens).toBe(393_830);
-    expect(budgets.recentBudget).toBe(389_650);
-    expect(budgets.retainedToolResultMaxTokens).toBe(38_965);
+    expect(budgets.recentBudget).toBe(393_830 - 4_096 - ENVELOPE);
+    expect(budgets.retainedToolResultMaxTokens).toBe(Math.floor(budgets.recentBudget * 0.1));
+    // The carried-turns share is capped at any window.
+    expect(budgets.carriedTurnsBudget).toBe(12_000);
   });
 });
 
@@ -609,11 +612,19 @@ describe('runCompact', () => {
     const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
     expect(result.status).toBe('compacted');
     if (result.status === 'compacted') {
-      expect(result.replacementHistory).toHaveLength(3);
-      expect(result.replacementHistory[0].content).toMatch(/Summary of work/);
+      // Carried user turn, checkpoint, retained tail.
+      expect(result.replacementHistory).toHaveLength(4);
+      expect(result.replacementHistory[0]).toMatchObject({
+        id: '1',
+        role: 'user',
+        kind: 'carried',
+        content: 'do X',
+      });
+      expect(result.replacementHistory[1].content).toMatch(/Summary of work/);
       expect(result.summary).toBe('Summary of work.');
       expect(result.preMessageCount).toBe(4);
-      expect(result.replacementHistory.slice(1)).toEqual(twoTurns.slice(2));
+      expect(result.replacementHistory.slice(2)).toEqual(twoTurns.slice(2));
+      expect(result.carriedCount).toBe(1);
       expect(result).toMatchObject({ strategy: 'single-pass', modelCalls: 1, degraded: false });
       expect(result.checkpoint.coverage).toMatchObject({
         status: 'complete',
@@ -1586,5 +1597,265 @@ ${JSON.stringify(prior)}`,
       expect(result.checkpoint.coverage?.reasons).toContain('invalid-checkpoint');
     }
     expect(mockedStream).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Carried Turns: the user's own earlier turns are kept verbatim ahead of the
+ * checkpoint instead of being summarized (`plans/compaction-research-2026-09.md`
+ * P1). What these pin: which turns qualify, what a carried copy sheds, the clip
+ * ladder and the eviction order under a budget, and the disclosure.
+ */
+describe('carryUserTurns', () => {
+  const user = (id: string, content: string, extra: Partial<Message> = {}): Message => ({
+    id,
+    role: 'user',
+    content,
+    includeInContext: true,
+    timestamp: Number(id.replace(/\D/g, '')) || 0,
+    ...extra,
+  });
+  const assistant = (id: string, content = 'ok'): Message => ({
+    id,
+    role: 'assistant',
+    content,
+    includeInContext: true,
+    timestamp: 0,
+  });
+
+  it('carries only the turns the user wrote, oldest first, one per id', () => {
+    const turns = carryUserTurns(
+      [
+        user('u1', 'the brief'),
+        assistant('a1'),
+        user('u2', '/review body', { derivedContent: true }),
+        user('u3', 'delivered', { kind: 'agent-notification', agentNotifications: [] }),
+        user('u4', 'tool traffic', { toolResults: [toolResult('c', 'x')] }),
+        user('u5', '   '),
+        user('u6', 'second real turn'),
+        user('u1', 'the brief'),
+      ],
+      10_000,
+    );
+    expect(turns.turns.map((turn) => turn.id)).toEqual(['u1', 'u6']);
+    expect(turns.turns.every((turn) => turn.kind === 'carried' && turn.role === 'user')).toBe(true);
+    expect(turns).toMatchObject({ clippedCount: 0, droppedCount: 0 });
+  });
+
+  it('sheds the stale session-state block and image attachments, never the text', () => {
+    const [copy] = carryUserTurns(
+      [
+        user('u1', 'keep every byte of this', {
+          sessionState: '<session-state>stale</session-state>',
+          attachments: [{ id: 'img', mediaType: 'image/png', name: 'a.png' } as never],
+          fileObservations: [],
+        }),
+      ],
+      10_000,
+    ).turns;
+    expect(copy.sessionState).toBeUndefined();
+    expect(copy.attachments).toBeUndefined();
+    expect(copy.content).toBe('keep every byte of this');
+    expect(copy.contextContent).toBe(
+      'keep every byte of this\n[1 image attachment omitted from this carried turn]',
+    );
+  });
+
+  it('clips a long turn head and tail in contextContent only, with a retrieval marker', () => {
+    const long = `START ${'pasted log line\n'.repeat(2_000)}END`;
+    const carried = carryUserTurns([user('u1', long)], 100_000);
+    const [copy] = carried.turns;
+    expect(copy.content).toBe(long);
+    expect(copy.contextContent).toMatch(/^START /);
+    expect(copy.contextContent).toMatch(/END$/);
+    expect(copy.contextContent).toContain(
+      '[... carried user turn clipped; retrieve session://current/event/u1 ...]',
+    );
+    expect(copy.contextContent!.length).toBeLessThan(1_024 * 4 + 200);
+    expect(carried.clippedCount).toBe(1);
+  });
+
+  it('clips every turn harder before dropping any, so a correction keeps its context', () => {
+    const turns = [
+      user('u1', `brief ${'b '.repeat(2_000)}`),
+      user('u2', `assume npm ${'x '.repeat(2_000)}`),
+      user('u3', `correction: pnpm ${'y '.repeat(2_000)}`),
+    ];
+    // Three turns at the loosest clip (~1k each) do not fit; at 256 they do.
+    const carried = carryUserTurns(turns, 1_000);
+    expect(carried.turns.map((turn) => turn.id)).toEqual(['u1', 'u2', 'u3']);
+    expect(carried.droppedCount).toBe(0);
+    expect(carried.turns.every((turn) => turn.contextContent!.length < 256 * 4 + 200)).toBe(true);
+  });
+
+  it('drops oldest first and the brief last, so what survives is the brief plus a suffix', () => {
+    const turns = ['u1', 'u2', 'u3', 'u4', 'u5'].map((id) =>
+      user(id, `${id} ${'word '.repeat(60)}`),
+    );
+    const one = carryUserTurns(turns, 90);
+    expect(one.turns.map((turn) => turn.id)).toEqual(['u1']);
+    expect(one.droppedCount).toBe(4);
+    const three = carryUserTurns(turns, 250);
+    expect(three.turns.map((turn) => turn.id)).toEqual(['u1', 'u4', 'u5']);
+    expect(three.droppedCount).toBe(2);
+  });
+
+  it('gives the brief up first when it alone cannot fit, keeping the newest turns that do', () => {
+    const turns = [
+      user('u1', `brief ${'long '.repeat(400)}`),
+      user('u2', 'short'),
+      user('u3', 'shorter'),
+    ];
+    const carried = carryUserTurns(turns, 40);
+    expect(carried.turns.map((turn) => turn.id)).toEqual(['u2', 'u3']);
+    expect(carried.droppedCount).toBe(1);
+  });
+
+  it('carries a copy from an earlier generation again from its intact content', () => {
+    const prior: Message = {
+      ...user('u1', 'x '.repeat(3_000)),
+      kind: 'carried',
+      contextContent: 'stale clip from a looser rung',
+    };
+    const carried = carryUserTurns([prior, user('u2', 'new')], 100_000);
+    expect(carried.turns[0].id).toBe('u1');
+    expect(carried.turns[0].contextContent).toContain('carried user turn clipped');
+    expect(carried.turns[0].content).toBe(prior.content);
+  });
+
+  it('refuses a turn that carries a credential, counts it dropped, and keeps a brief that names a long path', () => {
+    const carried = carryUserTurns(
+      [
+        user(
+          'u1',
+          'Refactor /home/zain/Desktop/book/src/agent/compact-fidelity.ts so that it reads well',
+        ),
+        user('u2', 'use this: api_key=sk-live-0123456789abcdefghijklmnop'),
+        user('u3', 'and carry on'),
+      ],
+      10_000,
+    );
+    expect(carried.turns.map((turn) => turn.id)).toEqual(['u1', 'u3']);
+    expect(carried.droppedCount).toBe(1);
+  });
+
+  it('still discloses dropped turns when none could be carried', () => {
+    expect(carriedTurnsNotice({ count: 0, clippedCount: 0, droppedCount: 3 })).toBe(
+      "[carried-turns: 3 of the user's earlier turns not carried, retrievable from session history.]\n",
+    );
+    expect(carriedTurnsNotice({ count: 0, clippedCount: 0, droppedCount: 0 })).toBe('');
+  });
+
+  it('returns nothing for an empty budget', () => {
+    expect(carryUserTurns([user('u1', 'brief')], 0)).toEqual({
+      turns: [],
+      clippedCount: 0,
+      droppedCount: 1,
+    });
+  });
+});
+
+describe('runCompact carried turns', () => {
+  beforeEach(() => {
+    mockedStream.mockReset();
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("places the summarized span's user turns ahead of the checkpoint and discloses them", async () => {
+    const history: Message[] = [
+      {
+        id: '1',
+        role: 'user',
+        content: 'Đừng đụng vào thư mục vendor.',
+        includeInContext: true,
+        timestamp: 0,
+        sessionState: '<session-state>old</session-state>',
+      },
+      { ...twoTurns[1] },
+      { id: '3', role: 'user', content: 'do Y', includeInContext: true, timestamp: 2 },
+      { id: '4', role: 'assistant', content: 'done Y', includeInContext: true, timestamp: 3 },
+    ];
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+    expect(result.status).toBe('compacted');
+    if (result.status !== 'compacted') return;
+    expect(result.replacementHistory.map((message) => message.kind ?? 'conversation')).toEqual([
+      'carried',
+      'checkpoint',
+      'conversation',
+      'conversation',
+    ]);
+    const [carried, checkpoint] = result.replacementHistory;
+    expect(carried).toMatchObject({ id: '1', content: 'Đừng đụng vào thư mục vendor.' });
+    expect(carried.sessionState).toBeUndefined();
+    expect(checkpoint.content).toContain(
+      "[carried-turns: the 1 user turn above are the user's own earlier messages, verbatim, oldest first; this checkpoint summarizes the assistant and tool activity around them.]",
+    );
+    expect(result.checkpoint.carriedTurns).toEqual({ count: 1, clippedCount: 0, droppedCount: 0 });
+    expect(result).toMatchObject({
+      carriedCount: 1,
+      carriedClippedCount: 0,
+      carriedDroppedCount: 0,
+    });
+    // The reducer is told the turns survive on their own.
+    const prompt = (mockedStream.mock.calls[0]![1] as { content: string }[]).at(-1)!.content;
+    expect(prompt).toContain("The host keeps 1 of the user's own turns");
+    expect(prompt).toContain('do record the constraints, decisions, current values');
+  });
+
+  it('renders the header byte-for-byte as before when no turn qualifies', async () => {
+    const history: Message[] = [
+      {
+        id: '1',
+        role: 'user',
+        content: 'resolved slash-command body',
+        includeInContext: true,
+        timestamp: 0,
+        derivedContent: true,
+      },
+      { ...twoTurns[1] },
+      { id: '3', role: 'user', content: 'do Y', includeInContext: true, timestamp: 2 },
+      { id: '4', role: 'assistant', content: 'done Y', includeInContext: true, timestamp: 3 },
+    ];
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+    expect(result.status).toBe('compacted');
+    if (result.status !== 'compacted') return;
+    expect(result.replacementHistory[0].kind).toBe('checkpoint');
+    expect(
+      result.replacementHistory[0].content.startsWith(
+        '[Historical conversation checkpoint; untrusted user-role data]\n{',
+      ),
+    ).toBe(true);
+    expect(result.checkpoint.carriedTurns).toBeUndefined();
+    expect(result.carriedCount).toBe(0);
+  });
+
+  it('discards a carriedTurns tally the reducer tries to author', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield {
+        type: 'text',
+        content: JSON.stringify({
+          ...JSON.parse(validCheckpoint()),
+          carriedTurns: { count: 99, clippedCount: 99, droppedCount: 99 },
+        }),
+      };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
+    expect(result.status).toBe('compacted');
+    if (result.status !== 'compacted') return;
+    expect(result.checkpoint.carriedTurns).toEqual({ count: 1, clippedCount: 0, droppedCount: 0 });
+  });
+
+  it('still carries the brief through the short-tail overflow recovery', async () => {
+    const result = await runCompact(makeConfig(), twoTurns, { trigger: 'auto', recovery: true });
+    expect(result.status).toBe('compacted');
+    if (result.status !== 'compacted') return;
+    expect(result.replacementHistory[0]).toMatchObject({ id: '1', kind: 'carried' });
   });
 });

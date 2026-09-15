@@ -164,7 +164,17 @@ fresh verification pass.
   otherwise retain everything. Measured over the eight-generation fidelity corpus:
   `verbatimUserRetention` 1.0 on both arms, final retention 0.667 at 32k and 0.833 at 272k, and
   post-history utilization 0.47 and 0.48 against the loop's gate, recorded as per-arm floors in
-  `FIDELITY_ARMS`. Design: `plans/carried-ledger-plan.md`.
+  `FIDELITY_ARMS`. Design: `plans/carried-ledger-plan.md`. Since Carried Turns (2026-09-14, Phase
+  3 of that plan) the user's own turns in the compacted span are kept verbatim as `kind: 'carried'`
+  messages ahead of the checkpoint and the reducer summarizes only assistant and tool activity;
+  they are paid for from the retained tail (15%, ≤12k tokens), clipped 1024→512→256 before any is
+  dropped, dropped oldest first with the brief last, and disclosed in the header. The fidelity
+  corpus gained two cue-less/Vietnamese `user-statement` facts and the double now grounds only on
+  the prompt it is shown, so the floors were re-measured: at 272k final retention 1.0 (0.571 before
+  on the same corpus and double), mean 0.804, `userTurnRetention` 1.0, utilization 0.488; at 32k
+  the change is neutral (final 0.643, `userTurnRetention` 0.5, utilization 0.476) because the
+  newest ~7.5k bundle leaves the carried set ~270 tokens. Evidence:
+  `plans/compaction-research-2026-09.md`.
 - Tool discovery: `auto`; the practical core stays loaded and `ToolSearch` activates deferred
   authorized tools on the next turn.
 - Tool execution: serial by default; only the reviewed read-only/Git set is scheduled in bounded

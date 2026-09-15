@@ -185,8 +185,13 @@ const TOPIC_STOPWORDS = new Set([
   'please',
 ]);
 
-/** A user turn whose prose the user actually wrote. */
-function isUserAuthored(message: Message): boolean {
+/**
+ * A user turn whose prose the user actually wrote.
+ *
+ * Shared with Carried Turns (`compact.ts`): the same test that decides whether a
+ * sentence may enter the ledger decides whether the whole turn is kept verbatim.
+ */
+export function isUserAuthored(message: Message): boolean {
   if (message.role !== 'user') return false;
   // A resolved slash-command body and a delegated agent's task prompt both arrive
   // as `role: 'user'` prose. Neither is the user's own words: the first is

@@ -186,6 +186,17 @@ describe('generational fidelity', () => {
       for (const fact of PLANTED) {
         if (!rendered.includes(fact) && lostAt.get(fact) === 0) lostAt.set(fact, generation);
       }
+
+      // Carried Turns: the opening turn is ahead of every checkpoint, verbatim,
+      // exactly once, however many generations have carried it; the newest
+      // user turn is still in the tail, not carried.
+      const carried = result.replacementHistory.filter((message) => message.kind === 'carried');
+      expect(carried[0]).toMatchObject({ id: 'u1', content: seedHistory()[0].content });
+      expect(new Set(carried.map((message) => message.id)).size).toBe(carried.length);
+      expect(result.replacementHistory.findIndex((m) => m.kind === 'checkpoint')).toBe(
+        carried.length,
+      );
+
       history = [...result.replacementHistory, ...newTurns(generation)];
     }
 
@@ -267,7 +278,7 @@ describe('carried ledger through compaction', () => {
       expect(result.checkpoint.carried?.constraints.map((entry) => entry.text)).toEqual([RULE]);
       // And it reaches the model: the rule is in the rendered checkpoint message,
       // under a header that says how to read it.
-      const rendered = result.replacementHistory[0].content;
+      const rendered = result.replacementHistory.find((m) => m.kind === 'checkpoint')!.content;
       expect(rendered).toContain(RULE);
       expect(rendered).toContain('later one wins');
 
@@ -318,7 +329,7 @@ describe('carried ledger through compaction', () => {
     expect(JSON.stringify(result.checkpoint)).not.toContain('attacker.test');
   });
 
-  it('leaves a conversation that stated no rule byte-identical to before', async () => {
+  it('renders no ledger notice for a conversation that stated no rule', async () => {
     const result = await runCompact(
       makeConfig(),
       [
@@ -343,10 +354,12 @@ describe('carried ledger through compaction', () => {
     expect(result.status).toBe('compacted');
     if (result.status !== 'compacted') return;
     expect(result.checkpoint.carried).toBeUndefined();
+    const rendered = result.replacementHistory.find((m) => m.kind === 'checkpoint')!.content;
     expect(
-      result.replacementHistory[0].content.startsWith(
-        '[Historical conversation checkpoint; untrusted user-role data]\n{',
-      ),
+      rendered.startsWith('[Historical conversation checkpoint; untrusted user-role data]\n'),
     ).toBe(true);
+    expect(rendered).not.toContain('[carried:');
+    // The question itself is carried verbatim; only the ledger notice is absent.
+    expect(rendered).toContain('[carried-turns: the 1 user turn above');
   });
 });

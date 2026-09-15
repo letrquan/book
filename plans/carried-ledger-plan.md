@@ -198,9 +198,13 @@ it was given on turn 3.
   exceeded the target on every window up to 64k, the loop's own reserve was still unclamped, and
   the overflow recovery could no longer shrink a history that fit the residual, all fixed in the
   revision.
-- **Phase 3 — beyond constraints** (proposed). The author split generalizes: user-stated
-  current values and user-stated open threads have the same ownership problem as user-stated
-  rules. Not started; the cap tiers were designed with room for a `kind` discriminator.
+- **Phase 3 — beyond constraints** (landed 2026-09-14 as **Carried Turns**). The author split
+  generalized further than a `kind` discriminator: instead of classifying user-stated values and
+  threads, the whole user turn is kept verbatim as a `kind: 'carried'` message ahead of the
+  checkpoint (`carryUserTurns` in `compact.ts`), paid for from the retained tail, clipped rung by
+  rung before any is dropped, dropped oldest first with the brief last. The ledger remains the
+  floor for when the budget no longer holds the turn. Evidence base and the remaining candidates
+  (P2–P6): `plans/compaction-research-2026-09.md`.
 
 ## Known limitations
 

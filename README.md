@@ -11,7 +11,7 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **Providers**: Anthropic Messages API (prompt caching, adaptive thinking) and any OpenAI-compatible endpoint, auto-detected from `baseUrl` / `--provider`. `--effort` reaches both, as `output_config.effort` and as `reasoning_effort`.
 - **Project context**: walks the tree to load Codex-style `AGENTS.md` and Claude-style `CLAUDE.md` instructions (user-global → broad project → specific project → local/rules) into a fenced, trust-labeled block, alongside platform info and discovered skills, slash commands, and subagents. Content is split by how often it changes: a cached static prefix, an uncached suffix for activation-class policy, and a per-turn `<session-state>` block carrying date, git status, and mode on the newest user turn — so an edit or a mode toggle costs one turn of cache, not the whole conversation.
 - **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
-- **Sessions**: append-only JSONL persistence with automatic titles from the first prompt plus `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, reference-aware `/compact`, and Claude-style `/rewind` for conversation, code, or both. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, remembered file facts are freshness-checked before reuse, and constraints you stated in your own words are carried verbatim in a host-owned ledger the summarizer can read but never rewrite (see "Carried constraints").
+- **Sessions**: append-only JSONL persistence with automatic titles from the first prompt plus `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, reference-aware `/compact`, and Claude-style `/rewind` for conversation, code, or both. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, remembered file facts are freshness-checked before reuse, your own earlier turns are kept verbatim ahead of the checkpoint instead of being paraphrased (only assistant and tool activity is summarized), and constraints you stated in your own words are additionally pinned in a host-owned ledger the summarizer can read but never rewrite (see "Carried turns and constraints").
 - **Tools**: a provider-neutral capability catalog keeps a practical core loaded and uses `ToolSearch` to activate up to five authorized git, web, session, skill, agent, notebook, or MCP definitions on the next model turn. File, shell, task, clarification, and plan tools stay immediately available when permitted. Existing names such as `Read`, `Bash`, and `AgentSpawn` remain stable.
 - **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`. Print mode resolves commands through the same registries: `/init`, `/security-review`, `/review`, and custom commands run headlessly, and the interactive-only ones fail loudly instead of reaching the model as text.
 - **Permissions**: allow/ask/deny rule matching with six modes — `default`, `acceptEdits` (`accept-edits`), `plan`, `auto`, `dontAsk`, `bypassPermissions` — see `/permissions` or `--permission-mode`. At a tool prompt, `A` arms **Always allow** and presses again to widen the rule it will write (`Bash(npm run check)` → `Bash(npm run *)` → `Bash(npm *)`); the pattern is always shown before Enter commits it. The prompt shows the whole command, wrapped to the terminal, and for `Edit`/`MultiEdit`/`Write`/`ApplyPatch` the diff the call would make, computed against the file on disk before anything is written; `D` opens a cut the card had to make. `/permissions` lists the rules in force and removes the selected one with `x`.
@@ -664,7 +664,7 @@ reach the same place — the typed form is the menu row, not a separate write.
 
 Tool execution is serial by default. Consecutive calls explicitly reviewed as parallel-safe (`Read`, `Glob`, `Grep`, `GitStatus`, `GitDiff`, `GitLog`, and `GitBranch`) run as bounded ordered waves; every other call is a barrier. Preparation, hooks, mode checks, and permission prompts remain sequential, while wave results are published in provider order without discarding successful siblings when another fails. `toolExecution.maxConcurrent` sets the session-wide limit shared by the root and managed children (default `4`, maximum `8`).
 
-### Carried constraints
+### Carried turns and constraints
 
 Compaction replaces older turns with a generated checkpoint, and everything in that checkpoint used
 to be written by the summarizer model and re-fitted under budget pressure at every generation. The
@@ -672,7 +672,28 @@ fitter drops the oldest entries first, which in a coding session means the brief
 fidelity harness measured **zero** retention of the constraints a user opened the conversation
 with, one generation in.
 
-Book now splits authorship. Directive sentences from your own turns -- "the runtime must remain
+**Carried turns.** Book no longer summarizes what you typed. Every turn you wrote yourself in the
+span being compacted is kept verbatim as a `carried` message placed ahead of the checkpoint, and
+the summarizer is told to spend the checkpoint on the assistant and tool activity around them
+rather than restating them. Only your own words qualify: a resolved slash-command body, a delegated
+task prompt, a delivered agent notification and tool traffic are summarized as before. A carried
+turn sheds its stale `<session-state>` block and any image attachments, and a long one (a pasted
+log) is clipped head and tail for the provider only, with a `session://` reference to the exact
+turn; the transcript and session history keep every byte.
+
+Carried turns are paid for out of the retained tail, never the checkpoint: up to 15% of it, capped
+at 12k tokens. Under pressure every turn is clipped harder (1024, 512, then 256 tokens) before any
+turn is dropped, and turns are then dropped oldest first with the opening turn last, so what
+survives is always the brief plus a suffix of your turns -- a value you later corrected can never
+outlive the correction. The newest exact bundle is never given up for them. The checkpoint header
+discloses how many turns are carried, clipped, and dropped; a dropped turn stays retrievable with
+`SessionHistorySearch` and `SessionHistoryRead`. Because the turn itself survives, a rule stated
+without a directive word -- or in another language -- survives with it, which the ledger below
+cannot promise. The same exclusions apply as for the ledger: a turn that matches the secret
+detector is never carried (it is summarized as before), and `@file` expansions and `!`-shell
+output are not part of the carried text.
+
+**Carried constraints.** Book also splits authorship. Directive sentences from your own turns -- "the runtime must remain
 Node 20", "never touch the vendored parser", "only use pnpm" -- are copied verbatim into a
 host-owned **carried ledger** on the checkpoint. The summarizer sees it and is told to honour it,
 but cannot write to it: a `carried` field in a model reply is discarded. The fitter cannot evict
@@ -691,9 +712,10 @@ anything matching the secret detector is refused, because a ledger that never fo
 place to write a credential.
 
 Extraction is a cue-based scan, not a model call: it costs no extra tokens and no extra latency,
-and it will miss a constraint phrased without a directive word. It is a floor under retention, not
-a replacement for the summarizer's own record. The design is documented in
-`plans/carried-ledger-plan.md`.
+and it will miss a constraint phrased without a directive word -- carried turns cover that case
+while the turn fits the budget; the ledger is the floor that holds when it no longer does. The
+design is documented in `plans/carried-ledger-plan.md`; the evidence for carrying whole turns is
+`plans/compaction-research-2026-09.md`.
 
 ### Permission rules and modes
 
