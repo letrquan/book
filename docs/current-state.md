@@ -173,8 +173,12 @@ fresh verification pass.
   the prompt it is shown, so the floors were re-measured: at 272k final retention 1.0 (0.571 before
   on the same corpus and double), mean 0.804, `userTurnRetention` 1.0, utilization 0.488; at 32k
   the change is neutral (final 0.643, `userTurnRetention` 0.5, utilization 0.476) because the
-  newest ~7.5k bundle leaves the carried set ~270 tokens. Evidence:
-  `plans/compaction-research-2026-09.md`.
+  newest ~7.5k bundle leaves the carried set ~270 tokens. Since P2 (2026-09-16) a ledger entry a
+  later entry restated or withdrew in as many words (rescission cues: "instead of", "rather
+  than", "no longer", "stop using", "switch from", "was wrong", "is obsolete", "no longer
+  applies") is withheld from the ledger the model reads and counted in `supersededCount`; a value
+  changed with no cue is still not detected and falls to the "later one wins" reading rule.
+  Evidence: `plans/compaction-research-2026-09.md`.
 - Tool discovery: `auto`; the practical core stays loaded and `ToolSearch` activates deferred
   authorized tools on the next turn.
 - Tool execution: serial by default; only the reviewed read-only/Git set is scheduled in bounded

@@ -9,6 +9,7 @@ import {
   CARRIED_ENTRY_MAX_CHARS,
   CARRIED_LEDGER_MAX_ENTRIES,
   CARRIED_LEDGER_MAX_TOKENS,
+  withholdSuperseded,
 } from './carried-ledger.js';
 import type { Message } from '../types/messages.js';
 import type { CarriedConstraint, CarriedLedger } from '../types/sessions.js';
@@ -489,5 +490,250 @@ describe('carried ledger authorship', () => {
     );
 
     expect(entries).toEqual([]);
+  });
+});
+
+/**
+ * P2 of `plans/compaction-research-2026-09.md`: a rule the user later withdrew
+ * is withheld from the ledger the model reads, not carried alongside its
+ * replacement with equal standing.
+ */
+describe('carried ledger supersession by rescission', () => {
+  const ledgerFor = (turns: Message[]): CarriedLedger =>
+    mergeCarriedLedger(undefined, extractUserConstraints(turns, 1), 1);
+
+  it('supersedes a rule the user withdrew with "instead of"', () => {
+    const merged = ledgerFor([
+      user('u1', 'Always use npm for installs.'),
+      user('u2', 'Use pnpm 9 instead of npm for installs from now on.'),
+    ]);
+    expect(merged.constraints.map((item) => item.supersededBy)).toEqual([
+      merged.constraints[1].id,
+      undefined,
+    ]);
+  });
+
+  it('supersedes a rule the user called wrong, naming it before the cue', () => {
+    const merged = ledgerFor([
+      user('u1', 'For now, always assume npm is the package manager.'),
+      user(
+        'u2',
+        'This repository requires pnpm 9. The earlier npm assumption was wrong and must not be used.',
+      ),
+    ]);
+    const [assumption, requires, wrong] = merged.constraints;
+    expect(assumption.supersededBy).toBe(wrong.id);
+    expect(requires.supersededBy).toBeUndefined();
+    expect(wrong.supersededBy).toBeUndefined();
+  });
+
+  it('does not treat plain negation or a shared frame as a withdrawal', () => {
+    const merged = ledgerFor([
+      user('u1', 'Always run tests before commit.'),
+      user('u2', "Don't run tests on CI."),
+      user('u3', 'Always run lint before commit.'),
+    ]);
+    expect(merged.constraints.every((item) => item.supersededBy === undefined)).toBe(true);
+  });
+
+  it('does not let a bug report about output withdraw a rule that names the same thing', () => {
+    const merged = ledgerFor([
+      user('u1', 'Never change the output format.'),
+      user('u2', 'The output is wrong for empty input.'),
+    ]);
+    // The report is neither a withdrawal nor an entry: "is wrong" only counts
+    // when it judges a prior rule ("the earlier npm assumption was wrong").
+    expect(merged.constraints.map((item) => item.text)).toEqual([
+      'Never change the output format.',
+    ]);
+    expect(merged.constraints[0].supersededBy).toBeUndefined();
+  });
+
+  it('does not let "instead of" in a report withdraw a rule', () => {
+    const merged = ledgerFor([
+      user('u1', 'Always return an empty array for no matches.'),
+      user('u2', 'The function returned null instead of an empty array.'),
+    ]);
+    expect(merged.constraints[0].supersededBy).toBeUndefined();
+  });
+
+  it('does not let a shared generic verb license a withdrawal', () => {
+    const merged = ledgerFor([
+      user('u1', 'Always deploy with the blue-green script.'),
+      user('u2', 'We no longer deploy on Fridays.'),
+    ]);
+    expect(merged.constraints[0].supersededBy).toBeUndefined();
+  });
+
+  it('treats a negated after-cue as a rule about its topic, not a withdrawal of it', () => {
+    const merged = ledgerFor([
+      user('u1', 'Always indent with two spaces.'),
+      user('u2', 'Never use tabs instead of spaces.'),
+    ]);
+    expect(merged.constraints.map((item) => item.text)).toEqual([
+      'Always indent with two spaces.',
+      'Never use tabs instead of spaces.',
+    ]);
+    expect(merged.constraints.every((item) => item.supersededBy === undefined)).toBe(true);
+  });
+
+  it('does not let "do not switch from X" withdraw the rule that keeps X', () => {
+    const merged = ledgerFor([
+      user('u1', 'Always use npm for installs.'),
+      user('u2', 'Do not switch from npm to pnpm yet.'),
+    ]);
+    expect(merged.constraints[0].supersededBy).toBeUndefined();
+  });
+
+  it('withdraws only the noun phrase beside the cue, not the rest of the sentence', () => {
+    const merged = ledgerFor([
+      user('u1', 'Always run installs in CI.'),
+      user('u2', 'Use pnpm instead of npm for the CI installs.'),
+    ]);
+    expect(merged.constraints[0].supersededBy).toBeUndefined();
+  });
+
+  it('withholds superseded entries from the ledger and says how many', () => {
+    const withheld = withholdSuperseded(
+      ledgerFor([
+        user('u1', 'Always use npm for installs.'),
+        user('u2', 'Never touch the vendored parser.'),
+        user('u3', 'Use pnpm 9 instead of npm for installs.'),
+      ]),
+    );
+    expect(withheld.constraints.map((item) => item.text)).toEqual([
+      'Never touch the vendored parser.',
+      'Use pnpm 9 instead of npm for installs.',
+    ]);
+    expect(withheld.supersededCount).toBe(1);
+    expect(JSON.stringify(withheld)).not.toContain('Always use npm');
+  });
+
+  it('builds a ledger without the withdrawn rule and discloses it in the notice', () => {
+    const ledger = buildCarriedLedger(
+      undefined,
+      [
+        user('u1', 'Always use npm for installs.'),
+        user('u2', 'Use pnpm 9 instead of npm for installs.'),
+      ],
+      1,
+      4_096,
+    );
+    expect(ledger?.constraints.map((item) => item.text)).toEqual([
+      'Use pnpm 9 instead of npm for installs.',
+    ]);
+    expect(ledger?.supersededCount).toBe(1);
+    expect(carriedLedgerNotice(ledger)).toContain(
+      '1 earlier entry the user later restated or rescinded is omitted.',
+    );
+  });
+
+  it('keeps the correction when the withdrawn turn is still in the window next generation', () => {
+    // The withheld rule is re-extracted and appended after the rule that
+    // withdrew it; judged by ledger position it would be the later word and
+    // withdraw its own correction.
+    const window = [
+      user('u1', 'Always use npm for installs.'),
+      user('u2', 'Use pnpm 9 instead of npm for installs.'),
+    ];
+    const first = buildCarriedLedger(undefined, window, 1, 4_096);
+    const second = buildCarriedLedger(first, window, 2, 4_096);
+    expect(second?.constraints.map((item) => item.text)).toEqual([
+      'Use pnpm 9 instead of npm for installs.',
+    ]);
+    expect(second?.supersededCount).toBe(1);
+  });
+
+  it('withdraws the closest rule in wording, not every rule that shares the word', () => {
+    const merged = withholdSuperseded(
+      ledgerFor([
+        user('u1', 'Always commit the npm lockfile.'),
+        user('u2', 'Always use npm for installs.'),
+        user('u3', 'Use pnpm instead of npm for installs.'),
+      ]),
+    );
+    expect(merged.constraints.map((item) => item.text)).toEqual([
+      'Always commit the npm lockfile.',
+      'Use pnpm instead of npm for installs.',
+    ]);
+  });
+
+  it('lands a withdrawal on the live paraphrase, not on the restatement it displaced', () => {
+    const merged = withholdSuperseded(
+      ledgerFor([
+        user('u1', 'Always use npm for installs.'),
+        user('u2', 'Always use npm for installs and scripts.'),
+        user('u3', 'Use pnpm instead of npm for installs.'),
+      ]),
+    );
+    expect(merged.constraints.map((item) => item.text)).toEqual([
+      'Use pnpm instead of npm for installs.',
+    ]);
+    expect(merged.supersededCount).toBe(2);
+  });
+
+  it('requires the whole withdrawn phrase, not one word of it', () => {
+    const merged = ledgerFor([
+      user('u1', 'Never touch the vendored parser.'),
+      user('u2', 'Stop using the legacy parser.'),
+    ]);
+    expect(merged.constraints[0].supersededBy).toBeUndefined();
+  });
+
+  it('does not take an ordinary noun for a reference to a prior rule', () => {
+    const merged = ledgerFor([
+      user('u1', 'Always keep the default export in index.ts.'),
+      user('u2', 'The default export is wrong for the CLI.'),
+    ]);
+    expect(merged.constraints.map((item) => item.text)).toEqual([
+      'Always keep the default export in index.ts.',
+    ]);
+    expect(merged.constraints[0].supersededBy).toBeUndefined();
+  });
+
+  it("keeps the user's final word when a rule is restated verbatim after its withdrawal", () => {
+    const merged = withholdSuperseded(
+      ledgerFor([
+        user('u1', 'Always use npm for installs.'),
+        user('u2', 'Use pnpm 9 instead of npm for installs.'),
+        user('u3', 'Always use npm for installs.'),
+      ]),
+    );
+    expect(merged.constraints.map((item) => item.text)).toEqual(['Always use npm for installs.']);
+    expect(merged.supersededCount).toBe(1);
+  });
+
+  it('lets a withdrawn rule come back when the user states it again later', () => {
+    const first = withholdSuperseded(
+      ledgerFor([
+        user('u1', 'Always use npm for installs.'),
+        user('u2', 'Use pnpm 9 instead of npm for installs.'),
+      ]),
+    );
+    const revived = withholdSuperseded(
+      mergeCarriedLedger(
+        first,
+        extractUserConstraints([user('u3', 'Go back to npm instead of pnpm for installs.')], 2),
+        2,
+      ),
+    );
+    expect(revived.constraints.map((item) => item.text)).toEqual([
+      'Go back to npm instead of pnpm for installs.',
+    ]);
+    // The pnpm entry is the withdrawn word on the topic now.
+    expect(revived.supersededCount).toBe(1);
+  });
+
+  it('keeps both entries when the user changes a value without saying so', () => {
+    // No cue withdraws npm here, so the host cannot tell a change of mind from
+    // a second rule. Both stay, oldest first; the reading rule says later wins.
+    const withheld = withholdSuperseded(
+      ledgerFor([
+        user('u1', 'Always use npm for installs.'),
+        user('u2', 'Always use pnpm for installs.'),
+      ]),
+    );
+    expect(withheld.constraints).toHaveLength(2);
+    expect(withheld.supersededCount).toBeUndefined();
   });
 });

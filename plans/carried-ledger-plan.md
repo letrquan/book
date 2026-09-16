@@ -106,15 +106,62 @@ The rule is stated in two layers, because only one of them can be decided determ
   later one wins.* This is what resolves the contradictions a host cannot detect — "use npm"
   followed by "use pnpm" shares almost no wording, so no amount of string comparison will
   connect them. Both entries stay; order decides.
-- **Marking (a bounded optimization).** When a later entry restates an earlier one — ≥ 0.7
-  Jaccard overlap on topic tokens, with cue and polarity words stripped so "always use X" and
-  "never use X" do not read as identical — the earlier entry is marked `supersededBy`.
-  Recency is `lastSeenGeneration` with position as tie-break, not position alone: an entry the
-  user restates keeps its original slot, and judging by position would leave a revived rule
-  flagged by the paraphrase that displaced it.
+- **Marking.** When a later entry restates an earlier one — ≥ 0.7 Jaccard overlap on topic
+  tokens, with cue and polarity words stripped so "always use X" and "never use X" do not read
+  as identical — or withdraws it in as many words (since 2026-09-16, P2 of
+  `plans/compaction-research-2026-09.md`: a rescission cue such as "instead of", "rather than",
+  "no longer", "stop using", "switch from", "was wrong", "is obsolete", "no longer applies",
+  whose adjacent noun phrase names the earlier entry's topic), the earlier entry is marked
+  `supersededBy`. Recency is `lastSeenGeneration`, then order in the window for two entries
+  seen this generation, then position — not position alone: an entry the user restates keeps
+  its original slot, and judging by position would leave a revived rule flagged by the
+  paraphrase that displaced it.
 
-Marking is an **eviction hint, never a deletion**. A wrongly marked entry loses priority; it
-does not lose its text until the cap actually binds.
+Since P2 a marked entry is **withheld** from the ledger the model reads (`withholdSuperseded`,
+between merge and cap) and counted in `supersededCount`, which the header discloses. The
+evidence is [Revoked but Still Authoritative](https://www.alphaxiv.org/abs/2609.08258): a
+withdrawn rule presented beside its replacement with equal standing was acted on in 43% of
+trials, an instruction to disregard superseded facts brought that to 37%, withholding it to 0%.
+Before P2 marking was only an eviction hint. The exact turn stays in session history, and while
+the carried-turns budget holds it, in context as conversation. `supersededCount` is what *this*
+generation withheld, recomputed from scratch each time like `droppedCount`: once the withdrawing
+turn leaves the tail the count and the notice line go with it, and the ledger simply no longer
+contains the rule.
+
+Because a wrong supersession now hides a live rule where before it only lowered a cap
+priority, each rescission form carries a guard against the ordinary sentences that share its
+words. A before-cue ("was wrong", "is obsolete", "no longer applies") must judge a prior rule —
+its phrase has to contain a noun that names a rule as such: *rule*, *assumption*, *constraint*,
+*requirement*, *instruction*, *guideline*, *convention*, *directive* — so "the output is wrong
+for empty input" and "the default export is wrong for the CLI" withdraw nothing and, since these
+cues are no longer directive cues on their own, are not entries either (*default*, *plan*,
+*setting*, *approach*, *policy* were tried as reference words and admitted the second sentence
+as both a rule and a withdrawal). An after-cue ("instead of",
+"rather than", "no longer", "stop using", "switch from") must sit in a directive sentence — one
+that opens like an order or carries a non-rescission cue — so "the function returned null
+instead of an empty array" withdraws nothing. And the token that links the withdrawn phrase to
+the earlier entry must name a thing, not a bare generic verb: "we no longer deploy on Fridays"
+leaves "always deploy with the blue-green script" in force. A negation ahead of an after-cue
+turns it around: "never use tabs instead of spaces" is a rule about spaces, and "do not switch
+from npm to pnpm yet" keeps the npm rule; both are entries, neither is a withdrawal. And a
+withdrawal names *one* rule: an earlier entry qualifies only when it contains the whole withdrawn
+phrase ("the legacy parser" does not withdraw "never touch the vendored parser"), and of the
+qualifying entries only the closest in wording to the withdrawing sentence is superseded, all of
+them on a tie — "use pnpm instead of npm for installs" withdraws "always use npm for installs"
+and leaves "always commit the npm lockfile" beside it in force. The ranking runs over the rules
+still standing: an entry some other later entry has already restated is out of the running, so
+the withdrawal lands on the live paraphrase rather than on the wording it displaced.
+
+Recency needs one more input than position and `lastSeenGeneration` give. Extraction reads the
+whole context, retained tail included, so a withheld rule whose turn is still in the window is
+re-extracted next generation and — no longer in the stored ledger — appended *after* the rule
+that withdrew it. Judged by position it would be the later word, and the 0.75 restatement
+overlap between "always use npm for installs" and "use pnpm 9 instead of npm for installs" would
+then withhold the correction and carry the withdrawn rule. So between two entries seen in the
+same generation, recency is their order in the window (`mergeCarriedLedger` passes it to
+`markSupersessions`); position is the tie-break only for entries not both seen this time. For the
+same reason a sentence the user repeats inside one window takes the position of its *last*
+statement, so "use npm", "use pnpm instead of npm", "use npm" again ends with npm in force.
 
 ### The cap
 
@@ -125,7 +172,8 @@ agent also needs. `CARRIED_LEDGER_MAX_ENTRIES` (32) bounds count independently o
 
 Eviction order, oldest-first within each tier:
 
-1. superseded entries — a restatement is already in the ledger,
+1. superseded entries — a restatement is already in the ledger (since P2 `buildCarriedLedger`
+   withholds these before the cap runs, so the tier is a safety net for a raw merged ledger),
 2. `weak` entries — softer steers,
 3. `strong` entries — last resort.
 
@@ -211,8 +259,18 @@ it was given on turn 3.
 - **Cue-based extraction misses paraphrase.** "It'd be good if we stayed on Node 20" carries no
   cue and is not recorded. The ledger is a floor on retention, not a ceiling — the reducer's
   own `constraints` array still exists and still runs.
-- **Contradiction is not detected.** Only restatement is. Conflicting rules both persist and
-  are resolved by the stated ordering rule at read time.
+- **A change of value stated without a cue is not detected.** Restatement is, and (since P2)
+  an explicit withdrawal is; "always use npm" followed by "always use pnpm" is neither, so both
+  persist and are resolved by the stated ordering rule at read time.
+- **Only a rule noun makes a before-cue a withdrawal.** "The previous npm choice was wrong" and
+  "the earlier us-east-1 value is superseded" carry a temporal word but no noun that names a
+  rule, so they neither withdraw anything nor become entries. The trade is deliberate: the
+  nouns that would catch them also caught "the default export is wrong for the CLI".
+- **A withdrawal with a single candidate is taken at its word.** "Use pnpm instead of npm for
+  installs" beside one npm rule that happens to be "always commit the npm lockfile" withholds the
+  lockfile rule: the closest-match rule only discriminates when there is more than one rule to
+  choose between. The header still discloses the count, the turn stays retrievable, and while the
+  carried-turns budget holds it the turn is still in context.
 - **A dropped entry is gone from the checkpoint.** `droppedCount` discloses it and the exact
   turn remains retrievable with `SessionHistorySearch` / `SessionHistoryRead`, but the ledger
   itself does not restore it.
