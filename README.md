@@ -712,7 +712,10 @@ nothing); "instead of" must sit in an instruction, not a report ("the function r
 instead of an empty array" withdraws nothing); a bare generic verb never links the two ("we no
 longer deploy on Fridays" leaves "always deploy with the blue-green script" in force); and a
 negated cue reinforces rather than withdraws ("never use tabs instead of spaces" is a rule about
-spaces, and "do not switch from npm to pnpm yet" keeps the npm rule). Plain
+spaces, and "do not switch from npm to pnpm yet" keeps the npm rule); and a withdrawal names one
+rule, the closest in wording that contains the whole withdrawn phrase ("use pnpm instead of npm
+for installs" withdraws "always use npm for installs" and leaves "always commit the npm lockfile"
+in force). Plain
 negation is not a withdrawal ("don't run tests on CI" leaves "always run tests before commit" in
 force), and a change of value stated without any cue ("always use npm" then "always use pnpm") is
 not detected: both entries stay, and the checkpoint states the rule for reading them -- where two

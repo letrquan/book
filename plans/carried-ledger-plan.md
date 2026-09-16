@@ -130,16 +130,35 @@ contains the rule.
 Because a wrong supersession now hides a live rule where before it only lowered a cap
 priority, each rescission form carries a guard against the ordinary sentences that share its
 words. A before-cue ("was wrong", "is obsolete", "no longer applies") must judge a prior rule —
-its phrase has to contain a reference word such as *earlier*, *previous*, *assumption*, *rule*,
-*convention* — so "the output is wrong for empty input" withdraws nothing and, since these cues
-are no longer directive cues on their own, is not an entry either. An after-cue ("instead of",
+its phrase has to contain a noun that names a rule as such: *rule*, *assumption*, *constraint*,
+*requirement*, *instruction*, *guideline*, *convention*, *directive* — so "the output is wrong
+for empty input" and "the default export is wrong for the CLI" withdraw nothing and, since these
+cues are no longer directive cues on their own, are not entries either (*default*, *plan*,
+*setting*, *approach*, *policy* were tried as reference words and admitted the second sentence
+as both a rule and a withdrawal). An after-cue ("instead of",
 "rather than", "no longer", "stop using", "switch from") must sit in a directive sentence — one
 that opens like an order or carries a non-rescission cue — so "the function returned null
 instead of an empty array" withdraws nothing. And the token that links the withdrawn phrase to
 the earlier entry must name a thing, not a bare generic verb: "we no longer deploy on Fridays"
-leaves "always deploy with the blue-green script" in force. Finally a negation ahead of an
-after-cue turns it around: "never use tabs instead of spaces" is a rule about spaces, and "do not
-switch from npm to pnpm yet" keeps the npm rule; both are entries, neither is a withdrawal.
+leaves "always deploy with the blue-green script" in force. A negation ahead of an after-cue
+turns it around: "never use tabs instead of spaces" is a rule about spaces, and "do not switch
+from npm to pnpm yet" keeps the npm rule; both are entries, neither is a withdrawal. And a
+withdrawal names *one* rule: an earlier entry qualifies only when it contains the whole withdrawn
+phrase ("the legacy parser" does not withdraw "never touch the vendored parser"), and of the
+qualifying entries only the closest in wording to the withdrawing sentence is superseded, all of
+them on a tie — "use pnpm instead of npm for installs" withdraws "always use npm for installs"
+and leaves "always commit the npm lockfile" beside it in force.
+
+Recency needs one more input than position and `lastSeenGeneration` give. Extraction reads the
+whole context, retained tail included, so a withheld rule whose turn is still in the window is
+re-extracted next generation and — no longer in the stored ledger — appended *after* the rule
+that withdrew it. Judged by position it would be the later word, and the 0.75 restatement
+overlap between "always use npm for installs" and "use pnpm 9 instead of npm for installs" would
+then withhold the correction and carry the withdrawn rule. So between two entries seen in the
+same generation, recency is their order in the window (`mergeCarriedLedger` passes it to
+`markSupersessions`); position is the tie-break only for entries not both seen this time. For the
+same reason a sentence the user repeats inside one window takes the position of its *last*
+statement, so "use npm", "use pnpm instead of npm", "use npm" again ends with npm in force.
 
 ### The cap
 
@@ -240,6 +259,11 @@ it was given on turn 3.
 - **A change of value stated without a cue is not detected.** Restatement is, and (since P2)
   an explicit withdrawal is; "always use npm" followed by "always use pnpm" is neither, so both
   persist and are resolved by the stated ordering rule at read time.
+- **A withdrawal with a single candidate is taken at its word.** "Use pnpm instead of npm for
+  installs" beside one npm rule that happens to be "always commit the npm lockfile" withholds the
+  lockfile rule: the closest-match rule only discriminates when there is more than one rule to
+  choose between. The header still discloses the count, the turn stays retrievable, and while the
+  carried-turns budget holds it the turn is still in context.
 - **A dropped entry is gone from the checkpoint.** `droppedCount` discloses it and the exact
   turn remains retrievable with `SessionHistorySearch` / `SessionHistoryRead`, but the ledger
   itself does not restore it.

@@ -125,7 +125,8 @@ const WEAK_CUES = [
  * guard against the ordinary sentences that share its words. A before-cue
  * must be passing judgement on a prior rule, not on program output: "the
  * earlier npm assumption was wrong" withdraws, "the output is wrong for empty
- * input" does not (`PRIOR_REFERENCE_WORDS`). An after-cue must sit in a
+ * input" and "the default export is wrong for the CLI" do not (`RULE_NOUNS`).
+ * An after-cue must sit in a
  * directive sentence: "use pnpm instead of npm" withdraws, "the function
  * returned null instead of an empty array" does not (`isDirective`). And the
  * token that links the withdrawn phrase to the earlier entry must name a
@@ -133,7 +134,11 @@ const WEAK_CUES = [
  * withdraw "always deploy with the blue-green script" (`GENERIC_VERBS`). And a
  * negated after-cue reinforces rather than withdraws: "never use tabs instead
  * of spaces" and "do not switch from npm to pnpm yet" keep the rule they name
- * (`NEGATION_BEFORE_CUE`).
+ * (`NEGATION_BEFORE_CUE`). Finally the withdrawn phrase names one rule, not
+ * every rule that shares a word with it: an earlier entry must contain the
+ * whole phrase, and of those only the closest match in wording is superseded,
+ * so "use pnpm instead of npm for installs" withdraws "always use npm for
+ * installs" and leaves "always commit the npm lockfile" alone.
  */
 const RESCISSION_CUES: ReadonlyArray<{ cue: string; subject: 'after' | 'before' }> = [
   { cue: 'instead of', subject: 'after' },
@@ -149,8 +154,34 @@ const RESCISSION_CUES: ReadonlyArray<{ cue: string; subject: 'after' | 'before' 
   { cue: 'no longer applies', subject: 'before' },
 ];
 
-/** Words that mark a before-cue phrase as being about a prior rule rather than about output. */
-const PRIOR_REFERENCE_WORDS = new Set([
+/**
+ * Nouns that make a before-cue phrase a judgement on a rule. Only nouns that
+ * name a rule as such qualify: "default", "plan", "setting", "approach" and
+ * "policy" were tried and admitted "the default export is wrong for the CLI"
+ * as both a rule and a withdrawal of the rule that keeps that export.
+ */
+const RULE_NOUNS = new Set([
+  'rule',
+  'rules',
+  'assumption',
+  'assumptions',
+  'constraint',
+  'constraints',
+  'requirement',
+  'requirements',
+  'instruction',
+  'instructions',
+  'guideline',
+  'guidelines',
+  'convention',
+  'conventions',
+  'directive',
+  'directives',
+]);
+
+/** Words a reference to a prior rule is made of; removed from the withdrawn topic. */
+const REFERENCE_FILLER = new Set([
+  ...RULE_NOUNS,
   'earlier',
   'previous',
   'previously',
@@ -160,20 +191,6 @@ const PRIOR_REFERENCE_WORDS = new Set([
   'prior',
   'former',
   'existing',
-  'rule',
-  'rules',
-  'assumption',
-  'constraint',
-  'requirement',
-  'instruction',
-  'convention',
-  'decision',
-  'policy',
-  'approach',
-  'default',
-  'plan',
-  'setting',
-  'guideline',
 ]);
 
 /** Verbs too generic to link a withdrawal to a rule on their own. */
@@ -446,24 +463,17 @@ function withdrawnPhrases(text: string): Array<{ subject: 'after' | 'before'; to
         subject === 'after'
           ? ordered.slice(0, RESCINDED_SPAN_TOKENS)
           : ordered.slice(-RESCINDED_SPAN_TOKENS);
-      if (subject === 'before' && !near.some((token) => PRIOR_REFERENCE_WORDS.has(token))) {
-        continue;
-      }
+      if (subject === 'before' && !near.some((token) => RULE_NOUNS.has(token))) continue;
       if (subject === 'after' && !isDirective(text)) continue;
       if (subject === 'after' && NEGATION_BEFORE_CUE.test(text.slice(0, at))) continue;
       // The words that made the phrase qualify are references, not the topic.
       const tokens = near.filter(
-        (token) => !PRIOR_REFERENCE_WORDS.has(token) && !GENERIC_VERBS.has(token),
+        (token) => !REFERENCE_FILLER.has(token) && !GENERIC_VERBS.has(token),
       );
       if (tokens.length > 0) phrases.push({ subject, tokens });
     }
   }
   return phrases;
-}
-
-/** The topic an entry withdraws, if it withdraws one. */
-function rescindedTopic(text: string): Set<string> {
-  return new Set(withdrawnPhrases(text).flatMap((phrase) => phrase.tokens));
 }
 
 function truncate(text: string): string {
@@ -498,7 +508,15 @@ export function extractUserConstraints(
       const normalized = normalizeForId(text);
       if (!normalized) continue;
       const id = entryId(normalized);
-      if (seen.has(id)) continue;
+      // A sentence the user repeats is one entry at the position of its last
+      // statement. Keeping the first position let "use npm", "use pnpm instead
+      // of npm", "use npm" again read as npm-then-pnpm, and the user's final
+      // word was the one withheld.
+      if (seen.has(id)) {
+        const index = entries.findIndex((entry) => entry.id === id);
+        if (index >= 0) entries.push(...entries.splice(index, 1));
+        continue;
+      }
       seen.add(id);
       entries.push({
         id,
@@ -528,7 +546,12 @@ export function mergeCarriedLedger(
 ): CarriedLedger {
   const constraints = (prior?.constraints ?? []).map((entry) => ({ ...entry }));
   const byId = new Map(constraints.map((entry) => [entry.id, entry]));
+  // Where each entry seen this generation sits in the window, oldest first.
+  // Ledger position cannot say: a withheld rule whose turn is still in the
+  // window is re-extracted and appended after the rule that withdrew it.
+  const seenOrder = new Map<string, number>();
   for (const entry of extracted) {
+    seenOrder.set(entry.id, seenOrder.size);
     const existing = byId.get(entry.id);
     if (existing) {
       // A rule the user restated is live again: bumping `lastSeenGeneration` is
@@ -540,7 +563,7 @@ export function mergeCarriedLedger(
     constraints.push(entry);
     byId.set(entry.id, entry);
   }
-  markSupersessions(constraints);
+  markSupersessions(constraints, seenOrder);
   return {
     version: 1,
     constraints,
@@ -563,24 +586,60 @@ export function mergeCarriedLedger(
  * rule and its replacement with equal standing acts on the withdrawn one
  * often enough to matter.
  *
- * "More recently" is `lastSeenGeneration`, with ledger position as the
- * tie-break. Position alone is wrong: an entry the user restates keeps its
- * original slot, so a rule revived on turn 40 would still be marked superseded
- * by the paraphrase that displaced it on turn 4 -- and then be the first thing
- * the cap evicted.
+ * "More recently" is `lastSeenGeneration`; between two entries seen this
+ * generation it is their order in the window (`seenOrder`), and otherwise
+ * ledger position. Position alone is wrong twice over: an entry the user
+ * restates keeps its original slot, so a rule revived on turn 40 would still
+ * be marked superseded by the paraphrase that displaced it on turn 4; and a
+ * withheld rule whose turn is still in the window is re-extracted *after* the
+ * rule that withdrew it, so by position it would read as the later word and
+ * withdraw its own correction.
+ *
+ * A withdrawal names one rule. An earlier entry qualifies when it contains the
+ * whole withdrawn phrase, and of the qualifying entries only the closest in
+ * wording to the withdrawing sentence is superseded (all of them on a tie):
+ * "use pnpm instead of npm for installs" withdraws "always use npm for
+ * installs", not "always commit the npm lockfile" beside it.
  */
-function markSupersessions(constraints: CarriedConstraint[]): void {
+function markSupersessions(
+  constraints: CarriedConstraint[],
+  seenOrder: ReadonlyMap<string, number> = new Map(),
+): void {
   const tokens = constraints.map((entry) => topicTokens(entry.text));
-  const rescinded = constraints.map((entry) => rescindedTopic(entry.text));
-  const isLater = (candidate: number, subject: number): boolean =>
-    constraints[candidate].lastSeenGeneration === constraints[subject].lastSeenGeneration
-      ? candidate > subject
-      : constraints[candidate].lastSeenGeneration > constraints[subject].lastSeenGeneration;
-  const withdraws = (candidate: number, subject: number): boolean => {
-    if (rescinded[candidate].size === 0) return false;
-    for (const token of rescinded[candidate]) if (tokens[subject].has(token)) return true;
-    return false;
+  const phrases = constraints.map((entry) => withdrawnPhrases(entry.text));
+  const isLater = (candidate: number, subject: number): boolean => {
+    const left = constraints[candidate];
+    const right = constraints[subject];
+    if (left.lastSeenGeneration !== right.lastSeenGeneration) {
+      return left.lastSeenGeneration > right.lastSeenGeneration;
+    }
+    const leftSeen = seenOrder.get(left.id);
+    const rightSeen = seenOrder.get(right.id);
+    if (leftSeen !== undefined && rightSeen !== undefined) return leftSeen > rightSeen;
+    return candidate > subject;
   };
+  // For each withdrawing entry, the earlier entries its phrases name.
+  const withdrawn = constraints.map((_, candidate) => {
+    const named = new Set<number>();
+    for (const phrase of phrases[candidate]) {
+      let best = -1;
+      const matches: number[] = [];
+      for (let subject = 0; subject < constraints.length; subject++) {
+        if (subject === candidate || !isLater(candidate, subject)) continue;
+        if (!phrase.tokens.every((token) => tokens[subject].has(token))) continue;
+        const score = overlap(tokens[candidate], tokens[subject]);
+        if (score > best) {
+          best = score;
+          matches.length = 0;
+        }
+        if (score === best) matches.push(subject);
+      }
+      for (const subject of matches) named.add(subject);
+    }
+    return named;
+  });
+  const withdraws = (candidate: number, subject: number): boolean =>
+    withdrawn[candidate].has(subject);
 
   for (let subject = 0; subject < constraints.length; subject++) {
     delete constraints[subject].supersededBy;
