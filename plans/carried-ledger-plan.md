@@ -112,9 +112,10 @@ The rule is stated in two layers, because only one of them can be decided determ
   `plans/compaction-research-2026-09.md`: a rescission cue such as "instead of", "rather than",
   "no longer", "stop using", "switch from", "was wrong", "is obsolete", "no longer applies",
   whose adjacent noun phrase names the earlier entry's topic), the earlier entry is marked
-  `supersededBy`. Recency is `lastSeenGeneration` with position as tie-break, not position
-  alone: an entry the user restates keeps its original slot, and judging by position would
-  leave a revived rule flagged by the paraphrase that displaced it.
+  `supersededBy`. Recency is `lastSeenGeneration`, then order in the window for two entries
+  seen this generation, then position — not position alone: an entry the user restates keeps
+  its original slot, and judging by position would leave a revived rule flagged by the
+  paraphrase that displaced it.
 
 Since P2 a marked entry is **withheld** from the ledger the model reads (`withholdSuperseded`,
 between merge and cap) and counted in `supersededCount`, which the header discloses. The
@@ -147,7 +148,9 @@ withdrawal names *one* rule: an earlier entry qualifies only when it contains th
 phrase ("the legacy parser" does not withdraw "never touch the vendored parser"), and of the
 qualifying entries only the closest in wording to the withdrawing sentence is superseded, all of
 them on a tie — "use pnpm instead of npm for installs" withdraws "always use npm for installs"
-and leaves "always commit the npm lockfile" beside it in force.
+and leaves "always commit the npm lockfile" beside it in force. The ranking runs over the rules
+still standing: an entry some other later entry has already restated is out of the running, so
+the withdrawal lands on the live paraphrase rather than on the wording it displaced.
 
 Recency needs one more input than position and `lastSeenGeneration` give. Extraction reads the
 whole context, retained tail included, so a withheld rule whose turn is still in the window is
@@ -259,6 +262,10 @@ it was given on turn 3.
 - **A change of value stated without a cue is not detected.** Restatement is, and (since P2)
   an explicit withdrawal is; "always use npm" followed by "always use pnpm" is neither, so both
   persist and are resolved by the stated ordering rule at read time.
+- **Only a rule noun makes a before-cue a withdrawal.** "The previous npm choice was wrong" and
+  "the earlier us-east-1 value is superseded" carry a temporal word but no noun that names a
+  rule, so they neither withdraw anything nor become entries. The trade is deliberate: the
+  nouns that would catch them also caught "the default export is wrong for the CLI".
 - **A withdrawal with a single candidate is taken at its word.** "Use pnpm instead of npm for
   installs" beside one npm rule that happens to be "always commit the npm lockfile" withholds the
   lockfile rule: the closest-match rule only discriminates when there is more than one rule to

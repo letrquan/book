@@ -658,6 +658,20 @@ describe('carried ledger supersession by rescission', () => {
     ]);
   });
 
+  it('lands a withdrawal on the live paraphrase, not on the restatement it displaced', () => {
+    const merged = withholdSuperseded(
+      ledgerFor([
+        user('u1', 'Always use npm for installs.'),
+        user('u2', 'Always use npm for installs and scripts.'),
+        user('u3', 'Use pnpm instead of npm for installs.'),
+      ]),
+    );
+    expect(merged.constraints.map((item) => item.text)).toEqual([
+      'Use pnpm instead of npm for installs.',
+    ]);
+    expect(merged.supersededCount).toBe(2);
+  });
+
   it('requires the whole withdrawn phrase, not one word of it', () => {
     const merged = ledgerFor([
       user('u1', 'Never touch the vendored parser.'),

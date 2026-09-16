@@ -618,7 +618,14 @@ function markSupersessions(
     if (leftSeen !== undefined && rightSeen !== undefined) return leftSeen > rightSeen;
     return candidate > subject;
   };
-  // For each withdrawing entry, the earlier entries its phrases name.
+  const restates = (candidate: number, subject: number): boolean =>
+    candidate !== subject &&
+    isLater(candidate, subject) &&
+    overlap(tokens[subject], tokens[candidate]) >= SUPERSESSION_OVERLAP;
+  // For each withdrawing entry, the earlier entries its phrases name. Ranked
+  // over the rules still standing: one an entry other than the withdrawer has
+  // already restated is superseded by that restatement, and letting it win
+  // the ranking would leave the live paraphrase in force.
   const withdrawn = constraints.map((_, candidate) => {
     const named = new Set<number>();
     for (const phrase of phrases[candidate]) {
@@ -627,6 +634,9 @@ function markSupersessions(
       for (let subject = 0; subject < constraints.length; subject++) {
         if (subject === candidate || !isLater(candidate, subject)) continue;
         if (!phrase.tokens.every((token) => tokens[subject].has(token))) continue;
+        if (constraints.some((_, other) => other !== candidate && restates(other, subject))) {
+          continue;
+        }
         const score = overlap(tokens[candidate], tokens[subject]);
         if (score > best) {
           best = score;
