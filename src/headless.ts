@@ -390,6 +390,46 @@ export async function runHeadless(
         }
         return outcome.result;
       },
+      // Deferred compaction (plans/async-compaction-plan.md): same plumbing,
+      // reducer on the snapshot first, judge and record at the next boundary.
+      prepareCompact: async (snapshot, usage, hints) => {
+        const outcome = await agentSession.prepareCompact({
+          config,
+          history: snapshot,
+          compactBoundaries,
+          sessionId,
+          transcriptOrdinal: transcript.length,
+          runContext,
+          runtime,
+          options: {
+            ...hints,
+            trigger: 'auto',
+            preContextTokens: usage ? usagePressureTokens(usage) : undefined,
+            signal: hints?.signal ?? opts.signal,
+            onHookEvent: createHookEventHandler(opts, emit),
+          },
+        });
+        return outcome.status === 'prepared' ? outcome.prepared : outcome.result;
+      },
+      commitCompact: async (prepared, history) => {
+        const outcome = await agentSession.commitCompact({
+          prepared,
+          history,
+          config,
+          sessionId,
+          transcriptOrdinal: transcript.length,
+          runContext,
+          runtime,
+          timelineStore: store,
+          onCommitted: (_result, boundary) => compactBoundaries.push(boundary),
+          options: { signal: opts.signal, onHookEvent: createHookEventHandler(opts, emit) },
+        });
+        if (outcome.result.status === 'compacted') {
+          emitCompactBoundary(opts.outputFormat, emit, outcome.result);
+          lastUsage = null;
+        }
+        return outcome.result;
+      },
       onAssistantMessageComplete: (message) => {
         if (!transcript.some((item) => item.id === message.id)) transcript.push(message);
         // The completed turn, always. `--include-partial-messages` adds the deltas
@@ -1060,6 +1100,8 @@ function emitCompactBoundary(
     // The reducer audit, when the host has something to report: suspect inputs
     // found in the summarized span and inherited constraints the reducer let go of.
     ...(result.checkpoint.audit ? { audit: result.checkpoint.audit } : {}),
+    // Deferred compaction: the judge's verdict on the steps taken while the reducer ran.
+    ...(result.judge ? { judge: result.judge } : {}),
   });
 }
 

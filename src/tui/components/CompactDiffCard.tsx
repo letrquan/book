@@ -15,6 +15,13 @@ export interface CompactDiffCardProps {
 function compactSummary(state: CompactUiState): string {
   const details: string[] = [];
   if (state.trigger === 'auto') details.push('automatic');
+  if (state.judge) {
+    details.push(
+      state.judge.verdict === 'accepted'
+        ? 'deferred · judge accepted'
+        : `deferred · judge ${state.judge.verdict}`,
+    );
+  }
   if (state.preMessages !== undefined) {
     details.push(`${state.preMessages} ${state.preMessages === 1 ? 'message' : 'messages'}`);
   }

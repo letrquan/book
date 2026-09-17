@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { requiresToolPermission, runAgentLoop } from './loop.js';
-import { estimateHistoryTokens, resolveCompactBudgets } from './compact.js';
+import { applyCompactResult, estimateHistoryTokens, resolveCompactBudgets } from './compact.js';
 import { createDefaultRegistry, createRegistry } from '../tools/registry.js';
 import { defaultConfig, userMsg } from '../test/fixtures.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
@@ -14,7 +14,7 @@ import { toolSuccess } from '../tools/result.js';
 import { readToolUseRecords } from '../tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import type { Provider } from '../provider/index.js';
-import type { CompactRequestHints, CompactResult } from '../types/sessions.js';
+import type { CompactRequestHints, CompactResult, PreparedCompaction } from '../types/sessions.js';
 import type { AgentTerminalOutcome } from '../types/terminal.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { MemoryModelWindowStore } from '../model-window-store.js';
@@ -4372,5 +4372,382 @@ describe('runAgentLoop Stop hook', () => {
     const lifecycle = hookEvents.filter((event) => event === 'Stop' || event === 'SessionEnd');
     expect(lifecycle).toEqual(['Stop', 'SessionEnd']);
     runtime.dispose();
+  });
+});
+
+/**
+ * Deferred compaction (`plans/async-compaction-plan.md`): the reducer runs on
+ * a snapshot while the turn goes on; the checkpoint is judged and committed at
+ * the next boundary against the steps taken meanwhile.
+ */
+describe('runAgentLoop deferred compaction', () => {
+  const pressure: Usage = {
+    promptTokens: 90_000,
+    completionTokens: 100,
+    totalTokens: 90_100,
+    contextTokens: 90_000,
+  };
+  const echoRegistry = () => {
+    const registry = createRegistry();
+    registry.register({
+      name: 'Echo',
+      description: 'Return the provided value',
+      parameters: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+        required: ['value'],
+      },
+      execute: async (args) => toolSuccess(String(args.value ?? '')),
+    });
+    return registry;
+  };
+  /** A prepared compaction for `snapshot`: one checkpoint message stands in for it all. */
+  const preparedFor = (snapshot: Message[]): PreparedCompaction => ({
+    snapshot,
+    trigger: 'auto',
+    result: {
+      ...compactedForRetry(),
+      preMessageCount: snapshot.length,
+      summarizedCount: snapshot.length,
+    },
+  });
+  const accepting: NonNullable<AgentLoopCallbacks['commitCompact']> = async (prepared, live) => {
+    const applied = applyCompactResult(prepared.result, prepared.snapshot, live);
+    if (!applied) return { status: 'skipped', reason: 'not-applicable' };
+    return {
+      ...applied,
+      judge: {
+        verdict: 'accepted',
+        missing: [],
+        modelCalls: 1,
+        deltaMessages: live.length - prepared.snapshot.length,
+      },
+    };
+  };
+
+  it('runs the reducer while the turn goes on and splices the checkpoint at the next boundary', async () => {
+    let providerCalls = 0;
+    const seen: string[][] = [];
+    let resolvePrepare: ((prepared: PreparedCompaction) => void) | undefined;
+    let snapshotSeen: Message[] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        providerCalls++;
+        seen.push(messages.map((message) => String(message.content)));
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'echo-1', name: 'Echo', arguments: { value: 'first' } },
+          };
+          yield { type: 'done', usage: pressure };
+          return;
+        }
+        if (providerCalls === 2) {
+          // The reducer is still running: this request went out on the full
+          // history, which is the point. It finishes now, before the boundary.
+          expect(resolvePrepare).toBeDefined();
+          resolvePrepare!(preparedFor(snapshotSeen));
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'echo-2', name: 'Echo', arguments: { value: 'second' } },
+          };
+          yield { type: 'done', usage: pressure };
+          return;
+        }
+        yield { type: 'text', content: 'finished after the deferred compaction' };
+        yield { type: 'done' };
+      },
+    };
+    const prepareCompact = vi.fn(
+      (snapshot: Message[]) =>
+        new Promise<PreparedCompaction>((resolve) => {
+          snapshotSeen = snapshot;
+          resolvePrepare = resolve;
+        }),
+    );
+    const commitCompact = vi.fn(accepting);
+    const onCompact = vi.fn(async () => compactedForRetry());
+
+    const result = await runAgentLoop(
+      defaultConfig({
+        maxTurns: 3,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onCompact, prepareCompact, commitCompact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(prepareCompact).toHaveBeenCalledOnce();
+    expect(commitCompact).toHaveBeenCalledOnce();
+    expect(onCompact).not.toHaveBeenCalled();
+    expect(providerCalls).toBe(3);
+    // Request 2 went out uncompacted; request 3 carries the checkpoint and,
+    // verbatim behind it, the step taken while the reducer ran.
+    expect(seen[1].join('\n')).not.toContain('compact summary');
+    expect(seen[2].join('\n')).toContain('compact summary');
+    expect(seen[2].join('\n')).toContain('second');
+    const [prepared, live] = commitCompact.mock.calls[0];
+    expect(live.length).toBeGreaterThan(prepared.snapshot.length);
+    expect(live.slice(0, prepared.snapshot.length).map((m) => m.id)).toEqual(
+      prepared.snapshot.map((m) => m.id),
+    );
+    expect(result.some((message) => message.kind === 'checkpoint')).toBe(true);
+    expect(result.at(-1)?.content).toBe('finished after the deferred compaction');
+  });
+
+  it('falls back to a synchronous compaction at the boundary when the judge rejects', async () => {
+    let providerCalls = 0;
+    const seen: string[][] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        providerCalls++;
+        seen.push(messages.map((message) => String(message.content)));
+        if (providerCalls <= 2) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: `echo-${providerCalls}`, name: 'Echo', arguments: { value: 'x' } },
+          };
+          // Pressure on the first turn only: the second reports a small request,
+          // so exactly one deferred attempt and one fallback happen.
+          yield {
+            type: 'done',
+            usage:
+              providerCalls === 1
+                ? pressure
+                : {
+                    promptTokens: 1_000,
+                    completionTokens: 10,
+                    totalTokens: 1_010,
+                    contextTokens: 1_000,
+                  },
+          };
+          return;
+        }
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    const prepareCompact = vi.fn(async (snapshot: Message[]) => preparedFor(snapshot));
+    const commitCompact = vi.fn(async (): Promise<CompactResult> => ({
+      status: 'skipped',
+      reason: 'judge-rejected',
+      message: 'insufficient',
+      judge: { verdict: 'rejected', missing: ['the batch size'], modelCalls: 1, deltaMessages: 2 },
+    }));
+    const onCompact = vi.fn(async () => ({
+      ...compactedForRetry(),
+      summary: 'synchronous summary',
+      replacementHistory: [
+        {
+          id: 'checkpoint-sync',
+          role: 'assistant' as const,
+          content: 'synchronous summary',
+          kind: 'checkpoint' as const,
+          includeInContext: true,
+          timestamp: 3,
+        },
+      ],
+    }));
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 3,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onCompact, prepareCompact, commitCompact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(prepareCompact).toHaveBeenCalledOnce();
+    expect(commitCompact).toHaveBeenCalledOnce();
+    // The rejected checkpoint never reached the provider; the synchronous one did.
+    expect(onCompact).toHaveBeenCalledOnce();
+    expect(seen.some((messages) => messages.join('\n').includes('compact summary'))).toBe(false);
+    expect(seen[2].join('\n')).toContain('synchronous summary');
+  });
+
+  it('awaits a reducer already in flight at the preflight gate instead of starting a second', async () => {
+    let providerCalls = 0;
+    const seen: string[][] = [];
+    let resolvePrepare: ((prepared: PreparedCompaction) => void) | undefined;
+    let snapshotSeen: Message[] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        providerCalls++;
+        seen.push(messages.map((message) => String(message.content)));
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'echo-1', name: 'Echo', arguments: { value: 'x' } },
+          };
+          yield { type: 'done', usage: pressure };
+          return;
+        }
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    const prepareCompact = vi.fn(
+      (snapshot: Message[]) =>
+        new Promise<PreparedCompaction>((resolve) => {
+          snapshotSeen = snapshot;
+          resolvePrepare = resolve;
+          // Still running when the gate is reached; it finishes shortly after.
+          setTimeout(() => resolve(preparedFor(snapshotSeen)), 20);
+        }),
+    );
+    const commitCompact = vi.fn(accepting);
+    const onCompact = vi.fn(async () => compactedForRetry());
+    // A history already near the window: the request after the first tool
+    // result will not fit the preflight gate.
+    const priorHistory: Message[] = Array.from({ length: 4 }, (_, index) => ({
+      id: `prior-${index}`,
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: `prior ${index} ${'filler text '.repeat(6_500)}`,
+      includeInContext: true,
+      timestamp: index,
+    }));
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 2,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'hello',
+      priorHistory,
+      noopCallbacks({ onCompact, prepareCompact, commitCompact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(resolvePrepare).toBeDefined();
+    expect(prepareCompact).toHaveBeenCalledOnce();
+    expect(commitCompact).toHaveBeenCalledOnce();
+    expect(onCompact).not.toHaveBeenCalled();
+    expect(providerCalls).toBe(2);
+    expect(seen[1].join('\n')).toContain('compact summary');
+  });
+
+  it('falls back to the synchronous path when the reducer fails to prepare', async () => {
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls <= 2) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: `echo-${providerCalls}`, name: 'Echo', arguments: { value: 'x' } },
+          };
+          yield {
+            type: 'done',
+            usage:
+              providerCalls === 1
+                ? pressure
+                : {
+                    promptTokens: 1_000,
+                    completionTokens: 10,
+                    totalTokens: 1_010,
+                    contextTokens: 1_000,
+                  },
+          };
+          return;
+        }
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    const prepareCompact = vi.fn(async () => {
+      throw new Error('router returned 429');
+    });
+    const commitCompact = vi.fn(accepting);
+    const onCompact = vi.fn(async () => compactedForRetry());
+
+    const result = await runAgentLoop(
+      defaultConfig({
+        maxTurns: 3,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onCompact, prepareCompact, commitCompact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    // The failure was the compactor's, not the turn's: the run finished, the
+    // judge was never asked, and the synchronous path took the boundary.
+    expect(prepareCompact).toHaveBeenCalledOnce();
+    expect(commitCompact).not.toHaveBeenCalled();
+    expect(onCompact).toHaveBeenCalledOnce();
+    expect(result.at(-1)?.content).toBe('done');
+  });
+
+  it('aborts a reducer still in flight when the run ends', async () => {
+    let providerCalls = 0;
+    let prepareSignal: AbortSignal | undefined;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'echo-1', name: 'Echo', arguments: { value: 'x' } },
+          };
+          yield { type: 'done', usage: pressure };
+          return;
+        }
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    const prepareCompact = vi.fn(
+      (_snapshot: Message[], _usage: Usage | null, hints?: { signal?: AbortSignal }) =>
+        new Promise<PreparedCompaction>(() => {
+          prepareSignal = hints?.signal;
+        }),
+    );
+    const commitCompact = vi.fn(accepting);
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 2,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onCompact: async () => compactedForRetry(), prepareCompact, commitCompact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(prepareCompact).toHaveBeenCalledOnce();
+    expect(commitCompact).not.toHaveBeenCalled();
+    expect(prepareSignal?.aborted).toBe(true);
   });
 });

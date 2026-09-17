@@ -52,6 +52,10 @@
  * the host's validator accepts even though message ids are minted at runtime.
  * A placeholder with no Nth event is left as written.
  *
+ * `--usage-from-estimate` reports `prompt_tokens` as the mock's own chars/4
+ * estimate of the request instead of a fixed 100, so Book's usage-triggered
+ * compaction -- which reads the provider's count -- can fire against the mock.
+ *
  * `--overflow-above <tokens>` makes the mock behave like a model whose real
  * window is smaller than the one Book assumes: any unmatched chat request
  * estimated (chars/4) above the number is refused with a 400 whose body Book
@@ -79,6 +83,7 @@ const port = Number(arg('port', '8919'));
 const replyText = arg('reply', 'MOCK-OK: Book reached the provider and streamed this reply.');
 const scriptPath = arg('script', null);
 const overflowAbove = Number(arg('overflow-above', '0'));
+const usageFromEstimate = argv.includes('--usage-from-estimate');
 // os.tmpdir(), not /tmp: on Windows node resolves /tmp to C:\tmp, which usually does not
 // exist, and the best-effort writes below then lose every request without a word.
 const requestLog = arg('request-log', join(tmpdir(), `book-mock-${port}.requests.jsonl`));
@@ -147,7 +152,7 @@ function substituteEvents(text, prompt) {
   return text.replace(/\{\{event:(\d+)\}\}/g, (whole, index) => refs[Number(index) - 1] ?? whole);
 }
 
-async function streamTurn(res, turn, model, id, prompt = '') {
+async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 100) {
   const base = { id, object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: {} }] };
 
   sse(res, { ...base, choices: [{ index: 0, delta: { role: 'assistant' } }] });
@@ -195,7 +200,9 @@ async function streamTurn(res, turn, model, id, prompt = '') {
   sse(res, {
     ...base,
     choices: [],
-    usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+    usage: usageFromEstimate
+      ? { prompt_tokens: estimatedTokens, completion_tokens: 20, total_tokens: estimatedTokens + 20 }
+      : { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
   });
   res.write('data: [DONE]\n\n');
   res.end();
@@ -282,7 +289,7 @@ const server = createServer((req, res) => {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     });
-    void streamTurn(res, turn, parsed.model ?? 'mock-model', id, prompt);
+    void streamTurn(res, turn, parsed.model ?? 'mock-model', id, prompt, estimatedTokens);
   });
 });
 

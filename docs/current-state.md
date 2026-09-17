@@ -194,7 +194,15 @@ fresh verification pass.
   constraints neither cited nor restated nor held by the ledger are counted in the same `audit`
   and disclosed in a `[reducer: …]` header line, never restored. `npm run eval:compact --
   --adversarial` is the provider-backed measurement; the deterministic double cannot be steered,
-  so the harness only checks the plumbing.
+  so the harness only checks the plumbing. Since P5 phase 1 (2026-09-17,
+  `plans/async-compaction-plan.md`) a response that reports usage over the threshold and has
+  tool calls starts the reducer on a snapshot ahead of the tool wave (`prepareCompact`), the turn
+  goes on over the full history, and at the next boundary a low-effort judge call on the compact
+  model reads the checkpoint and the steps taken meanwhile (`judgeCompaction`) before
+  `commitCompact` applies the result with those steps verbatim behind it and writes the record;
+  rejected or inapplicable falls back to the synchronous path, inconclusive accepts, the verdict
+  is recorded (`judge` on the result, the compact record and stream-json). The TUI and headless
+  hosts wire it; managed agents and the pre-turn host compaction stay synchronous.
   Evidence: `plans/compaction-research-2026-09.md`.
 - Tool discovery: `auto`; the practical core stays loaded and `ToolSearch` activates deferred
   authorized tools on the next turn.

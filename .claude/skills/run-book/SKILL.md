@@ -101,7 +101,12 @@ long enough to screenshot it. A reply's text may cite the events Book showed the
 `{{event:N}}` becomes the Nth `session://current/event/<id>` reference in the request's last user
 message, so a scripted `ConversationCheckpointV2` can carry sources the host's validator accepts
 even though message ids are minted at runtime (a `match` turn on `BEGIN HISTORICAL EVENTS` with such
-a `text` is how the fitter is exercised end to end).
+a `text` is how the fitter is exercised end to end; the deferred-compaction judge's prompt is matched
+on `BEGIN CHECKPOINT UNDER REVIEW`). The mock reports `prompt_tokens: 100` on every reply, so Book's
+usage-triggered compaction never fires against it; pass `--mock-usage-from-estimate` to the driver
+(`--usage-from-estimate` to the mock) to report its own chars/4 estimate instead, then a model with
+a small `contextWindow` in the throwaway BOOK_HOME's `settings.json` and a couple of long replies put
+a request over the threshold.
 
 ### `smoke.sh` — the end-to-end check
 
