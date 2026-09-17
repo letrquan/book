@@ -177,7 +177,15 @@ fresh verification pass.
   later entry restated or withdrew in as many words (rescission cues: "instead of", "rather
   than", "no longer", "stop using", "switch from", "was wrong", "is obsolete", "no longer
   applies") is withheld from the ledger the model reads and counted in `supersededCount`; a value
-  changed with no cue is still not detected and falls to the "later one wins" reading rule.
+  changed with no cue is still not detected and falls to the "later one wins" reading rule. Since
+  P3 (2026-09-17) `fitCheckpoint` evicts by kind and dependency rather than by age -- uncited
+  finished episodes and uncited files first, the narrative shortened before any rule or thread,
+  cited episodes kept ahead of uncited ones, open threads then constraints oldest first down to
+  the newest, the deep 64/32/16-character rungs only after eviction -- and records what it dropped
+  in a host-owned `fit` tally the header discloses for constraints and open threads. The harness
+  double records facts by kind and reports `retentionByKind` with per-kind floors; at 32k the
+  finished episode the CRLF thread cites now survives (final retention 0.667 → 0.733 on the
+  by-kind double), 272k stays at 1.0.
   Evidence: `plans/compaction-research-2026-09.md`.
 - Tool discovery: `auto`; the practical core stays loaded and `ToolSearch` activates deferred
   authorized tools on the next turn.

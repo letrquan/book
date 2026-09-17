@@ -244,10 +244,10 @@ export const FIDELITY_ARMS: readonly FidelityArm[] = [
      */
     fillerRepeat: 5,
     floors: {
-      /** Measured 0.667 on 2026-09-17 (15-fact corpus, by-kind double, age-ordered fit). */
-      minFinalRetention: 0.66,
-      /** Measured 0.658 across the eight generations on 2026-09-17. */
-      minMeanRetention: 0.65,
+      /** Measured 0.733 on 2026-09-17 (15-fact corpus, by-kind double, type-aware fit); 0.667 with the old fit. */
+      minFinalRetention: 0.73,
+      /** Measured 0.725 across the eight generations on 2026-09-17; 0.658 with the old fit. */
+      minMeanRetention: 0.72,
       /** Measured 1.0 on 2026-09-14. */
       minVerbatimUserRetention: 1,
       /**
@@ -286,7 +286,7 @@ export const FIDELITY_ARMS: readonly FidelityArm[] = [
         'accepted-decision': 1,
         'rejected-decision': 1,
         'open-thread': 1,
-        'timeline-event': 0.66,
+        'timeline-event': 1,
         'current-value': 0.5,
         'superseded-value': 0.5,
       },

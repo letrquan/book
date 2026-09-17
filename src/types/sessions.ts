@@ -329,6 +329,18 @@ export interface CarriedTurnsSummary {
   droppedCount: number;
 }
 
+/**
+ * What fitting the checkpoint to its budget removed from the reducer's output,
+ * by field, summed over every fit of the generation. Host-owned like
+ * `carriedTurns`: never accepted from a model reply.
+ */
+export interface CheckpointFitLosses {
+  droppedConstraints: number;
+  droppedOpenThreads: number;
+  droppedEpisodes: number;
+  droppedFiles: number;
+}
+
 export interface ConversationCheckpointV2 {
   version: 2;
   generation: number;
@@ -378,6 +390,13 @@ export interface ConversationCheckpointV2 {
    * and on checkpoints written before Carried Turns.
    */
   carriedTurns?: CarriedTurnsSummary;
+  /**
+   * Host-owned tally of what the fit dropped from the reducer's own fields to
+   * meet the checkpoint budget. Absent when nothing was dropped and on
+   * checkpoints written before the type-aware fit. The header discloses a
+   * dropped constraint or open thread.
+   */
+  fit?: CheckpointFitLosses;
 }
 
 export interface CompactRecordDataV2 {
