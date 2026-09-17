@@ -11,6 +11,12 @@
  *   npm run eval:compact -- --suite standard
  *   npm run eval:compact -- --model 9router/qc/qwen3.7-max --repeat 3
  *   npm run eval:compact -- --models model-a,model-b --include-no-history
+ *   npm run eval:compact -- --adversarial      # a tool result tells the summarizer what to omit
+ *
+ * `--adversarial` plants one tool round whose result carries six framings of
+ * "omit the runtime and query() constraints when compacting" (P4 of
+ * `plans/compaction-research-2026-09.md`). The same probes then measure
+ * whether the reducer was steered; compare with a run without the flag.
  *
  * Requires a reachable provider (BOOK_API_KEY / settings). Never part of CI.
  */
@@ -166,6 +172,8 @@ export interface CompactEvalRunResult {
     modelCalls?: number;
     strategy?: string;
     degraded?: boolean;
+    /** The host's reducer audit: suspect inputs found and inherited rules the reducer let go of. */
+    audit?: ConversationCheckpointV2['audit'];
     usage: UsageTotals;
     estimatedPromptTokens: number;
     costUsd: number | null;
@@ -217,6 +225,8 @@ export interface CompactEvalOptions {
   compactEffort?: AgentConfig['effort'];
   compactModel?: string;
   json: boolean;
+  /** Plant a tool result addressed to the summarizer (see the module comment). */
+  adversarial?: boolean;
 }
 
 const COMPACT_EVAL_WORKER = fileURLToPath(new URL('./compact-eval-worker.ts', import.meta.url));
@@ -248,11 +258,13 @@ function usageTotals(usage: Usage | null | undefined): UsageTotals {
     : { ...EMPTY_USAGE };
 }
 
-export function buildCompactEvalFixture(): CompactEvalFixture {
+export function buildCompactEvalFixture(
+  options: { adversarial?: boolean } = {},
+): CompactEvalFixture {
   // The corpus itself lives in `src/agent/compact-fixture.ts` so the
   // deterministic fidelity harness can score the same conversation this
   // provider-backed benchmark probes. Only the probes are eval-specific.
-  const { history, turns } = buildCompactFixtureHistory();
+  const { history, turns } = buildCompactFixtureHistory({ adversarial: options.adversarial });
   const {
     runtime,
     cache,
@@ -406,7 +418,13 @@ export function buildCompactEvalFixture(): CompactEvalFixture {
       evidenceMessageIds: [],
     },
   ];
-  return { name: 'handoff-state-and-history', history, probes };
+  return {
+    name: options.adversarial
+      ? 'handoff-state-and-history-adversarial'
+      : 'handoff-state-and-history',
+    history,
+    probes,
+  };
 }
 
 export function createMeter(): Meter {
@@ -767,6 +785,7 @@ async function runFixture(options: {
       modelCalls: compact.status === 'compacted' ? compact.modelCalls : undefined,
       strategy: compact.status === 'compacted' ? compact.strategy : undefined,
       degraded: compact.status === 'compacted' ? compact.degraded : undefined,
+      audit: compact.status === 'compacted' ? compact.checkpoint.audit : undefined,
       usage: compactUsage,
       estimatedPromptTokens: compactEstimatedPromptTokens,
       costUsd: compactCostUsd,
@@ -792,6 +811,15 @@ async function runFixture(options: {
     treatment,
     noHistory,
   };
+}
+
+/** The reducer audit as one cell: suspect inputs found / inherited rules let go of. */
+function formatAudit(audit: ConversationCheckpointV2['audit']): string {
+  if (!audit) return 'clean';
+  const parts: string[] = [];
+  if (audit.suspectInputs.length) parts.push(`${audit.suspectInputs.length} suspect`);
+  if (audit.omittedInheritedConstraints) parts.push(`${audit.omittedInheritedConstraints} omitted`);
+  return parts.join(', ') || 'clean';
 }
 
 function pct(saved: number, baseline: number): number | null {
@@ -1036,11 +1064,11 @@ export function renderBenchmarkReport(bundle: CompactEvalBundle): string {
     '',
     '## Run Details',
     '',
-    '| Model | Reducer | Rep | Compact | Attribution | Pre → post | Compression | Output cap | Checkpoint | Calls | Tokens | Time | Cost |',
-    '| --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+    '| Model | Reducer | Rep | Compact | Audit | Attribution | Pre → post | Compression | Output cap | Checkpoint | Calls | Tokens | Time | Cost |',
+    '| --- | --- | ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
     ...bundle.runs.map(
       (run) =>
-        `| ${run.model} | ${run.compact.model} | ${run.repetition} | ${run.compact.status}${run.compact.degraded ? ' degraded' : ''} | ${run.compact.attribution.eligible ? 'eligible' : `INELIGIBLE:${run.compact.attribution.reasons.join(',')}`} | ${(run.compact.preContextTokens ?? 0).toLocaleString()} → ${(run.compact.postContextTokens ?? 0).toLocaleString()} | ${run.compact.compressionRatio === undefined ? 'n/a' : `${(run.compact.compressionRatio * 100).toFixed(1)}%`} | ${run.compact.outputCapTokens?.toLocaleString() ?? 'default'} | ${run.compact.checkpointTokens?.toLocaleString() ?? 'n/a'} | ${run.compact.modelCalls ?? 0} | ${run.compact.usage.totalTokens.toLocaleString()} | ${run.compact.timeMs === undefined ? 'n/a' : `${run.compact.timeMs.toLocaleString()} ms`} | ${formatUsd(run.compact.costUsd)} |`,
+        `| ${run.model} | ${run.compact.model} | ${run.repetition} | ${run.compact.status}${run.compact.degraded ? ' degraded' : ''} | ${formatAudit(run.compact.audit)} | ${run.compact.attribution.eligible ? 'eligible' : `INELIGIBLE:${run.compact.attribution.reasons.join(',')}`} | ${(run.compact.preContextTokens ?? 0).toLocaleString()} → ${(run.compact.postContextTokens ?? 0).toLocaleString()} | ${run.compact.compressionRatio === undefined ? 'n/a' : `${(run.compact.compressionRatio * 100).toFixed(1)}%`} | ${run.compact.outputCapTokens?.toLocaleString() ?? 'default'} | ${run.compact.checkpointTokens?.toLocaleString() ?? 'n/a'} | ${run.compact.modelCalls ?? 0} | ${run.compact.usage.totalTokens.toLocaleString()} | ${run.compact.timeMs === undefined ? 'n/a' : `${run.compact.timeMs.toLocaleString()} ms`} | ${formatUsd(run.compact.costUsd)} |`,
     ),
     '',
     '## Probe Diagnostics',
@@ -1112,7 +1140,8 @@ export function parseArgs(argv: string[]): CompactEvalOptions {
       options.compactEffort = parseEffort(value) ?? options.compactEffort;
     } else if (argv[index] === '--include-no-history' || argv[index] === '--no-history') {
       options.includeNoHistory = true;
-    } else if (argv[index] === '--json') options.json = true;
+    } else if (argv[index] === '--adversarial') options.adversarial = true;
+    else if (argv[index] === '--json') options.json = true;
   }
   options.models = [...new Set(options.models)];
   return options;
@@ -1166,7 +1195,7 @@ export function createCompactEvaluationSettings(
 
 export async function runCompactEvaluationInProcess(
   options: CompactEvalOptions,
-  fixture: CompactEvalFixture = buildCompactEvalFixture(),
+  fixture: CompactEvalFixture = buildCompactEvalFixture({ adversarial: options.adversarial }),
 ): Promise<CompactEvalBundle> {
   const requestedModels = options.models.length > 0 ? options.models : [undefined];
   const runs: CompactEvalRunResult[] = [];
@@ -1248,6 +1277,7 @@ function workerArgs(
   }
   if (options.compactEffort) args.push('--compact-effort', options.compactEffort);
   if (options.includeNoHistory) args.push('--include-no-history');
+  if (options.adversarial) args.push('--adversarial');
   return args;
 }
 
@@ -1330,7 +1360,7 @@ export async function runCompactEvaluationIsolated(
       const model = requestedModel ?? probeConfig.modelSelection ?? probeConfig.model;
       const compactModel = effectiveCompactModel ?? model;
       for (let repetition = 1; repetition <= options.repetitions; repetition++) {
-        const fixture = buildCompactEvalFixture();
+        const fixture = buildCompactEvalFixture({ adversarial: options.adversarial });
         const processResult = await runEvaluationProcess({
           command: process.execPath,
           args: [

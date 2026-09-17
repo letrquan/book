@@ -2937,7 +2937,13 @@ export function App({
             ) : null}
           </Box>
 
-          {compactUi && (compactUi.phase === 'error' || compactUi.phase === 'skipped') ? (
+          {compactUi &&
+          (compactUi.phase === 'error' ||
+            compactUi.phase === 'skipped' ||
+            // A compaction that succeeded with something to say -- reduced
+            // coverage, or input that addressed the summarizer -- keeps its
+            // card; a clean one is the boundary row in the transcript alone.
+            (compactUi.phase === 'diff' && compactUi.warning)) ? (
             <CompactDiffCard
               state={compactUi}
               terminalWidth={termWidth}

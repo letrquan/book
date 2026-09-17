@@ -22,6 +22,7 @@ function compactSummary(state: CompactUiState): string {
     details.push(`~${Math.round(state.preContextTokens / 100) / 10}k context`);
   }
   if (state.degraded) details.unshift('reduced fidelity');
+  else if (state.warning) details.unshift('with a warning');
   return ['Compact conversation', ...details].join(' · ');
 }
 
@@ -64,7 +65,7 @@ export function CompactDiffCard({
           {truncateDisplay(summary, summaryWidth)}
         </Text>
       </Box>
-      {state.degraded && state.warning ? (
+      {state.warning ? (
         <Box
           marginLeft={2}
           borderStyle="single"

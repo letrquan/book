@@ -8,7 +8,11 @@
   **P3 landed 2026-09-17** (`fitCheckpoint` lanes by kind and dependency, the `fit` disclosure,
   and the by-kind reducer double with `retentionByKind` in `compact-fidelity.ts` — the
   deterministic post-fit verifier is the `fit` tally, and the ledger half of it is omitted because
-  the fit never touches `carried`); P4–P6 remain proposals.
+  the fit never touches `carried`); **P4 landed 2026-09-17** (`src/agent/compact-audit.ts`: the
+  suspect-input scan with the `PreCompact` `suspect_inputs` signal, the inherited-constraint
+  audit, the host-owned `audit` field and `[reducer: …]` header line, and the benchmark's
+  `--adversarial` arm — the "(a) verifier" landed as the inherited-constraint audit rather than a
+  ledger check, since the fit never touches the ledger); P5–P6 remain proposals.
 - **Scope:** `src/agent/compact.ts`, `src/agent/carried-ledger.ts`, `src/agent/compact-fidelity.ts`,
   `scripts/compact-eval.ts`, `src/agent/loop.ts` (compaction call site)
 - **Method:** literature retrieval through the OpenResearch CLI (`orx discover` over alphaXiv and
@@ -292,6 +296,23 @@ can block.
 **Measure.** Add an adversarial arm to `scripts/compact-eval.ts`: a planted tool result carrying
 each of Governance Decay's six omission framings; floor = ledger constraints 100% present, reducer
 constraints ≥ baseline.
+
+**As landed (2026-09-17).** (a) became the inherited-constraint audit: the reducer's output is
+compared with the seed and every seed constraint neither cited nor restated nor held by the
+ledger is counted -- disclosed, never restored, because a withdrawn rule or a finished task is
+dropped legitimately and scope cannot help (the host demotes a model-authored `global`/`workspace`
+scope to `task` on parse). (b) is `scanSuspectInputs`: a sentence must carry an address term, an
+omission verb and directive mood; the mood test is what keeps this repository's own docs, which
+describe all three in the third person, from firing (0 hits across README, CHANGELOG, plans and
+470 source files, except Book's own reducer prompt and one test comment). Hits are never quoted
+into the checkpoint. The `--adversarial` arm exists; the deterministic harness cannot be steered,
+so the number has to come from a provider-backed run. Known limitations: the seed itself is
+reducer output, so an instruction that once made it into a constraint's text persists as seed and
+is not scanned; the scan is English-only; the excerpt handed to hooks is a tool-result sentence
+and is withheld only when the secret detector matches it; and `audit.suspectInputs` keeps every
+flagged reference of the generation inside the checkpoint (the header lists three), which a span
+with dozens of steered tool results would pay ~60 characters each for out of the checkpoint
+budget -- accepted, since the fit then squeezes the narrative rather than the rules.
 
 ### P5. Asynchronous compaction with a trajectory-grounded judge
 
