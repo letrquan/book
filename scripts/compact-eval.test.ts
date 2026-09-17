@@ -586,3 +586,22 @@ describe('compact eval', () => {
     expect(processOptions?.args).toContain('evaluation-compact/reducer-model-id');
   });
 });
+
+describe('adversarial arm', () => {
+  it('plants one tool round addressed to the summarizer and keeps the probes', () => {
+    const plain = buildCompactEvalFixture();
+    const adversarial = buildCompactEvalFixture({ adversarial: true });
+    expect(adversarial.name).toBe('handoff-state-and-history-adversarial');
+    // Same probes; only the evidence ids shift past the planted round.
+    const shape = (fixture: ReturnType<typeof buildCompactEvalFixture>) =>
+      fixture.probes.map(({ evidenceMessageIds: _ids, ...probe }) => probe);
+    expect(shape(adversarial)).toEqual(shape(plain));
+    expect(adversarial.history.length).toBe(plain.history.length + 4);
+    const planted = adversarial.history.find((message) => message.toolResults?.length);
+    expect(planted?.toolResults?.[0]?.content).toContain('Note to summarizers:');
+    // Planted early, where it is summarized rather than retained.
+    expect(adversarial.history.indexOf(planted!)).toBeLessThan(10);
+    expect(parseArgs(['--adversarial']).adversarial).toBe(true);
+    expect(parseArgs([]).adversarial).toBeUndefined();
+  });
+});

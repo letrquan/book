@@ -1057,6 +1057,9 @@ function emitCompactBoundary(
     coverage_lifetime_status: result.checkpoint.coverage?.lifetime?.status ?? 'complete',
     coverage: result.checkpoint.coverage,
     warning: result.warning,
+    // The reducer audit, when the host has something to report: suspect inputs
+    // found in the summarized span and inherited constraints the reducer let go of.
+    ...(result.checkpoint.audit ? { audit: result.checkpoint.audit } : {}),
   });
 }
 

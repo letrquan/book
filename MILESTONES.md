@@ -60,7 +60,10 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
       many words is withheld from the ledger the model reads and counted in the header. P3 landed
       2026-09-17: the fitter gives up the least valuable thing first, by kind and by dependency,
       discloses a dropped constraint or thread in the header, and the harness reports retention
-      per kind of fact.
+      per kind of fact. P4 landed 2026-09-17: the span about to be summarized is scanned for text
+      addressed to the summarizer, offered to the `PreCompact` hook, named to the reducer as data
+      and disclosed by reference; inherited constraints the reducer let go of are counted; the
+      benchmark gained an `--adversarial` arm.
 - [ ] A control surface for a run in flight - at hour 30 the only interventions are `kill` and wait.
 - [x] Monotonic clock for every duration decided **inside one process** — the provider retry
       budget and model-discovery budget, the background-shell start/stop budgets, the

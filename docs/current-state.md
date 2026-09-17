@@ -185,7 +185,16 @@ fresh verification pass.
   in a host-owned `fit` tally the header discloses for constraints and open threads. The harness
   double records facts by kind and reports `retentionByKind` with per-kind floors; at 32k the
   finished episode the CRLF thread cites now survives (final retention 0.667 → 0.733 on the
-  by-kind double), 272k stays at 1.0.
+  by-kind double), 272k stays at 1.0. Since P4 (2026-09-17) the span about to be summarized is
+  scanned (`src/agent/compact-audit.ts`) for tool-result or `@file`/`!`-expansion sentences that
+  address a summarizer and ask it to leave something out; hits reach the `PreCompact` hook as
+  `suspect_inputs` (a block refuses the compaction and the TUI says so), are named to the reducer
+  as data, recorded on the checkpoint's host-owned `audit` by reference only, and shown as a
+  warning on the compaction card (which now stays for a warned success). Inherited reducer
+  constraints neither cited nor restated nor held by the ledger are counted in the same `audit`
+  and disclosed in a `[reducer: …]` header line, never restored. `npm run eval:compact --
+  --adversarial` is the provider-backed measurement; the deterministic double cannot be steered,
+  so the harness only checks the plumbing.
   Evidence: `plans/compaction-research-2026-09.md`.
 - Tool discovery: `auto`; the practical core stays loaded and `ToolSearch` activates deferred
   authorized tools on the next turn.

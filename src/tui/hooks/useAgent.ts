@@ -737,7 +737,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 modelCalls: autoResult.modelCalls,
               });
             } else if (stillCurrent()) {
-              setCompactUi(null);
+              // A PreCompact hook that refused is the one skip worth a line: the
+              // user's own script made a decision on evidence they cannot see
+              // otherwise, and the oversized request that follows will not say why.
+              setCompactUi(
+                autoResult.status === 'skipped' && autoResult.reason === 'blocked'
+                  ? {
+                      phase: 'skipped',
+                      trigger: 'auto',
+                      message: autoResult.message ?? 'Compaction blocked by PreCompact hook.',
+                    }
+                  : null,
+              );
             }
           } catch (err) {
             log.warn('pre-turn auto-compact failed', {
@@ -956,6 +967,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 warning: result.warning,
                 strategy: result.strategy,
                 modelCalls: result.modelCalls,
+              });
+            } else if (result.status === 'skipped' && result.reason === 'blocked') {
+              // Same as the pre-turn path: a hook's refusal is shown, with its reason.
+              setCompactUi({
+                phase: 'skipped',
+                trigger: 'auto',
+                message: result.message ?? 'Compaction blocked by PreCompact hook.',
               });
             }
             return result;

@@ -61,6 +61,12 @@ export type CompactResult =
       modelCalls?: number;
       degraded?: boolean;
       warning?: string;
+      /**
+       * Sentences in the summarized span addressed to a summarizer. The host
+       * shows the warning; a `PreCompact` hook saw the same list before the
+       * reducer ran and could have refused.
+       */
+      suspectInputs?: CompactSuspectInput[];
     }
   | {
       status: 'skipped';
@@ -341,6 +347,33 @@ export interface CheckpointFitLosses {
   droppedFiles: number;
 }
 
+/**
+ * What the host found when it treated the reducer as an untrusted-input sink
+ * for this generation. Host-owned like `fit`: never accepted from a model
+ * reply, never fed back to the reducer as seed.
+ */
+export interface CheckpointReducerAudit {
+  /**
+   * `global`/`workspace` constraints the previous checkpoint carried that
+   * the reducer did not carry forward and the ledger does not hold either.
+   * Disclosed, not restored: a rule the user withdrew is dropped legitimately.
+   */
+  omittedInheritedConstraints: number;
+  /**
+   * Events in the summarized span whose tool result or `@file`/`!` expansion
+   * addressed a summarizer and asked it to leave something out. References
+   * only; the sentence itself is never copied into the checkpoint.
+   */
+  suspectInputs: string[];
+}
+
+/** One sentence in the summarized span addressed to a summarizer, for hooks and the warning. */
+export interface CompactSuspectInput {
+  eventRef: string;
+  /** Shortened, and withheld when it matches the secret detector. */
+  excerpt: string;
+}
+
 export interface ConversationCheckpointV2 {
   version: 2;
   generation: number;
@@ -397,6 +430,13 @@ export interface ConversationCheckpointV2 {
    * dropped constraint or open thread.
    */
   fit?: CheckpointFitLosses;
+  /**
+   * Host-owned audit of the reducer's input and output for this generation:
+   * inherited rules it did not carry forward, and input addressed to it.
+   * Absent when there is nothing to report and on older checkpoints. The
+   * header discloses both.
+   */
+  audit?: CheckpointReducerAudit;
 }
 
 export interface CompactRecordDataV2 {
