@@ -1951,6 +1951,26 @@ describe('runCompact fits the checkpoint by kind', () => {
     });
   });
 
+  it('reads citations before source minimization keeps one ref per entry', async () => {
+    // The episode cites two events and the thread shares only the second;
+    // minimization keeps the shortest ref, which is the first, so a citation
+    // read afterwards would miss the dependency and evict the episode.
+    reply({
+      episodes: [
+        {
+          task: 'cited',
+          outcome: paragraph('B'),
+          status: 'complete',
+          sources: [event('1'), event('3')],
+        },
+        { task: 'uncited', outcome: paragraph('A'), status: 'complete', sources: [event('1')] },
+      ],
+      openThreads: [{ text: 'Thread still open on the cited work.', sources: [event('3')] }],
+    });
+    const result = await compact(700);
+    expect(result.checkpoint.episodes.map((episode) => episode.task)).toEqual(['cited']);
+  });
+
   it('evicts a file no thread cites before an older one a thread names', async () => {
     reply({
       files: [
@@ -2014,6 +2034,30 @@ describe('runCompact fits the checkpoint by kind', () => {
     expect(notice.content).toContain('did not fit the checkpoint budget');
     // The disclosure is on the message the model reads, not only on the record.
     expect(result.checkpoint.constraints.length + losses.droppedConstraints).toBe(6);
+  });
+
+  it('counts the tally it attaches, so a drop cannot push the result over budget', async () => {
+    const threads = Array.from({ length: 12 }, (_, index) => ({
+      text: `Thread ${index}: ${'still open. '.repeat(12)}`,
+      sources: [event('3')],
+    }));
+    // An invariant rather than a repro: the final fit of a generation re-runs
+    // on its own output, so a tally attached after the size check corrected
+    // itself on the message -- the cost was paid inside the post-budget loop,
+    // where an overshoot of a few tokens can give up the last retained bundle.
+    // Swept across budgets so the check lands near the line more than once.
+    for (let budget = 150; budget <= 300; budget += 6) {
+      reply({ openThreads: threads });
+      const result = await compact(budget);
+      const tally = result.checkpoint.fit!;
+      expect(tally.droppedOpenThreads).toBeGreaterThan(0);
+      // The checkpoint the model reads, tally included, is within the budget
+      // the fit was given; the notice is on top and was reserved separately.
+      const checkpoint = result.replacementHistory.find((m) => m.kind === 'checkpoint')!;
+      const json = checkpoint.content.slice(checkpoint.content.indexOf('{"version":2'));
+      expect(JSON.parse(json).fit).toEqual(tally);
+      expect(Math.ceil(json.length / 4), `budget ${budget}`).toBeLessThanOrEqual(budget);
+    }
   });
 
   it('never accepts a fit tally from the reducer and keeps it out of the next seed', async () => {

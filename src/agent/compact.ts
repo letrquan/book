@@ -1070,8 +1070,13 @@ export async function runCompact(
     }
 
     // Down to the newest bundle: the checkpoint shrinks, and only then does
-    // the last bundle go.
-    const prefixTokens = estimateTextTokens(checkpointPrefix(checkpoint)) + MESSAGE_OVERHEAD_TOKENS;
+    // the last bundle go. The fit about to run may drop a rule or a thread and
+    // so add the fit notice to the header; its room is reserved here so the
+    // disclosure's own bytes never cost the bundle it was fitted to keep.
+    const prefixTokens =
+      estimateTextTokens(checkpointPrefix(checkpoint)) +
+      MESSAGE_OVERHEAD_TOKENS +
+      (fitNotice(checkpoint.fit) ? 0 : FIT_NOTICE_MAX_TOKENS);
     const targetCheckpointBudget = Math.max(
       1,
       targetTokens - retainedTokens - carriedTurnsTokens(carried) - prefixTokens,
@@ -2109,9 +2114,11 @@ function resolveReducerOutputCap(
  *
  * An open thread or a file that cites the same event as an episode is the
  * thing that episode is context for; a thread that names a file's path is
- * working on that file. Citation is judged on `eventRef` alone, which
- * `minimizeSource` never strips, so the answer is the same before and after
- * the sources are minimized.
+ * working on that file. Judged on `eventRef` alone, and taken from the
+ * checkpoint as the reducer wrote it: source minimization keeps one ref per
+ * entry, so an episode citing two events would lose the one the thread shares
+ * if citation were read after it. The sets are keyed by entry object, which
+ * eviction's `splice` leaves intact, so they stay valid down the whole ladder.
  */
 function checkpointCitations(checkpoint: ConversationCheckpointV2): {
   citedEpisode: (episode: ConversationCheckpointV2['episodes'][number]) => boolean;
@@ -2120,22 +2127,25 @@ function checkpointCitations(checkpoint: ConversationCheckpointV2): {
   const events = (sources: readonly CheckpointSourceRef[]): Set<string> =>
     new Set(sources.map((source) => source.eventRef));
   const threadEvents = checkpoint.openThreads.map((thread) => events(thread.sources));
-  const fileEvents = checkpoint.files.map((file) => events(file.sources));
   const threadTexts = checkpoint.openThreads.map((thread) => thread.text);
+  const episodeEvents = new Map(
+    checkpoint.episodes.map((episode) => [episode, events(episode.sources)] as const),
+  );
+  const fileEvents = new Map(checkpoint.files.map((file) => [file, events(file.sources)] as const));
   const shares = (left: Set<string>, right: Set<string>): boolean => {
     for (const event of left) if (right.has(event)) return true;
     return false;
   };
   return {
     citedEpisode: (episode) => {
-      const own = events(episode.sources);
+      const own = episodeEvents.get(episode) ?? events(episode.sources);
       return (
         threadEvents.some((cited) => shares(own, cited)) ||
-        fileEvents.some((cited) => shares(own, cited))
+        [...fileEvents.values()].some((cited) => shares(own, cited))
       );
     },
     citedFile: (file) => {
-      const own = events(file.sources);
+      const own = fileEvents.get(file) ?? events(file.sources);
       return (
         threadEvents.some((cited) => shares(own, cited)) ||
         threadTexts.some((text) => text.includes(file.path))
@@ -2214,11 +2224,22 @@ function fitCheckpoint(
   inherited?: ConversationCheckpointV2,
 ): ConversationCheckpointV2 {
   const checkpoint = cloneCheckpoint(source);
-  const fits = () => estimateTextTokens(JSON.stringify(checkpoint)) <= budget;
-  const done = (): ConversationCheckpointV2 => {
+  // Citations are read before anything below touches the sources.
+  const { citedEpisode, citedFile } = checkpointCitations(checkpoint);
+  // The tally the fit will attach is part of what has to fit: measured on
+  // every check, so a drop that first brings the `fit` object into being
+  // cannot push the result over the budget it was just fitted to.
+  const tally = (): void => {
     const losses = fitLosses(source, checkpoint);
     if (losses) checkpoint.fit = losses;
     else delete checkpoint.fit;
+  };
+  const fits = () => {
+    tally();
+    return estimateTextTokens(JSON.stringify(checkpoint)) <= budget;
+  };
+  const done = (): ConversationCheckpointV2 => {
+    tally();
     return checkpoint;
   };
   if (fits()) return done();
@@ -2237,7 +2258,6 @@ function fitCheckpoint(
   }
   if (fits()) return done();
 
-  const { citedEpisode, citedFile } = checkpointCitations(checkpoint);
   /** Remove matching entries, oldest first, until the checkpoint fits; `keep` entries at the end stay. */
   const evict = <T>(list: T[], matches: (entry: T) => boolean, keep = 0): void => {
     while (!fits() && list.length > keep) {
