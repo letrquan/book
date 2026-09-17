@@ -231,7 +231,7 @@ describe('compact eval', () => {
     const fixture = buildCompactEvalFixture();
     const probes = new Map(fixture.probes.map((probe) => [probe.name, probe]));
 
-    expect(fixture.probes).toHaveLength(11);
+    expect(fixture.probes).toHaveLength(12);
     expect(fixture.probes.filter((probe) => probe.tier === 'smoke')).toHaveLength(5);
     expect(new Set(fixture.probes.map((probe) => probe.category))).toEqual(
       new Set([
