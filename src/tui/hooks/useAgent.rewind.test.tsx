@@ -32,6 +32,15 @@ vi.mock('../../agent/compact.js', () => ({
     );
   }),
   runPostCompactHooks: vi.fn(async () => {}),
+  // Deferred compaction's halves, imported by AgentSession; unused by these
+  // tests, whose scripted loop never prepares one.
+  applyCompactResult: vi.fn(() => undefined),
+  judgeCompaction: vi.fn(async () => ({
+    verdict: 'inconclusive',
+    missing: [],
+    modelCalls: 0,
+    deltaMessages: 0,
+  })),
 }));
 
 vi.mock('../../input/input-expansion.js', () => ({

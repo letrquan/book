@@ -603,5 +603,8 @@ describe('adversarial arm', () => {
     expect(adversarial.history.indexOf(planted!)).toBeLessThan(10);
     expect(parseArgs(['--adversarial']).adversarial).toBe(true);
     expect(parseArgs([]).adversarial).toBeUndefined();
+    expect(parseArgs(['--deferred', '3']).deferredTurns).toBe(3);
+    expect(parseArgs(['--deferred', '0']).deferredTurns).toBeUndefined();
+    expect(parseArgs([]).deferredTurns).toBeUndefined();
   });
 });

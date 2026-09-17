@@ -12,11 +12,19 @@
  *   npm run eval:compact -- --model 9router/qc/qwen3.7-max --repeat 3
  *   npm run eval:compact -- --models model-a,model-b --include-no-history
  *   npm run eval:compact -- --adversarial      # a tool result tells the summarizer what to omit
+ *   npm run eval:compact -- --deferred 2        # compact minus the last 2 turns, judge, then probe
  *
  * `--adversarial` plants one tool round whose result carries six framings of
  * "omit the runtime and query() constraints when compacting" (P4 of
  * `plans/compaction-research-2026-09.md`). The same probes then measure
  * whether the reducer was steered; compare with a run without the flag.
+ *
+ * `--deferred <k>` is deferred compaction without the loop
+ * (`plans/async-compaction-plan.md`): the reducer runs on the fixture minus
+ * its last k turns, the result is applied with those turns as the steps taken
+ * meanwhile, the judge reads them, and the probes run against the result --
+ * `runCompact` + `applyCompactResult` + `judgeCompaction`. The run records
+ * the verdict; Slipstream's 1-8.5% reject band is the sanity check.
  *
  * Requires a reachable provider (BOOK_API_KEY / settings). Never part of CI.
  */
@@ -27,8 +35,12 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, resolveCompactModelConfig } from '../src/config.js';
 import {
+  applyCompactResult,
   estimateHistoryTokens,
   estimateProviderRequestTokens,
+  judgeCompaction,
+  judgedResult,
+  resolveCompactBudgets,
   runCompact,
 } from '../src/agent/compact.js';
 import { runAgentLoop } from '../src/agent/loop.js';
@@ -54,10 +66,15 @@ import type { AgentConfig } from '../src/types/runtime.js';
 import type {
   AgentLoopCallbacks,
   ProviderMessage,
+  ProviderResponseMetadata,
   ProviderStreamEvent,
 } from '../src/types/providers.js';
 import type { Message, Usage } from '../src/types/messages.js';
-import type { CompactResult, ConversationCheckpointV2 } from '../src/types/sessions.js';
+import type {
+  CompactJudgeVerdict,
+  CompactResult,
+  ConversationCheckpointV2,
+} from '../src/types/sessions.js';
 import { createTerminalOutcome, type AgentTerminalOutcome } from '../src/types/terminal.js';
 
 export type CompactEvalSuite = 'smoke' | 'standard';
@@ -174,6 +191,10 @@ export interface CompactEvalRunResult {
     degraded?: boolean;
     /** The host's reducer audit: suspect inputs found and inherited rules the reducer let go of. */
     audit?: ConversationCheckpointV2['audit'];
+    /** `--deferred`: the judge's verdict on the turns applied as steps taken meanwhile. */
+    judge?: CompactJudgeVerdict;
+    /** `--deferred`: how many turns were held back from the reducer and judged. */
+    deferredTurns?: number;
     usage: UsageTotals;
     estimatedPromptTokens: number;
     costUsd: number | null;
@@ -227,6 +248,8 @@ export interface CompactEvalOptions {
   json: boolean;
   /** Plant a tool result addressed to the summarizer (see the module comment). */
   adversarial?: boolean;
+  /** Compact minus the last k turns, apply them as the steps taken meanwhile, judge. */
+  deferredTurns?: number;
 }
 
 const COMPACT_EVAL_WORKER = fileURLToPath(new URL('./compact-eval-worker.ts', import.meta.url));
@@ -660,6 +683,7 @@ async function runFixture(options: {
   includeNoHistory: boolean;
   checkpointTokens?: number;
   compactEffort?: AgentConfig['effort'];
+  deferredTurns?: number;
 }): Promise<CompactEvalRunResult> {
   const { config, compactConfig, fixture } = options;
   const control = createMeter();
@@ -680,11 +704,30 @@ async function runFixture(options: {
     }),
   );
   const compactStartedAt = Date.now();
-  const compact = await runCompact(compactConfig, fixture.history, {
+  // Deferred: the reducer reads the history minus the last k turns (2k
+  // messages), and those turns are the steps the judge reads afterwards.
+  const deferredMessages = options.deferredTurns ? options.deferredTurns * 2 : 0;
+  const snapshot =
+    deferredMessages > 0 ? fixture.history.slice(0, -deferredMessages) : fixture.history;
+  const delta = deferredMessages > 0 ? fixture.history.slice(-deferredMessages) : [];
+  const compactOptions = {
+    provider: compactProvider,
+    beforeModelCall: (model: string) =>
+      compactRuntime.runAccounting.checkBeforeModelCall(compactRunContext.rootRunId, model),
+    onUsage: (usage: Usage, metadata: ProviderResponseMetadata) =>
+      compactRuntime.runAccounting.record(compactRunContext, usage, metadata),
+    onUsageMissing: (metadata: ProviderResponseMetadata) =>
+      compactRuntime.runAccounting.markUsageUnknown(
+        compactRunContext,
+        metadata,
+        'compact_provider_usage',
+      ),
+  };
+  let compact = await runCompact(compactConfig, snapshot, {
     trigger: 'manual',
     provider: compactProvider,
     minMessages: 2,
-    preContextTokens: estimateHistoryTokens(fixture.history),
+    preContextTokens: estimateHistoryTokens(snapshot),
     checkpointMaxTokens: options.checkpointTokens,
     effort: options.compactEffort,
     beforeModelCall: (model) =>
@@ -698,6 +741,21 @@ async function runFixture(options: {
         'compact_provider_usage',
       ),
   });
+  if (compact.status === 'compacted' && deferredMessages > 0) {
+    const applied = applyCompactResult(compact, snapshot, fixture.history, {
+      toolResultMaxTokens: resolveCompactBudgets(compactConfig).retainedToolResultMaxTokens,
+    });
+    if (!applied) {
+      compact = {
+        status: 'failed',
+        reason: 'provider-error',
+        error: 'The deferred result did not apply to the full history.',
+      };
+    } else {
+      const judge = await judgeCompaction(compactConfig, applied, delta, compactOptions);
+      compact = judgedResult(applied, judge);
+    }
+  }
   const compactTimeMs = Date.now() - compactStartedAt;
   const compactAccounting = compactRuntime.runAccounting.snapshotRun(compactRunContext.runId);
   const compactOutcome =
@@ -786,6 +844,9 @@ async function runFixture(options: {
       strategy: compact.status === 'compacted' ? compact.strategy : undefined,
       degraded: compact.status === 'compacted' ? compact.degraded : undefined,
       audit: compact.status === 'compacted' ? compact.checkpoint.audit : undefined,
+      judge:
+        compact.status === 'compacted' || compact.status === 'skipped' ? compact.judge : undefined,
+      ...(options.deferredTurns ? { deferredTurns: options.deferredTurns } : {}),
       usage: compactUsage,
       estimatedPromptTokens: compactEstimatedPromptTokens,
       costUsd: compactCostUsd,
@@ -814,11 +875,17 @@ async function runFixture(options: {
 }
 
 /** The reducer audit as one cell: suspect inputs found / inherited rules let go of. */
-function formatAudit(audit: ConversationCheckpointV2['audit']): string {
-  if (!audit) return 'clean';
+function formatAudit(
+  audit: ConversationCheckpointV2['audit'],
+  judge?: CompactJudgeVerdict,
+  deferredTurns?: number,
+): string {
   const parts: string[] = [];
-  if (audit.suspectInputCount) parts.push(`${audit.suspectInputCount} suspect`);
-  if (audit.omittedInheritedConstraints) parts.push(`${audit.omittedInheritedConstraints} omitted`);
+  if (audit?.suspectInputCount) parts.push(`${audit.suspectInputCount} suspect`);
+  if (audit?.omittedInheritedConstraints)
+    parts.push(`${audit.omittedInheritedConstraints} omitted`);
+  if (judge)
+    parts.push(`judge ${judge.verdict}${deferredTurns ? ` (${deferredTurns} turns)` : ''}`);
   return parts.join(', ') || 'clean';
 }
 
@@ -1068,7 +1135,7 @@ export function renderBenchmarkReport(bundle: CompactEvalBundle): string {
     '| --- | --- | ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
     ...bundle.runs.map(
       (run) =>
-        `| ${run.model} | ${run.compact.model} | ${run.repetition} | ${run.compact.status}${run.compact.degraded ? ' degraded' : ''} | ${formatAudit(run.compact.audit)} | ${run.compact.attribution.eligible ? 'eligible' : `INELIGIBLE:${run.compact.attribution.reasons.join(',')}`} | ${(run.compact.preContextTokens ?? 0).toLocaleString()} → ${(run.compact.postContextTokens ?? 0).toLocaleString()} | ${run.compact.compressionRatio === undefined ? 'n/a' : `${(run.compact.compressionRatio * 100).toFixed(1)}%`} | ${run.compact.outputCapTokens?.toLocaleString() ?? 'default'} | ${run.compact.checkpointTokens?.toLocaleString() ?? 'n/a'} | ${run.compact.modelCalls ?? 0} | ${run.compact.usage.totalTokens.toLocaleString()} | ${run.compact.timeMs === undefined ? 'n/a' : `${run.compact.timeMs.toLocaleString()} ms`} | ${formatUsd(run.compact.costUsd)} |`,
+        `| ${run.model} | ${run.compact.model} | ${run.repetition} | ${run.compact.status}${run.compact.degraded ? ' degraded' : ''} | ${formatAudit(run.compact.audit, run.compact.judge, run.compact.deferredTurns)} | ${run.compact.attribution.eligible ? 'eligible' : `INELIGIBLE:${run.compact.attribution.reasons.join(',')}`} | ${(run.compact.preContextTokens ?? 0).toLocaleString()} → ${(run.compact.postContextTokens ?? 0).toLocaleString()} | ${run.compact.compressionRatio === undefined ? 'n/a' : `${(run.compact.compressionRatio * 100).toFixed(1)}%`} | ${run.compact.outputCapTokens?.toLocaleString() ?? 'default'} | ${run.compact.checkpointTokens?.toLocaleString() ?? 'n/a'} | ${run.compact.modelCalls ?? 0} | ${run.compact.usage.totalTokens.toLocaleString()} | ${run.compact.timeMs === undefined ? 'n/a' : `${run.compact.timeMs.toLocaleString()} ms`} | ${formatUsd(run.compact.costUsd)} |`,
     ),
     '',
     '## Probe Diagnostics',
@@ -1141,7 +1208,10 @@ export function parseArgs(argv: string[]): CompactEvalOptions {
     } else if (argv[index] === '--include-no-history' || argv[index] === '--no-history') {
       options.includeNoHistory = true;
     } else if (argv[index] === '--adversarial') options.adversarial = true;
-    else if (argv[index] === '--json') options.json = true;
+    else if (argv[index] === '--deferred') {
+      const turns = positiveInteger(value, 0, 1);
+      if (turns > 0) options.deferredTurns = turns;
+    } else if (argv[index] === '--json') options.json = true;
   }
   options.models = [...new Set(options.models)];
   return options;
@@ -1231,6 +1301,7 @@ export async function runCompactEvaluationInProcess(
           includeNoHistory: options.includeNoHistory,
           checkpointTokens: options.checkpointTokens,
           compactEffort: options.compactEffort,
+          deferredTurns: options.deferredTurns,
         }),
       );
     }
@@ -1278,6 +1349,7 @@ function workerArgs(
   if (options.compactEffort) args.push('--compact-effort', options.compactEffort);
   if (options.includeNoHistory) args.push('--include-no-history');
   if (options.adversarial) args.push('--adversarial');
+  if (options.deferredTurns) args.push('--deferred', String(options.deferredTurns));
   return args;
 }
 
@@ -1332,7 +1404,7 @@ function parseWorkerBundle(stdout: string): CompactEvalBundle {
   ) {
     throw new Error('Compact evaluation worker returned an unsupported report schema.');
   }
-  return parsed as CompactEvalBundle;
+  return parsed as unknown as CompactEvalBundle;
 }
 
 export async function runCompactEvaluationIsolated(

@@ -1,6 +1,14 @@
 import type { AgentRuntimeEvent } from '../agents/types.js';
 import { runAgentLoop } from '../agent/loop.js';
-import { runCompact, runPostCompactHooks, type RunCompactOptions } from '../agent/compact.js';
+import {
+  applyCompactResult,
+  judgeCompaction,
+  judgedResult,
+  resolveCompactBudgets,
+  runCompact,
+  runPostCompactHooks,
+  type RunCompactOptions,
+} from '../agent/compact.js';
 
 import { runSessionEnd, runSessionStart } from './lifecycle.js';
 import type { SessionLifecycleOptions } from './lifecycle.js';
@@ -12,6 +20,7 @@ import type {
   CompactRecordData,
   CompactResult,
   PlanRecordData,
+  PreparedCompaction,
   RewindSnapshotCaptureResult,
   RewindSnapshotStoreInterface,
   RewindTarget,
@@ -66,6 +75,8 @@ export interface AgentSessionRunCallbacks {
   getMode?: AgentLoopCallbacks['getMode'];
   onModeChange?: AgentLoopCallbacks['onModeChange'];
   onCompact?: AgentLoopCallbacks['onCompact'];
+  prepareCompact?: AgentLoopCallbacks['prepareCompact'];
+  commitCompact?: AgentLoopCallbacks['commitCompact'];
   onAssistantMessageComplete?: AgentLoopCallbacks['onAssistantMessageComplete'];
   onTodos?: AgentLoopCallbacks['onTodos'];
   onRetry?: AgentLoopCallbacks['onRetry'];
@@ -216,6 +227,26 @@ export interface AgentSessionCompactOutcome {
   boundary?: CompactBoundary;
 }
 
+/** `prepareCompact`'s answer: a compaction awaiting its commit, or the reason there is none. */
+export type AgentSessionPrepareCompactOutcome =
+  | { status: 'prepared'; prepared: PreparedCompaction }
+  | { status: 'skipped' | 'failed'; result: CompactResult };
+
+export interface AgentSessionCommitCompactRequest {
+  prepared: PreparedCompaction;
+  /** The history as it stands now; must extend the snapshot by message ids. */
+  history: readonly Message[];
+  config: AgentConfig;
+  sessionId?: string;
+  transcriptOrdinal: number;
+  options: Omit<RunCompactOptions, 'sessionId' | 'trigger'>;
+  runContext?: AgentRunContext;
+  runtime?: SessionRuntime;
+  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+  isCurrent?: () => boolean;
+  onCommitted?: AgentSessionCompactRequest['onCommitted'];
+}
+
 export type AgentSessionPrepareSendResult =
   | {
       status: 'prepared';
@@ -233,6 +264,8 @@ export interface AgentSessionCancelResult {
 export interface AgentSessionDependencies {
   runLoop?: AgentLoopRunner;
   compactRunner?: typeof runCompact;
+  /** The deferred checkpoint's judge; a test double stands in for the model call. */
+  judgeRunner?: typeof judgeCompaction;
   postCompactHooksRunner?: typeof runPostCompactHooks;
   sessionStartRunner?: typeof runSessionStart;
   sessionEndRunner?: typeof runSessionEnd;
@@ -289,6 +322,7 @@ export class AgentSession {
   readonly operations = new AgentSessionOperations();
   private readonly runLoop: AgentLoopRunner;
   private readonly compactRunner: typeof runCompact;
+  private readonly judgeRunner: typeof judgeCompaction;
   private readonly postCompactHooksRunner: typeof runPostCompactHooks;
   private readonly sessionStartRunner: typeof runSessionStart;
   private readonly sessionEndRunner: typeof runSessionEnd;
@@ -303,6 +337,7 @@ export class AgentSession {
   constructor(dependencies: AgentSessionDependencies = {}) {
     this.runLoop = dependencies.runLoop ?? runAgentLoop;
     this.compactRunner = dependencies.compactRunner ?? runCompact;
+    this.judgeRunner = dependencies.judgeRunner ?? judgeCompaction;
     this.postCompactHooksRunner = dependencies.postCompactHooksRunner ?? runPostCompactHooks;
     this.sessionStartRunner = dependencies.sessionStartRunner ?? runSessionStart;
     this.sessionEndRunner = dependencies.sessionEndRunner ?? runSessionEnd;
@@ -695,35 +730,138 @@ export class AgentSession {
     const runtime = request.runtime ?? this.runtime;
     if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
     const result = await this.compactRunner(request.config, request.history, {
-      ...request.options,
+      ...this.accountedOptions(request.options, request.runContext, runtime),
       sessionId: request.sessionId,
-      beforeModelCall: request.runContext
-        ? (model) => {
-            const requestCheck = request.options.beforeModelCall?.(model);
-            if (requestCheck && !requestCheck.allowed) return requestCheck;
-            return runtime.runAccounting.checkBeforeModelCall(request.runContext!.rootRunId, model);
-          }
-        : request.options.beforeModelCall,
-      onUsage: request.runContext
-        ? (usage, metadata) => {
-            runtime.runAccounting.record(request.runContext!, usage, metadata);
-            request.options.onUsage?.(usage, metadata);
-          }
-        : request.options.onUsage,
-      onUsageMissing: request.runContext
-        ? (metadata) => {
-            runtime.runAccounting.markUsageUnknown(
-              request.runContext!,
-              metadata,
-              'compaction_usage',
-            );
-            request.options.onUsageMissing?.(metadata);
-          }
-        : request.options.onUsageMissing,
     });
     if (result.status !== 'compacted') return { result };
     if (request.isCurrent?.() === false) return { result };
+    return this.commitCompactResult(result, request);
+  }
 
+  /**
+   * Deferred compaction (`plans/async-compaction-plan.md`): the reducer half of
+   * `compact`, on a snapshot, without the record, the boundary or the
+   * PostCompact hooks. PreCompact hooks still run -- they are the refusal
+   * point, and the suspect-input scan they see is the snapshot's.
+   */
+  async prepareCompact(
+    request: AgentSessionCompactRequest,
+  ): Promise<AgentSessionPrepareCompactOutcome> {
+    const runtime = request.runtime ?? this.runtime;
+    if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
+    const result = await this.compactRunner(request.config, request.history, {
+      ...this.accountedOptions(request.options, request.runContext, runtime),
+      sessionId: request.sessionId,
+    });
+    if (result.status !== 'compacted') return { status: result.status, result };
+    return {
+      status: 'prepared',
+      prepared: {
+        snapshot: [...request.history],
+        result,
+        trigger: request.options.trigger,
+        preContextTokens: request.options.preContextTokens,
+      },
+    };
+  }
+
+  /**
+   * The other half: apply a prepared compaction to the history as it stands,
+   * ask the judge whether the checkpoint holds what the steps taken meanwhile
+   * relied on, and only then write the record and run the hooks. A rejected
+   * or inapplicable checkpoint is dropped, and the caller falls back to a
+   * synchronous compaction.
+   */
+  async commitCompact(
+    request: AgentSessionCommitCompactRequest,
+  ): Promise<AgentSessionCompactOutcome> {
+    const runtime = request.runtime ?? this.runtime;
+    const { prepared } = request;
+    const applied = applyCompactResult(prepared.result, prepared.snapshot, request.history, {
+      toolResultMaxTokens: resolveCompactBudgets(request.config).retainedToolResultMaxTokens,
+    });
+    if (!applied) {
+      return {
+        result: {
+          status: 'skipped',
+          reason: 'not-applicable',
+          message: 'The history no longer extends the snapshot the reducer read.',
+        },
+      };
+    }
+    const snapshotIds = new Set(prepared.snapshot.map((message) => message.id));
+    const delta = request.history.filter((message) => !snapshotIds.has(message.id));
+    const accounted = this.accountedOptions(
+      { ...request.options, trigger: prepared.trigger },
+      request.runContext,
+      runtime,
+    );
+    const judge = await this.judgeRunner(request.config, applied, delta, {
+      signal: accounted.signal,
+      provider: accounted.provider,
+      beforeModelCall: accounted.beforeModelCall,
+      onUsage: accounted.onUsage,
+      onUsageMissing: accounted.onUsageMissing,
+    });
+    // A cancellation that lands during the judge call is a stop, not an
+    // inconclusive verdict: the synchronous path writes nothing under the
+    // same abort, and a checkpoint stamped as judged that nobody judged must
+    // not be what a resume starts from.
+    if (accounted.signal?.aborted || judge.note === 'aborted') {
+      return { result: { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' } };
+    }
+    const result = judgedResult(applied, judge);
+    if (result.status !== 'compacted') return { result };
+    if (request.isCurrent?.() === false) return { result };
+    return this.commitCompactResult(result, {
+      config: request.config,
+      history: request.history,
+      sessionId: request.sessionId,
+      transcriptOrdinal: request.transcriptOrdinal,
+      options: { ...request.options, trigger: prepared.trigger },
+      runContext: request.runContext,
+      runtime,
+      timelineStore: request.timelineStore,
+      isCurrent: request.isCurrent,
+      onCommitted: request.onCommitted,
+    });
+  }
+
+  /** The compactor's model calls charged to the run, the way `compact` has always charged them. */
+  private accountedOptions(
+    options: AgentSessionCompactRequest['options'],
+    runContext: AgentRunContext | undefined,
+    runtime: SessionRuntime,
+  ): AgentSessionCompactRequest['options'] {
+    return {
+      ...options,
+      beforeModelCall: runContext
+        ? (model) => {
+            const requestCheck = options.beforeModelCall?.(model);
+            if (requestCheck && !requestCheck.allowed) return requestCheck;
+            return runtime.runAccounting.checkBeforeModelCall(runContext.rootRunId, model);
+          }
+        : options.beforeModelCall,
+      onUsage: runContext
+        ? (usage, metadata) => {
+            runtime.runAccounting.record(runContext, usage, metadata);
+            options.onUsage?.(usage, metadata);
+          }
+        : options.onUsage,
+      onUsageMissing: runContext
+        ? (metadata) => {
+            runtime.runAccounting.markUsageUnknown(runContext, metadata, 'compaction_usage');
+            options.onUsageMissing?.(metadata);
+          }
+        : options.onUsageMissing,
+    };
+  }
+
+  /** The record, the boundary, `onCommitted` and the PostCompact hooks for a compacted result. */
+  private async commitCompactResult(
+    result: Extract<CompactResult, { status: 'compacted' }>,
+    request: AgentSessionCompactRequest,
+  ): Promise<AgentSessionCompactOutcome> {
     const timestamp = Date.now();
     const boundary: CompactBoundary = {
       id: result.compactId,
@@ -758,6 +896,7 @@ export class AgentSession {
       modelCalls: result.modelCalls,
       degraded: result.degraded,
       warning: result.warning,
+      ...(result.judge ? { judge: result.judge } : {}),
     };
     if (request.timelineStore && request.sessionId) {
       request.timelineStore.append(request.sessionId, {
@@ -968,6 +1107,8 @@ export class AgentSession {
         // context-overflow path at the bottom of the turn is deliberately not
         // gated by it. Nulling the callback disabled that recovery too.
         onCompact: callbacks.onCompact,
+        prepareCompact: callbacks.prepareCompact,
+        commitCompact: callbacks.commitCompact,
         onAssistantMessageComplete: (message) => {
           if (request.isCurrent?.() === false) return;
           request.timelineStore?.append(request.sessionId, {

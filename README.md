@@ -786,6 +786,27 @@ prompt and two comments about compaction -- honestly. `npm run eval:compact -- -
 framings of the instruction in a tool result and runs the same probes as the plain benchmark, so
 whether your summarizer model is steered is a number rather than a guess.
 
+**The turn that trips the threshold no longer waits for the summarizer.** When a response reports
+usage over the compaction threshold and the model has tool calls to make, Book starts the
+summarizer on a snapshot of the history *before* the tools run and lets the tool wave -- shell
+commands, tests, a permission prompt -- be its head start; the turn goes on over the full
+history. At the next turn boundary a **judge** (one small call on the compact model, low effort)
+reads the checkpoint as the agent would and the steps taken while the summarizer ran, and answers
+whether the checkpoint holds every fact, value and constraint those steps relied on and supports
+the next action they took. Accepted: the checkpoint replaces the older history and the steps
+taken meanwhile follow it verbatim -- the record that is written is what a compaction at that
+boundary would have written, with those steps kept exact rather than summarized. Rejected: the
+checkpoint is dropped and Book compacts synchronously at that boundary, as before. A judge that
+fails or does not answer in JSON is `inconclusive` and accepts, which is the blind acceptance
+every synchronous compaction gets; only a reject changes anything, and the verdict is recorded on
+the compaction (and the stream-json `compact` record) so the reject rate is visible. If the next
+request would not fit the window while the summarizer is still running, Book waits for that one
+rather than start a second; the overflow-recovery path stays synchronous. The compaction card
+reads "deferred · judge accepted" (or the verdict) when this path ran. The design, including what
+is deliberately left for later -- repair on reject, managed agents, the pre-turn host compaction,
+a judge from another model family -- is `plans/async-compaction-plan.md`; `npm run eval:compact --
+--deferred <k>` measures the judge without the loop.
+
 ### Permission rules and modes
 
 `permissions.allow`, `permissions.ask`, and `permissions.deny` are matched against every tool call.
@@ -838,7 +859,9 @@ runtime — hooks are capped at 10 s each and run sequentially in declaration or
 `matcher` filters `PreToolUse`/`PostToolUse` by tool call (`Bash(*)`) and `PreCompact`/`PostCompact`
 by trigger. `PreCompact` receives `trigger`, `focus`, and, when the span about to be summarized
 contains text addressed to a summarizer, `suspect_inputs`: a list of `{ eventRef, excerpt }`; exit
-2 (or `{"action":"block","message":…}`) refuses the compaction and the TUI shows the message.
+2 (or `{"action":"block","message":…}`) refuses the compaction and the TUI shows the message. For a
+deferred compaction the hook runs when the summarizer starts on the snapshot, and again if the
+judge rejects the checkpoint and Book compacts synchronously instead.
 
 Hooks from your own layers (`~/.book/settings.json`, `.book/settings.local.json`, `--settings`)
 run as written. A hook declared in a repository's checked-in `.book/settings.json` is withheld

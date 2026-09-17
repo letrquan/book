@@ -213,6 +213,55 @@ describe('SessionStore', () => {
     expect(loaded.meta.messageCount).toBe(4);
   });
 
+  it('replays a deferred compact record whose replacement ends with steps already in the timeline', () => {
+    // Asynchronous compaction (plans/async-compaction-plan.md): the reducer ran
+    // on a snapshot, the agent took two more steps meanwhile -- persisted as
+    // they completed -- and the record committed afterwards carries the
+    // replacement plus those steps. Context after load is that replacement,
+    // once, followed only by what came after the record.
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, { type: 'user', timestamp: 1, data: { content: 'old1' } });
+    s.append(id, { type: 'assistant', timestamp: 2, data: { content: 'old2', complete: true } });
+    s.append(id, { type: 'user', timestamp: 3, data: { content: 'delta-user' } });
+    s.append(id, {
+      type: 'assistant',
+      timestamp: 4,
+      data: { content: 'delta-assistant', complete: true },
+    });
+    s.append(id, {
+      type: 'compact',
+      timestamp: 5,
+      data: {
+        version: 1,
+        trigger: 'auto',
+        summary: 'the old stuff',
+        replacementHistory: [
+          { id: 'sum', role: 'user', content: '[Compacted summary]\nthe old stuff', timestamp: 5 },
+          { id: 'd1', role: 'user', content: 'delta-user', timestamp: 3 },
+          { id: 'd2', role: 'assistant', content: 'delta-assistant', timestamp: 4 },
+        ],
+      },
+    });
+    s.append(id, { type: 'user', timestamp: 6, data: { content: 'after' } });
+
+    const loaded = s.load(id);
+    expect(loaded.history.map((message) => message.content)).toEqual([
+      '[Compacted summary]\nthe old stuff',
+      'delta-user',
+      'delta-assistant',
+      'after',
+    ]);
+    expect(loaded.transcript.map((message) => message.content)).toEqual([
+      'old1',
+      'old2',
+      'delta-user',
+      'delta-assistant',
+      'after',
+    ]);
+    expect(loaded.compactBoundaries).toHaveLength(1);
+  });
+
   it('loads legacy conversation records as included context', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj' });

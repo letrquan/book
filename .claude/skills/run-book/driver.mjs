@@ -78,6 +78,8 @@ let mockProc = null;
 async function startMock() {
   const args = [join(HERE, 'mock-provider.mjs'), '--port', String(MOCK_PORT)];
   if (MOCK_SCRIPT) args.push('--script', MOCK_SCRIPT);
+  // Pass-through for the mock's own flags: `--mock-usage-from-estimate` etc.
+  if (process.argv.includes('--mock-usage-from-estimate')) args.push('--usage-from-estimate');
   mockProc = procSpawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((res, rej) => {
     const timer = setTimeout(

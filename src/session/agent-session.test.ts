@@ -1566,3 +1566,189 @@ describe('AgentSession', () => {
     expect(session.finishSend(operation)).toBe(false);
   });
 });
+
+describe('AgentSession deferred compaction', () => {
+  const step = (id: string, role: Message['role'], content: string): Message => ({
+    id,
+    role,
+    content,
+    includeInContext: true,
+    timestamp: 0,
+  });
+  const snapshot = [step('u1', 'user', 'first'), step('a1', 'assistant', 'done first')];
+  const delta = [step('u2', 'user', 'second'), step('a2', 'assistant', 'done second')];
+
+  it('prepares without committing, then judges, applies the steps taken meanwhile, and records once', async () => {
+    const records: SessionRecord[] = [];
+    const postCompactCalls: unknown[] = [];
+    const judged: Array<{ deltaIds: string[] }> = [];
+    const session = new AgentSession({
+      compactRunner: async () => compactedResult(),
+      judgeRunner: async (_config, _applied, judgedDelta) => {
+        judged.push({ deltaIds: judgedDelta.map((message) => message.id) });
+        return {
+          verdict: 'accepted',
+          missing: [],
+          modelCalls: 1,
+          deltaMessages: judgedDelta.length,
+        };
+      },
+      postCompactHooksRunner: async (_config, options) => {
+        postCompactCalls.push(options);
+      },
+    });
+
+    const prepared = await session.prepareCompact({
+      config: defaultConfig(),
+      history: snapshot,
+      sessionId: 'session-1',
+      transcriptOrdinal: 2,
+      options: { trigger: 'auto' },
+      timelineStore: { append: (_id, record) => records.push(record) },
+    });
+    expect(prepared.status).toBe('prepared');
+    if (prepared.status !== 'prepared') return;
+    expect(prepared.prepared.snapshot.map((message) => message.id)).toEqual(['u1', 'a1']);
+    // Nothing committed yet: no record, no hook.
+    expect(records).toEqual([]);
+    expect(postCompactCalls).toEqual([]);
+
+    const outcome = await session.commitCompact({
+      prepared: prepared.prepared,
+      history: [...snapshot, ...delta],
+      config: defaultConfig(),
+      sessionId: 'session-1',
+      transcriptOrdinal: 4,
+      options: {},
+      timelineStore: { append: (_id, record) => records.push(record) },
+    });
+    expect(outcome.result.status).toBe('compacted');
+    if (outcome.result.status !== 'compacted') return;
+    expect(judged).toEqual([{ deltaIds: ['u2', 'a2'] }]);
+    // The record carries the replacement plus the steps taken meanwhile, the
+    // boundary sits at the later ordinal, and the verdict rides along.
+    expect(outcome.result.replacementHistory.map((message) => message.id)).toEqual([
+      'checkpoint-1',
+      'u2',
+      'a2',
+    ]);
+    expect(outcome.result.judge).toMatchObject({ verdict: 'accepted', deltaMessages: 2 });
+    // The reducer's one call plus the judge's.
+    expect(outcome.result.modelCalls).toBe(2);
+    expect(outcome.boundary).toMatchObject({
+      transcriptOrdinal: 4,
+      preContextCount: 4,
+      postContextCount: 3,
+    });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      type: 'compact',
+      data: {
+        replacementHistory: outcome.result.replacementHistory,
+        judge: { verdict: 'accepted' },
+      },
+    });
+    expect(postCompactCalls).toHaveLength(1);
+  });
+
+  it('drops a checkpoint the judge rejects, writing nothing', async () => {
+    const records: SessionRecord[] = [];
+    const session = new AgentSession({
+      compactRunner: async () => compactedResult(),
+      judgeRunner: async () => ({
+        verdict: 'rejected',
+        missing: ['the batch size the second step used'],
+        modelCalls: 1,
+        deltaMessages: 2,
+      }),
+      postCompactHooksRunner: async () => {
+        throw new Error('no hook on a rejected checkpoint');
+      },
+    });
+    const prepared = await session.prepareCompact({
+      config: defaultConfig(),
+      history: snapshot,
+      transcriptOrdinal: 2,
+      options: { trigger: 'auto' },
+    });
+    if (prepared.status !== 'prepared') throw new Error(prepared.status);
+    const outcome = await session.commitCompact({
+      prepared: prepared.prepared,
+      history: [...snapshot, ...delta],
+      config: defaultConfig(),
+      transcriptOrdinal: 4,
+      options: {},
+      timelineStore: { append: (_id, record) => records.push(record) },
+    });
+    expect(outcome.result).toMatchObject({
+      status: 'skipped',
+      reason: 'judge-rejected',
+      judge: { verdict: 'rejected', missing: ['the batch size the second step used'] },
+    });
+    expect(outcome.result.status === 'skipped' && outcome.result.message).toContain('batch size');
+    expect(records).toEqual([]);
+  });
+
+  it('writes nothing when the run was cancelled while the judge was out', async () => {
+    const records: SessionRecord[] = [];
+    const controller = new AbortController();
+    const session = new AgentSession({
+      compactRunner: async () => compactedResult(),
+      judgeRunner: async () => {
+        controller.abort();
+        return {
+          verdict: 'inconclusive',
+          missing: [],
+          modelCalls: 1,
+          note: 'aborted',
+          deltaMessages: 2,
+        };
+      },
+      postCompactHooksRunner: async () => {
+        throw new Error('no hook after a cancel');
+      },
+    });
+    const prepared = await session.prepareCompact({
+      config: defaultConfig(),
+      history: snapshot,
+      transcriptOrdinal: 2,
+      options: { trigger: 'auto' },
+    });
+    if (prepared.status !== 'prepared') throw new Error(prepared.status);
+    const outcome = await session.commitCompact({
+      prepared: prepared.prepared,
+      history: [...snapshot, ...delta],
+      config: defaultConfig(),
+      transcriptOrdinal: 4,
+      options: { signal: controller.signal },
+      timelineStore: { append: (_id, record) => records.push(record) },
+    });
+    expect(outcome.result).toMatchObject({ status: 'failed', reason: 'aborted' });
+    expect(records).toEqual([]);
+  });
+
+  it('declines a checkpoint whose snapshot the history no longer extends', async () => {
+    const session = new AgentSession({
+      compactRunner: async () => compactedResult(),
+      judgeRunner: async () => {
+        throw new Error('nothing to judge');
+      },
+    });
+    const prepared = await session.prepareCompact({
+      config: defaultConfig(),
+      history: snapshot,
+      transcriptOrdinal: 2,
+      options: { trigger: 'auto' },
+    });
+    if (prepared.status !== 'prepared') throw new Error(prepared.status);
+    const outcome = await session.commitCompact({
+      prepared: prepared.prepared,
+      // The last turn was rewound and re-answered.
+      history: [snapshot[0], step('a1b', 'assistant', 'done first, differently'), ...delta],
+      config: defaultConfig(),
+      transcriptOrdinal: 4,
+      options: {},
+    });
+    expect(outcome.result).toMatchObject({ status: 'skipped', reason: 'not-applicable' });
+  });
+});

@@ -183,6 +183,8 @@ export type CompactUiState = {
   warning?: string;
   strategy?: Extract<CompactResult, { status: 'compacted' }>['strategy'];
   modelCalls?: number;
+  /** The reducer ran while the turn went on and a judge read the steps taken meanwhile. */
+  judge?: Extract<CompactResult, { status: 'compacted' }>['judge'];
 };
 
 function buildObservationLedger(messages: Message[]) {
@@ -974,6 +976,87 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 phase: 'skipped',
                 trigger: 'auto',
                 message: result.message ?? 'Compaction blocked by PreCompact hook.',
+              });
+            }
+            return result;
+          },
+          // Deferred compaction (plans/async-compaction-plan.md): the reducer
+          // runs on a snapshot while the turn goes on; the commit, at the next
+          // boundary, judges the checkpoint against the steps taken meanwhile.
+          prepareCompact: async (snapshot, usage, hints) => {
+            if (!stillCurrent()) {
+              return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
+            }
+            const outcome = await agentSession.prepareCompact({
+              config: liveConfigRef.current,
+              history: snapshot,
+              compactBoundaries,
+              sessionId: activeSessionId,
+              transcriptOrdinal: messagesRef.current.length,
+              runContext: activeRunContext,
+              runtime: agentSession.getRuntime(),
+              options: {
+                ...hints,
+                trigger: 'auto',
+                preContextTokens: usage ? usagePressureTokens(usage) : undefined,
+              },
+            });
+            if (outcome.status !== 'prepared') {
+              if (
+                stillCurrent() &&
+                outcome.result.status === 'skipped' &&
+                outcome.result.reason === 'blocked'
+              ) {
+                setCompactUi({
+                  phase: 'skipped',
+                  trigger: 'auto',
+                  message: outcome.result.message ?? 'Compaction blocked by PreCompact hook.',
+                });
+              }
+              return outcome.result;
+            }
+            return outcome.prepared;
+          },
+          commitCompact: async (prepared, history, hints) => {
+            if (!stillCurrent()) {
+              return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
+            }
+            // The commit usually lands at the preflight gate, after the next
+            // turn's streaming placeholder has been appended; the boundary
+            // belongs before that placeholder, not after it.
+            const placeholderIndex = streamingIdRef.current
+              ? messagesRef.current.findIndex((message) => message.id === streamingIdRef.current)
+              : -1;
+            const outcome = await agentSession.commitCompact({
+              prepared,
+              history,
+              config: liveConfigRef.current,
+              sessionId: activeSessionId,
+              transcriptOrdinal:
+                placeholderIndex >= 0 ? placeholderIndex : messagesRef.current.length,
+              runContext: activeRunContext,
+              runtime: agentSession.getRuntime(),
+              timelineStore,
+              isCurrent: stillCurrent,
+              onCommitted: projectCompactResult,
+              options: { signal: hints?.signal },
+            });
+            const result = outcome.result;
+            if (!stillCurrent()) return result;
+            if (result.status === 'compacted' && outcome.boundary) {
+              setCompactUi({
+                phase: 'diff',
+                trigger: 'auto',
+                preMessages: result.preMessageCount,
+                preContextTokens: result.preContextTokens,
+                message: result.degraded
+                  ? 'Conversation compacted with reduced fidelity'
+                  : 'Conversation compacted',
+                degraded: result.degraded,
+                warning: result.warning,
+                strategy: result.strategy,
+                modelCalls: result.modelCalls,
+                judge: result.judge,
               });
             }
             return result;

@@ -12,7 +12,12 @@
   suspect-input scan with the `PreCompact` `suspect_inputs` signal, the inherited-constraint
   audit, the host-owned `audit` field and `[reducer: …]` header line, and the benchmark's
   `--adversarial` arm — the "(a) verifier" landed as the inherited-constraint audit rather than a
-  ledger check, since the fit never touches the ledger); P5–P6 remain proposals.
+  ledger check, since the fit never touches the ledger); **P5 phase 1 landed 2026-09-17**
+  (`plans/async-compaction-plan.md`: `applyCompactResult`, `judgeCompaction`, the
+  `prepareCompact`/`commitCompact` seam through `AgentSession`, the loop's deferred trigger --
+  moved ahead of the tool wave because the usage threshold and the preflight gate nearly
+  coincide -- and `--deferred <k>` in the benchmark; repair on reject, managed agents and the
+  pre-turn host path are phase 2); P6 is moot after P1.
 - **Scope:** `src/agent/compact.ts`, `src/agent/carried-ledger.ts`, `src/agent/compact-fidelity.ts`,
   `scripts/compact-eval.ts`, `src/agent/loop.ts` (compaction call site)
 - **Method:** literature retrieval through the OpenResearch CLI (`orx discover` over alphaXiv and

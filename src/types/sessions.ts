@@ -67,11 +67,19 @@ export type CompactResult =
        * reducer ran and could have refused.
        */
       suspectInputs?: CompactSuspectInput[];
+      /**
+       * Present when the compaction was deferred: the reducer ran on a
+       * snapshot while the turn went on, and the judge read the steps taken
+       * meanwhile before the checkpoint was allowed to replace history.
+       */
+      judge?: CompactJudgeVerdict;
     }
   | {
       status: 'skipped';
-      reason: 'too-short' | 'blocked' | 'disabled';
+      reason: 'too-short' | 'blocked' | 'disabled' | 'judge-rejected' | 'not-applicable';
       message?: string;
+      /** For `judge-rejected`: the verdict, so the rate is visible. */
+      judge?: CompactJudgeVerdict;
     }
   | {
       status: 'failed';
@@ -377,6 +385,41 @@ export interface CompactSuspectInput {
   excerpt: string;
 }
 
+/**
+ * A compaction the reducer has finished on a snapshot of the history but the
+ * host has not committed: the judge, the record and the hooks wait for the
+ * next boundary, when the steps taken meanwhile are known.
+ */
+export interface PreparedCompaction {
+  /** The history the reducer read, so the commit can verify the live one still extends it. */
+  snapshot: Message[];
+  result: Extract<CompactResult, { status: 'compacted' }>;
+  /** What the reducer was asked; the commit reuses focus and hook plumbing. */
+  trigger: CompactTrigger;
+  preContextTokens?: number;
+}
+
+/**
+ * What the trajectory-grounded judge said about a deferred checkpoint
+ * (`plans/async-compaction-plan.md`): whether the checkpoint holds what the
+ * agent went on to rely on in the steps taken while the reducer ran.
+ * `inconclusive` -- no steps to judge, a judge that failed, or a reply that
+ * did not parse -- accepts, which is the blind acceptance every synchronous
+ * compaction gets; only `rejected` changes what happens.
+ */
+export interface CompactJudgeVerdict {
+  verdict: 'accepted' | 'rejected' | 'inconclusive';
+  /** What the judge found missing, in its words; empty unless rejected. */
+  missing: string[];
+  modelCalls: number;
+  /** Why the verdict is inconclusive, when it is. */
+  note?: string;
+  /** Steps in the judged span that carried text addressed to a summarizer (P4's scan). */
+  suspectDelta?: number;
+  /** How many steps were taken between the snapshot and the commit. */
+  deltaMessages: number;
+}
+
 export interface ConversationCheckpointV2 {
   version: 2;
   generation: number;
@@ -463,6 +506,8 @@ export interface CompactRecordDataV2 {
   modelCalls?: number;
   degraded?: boolean;
   warning?: string;
+  /** Present when the compaction was deferred and judged; see `CompactJudgeVerdict`. */
+  judge?: CompactJudgeVerdict;
 }
 
 export type CompactRecordData = CompactRecordDataV1 | CompactRecordDataV2;
