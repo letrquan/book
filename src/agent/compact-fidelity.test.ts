@@ -18,6 +18,7 @@ import {
   buildToolHeavyPlantedFacts,
   compactTestConfig,
   type PlantedFact,
+  type PlantedFactKind,
 } from '../test/compact-fixture.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message } from '../types/messages.js';
@@ -69,23 +70,75 @@ function readSeed(prompt: string): ConversationCheckpointV2 | undefined {
 }
 
 /**
- * Narrative bulk around a fact, so an episode is long enough that the fitter's
- * text ladder (512, 256, 128, 64, 32, 16 characters) decides whether the fact
- * inside it survives. A fact packed into a short string would ride out every
- * rung and measure nothing.
+ * Narrative bulk for an episode's outcome, so the checkpoint is big enough that
+ * the fitter has to choose. The fact itself is named in the episode's `task`
+ * as a reducer names it -- "Record timeline-event: Wednesday" -- so the text
+ * ladder's shallow rungs (512, 256, 128 characters) leave it whole the way
+ * they leave a real episode whole, and only eviction or the deep rungs lose
+ * it. Burying the fact mid-paragraph, as this double used to, measured the
+ * ladder against a shape no reducer writes.
  */
 const EPISODE_PADDING = 'Context recorded during the handoff investigation. '.repeat(20);
+/**
+ * A rule or an unresolved item is a sentence, not a paragraph: a reducer
+ * writes "never touch the vendored parser", not a page around it. Padded to
+ * the length of a real constraint so the ladder's shallow rungs (512, 256)
+ * leave it whole and the deep ones (128 and below) do not -- which is where a
+ * real constraint's words start to go.
+ */
+const RULE_PADDING = 'Recorded during the handoff investigation; see the cited turn. '.repeat(2);
+
+type CheckpointEntry =
+  | { field: 'constraints'; entry: ConversationCheckpointV2['constraints'][number] }
+  | { field: 'files'; entry: ConversationCheckpointV2['files'][number] }
+  | { field: 'episodes'; entry: ConversationCheckpointV2['episodes'][number] }
+  | { field: 'openThreads'; entry: ConversationCheckpointV2['openThreads'][number] };
+
+/**
+ * Where a reducer puts a fact of each kind. A rule or an accepted decision is a
+ * `constraints` entry, an unresolved item an `openThreads` entry, an observed
+ * file a `files` entry, and the narrative -- what happened, what was rejected,
+ * what a value was and became -- an `episodes` entry. The fitter treats the
+ * four fields differently (P3 of `plans/compaction-research-2026-09.md`), so
+ * a fact has to sit where a reducer would put it for the harness to see that.
+ */
+function recordFact(fact: PlantedFact, eventRef: string): CheckpointEntry {
+  const sources = [{ eventRef }];
+  const text = `${EPISODE_PADDING}${fact.terms.join(' ')}. ${EPISODE_PADDING}`;
+  const sentence = `${RULE_PADDING}${fact.terms.join(' ')}. ${RULE_PADDING}`;
+  const task = `Record ${fact.kind}: ${fact.terms.join(' ')}`;
+  switch (fact.kind) {
+    case 'user-constraint':
+      return { field: 'constraints', entry: { text: sentence, scope: 'global', sources } };
+    case 'accepted-decision':
+      return { field: 'constraints', entry: { text: sentence, scope: 'task', sources } };
+    case 'open-thread':
+      return { field: 'openThreads', entry: { text: sentence, sources } };
+    case 'current-value':
+      if (fact.terms.some((term) => term.includes('/'))) {
+        return {
+          field: 'files',
+          entry: { path: fact.terms.find((term) => term.includes('/'))!, summary: text, sources },
+        };
+      }
+      return { field: 'episodes', entry: { task, outcome: text, status: 'complete', sources } };
+    default:
+      return { field: 'episodes', entry: { task, outcome: text, status: 'complete', sources } };
+  }
+}
 
 /**
  * A reducer double that is faithful by construction and deterministic by
- * construction: no random source, and it re-emits every inherited episode
- * exactly as it received it. It never forgets on its own.
+ * construction: no random source, and it re-emits every inherited entry of
+ * every field exactly as it received it. It never forgets on its own.
  *
- * The facts therefore live in the model-authored narrative -- `episodes`, which
- * the fitter is free to truncate and evict -- rather than in a field the host
- * treats as special. That is the point. Whatever this harness reports about
- * retention is a statement about Book's fitting behaviour and nothing else, so
- * the numbers move when compaction changes and stay put when it does not.
+ * The facts live in the model-authored fields -- `constraints`, `files`,
+ * `episodes`, `openThreads`, each fact where a reducer would put it
+ * (`recordFact`) -- which the fitter is free to truncate and evict, rather
+ * than in a field the host treats as special. That is the point. Whatever this
+ * harness reports about retention is a statement about Book's fitting
+ * behaviour and nothing else, so the numbers move when compaction changes and
+ * stay put when it does not.
  */
 function scriptedReducer(
   facts: readonly PlantedFact[],
@@ -110,29 +163,35 @@ function scriptedReducer(
     );
     counter.call++;
 
-    // Inherited episodes are re-emitted verbatim, as the prompt instructs.
-    // Facts not yet recorded are added from the fixture, each grounded on a
-    // source that exists in the history being summarized.
-    const carried = seed?.episodes ?? [];
-    const carriedText = JSON.stringify(carried);
+    // Inherited entries are re-emitted verbatim, field by field, as the prompt
+    // instructs. Facts not yet recorded anywhere in the seed are added from the
+    // fixture, each grounded on a source that exists in the history being
+    // summarized and placed in the field a reducer would use.
+    const inherited = {
+      constraints: seed?.constraints ?? [],
+      files: seed?.files ?? [],
+      episodes: seed?.episodes ?? [],
+      openThreads: seed?.openThreads ?? [],
+    };
+    const inheritedText = JSON.stringify(inherited);
     const added = facts
-      .filter((fact) => !factRetained(carriedText, fact))
+      .filter((fact) => !factRetained(inheritedText, fact))
       // A cue-less preference or a rule in another language is exactly what a
       // real reducer drops (17% retention in the literature the research note
       // cites), so this double never records one: if it survives, the host
       // kept the turn.
       .filter((fact) => fact.kind !== 'user-statement')
       .filter((fact) => fact.sourceMessageIds.some((id) => observed.has(id)))
-      .map((fact) => ({
-        task: `Record ${fact.kind}`,
-        outcome: `${EPISODE_PADDING}${fact.terms.join(' ')}. ${EPISODE_PADDING}`,
-        status: 'complete' as const,
-        sources: [
-          {
-            eventRef: `session://current/event/${fact.sourceMessageIds.find((id) => observed.has(id))}`,
-          },
-        ],
-      }));
+      .map((fact) =>
+        recordFact(
+          fact,
+          `session://current/event/${fact.sourceMessageIds.find((id) => observed.has(id))}`,
+        ),
+      );
+    const fieldOf = <F extends CheckpointEntry['field']>(field: F) =>
+      added
+        .filter((item): item is Extract<CheckpointEntry, { field: F }> => item.field === field)
+        .map((item) => item.entry);
 
     yield {
       type: 'text',
@@ -144,10 +203,10 @@ function scriptedReducer(
           summary: `Handoff state, revision ${counter.call}. ${'Narrative the reducer rewrites each time. '.repeat(60)}`,
           status: 'active',
         },
-        constraints: [],
-        files: [],
-        episodes: [...carried, ...added],
-        openThreads: [],
+        constraints: [...inherited.constraints, ...fieldOf('constraints')],
+        files: [...inherited.files, ...fieldOf('files')],
+        episodes: [...inherited.episodes, ...fieldOf('episodes')],
+        openThreads: [...inherited.openThreads, ...fieldOf('openThreads')],
         statistics: {
           summarizedMessages: 2,
           retainedMessages: 2,
@@ -358,6 +417,12 @@ describe('compaction fidelity baseline', () => {
       expect(metrics.postHistoryUtilization).toBeGreaterThanOrEqual(
         arm.floors.minPostHistoryUtilization,
       );
+      for (const [kind, floor] of Object.entries(arm.floors.minRetentionByKind)) {
+        expect(
+          metrics.retentionByKind[kind as PlantedFactKind],
+          `retention of ${kind}`,
+        ).toBeGreaterThanOrEqual(floor);
+      }
 
       // Loss is ordered: the oldest facts go first, because the fitter evicts
       // completed episodes from the front. The newest three survive all eight

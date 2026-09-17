@@ -20,6 +20,26 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **The checkpoint fitter gives up the least valuable thing first, by kind and by dependency.**
+  When the summarizer's checkpoint was over budget, `fitCheckpoint` evicted the oldest entries of
+  each field and shortened every field's text by the same rung -- the brief's episode went first
+  because it was oldest, and a rule was cut to sixteen characters in the same pass as a finished
+  episode. It now evicts finished episodes nothing else cites and files no open thread cites first,
+  shortens the narrative (summary, episodes, files) before it touches a rule or a thread, keeps a
+  finished episode an open thread or a file cites ahead of the ones nothing cites, and runs the
+  deep rungs (64, 32, 16 characters) only after eviction, so a budget that holds twenty readable
+  rules holds twenty readable rules rather than sixty stubs. What the fit drops is counted in a
+  host-owned `fit` tally on the checkpoint (never accepted from a model reply, never fed back to
+  the reducer), and the header discloses a dropped constraint or open thread the way it discloses
+  a dropped ledger entry. The fidelity harness's reducer double now records each fact where a
+  reducer would put it (`constraints`, `openThreads`, `files`, `episodes`) instead of burying every
+  fact in a finished episode, scores the ledger's guarantee on the ledger alone, reports retention
+  per kind of fact with per-kind floors, and plants one finished episode an open thread cites: at
+  the 32k window that episode used to be the first thing evicted and now survives (final retention
+  0.667 → 0.733 on the new double; 272k unchanged at 1.0). The mock provider in the run-book
+  toolkit can cite the events a reducer was shown (`{{event:N}}`), so a scripted checkpoint passes
+  the host's validator. (`plans/compaction-research-2026-09.md`, P3.)
+
 - **The carried ledger withholds a rule you withdrew instead of listing it beside its
   replacement.** A later sentence that restates an earlier ledger entry, or withdraws it in as
   many words ("use pnpm instead of npm", "rather than", "no longer", "stop using", "switch

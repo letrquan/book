@@ -46,6 +46,12 @@
  * happens to contain the marker must not hijack the main agent's turn. Patterns
  * are compiled at load, so an invalid one fails before READY.
  *
+ * A reply's text may cite the events Book showed the reducer: `{{event:N}}` is
+ * replaced with the Nth (1-based) `session://current/event/<id>` reference in
+ * the request's last user message, so a scripted checkpoint can carry sources
+ * the host's validator accepts even though message ids are minted at runtime.
+ * A placeholder with no Nth event is left as written.
+ *
  * `--overflow-above <tokens>` makes the mock behave like a model whose real
  * window is smaller than the one Book assumes: any unmatched chat request
  * estimated (chars/4) above the number is refused with a 400 whose body Book
@@ -132,7 +138,16 @@ function checkpointText() {
   });
 }
 
-async function streamTurn(res, turn, model, id) {
+/** `{{event:N}}` -> the Nth event reference the reducer was shown, so scripted sources resolve. */
+function substituteEvents(text, prompt) {
+  if (!text.includes('{{event:')) return text;
+  const refs = [...prompt.matchAll(/\[event:(session:\/\/current\/event\/[^\]]+)\]/g)].map(
+    (match) => match[1],
+  );
+  return text.replace(/\{\{event:(\d+)\}\}/g, (whole, index) => refs[Number(index) - 1] ?? whole);
+}
+
+async function streamTurn(res, turn, model, id, prompt = '') {
   const base = { id, object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: {} }] };
 
   sse(res, { ...base, choices: [{ index: 0, delta: { role: 'assistant' } }] });
@@ -169,7 +184,7 @@ async function streamTurn(res, turn, model, id) {
     sse(res, { ...base, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
   } else {
     // Chunk the text so the TUI exercises its streaming render path.
-    const text = turn.text ?? replyText;
+    const text = substituteEvents(turn.text ?? replyText, prompt);
     for (const piece of text.match(/.{1,12}/gs) ?? [text]) {
       sse(res, { ...base, choices: [{ index: 0, delta: { content: piece } }] });
     }
@@ -267,7 +282,7 @@ const server = createServer((req, res) => {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     });
-    void streamTurn(res, turn, parsed.model ?? 'mock-model', id);
+    void streamTurn(res, turn, parsed.model ?? 'mock-model', id, prompt);
   });
 });
 

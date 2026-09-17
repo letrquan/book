@@ -57,7 +57,10 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
       at 272k final retention on the revised fidelity corpus went from 0.571 to 1.0 and
       cue-less/non-English user statements from 0.5 to 1.0 (`plans/compaction-research-2026-09.md`).
       P2 of that note landed 2026-09-16: a ledger entry the user later restated or withdrew in as
-      many words is withheld from the ledger the model reads and counted in the header.
+      many words is withheld from the ledger the model reads and counted in the header. P3 landed
+      2026-09-17: the fitter gives up the least valuable thing first, by kind and by dependency,
+      discloses a dropped constraint or thread in the header, and the harness reports retention
+      per kind of fact.
 - [ ] A control surface for a run in flight - at hour 30 the only interventions are `kill` and wait.
 - [x] Monotonic clock for every duration decided **inside one process** — the provider retry
       budget and model-discovery budget, the background-shell start/stop budgets, the

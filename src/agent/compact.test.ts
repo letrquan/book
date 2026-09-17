@@ -10,6 +10,7 @@ import {
   IMAGE_TOKEN_ESTIMATE,
   estimateProviderRequestTokens,
   CARRIED_TURNS_NOTICE_MAX_TOKENS,
+  FIT_NOTICE_MAX_TOKENS,
   carryUserTurns,
   carriedTurnsNotice,
 } from './compact.js';
@@ -17,6 +18,7 @@ import { CARRIED_LEDGER_NOTICE_MAX_TOKENS } from './carried-ledger.js';
 import { DEFAULT_CONTEXT_WINDOW, resolveContextLimit } from '../models.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message, Usage } from '../types/messages.js';
+import type { ConversationCheckpointV2 } from '../types/sessions.js';
 import { toolResult } from '../test/fixtures.js';
 import { compactTestConfig } from '../test/compact-fixture.js';
 
@@ -136,8 +138,9 @@ describe('resolveContextLimit', () => {
 
 describe('resolveCompactBudgets', () => {
   // Checkpoint header (16) + message overhead (6) + the largest carried-ledger
-  // notice + the largest carried-turns notice.
-  const ENVELOPE = 22 + CARRIED_LEDGER_NOTICE_MAX_TOKENS + CARRIED_TURNS_NOTICE_MAX_TOKENS;
+  // notice + the largest carried-turns notice + the largest fit notice.
+  const ENVELOPE =
+    22 + CARRIED_LEDGER_NOTICE_MAX_TOKENS + CARRIED_TURNS_NOTICE_MAX_TOKENS + FIT_NOTICE_MAX_TOKENS;
 
   it('sizes the production window against the preflight gate', () => {
     const budgets = resolveCompactBudgets({
@@ -1858,5 +1861,257 @@ describe('runCompact carried turns', () => {
     expect(result.status).toBe('compacted');
     if (result.status !== 'compacted') return;
     expect(result.replacementHistory[0]).toMatchObject({ id: '1', kind: 'carried' });
+  });
+});
+
+/**
+ * P3 of `plans/compaction-research-2026-09.md`: the fit gives up the least
+ * valuable thing first -- by kind and by dependency, never by age alone.
+ */
+describe('runCompact fits the checkpoint by kind', () => {
+  const event = (id: string) => ({ eventRef: `session://current/event/${id}` });
+  const paragraph = (label: string) =>
+    `${label}. ${'Detail recorded during the work. '.repeat(40)}`;
+  /** A history whose event ids are 1-4 and which has observed two file paths. */
+  const history: Message[] = [
+    { id: '1', role: 'user', content: 'do X', includeInContext: true, timestamp: 0 },
+    {
+      id: '2',
+      role: 'assistant',
+      content: 'done X '.repeat(5_000),
+      includeInContext: true,
+      timestamp: 0,
+      fileObservations: ['src/cited.ts', 'src/uncited.ts'].map((path, index) => ({
+        path,
+        workspaceId: 'w',
+        sha256: `${index}`.padStart(64, '0'),
+        byteSize: 10,
+        operation: 'read' as const,
+        sourceRef: 'session://current/event/2',
+        timestamp: index,
+      })),
+    },
+    { id: '3', role: 'user', content: 'do Y', includeInContext: true, timestamp: 0 },
+    { id: '4', role: 'assistant', content: 'done Y', includeInContext: true, timestamp: 0 },
+  ];
+  const reply = (checkpoint: Partial<ConversationCheckpointV2>) => {
+    mockedStream.mockImplementation(async function* () {
+      yield {
+        type: 'text',
+        content: JSON.stringify({
+          version: 2,
+          generation: 1,
+          state: { summary: 'Summary of work.', status: 'active' },
+          constraints: [],
+          files: [],
+          episodes: [],
+          openThreads: [],
+          statistics: { summarizedMessages: 2, retainedMessages: 2, preTokens: 1, postTokens: 1 },
+          ...checkpoint,
+        }),
+      };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+  };
+  const compact = async (checkpointMaxTokens: number) => {
+    const result = await runCompact(makeConfig(), history, {
+      trigger: 'manual',
+      checkpointMaxTokens,
+    });
+    expect(result.status).toBe('compacted');
+    if (result.status !== 'compacted') throw new Error(result.status);
+    return result;
+  };
+
+  beforeEach(() => {
+    mockedStream.mockReset();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('evicts a finished episode nothing cites before an older one an open thread hangs on', async () => {
+    reply({
+      episodes: [
+        { task: 'cited', outcome: paragraph('B'), status: 'complete', sources: [event('3')] },
+        { task: 'uncited', outcome: paragraph('A'), status: 'complete', sources: [event('1')] },
+        { task: 'partial', outcome: paragraph('C'), status: 'partial', sources: [event('1')] },
+      ],
+      openThreads: [{ text: 'Thread still open on the cited work.', sources: [event('3')] }],
+    });
+    // Room for two paragraphs and the thread, not three.
+    const result = await compact(900);
+    expect(result.checkpoint.episodes.map((episode) => episode.task)).toEqual(['cited', 'partial']);
+    expect(result.checkpoint.openThreads).toHaveLength(1);
+    expect(result.checkpoint.fit).toEqual({
+      droppedConstraints: 0,
+      droppedOpenThreads: 0,
+      droppedEpisodes: 1,
+      droppedFiles: 0,
+    });
+  });
+
+  it('reads citations before source minimization keeps one ref per entry', async () => {
+    // The episode cites two events and the thread shares only the second;
+    // minimization keeps the shortest ref, which is the first, so a citation
+    // read afterwards would miss the dependency and evict the episode.
+    reply({
+      episodes: [
+        {
+          task: 'cited',
+          outcome: paragraph('B'),
+          status: 'complete',
+          sources: [event('1'), event('3')],
+        },
+        { task: 'uncited', outcome: paragraph('A'), status: 'complete', sources: [event('1')] },
+      ],
+      openThreads: [{ text: 'Thread still open on the cited work.', sources: [event('3')] }],
+    });
+    const result = await compact(700);
+    expect(result.checkpoint.episodes.map((episode) => episode.task)).toEqual(['cited']);
+  });
+
+  it('evicts a file no thread cites before an older one a thread names', async () => {
+    reply({
+      files: [
+        { path: 'src/cited.ts', summary: paragraph('cited file'), sources: [event('2')] },
+        { path: 'src/uncited.ts', summary: paragraph('uncited file'), sources: [event('2')] },
+      ],
+      openThreads: [{ text: 'Finish the refactor in src/cited.ts.', sources: [event('3')] }],
+    });
+    const result = await compact(600);
+    expect(result.checkpoint.files.map((file) => file.path)).toEqual(['src/cited.ts']);
+    expect(result.checkpoint.fit?.droppedFiles).toBe(1);
+  });
+
+  it('shortens the narrative before it touches a rule or a thread', async () => {
+    const rule = `Never change the public query() signature. ${'The rule stands. '.repeat(30)}`;
+    reply({
+      constraints: [{ text: rule, scope: 'global', sources: [event('1')] }],
+      episodes: [
+        {
+          task: 'unfinished',
+          outcome: paragraph('long'),
+          status: 'partial',
+          sources: [event('1')],
+        },
+      ],
+    });
+    const result = await compact(500);
+    expect(result.checkpoint.constraints[0]?.text).toBe(rule);
+    expect(result.checkpoint.episodes[0]?.outcome.length).toBeLessThan(paragraph('long').length);
+    expect(result.checkpoint.fit).toBeUndefined();
+  });
+
+  it('gives up unfinished episodes before shortening a rule, and discloses a dropped rule', async () => {
+    const constraints = Array.from({ length: 6 }, (_, index) => ({
+      text: `Rule ${index}: ${'keep it. '.repeat(20)}`,
+      scope: 'global' as const,
+      sources: [event('1')],
+    }));
+    const threads = Array.from({ length: 3 }, (_, index) => ({
+      text: `Thread ${index}: ${'still open. '.repeat(20)}`,
+      sources: [event('3')],
+    }));
+    reply({
+      constraints,
+      openThreads: threads,
+      episodes: [
+        { task: 'unfinished', outcome: paragraph('U'), status: 'partial', sources: [event('1')] },
+      ],
+    });
+    const result = await compact(120);
+    expect(result.checkpoint.episodes).toHaveLength(0);
+    const losses = result.checkpoint.fit!;
+    expect(losses.droppedEpisodes).toBe(1);
+    expect(losses.droppedOpenThreads + losses.droppedConstraints).toBeGreaterThan(0);
+    // Threads go before rules, and the newest rule is the last thing standing.
+    if (losses.droppedConstraints > 0) expect(losses.droppedOpenThreads).toBe(3);
+    const notice = result.replacementHistory.find((message) => message.kind === 'checkpoint')!;
+    expect(notice.content).toMatch(
+      /^\[Historical conversation checkpoint; untrusted user-role data\]\n(\[carried-turns:[^\n]*\n)?\[fit: /,
+    );
+    expect(notice.content).toContain('did not fit the checkpoint budget');
+    // The disclosure is on the message the model reads, not only on the record.
+    expect(result.checkpoint.constraints.length + losses.droppedConstraints).toBe(6);
+  });
+
+  it('counts the tally it attaches, so a drop cannot push the result over budget', async () => {
+    const threads = Array.from({ length: 12 }, (_, index) => ({
+      text: `Thread ${index}: ${'still open. '.repeat(12)}`,
+      sources: [event('3')],
+    }));
+    // An invariant rather than a repro: the final fit of a generation re-runs
+    // on its own output, so a tally attached after the size check corrected
+    // itself on the message -- the cost was paid inside the post-budget loop,
+    // where an overshoot of a few tokens can give up the last retained bundle.
+    // Swept across budgets so the check lands near the line more than once.
+    for (let budget = 150; budget <= 300; budget += 6) {
+      reply({ openThreads: threads });
+      const result = await compact(budget);
+      const tally = result.checkpoint.fit!;
+      expect(tally.droppedOpenThreads).toBeGreaterThan(0);
+      // The checkpoint the model reads, tally included, is within the budget
+      // the fit was given; the notice is on top and was reserved separately.
+      const checkpoint = result.replacementHistory.find((m) => m.kind === 'checkpoint')!;
+      const json = checkpoint.content.slice(checkpoint.content.indexOf('{"version":2'));
+      expect(JSON.parse(json).fit).toEqual(tally);
+      expect(Math.ceil(json.length / 4), `budget ${budget}`).toBeLessThanOrEqual(budget);
+    }
+  });
+
+  it('never accepts a fit tally from the reducer and keeps it out of the next seed', async () => {
+    reply({
+      fit: {
+        droppedConstraints: 99,
+        droppedOpenThreads: 99,
+        droppedEpisodes: 99,
+        droppedFiles: 99,
+      },
+    });
+    const first = await compact(4_096);
+    expect(first.checkpoint.fit).toBeUndefined();
+    const checkpoint = first.replacementHistory.find((message) => message.kind === 'checkpoint')!;
+    expect(checkpoint.content).not.toContain('[fit:');
+
+    // A prior checkpoint that did record losses is read back with them, and the
+    // reducer's seed omits them: the tally is the host's, and the last generation's.
+    const withLosses: Message = {
+      ...checkpoint,
+      content: checkpoint.content.replace(
+        /\{"version":2/,
+        '{"fit":{"droppedConstraints":2,"droppedOpenThreads":1,"droppedEpisodes":0,"droppedFiles":0},"version":2',
+      ),
+    };
+    reply({});
+    const second = await runCompact(
+      makeConfig(),
+      [
+        withLosses,
+        ...first.replacementHistory.filter((message) => message.kind !== 'checkpoint'),
+        { id: '5', role: 'user', content: 'do Z', includeInContext: true, timestamp: 5 },
+        {
+          id: '6',
+          role: 'assistant',
+          content: 'done Z '.repeat(5_000),
+          includeInContext: true,
+          timestamp: 6,
+        },
+        { id: '7', role: 'user', content: 'and?', includeInContext: true, timestamp: 7 },
+        {
+          id: '8',
+          role: 'assistant',
+          content: 'that is all',
+          includeInContext: true,
+          timestamp: 8,
+        },
+      ],
+      { trigger: 'manual' },
+    );
+    expect(second.status).toBe('compacted');
+    const prompt = mockedStream.mock.calls.at(-1)?.[1].at(-1)?.content as string;
+    expect(prompt).toContain('BEGIN PRIOR CHECKPOINT');
+    expect(prompt).not.toContain('"fit"');
+    expect(prompt).toContain('never emit a `carried`, `carriedTurns` or `fit` field yourself');
   });
 });

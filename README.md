@@ -740,6 +740,23 @@ while the turn fits the budget; the ledger is the floor that holds when it no lo
 design is documented in `plans/carried-ledger-plan.md`; the evidence for carrying whole turns is
 `plans/compaction-research-2026-09.md`.
 
+**What the fitter gives up first.** When the summarizer's own checkpoint is over budget, Book no
+longer drops the oldest entries of each field. It gives up the least valuable thing first, by kind
+and by dependency: finished episodes nothing else cites, then files no open thread cites, then the
+narrative (summary, episodes, files) shortened to 512, 256 and 128 characters while rules and
+threads keep their words, then the remaining episodes -- a finished one an open thread hangs on
+survives the ones nothing cites -- and files, then rules and threads shortened by the same rungs,
+then open threads oldest first, then constraints oldest first down to the newest. Only after that
+do the deep rungs (64, 32, 16 characters) run: a budget that holds twenty readable rules is spent
+on twenty readable rules, not sixty stubs. The ledger is untouched throughout. When a constraint
+or an open thread the summarizer recorded was dropped to fit, the checkpoint header says how many
+(`[fit: 2 constraints and 1 open thread the summarizer recorded did not fit the checkpoint budget
+and were dropped; ...]`); dropped episodes and files are covered by the header's standing claim
+that exact history is retrievable. Measured on the fidelity harness, whose reducer double now
+records each fact where a reducer would put it, a finished episode an open thread cites survives
+at the 32k window where it used to be the first thing evicted (`timeline-event` retention 0.667 →
+1.0; final retention 0.667 → 0.733), and retention is reported per kind of fact.
+
 ### Permission rules and modes
 
 `permissions.allow`, `permissions.ask`, and `permissions.deny` are matched against every tool call.

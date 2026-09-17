@@ -251,8 +251,11 @@ it was given on turn 3.
   threads, the whole user turn is kept verbatim as a `kind: 'carried'` message ahead of the
   checkpoint (`carryUserTurns` in `compact.ts`), paid for from the retained tail, clipped rung by
   rung before any is dropped, dropped oldest first with the brief last. The ledger remains the
-  floor for when the budget no longer holds the turn. Evidence base and the remaining candidates
-  (P2–P6): `plans/compaction-research-2026-09.md`.
+  floor for when the budget no longer holds the turn. The `kind` discriminator this phase once
+  reserved landed instead on the checkpoint's own fields (P3 of the research note, 2026-09-17):
+  `fitCheckpoint` evicts by kind and dependency rather than by age, and discloses a dropped
+  reducer constraint or open thread in the header the way the ledger discloses `droppedCount`.
+  Evidence base and the remaining candidates (P4–P6): `plans/compaction-research-2026-09.md`.
 
 ## Known limitations
 
@@ -271,6 +274,10 @@ it was given on turn 3.
   lockfile rule: the closest-match rule only discriminates when there is more than one rule to
   choose between. The header still discloses the count, the turn stays retrievable, and while the
   carried-turns budget holds it the turn is still in context.
+- **The fit's disclosure counts entries, not characters.** A reducer constraint or thread the
+  fit shortened to 128 characters (or, past eviction, to 16) "still appears" and is not counted
+  in `fit`; only an evicted entry is. The deep rungs run after eviction for exactly this reason,
+  so a stub is the last resort rather than the common case.
 - **A dropped entry is gone from the checkpoint.** `droppedCount` discloses it and the exact
   turn remains retrievable with `SessionHistorySearch` / `SessionHistoryRead`, but the ledger
   itself does not restore it.

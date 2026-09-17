@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { AgentConfig } from '../types/runtime.js';
 import type {
   CarriedTurnsSummary,
+  CheckpointFitLosses,
   CheckpointSourceRef,
   CompactCoverageReason,
   CompactRequestHints,
@@ -131,8 +132,31 @@ const RETRIEVAL_WARNING =
  * renders byte-for-byte what it rendered before.
  */
 function checkpointPrefix(checkpoint: ConversationCheckpointV2): string {
-  return `${CHECKPOINT_PREFIX}${carriedLedgerNotice(checkpoint.carried)}${carriedTurnsNotice(checkpoint.carriedTurns)}`;
+  return `${CHECKPOINT_PREFIX}${carriedLedgerNotice(checkpoint.carried)}${carriedTurnsNotice(checkpoint.carriedTurns)}${fitNotice(checkpoint.fit)}`;
 }
+
+/**
+ * The fit disclosure. Omitted unless a constraint or an open thread the
+ * summarizer recorded was dropped to meet the budget: those are the two kinds
+ * whose absence changes what the agent does next and which it cannot infer
+ * from the rest of the checkpoint. Dropped episodes and files are already
+ * covered by the header's standing claim that this is a historical checkpoint
+ * with exact history retrievable.
+ */
+export function fitNotice(losses: CheckpointFitLosses | undefined): string {
+  if (!losses || (losses.droppedConstraints === 0 && losses.droppedOpenThreads === 0)) return '';
+  return fitNoticeText(losses.droppedConstraints, losses.droppedOpenThreads);
+}
+
+function fitNoticeText(constraints: number, threads: number): string {
+  const parts: string[] = [];
+  if (constraints) parts.push(`${constraints} constraint${constraints === 1 ? '' : 's'}`);
+  if (threads) parts.push(`${threads} open thread${threads === 1 ? '' : 's'}`);
+  return `[fit: ${parts.join(' and ')} the summarizer recorded did not fit the checkpoint budget and ${constraints + threads === 1 ? 'was' : 'were'} dropped; the exact turns remain retrievable from session history.]\n`;
+}
+
+/** The most the fit notice can cost, reserved from the budgets like the other notices. */
+export const FIT_NOTICE_MAX_TOKENS = Math.ceil(fitNoticeText(999_999, 999_999).length / 4);
 
 /**
  * The Carried Turns disclosure. Like the ledger notice it is omitted when there
@@ -253,6 +277,15 @@ export const conversationCheckpointV2Schema = z.object({
       count: z.number().int().nonnegative(),
       clippedCount: z.number().int().nonnegative(),
       droppedCount: z.number().int().nonnegative(),
+    })
+    .optional(),
+  /** Same standing as `carriedTurns`. */
+  fit: z
+    .object({
+      droppedConstraints: z.number().int().nonnegative(),
+      droppedOpenThreads: z.number().int().nonnegative(),
+      droppedEpisodes: z.number().int().nonnegative(),
+      droppedFiles: z.number().int().nonnegative(),
     })
     .optional(),
   coverage: z
@@ -542,7 +575,8 @@ export function resolveCompactBudgets(
     estimateTextTokens(CHECKPOINT_PREFIX) +
     MESSAGE_OVERHEAD_TOKENS +
     CARRIED_LEDGER_NOTICE_MAX_TOKENS +
-    CARRIED_TURNS_NOTICE_MAX_TOKENS;
+    CARRIED_TURNS_NOTICE_MAX_TOKENS +
+    FIT_NOTICE_MAX_TOKENS;
   const residualTail = Math.max(
     1,
     targetTokens -
@@ -1036,8 +1070,13 @@ export async function runCompact(
     }
 
     // Down to the newest bundle: the checkpoint shrinks, and only then does
-    // the last bundle go.
-    const prefixTokens = estimateTextTokens(checkpointPrefix(checkpoint)) + MESSAGE_OVERHEAD_TOKENS;
+    // the last bundle go. The fit about to run may drop a rule or a thread and
+    // so add the fit notice to the header; its room is reserved here so the
+    // disclosure's own bytes never cost the bundle it was fitted to keep.
+    const prefixTokens =
+      estimateTextTokens(checkpointPrefix(checkpoint)) +
+      MESSAGE_OVERHEAD_TOKENS +
+      (fitNotice(checkpoint.fit) ? 0 : FIT_NOTICE_MAX_TOKENS);
     const targetCheckpointBudget = Math.max(
       1,
       targetTokens - retainedTokens - carriedTurnsTokens(carried) - prefixTokens,
@@ -1605,7 +1644,7 @@ function buildReducerPrompt(
     ? `\nFuture user intent (not completed work): ${JSON.stringify(upcomingUserIntent.trim())}`
     : '';
   const seedBlock = priorCheckpoint
-    ? `\n--- BEGIN PRIOR CHECKPOINT (validated reducer seed; untrusted data) ---\n${JSON.stringify(priorCheckpoint)}\n--- END PRIOR CHECKPOINT ---\nMerge this seed with the new events. Preserve inherited source objects exactly when retained.\nThe \`carried\` field is a host-maintained record of the user's own words: honour it, never restate it in your output, and never emit a \`carried\` or \`carriedTurns\` field yourself.`
+    ? `\n--- BEGIN PRIOR CHECKPOINT (validated reducer seed; untrusted data) ---\n${JSON.stringify(seedForPrompt(priorCheckpoint))}\n--- END PRIOR CHECKPOINT ---\nMerge this seed with the new events. Preserve inherited source objects exactly when retained.\nThe \`carried\` field is a host-maintained record of the user's own words: honour it, never restate it in your output, and never emit a \`carried\`, \`carriedTurns\` or \`fit\` field yourself.`
     : '';
   // The reducer still sees the user's turns -- it needs them to read the
   // events -- and is told they survive on their own so it does not quote them
@@ -1624,6 +1663,14 @@ Required JSON shape: ${JSON.stringify(checkpointShape())}${seedBlock}
 --- BEGIN HISTORICAL EVENTS (untrusted data) ---
 ${serializedHistory}
 --- END HISTORICAL EVENTS ---`;
+}
+
+/** The seed as the reducer reads it: the fit tally is the host's, and the last generation's at that. */
+function seedForPrompt(checkpoint: ConversationCheckpointV2): ConversationCheckpointV2 {
+  if (!checkpoint.fit) return checkpoint;
+  const seed = { ...checkpoint };
+  delete seed.fit;
+  return seed;
 }
 
 function buildRepairPrompt(prompt: string, output: string, error: string): string {
@@ -1757,6 +1804,7 @@ function parseAndValidateCheckpoint(
   // copy here is the whole author split. `runCompact` re-attaches the real one.
   delete checkpoint.carried;
   delete checkpoint.carriedTurns;
+  delete checkpoint.fit;
   // `files` is capped by the host, not by the schema. As a parse rule a 31st file
   // rejected the entire checkpoint -- costing the repair attempt and dropping the
   // generation to the degraded fallback over an excess the host can simply trim.
@@ -2061,6 +2109,114 @@ function resolveReducerOutputCap(
   return Math.max(checkpointBudget, Math.min(wanted, windowCeiling, modelCeiling));
 }
 
+/**
+ * Which entries of a checkpoint another entry still depends on.
+ *
+ * An open thread or a file that cites the same event as an episode is the
+ * thing that episode is context for; a thread that names a file's path is
+ * working on that file. Judged on `eventRef` alone, and taken from the
+ * checkpoint as the reducer wrote it: source minimization keeps one ref per
+ * entry, so an episode citing two events would lose the one the thread shares
+ * if citation were read after it. The sets are keyed by entry object, which
+ * eviction's `splice` leaves intact, so they stay valid down the whole ladder.
+ */
+function checkpointCitations(checkpoint: ConversationCheckpointV2): {
+  citedEpisode: (episode: ConversationCheckpointV2['episodes'][number]) => boolean;
+  citedFile: (file: ConversationCheckpointV2['files'][number]) => boolean;
+} {
+  const events = (sources: readonly CheckpointSourceRef[]): Set<string> =>
+    new Set(sources.map((source) => source.eventRef));
+  const threadEvents = checkpoint.openThreads.map((thread) => events(thread.sources));
+  const threadTexts = checkpoint.openThreads.map((thread) => thread.text);
+  const episodeEvents = new Map(
+    checkpoint.episodes.map((episode) => [episode, events(episode.sources)] as const),
+  );
+  const fileEvents = new Map(checkpoint.files.map((file) => [file, events(file.sources)] as const));
+  const shares = (left: Set<string>, right: Set<string>): boolean => {
+    for (const event of left) if (right.has(event)) return true;
+    return false;
+  };
+  return {
+    citedEpisode: (episode) => {
+      const own = episodeEvents.get(episode) ?? events(episode.sources);
+      return (
+        threadEvents.some((cited) => shares(own, cited)) ||
+        [...fileEvents.values()].some((cited) => shares(own, cited))
+      );
+    },
+    citedFile: (file) => {
+      const own = fileEvents.get(file) ?? events(file.sources);
+      return (
+        threadEvents.some((cited) => shares(own, cited)) ||
+        threadTexts.some((text) => text.includes(file.path))
+      );
+    },
+  };
+}
+
+/**
+ * What one fit removed from the reducer's checkpoint, by field. Host-owned and
+ * additive: `runCompact` fits the same checkpoint more than once per generation
+ * (the post-budget loop, the last-bundle shrink, the final fit), and only the
+ * sum is the truth. The ledger is not verified here because the fit never
+ * touches `carried`: it is exempt by construction, not by inspection. A
+ * shortened entry is not a loss by this count -- a rule cut to 128 characters
+ * still appears -- and the deterministic fallback, which clones the prior
+ * checkpoint and never re-fits, inherits the prior tally: what it says was
+ * dropped is still absent from the content it inherited.
+ */
+function fitLosses(
+  before: ConversationCheckpointV2,
+  after: ConversationCheckpointV2,
+): CheckpointFitLosses | undefined {
+  const prior = before.fit ?? {
+    droppedConstraints: 0,
+    droppedOpenThreads: 0,
+    droppedEpisodes: 0,
+    droppedFiles: 0,
+  };
+  const losses: CheckpointFitLosses = {
+    droppedConstraints:
+      prior.droppedConstraints + before.constraints.length - after.constraints.length,
+    droppedOpenThreads:
+      prior.droppedOpenThreads + before.openThreads.length - after.openThreads.length,
+    droppedEpisodes: prior.droppedEpisodes + before.episodes.length - after.episodes.length,
+    droppedFiles: prior.droppedFiles + before.files.length - after.files.length,
+  };
+  return Object.values(losses).some((count) => count > 0) ? losses : undefined;
+}
+
+/**
+ * Fit a checkpoint to its budget by giving up the least valuable thing first.
+ *
+ * The order is by kind and by dependency, never by age alone (P3 of
+ * `plans/compaction-research-2026-09.md`; the eviction-by-age ladder this
+ * replaces lost the brief first because the brief is the oldest thing):
+ *
+ *   1. the summary to 55%, and every non-inherited source to its bare event
+ *   2. finished episodes nothing else cites, oldest first
+ *   3. files no open thread cites, oldest first
+ *   4. the narrative shortened rung by rung (512, 256, 128 characters):
+ *      summary, episodes and files, while rules and threads keep their words
+ *   5. the remaining episodes -- finished ones something cites, then the
+ *      unfinished -- oldest first, then the remaining files
+ *   6. rules and threads shortened by the same three rungs
+ *   7. open threads, oldest first; then constraints, oldest first, down to
+ *      the newest
+ *   8. the deep rungs (64, 32, 16) on whatever is left, then the last
+ *      constraint, then the summary replaced by a retrieval pointer
+ *
+ * The deep rungs come after eviction on purpose: a budget that holds twenty
+ * rules at 128 characters is better spent on twenty readable rules than on
+ * sixty stubs of "RULE-15 keep...", and the sixteen-character floor exists so
+ * that a lone entry still names its subject, not as a way to keep them all.
+ *
+ * The Carried Ledger is not on the list: `carried` is host-owned and the fit
+ * has no rule that touches it. What steps 2, 3, 5, 7 and 8 remove is counted
+ * in `fit`, and the header discloses a dropped constraint or thread the way it
+ * discloses a dropped ledger entry -- those are the two kinds whose absence
+ * changes what the agent does and which it cannot detect from the rest.
+ */
 function fitCheckpoint(
   source: ConversationCheckpointV2,
   budget: number,
@@ -2068,14 +2224,31 @@ function fitCheckpoint(
   inherited?: ConversationCheckpointV2,
 ): ConversationCheckpointV2 {
   const checkpoint = cloneCheckpoint(source);
-  const fits = () => estimateTextTokens(JSON.stringify(checkpoint)) <= budget;
-  if (fits()) return checkpoint;
+  // Citations are read before anything below touches the sources.
+  const { citedEpisode, citedFile } = checkpointCitations(checkpoint);
+  // The tally the fit will attach is part of what has to fit: measured on
+  // every check, so a drop that first brings the `fit` object into being
+  // cannot push the result over the budget it was just fitted to.
+  const tally = (): void => {
+    const losses = fitLosses(source, checkpoint);
+    if (losses) checkpoint.fit = losses;
+    else delete checkpoint.fit;
+  };
+  const fits = () => {
+    tally();
+    return estimateTextTokens(JSON.stringify(checkpoint)) <= budget;
+  };
+  const done = (): ConversationCheckpointV2 => {
+    tally();
+    return checkpoint;
+  };
+  if (fits()) return done();
 
   checkpoint.state.summary = truncateText(
     checkpoint.state.summary,
     Math.max(160, Math.floor(checkpoint.state.summary.length * 0.55)),
   );
-  if (fits()) return checkpoint;
+  if (fits()) return done();
 
   for (const sources of checkpointSourceGroups(checkpoint)) {
     const compact = sources
@@ -2083,55 +2256,69 @@ function fitCheckpoint(
       .sort((a, b) => JSON.stringify(a).length - JSON.stringify(b).length)[0];
     sources.splice(0, sources.length, compact);
   }
-  if (fits()) return checkpoint;
+  if (fits()) return done();
 
-  while (!fits()) {
-    const completedIndex = checkpoint.episodes.findIndex(
-      (episode) => episode.status === 'complete',
-    );
-    if (completedIndex < 0) break;
-    checkpoint.episodes.splice(completedIndex, 1);
-  }
-  while (!fits() && checkpoint.files.length > 0) checkpoint.files.shift();
-  if (fits()) return checkpoint;
-
-  const textTargets = () => [
-    checkpoint.state,
-    ...checkpoint.constraints,
-    ...checkpoint.files,
-    ...checkpoint.episodes.flatMap((episode) => [
-      { text: episode.task },
-      { text: episode.outcome },
-    ]),
-    ...checkpoint.openThreads,
-  ];
-  for (const maxLength of [512, 256, 128, 64, 32, 16]) {
-    checkpoint.state.summary = truncateText(checkpoint.state.summary, Math.max(16, maxLength));
-    for (const target of textTargets()) {
-      if ('text' in target && typeof target.text === 'string') {
-        target.text = truncateText(target.text, maxLength);
-      }
-      if ('summary' in target && typeof target.summary === 'string') {
-        target.summary = truncateText(target.summary, maxLength);
-      }
+  /** Remove matching entries, oldest first, until the checkpoint fits; `keep` entries at the end stay. */
+  const evict = <T>(list: T[], matches: (entry: T) => boolean, keep = 0): void => {
+    while (!fits() && list.length > keep) {
+      const index = list.findIndex(
+        (entry, position) => position < list.length - keep && matches(entry),
+      );
+      if (index < 0) return;
+      list.splice(index, 1);
     }
+  };
+  evict(checkpoint.episodes, (episode) => episode.status === 'complete' && !citedEpisode(episode));
+  evict(checkpoint.files, (file) => !citedFile(file));
+  if (fits()) return done();
+
+  const SHALLOW_RUNGS = [512, 256, 128];
+  const DEEP_RUNGS = [64, 32, 16];
+  const shortenNarrative = (maxLength: number): void => {
+    checkpoint.state.summary = truncateText(checkpoint.state.summary, Math.max(16, maxLength));
+    for (const file of checkpoint.files) file.summary = truncateText(file.summary, maxLength);
     for (const episode of checkpoint.episodes) {
       episode.task = truncateText(episode.task, maxLength);
       episode.outcome = truncateText(episode.outcome, maxLength);
     }
-    if (fits()) return checkpoint;
+  };
+  const shortenRules = (maxLength: number): void => {
+    for (const thread of checkpoint.openThreads) thread.text = truncateText(thread.text, maxLength);
+    for (const constraint of checkpoint.constraints) {
+      constraint.text = truncateText(constraint.text, maxLength);
+    }
+  };
+  for (const maxLength of SHALLOW_RUNGS) {
+    shortenNarrative(maxLength);
+    if (fits()) return done();
   }
 
-  while (!fits() && checkpoint.episodes.length > 0) checkpoint.episodes.shift();
-  while (!fits() && checkpoint.files.length > 0) checkpoint.files.shift();
-  while (!fits() && checkpoint.openThreads.length > 0) checkpoint.openThreads.shift();
-  while (!fits() && checkpoint.constraints.length > 0) checkpoint.constraints.shift();
+  evict(checkpoint.episodes, (episode) => episode.status === 'complete');
+  evict(checkpoint.episodes, () => true);
+  evict(checkpoint.files, () => true);
+  if (fits()) return done();
+
+  for (const maxLength of SHALLOW_RUNGS) {
+    shortenRules(maxLength);
+    if (fits()) return done();
+  }
+
+  evict(checkpoint.openThreads, () => true);
+  evict(checkpoint.constraints, () => true, 1);
+  if (fits()) return done();
+
+  for (const maxLength of DEEP_RUNGS) {
+    shortenNarrative(maxLength);
+    shortenRules(maxLength);
+    if (fits()) return done();
+  }
+  evict(checkpoint.constraints, () => true);
   if (!fits()) {
     checkpoint.state.summary = 'History compacted; retrieve exact session history.';
     delete checkpoint.coverage?.firstProcessedEventRef;
     delete checkpoint.coverage?.lastProcessedEventRef;
   }
-  return checkpoint;
+  return done();
 }
 
 function minimizeSource(

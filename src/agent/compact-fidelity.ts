@@ -12,7 +12,11 @@
 
 import type { Message } from '../types/messages.js';
 import type { ConversationCheckpointV2 } from '../types/sessions.js';
-import type { PlantedFact } from '../test/compact-fixture.js';
+import {
+  PLANTED_FACT_KINDS,
+  type PlantedFact,
+  type PlantedFactKind,
+} from '../test/compact-fixture.js';
 
 /** One generation's observable output, as the harness records it. */
 export interface GenerationRecord {
@@ -45,10 +49,18 @@ export interface FidelityMetrics {
   meanRetention: number;
   /**
    * Retention restricted to facts a user stated as a constraint, scored on the
-   * checkpoint alone: this is the Carried Ledger's guarantee, and it must hold
-   * even when no turn is carried.
+   * Carried Ledger alone (`checkpoint.carried`): this is the ledger's
+   * guarantee, and it must hold even when no turn is carried and when the
+   * reducer's own `constraints` copy of the rule has been evicted.
    */
   verbatimUserRetention: number;
+  /**
+   * Final-generation retention in the compacted representation, split by the
+   * kind of fact. The fitter is not equally obliged to every kind -- an
+   * unresolved thread or a rule in force is worth more than a finished
+   * episode -- and this is where that shows, or fails to.
+   */
+  retentionByKind: Record<PlantedFactKind, number>;
   /**
    * Retention of what the user said in their own words -- constraints and the
    * cue-less or non-English `user-statement` facts the ledger cannot extract
@@ -91,6 +103,8 @@ export interface FidelityFloors {
   maxReducerCalls: number;
   /** Floor now: the dead budget is reclaimed. Was the ceiling maxPostHistoryUtilization = 0.15. */
   minPostHistoryUtilization: number;
+  /** Per-kind floors on `retentionByKind`; a kind not listed is unconstrained. */
+  minRetentionByKind: Partial<Record<PlantedFactKind, number>>;
 }
 
 export interface FidelityArm {
@@ -178,6 +192,40 @@ export interface FidelityArm {
  * newest few. `userTurnRetention` there is the ledger's two constraints, not
  * the two statements.
  *
+ * What the type-aware fit changed (2026-09-17, research note P3). Two things
+ * moved together, and the table separates them. First the double: it used to
+ * write every fact as a finished episode with the fact buried mid-paragraph,
+ * a shape no reducer writes, which measured the text ladder against nothing
+ * real and could not tell the checkpoint's fields apart. It now records each
+ * fact where a reducer puts it -- rules and accepted decisions as
+ * `constraints`, unresolved items as `openThreads`, observed paths as
+ * `files`, the narrative as `episodes` named in the task -- and re-emits
+ * every inherited field verbatim; `verbatimUserRetention` is scored on the
+ * ledger alone so the reducer's copy of a rule cannot mask a lost ledger
+ * entry; and the corpus gained a fifteenth fact, the CRLF thread's last run
+ * day, planted in the thread's own turn so one finished episode is cited by
+ * an open thread. Then the fit: eviction by kind and dependency instead of by
+ * age (`fitCheckpoint` in `compact.ts`). Measured on the new double and
+ * corpus with the old fit and the new:
+ *
+ *   arm    metric                  old fit  new fit
+ *   32k    finalRetention          0.667    0.733
+ *   32k    meanRetention           0.658    0.725
+ *   32k    timeline-event          0.667    1.0
+ *   32k    accepted-decision       1.0      1.0
+ *   32k    open-thread             1.0      1.0
+ *   32k    current-value           0.5      0.5
+ *   32k    postHistoryUtilization  0.486    0.486
+ *   272k   finalRetention          1.0      1.0
+ *   272k   meanRetention           0.817    0.817
+ *
+ * The moved number is the cited episode: the old fit evicted it at generation
+ * 1 as the oldest finished episode, the new one keeps it for the thread's
+ * sake. Everything else at 32k is the same loss as before -- the two
+ * statements the tail cannot hold and the region values, finished episodes
+ * nothing cites -- and 272k loses nothing either way. Per-kind floors are
+ * recorded from here on.
+ *
  * To re-measure after a change: run the fidelity test with
  * `BOOK_FIDELITY_PRINT=<file>` (the arm test appends one JSON line of metrics
  * per arm to that file; vitest swallows console output of passing tests, so
@@ -196,10 +244,10 @@ export const FIDELITY_ARMS: readonly FidelityArm[] = [
      */
     fillerRepeat: 5,
     floors: {
-      /** Measured 0.643 on 2026-09-14 (14-fact corpus, prompt-grounded double). */
-      minFinalRetention: 0.64,
-      /** Measured 0.634 across the eight generations on 2026-09-14. */
-      minMeanRetention: 0.63,
+      /** Measured 0.733 on 2026-09-17 (15-fact corpus, by-kind double, type-aware fit); 0.667 with the old fit. */
+      minFinalRetention: 0.73,
+      /** Measured 0.725 across the eight generations on 2026-09-17; 0.658 with the old fit. */
+      minMeanRetention: 0.72,
       /** Measured 1.0 on 2026-09-14. */
       minVerbatimUserRetention: 1,
       /**
@@ -221,11 +269,27 @@ export const FIDELITY_ARMS: readonly FidelityArm[] = [
       /** Measured 8 on 2026-09-14 -- one reducer call per generation, no repairs spent. */
       maxReducerCalls: 8,
       /**
-       * Floor, not ceiling: dead budget reclaimed. Measured 0.476 against the
-       * loop's 22,323-token gate on 2026-09-14; post-compaction history sits at
-       * the target, which is half the gate.
+       * Floor, not ceiling: dead budget reclaimed. Measured 0.486 against the
+       * loop's 22,323-token gate on 2026-09-17 (0.476 on 2026-09-14);
+       * post-compaction history sits at the target, which is half the gate.
        */
       minPostHistoryUtilization: 0.47,
+      /**
+       * Measured 2026-09-17. Rules, decisions and the open thread survive
+       * whole; the finished episode the thread cites survives with it. The
+       * region values are finished episodes nothing cites, and half of each
+       * pair is lost at generation 2; the two statements are what the ~270
+       * tokens of carried-turn room at this window cannot hold.
+       */
+      minRetentionByKind: {
+        'user-constraint': 1,
+        'accepted-decision': 1,
+        'rejected-decision': 1,
+        'open-thread': 1,
+        'timeline-event': 1,
+        'current-value': 0.5,
+        'superseded-value': 0.5,
+      },
     },
   },
   {
@@ -233,10 +297,10 @@ export const FIDELITY_ARMS: readonly FidelityArm[] = [
     reservedOutputTokens: 64_000,
     fillerRepeat: 60,
     floors: {
-      /** Measured 1.0 on 2026-09-14 (14-fact corpus, prompt-grounded double); 0.571 before Carried Turns. */
+      /** Measured 1.0 on 2026-09-17 (15-fact corpus, by-kind double) and on 2026-09-14; 0.571 before Carried Turns. */
       minFinalRetention: 1,
-      /** Measured 0.804 across the eight generations on 2026-09-14; 0.571 before. */
-      minMeanRetention: 0.8,
+      /** Measured 0.817 across the eight generations on 2026-09-17 (0.804 on the 14-fact corpus); 0.571 before. */
+      minMeanRetention: 0.81,
       /** Measured 1.0 on 2026-09-14. */
       minVerbatimUserRetention: 1,
       /** Measured 1.0 on 2026-09-14; 0.5 before -- the cue-less and Vietnamese statements. */
@@ -260,10 +324,21 @@ export const FIDELITY_ARMS: readonly FidelityArm[] = [
       /** Measured 8 on 2026-09-14 -- one reducer call per generation, no repairs spent. */
       maxReducerCalls: 8,
       /**
-       * Floor, not ceiling: dead budget reclaimed. Measured 0.488 against the
-       * loop's 166,400-token gate on 2026-09-14 (post-compaction history 79k-82k).
+       * Floor, not ceiling: dead budget reclaimed. Measured 0.487 against the
+       * loop's 166,400-token gate on 2026-09-17 (post-compaction history 79k-82k).
        */
       minPostHistoryUtilization: 0.48,
+      /** Measured 2026-09-17: every kind whole at the window the owner's sessions compact at. */
+      minRetentionByKind: {
+        'user-constraint': 1,
+        'user-statement': 1,
+        'accepted-decision': 1,
+        'rejected-decision': 1,
+        'current-value': 1,
+        'superseded-value': 1,
+        'open-thread': 1,
+        'timeline-event': 1,
+      },
     },
   },
 ];
@@ -467,8 +542,16 @@ export function scoreFidelity(
     (fact) => fact.kind === 'user-constraint' || fact.kind === 'user-statement',
   );
   const finalRecord = generations[generations.length - 1];
-  const finalCheckpointText = checkpointText(finalRecord.checkpoint);
+  const finalLedgerText = JSON.stringify(finalRecord.checkpoint.carried ?? {});
   const finalCompactedText = compactedText(finalRecord);
+  const retentionByKind = {} as Record<PlantedFactKind, number>;
+  for (const kind of PLANTED_FACT_KINDS) {
+    const ofKind = facts.filter((fact) => fact.kind === kind);
+    retentionByKind[kind] =
+      ofKind.length === 0
+        ? 1
+        : ofKind.filter((fact) => factRetained(finalCompactedText, fact)).length / ofKind.length;
+  }
 
   return {
     lostAtGeneration,
@@ -477,8 +560,9 @@ export function scoreFidelity(
     verbatimUserRetention:
       constraintFacts.length === 0
         ? 1
-        : constraintFacts.filter((fact) => factRetained(finalCheckpointText, fact)).length /
+        : constraintFacts.filter((fact) => factRetained(finalLedgerText, fact)).length /
           constraintFacts.length,
+    retentionByKind,
     userTurnRetention:
       userFacts.length === 0
         ? 1

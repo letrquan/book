@@ -97,7 +97,11 @@ A turn with both `text` and `tool` streams the text first and the tool call afte
 turn — how a router that inlines reasoning delivers the `<think></think>` a thinking model emits
 before every tool call. `"holdMs": 9000` keeps a turn open after its text is on the wire, which is
 the only way to see the live (unsettled) rendering of a streaming message or a child's detail view
-long enough to screenshot it.
+long enough to screenshot it. A reply's text may cite the events Book showed the reducer:
+`{{event:N}}` becomes the Nth `session://current/event/<id>` reference in the request's last user
+message, so a scripted `ConversationCheckpointV2` can carry sources the host's validator accepts
+even though message ids are minted at runtime (a `match` turn on `BEGIN HISTORICAL EVENTS` with such
+a `text` is how the fitter is exercised end to end).
 
 ### `smoke.sh` — the end-to-end check
 

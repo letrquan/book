@@ -57,6 +57,18 @@ export type PlantedFactKind =
   | 'open-thread'
   | 'timeline-event';
 
+/** Every kind, in the order the per-kind retention report lists them. */
+export const PLANTED_FACT_KINDS: readonly PlantedFactKind[] = [
+  'user-constraint',
+  'user-statement',
+  'accepted-decision',
+  'rejected-decision',
+  'current-value',
+  'superseded-value',
+  'open-thread',
+  'timeline-event',
+];
+
 export interface PlantedFact {
   id: string;
   kind: PlantedFactKind;
@@ -119,9 +131,12 @@ export function buildCompactFixtureHistory(
     'The accepted cache key is workspaceHash:modelId:v3. We rejected Redis because the benchmark must work offline and without a service dependency.',
     'Accepted decision: use workspaceHash:modelId:v3. Rejected decision: Redis, because offline execution is required.',
   );
+  // The thread and the event it hangs on share a turn, so a reducer's episode
+  // for the Friday run cites the same event as the open thread: the one case
+  // where the fitter must keep a finished episode for the thread's sake.
   const openThread = addTurn(
-    'There is one unresolved issue from the last run: the Windows CRLF fixture still fails and must remain an open thread until verified.',
-    'Open thread recorded: the Windows CRLF fixture still fails and needs verification.',
+    'There is one unresolved issue from the last run: the Windows CRLF fixture still fails and must remain an open thread until verified. That last run was on Friday.',
+    'Open thread recorded: the Windows CRLF fixture still fails and needs verification; its last run was Friday.',
   );
   const oldRegion = addTurn(
     'Initial deployment note: the staging region is us-east-1. This value may change after the migration.',
@@ -265,6 +280,12 @@ export function buildPlantedFacts(turns: CompactFixtureHistory['turns']): Plante
       id: 'crlf-open-thread',
       kind: 'open-thread',
       terms: ['CRLF'],
+      sourceMessageIds: [turns.openThread.userId, turns.openThread.assistantId],
+    },
+    {
+      id: 'crlf-last-run',
+      kind: 'timeline-event',
+      terms: ['Friday'],
       sourceMessageIds: [turns.openThread.userId, turns.openThread.assistantId],
     },
     {

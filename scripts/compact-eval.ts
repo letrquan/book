@@ -322,6 +322,16 @@ export function buildCompactEvalFixture(): CompactEvalFixture {
       evidenceMessageIds: [openThread.userId, openThread.assistantId],
     },
     {
+      name: 'open-thread-last-run',
+      category: 'static-recall',
+      tier: 'standard',
+      evidencePosition: 'early',
+      prompt:
+        'Return JSON only as {"answer":"..."}. On which day of the week was the failing Windows CRLF fixture last run? Quote the exact recorded day.',
+      expectation: { kind: 'contains-all', terms: ['Friday'] },
+      evidenceMessageIds: [openThread.userId, openThread.assistantId],
+    },
+    {
       name: 'current-region-update',
       category: 'knowledge-update',
       tier: 'standard',

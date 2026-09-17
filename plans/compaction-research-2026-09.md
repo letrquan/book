@@ -4,8 +4,11 @@
 - **Status:** research note. **P1 landed 2026-09-14** (Carried Turns, `carryUserTurns` in
   `src/agent/compact.ts`); **P2 landed 2026-09-16** (`withholdSuperseded` and the rescission
   rule in `src/agent/carried-ledger.ts` — explicit rescission cues rather than the object-swap
-  heuristic sketched below, which cannot tell "npm → pnpm" from "tests" and "lint"); P3–P6
-  remain proposals.
+  heuristic sketched below, which cannot tell "npm → pnpm" from "tests" and "lint");
+  **P3 landed 2026-09-17** (`fitCheckpoint` lanes by kind and dependency, the `fit` disclosure,
+  and the by-kind reducer double with `retentionByKind` in `compact-fidelity.ts` — the
+  deterministic post-fit verifier is the `fit` tally, and the ledger half of it is omitted because
+  the fit never touches `carried`); P4–P6 remain proposals.
 - **Scope:** `src/agent/compact.ts`, `src/agent/carried-ledger.ts`, `src/agent/compact-fidelity.ts`,
   `scripts/compact-eval.ts`, `src/agent/loop.ts` (compaction call site)
 - **Method:** literature retrieval through the OpenResearch CLI (`orx discover` over alphaXiv and
@@ -25,7 +28,7 @@ any turn the carried-turns budget holds, and open only for the ledger's own extr
 
 Book compacts with a reducer model that writes a `ConversationCheckpointV2`
 (`summary`/`constraints`/`files`/`episodes`/`openThreads`), which the host re-fits under budget
-(`fitCheckpoint`, `compact.ts:1725`). On top of that sits the Carried Ledger
+(`fitCheckpoint` in `compact.ts`). On top of that sits the Carried Ledger
 (`carried-ledger.ts`): user constraints extracted deterministically from the user's own turns by
 an English cue list (`STRONG_CUES`/`WEAK_CUES`, `carried-ledger.ts:68-113`), stored verbatim,
 readable-but-not-writable by the reducer, capped at 32 entries / 1024 tokens, and disclosed in
@@ -36,7 +39,7 @@ Known limitations already written down in the ledger plan:
 
 | #   | gap                                                             | where                                        |
 | --- | --------------------------------------------------------------- | -------------------------------------------- |
-| 1   | fitter evicts oldest-first; "the oldest thing is the brief"     | `compact.ts:1725` (`shift()` ladder)         |
+| 1   | fitter evicts oldest-first; "the oldest thing is the brief"     | `fitCheckpoint` (`shift()` ladder; closed by P3) |
 | 2   | cue-based extraction misses paraphrase                          | `carried-ledger.ts:68-113`                   |
 | 3   | contradiction not detected, only restatement; both entries stay | `markSupersessions`, `carried-ledger.ts:352` |
 | 4   | reducer output is trusted after schema validation only          | `generateCheckpoint`, `compact.ts:1296`      |
@@ -256,7 +259,7 @@ from the rendered ledger, not merely ordered later.
 after five rounds into 0.96 [2608.22752]; CWL evicts by dependency and never by age alone
 [2606.11213].
 
-**Design.** The truncation ladder at `compact.ts:1725-1790` ends with
+**Design.** The truncation ladder in `fitCheckpoint` ended with
 `episodes.shift(); files.shift(); openThreads.shift(); constraints.shift()`. Reorder into
 lanes: (1) episodes with status `complete` whose `sources` no file or open thread still cites,
 oldest first; (2) `files` not cited by any open thread; (3) remaining episodes; (4) open threads;
