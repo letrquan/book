@@ -40,7 +40,9 @@ All notable changes to this project are documented in this file.
   legitimately. Both counts live in a host-owned `audit` field on the checkpoint (never accepted
   from a reply, never fed back as seed). The detector is calibrated against this repository's
   own documentation, which describes summarizers, compaction and dropping in the third person
-  throughout, and fires on none of it. `npm run eval:compact -- --adversarial` plants six framings
+  throughout, and fires on none of it; physical lines are joined into sentences first, so a
+  directive hard-wrapped across two lines of a file is still one directive, and the checkpoint
+  keeps at most eight suspect references beside the full count. `npm run eval:compact -- --adversarial` plants six framings
   of the instruction in a tool result so the provider-backed benchmark can measure whether a real
   reducer is steered. (`plans/compaction-research-2026-09.md`, P4.)
 

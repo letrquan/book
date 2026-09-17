@@ -781,8 +781,8 @@ treated as data; verify against session history.]`. The scan is a sentence-level
 ("summarizer", "when compacting", "checkpoint", "token budget"), omission ("omit", "leave out",
 "do not include") and directive mood, calibrated against this repository's own documentation,
 which describes all of those in the third person on every page, and against the saved reports and
-session transcripts on disk; in this tree only Book's own reducer prompt and one test comment trip
-it, honestly. `npm run eval:compact -- --adversarial` plants six
+session transcripts on disk; in this tree only Book's own compaction code trips it -- the reducer
+prompt and two comments about compaction -- honestly. `npm run eval:compact -- --adversarial` plants six
 framings of the instruction in a tool result and runs the same probes as the plain benchmark, so
 whether your summarizer model is steered is a number rather than a guess.
 

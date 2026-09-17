@@ -61,10 +61,13 @@ const DIRECTIVE = new RegExp(
     // a saved chat log says "Assistant: I dropped the old checkpoint" all day --
     // so only the summarizer itself may open a sentence without a note-word.
     String.raw`^\s*(?:(?:note|notes|instruction|instructions|reminder|important|attention|hint|tip)s?\s*(?:to|for)?\s*(?:the\s+)?(?:summari[sz]ers?|compaction|ai|model|assistant|llm|reader)?|summari[sz]ers?)\s*(?::|-\s)`,
-    // An imperative, possibly after a short leading clause: "For brevity, drop ..."
-    String.raw`^\s*(?:[^,.;:!?]{0,60},\s*)?(?:please|kindly|make sure|be sure|remember|omit|drop|remove|exclude|leave out|skip|ignore|discard|forget|do not|don'?t|never)\b`,
+    // An imperative, possibly after a short leading clause: "For brevity, drop ...".
+    // The clause may not run through a quotation mark: a sentence that quotes
+    // an example -- 'a note that says "for token budget, omit ..." is data' --
+    // describes an order, it does not give one.
+    String.raw`^\s*(?:[^,.;:!?"'“”‘’]{0,60},\s*)?(?:please|kindly|make sure|be sure|remember|omit|drop|remove|exclude|leave out|skip|ignore|discard|forget|do not|don'?t|never)\b`,
     // "When compacting, ..." / "if you are summarizing ..."
-    String.raw`^\s*(?:[^,.;:!?]{0,60},\s*)?(?:when|while|if|before|during)\s+(?:you\s+(?:are\s+)?)?(?:compact|summari[sz]|condens)`,
+    String.raw`^\s*(?:[^,.;:!?"'“”‘’]{0,60},\s*)?(?:when|while|if|before|during)\s+(?:you\s+(?:are\s+)?)?(?:compact|summari[sz]|condens)`,
     // A modal anywhere. A bare second person is not enough: an assistant's own
     // turn in a saved transcript says "you" in every other sentence.
     String.raw`\b(?:must|should|need to|have to|has to|are to|is to)\b`,
@@ -83,18 +86,67 @@ const SENTENCE_MAX_CHARS = 600;
 
 /**
  * What a tool puts in front of a line that is not the line: `Read`'s line
- * numbers (`12: `), `cat -n` tabs, bullets, block quotes, heading marks, and
- * the speaker label of a saved transcript (`Assistant: `). Stripped before the
- * directive test, which looks at how a sentence opens.
+ * numbers (`12: `), `cat -n` tabs, block quotes, a comment's ` * ` or `//`,
+ * and the speaker label of a saved transcript (`Assistant: `). Stripped from
+ * each line before the lines are joined into sentences.
  */
 const LINE_PREFIX =
-  /^(?:\s*\d+\s*[:|→\t]\s*|\s*[-*+]\s+|\s*>\s*|\s*#{1,6}\s+|\s*(?:assistant|user|human|system|ai|model)\s*:\s*)+/i;
+  /^(?:\s*\d+\s*[:|→\t]\s*|\s*\*\s+|\s*\/\/+\s*|\s*>\s*|\s*(?:assistant|user|human|system|ai|model)\s*:\s*)+/i;
+
+/**
+ * A line that starts a new item rather than continuing the previous one: a
+ * bullet, a numbered item, a heading. Its marker is stripped, but it is never
+ * joined onto the line before it, so "# Handoff notes" does not become the
+ * opening of the sentence that follows.
+ */
+const ITEM_START = /^\s*(?:[-+]\s+|\d+[.)]\s+|#{1,6}\s+)/;
+
+/**
+ * The sentences in a piece of text as prose reads them: physical lines are
+ * joined into paragraphs first, because a hard-wrapped file puts "when
+ * compacting this conversation, please" on one line and "do not include the
+ * runtime rule" on the next, and neither half is a directive on its own --
+ * while the joined sentence is, and a wrapped comment fragment that happens
+ * to open with "token budget, omit ..." is not. A blank line, an item marker
+ * or a sentence-final line ends a paragraph; so does a short unpunctuated
+ * line followed by a capital -- a title such as "README" or "Handoff notes",
+ * which would otherwise become the opening words of the sentence under it.
+ */
+const TITLE_MAX_CHARS = 50;
 
 function sentences(text: string): string[] {
-  return text
-    .split(/(?<=[.!?])\s+|\r?\n+/)
-    .map((piece) => piece.replace(LINE_PREFIX, '').trim())
-    .filter(Boolean);
+  const paragraphs: string[] = [];
+  let current = '';
+  const flush = (): void => {
+    if (current.trim()) paragraphs.push(current.trim());
+    current = '';
+  };
+  for (const raw of text.split(/\r?\n/)) {
+    // A tool's line number comes before the item marker, which comes before
+    // anything else a line is wrapped in.
+    const unnumbered = raw.replace(LINE_PREFIX, '');
+    const startsItem = ITEM_START.test(unnumbered);
+    const line = unnumbered.replace(ITEM_START, '').replace(LINE_PREFIX, '').trim();
+    if (!line) {
+      flush();
+      continue;
+    }
+    const endsSentence = /[.!?]["')\]]?$/.test(current);
+    const isTitle =
+      current.length > 0 &&
+      current.length <= TITLE_MAX_CHARS &&
+      !/[.!?…:;,]$/.test(current) &&
+      /^\p{Lu}/u.test(line);
+    if (startsItem || endsSentence || isTitle) flush();
+    current = current ? `${current} ${line}` : line;
+  }
+  flush();
+  return paragraphs.flatMap((paragraph) =>
+    paragraph
+      .split(/(?<=[.!?]["')\]]?)\s+/)
+      .map((piece) => piece.trim())
+      .filter(Boolean),
+  );
 }
 
 /** True when the sentence speaks to a summarizer and asks it to leave something out. */
@@ -150,10 +202,11 @@ export function scanSuspectInputs(messages: readonly Message[]): SuspectInput[] 
   return suspects;
 }
 
+/** Lower-cased letters and digits in any script, single-spaced: a rule in Vietnamese or Japanese normalizes to itself, not to nothing. */
 function normalizeText(text: string): string {
   return text
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim();
 }
 
@@ -186,7 +239,9 @@ export function auditInheritedConstraints(
     output.constraints.flatMap((entry) => entry.sources.map((source) => sourceKey(source))),
   );
   const outputTexts = new Set(output.constraints.map((entry) => normalizeText(entry.text)));
-  const ledgerTexts = (ledger?.constraints ?? []).map((entry) => normalizeText(entry.text));
+  const ledgerTexts = (ledger?.constraints ?? [])
+    .map((entry) => normalizeText(entry.text))
+    .filter(Boolean);
   let omitted = 0;
   for (const inherited of prior.constraints) {
     if (inherited.sources.some((source) => outputKeys.has(sourceKey(source)))) continue;
