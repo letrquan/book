@@ -224,7 +224,9 @@ export interface FidelityArm {
  * sake. Everything else at 32k is the same loss as before -- the two
  * statements the tail cannot hold and the region values, finished episodes
  * nothing cites -- and 272k loses nothing either way. Per-kind floors are
- * recorded from here on.
+ * recorded from here on. P4 (same day) reserved the reducer-audit notice in
+ * the header envelope: 32k utilization 0.486 -> 0.485, precision 0.143 ->
+ * 0.162 as one bundle moved; nothing else changed.
  *
  * To re-measure after a change: run the fidelity test with
  * `BOOK_FIDELITY_PRINT=<file>` (the arm test appends one JSON line of metrics

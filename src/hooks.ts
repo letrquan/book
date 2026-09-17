@@ -25,6 +25,13 @@ export interface HookContext {
   trigger?: 'manual' | 'auto';
   /** For PreCompact/PostCompact: optional focus instructions from /compact. */
   focus?: string;
+  /**
+   * For PreCompact: sentences in the span about to be summarized that address
+   * a summarizer and ask it to leave something out -- tool output or a file
+   * expansion talking to the model. A hook that returns `block` refuses the
+   * compaction; otherwise the reducer runs and the checkpoint records the refs.
+   */
+  suspectInputs?: Array<{ eventRef: string; excerpt: string }>;
   agentId?: string;
   agentRole?: string;
   parentSessionId?: string;
@@ -83,6 +90,7 @@ export async function runHooks(
     reason: ctx.reason ?? null,
     trigger: ctx.trigger ?? null,
     focus: ctx.focus ?? null,
+    suspectInputs: ctx.suspectInputs ?? null,
     agentId: ctx.agentId ?? null,
     agentRole: ctx.agentRole ?? null,
     parentSessionId: ctx.parentSessionId ?? null,
@@ -227,6 +235,7 @@ async function runSingleHook(
     reason: ctx.reason,
     trigger: ctx.trigger,
     focus: ctx.focus,
+    suspect_inputs: ctx.suspectInputs,
     agent_id: ctx.agentId,
     agent_role: ctx.agentRole,
     parent_session_id: ctx.parentSessionId,
