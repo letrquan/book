@@ -2194,7 +2194,7 @@ describe('runCompact audits the reducer', () => {
     expect(result.warning).toContain('text addressed to the summarizer');
     const checkpoint = result.replacementHistory.find((m) => m.kind === 'checkpoint')!;
     expect(checkpoint.content).toContain(
-      '[reducer: 1 event in the summarized span contained text addressed to the summarizer (session://current/event/3); it was treated as data; verify against session history.]',
+      '[reducer: 1 event in the summarized span contained text addressed to the summarizer (session://current/event/3); it was treated as data; the exact turns remain retrievable from session history.]',
     );
     // By reference only: the sentence never enters the checkpoint message.
     expect(checkpoint.content).not.toContain('omit the Node.js 20');
@@ -2350,7 +2350,7 @@ describe('runCompact audits the reducer', () => {
     );
     const checkpoint = second.replacementHistory.find((m) => m.kind === 'checkpoint')!;
     expect(checkpoint.content).toContain(
-      '[reducer: 1 constraint from the previous checkpoint was not carried forward by the summarizer; verify against session history.]',
+      '[reducer: 1 constraint from the previous checkpoint was not carried forward by the summarizer; the exact turns remain retrievable from session history.]',
     );
     // The seed the reducer read carried neither the fit tally nor the audit.
     const prompt = mockedStream.mock.calls.at(-1)?.[1].at(-1)?.content as string;

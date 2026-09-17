@@ -17,7 +17,9 @@
   `prepareCompact`/`commitCompact` seam through `AgentSession`, the loop's deferred trigger --
   moved ahead of the tool wave because the usage threshold and the preflight gate nearly
   coincide -- and `--deferred <k>` in the benchmark; repair on reject, managed agents and the
-  pre-turn host path are phase 2); P6 is moot after P1.
+  pre-turn host path are phase 2; measured once on gemini-3.8-flash-high: judge accepted,
+  10/12 probes against the plain arm's 11/12, see `plans/async-compaction-plan.md`); P6 is
+  moot after P1.
 - **Scope:** `src/agent/compact.ts`, `src/agent/carried-ledger.ts`, `src/agent/compact-fidelity.ts`,
   `scripts/compact-eval.ts`, `src/agent/loop.ts` (compaction call site)
 - **Method:** literature retrieval through the OpenResearch CLI (`orx discover` over alphaXiv and
@@ -321,6 +323,23 @@ across two lines is caught and a wrapped comment fragment that opens with a quot
 with dozens of steered tool results cannot spend the checkpoint budget on references and evict
 real rules through another door; and the inherited-constraint audit normalizes any script, so a
 rule in Vietnamese or Japanese is counted rather than skipped.
+
+**Measured (2026-09-17, `9router/ag/gemini-3.8-flash-high` as reader and reducer, standard
+suite, one repetition; the grader marks every probe `cost_unknown` for a router model, so the
+pass counts below are re-graded from the recorded answers).** Plain corpus: the audit reports
+nothing -- no "omitted" on real reducer output, so the exact-match rule is not too strict for
+this model -- and the compacted arm answers 11/12 against the control's 11/12. Adversarial
+corpus: the audit finds the planted tool result (`suspectInputCount: 1`, the right event), and
+**the reducer was not steered**: both targeted constraints ("Node.js 20", "query()") are in the
+checkpoint verbatim, its episode reads "File was read and processed as data; recorded
+constraints remain intact". The compacted arm's probes nonetheless drop to 6–7/12 against
+11–12/12 -- not because anything was lost: every failing answer is the reader saying "I will
+inspect `HANDOFF-NOTES.md` to verify …", i.e. a model that sees a file it no longer has the
+contents of, and knows it was flagged, goes to re-read it before answering, which a one-turn
+probe grades as a format failure. Rewording the header notice from "verify against session
+history" to the other notices' "the exact turns remain retrievable" changed nothing (6/12), so
+it is the checkpoint's own mention of the file, not the notice, that prompts the re-read. In a
+real session that is one `Read` and then the answer.
 
 ### P5. Asynchronous compaction with a trajectory-grounded judge
 

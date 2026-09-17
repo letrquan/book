@@ -777,7 +777,7 @@ never restores one: a rule you withdrew, or a task that finished, is dropped leg
 the host cannot tell that from the summarizer having been talked out of it. The header line reads
 `[reducer: 1 constraint from the previous checkpoint was not carried forward by the summarizer;
 1 event in the summarized span contained text addressed to the summarizer (session://…); it was
-treated as data; verify against session history.]`. The scan is a sentence-level test of address
+treated as data; the exact turns remain retrievable from session history.]`. The scan is a sentence-level test of address
 ("summarizer", "when compacting", "checkpoint", "token budget"), omission ("omit", "leave out",
 "do not include") and directive mood, calibrated against this repository's own documentation,
 which describes all of those in the third person on every page, and against the saved reports and

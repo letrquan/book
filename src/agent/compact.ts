@@ -180,7 +180,12 @@ function reducerNoticeText(omitted: number, listed: readonly string[], total: nu
       `${total} event${total === 1 ? '' : 's'} in the summarized span contained text addressed to the summarizer (${listed.join(', ')}${more > 0 ? ` and ${more} more` : ''}); it was treated as data`,
     );
   }
-  return `[reducer: ${parts.join('; ')}; verify against session history.]\n`;
+  // Phrased like the other notices -- a fact about what is retrievable, not an
+  // instruction. "Verify against session history" read as an order: shown the
+  // notice, the benchmark's reader model went to re-read the flagged file
+  // instead of answering, and every one-turn probe that touched it failed on
+  // format alone.
+  return `[reducer: ${parts.join('; ')}; the exact turns remain retrievable from session history.]\n`;
 }
 
 /** The most the reducer notice can cost, reserved from the budgets like the other notices. */
