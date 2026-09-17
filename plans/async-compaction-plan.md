@@ -175,7 +175,15 @@ SDK inherits whatever `AgentSession.run` forwards.
   the next main request (6) went out at 3,097 tokens with the checkpoint followed by the tool
   turn verbatim, and the card read "Compact conversation · automatic · deferred · judge
   accepted". The mock answers in milliseconds, so the drive proves the ordering, not the
-  latency saved -- that number waits for the router.
+  latency saved.
+- **Router, once (2026-09-17, `9router/ag/gemini-3.8-flash-high`, standard suite, `--deferred
+  2`).** The reducer compacted the fixture minus its last two turns in one pass, the judge read
+  the four withheld messages and **accepted** (`modelCalls: 1`), and the probes against
+  `R0 + Δ` answered 10/12 where the plain arm answered 11/12 and the control 11/12 (the two
+  misses: a one-turn format failure the plain arm shares, and a grading artifact where the
+  answer quoted "Windows CRLF" with quotation marks). Reducer plus judge took 25.8 s against
+  the plain arm's 52.6 s for reducer plus repair -- single samples, not a latency claim. One
+  verdict is no accept rate; the 1–8.5% reject band is checked over repetitions.
 
 ## Out of scope for phase 1 (named so they are not forgotten)
 
