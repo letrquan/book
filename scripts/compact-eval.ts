@@ -817,7 +817,7 @@ async function runFixture(options: {
 function formatAudit(audit: ConversationCheckpointV2['audit']): string {
   if (!audit) return 'clean';
   const parts: string[] = [];
-  if (audit.suspectInputs.length) parts.push(`${audit.suspectInputs.length} suspect`);
+  if (audit.suspectInputCount) parts.push(`${audit.suspectInputCount} suspect`);
   if (audit.omittedInheritedConstraints) parts.push(`${audit.omittedInheritedConstraints} omitted`);
   return parts.join(', ') || 'clean';
 }

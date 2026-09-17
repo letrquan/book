@@ -362,9 +362,12 @@ export interface CheckpointReducerAudit {
   /**
    * Events in the summarized span whose tool result or `@file`/`!` expansion
    * addressed a summarizer and asked it to leave something out. References
-   * only; the sentence itself is never copied into the checkpoint.
+   * only, and at most a handful: the sentence itself is never copied into the
+   * checkpoint, and a span with dozens of such events must not spend the
+   * checkpoint budget on their references. `suspectInputCount` is the total.
    */
   suspectInputs: string[];
+  suspectInputCount: number;
 }
 
 /** One sentence in the summarized span addressed to a summarizer, for hooks and the warning. */

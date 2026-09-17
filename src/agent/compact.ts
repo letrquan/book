@@ -146,18 +146,25 @@ function checkpointPrefix(checkpoint: ConversationCheckpointV2): string {
  * sentence would re-inject it into every later request.
  */
 export function reducerNotice(audit: CheckpointReducerAudit | undefined): string {
-  if (!audit || (audit.omittedInheritedConstraints === 0 && audit.suspectInputs.length === 0)) {
+  if (!audit || (audit.omittedInheritedConstraints === 0 && audit.suspectInputCount === 0)) {
     return '';
   }
   return reducerNoticeText(
     audit.omittedInheritedConstraints,
     audit.suspectInputs.slice(0, REDUCER_NOTICE_MAX_REFS),
-    audit.suspectInputs.length,
+    audit.suspectInputCount,
   );
 }
 
 /** How many suspect event references the notice lists before it counts the rest. */
 const REDUCER_NOTICE_MAX_REFS = 3;
+/**
+ * How many suspect event references the checkpoint keeps. The fit measures
+ * the audit but has no rung that trims it, so an unbounded list would spend
+ * the checkpoint budget on references and evict real rules to pay for them --
+ * the attack's effect through another door.
+ */
+const REDUCER_AUDIT_MAX_REFS = 8;
 
 function reducerNoticeText(omitted: number, listed: readonly string[], total: number): string {
   const parts: string[] = [];
@@ -345,6 +352,7 @@ export const conversationCheckpointV2Schema = z.object({
     .object({
       omittedInheritedConstraints: z.number().int().nonnegative(),
       suspectInputs: z.array(z.string().min(1)),
+      suspectInputCount: z.number().int().nonnegative(),
     })
     .optional(),
   coverage: z
@@ -1057,13 +1065,19 @@ export async function runCompact(
    * output before any fit: what the previous checkpoint carried and this one
    * does not, and the suspect input named above. Attached beside the ledger.
    */
-  const omittedInheritedConstraints = fallbackUsed
-    ? 0
-    : auditInheritedConstraints(selection.priorCheckpoint, checkpoint, carriedLedger);
-  const audit: CheckpointReducerAudit | undefined =
-    omittedInheritedConstraints > 0 || suspectRefs.length > 0
-      ? { omittedInheritedConstraints, suspectInputs: suspectRefs }
+  const reducerAudit = (omitted: number): CheckpointReducerAudit | undefined =>
+    omitted > 0 || suspectRefs.length > 0
+      ? {
+          omittedInheritedConstraints: omitted,
+          suspectInputs: suspectRefs.slice(0, REDUCER_AUDIT_MAX_REFS),
+          suspectInputCount: suspectRefs.length,
+        }
       : undefined;
+  let audit = reducerAudit(
+    fallbackUsed
+      ? 0
+      : auditInheritedConstraints(selection.priorCheckpoint, checkpoint, carriedLedger),
+  );
   /**
    * Re-attached after every rewrite of `checkpoint`, including the deterministic
    * fallbacks. `fitCheckpoint` clones and returns a new object and the fallback
@@ -1216,6 +1230,10 @@ export async function runCompact(
   if (finalValidationError) {
     baseReasons.add('invalid-checkpoint');
     fallbackUsed = true;
+    // The fallback is a clone of the prior checkpoint, rules and all: an audit
+    // settled on the reducer's rejected output would say those rules were let
+    // go of by a checkpoint that carries every one of them.
+    audit = reducerAudit(0);
     // The ledger's bytes are reserved from the budget here because this is the one
     // path that never re-fits: every other site hands `fitCheckpoint` a checkpoint
     // that already carries the ledger, but the fallback is built fresh and the
@@ -1259,8 +1277,8 @@ export async function runCompact(
       `Compaction used reduced-fidelity coverage (${checkpoint.coverage?.reasons.join(', ') || 'unknown'}).`,
     );
   }
-  if (audit?.suspectInputs.length) {
-    const count = audit.suspectInputs.length;
+  if (audit?.suspectInputCount) {
+    const count = audit.suspectInputCount;
     warnings.push(
       `${count} event${count === 1 ? '' : 's'} in the summarized span contained text addressed to the summarizer (e.g. ${suspectInputs[0]?.excerpt ?? ''}); the checkpoint may have been steered.`,
     );

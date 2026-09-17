@@ -308,11 +308,14 @@ describe all three in the third person, from firing (0 hits across README, CHANG
 into the checkpoint. The `--adversarial` arm exists; the deterministic harness cannot be steered,
 so the number has to come from a provider-backed run. Known limitations: the seed itself is
 reducer output, so an instruction that once made it into a constraint's text persists as seed and
-is not scanned; the scan is English-only; the excerpt handed to hooks is a tool-result sentence
-and is withheld only when the secret detector matches it; and `audit.suspectInputs` keeps every
-flagged reference of the generation inside the checkpoint (the header lists three), which a span
-with dozens of steered tool results would pay ~60 characters each for out of the checkpoint
-budget -- accepted, since the fit then squeezes the narrative rather than the rules.
+is not scanned; the scan is English-only; and the excerpt handed to hooks is a tool-result
+sentence and is withheld only when the secret detector matches it. Review then closed three
+holes: physical lines are joined into sentences before the test, so a directive hard-wrapped
+across two lines is caught and a wrapped comment fragment that opens with a quoted order is not;
+`audit.suspectInputs` keeps at most eight references beside a full `suspectInputCount`, so a span
+with dozens of steered tool results cannot spend the checkpoint budget on references and evict
+real rules through another door; and the inherited-constraint audit normalizes any script, so a
+rule in Vietnamese or Japanese is counted rather than skipped.
 
 ### P5. Asynchronous compaction with a trajectory-grounded judge
 
