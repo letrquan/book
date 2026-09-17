@@ -39,6 +39,8 @@ import {
   estimateHistoryTokens,
   estimateProviderRequestTokens,
   judgeCompaction,
+  judgedResult,
+  resolveCompactBudgets,
   runCompact,
 } from '../src/agent/compact.js';
 import { runAgentLoop } from '../src/agent/loop.js';
@@ -681,6 +683,7 @@ async function runFixture(options: {
   includeNoHistory: boolean;
   checkpointTokens?: number;
   compactEffort?: AgentConfig['effort'];
+  deferredTurns?: number;
 }): Promise<CompactEvalRunResult> {
   const { config, compactConfig, fixture } = options;
   const control = createMeter();
@@ -739,7 +742,9 @@ async function runFixture(options: {
       ),
   });
   if (compact.status === 'compacted' && deferredMessages > 0) {
-    const applied = applyCompactResult(compact, snapshot, fixture.history);
+    const applied = applyCompactResult(compact, snapshot, fixture.history, {
+      toolResultMaxTokens: resolveCompactBudgets(compactConfig).retainedToolResultMaxTokens,
+    });
     if (!applied) {
       compact = {
         status: 'failed',
@@ -748,15 +753,7 @@ async function runFixture(options: {
       };
     } else {
       const judge = await judgeCompaction(compactConfig, applied, delta, compactOptions);
-      compact =
-        judge.verdict === 'rejected'
-          ? {
-              status: 'skipped',
-              reason: 'judge-rejected',
-              message: `The judge found the deferred checkpoint insufficient: ${judge.missing.join('; ') || 'no detail'}.`,
-              judge,
-            }
-          : { ...applied, modelCalls: (applied.modelCalls ?? 0) + judge.modelCalls, judge };
+      compact = judgedResult(applied, judge);
     }
   }
   const compactTimeMs = Date.now() - compactStartedAt;
@@ -1304,6 +1301,7 @@ export async function runCompactEvaluationInProcess(
           includeNoHistory: options.includeNoHistory,
           checkpointTokens: options.checkpointTokens,
           compactEffort: options.compactEffort,
+          deferredTurns: options.deferredTurns,
         }),
       );
     }
@@ -1406,7 +1404,7 @@ function parseWorkerBundle(stdout: string): CompactEvalBundle {
   ) {
     throw new Error('Compact evaluation worker returned an unsupported report schema.');
   }
-  return parsed as CompactEvalBundle;
+  return parsed as unknown as CompactEvalBundle;
 }
 
 export async function runCompactEvaluationIsolated(

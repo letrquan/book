@@ -647,18 +647,30 @@ export async function runAgentLoop(
      * the judge rejected it, or it no longer applies -- the caller then falls
      * back to a synchronous compaction, as before this existed.
      */
-    const commitDeferredCompaction = async (wait: boolean): Promise<boolean> => {
+    /**
+     * Commit a prepared compaction against the history as it stands.
+     * `committed`: history was replaced. `fallback`: the synchronous path
+     * should take this boundary -- the judge rejected it, it no longer
+     * applied, or the reducer failed. `settled`: nothing to do here -- the
+     * prepare was refused by a hook or skipped, which the synchronous path
+     * would only repeat, or the run was aborted meanwhile. `pending`: still
+     * in flight and not waited for.
+     */
+    const commitDeferredCompaction = async (
+      wait: boolean,
+    ): Promise<'committed' | 'fallback' | 'settled' | 'pending'> => {
       const pending = pendingCompaction();
-      if (!pending) return false;
+      if (!pending) return 'settled';
       const settled = wait ? await pending.promise : pending.settled;
-      if (settled === undefined) return false;
+      if (settled === undefined) return 'pending';
       if (pendingCompactionState === pending) pendingCompactionState = null;
+      if (signal?.aborted) return 'settled';
       if (!('snapshot' in settled)) {
         log.info('deferred compaction did not prepare', { status: settled.status });
-        return false;
+        return settled.status === 'skipped' ? 'settled' : 'fallback';
       }
       try {
-        const result = await callbacks.commitCompact!(settled, [...newHistory]);
+        const result = await callbacks.commitCompact!(settled, [...newHistory], { signal });
         if (result.status === 'compacted') {
           newHistory.length = 0;
           newHistory.push(...result.replacementHistory);
@@ -668,18 +680,19 @@ export async function runAgentLoop(
             verdict: result.judge?.verdict,
             delta: result.judge?.deltaMessages,
           });
-          return true;
+          return 'committed';
         }
         log.info('deferred compaction not committed', {
           status: result.status,
           reason: result.status === 'skipped' ? result.reason : undefined,
         });
+        if (result.status === 'failed' && result.reason === 'aborted') return 'settled';
       } catch (error) {
         log.warn('deferred compaction failed to commit', {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-      return false;
+      return 'fallback';
     };
     let retrySameTurn = false;
     /** True while replaying a turn, so its messages do not reuse the host's id. */
@@ -744,14 +757,21 @@ export async function runAgentLoop(
       // committed here, at the boundary, before the pressure check below
       // decides anything on stale numbers.
       let synchronousThisBoundary = false;
+      let compactionSettledThisBoundary = false;
       if (pendingCompaction()?.settled !== undefined) {
-        const committed = await commitDeferredCompaction(false);
-        if (!committed) {
-          // Rejected or inapplicable: the synchronous path below gets its turn
-          // on this same boundary, under a fresh dedupe key, rather than a
-          // second deferred attempt on the same pressure.
+        const outcome = await commitDeferredCompaction(false);
+        if (signal?.aborted) break;
+        if (outcome === 'fallback') {
+          // Rejected, inapplicable or failed: the synchronous path below gets
+          // its turn on this same boundary, under a fresh dedupe key, rather
+          // than a second deferred attempt on the same pressure.
           lastCompactAttemptKey = null;
           synchronousThisBoundary = true;
+        } else if (outcome === 'settled') {
+          // A prepare a hook refused, or one skipped, is not retried on this
+          // pressure: the hook would refuse again, and the boundary's dedupe
+          // key differs from the wave's only because the wave appended a turn.
+          compactionSettledThisBoundary = true;
         }
       }
 
@@ -764,7 +784,11 @@ export async function runAgentLoop(
         shouldCompact(lastUsage, contextLimit)
       ) {
         const attemptKey = `${usagePressureTokens(lastUsage)}:${newHistory.length}`;
-        if (attemptKey !== lastCompactAttemptKey && !pendingCompaction()) {
+        if (
+          attemptKey !== lastCompactAttemptKey &&
+          !pendingCompaction() &&
+          !compactionSettledThisBoundary
+        ) {
           lastCompactAttemptKey = attemptKey;
           const hints: CompactRequestHints = {
             requestOverheadTokens: lastRequestEstimate?.overheadTokens,
@@ -912,26 +936,34 @@ export async function runAgentLoop(
       const budgets = resolveCompactBudgets(effectiveConfig, { requestOverheadTokens });
       const usableContextLimit = budgets.usableContextLimit;
       const preflightThreshold = budgets.preflightThreshold;
-      const hasToolResults = newHistory.some((message) => (message.toolResults?.length ?? 0) > 0);
-      const preflightEligible = requestTokens >= preflightThreshold && hasToolResults;
+
+      // A reducer already running on a snapshot is worth more than a second one
+      // started now: when the request is over the gate, wait for it, judge it,
+      // commit it -- whether or not the history holds a tool result, since a
+      // pressured text-only run has no other site that would ever wait for it.
+      // The request is re-measured afterwards; the steps kept verbatim can
+      // leave it over the gate still, and then the synchronous path runs.
+      if (
+        config.autoCompactEnabled !== false &&
+        callbacks.onCompact &&
+        requestTokens >= preflightThreshold &&
+        pendingCompaction()
+      ) {
+        log.info('preflight compact: awaiting deferred compaction', { requestTokens });
+        const outcome = await commitDeferredCompaction(true);
+        if (signal?.aborted) break;
+        if (outcome === 'committed') await rebuildRequest();
+      }
+      const hasToolResultsNow = newHistory.some(
+        (message) => (message.toolResults?.length ?? 0) > 0,
+      );
+      const preflightEligible = requestTokens >= preflightThreshold && hasToolResultsNow;
 
       // Usage from the prior request cannot see a tool result added afterward. Measure the complete
       // request that is about to be sent and compact it before the provider has to reject it.
       if (config.autoCompactEnabled !== false && callbacks.onCompact && preflightEligible) {
-        // A reducer already running on a snapshot is worth more than a second
-        // one started now: wait for it, judge it, commit it. The request is
-        // re-measured afterwards; the steps kept verbatim can leave it over the
-        // gate still, and then the synchronous path runs on what remains.
-        if (pendingCompaction()) {
-          log.info('preflight compact: awaiting deferred compaction', { requestTokens });
-          const committed = await commitDeferredCompaction(true);
-          if (committed) {
-            await rebuildRequest();
-            requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
-          }
-        }
         const attemptKey = `preflight:${requestTokens}:${newHistory.length}`;
-        if (attemptKey !== lastCompactAttemptKey && requestTokens >= preflightThreshold) {
+        if (attemptKey !== lastCompactAttemptKey) {
           lastCompactAttemptKey = attemptKey;
           const estimatedUsage: Usage = {
             promptTokens: requestTokens,
@@ -972,7 +1004,7 @@ export async function runAgentLoop(
         // When the request would still be refused -- compaction disabled, failed, or
         // skipped -- the flat cap the loop always had is the last valve: less evidence
         // in the tool results beats a dead turn.
-        if (requestTokens >= usableContextLimit && hasToolResults) {
+        if (requestTokens >= usableContextLimit && hasToolResultsNow) {
           const shortClipped = clipHistoryToolResults(newHistory);
           if (shortClipped.some((message, index) => message !== newHistory[index])) {
             newHistory.length = 0;
@@ -986,7 +1018,7 @@ export async function runAgentLoop(
         }
       }
 
-      if (requestTokens >= usableContextLimit && hasToolResults) {
+      if (requestTokens >= usableContextLimit && hasToolResultsNow) {
         callbacks.onError(
           `Request is too large for ${effectiveConfig.model} (${requestTokens} estimated input tokens, ${usableContextLimit} available input tokens after reserving output space). Start a new session or reduce the current prompt.`,
         );
@@ -2724,6 +2756,15 @@ export async function runAgentLoop(
     // agents would fire Stop four times, three of them reporting a worktree as
     // the workspace.
     fireTerminalHooks();
+
+    // A reducer that finished during the last turn has a checkpoint nobody has
+    // committed, and the history is final now: judge and commit it here rather
+    // than throw away its calls and have the host's pre-turn compaction redo
+    // the whole thing on the user's next send. One still in flight is aborted
+    // by the `finally`; there is no boundary left for it.
+    if (!signal?.aborted && pendingCompaction()?.settled !== undefined) {
+      await commitDeferredCompaction(false);
+    }
 
     callbacks.onDone();
     return newHistory;

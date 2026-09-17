@@ -411,7 +411,7 @@ export async function runHeadless(
         });
         return outcome.status === 'prepared' ? outcome.prepared : outcome.result;
       },
-      commitCompact: async (prepared, history) => {
+      commitCompact: async (prepared, history, hints) => {
         const outcome = await agentSession.commitCompact({
           prepared,
           history,
@@ -422,7 +422,10 @@ export async function runHeadless(
           runtime,
           timelineStore: store,
           onCommitted: (_result, boundary) => compactBoundaries.push(boundary),
-          options: { signal: opts.signal, onHookEvent: createHookEventHandler(opts, emit) },
+          options: {
+            signal: hints?.signal ?? opts.signal,
+            onHookEvent: createHookEventHandler(opts, emit),
+          },
         });
         if (outcome.result.status === 'compacted') {
           emitCompactBoundary(opts.outputFormat, emit, outcome.result);

@@ -16,11 +16,11 @@ function compactSummary(state: CompactUiState): string {
   const details: string[] = [];
   if (state.trigger === 'auto') details.push('automatic');
   if (state.judge) {
-    details.push(
-      state.judge.verdict === 'accepted'
-        ? 'deferred · judge accepted'
-        : `deferred · judge ${state.judge.verdict}`,
-    );
+    // An inconclusive verdict names its reason: it is the difference between a
+    // judge that had nothing to read and one whose reply never parsed.
+    const why =
+      state.judge.verdict === 'inconclusive' && state.judge.note ? ` (${state.judge.note})` : '';
+    details.push(`deferred · judge ${state.judge.verdict}${why}`);
   }
   if (state.preMessages !== undefined) {
     details.push(`${state.preMessages} ${state.preMessages === 1 ? 'message' : 'messages'}`);

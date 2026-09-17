@@ -1689,6 +1689,44 @@ describe('AgentSession deferred compaction', () => {
     expect(records).toEqual([]);
   });
 
+  it('writes nothing when the run was cancelled while the judge was out', async () => {
+    const records: SessionRecord[] = [];
+    const controller = new AbortController();
+    const session = new AgentSession({
+      compactRunner: async () => compactedResult(),
+      judgeRunner: async () => {
+        controller.abort();
+        return {
+          verdict: 'inconclusive',
+          missing: [],
+          modelCalls: 1,
+          note: 'aborted',
+          deltaMessages: 2,
+        };
+      },
+      postCompactHooksRunner: async () => {
+        throw new Error('no hook after a cancel');
+      },
+    });
+    const prepared = await session.prepareCompact({
+      config: defaultConfig(),
+      history: snapshot,
+      transcriptOrdinal: 2,
+      options: { trigger: 'auto' },
+    });
+    if (prepared.status !== 'prepared') throw new Error(prepared.status);
+    const outcome = await session.commitCompact({
+      prepared: prepared.prepared,
+      history: [...snapshot, ...delta],
+      config: defaultConfig(),
+      transcriptOrdinal: 4,
+      options: { signal: controller.signal },
+      timelineStore: { append: (_id, record) => records.push(record) },
+    });
+    expect(outcome.result).toMatchObject({ status: 'failed', reason: 'aborted' });
+    expect(records).toEqual([]);
+  });
+
   it('declines a checkpoint whose snapshot the history no longer extends', async () => {
     const session = new AgentSession({
       compactRunner: async () => compactedResult(),

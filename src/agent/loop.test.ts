@@ -4704,6 +4704,218 @@ describe('runAgentLoop deferred compaction', () => {
     expect(result.at(-1)?.content).toBe('done');
   });
 
+  it('does not re-run a compaction a hook refused at prepare time', async () => {
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls <= 2) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: `echo-${providerCalls}`, name: 'Echo', arguments: { value: 'x' } },
+          };
+          yield { type: 'done', usage: pressure };
+          return;
+        }
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    const prepareCompact = vi.fn(async (): Promise<CompactResult> => ({
+      status: 'skipped',
+      reason: 'blocked',
+      message: 'refused by hook',
+    }));
+    const commitCompact = vi.fn(accepting);
+    const onCompact = vi.fn(async () => compactedForRetry());
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 3,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onCompact, prepareCompact, commitCompact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    // The hook would refuse again: no synchronous re-run on that boundary, and
+    // the dedupe key keeps the same pressure from starting a second prepare.
+    expect(onCompact).not.toHaveBeenCalled();
+    expect(commitCompact).not.toHaveBeenCalled();
+    expect(prepareCompact).toHaveBeenCalledTimes(2);
+  });
+
+  it('commits a checkpoint that finished during the last turn instead of throwing it away', async () => {
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'echo-1', name: 'Echo', arguments: { value: 'x' } },
+          };
+          yield { type: 'done', usage: pressure };
+          return;
+        }
+        // Text only: the run ends here, with the reducer already settled.
+        yield { type: 'text', content: 'all done' };
+        yield { type: 'done' };
+      },
+    };
+    const prepareCompact = vi.fn(async (snapshot: Message[]) => preparedFor(snapshot));
+    const commitCompact = vi.fn(accepting);
+
+    const result = await runAgentLoop(
+      defaultConfig({
+        maxTurns: 2,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onCompact: async () => compactedForRetry(), prepareCompact, commitCompact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(commitCompact).toHaveBeenCalledOnce();
+    expect(result.some((message) => message.kind === 'checkpoint')).toBe(true);
+    expect(result.at(-1)?.content).toBe('all done');
+  });
+
+  it('stops after the gate wait when the run was cancelled, rather than start a synchronous reducer', async () => {
+    let providerCalls = 0;
+    const controller = new AbortController();
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        yield {
+          type: 'tool_call',
+          toolCall: { id: `echo-${providerCalls}`, name: 'Echo', arguments: { value: 'x' } },
+        };
+        yield { type: 'done', usage: pressure };
+      },
+    };
+    const prepareCompact = vi.fn(
+      (_snapshot: Message[], _usage: Usage | null, hints?: { signal?: AbortSignal }) =>
+        new Promise<CompactResult>((resolve) => {
+          // The user cancels while the gate waits on this reducer.
+          setTimeout(() => controller.abort(), 10);
+          hints?.signal?.addEventListener('abort', () =>
+            resolve({ status: 'failed', reason: 'aborted', error: 'aborted' }),
+          );
+        }),
+    );
+    const commitCompact = vi.fn(accepting);
+    const onCompact = vi.fn(async () => compactedForRetry());
+    const priorHistory: Message[] = Array.from({ length: 4 }, (_, index) => ({
+      id: `prior-${index}`,
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: `prior ${index} ${'filler text '.repeat(6_500)}`,
+      includeInContext: true,
+      timestamp: index,
+    }));
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 3,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'hello',
+      priorHistory,
+      noopCallbacks({ onCompact, prepareCompact, commitCompact }),
+      'default',
+      { provider, isNewSession: false, signal: controller.signal },
+    );
+
+    expect(prepareCompact).toHaveBeenCalledOnce();
+    expect(commitCompact).not.toHaveBeenCalled();
+    expect(onCompact).not.toHaveBeenCalled();
+  });
+
+  it('awaits a pending reducer at the gate even when the history holds no tool result', async () => {
+    let providerCalls = 0;
+    const seen: string[][] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        providerCalls++;
+        seen.push(messages.map((message) => String(message.content)));
+        if (providerCalls === 1) {
+          // Pressure with tool calls starts the deferred reducer...
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'echo-1', name: 'Echo', arguments: { value: 'x' } },
+          };
+          yield { type: 'done', usage: pressure };
+          return;
+        }
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    let resolvePrepare: ((prepared: PreparedCompaction) => void) | undefined;
+    const prepareCompact = vi.fn(
+      (snapshot: Message[]) =>
+        new Promise<PreparedCompaction>((resolve) => {
+          resolvePrepare = resolve;
+          setTimeout(() => resolve(preparedFor(snapshot)), 20);
+        }),
+    );
+    const commitCompact = vi.fn(accepting);
+    // ...and a history near the window with no tool result in it: the only
+    // thing that can wait for the reducer is the gate, which must not require one.
+    const priorHistory: Message[] = Array.from({ length: 4 }, (_, index) => ({
+      id: `prior-${index}`,
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: `prior ${index} ${'filler text '.repeat(6_500)}`,
+      includeInContext: true,
+      timestamp: index,
+    }));
+    const registry = createRegistry();
+    registry.register({
+      name: 'Echo',
+      description: 'Echo',
+      parameters: { type: 'object', properties: { value: { type: 'string' } } },
+      // A result the loop records as a tool call with no tool-result body.
+      execute: async () => toolSuccess(''),
+    });
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 2,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      registry,
+      'hello',
+      priorHistory,
+      noopCallbacks({ onCompact: async () => compactedForRetry(), prepareCompact, commitCompact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(resolvePrepare).toBeDefined();
+    expect(commitCompact).toHaveBeenCalledOnce();
+    expect(seen[1].join('\n')).toContain('compact summary');
+  });
+
   it('aborts a reducer still in flight when the run ends', async () => {
     let providerCalls = 0;
     let prepareSignal: AbortSignal | undefined;

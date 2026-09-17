@@ -3,6 +3,8 @@ import { runAgentLoop } from '../agent/loop.js';
 import {
   applyCompactResult,
   judgeCompaction,
+  judgedResult,
+  resolveCompactBudgets,
   runCompact,
   runPostCompactHooks,
   type RunCompactOptions,
@@ -775,7 +777,9 @@ export class AgentSession {
   ): Promise<AgentSessionCompactOutcome> {
     const runtime = request.runtime ?? this.runtime;
     const { prepared } = request;
-    const applied = applyCompactResult(prepared.result, prepared.snapshot, request.history);
+    const applied = applyCompactResult(prepared.result, prepared.snapshot, request.history, {
+      toolResultMaxTokens: resolveCompactBudgets(request.config).retainedToolResultMaxTokens,
+    });
     if (!applied) {
       return {
         result: {
@@ -799,22 +803,16 @@ export class AgentSession {
       onUsage: accounted.onUsage,
       onUsageMissing: accounted.onUsageMissing,
     });
-    if (judge.verdict === 'rejected') {
-      return {
-        result: {
-          status: 'skipped',
-          reason: 'judge-rejected',
-          message: `The judge found the deferred checkpoint insufficient: ${judge.missing.join('; ') || 'no detail'}.`,
-          judge,
-        },
-      };
+    // A cancellation that lands during the judge call is a stop, not an
+    // inconclusive verdict: the synchronous path writes nothing under the
+    // same abort, and a checkpoint stamped as judged that nobody judged must
+    // not be what a resume starts from.
+    if (accounted.signal?.aborted || judge.note === 'aborted') {
+      return { result: { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' } };
     }
-    if (request.isCurrent?.() === false) return { result: applied };
-    const result = {
-      ...applied,
-      modelCalls: (applied.modelCalls ?? 0) + judge.modelCalls,
-      judge,
-    };
+    const result = judgedResult(applied, judge);
+    if (result.status !== 'compacted') return { result };
+    if (request.isCurrent?.() === false) return { result };
     return this.commitCompactResult(result, {
       config: request.config,
       history: request.history,

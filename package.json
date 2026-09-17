@@ -59,7 +59,7 @@
     "build": "tsup",
     "dev": "tsx src/index.ts",
     "postinstall": "node scripts/apply-ink-patch.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json",
     "pretest": "npm run build",
     "test": "npm run test:unit && npm run test:contract && npm run test:integration",
     "test:unit": "vitest run --config vitest.unit.config.ts",

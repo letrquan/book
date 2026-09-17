@@ -63,14 +63,19 @@ rules it out.
   result is not applicable and the caller falls back to the synchronous path. Appends Δ to the
   replacement history, re-runs `stabilizePostTokens` so `statistics.postTokens` and
   `postContextTokens` are honest, and bumps `retainedCount`.
-- `judgeCompaction(config, result, delta, options)`. One call on the compact model (`effort:
-  'low'`), with the checkpoint message as the agent reads it (header and JSON, carried turns
-  ahead of it) and Δ clipped by `clipHistoryToolResults` so the request is small. It answers
-  JSON `{ "sufficient": boolean, "missing": string[] }` to two questions: does the checkpoint
-  contain every fact and constraint these steps relied on, and does it support the next action
-  these steps took. An inconclusive judge -- timeout, provider error, malformed reply -- is
-  recorded as `inconclusive` and **accepts**: that is today's blind acceptance, not a regression.
-  Only a reject changes behaviour.
+- `judgeCompaction(config, result, delta, options)`. One call on the compact model, at low
+  effort where the model's catalog accepts one, with **the whole context the agent will read
+  after the replacement** -- the carried turns, the checkpoint, and the retained tail, which
+  stays verbatim too -- followed by Δ, tool results clipped and reasoning left out. Review found
+  the first cut showed the judge the checkpoint alone and it faulted the checkpoint for what the
+  newest retained turn already carried. It answers `{ "sufficient": boolean, "missing": string[]
+  }`, read leniently -- the verdict is the one field that must be legible -- to two questions:
+  does that context contain every fact, value and constraint these steps relied on, and does it
+  support the next action these steps took. A prompt that would not fit the judge model's window
+  is not sent. An inconclusive judge -- no steps, too large, provider error, a reply cut by the
+  output cap, a reply that does not parse -- is recorded with its reason and **accepts**: that is
+  today's blind acceptance, not a regression. Only a reject changes behaviour. A judge call the
+  run's cancellation lands on is a stop, not a verdict: nothing is committed.
 - `CompactResult` gains `judge?: { verdict: 'accepted' | 'rejected' | 'inconclusive'; missing:
   string[]; modelCalls: number }`, carried onto the compact record and the stream-json record.
   This is the accept/reject rate the plan is measured by.
@@ -114,12 +119,19 @@ When the host provides both callbacks:
 2. The turn proceeds on the full history.
 3. At the next boundary, if the prepare has settled with a checkpoint: `commitCompact` (judge →
    apply → record). Accepted: splice `R0 + Δ` into `newHistory`. Rejected, failed or not
-   applicable: discard it and run today's synchronous `onCompact` at this boundary.
+   applicable: discard it and run today's synchronous `onCompact` at this boundary. A prepare a
+   `PreCompact` hook refused is *not* followed by a synchronous attempt -- the hook would refuse
+   again -- and that pressure is not retried at the boundary either. `applyCompactResult` clips
+   Δ's tool results the way a retained tail's are and refreshes the checkpoint's file
+   observations from Δ, so the request that follows is not put back over the gate by the wave's
+   own output and the next turn does not report a file stale against the agent's own edit.
 4. At the preflight gate (the next request would not fit): if a prepare is in flight, **await
-   and commit it** rather than start a second reducer; otherwise synchronous as today. After a
-   commit there `R0 + Δ` can still be over the threshold -- Δ is verbatim and the snapshot is
-   behind -- so the gate re-checks and, if so, runs the synchronous path on `R0 + Δ` under its
-   own dedupe key.
+   and commit it** rather than start a second reducer -- whether or not the history holds a
+   tool result, since a pressured text-only run has no other site that would wait for it. The
+   gate re-measures and re-decides its eligibility afterwards, so a request the commit brought
+   under the gate is neither compacted again nor clipped again; one still over it takes the
+   synchronous path. A cancellation that lands during the wait ends the turn there; it does not
+   start a synchronous reducer.
 5. The overflow-recovery site stays synchronous: there is no room to continue. It aborts a
    prepare in flight first: the recovery replaces history outright, so that reducer's snapshot
    could never be applied afterwards.
@@ -130,6 +142,9 @@ When the host provides both callbacks:
 7. Δ empty at commit (the reducer finished before the next wave did): nothing to judge; commit
    with `verdict: 'inconclusive'` and a `no-delta` note rather than spend a judge call on an
    empty trajectory.
+8. Run end with a prepare already **settled**: the history is final, so it is judged and
+   committed there rather than thrown away for the host's pre-turn compaction to redo on the
+   user's next send. Only one still in flight is aborted.
 
 ### Hosts
 
@@ -177,8 +192,11 @@ SDK inherits whatever `AgentSession.run` forwards.
   costs one reducer call per boundary -- bounded, denial-of-service-shaped; one that says
   "accept" is today's blind acceptance. P4's `scanSuspectInputs` runs over Δ and the count is
   recorded on the verdict (`suspectDelta`); no new detector.
-- **PreCompact hooks run twice on a reject**: once at prepare, once in the synchronous fallback.
-  Documented in the README hook table.
+- **PreCompact hooks run twice on a reject or a failed prepare**: once at prepare, once in the
+  synchronous fallback. A refusal at prepare is not followed by a second run. Documented in the
+  README hook table.
+- **The judge's model is `compactModel`'s**; its effort is only requested where the catalog says
+  the model accepts one, so a strict endpoint is not sent a `reasoning_effort` it would refuse.
 
 ## Risks
 

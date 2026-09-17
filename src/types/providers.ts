@@ -137,7 +137,11 @@ export interface AgentLoopCallbacks {
     usage: Usage | null,
     hints?: CompactRequestHints & { signal?: AbortSignal },
   ) => Promise<PreparedCompaction | CompactResult>;
-  commitCompact?: (prepared: PreparedCompaction, live: Message[]) => Promise<CompactResult>;
+  commitCompact?: (
+    prepared: PreparedCompaction,
+    live: Message[],
+    hints?: { signal?: AbortSignal },
+  ) => Promise<CompactResult>;
   /**
    * Called when an assistant turn (including tool results) is finalized.
    * Hosts should persist this immediately rather than slicing the final history.

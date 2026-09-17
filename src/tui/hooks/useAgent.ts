@@ -1017,22 +1017,29 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             }
             return outcome.prepared;
           },
-          commitCompact: async (prepared, history) => {
+          commitCompact: async (prepared, history, hints) => {
             if (!stillCurrent()) {
               return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
             }
+            // The commit usually lands at the preflight gate, after the next
+            // turn's streaming placeholder has been appended; the boundary
+            // belongs before that placeholder, not after it.
+            const placeholderIndex = streamingIdRef.current
+              ? messagesRef.current.findIndex((message) => message.id === streamingIdRef.current)
+              : -1;
             const outcome = await agentSession.commitCompact({
               prepared,
               history,
               config: liveConfigRef.current,
               sessionId: activeSessionId,
-              transcriptOrdinal: messagesRef.current.length,
+              transcriptOrdinal:
+                placeholderIndex >= 0 ? placeholderIndex : messagesRef.current.length,
               runContext: activeRunContext,
               runtime: agentSession.getRuntime(),
               timelineStore,
               isCurrent: stillCurrent,
               onCommitted: projectCompactResult,
-              options: {},
+              options: { signal: hints?.signal },
             });
             const result = outcome.result;
             if (!stillCurrent()) return result;
