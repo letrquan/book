@@ -1,7 +1,7 @@
 import type { AgentRuntimeEvent } from '../agents/types.js';
 import type { Message, ProviderMessageMetadata, Usage } from './messages.js';
 import type { AgentTask, PermissionMode, RetryPhase } from './runtime.js';
-import type { CompactRequestHints, CompactResult } from './sessions.js';
+import type { CompactRequestHints, CompactResult, PreparedCompaction } from './sessions.js';
 import type { AgentTerminalOutcome } from './terminal.js';
 import type {
   PermissionDecision,
@@ -124,6 +124,20 @@ export interface AgentLoopCallbacks {
     usage: Usage | null,
     hints?: CompactRequestHints,
   ) => Promise<CompactResult>;
+  /**
+   * Deferred compaction (`plans/async-compaction-plan.md`). When both are
+   * provided, the loop's usage-triggered site runs the reducer on a snapshot
+   * in the background while the turn goes on, and at the next boundary hands
+   * the prepared result back with the history as it stands. The host judges
+   * the checkpoint against the steps taken meanwhile, applies it, and commits
+   * it, or returns a `skipped` result and the loop falls back to `onCompact`.
+   */
+  prepareCompact?: (
+    snapshot: Message[],
+    usage: Usage | null,
+    hints?: CompactRequestHints & { signal?: AbortSignal },
+  ) => Promise<PreparedCompaction | CompactResult>;
+  commitCompact?: (prepared: PreparedCompaction, live: Message[]) => Promise<CompactResult>;
   /**
    * Called when an assistant turn (including tool results) is finalized.
    * Hosts should persist this immediately rather than slicing the final history.
