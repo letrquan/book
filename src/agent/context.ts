@@ -322,6 +322,7 @@ function operatingPrinciplesSection(editFormat: EditFormat): string {
     ...mutationGuidanceLines(editFormat),
     '- Use the strongest practical feedback loop available: exercise the affected behavior when possible, then run focused tests, type checks, lint, builds, or visual checks as relevant. Fix failures caused by your changes.',
     '- Before finishing, review the changed files or diff for requested scope, edge cases, security issues, and accidental edits. Do not claim success without evidence; if verification is incomplete or blocked, state what ran and what remains uncertain.',
+    '- Report verification from the tool results already in the transcript. Do not re-run a command only to quote its output when nothing it reads has changed since it last ran; a second run of the same suite spends a turn and proves nothing new.',
     '',
     '## Communication',
     '- Be concise, direct, and factual. Lead with outcomes and include reasoning only when it helps the user evaluate a decision or tradeoff.',

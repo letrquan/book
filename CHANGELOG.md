@@ -14,6 +14,13 @@ All notable changes to this project are documented in this file.
   choice, and so is a positional without `--print`, since the TUI has no initial prompt; the
   message says to add `-p` and points at `book --help`, since a mistyped subcommand lands there
   too.
+- **The kernel tells the model not to re-run the finish list to quote it.** Every spec ends
+  with a numbered finish list and asks for the pasted output of each step; the model ran the
+  list, saw it green, then ran every step again to have "fresh" output — six extra turns and a
+  second full `go test ./...` per run (#216). One kernel line says to report verification from
+  the tool results already in the transcript. `SYSTEM_PROMPT_VERSION` is now
+  `book-system-prompt-v3`, so run-ambient records distinguish the two kernels.
+
 - **`Read` can open the project memory directory.** The memory index told the model to read a
   memory file when its entry was relevant, and `Read` refused with `Path outside workspace`: every
   path resolved against the single workspace root, and memory lives under `BOOK_HOME` (#227). The

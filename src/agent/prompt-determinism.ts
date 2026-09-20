@@ -10,7 +10,7 @@ import { resolveBookHome } from '../book-home.js';
 
 const EVALUATION_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
-export const SYSTEM_PROMPT_VERSION = 'book-system-prompt-v2';
+export const SYSTEM_PROMPT_VERSION = 'book-system-prompt-v3';
 
 /** Return the date exposed to the model, with evaluator-controlled runs frozen. */
 export function promptCurrentDate(): string {
