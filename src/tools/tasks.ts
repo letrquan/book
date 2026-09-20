@@ -367,12 +367,14 @@ export const taskTools: ToolDefinition[] = [
     parameters: {
       type: 'object',
       properties: {
+        // Declared so the model's habitual `TaskList({ reason })` is not a hard
+        // invalid_arguments error it then repeats bare; the value is not read.
+        // The schema stays closed like every other built-in tool's.
         reason: {
           type: 'string',
           description: 'Optional note on why the list is being read; not stored.',
         },
       },
-      additionalProperties: true,
     },
     execute: taskList,
   },

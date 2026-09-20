@@ -52,7 +52,7 @@ All notable changes to this project are documented in this file.
 - **`TaskList` no longer rejects a `reason`.** The model habitually explains why it is reading the
   list (`TaskList({ reason: "verify all tasks are complete" })`) and got a hard
   `invalid_arguments` for it, then repeated the call bare — two wasted turns each time (#216). The
-  field is declared and ignored, and the schema tolerates other extras.
+  field is declared and ignored; the schema stays closed like every other built-in tool's.
 - **`Read` says its default is the whole file.** The description offered `offset`/`limit` "for
   large files" and models took the hint too far, reading a 430-line file in four 100-line calls
   and one 20-line span three times over (#224). It now says the default reads the file whole, and

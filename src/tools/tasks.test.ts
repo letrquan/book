@@ -83,7 +83,7 @@ describe('task management tools', () => {
     expect(r.content).toMatch(/completed 1/);
   });
 
-  it('tolerates explanatory and extra arguments through the registry', async () => {
+  it('accepts an explanatory reason through the registry and stays closed otherwise', async () => {
     const registry = createRegistry();
     registry.register(taskList);
     const c = ctx();
@@ -98,7 +98,8 @@ describe('task management tools', () => {
       { id: '2', name: 'TaskList', arguments: { anything: 1 } },
       c,
     );
-    expect(withExtra.status).toBe('success');
+    expect(withExtra.status).toBe('error');
+    expect(withExtra.structuredError?.code).toBe('invalid_arguments');
   });
 
   it('gets full task details and errors for missing IDs', async () => {
