@@ -366,7 +366,7 @@ export async function runHeadless(
       onRetry: (phase, attempt, max, delayMs) => {
         if (opts.outputFormat === 'stream-json') {
           emit({ type: 'retry', phase, attempt, max, delay_ms: delayMs });
-        } else {
+        } else if (opts.quiet !== true) {
           process.stderr.write(
             `retry: ${phase} attempt ${attempt}${max > 0 ? `/${max}` : ''} in ${Math.round(delayMs / 1000)}s\n`,
           );

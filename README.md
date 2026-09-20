@@ -149,8 +149,8 @@ process.
 In `text` output stdout is the final answer alone, and progress goes to **stderr**: one line per
 tool call (`[Read] src/cli/doctor.ts`, `[Bash] npm test`) so a person watching a terminal can see a
 long run is alive without tailing the session file. `--verbose` adds each call's result
-(`  → success 12ms`, or the error), `--quiet` turns the lines off. `json` and `stream-json` write
-nothing to stderr. Reasoning the model inlines as `<reasoning_context>…</reasoning_context>` is
+(`  → success 12ms`, or the error), `--quiet` turns the lines off, retry lines included. `json` and
+`stream-json` write nothing to stderr. Reasoning the model inlines as `<reasoning_context>…</reasoning_context>` is
 stored as reasoning, not answer text, so it never reaches stdout.
 
 Three things behave differently in print mode, because there is nobody to ask.
