@@ -6,6 +6,9 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Windows paths in `/memory` commands no longer lose backslashes to markdown parsing.** `/memory`
+  reports and effects rendered paths unescaped through `marked`, which treated backslashes as
+  markdown escape sequences. Paths are now wrapped in inline code spans.
 - **A lead no longer reports results a delegated agent has not produced.** `AgentSpawn` returns as
   soon as the child is queued, and the only hint in the result was `"status": "queued"` inside an
   otherwise bare record. Watched in the TUI, the lead read that and printed "Sidekick reported.
@@ -20,6 +23,17 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **Phase 0 memory improvements: read-path instructions, visibility, and health reporting.**
+  The system prompt's cached local memory section now provides the absolute memory directory,
+  instructs the model to read relevant memory markdown files on demand, and directs it to note when
+  a fact is memory-derived and potentially stale while preserving evaluation-path masking determinism.
+  The Read tool now admits read-only roots outside the workspace, allowing the model to read memory
+  files in the memory directory while mutation tools continue to reject writes outside the workspace.
+  Captured memory candidates now emit an agent notice rendered as a single-line message in the TUI
+  (`memory candidate saved: <title> — /memory inbox`) and surfaced in print mode and the SDK, while
+  pending candidate counts are delivered in the per-turn `<session-state>` block. `/memory status` and
+  `book doctor` now report a filesystem-only memory health line (approved memory count, inbox count,
+  index lines, and newest write date).
 - **The turn that trips the compaction threshold no longer waits for the summarizer.** When a
   response reports usage over the threshold and has tool calls to make, the reducer now starts on
   a snapshot of the history ahead of the tool wave and the turn goes on over the full history; at

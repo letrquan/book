@@ -427,7 +427,7 @@ function memoryCommandEffect(
     };
   }
   if (rawArguments === 'path') {
-    return { type: 'local-message', content: getProjectMemoryDir(context.workspace) };
+    return { type: 'local-message', content: `\`${getProjectMemoryDir(context.workspace)}\`` };
   }
   if (rawArguments === 'on' || rawArguments === 'auto-save on') {
     return { type: 'set-memory-auto-save', enabled: true };
@@ -449,7 +449,7 @@ function memoryCommandEffect(
     return {
       type: 'local-message',
       content: result.ok
-        ? `${approve ? 'Approved' : 'Discarded'} memory candidate → ${result.path}`
+        ? `${approve ? 'Approved' : 'Discarded'} memory candidate → \`${result.path}\``
         : `✕ ${result.error}`,
       refreshMemory: result.ok && approve,
     };

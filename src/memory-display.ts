@@ -1,5 +1,6 @@
 import type { ResolvedSettings } from './settings.js';
 import {
+  getMemoryHealth,
   getMemoryInboxDir,
   getProjectMemoryDir,
   listMemoryCandidates,
@@ -38,7 +39,7 @@ export function buildMemoryInboxReport(input: MemoryReportInput): string {
     return [
       'Memory inbox: no pending candidates.',
       '',
-      `Inbox: ${getMemoryInboxDir(input.workspace, input)}`,
+      `Inbox: \`${getMemoryInboxDir(input.workspace, input)}\``,
       '',
       'New auto-memory candidates appear here for review before they are loaded.',
     ].join('\n');
@@ -66,13 +67,18 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
   const enabled = settings?.memory.enabled ?? true;
   const autoSave = settings?.memory.autoSave ?? true;
   const requireApproval = settings?.memory.requireApproval ?? true;
+  const health = getMemoryHealth(ctx, input);
+  const lastWrite = health.lastWrite ? health.lastWrite.toISOString() : 'never';
 
   const lines: string[] = ['Auto-memory for this workspace:', ''];
-  lines.push(`Location: ${ctx.dir}`);
+  lines.push(`Location: \`${ctx.dir}\``);
   lines.push(`Loading: ${enabled ? 'enabled' : 'disabled'}`);
   lines.push(`Auto-capture: ${autoSave ? 'enabled' : 'disabled'} (writes review candidates only)`);
   lines.push(`Approval required: ${requireApproval ? 'yes' : 'no'}`);
-  lines.push(`Inbox: ${getMemoryInboxDir(input.workspace, input)}`);
+  lines.push(`Inbox: \`${getMemoryInboxDir(input.workspace, input)}\``);
+  lines.push(
+    `Health: ${health.approvedCount} approved, ${health.inboxCount} inbox, ${health.indexLineCount} index lines, last write: ${lastWrite}`,
+  );
   lines.push('');
 
   if (ctx.indexFile) {
@@ -80,7 +86,7 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
       ctx.loadedLineCount < ctx.indexLineCount
         ? `first ${ctx.loadedLineCount} of ${ctx.indexLineCount} non-empty lines`
         : `${ctx.loadedLineCount} non-empty lines`;
-    lines.push(`Loaded index: ${ctx.indexFile} (${cap})`);
+    lines.push(`Loaded index: \`${ctx.indexFile}\` (${cap})`);
   } else {
     lines.push('Loaded index: none found');
   }
@@ -102,6 +108,6 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
   lines.push(
     'Commands: /memory inbox, /memory approve <n|file>, /memory discard <n|file>, /memory on, /memory off, /memory path',
   );
-  lines.push(`Path: ${getProjectMemoryDir(input.workspace, input)}`);
+  lines.push(`Path: \`${getProjectMemoryDir(input.workspace, input)}\``);
   return lines.join('\n');
 }

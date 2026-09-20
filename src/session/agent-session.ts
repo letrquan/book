@@ -1022,6 +1022,7 @@ export class AgentSession {
         },
         onToolCall: (toolCall: ToolCall) => emit({ type: 'tool_use', toolCall }),
         onToolResult: (toolResult: ToolResult) => emit({ type: 'tool_result', toolResult }),
+        onNotice: (message: string) => emit({ type: 'notice', message }),
         onError: (error: string) => {
           emittedError = error;
           emit({ type: 'error', error });

@@ -865,6 +865,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               case 'tool_result':
                 activeAccumulator?.addToolResult(event.toolResult);
                 break;
+              case 'notice':
+                appendLocalMessage(event.message);
+                break;
               case 'attempt_discarded': {
                 // Land anything still queued before clearing, or it would flush
                 // the abandoned attempt back in on top of the reset.

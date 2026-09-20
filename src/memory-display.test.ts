@@ -2,8 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { marked } from 'marked';
 import { buildMemoryInboxReport, buildMemoryReport, getMemoryIndex } from './memory-display.js';
-import { getMemoryInboxDir, getProjectMemoryDir, writeMemoryCandidate } from './memory-store.js';
+import {
+  getMemoryInboxDir,
+  getProjectMemoryDir,
+  loadMemoryContext,
+  writeMemoryCandidate,
+} from './memory-store.js';
 import { DEFAULT_SETTINGS } from './settings.js';
 
 let bookRoot: string;
@@ -72,5 +78,75 @@ describe('buildMemoryReport', () => {
     expect(idx.indexFile).toBe(join(dir, 'MEMORY.md'));
     expect(idx.indexLineCount).toBe(1);
     expect(getMemoryInboxDir(workspace, { bookRoot })).toContain('.inbox');
+  });
+
+  it('reports memory health line with approved, inbox, index line counts, and last write', () => {
+    const dir = getProjectMemoryDir(workspace, { bookRoot });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Rule](rule.md) — project rule\n', 'utf-8');
+    writeFileSync(
+      join(dir, 'rule.md'),
+      '---\ntype: project\nstatus: approved\n---\n# Rule\nUse TypeScript.',
+      'utf-8',
+    );
+    writeMemoryCandidate(
+      workspace,
+      {
+        type: 'user',
+        title: 'User prefers concise answers',
+        body: 'User prefers concise answers.',
+        source: 'auto',
+      },
+      { bookRoot },
+    );
+
+    const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
+    expect(report).toMatch(
+      /Health: 1 approved, 1 inbox, 1 index lines, last write: \d{4}-\d{2}-\d{2}T/,
+    );
+  });
+
+  it('reads inbox count from disk even when given a stale session-start snapshot', () => {
+    const initialContext = loadMemoryContext(workspace, { bookRoot });
+    expect(initialContext.candidates).toHaveLength(0);
+
+    writeMemoryCandidate(
+      workspace,
+      {
+        type: 'user',
+        title: 'Fresh candidate',
+        body: 'Fresh candidate body.',
+        source: 'auto',
+      },
+      { bookRoot },
+    );
+
+    const report = buildMemoryReport({
+      workspace,
+      bookRoot,
+      settings: DEFAULT_SETTINGS,
+      loaded: initialContext,
+    });
+    expect(report).toMatch(/Health: \d+ approved, 1 inbox/);
+  });
+
+  it('renders paths in inline code spans so marked preserves backslashes', () => {
+    const winBookRoot = 'C:\\Users\\test\\.book';
+    const report = buildMemoryReport({
+      workspace,
+      bookRoot: winBookRoot,
+      settings: DEFAULT_SETTINGS,
+    });
+    const inboxReport = buildMemoryInboxReport({ workspace, bookRoot: winBookRoot });
+
+    // Both reports wrap paths in inline code spans (`...`)
+    expect(report).toContain(`Location: \`${winBookRoot}`);
+    expect(report).toContain(`Inbox: \`${winBookRoot}`);
+    expect(report).toContain(`Path: \`${winBookRoot}`);
+    expect(inboxReport).toContain(`Inbox: \`${winBookRoot}`);
+
+    // When processed through marked, the backslashes survive inside <code> blocks
+    const parsed = marked.parse(report);
+    expect(parsed).toContain(`<code>${winBookRoot}`);
   });
 });

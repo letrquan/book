@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from 'fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'path';
-import type { ToolResult } from '../types/tools.js';
+import type { ReadOnlyRoot, ToolResult } from '../types/tools.js';
 import { toolFailure } from './result.js';
 
 function isOutside(root: string, candidate: string): boolean {
@@ -44,6 +44,54 @@ export function resolveWorkspacePath(
 
   const rel = relative(lexicalRoot, filePath);
   return { filePath, canonicalPath, relativePath: rel.replace(/\\/g, '/') };
+}
+
+export interface ResolvedReadablePath {
+  filePath: string;
+  canonicalPath: string;
+  relativePath: string;
+}
+
+export function resolveReadablePath(
+  context: { workspaceRoot: string; readOnlyRoots?: readonly (string | ReadOnlyRoot)[] },
+  inputPath: string,
+): ResolvedReadablePath | null {
+  const wsMatch = resolveWorkspacePath(context.workspaceRoot, inputPath);
+  if (wsMatch) {
+    return {
+      filePath: wsMatch.filePath,
+      canonicalPath: wsMatch.canonicalPath,
+      relativePath: wsMatch.relativePath,
+    };
+  }
+
+  // Only absolute inputs may be tried against read-only roots; relative inputs stay workspace-anchored.
+  if (!isAbsolute(inputPath)) {
+    return null;
+  }
+
+  for (const entry of context.readOnlyRoots ?? []) {
+    const root = typeof entry === 'string' ? entry : entry.root;
+    const exclude = typeof entry === 'string' ? undefined : entry.exclude;
+    const rootMatch = resolveWorkspacePath(root, inputPath);
+    if (rootMatch) {
+      if (exclude && exclude.length > 0) {
+        const isExcluded = exclude.some((subpath) => {
+          const normSub = subpath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+          const normRel = rootMatch.relativePath;
+          return normRel === normSub || normRel.startsWith(`${normSub}/`);
+        });
+        if (isExcluded) continue;
+      }
+      return {
+        filePath: rootMatch.filePath,
+        canonicalPath: rootMatch.canonicalPath,
+        relativePath: rootMatch.relativePath,
+      };
+    }
+  }
+
+  return null;
 }
 
 export function pathOutsideWorkspaceResult(inputPath: unknown): ToolResult {

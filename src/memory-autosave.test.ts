@@ -61,6 +61,20 @@ describe('detectMemoryCandidate', () => {
       }),
     ).toBeNull();
   });
+
+  it('truncates title at 80 chars while keeping the full user text in body', () => {
+    const longText =
+      'in this repo we always use strict TypeScript settings and avoid any type assertions or any casts in production code';
+    expect(longText.length).toBeGreaterThan(80);
+    const candidate = detectMemoryCandidate({
+      userMessage: `Remember that ${longText}`,
+    });
+    expect(candidate).not.toBeNull();
+    expect(candidate?.title.length).toBeLessThanOrEqual(80);
+    expect(candidate?.title.endsWith('...')).toBe(true);
+    expect(candidate?.body).toBe(longText);
+    expect(candidate?.body.length).toBe(longText.length);
+  });
 });
 
 describe('maybeCaptureMemoryCandidate', () => {

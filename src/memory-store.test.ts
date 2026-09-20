@@ -12,8 +12,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   approveMemoryCandidate,
+  countMemoryCandidates,
   discardMemoryCandidate,
+  getMemoryHealth,
   getMemoryInboxDir,
+  getNewestMemoryWriteTime,
   getProjectMemoryDir,
   listMemoryCandidates,
   listMemoryFiles,
@@ -211,4 +214,103 @@ describe('candidate lifecycle', () => {
     expect(raw).toContain('type: user');
     expect(raw).toContain('confidence: high');
   });
+
+  describe('getNewestMemoryWriteTime and memory health', () => {
+    it('does not hang on a symlink loop and ignores discarded candidates and dotfiles', () => {
+      const ws = 'C:\\fake\\symlink-loop';
+      const memoryDir = getProjectMemoryDir(ws, { bookRoot });
+      mkdirSync(memoryDir, { recursive: true });
+
+      // Write an approved file
+      const approvedFile = join(memoryDir, 'approved.md');
+      writeFileSync(approvedFile, '# Approved fact', 'utf-8');
+
+      // Create a symlink loop inside memoryDir
+      const loopLink = join(memoryDir, 'loop-link');
+      try {
+        symlinkSync(memoryDir, loopLink);
+      } catch {
+        // May be restricted on Windows without admin, continue if so
+      }
+
+      // Write a dotfile (like .extraction-state.json) with recent timestamp
+      const dotFile = join(memoryDir, '.extraction-state.json');
+      writeFileSync(dotFile, '{"watermark": "recent"}', 'utf-8');
+
+      // Write a discarded candidate inside .inbox/discarded/
+      const inboxDir = getMemoryInboxDir(ws, { bookRoot });
+      const discardedDir = join(inboxDir, 'discarded');
+      mkdirSync(discardedDir, { recursive: true });
+      const discardedFile = join(discardedDir, 'discarded.md');
+      writeFileSync(discardedFile, '# Discarded fact', 'utf-8');
+
+      const newest = getNewestMemoryWriteTime(memoryDir);
+      expect(newest).not.toBeNull();
+      // Should see approvedFile, and neither hang on loop-link nor count .extraction-state.json or discarded.md
+    });
+
+    it('counts approved files with status approved or absent, excluding pending/discarded and MEMORY.md', () => {
+      const ws = 'C:\\fake\\health-status';
+      const memoryDir = getProjectMemoryDir(ws, { bookRoot });
+      mkdirSync(memoryDir, { recursive: true });
+
+      writeFileSync(join(memoryDir, 'MEMORY.md'), '# Index\n- [A](a.md)\n- [B](b.md)\n', 'utf-8');
+      writeFileSync(
+        join(memoryDir, 'approved-explicit.md'),
+        '---\nstatus: approved\ntype: project\n---\n# Expl',
+        'utf-8',
+      );
+      writeFileSync(
+        join(memoryDir, 'approved-absent.md'),
+        '---\ntype: project\n---\n# Absent status is approved',
+        'utf-8',
+      );
+      writeFileSync(
+        join(memoryDir, 'pending.md'),
+        '---\nstatus: pending\ntype: project\n---\n# Pending',
+        'utf-8',
+      );
+      writeFileSync(
+        join(memoryDir, 'discarded.md'),
+        '---\nstatus: discarded\ntype: project\n---\n# Discarded',
+        'utf-8',
+      );
+
+      // Also write one candidate to inbox
+      writeMemoryCandidate(
+        ws,
+        {
+          type: 'user',
+          title: 'Candidate in inbox',
+          body: 'Candidate body.',
+          source: 'auto',
+        },
+        { bookRoot },
+      );
+
+      const health = getMemoryHealth(ws, { bookRoot });
+      expect(health.approvedCount).toBe(2); // approved-explicit.md and approved-absent.md
+      expect(health.inboxCount).toBe(1);
+      expect(health.indexLineCount).toBe(3); // non-empty lines in MEMORY.md
+      expect(health.lastWrite).not.toBeNull();
+    });
+
+    it('cheaply counts candidates in inbox without parsing frontmatter', () => {
+      const ws = 'C:\\fake\\cheap-count';
+      const inboxDir = getMemoryInboxDir(ws, { bookRoot });
+      mkdirSync(inboxDir, { recursive: true });
+
+      writeFileSync(join(inboxDir, 'cand1.md'), 'not valid frontmatter', 'utf-8');
+      writeFileSync(join(inboxDir, 'cand2.md'), 'also raw text', 'utf-8');
+      writeFileSync(join(inboxDir, 'other.txt'), 'txt file', 'utf-8');
+      writeFileSync(join(inboxDir, '.dotfile.md'), 'dotfile', 'utf-8');
+
+      expect(countMemoryCandidates(ws, { bookRoot })).toBe(2);
+      expect(countMemoryCandidates(ws, { dir: memoryDirOrInbox(ws, bookRoot) })).toBe(2);
+    });
+  });
 });
+
+function memoryDirOrInbox(ws: string, root: string): string {
+  return getProjectMemoryDir(ws, { bookRoot: root });
+}

@@ -118,6 +118,111 @@ describe('read_file', () => {
   });
 });
 
+describe('readOnlyRoots', () => {
+  let readOnlyDir: string;
+
+  beforeEach(() => {
+    readOnlyDir = mkdtempSync(join(tmpdir(), 'book-readonly-root-'));
+  });
+
+  afterEach(() => {
+    rmSync(readOnlyDir, { recursive: true, force: true });
+    delete ctx.readOnlyRoots;
+  });
+
+  it('reads a file under a read-only root', async () => {
+    const memoryFile = join(readOnlyDir, 'note.md');
+    writeFileSync(memoryFile, 'memory note content');
+    ctx.readOnlyRoots = [readOnlyDir];
+
+    const r = await read.execute({ filePath: memoryFile }, ctx);
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('1: memory note content');
+  });
+
+  it('refuses Write and Edit to files under read-only roots with Path outside workspace', async () => {
+    const memoryFile = join(readOnlyDir, 'note.md');
+    writeFileSync(memoryFile, 'initial content');
+    ctx.readOnlyRoots = [readOnlyDir];
+
+    const w = await write.execute({ filePath: memoryFile, content: 'new content' }, ctx);
+    expect(w.status).toBe('error');
+    expect(w.structuredError?.message).toMatch(/outside workspace/i);
+
+    const e = await edit.execute(
+      { filePath: memoryFile, oldString: 'initial', newString: 'updated' },
+      ctx,
+    );
+    expect(e.status).toBe('error');
+    expect(e.structuredError?.message).toMatch(/outside workspace/i);
+  });
+
+  it('refuses traversal outside a read-only root', async () => {
+    const outsideFile = join(dirname(readOnlyDir), 'secret.txt');
+    writeFileSync(outsideFile, 'secret');
+    ctx.readOnlyRoots = [readOnlyDir];
+
+    try {
+      const r = await read.execute({ filePath: join(readOnlyDir, '../secret.txt') }, ctx);
+      expect(r.status).toBe('error');
+      expect(r.structuredError?.message).toMatch(/outside workspace/i);
+    } finally {
+      rmSync(outsideFile, { force: true });
+    }
+  });
+
+  it('refuses read outside workspace when readOnlyRoots is empty or undefined', async () => {
+    const outsideFile = join(readOnlyDir, 'note.md');
+    writeFileSync(outsideFile, 'content');
+    ctx.readOnlyRoots = undefined;
+
+    const r1 = await read.execute({ filePath: outsideFile }, ctx);
+    expect(r1.status).toBe('error');
+    expect(r1.structuredError?.message).toMatch(/outside workspace/i);
+
+    ctx.readOnlyRoots = [];
+    const r2 = await read.execute({ filePath: outsideFile }, ctx);
+    expect(r2.status).toBe('error');
+    expect(r2.structuredError?.message).toMatch(/outside workspace/i);
+  });
+
+  it('refuses read of excluded subpaths under a read-only root', async () => {
+    ctx.readOnlyRoots = [{ root: readOnlyDir, exclude: ['.inbox'] }];
+
+    const approved = join(readOnlyDir, 'approved.md');
+    writeFileSync(approved, 'approved fact');
+
+    const inbox = join(readOnlyDir, '.inbox');
+    mkdirSync(join(inbox, 'discarded'), { recursive: true });
+    const inboxFile = join(inbox, 'x.md');
+    writeFileSync(inboxFile, 'unapproved candidate');
+    const discardedFile = join(inbox, 'discarded', 'x.md');
+    writeFileSync(discardedFile, 'discarded candidate');
+
+    // Approved file under root succeeds
+    const rApproved = await read.execute({ filePath: approved }, ctx);
+    expect(rApproved.status).toBe('success');
+    expect(rApproved.content).toContain('approved fact');
+
+    // Files in excluded .inbox and .inbox/discarded fail with Path outside workspace
+    const rInbox = await read.execute({ filePath: inboxFile }, ctx);
+    expect(rInbox.status).toBe('error');
+    expect(rInbox.structuredError?.message).toMatch(/outside workspace/i);
+
+    const rDiscarded = await read.execute({ filePath: discardedFile }, ctx);
+    expect(rDiscarded.status).toBe('error');
+    expect(rDiscarded.structuredError?.message).toMatch(/outside workspace/i);
+  });
+
+  it('refuses relative ../x.md path even when readOnlyRoots is configured', async () => {
+    ctx.readOnlyRoots = [readOnlyDir];
+
+    const r = await read.execute({ filePath: '../x.md' }, ctx);
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/outside workspace/i);
+  });
+});
+
 describe('write_file', () => {
   it('returns create metadata for new files', async () => {
     const r = await write.execute({ filePath: 'new.txt', content: 'one\ntwo' }, ctx);

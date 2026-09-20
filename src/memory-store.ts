@@ -56,6 +56,7 @@ export interface MemoryStoreOptions {
   bookRoot?: string;
   now?: Date;
   maxIndexLines?: number;
+  dir?: string;
 }
 
 export interface MemoryWriteResult {
@@ -87,7 +88,9 @@ export function getProjectMemoryDir(workspace: string, opts?: MemoryStoreOptions
 }
 
 export function getMemoryInboxDir(workspace: string, opts?: MemoryStoreOptions): string {
-  return join(getProjectMemoryDir(workspace, opts), INBOX_DIR);
+  return opts?.dir
+    ? join(opts.dir, INBOX_DIR)
+    : join(getProjectMemoryDir(workspace, opts), INBOX_DIR);
 }
 
 export function getMemoryExtractionStatePath(workspace: string, opts?: MemoryStoreOptions): string {
@@ -176,6 +179,17 @@ export function listMemoryCandidates(
   return files;
 }
 
+export function countMemoryCandidates(workspace: string, opts?: MemoryStoreOptions): number {
+  const dir = getMemoryInboxDir(workspace, opts);
+  if (!existsSync(dir)) return 0;
+  try {
+    return readdirSync(dir).filter((entry) => !entry.startsWith('.') && entry.endsWith('.md'))
+      .length;
+  } catch {
+    return 0;
+  }
+}
+
 function readFirstLines(
   path: string,
   maxLines: number,
@@ -229,6 +243,106 @@ export function loadMemoryContext(
   result.files = listMemoryFiles(workspace, opts);
   result.candidates = listMemoryCandidates(workspace, opts);
   return result;
+}
+
+export interface MemoryHealth {
+  approvedCount: number;
+  inboxCount: number;
+  indexLineCount: number;
+  lastWrite: Date | null;
+}
+
+export function getNewestMemoryWriteTime(memoryDir: string): Date | null {
+  if (!existsSync(memoryDir)) return null;
+  let newestMs = 0;
+
+  function scanEntries(dir: string, isInbox: boolean): void {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (entry.startsWith('.')) {
+        if (!isInbox && entry === INBOX_DIR) {
+          scanEntries(join(dir, entry), true);
+        }
+        continue;
+      }
+      if (isInbox && entry === DISCARDED_DIR) {
+        continue;
+      }
+      const full = join(dir, entry);
+      try {
+        const st = lstatSync(full);
+        if (st.isSymbolicLink()) continue;
+        if (st.isFile()) {
+          if (st.mtimeMs > newestMs) newestMs = st.mtimeMs;
+        }
+      } catch {
+        // ignore unreadable entries
+      }
+    }
+  }
+
+  scanEntries(memoryDir, false);
+  return newestMs > 0 ? new Date(newestMs) : null;
+}
+
+export function getMemoryHealth(
+  workspaceOrContext: string | LoadedMemoryContext,
+  opts?: MemoryStoreOptions,
+): MemoryHealth {
+  const dir =
+    typeof workspaceOrContext === 'string'
+      ? (opts?.dir ?? getProjectMemoryDir(workspaceOrContext, opts))
+      : workspaceOrContext.dir;
+  const workspace = typeof workspaceOrContext === 'string' ? workspaceOrContext : '';
+
+  let approvedCount = 0;
+  if (existsSync(dir)) {
+    try {
+      for (const entry of readdirSync(dir)) {
+        if (!entry.endsWith('.md') || entry === INDEX_FILE) continue;
+        const full = join(dir, entry);
+        try {
+          const st = lstatSync(full);
+          if (st.isSymbolicLink() || !st.isFile()) continue;
+          const summary = summarizeMemoryFile(full, entry);
+          if (summary && (summary.status === 'approved' || summary.status === undefined)) {
+            approvedCount++;
+          }
+        } catch {
+          // ignore unreadable file
+        }
+      }
+    } catch {
+      // ignore unreadable directory
+    }
+  }
+
+  const inboxCount = countMemoryCandidates(workspace, { ...opts, dir });
+
+  let indexLineCount = 0;
+  const indexPath = join(dir, INDEX_FILE);
+  if (existsSync(indexPath)) {
+    try {
+      const raw = readFileSync(indexPath, 'utf-8');
+      indexLineCount = raw.split('\n').filter((line) => line.trim().length > 0).length;
+    } catch {
+      // ignore
+    }
+  }
+
+  const lastWrite = getNewestMemoryWriteTime(dir);
+  return {
+    approvedCount,
+    inboxCount,
+    indexLineCount,
+    lastWrite,
+  };
 }
 
 function safeTitle(title: string): string {

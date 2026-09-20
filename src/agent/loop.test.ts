@@ -18,6 +18,7 @@ import type { CompactRequestHints, CompactResult, PreparedCompaction } from '../
 import type { AgentTerminalOutcome } from '../types/terminal.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { MemoryModelWindowStore } from '../model-window-store.js';
+import type { LoadedMemoryContext } from '../memory-store.js';
 
 function writeLoopSkill(
   workspace: string,
@@ -574,6 +575,88 @@ describe('runAgentLoop skill lifecycle', () => {
       expect(systemPrompt).not.toContain('Available skills');
       expect(toolNames).not.toContain('InvokeSkill');
       expect(toolNames).not.toContain('ReadSkillResource');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('emits onNotice when a memory candidate is captured', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-memory-notice-'));
+    try {
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 1 });
+      const notices: string[] = [];
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          yield { type: 'text', content: 'Noted.' };
+          yield { type: 'done' };
+        },
+      };
+
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'Remember that in this repo we use pnpm.',
+        [],
+        noopCallbacks({
+          onNotice: (notice) => notices.push(notice),
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toBe('memory candidate saved: in this repo we use pnpm — /memory inbox');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('emits onNotice when a memory candidate is captured with a frozen config containing memoryContext', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-memory-frozen-'));
+    try {
+      const memoryDir = join(workspace, 'memory');
+      const memoryContext: LoadedMemoryContext = {
+        dir: memoryDir,
+        indexFile: join(memoryDir, 'MEMORY.md'),
+        indexLoaded: false,
+        indexLineCount: 0,
+        loadedLineCount: 0,
+        indexText: '',
+        files: [],
+        candidates: [],
+      };
+      Object.freeze(memoryContext.files);
+      Object.freeze(memoryContext.candidates);
+      Object.freeze(memoryContext);
+
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 1 });
+      runtimeConfig.memoryContext = memoryContext;
+      Object.freeze(runtimeConfig);
+
+      const notices: string[] = [];
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          yield { type: 'text', content: 'Noted.' };
+          yield { type: 'done' };
+        },
+      };
+
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'Remember that in this repo we use pnpm.',
+        [],
+        noopCallbacks({
+          onNotice: (notice) => notices.push(notice),
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toBe('memory candidate saved: in this repo we use pnpm — /memory inbox');
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

@@ -1007,6 +1007,11 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
   if (event.type === 'terminal') return;
   if (event.type === 'agent_text_delta' && opts.forwardSubagentText !== true) return;
   opts.onAgentEvent?.(event);
+  if (event.type === 'notice') {
+    if (opts.outputFormat === 'stream-json') emit({ type: 'notice', message: event.message });
+    else console.warn(event.message);
+    return;
+  }
   if (event.type === 'error') {
     if (opts.outputFormat === 'stream-json') emit({ type: 'error', error: event.error });
     else process.stderr.write(`error: ${event.error}\n`);

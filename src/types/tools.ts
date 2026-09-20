@@ -294,8 +294,19 @@ export interface ToolDefinition {
   execute: (args: Record<string, unknown>, context: ToolContext) => Promise<ToolResult>;
 }
 
+export interface ReadOnlyRoot {
+  root: string;
+  /** Subpaths relative to root that must not be read (e.g. ['.inbox']). */
+  exclude?: readonly string[];
+}
+
 export interface ToolContext {
   workspaceRoot: string;
+  /**
+   * Directories outside the workspace that the Read tool may read;
+   * today only the project memory directory.
+   */
+  readOnlyRoots?: readonly (string | ReadOnlyRoot)[];
   env: Record<string, string>;
   /** Explicit environment overrides safe to persist for opt-in persistent jobs. */
   envOverrides?: Record<string, string>;

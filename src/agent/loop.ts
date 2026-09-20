@@ -483,7 +483,14 @@ export async function runAgentLoop(
         userMessage: effectivePrompt,
         previousAssistant,
       });
-      if (memoryCapture.saved) log.info('memory candidate captured', { path: memoryCapture.path });
+      if (memoryCapture.saved && memoryCapture.candidate) {
+        const notice = `memory candidate saved: ${memoryCapture.candidate.title} — /memory inbox`;
+        callbacks.onNotice?.(notice);
+        log.info('memory candidate captured', {
+          path: memoryCapture.path,
+          title: memoryCapture.candidate.title,
+        });
+      }
     } catch (e) {
       log.warn('memory candidate capture failed', {
         error: e instanceof Error ? e.message : String(e),
@@ -494,6 +501,9 @@ export async function runAgentLoop(
   const initialMode = mode as PermissionMode;
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
+    readOnlyRoots: config.memoryContext?.dir
+      ? [{ root: config.memoryContext.dir, exclude: ['.inbox'] }]
+      : undefined,
     env: process.env as Record<string, string>,
     envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,

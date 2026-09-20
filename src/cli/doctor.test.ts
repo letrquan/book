@@ -393,3 +393,40 @@ describe('runDoctorCommand project-declared hooks', () => {
     }
   });
 });
+
+describe('runDoctorCommand memory health', () => {
+  it('reports memory health line, counts, index lines, and last write', async () => {
+    const { getProjectMemoryDir, writeMemoryCandidate } = await import('../memory-store.js');
+    const memoryDir = getProjectMemoryDir(workspace, { bookRoot: bookHome });
+    mkdirSync(memoryDir, { recursive: true });
+    writeFileSync(
+      join(memoryDir, 'MEMORY.md'),
+      '- [Convention](conv.md) — project convention\n- [Rule](rule.md) — rule\n',
+      'utf-8',
+    );
+    writeFileSync(
+      join(memoryDir, 'conv.md'),
+      '---\ntype: project\nstatus: approved\n---\n# Convention\nUse pnpm.',
+      'utf-8',
+    );
+    writeMemoryCandidate(
+      workspace,
+      {
+        type: 'user',
+        title: 'User likes short answers',
+        body: 'User likes short answers.',
+        source: 'auto',
+      },
+      { bookRoot: bookHome },
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('Memory:');
+    expect(output).not.toContain('Health:');
+    expect(output).toContain('Approved memories: 1');
+    expect(output).toContain('Inbox candidates:  1');
+    expect(output).toContain('Index lines:       2');
+    expect(output).toMatch(/Last write:\s+\d{4}-\d{2}-\d{2}T/);
+  });
+});
