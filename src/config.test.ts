@@ -571,6 +571,124 @@ describe('loadConfig provider registry', () => {
     });
   });
 
+  it('resolves compact reducer effort capped at medium by default with maxAttempts 2', () => {
+    const config = defaultConfig({
+      effort: 'max',
+      effortExplicit: true,
+      compactModel: 'reducer/flash',
+      settings: {
+        ...defaultConfig().settings,
+        provider: {
+          reducer: {
+            type: 'openai',
+            baseURL: 'https://reducer.example/v1',
+            apiKey: 'reducer-key',
+            models: {
+              flash: {
+                maxOutputTokens: 4096,
+                effort: { default: 'medium', levels: ['low', 'medium', 'high', 'max'] },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const reducer = resolveCompactModelConfig(config);
+    expect(reducer.effort).toBe('medium');
+    expect(reducer.effortExplicit).toBe(true);
+    expect(reducer.retry.maxAttempts).toBe(2);
+    expect(config.effort).toBe('max');
+  });
+
+  it('respects compactEffort override for the reducer', () => {
+    const config = defaultConfig({
+      effort: 'max',
+      effortExplicit: true,
+      compactEffort: 'high',
+      compactModel: 'reducer/flash',
+      settings: {
+        ...defaultConfig().settings,
+        provider: {
+          reducer: {
+            type: 'openai',
+            baseURL: 'https://reducer.example/v1',
+            apiKey: 'reducer-key',
+            models: {
+              flash: {
+                maxOutputTokens: 4096,
+                effort: { default: 'medium', levels: ['low', 'medium', 'high', 'max'] },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const reducer = resolveCompactModelConfig(config);
+    expect(reducer.effort).toBe('high');
+    expect(reducer.effortExplicit).toBe(true);
+    expect(config.compactEffort).toBe('high');
+    expect(config.effort).toBe('max');
+  });
+
+  it('preserves low effort when session effort is low', () => {
+    const config = defaultConfig({
+      effort: 'low',
+      effortExplicit: true,
+      compactModel: 'reducer/flash',
+      settings: {
+        ...defaultConfig().settings,
+        provider: {
+          reducer: {
+            type: 'openai',
+            baseURL: 'https://reducer.example/v1',
+            apiKey: 'reducer-key',
+            models: {
+              flash: {
+                maxOutputTokens: 4096,
+                effort: { default: 'medium', levels: ['low', 'medium', 'high'] },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const reducer = resolveCompactModelConfig(config);
+    expect(reducer.effort).toBe('low');
+    expect(reducer.effortExplicit).toBe(true);
+    expect(config.effort).toBe('low');
+  });
+
+  it('sets effort to undefined when reducer model catalog specifies effort false', () => {
+    const config = defaultConfig({
+      effort: 'max',
+      effortExplicit: true,
+      compactModel: 'reducer/no-effort',
+      settings: {
+        ...defaultConfig().settings,
+        provider: {
+          reducer: {
+            type: 'openai',
+            baseURL: 'https://reducer.example/v1',
+            apiKey: 'reducer-key',
+            models: {
+              'no-effort': {
+                maxOutputTokens: 4096,
+                effort: false,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const reducer = resolveCompactModelConfig(config);
+    expect(reducer.effort).toBeUndefined();
+    expect(config.effort).toBe('max');
+  });
+
   it('uses the 64k output budget for models without metadata', () => {
     const config = defaultConfig({ maxTokens: 64_000, defaultMaxTokens: 64_000 });
     const switched = applyModelDefaults(resolveModelProviderConfig(config, 'unknown/model'));

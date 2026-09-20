@@ -10,7 +10,7 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **Interactive TUI** (Ink/React) plus **print mode** (`-p`) with `text` / `json` / `stream-json` output for CI.
 - **Providers**: Anthropic Messages API (prompt caching, adaptive thinking) and any OpenAI-compatible endpoint, auto-detected from `baseUrl` / `--provider`. `--effort` reaches both, as `output_config.effort` and as `reasoning_effort`.
 - **Project context**: walks the tree to load Codex-style `AGENTS.md` and Claude-style `CLAUDE.md` instructions (user-global → broad project → specific project → local/rules) into a fenced, trust-labeled block, alongside platform info and discovered skills, slash commands, and subagents. Content is split by how often it changes: a cached static prefix, an uncached suffix for activation-class policy, and a per-turn `<session-state>` block carrying date, git status, and mode on the newest user turn — so an edit or a mode toggle costs one turn of cache, not the whole conversation.
-- **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
+- **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded); `Read` can open the memory files themselves (the directory is a read-only root outside the workspace — `Write`/`Edit` there stay refused). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
 - **Sessions**: append-only JSONL persistence with automatic titles from the first prompt plus `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, reference-aware `/compact`, and Claude-style `/rewind` for conversation, code, or both. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, remembered file facts are freshness-checked before reuse, your own earlier turns are kept verbatim ahead of the checkpoint instead of being paraphrased (only assistant and tool activity is summarized), and constraints you stated in your own words are additionally pinned in a host-owned ledger the summarizer can read but never rewrite (see "Carried turns and constraints").
 - **Tools**: a provider-neutral capability catalog keeps a practical core loaded and uses `ToolSearch` to activate up to five authorized git, web, session, skill, agent, notebook, or MCP definitions on the next model turn. File, shell, task, clarification, and plan tools stay immediately available when permitted. Existing names such as `Read`, `Bash`, and `AgentSpawn` remain stable.
 - **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`. Print mode resolves commands through the same registries: `/init`, `/security-review`, `/review`, and custom commands run headlessly, and the interactive-only ones fail loudly instead of reaching the model as text.
@@ -526,6 +526,14 @@ is killed and reported as `check_timed_out` — explicitly *not* as a failing ch
 not "fix" code that was passing. Raise it for repositories whose full suite runs longer than the
 default; `npm test` here builds first and routinely does.
 
+`agents.taskTimeoutMs` caps one foreground `Task` delegation (default 30 min; `BOOK_TOOL_TIMEOUT_MS`
+also applies). The registry's 120 s default assumed a fast model; on a route where one max-effort
+turn takes minutes the child was cut off mid-survey, its result discarded, and — because nothing
+stopped it — it ran and billed for an hour afterwards. When the ceiling passes the child is now
+stopped, and the parent gets what exists so far: the child's last assistant text, its summary, and
+the `AgentRead` id for the full transcript, so the work is continued rather than redone. Cancelling
+the parent stops the child too.
+
 ### Unattended runs
 
 By default a run ends at the first turn that produces no tool calls: one user message is the whole
@@ -683,6 +691,12 @@ before making it a shared default. You can set it without editing JSON:
 open `/config` and choose **Compact model** (shortcut `C`), or run
 `/config compact-model 9router/ag/gemini-3.6-flash-high` (or `/config compactModel=...`). Both
 reach the same place — the typed form is the menu row, not a separate write.
+
+`compactEffort` sets the reducer's reasoning effort. Left unset, the reducer runs at the session's
+effort capped at `medium`: a checkpoint does not need minutes of reasoning, and at `--effort max`
+on a slow route the reducer's request produced no byte for long enough that the proxy dropped it,
+ten times over. The reducer's request is also retried at most twice before compaction falls back to
+the deterministic checkpoint, instead of the full `retry.maxAttempts`.
 
 `toolDiscovery.mode` accepts `auto`, `eager`, or `deferred`. Auto mode sends all authorized definitions only when there are at most ten and their schemas fit the configured budget; otherwise the provider receives the practical core plus `ToolSearch`. Search never returns tools outside the current command, skill, agent-role, permission-mode, or runtime-state capability intersection.
 

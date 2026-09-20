@@ -14,6 +14,25 @@ All notable changes to this project are documented in this file.
   choice, and so is a positional without `--print`, since the TUI has no initial prompt; the
   message says to add `-p` and points at `book --help`, since a mistyped subcommand lands there
   too.
+- **`Read` can open the project memory directory.** The memory index told the model to read a
+  memory file when its entry was relevant, and `Read` refused with `Path outside workspace`: every
+  path resolved against the single workspace root, and memory lives under `BOOK_HOME` (#227). The
+  tool context now carries read-only roots — the project memory directory — that `Read` tries
+  after the workspace, with the same lexical and realpath containment checks; `Write`, `Edit`,
+  `ApplyPatch`, `Glob` and `Grep` stay workspace-only.
+- **A `Task` child that outlives the ceiling is stopped and its work handed back.** The registry's
+  120 s default cut a slow-model survey off, discarded the result, and never stopped the child,
+  which ran — and billed — for an hour afterwards while the parent redid the survey itself (#215).
+  `Task` now has its own ceiling (30 min, `agents.taskTimeoutMs`, `BOOK_TOOL_TIMEOUT_MS`), stops
+  the child when it passes or when the parent is cancelled, and returns `subagent_timeout` with the
+  child's last assistant text, its summary so far, and the `AgentRead` id.
+- **The compaction reducer no longer inherits `--effort max`, and gives up faster.** A 167k-token
+  reducer request at max effort produced no byte for long enough that the proxy dropped it, and it
+  was retried ten times at the same size — 17 minutes with no compaction (#214). The reducer now
+  runs at the session's effort capped at `medium` (`compactEffort` overrides), only when the
+  reducer model's catalog accepts it, and its request is retried at most twice before compaction
+  falls back to the deterministic checkpoint.
+
 - **A 4xx quoted inside a router's 503 is no longer retried to exhaustion.** 9router wraps an
   upstream `400 INVALID_ARGUMENT` as a `503` plus a cooldown, and the retry policy decided on the
   status alone, so a request the provider had refused outright was re-sent ten times at 30 s, then

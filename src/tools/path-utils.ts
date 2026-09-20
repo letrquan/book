@@ -46,6 +46,26 @@ export function resolveWorkspacePath(
   return { filePath, canonicalPath, relativePath: rel.replace(/\\/g, '/') };
 }
 
+/**
+ * Resolve a path against the workspace first, then each read-only root, with
+ * the same lexical and realpath containment checks. Returns the first root
+ * that contains the path.
+ */
+export function resolveReadablePath(
+  workspaceRoot: string,
+  readOnlyRoots: readonly string[] | undefined,
+  inputPath: string,
+): { filePath: string; canonicalPath: string; relativePath: string; root: string } | null {
+  const ws = resolveWorkspacePath(workspaceRoot, inputPath);
+  if (ws) return { ...ws, root: workspaceRoot };
+  if (!isAbsolute(inputPath)) return null;
+  for (const root of readOnlyRoots ?? []) {
+    const candidate = resolveWorkspacePath(root, inputPath);
+    if (candidate) return { ...candidate, root };
+  }
+  return null;
+}
+
 export function pathOutsideWorkspaceResult(inputPath: unknown): ToolResult {
   return toolFailure(`Path outside workspace: ${inputPath}`, {
     code: 'path_outside_workspace',

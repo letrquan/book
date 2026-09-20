@@ -173,6 +173,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const rawModel =
     options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
+  const compactEffort = settings.compactEffort;
   const compactStrategy: CompactStrategy = 'summary';
   // Resolved once here: the Bash tool, the system prompt, and `book doctor`
   // must all name the same shell for the whole session.
@@ -194,6 +195,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     model: rawModel,
     modelSelection: rawModel,
     compactModel,
+    compactEffort,
     compactStrategy,
     // Undefined = unlimited. Only set when env/settings/legacy explicitly provide a value.
     maxTurns: process.env.BOOK_MAX_TURNS
@@ -365,13 +367,57 @@ export function resolveModelProviderConfig(
   };
 }
 
+const EFFORT_RANK = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 } as const satisfies Record<
+  NonNullable<AgentConfig['effort']>,
+  number
+>;
+
+/**
+ * The reducer's effort. A checkpoint does not need minutes of reasoning, and
+ * at `--effort max` on a slow route the reducer's request produced no byte for
+ * long enough that the proxy dropped it, ten times over (#214). Unless
+ * `compactEffort` says otherwise, the session's effort is capped at `medium`,
+ * and only sent when the reducer model's catalog accepts it.
+ */
+function reducerEffort(config: AgentConfig): AgentConfig['effort'] | undefined {
+  const catalog = config.modelInfo?.effort;
+  if (catalog === false) return undefined;
+  const wanted =
+    config.compactEffort ??
+    (config.effort && EFFORT_RANK[config.effort] > EFFORT_RANK.medium ? 'medium' : config.effort);
+  if (!wanted) return undefined;
+  if (typeof catalog === 'object' && catalog.levels && !catalog.levels.includes(wanted)) {
+    return undefined;
+  }
+  return wanted;
+}
+
 /** Resolve the optional reducer model without changing the active agent model. */
 export function resolveCompactModelConfig(config: AgentConfig): AgentConfig {
   const compactModel = config.compactModel?.trim() || config.settings.compactModel?.trim();
-  if (!compactModel || compactModel === config.modelSelection || compactModel === config.model) {
-    return config;
-  }
-  return applyModelDefaults(resolveModelProviderConfig(config, compactModel));
+  const resolved =
+    !compactModel || compactModel === config.modelSelection || compactModel === config.model
+      ? config
+      : applyModelDefaults(resolveModelProviderConfig(config, compactModel));
+
+  const effort = reducerEffort(resolved);
+  const keepResolved = effort === undefined && resolved.modelInfo?.effort !== false;
+  const finalEffort = keepResolved ? resolved.effort : effort;
+  const finalEffortExplicit = keepResolved ? resolved.effortExplicit : effort !== undefined;
+
+  return {
+    ...resolved,
+    effort: finalEffort,
+    effortExplicit: finalEffortExplicit,
+    // A reducer request that dies before its first byte twice is not going to succeed
+    // at that size, and runCompaction already falls back to the deterministic
+    // checkpoint when the model path fails — ten attempts at five minutes each only
+    // delayed that fallback.
+    retry: {
+      ...resolved.retry,
+      maxAttempts: Math.min(resolved.retry.maxAttempts, 2),
+    },
+  };
 }
 
 export function resolveSecret(raw: string | undefined, workspace: string): string | undefined {

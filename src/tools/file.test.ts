@@ -87,6 +87,27 @@ describe('read_file', () => {
     }
   });
 
+  it('reads a file in readOnlyRoots with success and rejects without readOnlyRoots', async () => {
+    const mem = mkdtempSync(join(tmpdir(), 'book-file-mem-'));
+    const notePath = join(mem, 'note.md');
+    writeFileSync(notePath, '# Memory content');
+
+    try {
+      const withRoots = await read.execute(
+        { filePath: notePath },
+        { ...ctx, readOnlyRoots: [mem] },
+      );
+      expect(withRoots.status).toBe('success');
+      expect(withRoots.content).toContain('1: # Memory content');
+
+      const withoutRoots = await read.execute({ filePath: notePath }, ctx);
+      expect(withoutRoots.status).toBe('error');
+      expect(withoutRoots.structuredError?.code).toBe('path_outside_workspace');
+    } finally {
+      rmSync(mem, { recursive: true, force: true });
+    }
+  });
+
   /**
    * This used to schedule `setTimeout(..., 0)` and assert it had fired by the
    * time the read finished. `yieldToEventLoop` yields with `setImmediate`, so
@@ -262,6 +283,24 @@ describe('write_file', () => {
     expect(r.structuredError?.message).toMatch(/outside workspace/);
     expect(r.artifacts?.fileMutation).toBeUndefined();
     expect(existsSync(outsidePath)).toBe(false);
+  });
+
+  it('rejects writes to paths in readOnlyRoots', async () => {
+    const mem = mkdtempSync(join(tmpdir(), 'book-file-mem-'));
+    const notePath = join(mem, 'note.md');
+    writeFileSync(notePath, '# Memory content');
+
+    try {
+      const r = await write.execute(
+        { filePath: notePath, content: 'overwrite memory' },
+        { ...ctx, readOnlyRoots: [mem] },
+      );
+      expect(r.status).toBe('error');
+      expect(r.structuredError?.code).toBe('path_outside_workspace');
+      expect(readFileSync(notePath, 'utf-8')).toBe('# Memory content');
+    } finally {
+      rmSync(mem, { recursive: true, force: true });
+    }
   });
 });
 

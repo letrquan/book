@@ -161,6 +161,7 @@ export interface AgentConfig {
   modelProviderWarning?: string;
   /** Optional provider/model used only for historical conversation compaction. */
   compactModel?: string;
+  compactEffort?: AgentConfig['effort'];
   /** Supported production context-reduction strategy. */
   compactStrategy: CompactStrategy;
   /** Max agent turns per user message. Undefined = unlimited. */
