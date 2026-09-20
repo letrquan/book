@@ -91,6 +91,15 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **`Read` has an outline mode.** Before its first edit a run read 40–55 whole files, and each
+  survey read cost the entire file on every turn afterwards; the context reached 200k tokens by
+  turn 30 (#217). `Read { outline: true }` returns the declarations and section lines with their
+  line numbers — `src/agent/loop.ts` goes from 2868 lines to 51 — so a survey can decide what to
+  read in full without paying for the file. The tool description steers surveys to it. The
+  issue's second proposal, answering a repeat `Read` of an unchanged file with "unchanged since
+  your read", is deliberately not done: after a compaction the earlier bytes are gone from the
+  context and the repeat read is the model's only way back to them.
+
 - **Print mode shows progress.** `book -p` with the default `text` output printed nothing for 35
   minutes while the agent made a hundred tool calls; the only sign of life was the session file
   (#225). It now writes one line per tool call to stderr — `[Read] src/cli/doctor.ts` — with

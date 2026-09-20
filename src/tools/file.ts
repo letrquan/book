@@ -239,6 +239,40 @@ export async function applySingleEdit(
   };
 }
 
+/**
+ * The lines of a file that a survey is after: top-level declarations and
+ * section boundaries, each with its line number, so the model can decide what
+ * to read in full without paying for the whole file (#217). Language-agnostic
+ * on purpose — a line at indentation zero that is not blank, a closing brace or
+ * a comment is a declaration in every language this tool sees, and a shallowly
+ * indented `def`/`func`/method line is the next tier. Fenced-off bodies stay
+ * out: nothing deeper than `OUTLINE_MAX_INDENT` is shown.
+ */
+const OUTLINE_MAX_INDENT = 4;
+// Either a keyword declaration, or a method-shaped line: an identifier, its
+// parameter list, and an opening brace at the end of the line. Control flow
+// has the same shape (`if (x) {`) and is a body, not a declaration; `type` is
+// left out of the shallow tier because there it is an import-list member.
+const OUTLINE_DECLARATION =
+  /^\s{1,4}(?:(?:export|public|private|protected|static|async|abstract|override|readonly|pub|final)\s+)*(?:(?:function|class|interface|enum|namespace|def|func|fn|struct|impl|trait|describe|it|test|constructor|get|set)\b|(?!(?:if|for|while|switch|catch|else|do|try|return|await)\b)[A-Za-z_$][\w$]*\s*(?:<[^>]*>)?\([^)]*\)[^;{]*\{\s*$)/;
+function outlineLines(lines: readonly string[]): string[] {
+  const output: string[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    if (/^[}\])];?,?$/.test(trimmed)) continue;
+    if (/^(?:\/\/|\/\*|\*|#(?!!)|--|<!--)/.test(trimmed)) continue;
+    // The closing line of a multi-line import is punctuation, not a declaration.
+    if (/^\} from\b/.test(trimmed)) continue;
+    const indent = line.length - line.trimStart().length;
+    if (indent === 0 || (indent <= OUTLINE_MAX_INDENT && OUTLINE_DECLARATION.test(line))) {
+      output.push(`${index + 1}: ${line.trimEnd()}`);
+    }
+  }
+  return output;
+}
+
 async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveReadablePath(
     ctx.workspaceRoot,
@@ -267,6 +301,20 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
     return toolFailure(
       `Offset ${offset} is past the end of ${args.filePath}: the file has ${lines.length} lines. Read with an offset of at most ${lines.length}.`,
       { code: 'offset_out_of_range' },
+    );
+  }
+  if (args.outline === true) {
+    const shown = outlineLines(lines);
+    const observation = await observeFile(ctx, filePath, 'read', {
+      lineStart: 1,
+      lineEnd: lines.length,
+    });
+    return toolSuccess(
+      [
+        `Outline of ${args.filePath}: ${lines.length} lines, ${shown.length} shown. Read without outline (or with offset/limit) for the full text.`,
+        ...shown,
+      ].join('\n'),
+      { artifacts: { fileObservations: [observation] } },
     );
   }
   const end = Math.min(lines.length, offset - 1 + limit);
@@ -942,7 +990,7 @@ export const fileTools: ToolDefinition[] = [
     policy: { concurrency: 'parallel' },
     argumentAliases: { file_path: 'filePath', path: 'filePath' },
     description:
-      'Read a file from the workspace. Returns lines with line numbers. The default reads the whole file (up to 2000 lines) in one call — read files whole; use offset/limit only for files longer than that, and never to read a file in small chunks. The "N: " line-number prefixes are display-only and are never part of the file content.',
+      'Read a file from the workspace. Returns lines with line numbers. The default reads the whole file (up to 2000 lines) in one call — read files whole; use offset/limit only for files longer than that, and never to read a file in small chunks. The "N: " line-number prefixes are display-only and are never part of the file content. Pass outline: true to survey a file\'s declarations first.',
     parameters: {
       type: 'object',
       properties: {
@@ -962,6 +1010,11 @@ export const fileTools: ToolDefinition[] = [
           description:
             'Maximum number of lines to read. Leave unset to read the whole file; only set it for files longer than 2000 lines.',
           default: 2000,
+        },
+        outline: {
+          type: 'boolean',
+          description:
+            'Return only the top-level declarations and section lines with their line numbers, about a tenth of the file. Use it to survey a file before deciding what to read in full.',
         },
       },
       required: ['filePath'],

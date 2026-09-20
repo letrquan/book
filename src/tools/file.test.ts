@@ -157,6 +157,62 @@ describe('read_file', () => {
     expect(wholeFile.content).toContain('2: line 2');
     expect(wholeFile.content).toContain('3: line 3');
   });
+
+  it('returns declaration outlines for survey reads', async () => {
+    const fixtureContent = [
+      "import { x } from './x.js';",
+      '',
+      '/** A comment. */',
+      'export function alpha(): void {',
+      '  const inner = 1;',
+      '  if (inner) {',
+      '    return;',
+      '  }',
+      '}',
+      '',
+      'export class Beta {',
+      '  private count = 0;',
+      '  constructor() {}',
+      '  public method(): number {',
+      '    return this.count;',
+      '  }',
+      '}',
+      '',
+      'const gamma = 3;',
+    ].join('\n');
+    const filePath = 'fixture.ts';
+    writeFileSync(join(dir, filePath), fixtureContent);
+
+    const outlined = await read.execute({ filePath, outline: true }, ctx);
+    expect(outlined.status).toBe('success');
+
+    const firstLine = outlined.content.split('\n')[0];
+    expect(firstLine.startsWith('Outline of ')).toBe(true);
+    expect(firstLine).toContain('19 lines');
+
+    expect(outlined.content).toContain("1: import { x } from './x.js';");
+    expect(outlined.content).toContain('4: export function alpha(): void {');
+    expect(outlined.content).toContain('11: export class Beta {');
+    expect(outlined.content).toContain('14:   public method(): number {');
+    expect(outlined.content).toContain('13:   constructor() {}');
+    expect(outlined.content).toContain('19: const gamma = 3;');
+
+    expect(outlined.content).not.toContain('const inner');
+    expect(outlined.content).not.toContain('return;');
+    expect(outlined.content).not.toContain('A comment');
+    expect(outlined.content.split('\n').some((line) => /^\d+:\s*\}$/.test(line))).toBe(false);
+    expect(outlined.content.split('\n').some((line) => line.trim() === '}')).toBe(false);
+
+    expect(outlined.artifacts?.fileObservations).toHaveLength(1);
+
+    const full = await read.execute({ filePath }, ctx);
+    expect(full.status).toBe('success');
+    expect(full.content.split('\n')).toHaveLength(19);
+
+    const falseOutline = await read.execute({ filePath, outline: false }, ctx);
+    expect(falseOutline.status).toBe('success');
+    expect(falseOutline.content).toBe(full.content);
+  });
 });
 
 describe('write_file', () => {

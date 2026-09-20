@@ -380,6 +380,16 @@ stays in `.book/settings.local.json`: skill overrides, approved permission rules
 models. Set `ui.startupAnimation` to `false` in `~/.book/settings.json` to disable the
 effect everywhere.
 
+### Reading files
+
+`Read` returns a whole file by default (up to 2000 lines); `offset`/`limit` are for files longer
+than that. `Read { filePath, outline: true }` returns only the file's declarations and section
+lines with their line numbers — top-level lines that are not blank, a closing brace or a comment,
+plus shallowly indented `function`/`class`/`def`/method lines — at roughly a tenth to a thirtieth
+of the tokens (`src/agent/loop.ts`: 2868 lines → 51). It is the survey call: decide from the
+outline what to read in full. The outline records the same file observation a full read does, so
+an `Edit` may follow it.
+
 ### File mutations
 
 Book exposes the same mutation tools to every model — `ApplyPatch`, `Edit`, `MultiEdit`, and
