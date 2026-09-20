@@ -51,7 +51,11 @@ import {
   type CapabilityRule,
 } from '../tools/capability-rules.js';
 import { createDebugLogger } from '../debug-log.js';
-import { isUnclosedReasoningOnly, stripReasoningTags } from '../reasoning-tags.js';
+import {
+  isUnclosedReasoningOnly,
+  separateInlineReasoning,
+  stripReasoningTags,
+} from '../reasoning-tags.js';
 import { maybeCaptureMemoryCandidate } from '../memory-autosave.js';
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
@@ -1197,6 +1201,13 @@ export async function runAgentLoop(
       }
 
       assistantContent = textBuffer;
+      {
+        const inline = separateInlineReasoning(assistantContent);
+        if (inline.reasoning) {
+          reasoningContent = [reasoningContent, inline.reasoning].filter(Boolean).join('\n\n');
+          assistantContent = inline.content;
+        }
+      }
       recordTurnUsage();
       if (options?.runContext && !turnUsage) {
         runtime.runAccounting.markUsageUnknown(

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   isUnclosedReasoningOnly,
+  separateInlineReasoning,
   splitReasoningParts,
   stripReasoningTags,
 } from './reasoning-tags.js';
@@ -197,5 +198,44 @@ Now let me continue.
 
       expect(rendered).toBe(counted);
     }
+  });
+});
+
+describe('separateInlineReasoning', () => {
+  it('separates a closed reasoning_context block from the answer', () => {
+    expect(
+      separateInlineReasoning(
+        '<reasoning_context>\n**Planning**\n</reasoning_context>\nThe answer.',
+      ),
+    ).toEqual({ content: 'The answer.', reasoning: '**Planning**' });
+  });
+
+  it('joins two closed blocks with a blank line', () => {
+    const input = '<think>Block 1</think>\n<think>Block 2</think>\nAnswer';
+    expect(separateInlineReasoning(input)).toEqual({
+      content: 'Answer',
+      reasoning: 'Block 1\n\nBlock 2',
+    });
+  });
+
+  it('returns an unclosed thinking block unchanged with empty reasoning', () => {
+    const unclosed = '<thinking>unclosed thought';
+    const result = separateInlineReasoning(unclosed);
+    expect(result.content).toBe(unclosed);
+    expect(result.reasoning).toBe('');
+  });
+
+  it('leaves a block inside a fenced code block in content', () => {
+    const fenced = ['```', '<thinking>quoted</thinking>', '```'].join('\n');
+    const result = separateInlineReasoning(fenced);
+    expect(result.content).toBe(fenced);
+    expect(result.reasoning).toBe('');
+  });
+
+  it('returns plain text with no < by identity', () => {
+    const plain = 'just an ordinary answer';
+    const result = separateInlineReasoning(plain);
+    expect(result.content).toBe(plain);
+    expect(result.reasoning).toBe('');
   });
 });

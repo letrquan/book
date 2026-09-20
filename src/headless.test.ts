@@ -1213,3 +1213,194 @@ function deepFreeze<T>(value: T): T {
   }
   return value;
 }
+
+describe('runHeadless — reasoning tags in text mode', () => {
+  it('strips reasoning tags from the final answer in text mode', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sse([textDelta('<reasoning_context>x</reasoning_context>\nAnswer')])),
+    );
+    const writes: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        writes.push(s);
+        return true;
+      },
+    };
+    await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'say hi',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+    });
+    expect(writes.join('')).toBe('Answer\n');
+  });
+});
+
+describe('runHeadless — text progress on stderr', () => {
+  let stderrWrites: string[] = [];
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stderrWrites = [];
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderrWrites.push(
+        typeof chunk === 'string' ? chunk : Buffer.from(chunk as Uint8Array).toString('utf8'),
+      );
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+  });
+
+  it('prints tool call progress on stderr and final answer on stdout in text mode', async () => {
+    const ws = makeWorkspace();
+    const filePath = 'sample.txt';
+    writeFileSync(join(ws, filePath), 'file content');
+
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount++;
+        if (requestCount === 1) return sse([toolDelta('call-1', 'Read', { filePath })]);
+        return sse([textDelta('done')]);
+      }),
+    );
+
+    const stdoutWrites: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        stdoutWrites.push(s);
+        return true;
+      },
+    };
+
+    await runHeadless(freshConfig({ workspace: ws }), createDefaultRegistry(), {
+      prompt: 'read file',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+    });
+
+    expect(stdoutWrites.join('')).toBe('done\n');
+    expect(stderrWrites).toContain(`[Read] ${filePath}\n`);
+  });
+
+  it('suppresses tool progress on stderr when quiet is true', async () => {
+    const ws = makeWorkspace();
+    const filePath = 'sample.txt';
+    writeFileSync(join(ws, filePath), 'file content');
+
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount++;
+        if (requestCount === 1) return sse([toolDelta('call-1', 'Read', { filePath })]);
+        return sse([textDelta('done')]);
+      }),
+    );
+
+    const stdoutWrites: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        stdoutWrites.push(s);
+        return true;
+      },
+    };
+
+    await runHeadless(freshConfig({ workspace: ws }), createDefaultRegistry(), {
+      prompt: 'read file',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      quiet: true,
+      stdout,
+    });
+
+    expect(stdoutWrites.join('')).toBe('done\n');
+    expect(stderrWrites.some((line) => line.includes('[Read]'))).toBe(false);
+  });
+
+  it('prints tool result status on stderr when verbose is true', async () => {
+    const ws = makeWorkspace();
+    const filePath = 'sample.txt';
+    writeFileSync(join(ws, filePath), 'file content');
+
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount++;
+        if (requestCount === 1) return sse([toolDelta('call-1', 'Read', { filePath })]);
+        return sse([textDelta('done')]);
+      }),
+    );
+
+    const stdoutWrites: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        stdoutWrites.push(s);
+        return true;
+      },
+    };
+
+    await runHeadless(freshConfig({ workspace: ws }), createDefaultRegistry(), {
+      prompt: 'read file',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      verbose: true,
+      stdout,
+    });
+
+    expect(stdoutWrites.join('')).toBe('done\n');
+    expect(stderrWrites).toContain(`[Read] ${filePath}\n`);
+    expect(stderrWrites.some((line) => line.startsWith('  → success'))).toBe(true);
+  });
+
+  it('does not write progress to stderr in stream-json mode', async () => {
+    const ws = makeWorkspace();
+    const filePath = 'sample.txt';
+    writeFileSync(join(ws, filePath), 'file content');
+
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount++;
+        if (requestCount === 1) return sse([toolDelta('call-1', 'Read', { filePath })]);
+        return sse([textDelta('done')]);
+      }),
+    );
+
+    const stdoutWrites: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        stdoutWrites.push(s);
+        return true;
+      },
+    };
+
+    await runHeadless(freshConfig({ workspace: ws }), createDefaultRegistry(), {
+      prompt: 'read file',
+      inputFormat: 'text',
+      outputFormat: 'stream-json',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+    });
+
+    expect(stderrWrites.some((line) => line.includes('[Read]'))).toBe(false);
+    expect(stderrWrites.some((line) => line.startsWith('  → '))).toBe(false);
+  });
+});

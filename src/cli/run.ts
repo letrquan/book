@@ -244,6 +244,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           maxTurns: parseNumericFlag(options.maxTurns, '--max-turns', { integer: true }),
           maxBudgetUsd: parseNumericFlag(options.maxBudgetUsd, '--max-budget-usd'),
           verbose: options.verbose as boolean | undefined,
+          quiet: options.quiet as boolean | undefined,
           jsonSchema: options.jsonSchema ? JSON.parse(options.jsonSchema as string) : undefined,
           sessionStore,
           sessionId: bootstrap.sessionId,

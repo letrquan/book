@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { createRegistry } from './registry.js';
 import { taskTools } from './tasks.js';
 import { defaultConfig } from '../test/fixtures.js';
 import type { ToolContext } from '../types/tools.js';
@@ -80,6 +81,24 @@ describe('task management tools', () => {
     expect(r.content).not.toMatch(/#1 A/);
     expect(r.content).toMatch(/#2 B/);
     expect(r.content).toMatch(/completed 1/);
+  });
+
+  it('tolerates explanatory and extra arguments through the registry', async () => {
+    const registry = createRegistry();
+    registry.register(taskList);
+    const c = ctx();
+
+    const withReason = await registry.execute(
+      { id: '1', name: 'TaskList', arguments: { reason: 'verify' } },
+      c,
+    );
+    expect(withReason.status).toBe('success');
+
+    const withExtra = await registry.execute(
+      { id: '2', name: 'TaskList', arguments: { anything: 1 } },
+      c,
+    );
+    expect(withExtra.status).toBe('success');
   });
 
   it('gets full task details and errors for missing IDs', async () => {

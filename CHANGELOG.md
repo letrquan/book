@@ -42,6 +42,21 @@ All notable changes to this project are documented in this file.
 - **Retries are visible to a print-mode host.** `stream-json` gains a `retry` record
   (`phase`, `attempt`, `max`, `delay_ms`); `text` output writes `retry: transport attempt 1/10 in 2s`
   to stderr. Before, a 16-minute retry wall left the last record as the previous turn's tool result.
+- **Inline `<reasoning_context>` blocks are reasoning, not the answer.** Book renders earlier
+  assistant turns to OpenAI-compatible providers as `<reasoning_context>…</reasoning_context>`
+  followed by the answer, and routers inline thinking the same way, so models began every reply
+  with that block themselves. It was stored as answer text, re-sent as such, printed by print
+  mode, and shown as the answer on `--resume`; at a `--max-turns` stop the same block came out
+  three times (#216, #223). Closed blocks are now split out of a settled message into its
+  reasoning, and text output strips whatever an older session still carries.
+- **`TaskList` no longer rejects a `reason`.** The model habitually explains why it is reading the
+  list (`TaskList({ reason: "verify all tasks are complete" })`) and got a hard
+  `invalid_arguments` for it, then repeated the call bare — two wasted turns each time (#216). The
+  field is declared and ignored, and the schema tolerates other extras.
+- **`Read` says its default is the whole file.** The description offered `offset`/`limit` "for
+  large files" and models took the hint too far, reading a 430-line file in four 100-line calls
+  and one 20-line span three times over (#224). It now says the default reads the file whole, and
+  the two parameters are for files longer than 2000 lines only.
 
 - **A lead no longer reports results a delegated agent has not produced.** `AgentSpawn` returns as
   soon as the child is queued, and the only hint in the result was `"status": "queued"` inside an
@@ -56,6 +71,12 @@ All notable changes to this project are documented in this file.
   that is what the server said, and reports the retry.
 
 ### Added
+
+- **Print mode shows progress.** `book -p` with the default `text` output printed nothing for 35
+  minutes while the agent made a hundred tool calls; the only sign of life was the session file
+  (#225). It now writes one line per tool call to stderr — `[Read] src/cli/doctor.ts` — with
+  stdout still the final answer alone. `--verbose`, which was parsed and discarded, adds each
+  call's result; `-q/--quiet` turns the lines off; `json` and `stream-json` are untouched.
 
 - **The turn that trips the compaction threshold no longer waits for the summarizer.** When a
   response reports usage over the threshold and has tool calls to make, the reducer now starts on

@@ -364,7 +364,16 @@ export const taskTools: ToolDefinition[] = [
   {
     name: 'TaskList',
     description: 'List all non-deleted agent tasks with status and dependency summaries.',
-    parameters: { type: 'object', properties: {} },
+    parameters: {
+      type: 'object',
+      properties: {
+        reason: {
+          type: 'string',
+          description: 'Optional note on why the list is being read; not stored.',
+        },
+      },
+      additionalProperties: true,
+    },
     execute: taskList,
   },
   {

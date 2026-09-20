@@ -199,3 +199,30 @@ export function stripReasoningTags(content: string): string {
     .map((part) => part.text)
     .join('');
 }
+
+/**
+ * Split closed reasoning blocks out of a settled message so they are stored
+ * and re-sent as reasoning rather than as answer text.
+ *
+ * Book renders earlier assistant turns to OpenAI-compatible providers as
+ * `<reasoning_context>…</reasoning_context>` followed by the answer, and some
+ * routers inline thinking the same way, so models start every reply with that
+ * block themselves. Left in `content`, it is what print mode prints and what a
+ * `--resume` shows as the answer. Only closed blocks move: an unclosed one is
+ * kept as answer text for the same reason `stripReasoningTags` keeps it.
+ */
+export function separateInlineReasoning(content: string): { content: string; reasoning: string } {
+  if (!content.includes('<')) return { content, reasoning: '' };
+  const { parts } = splitWith(content, CLOSED_REASONING_TAG_PATTERN);
+  const thinkParts = parts.filter((part): part is ThinkBlockPart => part.kind === 'think');
+  if (thinkParts.length === 0) return { content, reasoning: '' };
+
+  const reasoning = thinkParts.map((part) => part.text.trim()).join('\n\n');
+  const markdown = parts
+    .filter((part): part is MarkdownPart => part.kind === 'markdown')
+    .map((part) => part.text)
+    .join('')
+    .replace(/^(?:[ \t]*\r?\n)+/, '');
+
+  return { content: markdown, reasoning };
+}

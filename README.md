@@ -121,7 +121,8 @@ book tool-stats --since 7       # only the last 7 days
 | `--settings <path>` / `--no-settings` | Ad-hoc settings file, or skip all layers                                           |
 | `--scrollback`                        | Terminal-native scrollback instead of full-screen TUI                              |
 | `--agents <mode>`                     | `adaptive` (default) \| `manual` \| `off`                                          |
-| `--verbose`                           | Full turn-by-turn output in print mode                                             |
+| `--verbose`                           | Print mode: add each tool's result to the progress lines on stderr                 |
+| `-q, --quiet`                         | Print mode: no progress lines on stderr                                            |
 | `--include-hook-events`               | Include hook lifecycle events in stream-JSON output                                |
 | `--include-partial-messages`          | Include partial assistant text deltas in stream-JSON output                        |
 | `--prompt-suggestions`                | Ask for follow-up prompt suggestions after completion                              |
@@ -144,6 +145,13 @@ argument, is an error rather than a silent choice, and a positional argument wit
 an error too: the TUI has no initial prompt. `--input-format stream-json` reads stdin as newline-delimited
 `{type:'user', content}` records instead, which is how you submit more than one prompt to a single
 process.
+
+In `text` output stdout is the final answer alone, and progress goes to **stderr**: one line per
+tool call (`[Read] src/cli/doctor.ts`, `[Bash] npm test`) so a person watching a terminal can see a
+long run is alive without tailing the session file. `--verbose` adds each call's result
+(`  → success 12ms`, or the error), `--quiet` turns the lines off. `json` and `stream-json` write
+nothing to stderr. Reasoning the model inlines as `<reasoning_context>…</reasoning_context>` is
+stored as reasoning, not answer text, so it never reaches stdout.
 
 Three things behave differently in print mode, because there is nobody to ask.
 

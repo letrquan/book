@@ -34,6 +34,12 @@ export interface HeadlessOptions {
   maxTurns?: number;
   maxBudgetUsd?: number;
   verbose?: boolean;
+  /**
+   * Text mode writes one progress line per tool call to stderr so a person
+   * watching a terminal can see the run is alive; this turns those off.
+   * stdout is never touched by progress output.
+   */
+  quiet?: boolean;
   signal?: AbortSignal;
   stdout?: { write: (s: string) => boolean };
   stdin?: NodeJS.ReadableStream;

@@ -39,6 +39,9 @@ import {
 } from './agents/completion-notification.js';
 import { getOrCreateAgentManager } from './agents/manager.js';
 import { resolvePermissionMode } from './permission-mode.js';
+import { stripReasoningTags } from './reasoning-tags.js';
+import { getPrimaryArg } from './tools/primary-arg.js';
+import { toolResultErrorMessage } from './tools/result.js';
 
 /**
  * Re-price restored tokens.
@@ -938,7 +941,8 @@ export async function runHeadless(
         stdout.write(`${stopped.plan}\n\n${stopped.message}\n`);
       } else {
         const last = lastAssistantText(contextHistory);
-        if (last) stdout.write(last + '\n');
+        const stripped = stripReasoningTags(last).trim();
+        if (stripped) stdout.write(stripped + '\n');
       }
     } else if (opts.outputFormat === 'json') {
       // Exactly one top-level document: everything the run produced, including
@@ -1021,6 +1025,9 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
     else process.stderr.write(`error: ${event.error}\n`);
     return;
   }
+  if (opts.outputFormat === 'text' && opts.quiet !== true) {
+    writeTextProgress(event, opts);
+  }
   if (opts.outputFormat !== 'stream-json') return;
 
   switch (event.type) {
@@ -1080,6 +1087,30 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
     case 'result':
     case 'done':
       break;
+  }
+}
+
+/**
+ * One line per tool call on stderr in text mode. Without it a print run is
+ * silent from the first request to the final answer — 35 minutes and a hundred
+ * tool calls with nothing on the terminal (#225) — and the only way to see it was
+ * alive was to tail the session file. `--verbose` adds the result of each call;
+ * `--quiet` turns the lines off. stdout stays the final answer alone.
+ */
+function writeTextProgress(event: AgentEvent, opts: HeadlessOptions): void {
+  if (event.type === 'tool_use') {
+    const arg = getPrimaryArg(event.toolCall.arguments);
+    process.stderr.write(`[${event.toolCall.name}] ${arg}\n`.replace(/\s+\n$/, '\n'));
+    return;
+  }
+  if (event.type === 'tool_result' && opts.verbose === true) {
+    const result = event.toolResult;
+    const status = result.status;
+    const duration = result.metrics?.durationMs;
+    const detail = status === 'success' ? '' : ` ${toolResultErrorMessage(result) ?? ''}`.trimEnd();
+    process.stderr.write(
+      `  → ${status}${duration !== undefined ? ` ${Math.round(duration)}ms` : ''}${detail.slice(0, 160)}\n`,
+    );
   }
 }
 

@@ -5199,3 +5199,60 @@ describe('content filter and upstream error recoveries', () => {
     expect(errors[0] || outcomes[0].message).toContain('INVALID_ARGUMENT');
   });
 });
+
+describe('runAgentLoop inline reasoning separation', () => {
+  it('separates inline reasoning from assistant content and records it in reasoningContent', async () => {
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield {
+          type: 'text',
+          content: '<reasoning_context>\nReading lines 1006-1025.\n</reasoning_context>\nDone.',
+        };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks(),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    const assistant = history.find((m) => m.role === 'assistant');
+    expect(assistant?.content).toBe('Done.');
+    expect(assistant?.reasoningContent).toContain('Reading lines 1006-1025.');
+  });
+
+  it('separates multiple reasoning blocks and preserves final content', async () => {
+    const block = '<reasoning_context>\nReading lines 1006-1025.\n</reasoning_context>\n';
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield {
+          type: 'text',
+          content: `${block}${block}${block}Done.`,
+        };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks(),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    const assistant = history.find((m) => m.role === 'assistant');
+    expect(assistant?.content).toBe('Done.');
+    expect(assistant?.reasoningContent).toContain('Reading lines 1006-1025.');
+  });
+});
