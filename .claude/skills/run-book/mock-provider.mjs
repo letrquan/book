@@ -62,6 +62,12 @@
  * classifies as a context overflow, which exercises the loop's recovery path end
  * to end. Matched requests (the reducer's) are always answered.
  *
+ * A turn may also be `{"status": 503, "body": "…"}` (answer with that HTTP status and
+ * body, no stream), carry `"finishReason": "content_filter"` on a text turn, or
+ * `"usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}` to
+ * override the usage block — the three provider failure shapes the agent loop
+ * classifies.
+ *
  * With no --script the server always replies with a single text turn taken from
  * --reply (default: a fixed sentence). Every request is appended as JSON to
  * book-mock-<port>.requests.jsonl in the OS temp directory (--request-log overrides
@@ -194,15 +200,24 @@ async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 1
       sse(res, { ...base, choices: [{ index: 0, delta: { content: piece } }] });
     }
     if (turn.holdMs) await new Promise((resolve) => setTimeout(resolve, turn.holdMs));
-    sse(res, { ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+    // `finishReason` overrides the terminal reason of a text turn: `content_filter`
+    // is what Gemini's safety filter answers on ordinary code-shaped prose.
+    sse(res, {
+      ...base,
+      choices: [{ index: 0, delta: {}, finish_reason: turn.finishReason ?? 'stop' }],
+    });
   }
 
   sse(res, {
     ...base,
     choices: [],
-    usage: usageFromEstimate
-      ? { prompt_tokens: estimatedTokens, completion_tokens: 20, total_tokens: estimatedTokens + 20 }
-      : { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+    // `usage` overrides the reported usage; `{prompt_tokens: 0, completion_tokens: 0}`
+    // is the tell of a router that rendered an upstream error as content.
+    usage:
+      turn.usage ??
+      (usageFromEstimate
+        ? { prompt_tokens: estimatedTokens, completion_tokens: 20, total_tokens: estimatedTokens + 20 }
+        : { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }),
   });
   res.write('data: [DONE]\n\n');
   res.end();
@@ -267,6 +282,16 @@ const server = createServer((req, res) => {
       );
     } catch {
       /* logging is best-effort */
+    }
+
+    if (turn && typeof turn.status === 'number') {
+      // An HTTP error turn: `{"status": 503, "body": "..."}` answers with that
+      // status and body instead of a stream, the way a router wraps an upstream
+      // failure. The next request consumes the next turn, so a retry is scripted
+      // as the turn after it.
+      res.writeHead(turn.status, { 'Content-Type': 'application/json' });
+      res.end(typeof turn.body === 'string' ? turn.body : JSON.stringify(turn.body ?? {}));
+      return;
     }
 
     if (overflow) {

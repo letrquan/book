@@ -14,6 +14,35 @@ All notable changes to this project are documented in this file.
   choice, and so is a positional without `--print`, since the TUI has no initial prompt; the
   message says to add `-p` and points at `book --help`, since a mistyped subcommand lands there
   too.
+- **A 4xx quoted inside a router's 503 is no longer retried to exhaustion.** 9router wraps an
+  upstream `400 INVALID_ARGUMENT` as a `503` plus a cooldown, and the retry policy decided on the
+  status alone, so a request the provider had refused outright was re-sent ten times at 30 s, then
+  re-issued three more times — 16 minutes with no progress and nothing said to the host (#194,
+  #221). A retryable status now has its body read before the decision; a quoted 4xx classifies as
+  that 4xx, comes back after one fetch, and a `bad_request`/`not_found` is not re-issued at the
+  stream level either, since re-sending it byte for byte reproduces it. A 400 on a request of
+  200k tokens or more is read as a context overflow — the antigravity Gemini route refuses at
+  ~300k without saying why — and takes the compaction-and-ratchet recovery a spoken overflow gets.
+- **An upstream error rendered as the answer no longer completes the run.** A router answered
+  200 with `[Error] An error occurred while processing your request … request ID …` and zero
+  tokens both ways, and Book accepted it as the model's final message: exit 0,
+  `normal_completion`, 31 turns of work abandoned mid-task (#220). The envelope is now recognised
+  (`[Error]` prefix plus the sentence, the request id, or 0/0 usage), the turn is re-issued once,
+  and a repeat ends the run `failed/provider_error` with the text as the message.
+- **A `content_filter` stop on a narration turn is re-issued once.** Gemini's filter fires on
+  ordinary code-shaped prose now and then; a turn with no tool calls that stopped that way ended
+  the run `failed/protocol_error` (#222). It now gets the same single re-issue as an empty
+  completion, and only a repeat ends the run.
+- **`Read` past the end of a file says so.** An offset beyond the last line returned a successful
+  result with empty content and an observation whose range ended before it began; the empty tool
+  message then made the provider refuse every later request in the session, and a `--resume`
+  rebuilt the same refusal (#194). The read now fails with `offset_out_of_range` naming the file's
+  line count, and a successful tool result that would reach the model empty is sent as
+  `(no output)`.
+- **Retries are visible to a print-mode host.** `stream-json` gains a `retry` record
+  (`phase`, `attempt`, `max`, `delay_ms`); `text` output writes `retry: transport attempt 1/10 in 2s`
+  to stderr. Before, a 16-minute retry wall left the last record as the previous turn's tool result.
+
 - **A lead no longer reports results a delegated agent has not produced.** `AgentSpawn` returns as
   soon as the child is queued, and the only hint in the result was `"status": "queued"` inside an
   otherwise bare record. Watched in the TUI, the lead read that and printed "Sidekick reported.

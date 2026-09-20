@@ -144,6 +144,11 @@ describe('ToolResult V2', () => {
     expect(result.data).toEqual({ matches: ['a', 'b'] });
   });
 
+  it('replaces empty successful content with (no output) for the model', () => {
+    expect(toolResultModelContent(toolSuccess(''))).toBe('(no output)');
+    expect(toolResultModelContent(toolSuccess('x'))).toBe('x');
+  });
+
   it('bounds oversized output and preserves the complete text as an artifact', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'book-tool-result-'));
     const artifactRoot = mkdtempSync(join(tmpdir(), 'book-tool-output-'));

@@ -590,6 +590,18 @@ socket — onto the history already committed. Set it to 0 to end the run on any
 earlier versions did. `retry.outputCapContinuations` is a separate allowance for continuing after the
 provider's output limit, so a large generated file cannot drain the budget a real socket drop needs.
 
+A retryable status is classified by the error it quotes, not by the status alone. A router that
+wraps an upstream 4xx as a 503 with a cooldown (`503 … [400]: {"status":"INVALID_ARGUMENT"}`) is
+answered once and the run ends on that 400; it is not retried ten times and not re-issued, since the
+request itself is what was refused. A 400 on a request of 200k tokens or more is read as a context
+overflow even when the body does not say so, and goes through compaction and the learned-window
+ratchet like a spoken overflow. Two answers that are not answers get one re-issue each: a
+`content_filter` stop on a turn with no tool calls, and a 200 whose text is the upstream's error
+envelope (`[Error] … request ID …`, zero tokens both ways); if either repeats, the run ends
+`failed/provider_error`, never `completed`. Every retry is visible to a print-mode host: a
+`{"type":"retry","phase","attempt","max","delay_ms"}` record in `stream-json`, a `retry: …` line on
+stderr in `text` output.
+
 For a supervised loop, use `--session-id` (resume-or-create) rather than `--continue`, which selects
 the most recently touched session in the directory and can be hijacked by an unrelated `book -p`
 invocation:

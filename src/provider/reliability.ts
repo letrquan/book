@@ -35,8 +35,41 @@ export function classifyHttpStatus(status: number): {
   return { code: 'unknown', retryable: false };
 }
 
+/**
+ * The upstream HTTP status a router quoted inside its own error body, if any.
+ *
+ * 9router wraps an upstream 4xx as a 503 plus a cooldown, so the wrapper's status
+ * says "transient" while the body says the request itself is invalid. Only a 4xx
+ * is ever taken from the body: a quoted 5xx says nothing the wrapper did not.
+ */
+export function quotedUpstreamStatus(body: string): number | undefined {
+  if (!body) return undefined;
+  const text = body.length > 65536 ? body.slice(0, 65536) : body;
+  const patterns = [
+    /\[(4\d\d)\]/,
+    /"code"\s*:\s*"?(4\d\d)"?/,
+    /"status"\s*:\s*"?(4\d\d)"?/,
+    /\bHTTP\s+(4\d\d)\b/,
+    /\b(4\d\d)\s+(?:Bad Request|Unauthorized|Forbidden|Not Found|Payload Too Large|Too Many Requests)\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      return Number(match[1]);
+    }
+  }
+  return undefined;
+}
+
 export function classifyApiError(status: number, body: string): ProviderErrorCode {
-  const code = classifyHttpStatus(status).code;
+  const statusInfo = classifyHttpStatus(status);
+  let code = statusInfo.code;
+  if (statusInfo.retryable) {
+    const quoted = quotedUpstreamStatus(body);
+    if (quoted !== undefined) {
+      code = classifyHttpStatus(quoted).code;
+    }
+  }
   return code === 'bad_request' && isContextOverflowError(body) ? 'context_overflow' : code;
 }
 
@@ -96,6 +129,37 @@ export function isContextOverflowError(error: unknown): boolean {
   );
 }
 
+/**
+ * A router that answers 200 with the upstream's error as the assistant text —
+ * `[Error] An error occurred while processing your request. ... Please include
+ * the request ID ... in your message.` — has not answered. The leading `[Error]`
+ * is required; the rest of the sentence, or a usage block reporting zero tokens
+ * both ways, confirms it.
+ */
+export function isUpstreamErrorEnvelope(
+  text: string,
+  usage?: { promptTokens: number; completionTokens: number } | null,
+): boolean {
+  if (!/^\s*\[Error\]/i.test(text)) return false;
+  const zeroUsage = usage != null && usage.promptTokens === 0 && usage.completionTokens === 0;
+  return (
+    zeroUsage ||
+    /\brequest id\b/i.test(text) ||
+    /help\.openai\.com/i.test(text) ||
+    /error occurred while processing/i.test(text)
+  );
+}
+
+async function readErrorBody(response: Response, signal?: AbortSignal): Promise<string> {
+  if (signal?.aborted) return '';
+  try {
+    const text = await response.text();
+    return text.length > 65536 ? text.slice(0, 65536) : text;
+  } catch {
+    return '';
+  }
+}
+
 export async function fetchWithRetry(
   url: string,
   init: RequestInit,
@@ -137,10 +201,30 @@ export async function fetchWithRetry(
     const classification = classifyHttpStatus(response.status);
     if (!classification.retryable) return response;
     lastError = `API error ${response.status}`;
+
+    const bodyText = await readErrorBody(response, signal);
+    const quoted = quotedUpstreamStatus(bodyText);
+    if (quoted !== undefined && !classifyHttpStatus(quoted).retryable) {
+      logger?.warn('upstream error quoted in retryable status; not retrying', {
+        status: response.status,
+        upstreamStatus: quoted,
+      });
+      return new Response(bodyText, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }
+
     const watchdogRetry = retry.watchdog && (response.status === 429 || response.status === 529);
     const effectiveMax = watchdogRetry ? Number.MAX_SAFE_INTEGER : maxAttempts;
-    if (attempt >= effectiveMax || budgetExhausted(clock, startMs, retry.totalBudgetMs))
-      return response;
+    if (attempt >= effectiveMax || budgetExhausted(clock, startMs, retry.totalBudgetMs)) {
+      return new Response(bodyText, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }
 
     const delay = boundedDelay(
       clock,
@@ -157,7 +241,11 @@ export async function fetchWithRetry(
     try {
       await sleep(delay, signal);
     } catch {
-      return response;
+      return new Response(bodyText, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
     }
     try {
       await response.body?.cancel();

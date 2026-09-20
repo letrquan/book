@@ -49,6 +49,16 @@ export type AgentTerminalReason =
 export type TerminalRecovery = 'none' | 'reissue' | 'continue' | 'park';
 
 export function terminalRecovery(outcome: AgentTerminalOutcome): TerminalRecovery {
+  // A 4xx the provider or its router pinned on the request itself is reproduced by
+  // re-sending it; the transport was fine. `providerCode` is what the loop copied
+  // from the stream's error code, so only the loop's provider outcomes carry it.
+  if (
+    outcome.reason === 'provider_error' &&
+    (outcome.providerCode === 'bad_request' || outcome.providerCode === 'not_found')
+  ) {
+    return 'none';
+  }
+
   switch (outcome.reason) {
     case 'stream_stall':
     case 'provider_timeout':

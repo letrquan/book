@@ -74,7 +74,7 @@ import type { ToolUseRecord } from '../types/tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
 import { permissionDeniedError } from './actionable-errors.js';
-import { isContextOverflowError } from '../provider/reliability.js';
+import { isContextOverflowError, isUpstreamErrorEnvelope } from '../provider/reliability.js';
 import {
   classifyAbortReason,
   createTerminalOutcome,
@@ -94,6 +94,16 @@ import {
 
 const log = createDebugLogger('agent');
 const SKILL_INFRASTRUCTURE_TOOLS = new Set(['InvokeSkill', 'ReadSkillResource', 'ToolSearch']);
+
+/**
+ * A 400 on a prompt this large is read as a context overflow even when the
+ * body does not say so. The antigravity Gemini route answers a ~330k-token
+ * request with `INVALID_ARGUMENT` and no mention of length (#221), which is
+ * its practical window, not the 1M the model publishes; treating it as an
+ * overflow puts it through the same compaction and learned-window ratchet a
+ * spoken overflow gets. A 400 below the floor is still the request's own fault.
+ */
+const LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS = 200_000;
 
 /**
  * Check whether a tool call should be evaluated against permission rules,
@@ -724,6 +734,8 @@ export async function runAgentLoop(
     /** Guards the periodic work-state message against a same-turn re-issue. */
     let lastWorkStateTurn = -1;
     let emptyResponseRetryTurn: number | null = null;
+    let contentFilterRetryTurn = -1;
+    let upstreamErrorRetryTurn = -1;
     let forcedCompactTurn: number | null = null;
     let effectiveMode = initialMode;
     /** Set when the user approves a plan with fresh context; ends the turn so the host can reseed. */
@@ -1298,6 +1310,30 @@ export async function runAgentLoop(
         }
       }
 
+      // Gemini's safety filter fires on ordinary code-shaped prose now and then, and
+      // a `content_filter` stop on a turn that called no tool is a lost turn, not a
+      // refusal the run should end on. It gets the same single re-issue as an empty
+      // completion; only when it repeats on the retry does the run end.
+      const filteredNarration =
+        finishReason === 'content_filter' && toolCalls.length === 0 && !signal?.aborted;
+      if (filteredNarration) {
+        if (contentFilterRetryTurn !== turn) {
+          contentFilterRetryTurn = turn;
+          log.warn(
+            'provider stopped with content_filter on a turn with no tool calls; retrying once',
+            {
+              turn,
+              contentLen: assistantContent.length,
+              responseId: responseMetadata?.responseId,
+            },
+          );
+          callbacks.onAttemptDiscarded?.();
+          retrySameTurn = true;
+          continue;
+        }
+        streamErrorCode = 'provider_error';
+      }
+
       const routerOverflowResponse =
         !streamError &&
         streamDone &&
@@ -1309,7 +1345,32 @@ export async function runAgentLoop(
         streamErrorCode = 'context_overflow';
         assistantContent = '';
       }
-      if (heldText && !routerOverflowResponse) {
+
+      const upstreamErrorAsContent =
+        !streamError &&
+        streamDone &&
+        toolCalls.length === 0 &&
+        !routerOverflowResponse &&
+        isUpstreamErrorEnvelope(assistantContent, turnUsage);
+      if (upstreamErrorAsContent) {
+        if (upstreamErrorRetryTurn !== turn && !signal?.aborted) {
+          upstreamErrorRetryTurn = turn;
+          log.warn('provider answered with an upstream error envelope as content; retrying once', {
+            turn,
+            contentLen: assistantContent.length,
+            promptTokens: turnUsage?.promptTokens,
+            completionTokens: turnUsage?.completionTokens,
+          });
+          callbacks.onAttemptDiscarded?.();
+          retrySameTurn = true;
+          continue;
+        }
+        streamError = assistantContent.trim();
+        streamErrorCode = 'provider_error';
+        assistantContent = '';
+      }
+
+      if (heldText && !routerOverflowResponse && !upstreamErrorAsContent) {
         assistantOutputProduced = true;
         flushReasoning();
         callbacks.onText(heldText);
@@ -1319,11 +1380,15 @@ export async function runAgentLoop(
       // any partial assistant text/tool call metadata in returned history so
       // callers that persist sessions do not lose what was already rendered.
       if (streamError && !signal?.aborted) {
+        const overflowByShape =
+          isContextOverflowError(streamError) ||
+          (streamErrorCode === 'bad_request' &&
+            requestTokens >= LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS);
         const canRecoverContextOverflow =
           forcedCompactTurn !== turn &&
           assistantContent.length === 0 &&
           toolCalls.length === 0 &&
-          isContextOverflowError(streamError);
+          overflowByShape;
         if (canRecoverContextOverflow) {
           forcedCompactTurn = turn;
           log.warn('provider context overflow; forcing compaction before retry', {

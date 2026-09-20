@@ -31,6 +31,7 @@ export type StreamJsonEvent =
    * so a consumer that concatenates blindly would keep text no history records.
    */
   | { type: 'attempt_discarded'; reason?: string }
+  | { type: 'retry'; phase?: string; attempt?: number; max?: number; delay_ms?: number }
   | { type: 'agent_apply'; agentId?: string; evidenceId?: string; status?: string }
   | { type: 'hook_event'; event?: string; [key: string]: unknown }
   | { type: 'mode_change'; mode?: string }
@@ -86,10 +87,13 @@ const EVENT_TYPES = new Set<StreamJsonEvent['type']>([
   'agent_completion',
   'agent_permission',
   'evidence_update',
+  'attempt_discarded',
+  'retry',
   'agent_apply',
   'hook_event',
   'mode_change',
   'plan_approval',
+  'command_result',
   'prompt_suggestions',
   'error',
   'result',

@@ -116,6 +116,26 @@ describe('read_file', () => {
     // makes the assertion worth having.
     expect(vi.mocked(yieldToEventLoop).mock.calls.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('rejects offset past the end of file without recording observations', async () => {
+    writeFileSync(join(dir, 'three-lines.txt'), 'line 1\nline 2\nline 3');
+    const result = await read.execute({ filePath: 'three-lines.txt', offset: 5 }, ctx);
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.code).toBe('offset_out_of_range');
+    expect(result.structuredError?.message).toContain('3 lines');
+    expect(result.artifacts?.fileObservations).toBeUndefined();
+
+    const lineThree = await read.execute({ filePath: 'three-lines.txt', offset: 3 }, ctx);
+    expect(lineThree.status).toBe('success');
+    expect(lineThree.content).toContain('3: line 3');
+
+    const wholeFile = await read.execute({ filePath: 'three-lines.txt', limit: 0 }, ctx);
+    expect(wholeFile.status).toBe('success');
+    expect(wholeFile.content).toContain('1: line 1');
+    expect(wholeFile.content).toContain('2: line 2');
+    expect(wholeFile.content).toContain('3: line 3');
+  });
 });
 
 describe('write_file', () => {
