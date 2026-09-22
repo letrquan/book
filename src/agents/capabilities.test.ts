@@ -117,6 +117,21 @@ describe('managed agent capabilities', () => {
     expect(names).toEqual(['Read']);
   });
 
+  it('excludes MemorySave from subagent capability registry even if requested explicitly', () => {
+    const parent = createRegistry();
+    parent.registerAll([tool('Read'), tool('MemorySave')]);
+    expect(
+      createCapabilityRegistry(parent, ['*'])
+        .getDefinitions()
+        .map((d) => d.name),
+    ).toEqual(['Read']);
+    expect(
+      createCapabilityRegistry(parent, ['MemorySave'])
+        .getDefinitions()
+        .map((d) => d.name),
+    ).toEqual([]);
+  });
+
   it('allows ToolSearch to inspect only the already-restricted child catalog', async () => {
     const parent = createRegistry();
     parent.registerAll([...toolSearchTools, tool('Read')]);

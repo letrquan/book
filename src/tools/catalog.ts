@@ -25,7 +25,15 @@ import { normalizeToolSchema } from './schema.js';
 import { toolSearchTools } from './tool-search.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
 
-const ALWAYS_CORE = new Set(['Read', 'Glob', 'Grep', 'AskUserQuestion', 'TodoWrite', 'ToolSearch']);
+const ALWAYS_CORE = new Set([
+  'Read',
+  'Glob',
+  'Grep',
+  'AskUserQuestion',
+  'TodoWrite',
+  'ToolSearch',
+  'MemorySave',
+]);
 const MUTATION_CORE = new Set(['ApplyPatch', 'Write', 'Edit', 'MultiEdit', 'Bash']);
 const MANAGED_TASK_CORE = new Set(['TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate']);
 const RUNTIME_CORE = new Set(['BashOutput', 'KillShell']);
@@ -39,6 +47,7 @@ const ROOT_ONLY = new Set([
   'AgentWait',
   'AgentStop',
   'AgentApply',
+  'MemorySave',
 ]);
 const CHILD_ONLY = new Set(['EvidencePublish', 'EvidenceReview']);
 
@@ -84,6 +93,7 @@ function keywordsFor(name: string): string[] {
     AgentRead: ['subagent', 'result', 'output', 'continuation'],
     WebSearch: ['internet', 'research'],
     WebFetch: ['url', 'page', 'download'],
+    MemorySave: ['remember', 'memory', 'save fact'],
   };
   return common[name] ?? [];
 }
@@ -228,6 +238,12 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       const name = canonicalToolName(definition.name);
       if (name === 'ToolSearch') return true;
       if (!definition.catalog?.roles?.includes(role)) return false;
+      if (
+        name === 'MemorySave' &&
+        (!config.settings.memory.enabled || !config.settings.memory.autoSave)
+      ) {
+        return false;
+      }
       if ([...ruleSets.values()].some((rules) => !isToolDefinitionAllowed(rules, definition)))
         return false;
       if (additionalRules && !isToolDefinitionAllowed(additionalRules, definition)) return false;
@@ -252,6 +268,11 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     if (name === 'ToolSearch') return deferredMode();
     if (name === 'EnterPlanMode' || name === 'ExitPlanMode')
       return isRuntimeAvailable(definition, context);
+    if (
+      name === 'MemorySave' &&
+      (!config.settings.memory.enabled || !config.settings.memory.autoSave)
+    )
+      return false;
     if (MANAGED_TASK_CORE.has(name) && config.settings.agents.mode === 'off') return false;
     if (MUTATION_CORE.has(name) && context.currentMode === 'plan') return false;
     return definition.catalog?.exposure === 'core' || definition.catalog?.exposure === 'runtime';

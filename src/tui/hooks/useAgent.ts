@@ -534,6 +534,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       opts: { preserveOperation?: boolean } = {},
     ) => {
       prepareConversationProjection();
+      agentSession.getRuntime().resetConversation();
       if (opts.preserveOperation) interactions.cancelAll('session-reset');
       else agentSession.reset('session-reset');
       projectConversationState(nextId, nextName, transcript, contextHistory, boundaries, targets);
@@ -549,6 +550,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
   const startNewConversation = useCallback(
     async (previousName?: string) => {
+      agentSession.getRuntime().resetConversation();
       await agentSession.clearSession({
         config: liveConfigRef.current,
         currentSessionId: sessionIdRef.current,
@@ -864,9 +866,32 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 break;
               case 'tool_result':
                 activeAccumulator?.addToolResult(event.toolResult);
+                if (
+                  event.toolResult.data &&
+                  typeof event.toolResult.data === 'object' &&
+                  'memorySaved' in event.toolResult.data
+                ) {
+                  setLiveConfig((c) => ({
+                    ...c,
+                    memoryContext: c.settings.memory.enabled
+                      ? loadMemoryContext(config.workspace)
+                      : undefined,
+                  }));
+                }
                 break;
               case 'notice':
                 appendLocalMessage(event.message);
+                if (
+                  event.message.startsWith('memory saved:') ||
+                  event.message.startsWith('memory candidate saved:')
+                ) {
+                  setLiveConfig((c) => ({
+                    ...c,
+                    memoryContext: c.settings.memory.enabled
+                      ? loadMemoryContext(config.workspace)
+                      : undefined,
+                  }));
+                }
                 break;
               case 'attempt_discarded': {
                 // Land anything still queued before clearing, or it would flush
@@ -2188,7 +2213,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     refreshMemoryContext: () => {
       setLiveConfig((c) => ({
         ...c,
-        memoryContext: loadMemoryContext(config.workspace),
+        memoryContext: c.settings.memory.enabled ? loadMemoryContext(config.workspace) : undefined,
       }));
     },
 

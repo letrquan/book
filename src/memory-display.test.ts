@@ -28,7 +28,7 @@ describe('buildMemoryReport', () => {
     const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
     expect(report).toContain('Loaded index: none found');
     expect(report).toContain('Pending candidates: 0');
-    expect(report).toContain('Auto-capture: enabled');
+    expect(report).toContain('Model writes: enabled (direct to store)');
   });
 
   it('lists approved memory and reports the line cap', () => {
@@ -50,7 +50,7 @@ describe('buildMemoryReport', () => {
     expect(report).toContain('Project rule (project)');
   });
 
-  it('shows disabled auto-capture and pending inbox candidates', () => {
+  it('shows disabled model writes and pending inbox candidates', () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.memory.autoSave = false;
     writeMemoryCandidate(
@@ -65,7 +65,7 @@ describe('buildMemoryReport', () => {
     );
 
     const report = buildMemoryReport({ workspace, bookRoot, settings });
-    expect(report).toContain('Auto-capture: disabled');
+    expect(report).toContain('Model writes: disabled');
     expect(report).toContain('Pending candidates: 1');
     expect(buildMemoryInboxReport({ workspace, bookRoot })).toContain('User likes short answers');
   });
@@ -148,5 +148,16 @@ describe('buildMemoryReport', () => {
     // When processed through marked, the backslashes survive inside <code> blocks
     const parsed = marked.parse(report);
     expect(parsed).toContain(`<code>${winBookRoot}`);
+  });
+
+  it('reflects requireApproval setting in report', () => {
+    const defaultReport = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
+    expect(defaultReport).toContain('Approval required: no');
+
+    const approvalSettings = structuredClone(DEFAULT_SETTINGS);
+    approvalSettings.memory.requireApproval = true;
+    const approvalReport = buildMemoryReport({ workspace, bookRoot, settings: approvalSettings });
+    expect(approvalReport).toContain('Approval required: yes');
+    expect(approvalReport).toContain('Model writes: enabled (to inbox, needs approval)');
   });
 });

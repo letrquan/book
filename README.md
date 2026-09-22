@@ -10,7 +10,7 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **Interactive TUI** (Ink/React) plus **print mode** (`-p`) with `text` / `json` / `stream-json` output for CI.
 - **Providers**: Anthropic Messages API (prompt caching, adaptive thinking) and any OpenAI-compatible endpoint, auto-detected from `baseUrl` / `--provider`. `--effort` reaches both, as `output_config.effort` and as `reasoning_effort`.
 - **Project context**: walks the tree to load Codex-style `AGENTS.md` and Claude-style `CLAUDE.md` instructions (user-global → broad project → specific project → local/rules) into a fenced, trust-labeled block, alongside platform info and discovered skills, slash commands, and subagents. Content is split by how often it changes: a cached static prefix, an uncached suffix for activation-class policy, and a per-turn `<session-state>` block carrying date, git status, and mode on the newest user turn — so an edit or a mode toggle costs one turn of cache, not the whole conversation.
-- **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). The prompt instructs the model to inspect relevant markdown files in the memory directory on demand and disclose memory-derived facts as potentially stale (the model may Read files in the memory directory; it cannot write there). Health metrics (approved count, inbox count, index lines, and last write date) are reported via `/memory status` and `book doctor`, while capture notices announce new candidates in the TUI, print mode, and SDK. Secret/unfit text is rejected before writing.
+- **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter with provenance (`origin`, `sessionId`, `externalContext`, `evidence`), model writes via the `MemorySave` tool, and an optional **approval flow** (`memory.requireApproval: true`, default `false`, routed via `/memory inbox` → `/memory approve|discard`). The prompt instructs the model to inspect relevant markdown files in the memory directory on demand, use `MemorySave` to record durable facts or corrections, and disclose memory-derived facts as potentially stale. Health metrics (approved count, inbox count, index lines, and last write date) are reported via `/memory status` and `book doctor`, while notices announce memory writes in the TUI, print mode, and SDK. Secret/unfit text is rejected before writing.
 - **Sessions**: append-only JSONL persistence with automatic titles from the first prompt plus `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, reference-aware `/compact`, and Claude-style `/rewind` for conversation, code, or both. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, remembered file facts are freshness-checked before reuse, your own earlier turns are kept verbatim ahead of the checkpoint instead of being paraphrased (only assistant and tool activity is summarized), and constraints you stated in your own words are additionally pinned in a host-owned ledger the summarizer can read but never rewrite (see "Carried turns and constraints").
 - **Tools**: a provider-neutral capability catalog keeps a practical core loaded and uses `ToolSearch` to activate up to five authorized git, web, session, skill, agent, notebook, or MCP definitions on the next model turn. File, shell, task, clarification, and plan tools stay immediately available when permitted. Existing names such as `Read`, `Bash`, and `AgentSpawn` remain stable.
 - **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`. Print mode resolves commands through the same registries: `/init`, `/security-review`, `/review`, and custom commands run headlessly, and the interactive-only ones fail loudly instead of reaching the model as text.
@@ -337,7 +337,7 @@ Writes use an atomic sibling-file replacement, and malformed or non-object
 invalid setting path; provider secrets are redacted.
 
 Inside the TUI, `/config` opens a visual settings menu. Use it to change the main model, compact
-strategy, compact model, effort, memory auto-capture, startup fire, or the model assigned to
+strategy, compact model, effort, model memory writes, startup fire, or the model assigned to
 each managed-agent profile. Choosing a row opens that setting's picker and returns to the menu on
 the same row when it closes, so one `/config` covers as many settings as you want to change.
 
@@ -362,7 +362,7 @@ screen-reader or reduced-motion mode. Press Esc to skip it.
 
 TUI preference changes are saved by whose choice they are. Preferences about how Book behaves for
 *you* — model, effort, compact model, permission default mode, provider registries and API keys,
-thinking display, startup animation, memory auto-capture — are written to the user-global
+thinking display, startup animation, model memory writes — are written to the user-global
 `~/.book/settings.json` and follow you across projects. What is genuinely about *this* repository
 stays in `.book/settings.local.json`: skill overrides, approved permission rules, and per-profile agent
 models. Set `ui.startupAnimation` to `false` in `~/.book/settings.json` to disable the
@@ -475,7 +475,7 @@ The benchmark requires configured provider credentials and is not part of CI.
   "memory": {
     "enabled": true,
     "autoSave": true,
-    "requireApproval": true
+    "requireApproval": false
   },
   "ui": {
     "showThinking": true,
@@ -508,6 +508,8 @@ The benchmark requires configured provider credentials and is not part of CI.
   }
 }
 ```
+
+`memory.enabled` controls loading and reading the project memory index at session start; `memory.autoSave` controls whether the model may write memories via `MemorySave` (omitting the tool and save spec when false); `memory.requireApproval` (default `false`) routes model writes to `.inbox/` for review via `/memory inbox` rather than saving directly to the approved store.
 
 `agents.checkTimeoutMs` caps one `Check` run (default 120 s, maximum 2 h). A check that exceeds it
 is killed and reported as `check_timed_out` — explicitly *not* as a failing check, so an agent does
@@ -1425,7 +1427,7 @@ for await (const event of query('Explain this code', {
 }
 ```
 
-`AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop` — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK. Host notices (such as auto-captured memory candidates) emit `notice` (`{type: 'notice', message}`).
+`AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop` — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK. Host notices (such as saved memories or review candidates) emit `notice` (`{type: 'notice', message}`).
 
 Auth and model selection come from settings / env (`BOOK_API_KEY`, `BOOK_MODEL`, and provider blocks), not from `query()` options. See `src/sdk.ts` for the full `QueryEvent` / `QueryOptions` surface.
 

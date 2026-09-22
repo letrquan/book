@@ -66,14 +66,19 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
   const settings = input.settings;
   const enabled = settings?.memory.enabled ?? true;
   const autoSave = settings?.memory.autoSave ?? true;
-  const requireApproval = settings?.memory.requireApproval ?? true;
+  const requireApproval = settings?.memory.requireApproval ?? false;
   const health = getMemoryHealth(ctx, input);
   const lastWrite = health.lastWrite ? health.lastWrite.toISOString() : 'never';
 
   const lines: string[] = ['Auto-memory for this workspace:', ''];
   lines.push(`Location: \`${ctx.dir}\``);
   lines.push(`Loading: ${enabled ? 'enabled' : 'disabled'}`);
-  lines.push(`Auto-capture: ${autoSave ? 'enabled' : 'disabled'} (writes review candidates only)`);
+  const modelWrites = !autoSave
+    ? 'disabled'
+    : requireApproval
+      ? 'enabled (to inbox, needs approval)'
+      : 'enabled (direct to store)';
+  lines.push(`Model writes: ${modelWrites}`);
   lines.push(`Approval required: ${requireApproval ? 'yes' : 'no'}`);
   lines.push(`Inbox: \`${getMemoryInboxDir(input.workspace, input)}\``);
   lines.push(

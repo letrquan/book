@@ -10,7 +10,8 @@ runtime defaults and known boundaries, see [docs/current-state.md](docs/current-
 - [x] Interactive TUI, print/headless hosts, JSON/stream-JSON protocols, public `query()` SDK,
   shared session lifecycle, resume/fork/name support, compaction, rewind, and structured output.
 - [x] Layered settings, atomic settings repository, migration/redaction, permission modes and rules,
-  lifecycle hooks, optional bubblewrap sandbox, project/user instructions, themes, and auto-memory.
+  lifecycle hooks, optional bubblewrap sandbox, project/user instructions, and themes.
+- [ ] Auto-memory (Phase 1 part A model writes landed; auto-memory is not done until part B background extraction lands).
 - [x] Provider-neutral tool registry with closed schemas, aliases, capability intersections,
   model-conditional mutation guidance, read-before-edit, tool discovery, bounded parallel-safe
   waves, retries/timeouts, structured errors, and persistent tool telemetry.

@@ -6,16 +6,39 @@ import {
   readFileSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'fs';
 import { createHash } from 'crypto';
 import { basename, isAbsolute, join, relative, resolve } from 'path';
 import { parseFrontmatter } from './frontmatter.js';
 import { resolveBookHome } from './book-home.js';
+import { looksLikeSecretOrUnfit } from './secret-detect.js';
 
 export const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
 export type MemoryType = (typeof MEMORY_TYPES)[number];
 export type MemoryStatus = 'approved' | 'pending' | 'discarded';
+export type MemoryOrigin = 'model-tool' | 'extraction' | 'user-text';
+
+export const MAX_BODY_CHARS = 1600;
+
+export function sanitizeMemoryTitle(rawTitle: string): string {
+  return rawTitle
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
+    .replace(/[[\]()]/g, '')
+    .replace(/^[\s#]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120)
+    .trim();
+}
+
+export function shouldRejectMemoryText(text: string): string | null {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return 'empty';
+  if (trimmed.length > MAX_BODY_CHARS * 2) return 'too long';
+  return looksLikeSecretOrUnfit(trimmed);
+}
 
 export interface MemoryFileSummary {
   name: string;
@@ -43,13 +66,24 @@ export interface MemoryCandidate {
   type: MemoryType;
   title: string;
   body: string;
-  source: 'auto' | 'manual';
+  origin: MemoryOrigin;
+  source?: 'auto' | 'manual';
   confidence?: 'low' | 'medium' | 'high';
   tags?: string[];
+  sessionId?: string;
+  externalContext: boolean;
+  evidence?: string[];
+  supersedes?: string;
+  targetSlug?: string;
 }
 
-export interface MemoryWriteInput extends MemoryCandidate {
+export interface MemoryWriteInput extends Partial<MemoryCandidate> {
+  type: MemoryType;
+  title: string;
+  body: string;
   status?: MemoryStatus;
+  created?: string;
+  targetSlug?: string;
 }
 
 export interface MemoryStoreOptions {
@@ -62,6 +96,19 @@ export interface MemoryStoreOptions {
 export interface MemoryWriteResult {
   ok: boolean;
   path?: string;
+  error?: string;
+}
+
+export interface SaveMemoryOptions extends MemoryStoreOptions {
+  requireApproval?: boolean;
+  slug?: string;
+}
+
+export interface SaveMemoryResult {
+  ok: boolean;
+  path?: string;
+  indexLine?: string;
+  status: MemoryStatus;
   error?: string;
 }
 
@@ -179,6 +226,7 @@ export function listMemoryCandidates(
   return files;
 }
 
+// Deliberately cheaper than listMemoryCandidates(): readdir only, no frontmatter parse.
 export function countMemoryCandidates(workspace: string, opts?: MemoryStoreOptions): number {
   const dir = getMemoryInboxDir(workspace, opts);
   if (!existsSync(dir)) return 0;
@@ -366,20 +414,34 @@ function formatTags(tags: string[] | undefined): string {
 }
 
 function renderMemoryMarkdown(input: MemoryWriteInput, status: MemoryStatus, now: Date): string {
-  const created = now.toISOString();
-  const title = status === 'pending' ? `Candidate: ${input.title}` : input.title;
+  const created = input.created ?? now.toISOString();
+  const updated = now.toISOString();
+  const sanitizedTitle = sanitizeMemoryTitle(input.title);
+  const title = status === 'pending' ? `Candidate: ${sanitizedTitle}` : sanitizedTitle;
+  const origin: MemoryOrigin = input.origin ?? 'user-text';
+  const source = input.source ?? (origin === 'user-text' ? 'manual' : 'auto');
+  const externalContext = input.externalContext ?? false;
+
   // Build frontmatter fields, dropping optional ones that are absent so we
   // don't rely on a blanket ''.filter() that would also strip the blank
   // spacer lines between the closing fence, the heading, and the body.
   const fm: string[] = [
     `type: ${input.type}`,
     `status: ${status}`,
-    `source: ${input.source}`,
+    `origin: ${origin}`,
+    `source: ${source}`,
+    `externalContext: ${externalContext}`,
     `created: ${created}`,
-    `updated: ${created}`,
+    `updated: ${updated}`,
   ];
+  if (input.sessionId) fm.push(`sessionId: ${input.sessionId}`);
+  if (input.evidence?.length) {
+    fm.push(`evidence:\n${input.evidence.map((e) => `- ${e}`).join('\n')}`);
+  }
+  if (input.supersedes) fm.push(`supersedes: ${input.supersedes}`);
+  if (input.targetSlug) fm.push(`targetSlug: ${input.targetSlug}`);
   if ('confidence' in input && input.confidence) fm.push(`confidence: ${input.confidence}`);
-  if (status === 'pending') fm.push(`proposedTitle: ${input.title}`);
+  if (status === 'pending') fm.push(`proposedTitle: ${sanitizedTitle}`);
   if (input.tags?.length) {
     fm.push(formatTags(input.tags).trimEnd());
   }
@@ -388,20 +450,22 @@ function renderMemoryMarkdown(input: MemoryWriteInput, status: MemoryStatus, now
 
 export function writeMemoryCandidate(
   workspace: string,
-  candidate: MemoryCandidate,
+  candidate: MemoryWriteInput,
   opts?: MemoryStoreOptions,
 ): MemoryWriteResult {
   try {
+    const title = sanitizeMemoryTitle(candidate.title);
+    if (!title) {
+      return { ok: false, error: 'title must not be empty after sanitizing.' };
+    }
     const now = opts?.now ?? new Date();
     const inbox = getMemoryInboxDir(workspace, opts);
     mkdirSync(inbox, { recursive: true });
     const stamp = now.toISOString().replace(/[-:.]/g, '').slice(0, 15);
-    const hash = shortHash(
-      `${candidate.type}\n${candidate.title}\n${candidate.body}\n${now.toISOString()}`,
-    );
-    const filename = `${stamp}-cand-${safeTitle(candidate.title)}-${hash}.md`;
+    const hash = shortHash(`${candidate.type}\n${title}\n${candidate.body}\n${now.toISOString()}`);
+    const filename = `${stamp}-cand-${safeTitle(title)}-${hash}.md`;
     const path = join(inbox, filename);
-    writeFileSync(path, renderMemoryMarkdown(candidate, 'pending', now), 'utf-8');
+    writeFileSync(path, renderMemoryMarkdown({ ...candidate, title }, 'pending', now), 'utf-8');
     return { ok: true, path };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -430,32 +494,85 @@ function activeMemoryFilename(
   return `${date}-${input.type}-${safeTitle(input.title)}-${hash}.md`;
 }
 
+export function readMemoryFile(
+  path: string,
+): (MemoryCandidate & { created?: string; updated?: string; status?: MemoryStatus }) | null {
+  try {
+    const raw = readFileSync(path, 'utf-8');
+    const { body, frontmatter } = parseFrontmatter(raw);
+    if (!isMemoryType(frontmatter.type)) return null;
+    const rawProposed =
+      typeof frontmatter.proposedTitle === 'string' ? frontmatter.proposedTitle : undefined;
+    const proposedTitle = rawProposed ? sanitizeMemoryTitle(rawProposed) || undefined : undefined;
+    const title =
+      proposedTitle ??
+      (typeof frontmatter.title === 'string'
+        ? sanitizeMemoryTitle(frontmatter.title)
+        : undefined) ??
+      (titleFromBody(body)?.replace(/^Candidate:\s*/i, '')
+        ? sanitizeMemoryTitle(titleFromBody(body)!.replace(/^Candidate:\s*/i, ''))
+        : undefined) ??
+      basename(path, '.md');
+    const tags = Array.isArray(frontmatter.tags)
+      ? frontmatter.tags.filter((t): t is string => typeof t === 'string')
+      : undefined;
+    const evidence = Array.isArray(frontmatter.evidence)
+      ? frontmatter.evidence.filter((e): e is string => typeof e === 'string')
+      : undefined;
+    const cleanBody = body.replace(/^#\s+[^\n]*\n+/i, '').trim() || body.trim();
+    const origin: MemoryOrigin =
+      frontmatter.origin === 'model-tool' ||
+      frontmatter.origin === 'extraction' ||
+      frontmatter.origin === 'user-text'
+        ? frontmatter.origin
+        : 'user-text';
+    const source: 'auto' | 'manual' =
+      frontmatter.source === 'manual' || frontmatter.source === 'auto'
+        ? frontmatter.source
+        : origin === 'user-text'
+          ? 'manual'
+          : 'auto';
+    const externalContext =
+      frontmatter.externalContext === true || frontmatter.externalContext === 'true';
+    const sessionId = typeof frontmatter.sessionId === 'string' ? frontmatter.sessionId : undefined;
+    const supersedes =
+      typeof frontmatter.supersedes === 'string' ? frontmatter.supersedes : undefined;
+    const targetSlug =
+      typeof frontmatter.targetSlug === 'string' && frontmatter.targetSlug.trim()
+        ? basename(frontmatter.targetSlug.trim())
+        : undefined;
+    const status = isMemoryStatus(frontmatter.status) ? frontmatter.status : undefined;
+    const created = typeof frontmatter.created === 'string' ? frontmatter.created : undefined;
+    const updated = typeof frontmatter.updated === 'string' ? frontmatter.updated : undefined;
+    return {
+      type: frontmatter.type,
+      title,
+      body: cleanBody,
+      origin,
+      source,
+      externalContext,
+      sessionId,
+      evidence,
+      supersedes,
+      targetSlug,
+      status,
+      confidence:
+        frontmatter.confidence === 'low' ||
+        frontmatter.confidence === 'medium' ||
+        frontmatter.confidence === 'high'
+          ? frontmatter.confidence
+          : undefined,
+      tags,
+      created,
+      updated,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function parseCandidateFile(path: string): (MemoryCandidate & { created?: string }) | null {
-  const raw = readFileSync(path, 'utf-8');
-  const { body, frontmatter } = parseFrontmatter(raw);
-  if (!isMemoryType(frontmatter.type)) return null;
-  const title =
-    typeof frontmatter.proposedTitle === 'string'
-      ? frontmatter.proposedTitle
-      : (titleFromBody(body)?.replace(/^Candidate:\s*/i, '') ?? basename(path, '.md'));
-  const tags = Array.isArray(frontmatter.tags)
-    ? frontmatter.tags.filter((t): t is string => typeof t === 'string')
-    : undefined;
-  const cleanBody = body.replace(/^#\s+Candidate:\s*.*\n*/i, '').trim() || body.trim();
-  return {
-    type: frontmatter.type,
-    title,
-    body: cleanBody,
-    source: frontmatter.source === 'manual' ? 'manual' : 'auto',
-    confidence:
-      frontmatter.confidence === 'low' ||
-      frontmatter.confidence === 'medium' ||
-      frontmatter.confidence === 'high'
-        ? frontmatter.confidence
-        : undefined,
-    tags,
-    created: typeof frontmatter.created === 'string' ? frontmatter.created : undefined,
-  };
+  return readMemoryFile(path);
 }
 
 function updateMemoryIndex(
@@ -464,7 +581,7 @@ function updateMemoryIndex(
   filename: string,
   type: MemoryType,
   now: Date,
-): void {
+): string {
   const indexPath = join(dir, INDEX_FILE);
   const entry = `- [${title}](${filename}) — ${type} — ${now.toISOString().slice(0, 10)}`;
   let lines: string[] = [];
@@ -486,6 +603,148 @@ function updateMemoryIndex(
     lines = [entry, ...lines];
   }
   writeFileSync(indexPath, lines.join('\n') + '\n', 'utf-8');
+  return entry;
+}
+
+export function saveMemory(
+  workspace: string,
+  candidate: MemoryWriteInput,
+  opts?: SaveMemoryOptions,
+): SaveMemoryResult {
+  const requireApproval = opts?.requireApproval ?? false;
+  const title = sanitizeMemoryTitle(candidate.title);
+  if (!title) {
+    return {
+      ok: false,
+      error: 'title must not be empty after sanitizing.',
+      status: requireApproval ? 'pending' : 'approved',
+    };
+  }
+
+  if (requireApproval) {
+    const candidateInput: MemoryWriteInput = {
+      ...candidate,
+      title,
+      targetSlug: opts?.slug ? basename(opts.slug.trim()) : candidate.targetSlug,
+    };
+    const writeResult = writeMemoryCandidate(workspace, candidateInput, opts);
+    if (!writeResult.ok) {
+      return { ok: false, error: writeResult.error, status: 'pending' };
+    }
+    return { ok: true, path: writeResult.path, status: 'pending' };
+  }
+
+  try {
+    const now = opts?.now ?? new Date();
+    const dir = getProjectMemoryDir(workspace, opts);
+    mkdirSync(dir, { recursive: true });
+
+    let filename: string;
+    let existingCreated: string | undefined;
+
+    if (opts?.slug) {
+      const cleanSlug = basename(opts.slug.trim());
+      filename = cleanSlug.toLowerCase().endsWith('.md') ? cleanSlug : `${cleanSlug}.md`;
+      const targetPath = join(dir, filename);
+      if (existsSync(targetPath)) {
+        const existing = readMemoryFile(targetPath);
+        if (existing?.created) {
+          existingCreated = existing.created;
+        }
+      }
+    } else {
+      filename = activeMemoryFilename({ ...candidate, title }, now);
+    }
+
+    if (filename.toLowerCase() === INDEX_FILE.toLowerCase()) {
+      return {
+        ok: false,
+        error: 'Target filename cannot be the index file.',
+        status: 'approved',
+      };
+    }
+
+    const target = join(dir, filename);
+    const rel = relative(dir, target);
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+      return {
+        ok: false,
+        error: 'Target path must stay inside the project memory directory.',
+        status: 'approved',
+      };
+    }
+
+    if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
+      return {
+        ok: false,
+        error: 'Refusing to overwrite symlinked memory file.',
+        status: 'approved',
+      };
+    }
+
+    const memoryInput: MemoryWriteInput = {
+      ...candidate,
+      title,
+      created: existingCreated ?? candidate.created,
+    };
+    const rendered = renderMemoryMarkdown(memoryInput, 'approved', now);
+    writeFileSync(target, rendered, 'utf-8');
+    const indexLine = updateMemoryIndex(dir, title, filename, candidate.type, now);
+    return { ok: true, path: target, indexLine, status: 'approved' };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e), status: 'approved' };
+  }
+}
+
+export function deleteMemoryEntry(
+  workspace: string,
+  slug: string,
+  opts?: MemoryStoreOptions,
+): { ok: boolean; path?: string; error?: string } {
+  try {
+    const dir = getProjectMemoryDir(workspace, opts);
+    const cleanSlug = basename(slug.trim());
+    const filename = cleanSlug.toLowerCase().endsWith('.md') ? cleanSlug : `${cleanSlug}.md`;
+    if (filename.toLowerCase() === INDEX_FILE.toLowerCase()) {
+      return { ok: false, error: 'Cannot delete the memory index file.' };
+    }
+    const target = join(dir, filename);
+    const rel = relative(dir, target);
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+      return { ok: false, error: 'Target path must stay inside the project memory directory.' };
+    }
+    if (!existsSync(target)) {
+      return { ok: false, error: `Memory file not found: ${filename}` };
+    }
+    if (lstatSync(target).isSymbolicLink()) {
+      return { ok: false, error: 'Refusing to delete symlinked file.' };
+    }
+
+    unlinkSync(target);
+
+    // Remove from MEMORY.md
+    const indexPath = join(dir, INDEX_FILE);
+    if (existsSync(indexPath)) {
+      try {
+        const raw = readFileSync(indexPath, 'utf-8');
+        const lines = raw
+          .split('\n')
+          .filter((line) => line.trim().length > 0)
+          .filter((line) => !line.includes(`](${filename})`));
+        writeFileSync(
+          indexPath,
+          lines.length > 0 ? lines.join('\n') + '\n' : '# Book memory index\n',
+          'utf-8',
+        );
+      } catch {
+        // ignore
+      }
+    }
+
+    return { ok: true, path: target };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 export function approveMemoryCandidate(
@@ -509,9 +768,43 @@ export function approveMemoryCandidate(
     const now = opts?.now ?? new Date();
     const dir = getProjectMemoryDir(workspace, opts);
     mkdirSync(dir, { recursive: true });
-    const filename = activeMemoryFilename(candidate, now);
+
+    let filename: string;
+    let existingCreated: string | undefined;
+
+    if (candidate.targetSlug) {
+      const cleanSlug = basename(candidate.targetSlug.trim());
+      filename = cleanSlug.toLowerCase().endsWith('.md') ? cleanSlug : `${cleanSlug}.md`;
+      const targetPath = join(dir, filename);
+      if (existsSync(targetPath)) {
+        const existing = readMemoryFile(targetPath);
+        if (existing?.created) {
+          existingCreated = existing.created;
+        }
+      }
+    } else {
+      filename = activeMemoryFilename(candidate, now);
+    }
+
+    if (filename.toLowerCase() === INDEX_FILE.toLowerCase()) {
+      return { ok: false, error: 'Target filename cannot be the index file.' };
+    }
+
     const target = join(dir, filename);
-    const rendered = renderMemoryMarkdown(candidate, 'approved', now);
+    const rel = relative(dir, target);
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+      return { ok: false, error: 'Target path must stay inside the project memory directory.' };
+    }
+
+    if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
+      return { ok: false, error: 'Refusing to overwrite symlinked memory file.' };
+    }
+
+    const memoryInput: MemoryWriteInput = {
+      ...candidate,
+      created: existingCreated ?? candidate.created,
+    };
+    const rendered = renderMemoryMarkdown(memoryInput, 'approved', now);
     // Move the candidate to discarded BEFORE writing the approved file and
     // updating the index, so a rename failure cannot leave an orphan approved
     // memory + index entry behind on disk. If the rename throws, nothing has

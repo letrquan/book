@@ -67,6 +67,13 @@ export class SessionRuntime {
   readonly recentToolFailures = new Map<string, number>();
   /** Per-session tool call/failure counters keyed by canonical tool name. */
   readonly toolCallStats = new Map<string, { calls: number; failures: Record<string, number> }>();
+  /** Canonical names of tools executed during this session. */
+  readonly usedToolNames = new Set<string>();
+
+  /** Reset per-conversation volatile telemetry such as used tool names. */
+  resetConversation(): void {
+    this.usedToolNames.clear();
+  }
   agentManager?: import('../agents/manager.js').AgentManager;
   private readonly abortControllers = new Set<AbortController>();
   private readonly timers = new Set<NodeJS.Timeout>();

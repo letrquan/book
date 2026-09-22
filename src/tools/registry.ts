@@ -14,6 +14,7 @@ import { askUserQuestionTools } from './ask-user-question.js';
 import { agentLifecycleTools, evidenceTools } from './agent-tools.js';
 import { checkTools } from '../agents/check.js';
 import { toolSearchTools } from './tool-search.js';
+import { memorySaveTools } from './memory-save.js';
 import { createRegistry, type ToolRegistry } from './registry-core.js';
 
 export { createRegistry } from './registry-core.js';
@@ -37,6 +38,7 @@ export function createDefaultRegistry(capabilities?: {
     ...planModeTools,
     ...askUserQuestionTools,
     ...notebookTools,
+    ...memorySaveTools,
   ]);
   if (capabilities?.agents !== false) {
     registry.registerAll([...agentLifecycleTools, ...evidenceTools, ...taskTool, ...checkTools]);

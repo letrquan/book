@@ -250,7 +250,7 @@ export type ContinuationSettings = z.infer<typeof continuationSettingsSchema>;
 export const memorySettingsSchema = z.object({
   enabled: z.boolean().default(true),
   autoSave: z.boolean().default(true),
-  requireApproval: z.boolean().default(true),
+  requireApproval: z.boolean().default(false),
 });
 
 export const agentSettingsSchema = z.object({
@@ -562,7 +562,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   memory: {
     enabled: true,
     autoSave: true,
-    requireApproval: true,
+    requireApproval: false,
   },
   agents: {
     mode: 'adaptive',

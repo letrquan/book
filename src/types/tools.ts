@@ -361,12 +361,18 @@ export interface ToolContext {
   agentRole?: AgentRole;
   /** Parent session attribution for managed agents and hooks. */
   parentSessionId?: string;
+  /** Active session identifier for provenance attribution. */
+  sessionId?: string;
   /** Root/parent execution attribution for managed agents and evidence. */
   runContext?: AgentRunContext;
   /** Host sink for managed-agent lifecycle and evidence events. */
   onAgentEvent?: (event: AgentRuntimeEvent) => void;
   /** Host sink used by lifecycle hooks started from managed-agent tools. */
   onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
+  /** Host sink for one-line informational notices (e.g. memory saved). */
+  onNotice?: (notice: string) => void;
+  /** Canonical tool names invoked so far in this session. */
+  usedToolNames?: Set<string>;
   /** Per-session capability/discovery controller installed by the agent loop. */
   toolDiscovery?: ToolDiscoveryContext;
   /** Mutable resources owned by the current session, separate from configuration. */

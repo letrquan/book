@@ -580,7 +580,7 @@ describe('runAgentLoop skill lifecycle', () => {
     }
   });
 
-  it('emits onNotice when a memory candidate is captured', async () => {
+  it('no longer captures memory candidates from user text regex', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'book-loop-memory-notice-'));
     try {
       const runtimeConfig = defaultConfig({ workspace, maxTurns: 1 });
@@ -605,14 +605,13 @@ describe('runAgentLoop skill lifecycle', () => {
         { provider, isNewSession: false },
       );
 
-      expect(notices).toHaveLength(1);
-      expect(notices[0]).toBe('memory candidate saved: in this repo we use pnpm — /memory inbox');
+      expect(notices).toHaveLength(0);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
 
-  it('emits onNotice when a memory candidate is captured with a frozen config containing memoryContext', async () => {
+  it('does not capture from user text even with frozen config containing memoryContext', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'book-loop-memory-frozen-'));
     try {
       const memoryDir = join(workspace, 'memory');
@@ -655,8 +654,162 @@ describe('runAgentLoop skill lifecycle', () => {
         { provider, isNewSession: false },
       );
 
+      expect(notices).toHaveLength(0);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('emits onNotice when model calls MemorySave tool', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-memory-save-'));
+    try {
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 2 });
+      const notices: string[] = [];
+      let turn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          turn++;
+          if (turn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'call-1',
+                name: 'MemorySave',
+                arguments: {
+                  action: 'save',
+                  type: 'project',
+                  title: 'In this repo we use pnpm',
+                  body: 'Always run pnpm install.\nWhy: Monorepo uses pnpm workspaces.\nHow to apply: Do not use npm or yarn.',
+                },
+              },
+            };
+            yield { type: 'done' };
+          } else {
+            yield { type: 'text', content: 'Saved memory.' };
+            yield { type: 'done' };
+          }
+        },
+      };
+
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'Please remember our package manager.',
+        [],
+        noopCallbacks({
+          onNotice: (notice) => notices.push(notice),
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
       expect(notices).toHaveLength(1);
-      expect(notices[0]).toBe('memory candidate saved: in this repo we use pnpm — /memory inbox');
+      expect(notices[0]).toBe('memory saved: In this repo we use pnpm');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('prompts user when permissions.ask matches MemorySave', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-memory-ask-'));
+    try {
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 2 });
+      runtimeConfig.settings.permissions.ask = ['MemorySave'];
+      let permissionPrompted = false;
+      let turn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          turn++;
+          if (turn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'call-1',
+                name: 'MemorySave',
+                arguments: {
+                  action: 'save',
+                  type: 'project',
+                  title: 'Convention',
+                  body: 'A convention.',
+                },
+              },
+            };
+            yield { type: 'done' };
+          } else {
+            yield { type: 'text', content: 'Done.' };
+            yield { type: 'done' };
+          }
+        },
+      };
+
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'Remember convention.',
+        [],
+        noopCallbacks({
+          onPermissionRequired: async () => {
+            permissionPrompted = true;
+            return 'allow';
+          },
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(permissionPrompted).toBe(true);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks MemorySave when permissions.deny matches MemorySave', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-memory-deny-'));
+    try {
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 2 });
+      runtimeConfig.settings.permissions.deny = ['MemorySave'];
+      let turn = 0;
+      let secondTurnPrompt = '';
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* (_config, messages) {
+          turn++;
+          if (turn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'call-1',
+                name: 'MemorySave',
+                arguments: {
+                  action: 'save',
+                  type: 'project',
+                  title: 'Convention',
+                  body: 'A convention.',
+                },
+              },
+            };
+            yield { type: 'done' };
+          } else {
+            secondTurnPrompt = String(messages.at(-1)?.content ?? '');
+            yield { type: 'text', content: 'Blocked noted.' };
+            yield { type: 'done' };
+          }
+        },
+      };
+
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'Remember convention.',
+        [],
+        noopCallbacks(),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(secondTurnPrompt).toContain('Permission denied');
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

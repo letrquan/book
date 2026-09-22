@@ -11,8 +11,10 @@ import {
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  MAX_BODY_CHARS,
   approveMemoryCandidate,
   countMemoryCandidates,
+  deleteMemoryEntry,
   discardMemoryCandidate,
   getMemoryHealth,
   getMemoryInboxDir,
@@ -21,6 +23,10 @@ import {
   listMemoryCandidates,
   listMemoryFiles,
   loadMemoryContext,
+  readMemoryFile,
+  sanitizeMemoryTitle,
+  saveMemory,
+  shouldRejectMemoryText,
   slugifyWorkspace,
   writeMemoryCandidate,
 } from './memory-store.js';
@@ -307,6 +313,413 @@ describe('candidate lifecycle', () => {
 
       expect(countMemoryCandidates(ws, { bookRoot })).toBe(2);
       expect(countMemoryCandidates(ws, { dir: memoryDirOrInbox(ws, bookRoot) })).toBe(2);
+    });
+  });
+
+  describe('provenance schema and round-trip', () => {
+    it('round-trips full provenance fields through frontmatter', () => {
+      const ws = 'C:\\fake\\provenance-rt';
+      const result = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Monorepo conventions',
+          body: 'Use pnpm across all packages.\nWhy: Single lockfile.\nHow to apply: Never run npm install.',
+          origin: 'model-tool',
+          source: 'auto',
+          sessionId: 'session-xyz-456',
+          externalContext: true,
+          evidence: ['rec-turn-1', 'rec-turn-2'],
+          supersedes: 'old-pnpm-slug',
+          confidence: 'high',
+          tags: ['monorepo', 'tooling'],
+        },
+        { bookRoot, now: new Date('2026-09-20T10:00:00Z') },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.status).toBe('approved');
+      expect(result.path).toBeDefined();
+
+      const parsed = readMemoryFile(result.path!);
+      expect(parsed).not.toBeNull();
+      expect(parsed?.type).toBe('project');
+      expect(parsed?.title).toBe('Monorepo conventions');
+      expect(parsed?.origin).toBe('model-tool');
+      expect(parsed?.source).toBe('auto');
+      expect(parsed?.sessionId).toBe('session-xyz-456');
+      expect(parsed?.externalContext).toBe(true);
+      expect(parsed?.evidence).toEqual(['rec-turn-1', 'rec-turn-2']);
+      expect(parsed?.supersedes).toBe('old-pnpm-slug');
+      expect(parsed?.confidence).toBe('high');
+      expect(parsed?.tags).toEqual(['monorepo', 'tooling']);
+      expect(parsed?.status).toBe('approved');
+    });
+
+    it('reads legacy source: auto files and derives origin user-text and externalContext false', () => {
+      const dir = getProjectMemoryDir('C:\\fake\\legacy-auto', { bookRoot });
+      mkdirSync(dir, { recursive: true });
+      const legacyPath = join(dir, 'legacy-auto.md');
+      writeFileSync(
+        legacyPath,
+        [
+          '---',
+          'type: feedback',
+          'source: auto',
+          'status: approved',
+          'created: 2026-05-01T12:00:00Z',
+          '---',
+          '',
+          '# That worked',
+          '',
+          'User confirmed the approach worked.',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const parsed = readMemoryFile(legacyPath);
+      expect(parsed).not.toBeNull();
+      expect(parsed?.type).toBe('feedback');
+      expect(parsed?.title).toBe('That worked');
+      expect(parsed?.origin).toBe('user-text');
+      expect(parsed?.source).toBe('auto');
+      expect(parsed?.externalContext).toBe(false);
+      expect(parsed?.sessionId).toBeUndefined();
+      expect(parsed?.evidence).toBeUndefined();
+    });
+
+    it('reads legacy source: manual files and derives origin user-text', () => {
+      const dir = getProjectMemoryDir('C:\\fake\\legacy-manual', { bookRoot });
+      mkdirSync(dir, { recursive: true });
+      const legacyPath = join(dir, 'legacy-manual.md');
+      writeFileSync(
+        legacyPath,
+        [
+          '---',
+          'type: user',
+          'source: manual',
+          'status: approved',
+          'created: 2026-05-01T12:00:00Z',
+          '---',
+          '',
+          '# User prefers concise answers',
+          '',
+          'Give short answers.',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const parsed = readMemoryFile(legacyPath);
+      expect(parsed).not.toBeNull();
+      expect(parsed?.type).toBe('user');
+      expect(parsed?.title).toBe('User prefers concise answers');
+      expect(parsed?.origin).toBe('user-text');
+      expect(parsed?.source).toBe('manual');
+      expect(parsed?.externalContext).toBe(false);
+    });
+  });
+
+  describe('saveMemory and deleteMemoryEntry', () => {
+    it('writes directly to approved store and index when requireApproval is false', () => {
+      const ws = 'C:\\fake\\direct-save';
+      const result = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Direct save entry',
+          body: 'Content for direct save.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { bookRoot, requireApproval: false, now: new Date('2026-09-20T10:00:00Z') },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.status).toBe('approved');
+      expect(result.path).not.toContain('.inbox');
+      expect(existsSync(result.path!)).toBe(true);
+      expect(result.indexLine).toContain('[Direct save entry]');
+
+      const indexText = readFileSync(
+        join(getProjectMemoryDir(ws, { bookRoot }), 'MEMORY.md'),
+        'utf-8',
+      );
+      expect(indexText).toContain('[Direct save entry]');
+      expect(loadMemoryContext(ws, { bookRoot }).candidates).toHaveLength(0);
+    });
+
+    it('routes to .inbox/ when requireApproval is true', () => {
+      const ws = 'C:\\fake\\inbox-save';
+      const result = saveMemory(
+        ws,
+        {
+          type: 'user',
+          title: 'Inbox review entry',
+          body: 'Needs user approval.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { bookRoot, requireApproval: true, now: new Date('2026-09-20T10:00:00Z') },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.status).toBe('pending');
+      expect(result.path).toContain('.inbox');
+      expect(result.indexLine).toBeUndefined();
+
+      expect(existsSync(join(getProjectMemoryDir(ws, { bookRoot }), 'MEMORY.md'))).toBe(false);
+      expect(loadMemoryContext(ws, { bookRoot }).candidates).toHaveLength(1);
+    });
+
+    it('updates an existing entry by slug, preserving created and rewriting index line', () => {
+      const ws = 'C:\\fake\\slug-update';
+      const initial = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Initial title',
+          body: 'Initial body.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { bookRoot, slug: 'conventions.md', now: new Date('2026-09-01T10:00:00Z') },
+      );
+      expect(initial.ok).toBe(true);
+
+      const updated = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Updated title',
+          body: 'Updated body content.',
+          origin: 'model-tool',
+          externalContext: true,
+        },
+        { bookRoot, slug: 'conventions.md', now: new Date('2026-09-20T10:00:00Z') },
+      );
+      expect(updated.ok).toBe(true);
+
+      const parsed = readMemoryFile(updated.path!);
+      expect(parsed?.created).toBe('2026-09-01T10:00:00.000Z');
+      expect(parsed?.updated).toBe('2026-09-20T10:00:00.000Z');
+      expect(parsed?.title).toBe('Updated title');
+      expect(parsed?.externalContext).toBe(true);
+
+      const indexText = readFileSync(
+        join(getProjectMemoryDir(ws, { bookRoot }), 'MEMORY.md'),
+        'utf-8',
+      );
+      expect(indexText).toContain('[Updated title](conventions.md)');
+      expect(indexText).not.toContain('[Initial title]');
+    });
+
+    it('deletes an entry and removes its index line', () => {
+      const ws = 'C:\\fake\\delete-entry';
+      const saved = saveMemory(
+        ws,
+        {
+          type: 'reference',
+          title: 'Doc link',
+          body: 'Reference url: https://example.com',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { bookRoot, slug: 'doc-link.md' },
+      );
+      expect(saved.ok).toBe(true);
+
+      const del = deleteMemoryEntry(ws, 'doc-link.md', { bookRoot });
+      expect(del.ok).toBe(true);
+      expect(existsSync(saved.path!)).toBe(false);
+
+      const indexText = readFileSync(
+        join(getProjectMemoryDir(ws, { bookRoot }), 'MEMORY.md'),
+        'utf-8',
+      );
+      expect(indexText).not.toContain('doc-link.md');
+    });
+
+    it('rejects deletion of missing files, traversal paths, and MEMORY.md', () => {
+      const ws = 'C:\\fake\\delete-guards';
+      expect(deleteMemoryEntry(ws, 'nonexistent.md', { bookRoot }).ok).toBe(false);
+      expect(deleteMemoryEntry(ws, 'MEMORY.md', { bookRoot }).ok).toBe(false);
+      expect(deleteMemoryEntry(ws, 'memory.md', { bookRoot }).ok).toBe(false);
+      expect(deleteMemoryEntry(ws, '../../escape.md', { bookRoot }).ok).toBe(false);
+    });
+
+    it('rejects saving to index file case-insensitively', () => {
+      const ws = 'C:\\fake\\index-case';
+      expect(
+        saveMemory(
+          ws,
+          { type: 'project', title: 'Test', body: 'Body' },
+          { bookRoot, slug: 'memory.md' },
+        ).ok,
+      ).toBe(false);
+      expect(
+        saveMemory(
+          ws,
+          { type: 'project', title: 'Test', body: 'Body' },
+          { bookRoot, slug: 'MEMORY.MD' },
+        ).ok,
+      ).toBe(false);
+    });
+
+    it('refuses to overwrite symlinked memory file', () => {
+      const ws = 'C:\\fake\\symlink-save';
+      const dir = getProjectMemoryDir(ws, { bookRoot });
+      mkdirSync(dir, { recursive: true });
+      const target = join(bookRoot, 'target.md');
+      writeFileSync(target, '# Outside target', 'utf-8');
+      const symlinkFile = join(dir, 'link.md');
+      try {
+        symlinkSync(target, symlinkFile);
+        const result = saveMemory(
+          ws,
+          { type: 'project', title: 'Symlink attack', body: 'Evil' },
+          { bookRoot, slug: 'link.md' },
+        );
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain('Refusing to overwrite symlinked memory file');
+      } catch {
+        // Symlink creation might not be permitted on some Windows configs
+      }
+    });
+
+    it('preserves targetSlug when requireApproval is true and approve overwrites original with one index entry', () => {
+      const ws = 'C:\\fake\\approval-slug';
+      // First, write and approve initial memory
+      const initial = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Original Conventions',
+          body: 'Original content.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { bookRoot, slug: 'custom-slug.md', now: new Date('2026-09-01T10:00:00Z') },
+      );
+      expect(initial.ok).toBe(true);
+
+      // Now save an update with requireApproval: true and the same slug
+      const candidateResult = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Updated Conventions',
+          body: 'Updated approved content.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        {
+          bookRoot,
+          slug: 'custom-slug.md',
+          requireApproval: true,
+          now: new Date('2026-09-20T10:00:00Z'),
+        },
+      );
+      expect(candidateResult.ok).toBe(true);
+      expect(candidateResult.status).toBe('pending');
+      expect(candidateResult.path).toContain('.inbox');
+
+      // Verify the candidate file has targetSlug in frontmatter
+      const candParsed = readMemoryFile(candidateResult.path!);
+      expect(candParsed?.targetSlug).toBe('custom-slug.md');
+
+      // Approve the candidate
+      const approved = approveMemoryCandidate(ws, candidateResult.path!, {
+        bookRoot,
+        now: new Date('2026-09-20T11:00:00Z'),
+      });
+      expect(approved.ok).toBe(true);
+      expect(approved.path).toContain('custom-slug.md');
+
+      // Verify original was overwritten, created timestamp preserved, and index has exactly one line
+      const finalParsed = readMemoryFile(approved.path!);
+      expect(finalParsed?.title).toBe('Updated Conventions');
+      expect(finalParsed?.created).toBe('2026-09-01T10:00:00.000Z');
+
+      const indexText = readFileSync(
+        join(getProjectMemoryDir(ws, { bookRoot }), 'MEMORY.md'),
+        'utf-8',
+      );
+      const lines = indexText.split('\n').filter((l) => l.includes('custom-slug.md'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('[Updated Conventions](custom-slug.md)');
+      expect(indexText).not.toContain('[Original Conventions]');
+    });
+  });
+
+  describe('title sanitization', () => {
+    it('sanitizes titles with newlines, control characters, brackets, and leading hashes', () => {
+      expect(sanitizeMemoryTitle('My title\nstatus: discarded')).toBe('My title status: discarded');
+      expect(sanitizeMemoryTitle('Evil title](http://evil.com) [foo')).toBe(
+        'Evil titlehttp://evil.com foo',
+      );
+      expect(sanitizeMemoryTitle('### Leading hashes')).toBe('Leading hashes');
+      expect(sanitizeMemoryTitle('   \t\r\n   ')).toBe('');
+    });
+
+    it('produces clean frontmatter, heading, and index line for malicious title inputs', () => {
+      const ws = 'C:\\fake\\sanitize-title';
+      const result = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Malicious title\nstatus: discarded\nfoo: bar](evil.com)[',
+          body: 'Safe body content.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { bookRoot, slug: 'sanitized.md' },
+      );
+      expect(result.ok).toBe(true);
+
+      const raw = readFileSync(result.path!, 'utf-8');
+      expect(raw).not.toMatch(/\nstatus: discarded\n/);
+      expect(raw).toContain('# Malicious title status: discarded foo: barevil.com');
+
+      const indexText = readFileSync(
+        join(getProjectMemoryDir(ws, { bookRoot }), 'MEMORY.md'),
+        'utf-8',
+      );
+      expect(indexText).toContain(
+        '[Malicious title status: discarded foo: barevil.com](sanitized.md)',
+      );
+      // Markdown link is not broken; contains only the single valid markdown link
+      expect(indexText.match(/\]\(/g)).toHaveLength(1);
+    });
+
+    it('rejects memory writes when title is empty after sanitizing', () => {
+      const ws = 'C:\\fake\\empty-title';
+      expect(
+        saveMemory(
+          ws,
+          { type: 'project', title: '   [ ] ( ) # \n\t  ', body: 'Body' },
+          { bookRoot },
+        ).ok,
+      ).toBe(false);
+    });
+  });
+
+  describe('shouldRejectMemoryText', () => {
+    it('rejects empty text and overly long text', () => {
+      expect(shouldRejectMemoryText('')).toBe('empty');
+      expect(shouldRejectMemoryText('   ')).toBe('empty');
+      expect(shouldRejectMemoryText('a'.repeat(MAX_BODY_CHARS * 2 + 10))).toBe('too long');
+    });
+
+    it('rejects secrets via looksLikeSecretOrUnfit', () => {
+      expect(shouldRejectMemoryText('-----BEGIN OPENSSH PRIVATE KEY-----')).not.toBeNull();
+      expect(shouldRejectMemoryText('api_key=sk-1234567890abcdef12345678')).not.toBeNull();
+      expect(shouldRejectMemoryText('ghp_' + 'A'.repeat(36))).not.toBeNull();
+    });
+
+    it('accepts legitimate memory text', () => {
+      expect(shouldRejectMemoryText('We use Vitest for unit testing.')).toBeNull();
     });
   });
 });

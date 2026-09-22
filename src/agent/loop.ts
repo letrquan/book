@@ -52,7 +52,6 @@ import {
 } from '../tools/capability-rules.js';
 import { createDebugLogger } from '../debug-log.js';
 import { isUnclosedReasoningOnly, stripReasoningTags } from '../reasoning-tags.js';
-import { maybeCaptureMemoryCandidate } from '../memory-autosave.js';
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import {
@@ -200,6 +199,7 @@ export async function runAgentLoop(
     agentId?: string;
     agentRole?: import('../agents/types.js').AgentRole;
     parentSessionId?: string;
+    sessionId?: string;
     /** Non-owning managed-agent coordinator used by child-only evidence tools. */
     agentManager?: ToolContext['agentManager'];
     /** Mutable resources owned by the logical session. */
@@ -468,36 +468,6 @@ export async function runAgentLoop(
     timestamp: options?.userMessageTimestamp ?? Date.now(),
   });
 
-  if (!options?.isSubagent && !options?.skipUserPromptHooks) {
-    try {
-      let previousAssistant: string | undefined;
-      for (let i = history.length - 1; i >= 0; i--) {
-        if (history[i].role === 'assistant' && history[i].includeInContext) {
-          previousAssistant = history[i].content;
-          break;
-        }
-      }
-      const memoryCapture = maybeCaptureMemoryCandidate({
-        workspace: config.workspace,
-        settings: config.settings,
-        userMessage: effectivePrompt,
-        previousAssistant,
-      });
-      if (memoryCapture.saved && memoryCapture.candidate) {
-        const notice = `memory candidate saved: ${memoryCapture.candidate.title} — /memory inbox`;
-        callbacks.onNotice?.(notice);
-        log.info('memory candidate captured', {
-          path: memoryCapture.path,
-          title: memoryCapture.candidate.title,
-        });
-      }
-    } catch (e) {
-      log.warn('memory candidate capture failed', {
-        error: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }
-
   const initialMode = mode as PermissionMode;
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
@@ -528,9 +498,12 @@ export async function runAgentLoop(
     agentId: options?.agentId,
     agentRole: options?.agentRole,
     parentSessionId: options?.parentSessionId,
+    sessionId: options?.sessionId ?? options?.runContext?.sessionId ?? options?.parentSessionId,
     runContext: options?.runContext,
     onAgentEvent: callbacks.onAgentEvent,
     onHookEvent: callbacks.onHookEvent,
+    onNotice: callbacks.onNotice,
+    usedToolNames: runtime.usedToolNames,
     runtime,
   };
   const toolSurface = createToolSurface({
@@ -1898,8 +1871,8 @@ export async function runAgentLoop(
         // while `deny: ["Write(.env)"]` in the same list held. Modes decide
         // whether the user is *asked*; they do not decide whether a rule the user
         // already wrote applies.
-        const hardDeny = evaluatePermissionDetail(canonName, call.arguments, config.settings);
-        if (hardDeny.decision === 'deny') {
+        const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
+        if (verdict.decision === 'deny') {
           // Consent was requested a few lines up; close it out, or the registry
           // keeps an activation request that never resolves. The later
           // permission-block deny does the same.
@@ -1910,30 +1883,32 @@ export async function runAgentLoop(
             toolCallId: call.id,
             code: 'permission_denied',
             status: 'blocked',
-            content: permissionDeniedError(canonName, hardDeny.matchedRule),
+            content: permissionDeniedError(canonName, verdict.matchedRule),
           });
           return undefined;
         }
 
+        const userRuleAsked = verdict.decision === 'ask' && verdict.source === 'ask';
+
         if (
-          (forceSkillPermission ||
+          (userRuleAsked ||
+            forceSkillPermission ||
             requiresToolPermission(effectiveMode, persistentBackgroundShell)) &&
           (persistentBackgroundShell ||
             !approveAllRules.some((rule) => permissionRuleMatchesCall(rule, call))) &&
-          !autoSafeTool &&
+          (!autoSafeTool || userRuleAsked) &&
           (effectiveMode !== 'plan' || planReadOnly)
         ) {
           const autoApproved = effectiveMode === 'accept-edits' && isFileMutatingTool(canonName);
-          if (!autoApproved) {
+          if (!autoApproved || userRuleAsked) {
             let permission: 'allow' | 'deny' | 'always' | undefined;
             let chosenRule: string | undefined;
             if (
+              !userRuleAsked &&
               (forceSkillPermission || effectiveMode !== 'dontAsk') &&
               !persistentBackgroundShell
             ) {
-              const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
               if (verdict.decision === 'allow') permission = 'allow';
-              else if (verdict.decision === 'deny') permission = 'deny';
             }
             if (permission === undefined && effectiveMode !== 'dontAsk') {
               const decision = await callbacks.onPermissionRequired(call);
@@ -1951,12 +1926,16 @@ export async function runAgentLoop(
                   effectiveMode === 'dontAsk' ? 'dont_ask' : 'user_denied',
                 );
               }
-              const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
+              const currentVerdict = evaluatePermissionDetail(
+                canonName,
+                call.arguments,
+                config.settings,
+              );
               toolResults[callIndex] = toolFailure('SKIPPED: Permission denied', {
                 toolCallId: call.id,
                 code: 'permission_denied',
                 status: 'blocked',
-                content: permissionDeniedError(canonName, verdict.matchedRule),
+                content: permissionDeniedError(canonName, currentVerdict.matchedRule),
               });
               return undefined;
             }
@@ -2019,6 +1998,7 @@ export async function runAgentLoop(
 
       const executeToolCall = async (entry: PreparedLoopCall): Promise<ToolResult> => {
         const toolStartMs = clock.monotonicNowMs();
+        runtime.usedToolNames.add(entry.canonName);
         log.debug('tool start', {
           name: entry.canonName,
           id: entry.call.id,

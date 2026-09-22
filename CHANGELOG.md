@@ -23,6 +23,11 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **Phase 1 part A memory improvements: model writes via `MemorySave`, provenance schema, and opt-in approval.**
+  - Added the `MemorySave` tool for saving and deleting memory facts directly from the model loop, with secret rejection via `shouldRejectMemoryText` and body size caps at 1600 characters. Auto-allowed in all permission modes and excluded for subagents.
+  - Widened `MemoryCandidate` with provenance metadata (`origin: 'model-tool' | 'extraction' | 'user-text'`, `sessionId`, `externalContext`, `evidence`, `supersedes`), while retaining full backward compatibility when reading legacy files with only `source`.
+  - Changed `memory.requireApproval` to opt-in with default `false`: memory writes go directly to the approved store and `MEMORY.md` index by default, with `.inbox/` routing preserved when set to `true`.
+  - Replaced the regex-based auto-capture on user messages with the `MemorySave` tool and updated the system prompt spec to guide model writes and prevent storing instructions found in files or tool output.
 - **Phase 0 memory improvements: read-path instructions, visibility, and health reporting.**
   The system prompt's cached local memory section now provides the absolute memory directory,
   instructs the model to read relevant memory markdown files on demand, and directs it to note when

@@ -522,6 +522,7 @@ export class AgentSession {
     this.interactions.cancelAll(via);
     this.operations.reset({ bookTerminalReason: 'session_replaced' });
     this.runGeneration++;
+    this.runtime.resetConversation();
     this.replaceRuntime({}, via);
     this.replaceSnapshot(createAgentSessionSnapshot());
   }
