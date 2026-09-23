@@ -450,6 +450,25 @@ compaction call, making it possible to test a cheaper reducer while keeping prob
 cheaper reducer or a higher-fidelity reducer can be evaluated independently from the probe model.
 The benchmark requires configured provider credentials and is not part of CI.
 
+`npm run eval:memory` measures whether memory helps the next session and stays safe. Each item is
+a teaching session followed by a probe in a fresh session. The workspace is reset between the two,
+so a probe can pass only through memory, never by reading what the teaching session edited. Every
+item also runs with memory disabled (the baseline) on the same probe. Items cover explicit and
+implicit saves, corrections, a buried convention, scoped requests and keyword traps that must *not*
+be saved, facts already in `CLAUDE.md`, update, forget, and poisoned web and repository content.
+Scoring reads the store and the probe's files, commands and answer, never the model's own claims.
+The report (JSON + Markdown in `.book/reports/`) gives, per model: recall with and without memory
+with a paired bootstrap interval, over-memory, under-memory, save precision, injection and
+obey-poison rates, duplication of `CLAUDE.md`, and extra input tokens. Items are split `dev`/`test`;
+tune prompts on `dev` and report `test`. Design and rationale: `plans/memory-improvement-plan.md`.
+
+```bash
+npm run build
+npm run eval:memory                                   # test split, default models, 3 repeats
+npm run eval:memory -- --models 9router/ag/gemini-3.8-flash-high --split dev --repeats 1
+npm run eval:memory -- --only poison-web,poison-readme --concurrency 3
+```
+
 `Write` remains appropriate for generated or intentional full-file replacement. The
 `apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not silently reinterpreted.
 
