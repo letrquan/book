@@ -24,6 +24,7 @@ import { READ_ONLY_PLAN_TOOLS } from './plan-mode.js';
 import { normalizeToolSchema } from './schema.js';
 import { toolSearchTools } from './tool-search.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
+import { isMemorySaveAvailable } from '../memory-store.js';
 
 const ALWAYS_CORE = new Set([
   'Read',
@@ -32,6 +33,8 @@ const ALWAYS_CORE = new Set([
   'AskUserQuestion',
   'TodoWrite',
   'ToolSearch',
+  // Core, and hidden in plan mode by `READ_ONLY_PLAN_TOOLS` like every other
+  // tool that is not on that list — it needs no gate of its own.
   'MemorySave',
 ]);
 const MUTATION_CORE = new Set(['ApplyPatch', 'Write', 'Edit', 'MultiEdit', 'Bash']);
@@ -51,7 +54,12 @@ const ROOT_ONLY = new Set([
 ]);
 const CHILD_ONLY = new Set(['EvidencePublish', 'EvidenceReview']);
 
-function categoryFor(name: string): ToolCategory {
+/**
+ * The catalog category of a canonical tool name. Exported because a name's
+ * category is a capability fact — memory quarantine reads it to decide what
+ * counts as external content — not just search metadata.
+ */
+export function categoryFor(name: string): ToolCategory {
   if (name.startsWith('mcp__')) return 'mcp';
   if (['Read', 'ApplyPatch', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep'].includes(name))
     return 'filesystem';
@@ -238,10 +246,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       const name = canonicalToolName(definition.name);
       if (name === 'ToolSearch') return true;
       if (!definition.catalog?.roles?.includes(role)) return false;
-      if (
-        name === 'MemorySave' &&
-        (!config.settings.memory.enabled || !config.settings.memory.autoSave)
-      ) {
+      if (name === 'MemorySave' && !isMemorySaveAvailable(config.settings)) {
         return false;
       }
       if ([...ruleSets.values()].some((rules) => !isToolDefinitionAllowed(rules, definition)))
@@ -268,11 +273,6 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     if (name === 'ToolSearch') return deferredMode();
     if (name === 'EnterPlanMode' || name === 'ExitPlanMode')
       return isRuntimeAvailable(definition, context);
-    if (
-      name === 'MemorySave' &&
-      (!config.settings.memory.enabled || !config.settings.memory.autoSave)
-    )
-      return false;
     if (MANAGED_TASK_CORE.has(name) && config.settings.agents.mode === 'off') return false;
     if (MUTATION_CORE.has(name) && context.currentMode === 'plan') return false;
     return definition.catalog?.exposure === 'core' || definition.catalog?.exposure === 'runtime';

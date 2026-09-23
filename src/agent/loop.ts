@@ -37,6 +37,7 @@ import {
   type ModelWindowStore,
 } from '../model-window-store.js';
 import {
+  ALWAYS_ALLOWED_TOOLS,
   evaluatePermissionDetail,
   permissionResultOf,
   permissionRuleForToolCall,
@@ -296,7 +297,7 @@ export async function runAgentLoop(
   const hasPartialOutput = (): boolean => assistantOutputProduced;
   const retry = config.retry;
   const ownsRuntime = !options?.runtime;
-  const runtime = options?.runtime ?? new SessionRuntime();
+  const runtime = options?.runtime ?? new SessionRuntime({ history });
   runtime.toolExecutionScheduler.setLimit(config.settings.toolExecution.maxConcurrent);
   runtime.agentContextCache.beginTurn();
   if (!registry.getTool('ToolSearch')) registry.registerAll(toolSearchTools);
@@ -879,6 +880,7 @@ export async function runAgentLoop(
           append: options?.systemPromptAppend,
           dynamicPolicy: dynamicPolicy(turn),
           hideAgents: options?.hideAgents,
+          isSubagent: options?.isSubagent,
           toolCatalogSummary: toolSurface.catalogSummary(),
           planMode: effectiveMode === 'plan',
           planUnrestored: runtime.planUnrestored,
@@ -900,6 +902,7 @@ export async function runAgentLoop(
             append: options?.systemPromptAppend,
             dynamicPolicy: dynamicPolicy(turn),
             hideAgents: options?.hideAgents,
+            isSubagent: options?.isSubagent,
             toolCatalogSummary: toolSurface.catalogSummary(),
             planMode: effectiveMode === 'plan',
             planUnrestored: runtime.planUnrestored,
@@ -1888,12 +1891,15 @@ export async function runAgentLoop(
           return undefined;
         }
 
-        const userRuleAsked = verdict.decision === 'ask' && verdict.source === 'ask';
+        const toolPermissionRequired = requiresToolPermission(
+          effectiveMode,
+          persistentBackgroundShell,
+        );
+        const userRuleAsked =
+          toolPermissionRequired && verdict.decision === 'ask' && verdict.source === 'ask';
 
         if (
-          (userRuleAsked ||
-            forceSkillPermission ||
-            requiresToolPermission(effectiveMode, persistentBackgroundShell)) &&
+          (userRuleAsked || forceSkillPermission || toolPermissionRequired) &&
           (persistentBackgroundShell ||
             !approveAllRules.some((rule) => permissionRuleMatchesCall(rule, call))) &&
           (!autoSafeTool || userRuleAsked) &&
@@ -1903,9 +1909,14 @@ export async function runAgentLoop(
           if (!autoApproved || userRuleAsked) {
             let permission: 'allow' | 'deny' | 'always' | undefined;
             let chosenRule: string | undefined;
+            // A tool on the always-allowed list is never prompted for in any
+            // mode, so `dontAsk` — which refuses what it cannot ask about —
+            // has nothing to refuse. A `deny` rule already returned above, and
+            // an `ask` rule still lands on the deny below rather than a prompt.
+            const autoAllowed = ALWAYS_ALLOWED_TOOLS.has(canonName);
             if (
               !userRuleAsked &&
-              (forceSkillPermission || effectiveMode !== 'dontAsk') &&
+              (forceSkillPermission || effectiveMode !== 'dontAsk' || autoAllowed) &&
               !persistentBackgroundShell
             ) {
               if (verdict.decision === 'allow') permission = 'allow';

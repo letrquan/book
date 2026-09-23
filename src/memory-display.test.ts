@@ -8,6 +8,7 @@ import {
   getMemoryInboxDir,
   getProjectMemoryDir,
   loadMemoryContext,
+  saveMemory,
   writeMemoryCandidate,
 } from './memory-store.js';
 import { DEFAULT_SETTINGS } from './settings.js';
@@ -28,7 +29,9 @@ describe('buildMemoryReport', () => {
     const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
     expect(report).toContain('Loaded index: none found');
     expect(report).toContain('Pending candidates: 0');
-    expect(report).toContain('Model writes: enabled (direct to store)');
+    expect(report).toContain(
+      'Model writes: enabled (direct to store; to inbox after external content)',
+    );
   });
 
   it('lists approved memory and reports the line cap', () => {
@@ -106,28 +109,26 @@ describe('buildMemoryReport', () => {
     );
   });
 
-  it('reads inbox count from disk even when given a stale session-start snapshot', () => {
-    const initialContext = loadMemoryContext(workspace, { bookRoot });
-    expect(initialContext.candidates).toHaveLength(0);
+  it('reads the store from disk so a memory saved in-session shows up at once', () => {
+    // The session-start snapshot, taken before anything was written.
+    const sessionStart = loadMemoryContext(workspace, { bookRoot });
+    expect(sessionStart.files).toHaveLength(0);
 
-    writeMemoryCandidate(
+    saveMemory(
       workspace,
       {
-        type: 'user',
-        title: 'Fresh candidate',
-        body: 'Fresh candidate body.',
-        source: 'auto',
+        type: 'project',
+        title: 'Fresh fact',
+        body: 'Fresh fact body.',
+        origin: 'model-tool',
+        externalContext: false,
       },
-      { bookRoot },
+      { bookRoot, slug: 'fresh-fact.md' },
     );
 
-    const report = buildMemoryReport({
-      workspace,
-      bookRoot,
-      settings: DEFAULT_SETTINGS,
-      loaded: initialContext,
-    });
-    expect(report).toMatch(/Health: \d+ approved, 1 inbox/);
+    const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
+    expect(report).toContain('Fresh fact (project)');
+    expect(report).toMatch(/Health: 1 approved, 0 inbox/);
   });
 
   it('renders paths in inline code spans so marked preserves backslashes', () => {

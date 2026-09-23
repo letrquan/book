@@ -243,6 +243,7 @@ function createSeededRuntime(
 ): SessionRuntime {
   const runtime = new SessionRuntime({
     fileObservationLedger: buildObservationLedger(initialTranscript),
+    history: initialTranscript,
   });
   runtime.todos.push(...normalizePersistedTodos(session.plan?.todos));
   if (session.plan?.tasks?.length) runtime.tasks.push(...session.plan.tasks);
@@ -498,7 +499,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setRetryMax(0);
       setRetryCountdownMs(0);
       const nextRuntime = agentSession.replaceRuntime(
-        { fileObservationLedger: buildObservationLedger(transcript) },
+        {
+          fileObservationLedger: buildObservationLedger(transcript),
+          // The projected conversation is the runtime's: a resumed or rewound
+          // session keeps the tool history that memory quarantine reads.
+          history: transcript,
+        },
         'session_transition',
       );
       // `replaceRuntime` hands back empty lists, so without this a transition into
@@ -534,7 +540,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       opts: { preserveOperation?: boolean } = {},
     ) => {
       prepareConversationProjection();
-      agentSession.getRuntime().resetConversation();
       if (opts.preserveOperation) interactions.cancelAll('session-reset');
       else agentSession.reset('session-reset');
       projectConversationState(nextId, nextName, transcript, contextHistory, boundaries, targets);
@@ -550,7 +555,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
   const startNewConversation = useCallback(
     async (previousName?: string) => {
-      agentSession.getRuntime().resetConversation();
       await agentSession.clearSession({
         config: liveConfigRef.current,
         currentSessionId: sessionIdRef.current,
@@ -866,32 +870,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 break;
               case 'tool_result':
                 activeAccumulator?.addToolResult(event.toolResult);
-                if (
-                  event.toolResult.data &&
-                  typeof event.toolResult.data === 'object' &&
-                  'memorySaved' in event.toolResult.data
-                ) {
-                  setLiveConfig((c) => ({
-                    ...c,
-                    memoryContext: c.settings.memory.enabled
-                      ? loadMemoryContext(config.workspace)
-                      : undefined,
-                  }));
-                }
                 break;
               case 'notice':
                 appendLocalMessage(event.message);
-                if (
-                  event.message.startsWith('memory saved:') ||
-                  event.message.startsWith('memory candidate saved:')
-                ) {
-                  setLiveConfig((c) => ({
-                    ...c,
-                    memoryContext: c.settings.memory.enabled
-                      ? loadMemoryContext(config.workspace)
-                      : undefined,
-                  }));
-                }
                 break;
               case 'attempt_discarded': {
                 // Land anything still queued before clearing, or it would flush

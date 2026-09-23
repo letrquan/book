@@ -16,10 +16,11 @@ import { formatSettingsKeyHelp } from '../settings-repository.js';
 import { buildMemoryInboxReport, buildMemoryReport } from '../memory-display.js';
 import {
   approveMemoryCandidate,
+  deleteMemoryEntry,
   discardMemoryCandidate,
   getProjectMemoryDir,
   listMemoryCandidates,
-  loadMemoryContext,
+  type MemoryFileSummary,
 } from '../memory-store.js';
 import { costReport, failureTotal, PRICING, usageReport, type DelegatedUsage } from '../pricing.js';
 import { buildContextBreakdown, buildContextReport, sourceLabel } from '../context-report.js';
@@ -393,12 +394,12 @@ function scopeFlagFor(scope: SettingsScope): string {
   return scope === 'user' ? '--global' : `--${scope}`;
 }
 
-function resolveMemoryCandidate(workspace: string, raw: string): string | undefined {
+/** A `<n|file>` argument: an index into a listing, or the name itself. */
+function resolveMemoryTarget(list: MemoryFileSummary[], raw: string): string | undefined {
   if (!raw) return undefined;
-  const candidates = listMemoryCandidates(workspace);
   const index = Number(raw);
-  if (Number.isInteger(index) && index >= 1 && index <= candidates.length) {
-    return candidates[index - 1].name;
+  if (Number.isInteger(index) && index >= 1 && index <= list.length) {
+    return list[index - 1].name;
   }
   return raw;
 }
@@ -408,15 +409,13 @@ function memoryCommandEffect(
   context: BuiltinCommandContext,
 ): BuiltinCommandEffect {
   if (!rawArguments || rawArguments === 'status') {
-    const loaded = context.runtimeConfig.settings.memory.enabled
-      ? (context.runtimeConfig.memoryContext ?? loadMemoryContext(context.workspace))
-      : undefined;
+    // Read from disk rather than the session-start snapshot: a memory saved
+    // mid-session must show up here, not at the next start.
     return {
       type: 'local-message',
       content: buildMemoryReport({
         workspace: context.workspace,
         settings: context.runtimeConfig.settings,
-        loaded,
       }),
     };
   }
@@ -437,8 +436,8 @@ function memoryCommandEffect(
   }
   if (rawArguments.startsWith('approve ') || rawArguments.startsWith('discard ')) {
     const approve = rawArguments.startsWith('approve ');
-    const target = resolveMemoryCandidate(
-      context.workspace,
+    const target = resolveMemoryTarget(
+      listMemoryCandidates(context.workspace),
       rawArguments.slice(approve ? 'approve '.length : 'discard '.length).trim(),
     );
     const result = target
@@ -454,9 +453,24 @@ function memoryCommandEffect(
       refreshMemory: result.ok && approve,
     };
   }
+  if (rawArguments === 'delete' || rawArguments.startsWith('delete ')) {
+    // A file name only: numbering can shift between `/memory status` and this
+    // command — a model write lands in the store mid-session — and deleting the
+    // wrong entry is not a mistake the user can see coming.
+    const target = rawArguments.slice('delete'.length).trim();
+    const result = target
+      ? deleteMemoryEntry(context.workspace, target)
+      : { ok: false as const, error: 'Usage: /memory delete <file>' };
+    return {
+      type: 'local-message',
+      content: result.ok ? `Deleted memory → \`${result.path}\`` : `✕ ${result.error}`,
+      refreshMemory: result.ok,
+    };
+  }
   return {
     type: 'local-message',
-    content: 'Usage: /memory [status|inbox|approve <n|file>|discard <n|file>|on|off|path]',
+    content:
+      'Usage: /memory [status|inbox|approve <n|file>|discard <n|file>|delete <file>|on|off|path]',
   };
 }
 
@@ -739,7 +753,7 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   {
     name: 'memory',
     description: 'Manage auto-memory',
-    argumentHint: '[status|inbox|approve|discard|on|off|path]',
+    argumentHint: '[status|inbox|approve|discard|delete|on|off|path]',
     execute: ({ rawArguments }, context) => memoryCommandEffect(rawArguments, context),
   },
   {

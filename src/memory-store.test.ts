@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import {
   MAX_BODY_CHARS,
   approveMemoryCandidate,
@@ -24,6 +24,7 @@ import {
   listMemoryFiles,
   loadMemoryContext,
   readMemoryFile,
+  sanitizeMemorySlug,
   sanitizeMemoryTitle,
   saveMemory,
   shouldRejectMemoryText,
@@ -330,11 +331,10 @@ describe('candidate lifecycle', () => {
           sessionId: 'session-xyz-456',
           externalContext: true,
           evidence: ['rec-turn-1', 'rec-turn-2'],
-          supersedes: 'old-pnpm-slug',
           confidence: 'high',
           tags: ['monorepo', 'tooling'],
         },
-        { bookRoot, now: new Date('2026-09-20T10:00:00Z') },
+        { bookRoot, quarantineExternal: false, now: new Date('2026-09-20T10:00:00Z') },
       );
 
       expect(result.ok).toBe(true);
@@ -350,7 +350,6 @@ describe('candidate lifecycle', () => {
       expect(parsed?.sessionId).toBe('session-xyz-456');
       expect(parsed?.externalContext).toBe(true);
       expect(parsed?.evidence).toEqual(['rec-turn-1', 'rec-turn-2']);
-      expect(parsed?.supersedes).toBe('old-pnpm-slug');
       expect(parsed?.confidence).toBe('high');
       expect(parsed?.tags).toEqual(['monorepo', 'tooling']);
       expect(parsed?.status).toBe('approved');
@@ -419,6 +418,40 @@ describe('candidate lifecycle', () => {
       expect(parsed?.source).toBe('manual');
       expect(parsed?.externalContext).toBe(false);
     });
+
+    it('resolves a legacy targetSlug with a path prefix to its file name', () => {
+      const ws = 'C:\\fake\\legacy-target-slug';
+      const inbox = getMemoryInboxDir(ws, { bookRoot });
+      mkdirSync(inbox, { recursive: true });
+      const candidatePath = join(inbox, 'legacy-candidate.md');
+      writeFileSync(
+        candidatePath,
+        [
+          '---',
+          'type: project',
+          'source: auto',
+          'status: pending',
+          'targetSlug: notes/build',
+          'created: 2026-05-01T12:00:00Z',
+          '---',
+          '',
+          '# Build conventions',
+          '',
+          'Run npm run build.',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      // The slug names a file in the memory directory, so the last segment is
+      // the file name — sanitizing alone would have glued the segments together
+      // into `notesbuild.md`.
+      expect(readMemoryFile(candidatePath)?.targetSlug).toBe('build');
+
+      const approved = approveMemoryCandidate(ws, candidatePath, { bookRoot });
+      expect(approved.ok).toBe(true);
+      expect(approved.path).toBe(join(getProjectMemoryDir(ws, { bookRoot }), 'build.md'));
+    });
   });
 
   describe('saveMemory and deleteMemoryEntry', () => {
@@ -473,6 +506,75 @@ describe('candidate lifecycle', () => {
       expect(loadMemoryContext(ws, { bookRoot }).candidates).toHaveLength(1);
     });
 
+    it('quarantines candidate to .inbox/ when externalContext is true, even if requireApproval is false', () => {
+      const ws = 'C:\\fake\\quarantine-ext';
+      const result = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'External context fact',
+          body: 'Learned from web.',
+          origin: 'model-tool',
+          externalContext: true,
+        },
+        { bookRoot, requireApproval: false, now: new Date('2026-09-20T10:00:00Z') },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.status).toBe('pending');
+      expect(result.quarantined).toBe(true);
+      expect(result.path).toContain('.inbox');
+      expect(existsSync(join(getProjectMemoryDir(ws, { bookRoot }), 'MEMORY.md'))).toBe(false);
+      expect(loadMemoryContext(ws, { bookRoot }).candidates).toHaveLength(1);
+    });
+
+    it('approves directly when externalContext is false and requireApproval is false', () => {
+      const ws = 'C:\\fake\\internal-direct';
+      const result = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Internal context fact',
+          body: 'Learned from repo.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { bookRoot, requireApproval: false, now: new Date('2026-09-20T10:00:00Z') },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.status).toBe('approved');
+      expect(result.path).not.toContain('.inbox');
+      expect(existsSync(join(getProjectMemoryDir(ws, { bookRoot }), 'MEMORY.md'))).toBe(true);
+      expect(loadMemoryContext(ws, { bookRoot }).candidates).toHaveLength(0);
+    });
+
+    it('approves directly even with externalContext true when quarantineExternal is false', () => {
+      const ws = 'C:\\fake\\quarantine-disabled';
+      const result = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Unquarantined external fact',
+          body: 'Learned from web but quarantine disabled.',
+          origin: 'model-tool',
+          externalContext: true,
+        },
+        {
+          bookRoot,
+          requireApproval: false,
+          quarantineExternal: false,
+          now: new Date('2026-09-20T10:00:00Z'),
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.status).toBe('approved');
+      expect(result.path).not.toContain('.inbox');
+      expect(existsSync(join(getProjectMemoryDir(ws, { bookRoot }), 'MEMORY.md'))).toBe(true);
+      expect(loadMemoryContext(ws, { bookRoot }).candidates).toHaveLength(0);
+    });
+
     it('updates an existing entry by slug, preserving created and rewriting index line', () => {
       const ws = 'C:\\fake\\slug-update';
       const initial = saveMemory(
@@ -497,7 +599,12 @@ describe('candidate lifecycle', () => {
           origin: 'model-tool',
           externalContext: true,
         },
-        { bookRoot, slug: 'conventions.md', now: new Date('2026-09-20T10:00:00Z') },
+        {
+          bookRoot,
+          slug: 'conventions.md',
+          quarantineExternal: false,
+          now: new Date('2026-09-20T10:00:00Z'),
+        },
       );
       expect(updated.ok).toBe(true);
 
@@ -702,6 +809,160 @@ describe('candidate lifecycle', () => {
           { bookRoot },
         ).ok,
       ).toBe(false);
+    });
+  });
+
+  describe('slug sanitization', () => {
+    it('strips control characters, path separators, leading dots, preserves case, and rejects empty results', () => {
+      expect(sanitizeMemorySlug('Foo/Bar\\Baz')).toBe('FooBarBaz');
+      expect(sanitizeMemorySlug('...hidden')).toBe('hidden');
+      expect(sanitizeMemorySlug('..\evil/Slug\n.md')).toBe('evilSlug.md');
+      expect(sanitizeMemorySlug('x\nstatus: discarded')).toBe('xstatus: discarded');
+      expect(sanitizeMemorySlug('\r\n\t')).toBeNull();
+      expect(sanitizeMemorySlug('...')).toBeNull();
+      expect(sanitizeMemorySlug('   ')).toBeNull();
+    });
+
+    it('neutralizes a slug that carries a newline or a path, and cannot reach the index', () => {
+      const ws = 'C:\\fake\\slug-injection';
+      const result = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Slug injection test',
+          body: 'Some body content.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { bookRoot, slug: 'notes\n/../../MEMORY.md\nstatus: discarded' },
+      );
+      expect(result.ok).toBe(true);
+
+      const raw = readFileSync(result.path!, 'utf-8');
+      expect(raw).not.toMatch(/\nstatus: discarded\n/);
+      expect(raw).toContain('status: approved');
+
+      const parsed = readMemoryFile(result.path!);
+      expect(parsed?.status).toBe('approved');
+      expect(basename(result.path!)).toBe('MEMORY.mdstatus: discarded.md');
+      expect(result.path!.startsWith(getProjectMemoryDir(ws, { bookRoot }))).toBe(true);
+    });
+
+    it('updates the existing file when the slug names it through a path', () => {
+      const ws = 'C:\\fake\\path-like-slug';
+      const dir = getProjectMemoryDir(ws, { bookRoot });
+      const initial = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Build command',
+          body: 'Use npm run build.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { bookRoot, slug: 'build-cmd.md' },
+      );
+      expect(initial.ok).toBe(true);
+
+      const updated = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Build command',
+          body: 'Use npm run build --production.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { bookRoot, slug: 'memory/build-cmd.md' },
+      );
+      expect(updated.ok).toBe(true);
+      expect(updated.path).toBe(join(dir, 'build-cmd.md'));
+
+      const indexLines = readFileSync(join(dir, 'MEMORY.md'), 'utf-8')
+        .split('\n')
+        .filter((line) => line.includes('](build-cmd.md)'));
+      expect(indexLines).toHaveLength(1);
+    });
+
+    it('deletes by a path-like slug', () => {
+      const ws = 'C:\\fake\\path-like-delete';
+      const dir = getProjectMemoryDir(ws, { bookRoot });
+      const saved = saveMemory(
+        ws,
+        {
+          type: 'reference',
+          title: 'Deploy doc',
+          body: 'See the runbook.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { bookRoot, slug: 'deploy.md' },
+      );
+      expect(saved.ok).toBe(true);
+
+      const deleted = deleteMemoryEntry(ws, 'memory/deploy.md', { bookRoot });
+      expect(deleted.ok).toBe(true);
+      expect(deleted.path).toBe(join(dir, 'deploy.md'));
+      expect(existsSync(saved.path!)).toBe(false);
+    });
+
+    it('takes the last segment of a Windows-style path slug', () => {
+      const ws = 'C:\\fake\\windows-slug';
+      const dir = getProjectMemoryDir(ws, { bookRoot });
+      const saved = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Windows slug',
+          body: 'Body.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { bookRoot, slug: 'C:\\notes\\memory\\release.md' },
+      );
+
+      expect(saved.ok).toBe(true);
+      expect(saved.path).toBe(join(dir, 'release.md'));
+    });
+
+    it('lists memory files whatever the case of the .md extension', () => {
+      const ws = 'C:\\fake\\case-insensitive-list';
+      const dir = getProjectMemoryDir(ws, { bookRoot });
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'Build.MD'), '# Build\n');
+      writeFileSync(join(dir, 'Notes.md'), '# Notes\n');
+
+      expect(listMemoryFiles(ws, { bookRoot }).map((file) => file.name)).toEqual([
+        'Build.MD',
+        'Notes.md',
+      ]);
+    });
+
+    it('rejects save when slug is non-empty but invalid after sanitization', () => {
+      const ws = 'C:\\fake\\empty-slug';
+      expect(
+        saveMemory(
+          ws,
+          { type: 'project', title: 'Valid title', body: 'Body' },
+          { bookRoot, slug: '..' },
+        ).ok,
+      ).toBe(false);
+    });
+
+    it('treats a whitespace-only slug as absent in saveMemory', () => {
+      const ws = 'C:\\fake\\absent-slug';
+      const result = saveMemory(
+        ws,
+        {
+          type: 'project',
+          title: 'Valid title',
+          body: 'Body.',
+        },
+        { bookRoot, slug: '   \t\n  ' },
+      );
+      expect(result.ok).toBe(true);
+      expect(result.status).toBe('approved');
+      expect(basename(result.path!)).not.toBe('.md');
     });
   });
 

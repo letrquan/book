@@ -72,7 +72,6 @@ describe('plan mode tools', () => {
       'WebFetch',
       'EnterPlanMode',
       'ExitPlanMode',
-      'MemorySave',
     ]) {
       expect(READ_ONLY_PLAN_TOOLS.has(name), `expected ${name} read-only`).toBe(true);
     }
@@ -87,6 +86,7 @@ describe('plan mode tools', () => {
       'GitCommit',
       'InvokeSkill',
       'Task',
+      'MemorySave',
     ]) {
       expect(READ_ONLY_PLAN_TOOLS.has(name), `expected ${name} blocked`).toBe(false);
     }

@@ -522,7 +522,6 @@ export class AgentSession {
     this.interactions.cancelAll(via);
     this.operations.reset({ bookTerminalReason: 'session_replaced' });
     this.runGeneration++;
-    this.runtime.resetConversation();
     this.replaceRuntime({}, via);
     this.replaceSnapshot(createAgentSessionSnapshot());
   }
@@ -617,7 +616,12 @@ export class AgentSession {
       persisted: true,
       created: false,
     };
+    // The resumed conversation's tool history lives on the runtime, so install
+    // it here rather than relying on `onTransition` to rebuild one: a host that
+    // projects the conversation without one would otherwise lose the record the
+    // next memory write reads to decide whether the session saw external content.
     this.reset('session-resume');
+    this.replaceRuntime({ history: bootstrap.transcript ?? bootstrap.history }, 'session-resume');
     request.onTransition?.(bootstrap);
     await this.startLifecycle(request.config, selected.id, 'resume');
     return { status: 'transitioned', bootstrap };

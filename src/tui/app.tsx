@@ -1617,7 +1617,6 @@ export function App({
           return;
         }
         if (effect?.type === 'start-new-conversation') {
-          runtime?.resetConversation();
           clearTasks();
           setReferencePanel(null);
           setShowSessionPicker(false);

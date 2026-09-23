@@ -39,7 +39,6 @@ export const READ_ONLY_PLAN_TOOLS = new Set([
   'AgentSpawn',
   'AgentSend',
   'AgentStop',
-  'MemorySave',
 ]);
 
 /** Read-only network calls remain available in plan mode but still require approval. */

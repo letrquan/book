@@ -22,6 +22,57 @@ export type MemoryOrigin = 'model-tool' | 'extraction' | 'user-text';
 
 export const MAX_BODY_CHARS = 1600;
 
+export function sanitizeMemorySlug(rawSlug: string): string | null {
+  const cleaned = rawSlug
+    .replace(/[\x00-\x1f\x7f]/g, '')
+    .replace(/[/\\]/g, '')
+    .trim()
+    .replace(/^\.+/, '')
+    .trim();
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+/**
+ * The last segment of a slug. Both separators are split on, so a Windows-style
+ * `C:\notes\memory.md` names its file rather than being pasted onto `dir`.
+ */
+function lastSlugSegment(raw: string): string {
+  return raw.split(/[/\\]/).pop() ?? '';
+}
+
+/**
+ * Resolve a raw slug to the one file it names inside the memory directory.
+ *
+ * The last path segment is taken first, so a path-like slug (`memory/build-cmd.md`,
+ * an absolute path) names its file instead of being pasted onto `dir`. This is the
+ * only place a slug is sanitized: every caller passes raw model or user input and
+ * gets back a resolved filename, or the reason it cannot be used.
+ */
+export function memoryFileForSlug(
+  dir: string,
+  raw: string,
+): { filename: string; target: string } | { error: string } {
+  const cleanSlug = sanitizeMemorySlug(lastSlugSegment(raw.trim()));
+  if (!cleanSlug) return { error: 'Invalid memory slug.' };
+  const filename = cleanSlug.toLowerCase().endsWith('.md') ? cleanSlug : `${cleanSlug}.md`;
+  if (filename.toLowerCase() === INDEX_FILE.toLowerCase()) {
+    return { error: 'Target filename cannot be the index file.' };
+  }
+  const target = join(dir, filename);
+  const rel = relative(dir, target);
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+    return { error: 'Target path must stay inside the project memory directory.' };
+  }
+  return { filename, target };
+}
+
+export function isMemorySaveAvailable(settings?: {
+  memory?: { enabled?: boolean; autoSave?: boolean };
+}): boolean {
+  if (!settings?.memory) return true;
+  return settings.memory.enabled !== false && settings.memory.autoSave !== false;
+}
+
 export function sanitizeMemoryTitle(rawTitle: string): string {
   return rawTitle
     .replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
@@ -73,7 +124,6 @@ export interface MemoryCandidate {
   sessionId?: string;
   externalContext: boolean;
   evidence?: string[];
-  supersedes?: string;
   targetSlug?: string;
 }
 
@@ -101,6 +151,7 @@ export interface MemoryWriteResult {
 
 export interface SaveMemoryOptions extends MemoryStoreOptions {
   requireApproval?: boolean;
+  quarantineExternal?: boolean;
   slug?: string;
 }
 
@@ -109,6 +160,7 @@ export interface SaveMemoryResult {
   path?: string;
   indexLine?: string;
   status: MemoryStatus;
+  quarantined?: boolean;
   error?: string;
 }
 
@@ -194,8 +246,8 @@ export function listMemoryFiles(workspace: string, opts?: MemoryStoreOptions): M
   const files: MemoryFileSummary[] = [];
   try {
     for (const entry of readdirSync(dir).sort()) {
-      if (!entry.endsWith('.md')) continue;
-      if (entry === INDEX_FILE) continue; // MEMORY.md is the index, not an approved memory file.
+      if (!entry.toLowerCase().endsWith('.md')) continue;
+      if (entry.toLowerCase() === INDEX_FILE.toLowerCase()) continue; // MEMORY.md is the index, not an approved memory file.
       const full = join(dir, entry);
       const summary = summarizeMemoryFile(full, entry);
       if (summary) files.push(summary);
@@ -438,7 +490,8 @@ function renderMemoryMarkdown(input: MemoryWriteInput, status: MemoryStatus, now
   if (input.evidence?.length) {
     fm.push(`evidence:\n${input.evidence.map((e) => `- ${e}`).join('\n')}`);
   }
-  if (input.supersedes) fm.push(`supersedes: ${input.supersedes}`);
+  // Already a resolved file name: `memoryFileForSlug` sanitized it (and
+  // `readMemoryFile` did the same for a candidate read back from disk).
   if (input.targetSlug) fm.push(`targetSlug: ${input.targetSlug}`);
   if ('confidence' in input && input.confidence) fm.push(`confidence: ${input.confidence}`);
   if (status === 'pending') fm.push(`proposedTitle: ${sanitizedTitle}`);
@@ -535,12 +588,14 @@ export function readMemoryFile(
     const externalContext =
       frontmatter.externalContext === true || frontmatter.externalContext === 'true';
     const sessionId = typeof frontmatter.sessionId === 'string' ? frontmatter.sessionId : undefined;
-    const supersedes =
-      typeof frontmatter.supersedes === 'string' ? frontmatter.supersedes : undefined;
-    const targetSlug =
-      typeof frontmatter.targetSlug === 'string' && frontmatter.targetSlug.trim()
-        ? basename(frontmatter.targetSlug.trim())
-        : undefined;
+    const rawTargetSlug =
+      typeof frontmatter.targetSlug === 'string' ? frontmatter.targetSlug : undefined;
+    // The last path segment, the same rule `memoryFileForSlug` applies on write:
+    // a legacy `targetSlug: notes/build` names a file in the memory directory,
+    // and sanitizing alone would glue the segments together.
+    const targetSlug = rawTargetSlug?.trim()
+      ? (sanitizeMemorySlug(lastSlugSegment(rawTargetSlug.trim())) ?? undefined)
+      : undefined;
     const status = isMemoryStatus(frontmatter.status) ? frontmatter.status : undefined;
     const created = typeof frontmatter.created === 'string' ? frontmatter.created : undefined;
     const updated = typeof frontmatter.updated === 'string' ? frontmatter.updated : undefined;
@@ -553,7 +608,6 @@ export function readMemoryFile(
       externalContext,
       sessionId,
       evidence,
-      supersedes,
       targetSlug,
       status,
       confidence:
@@ -611,27 +665,43 @@ export function saveMemory(
   candidate: MemoryWriteInput,
   opts?: SaveMemoryOptions,
 ): SaveMemoryResult {
-  const requireApproval = opts?.requireApproval ?? false;
+  const quarantineExternal = opts?.quarantineExternal ?? true;
+  const isQuarantined = candidate.externalContext === true && quarantineExternal;
+  const requireApproval = (opts?.requireApproval ?? false) || isQuarantined;
   const title = sanitizeMemoryTitle(candidate.title);
   if (!title) {
     return {
       ok: false,
       error: 'title must not be empty after sanitizing.',
       status: requireApproval ? 'pending' : 'approved',
+      quarantined: isQuarantined,
     };
   }
 
   if (requireApproval) {
+    const rawSlug = opts?.slug?.trim()
+      ? opts.slug
+      : candidate.targetSlug?.trim()
+        ? candidate.targetSlug
+        : undefined;
+    let targetSlug: string | undefined;
+    if (rawSlug) {
+      const named = memoryFileForSlug(getProjectMemoryDir(workspace, opts), rawSlug);
+      if ('error' in named) {
+        return { ok: false, error: named.error, status: 'pending', quarantined: isQuarantined };
+      }
+      targetSlug = named.filename;
+    }
     const candidateInput: MemoryWriteInput = {
       ...candidate,
       title,
-      targetSlug: opts?.slug ? basename(opts.slug.trim()) : candidate.targetSlug,
+      targetSlug,
     };
     const writeResult = writeMemoryCandidate(workspace, candidateInput, opts);
     if (!writeResult.ok) {
-      return { ok: false, error: writeResult.error, status: 'pending' };
+      return { ok: false, error: writeResult.error, status: 'pending', quarantined: isQuarantined };
     }
-    return { ok: true, path: writeResult.path, status: 'pending' };
+    return { ok: true, path: writeResult.path, status: 'pending', quarantined: isQuarantined };
   }
 
   try {
@@ -639,40 +709,17 @@ export function saveMemory(
     const dir = getProjectMemoryDir(workspace, opts);
     mkdirSync(dir, { recursive: true });
 
-    let filename: string;
-    let existingCreated: string | undefined;
-
-    if (opts?.slug) {
-      const cleanSlug = basename(opts.slug.trim());
-      filename = cleanSlug.toLowerCase().endsWith('.md') ? cleanSlug : `${cleanSlug}.md`;
-      const targetPath = join(dir, filename);
-      if (existsSync(targetPath)) {
-        const existing = readMemoryFile(targetPath);
-        if (existing?.created) {
-          existingCreated = existing.created;
-        }
-      }
-    } else {
-      filename = activeMemoryFilename({ ...candidate, title }, now);
+    // A named target goes through the one slug resolver; a generated name is
+    // built from a sanitized title and a hash, so it cannot leave `dir`.
+    const named = opts?.slug?.trim() ? memoryFileForSlug(dir, opts.slug) : null;
+    if (named && 'error' in named) {
+      return { ok: false, error: named.error, status: 'approved' };
     }
-
-    if (filename.toLowerCase() === INDEX_FILE.toLowerCase()) {
-      return {
-        ok: false,
-        error: 'Target filename cannot be the index file.',
-        status: 'approved',
-      };
-    }
-
-    const target = join(dir, filename);
-    const rel = relative(dir, target);
-    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
-      return {
-        ok: false,
-        error: 'Target path must stay inside the project memory directory.',
-        status: 'approved',
-      };
-    }
+    const filename = named?.filename ?? activeMemoryFilename({ ...candidate, title }, now);
+    const target = named?.target ?? join(dir, filename);
+    // Updating an entry keeps its original creation time.
+    const existingCreated =
+      named && existsSync(target) ? readMemoryFile(target)?.created : undefined;
 
     if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
       return {
@@ -703,16 +750,9 @@ export function deleteMemoryEntry(
 ): { ok: boolean; path?: string; error?: string } {
   try {
     const dir = getProjectMemoryDir(workspace, opts);
-    const cleanSlug = basename(slug.trim());
-    const filename = cleanSlug.toLowerCase().endsWith('.md') ? cleanSlug : `${cleanSlug}.md`;
-    if (filename.toLowerCase() === INDEX_FILE.toLowerCase()) {
-      return { ok: false, error: 'Cannot delete the memory index file.' };
-    }
-    const target = join(dir, filename);
-    const rel = relative(dir, target);
-    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
-      return { ok: false, error: 'Target path must stay inside the project memory directory.' };
-    }
+    const named = memoryFileForSlug(dir, slug);
+    if ('error' in named) return { ok: false, error: named.error };
+    const { filename, target } = named;
     if (!existsSync(target)) {
       return { ok: false, error: `Memory file not found: ${filename}` };
     }
@@ -769,32 +809,15 @@ export function approveMemoryCandidate(
     const dir = getProjectMemoryDir(workspace, opts);
     mkdirSync(dir, { recursive: true });
 
-    let filename: string;
-    let existingCreated: string | undefined;
-
-    if (candidate.targetSlug) {
-      const cleanSlug = basename(candidate.targetSlug.trim());
-      filename = cleanSlug.toLowerCase().endsWith('.md') ? cleanSlug : `${cleanSlug}.md`;
-      const targetPath = join(dir, filename);
-      if (existsSync(targetPath)) {
-        const existing = readMemoryFile(targetPath);
-        if (existing?.created) {
-          existingCreated = existing.created;
-        }
-      }
-    } else {
-      filename = activeMemoryFilename(candidate, now);
-    }
-
-    if (filename.toLowerCase() === INDEX_FILE.toLowerCase()) {
-      return { ok: false, error: 'Target filename cannot be the index file.' };
-    }
-
-    const target = join(dir, filename);
-    const rel = relative(dir, target);
-    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
-      return { ok: false, error: 'Target path must stay inside the project memory directory.' };
-    }
+    const named = candidate.targetSlug?.trim()
+      ? memoryFileForSlug(dir, candidate.targetSlug)
+      : null;
+    if (named && 'error' in named) return { ok: false, error: named.error };
+    const filename = named?.filename ?? activeMemoryFilename(candidate, now);
+    const target = named?.target ?? join(dir, filename);
+    // Updating an entry keeps its original creation time.
+    const existingCreated =
+      named && existsSync(target) ? readMemoryFile(target)?.created : undefined;
 
     if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
       return { ok: false, error: 'Refusing to overwrite symlinked memory file.' };

@@ -3,16 +3,15 @@ import {
   getMemoryHealth,
   getMemoryInboxDir,
   getProjectMemoryDir,
+  isMemorySaveAvailable,
   listMemoryCandidates,
   loadMemoryContext,
-  type LoadedMemoryContext,
   type MemoryStoreOptions,
 } from './memory-store.js';
 
 interface MemoryReportInput extends MemoryStoreOptions {
   workspace: string;
   settings?: ResolvedSettings;
-  loaded?: LoadedMemoryContext;
 }
 
 export interface MemoryIndex {
@@ -59,13 +58,12 @@ export function buildMemoryInboxReport(input: MemoryReportInput): string {
 export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string): string {
   const input: MemoryReportInput =
     typeof inputOrWorkspace === 'string' ? { workspace: inputOrWorkspace } : inputOrWorkspace;
-  // Prefer the caller-supplied snapshot (already current after /memory approve
-  // refreshes liveConfig.memoryContext). Only walk the disk when no snapshot
-  // is available — avoids a redundant full re-read on every /memory status.
-  const ctx = input.loaded ?? loadMemoryContext(input.workspace, input);
+  // Read the store from disk every time. The session-start snapshot this used
+  // to prefer goes stale the moment the session or the model writes a memory,
+  // and a status report showing yesterday's counts is worse than a re-read.
+  const ctx = loadMemoryContext(input.workspace, input);
   const settings = input.settings;
   const enabled = settings?.memory.enabled ?? true;
-  const autoSave = settings?.memory.autoSave ?? true;
   const requireApproval = settings?.memory.requireApproval ?? false;
   const health = getMemoryHealth(ctx, input);
   const lastWrite = health.lastWrite ? health.lastWrite.toISOString() : 'never';
@@ -73,11 +71,14 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
   const lines: string[] = ['Auto-memory for this workspace:', ''];
   lines.push(`Location: \`${ctx.dir}\``);
   lines.push(`Loading: ${enabled ? 'enabled' : 'disabled'}`);
-  const modelWrites = !autoSave
+  const quarantineExternal = settings?.memory.quarantineExternal ?? true;
+  const modelWrites = !isMemorySaveAvailable(settings)
     ? 'disabled'
     : requireApproval
       ? 'enabled (to inbox, needs approval)'
-      : 'enabled (direct to store)';
+      : quarantineExternal
+        ? 'enabled (direct to store; to inbox after external content)'
+        : 'enabled (direct to store)';
   lines.push(`Model writes: ${modelWrites}`);
   lines.push(`Approval required: ${requireApproval ? 'yes' : 'no'}`);
   lines.push(`Inbox: \`${getMemoryInboxDir(input.workspace, input)}\``);
@@ -111,7 +112,7 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
 
   lines.push('');
   lines.push(
-    'Commands: /memory inbox, /memory approve <n|file>, /memory discard <n|file>, /memory on, /memory off, /memory path',
+    'Commands: /memory inbox, /memory approve <n|file>, /memory discard <n|file>, /memory delete <file>, /memory on, /memory off, /memory path',
   );
   lines.push(`Path: \`${getProjectMemoryDir(input.workspace, input)}\``);
   return lines.join('\n');

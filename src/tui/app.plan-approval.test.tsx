@@ -77,7 +77,7 @@ function config(): AgentConfig {
       maxTokens: 128000,
       autoCompactEnabled: true,
       defaultMode: 'default',
-      memory: { enabled: false, autoSave: false, requireApproval: true },
+      memory: { enabled: false, autoSave: false, requireApproval: true, quarantineExternal: true },
       retry: {
         ...DEFAULT_SETTINGS.retry,
         maxAttempts: 3,

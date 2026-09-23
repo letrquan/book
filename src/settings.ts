@@ -251,6 +251,7 @@ export const memorySettingsSchema = z.object({
   enabled: z.boolean().default(true),
   autoSave: z.boolean().default(true),
   requireApproval: z.boolean().default(false),
+  quarantineExternal: z.boolean().default(true),
 });
 
 export const agentSettingsSchema = z.object({
@@ -563,6 +564,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     enabled: true,
     autoSave: true,
     requireApproval: false,
+    quarantineExternal: true,
   },
   agents: {
     mode: 'adaptive',

@@ -152,6 +152,7 @@ describe('mergeSettings', () => {
     expect(result.memory.enabled).toBe(true);
     expect(result.memory.autoSave).toBe(false);
     expect(result.memory.requireApproval).toBe(false);
+    expect(result.memory.quarantineExternal).toBe(true);
   });
 
   it('merges the thinking visibility setting without losing its default', () => {
@@ -179,7 +180,12 @@ describe('resolveSettings — layered merging', () => {
     expect(result.permissions.allow).toEqual([]);
     expect(result.compactStrategy).toBe('summary');
     expect(result.sandbox.enabled).toBe(false);
-    expect(result.memory).toEqual({ enabled: true, autoSave: true, requireApproval: false });
+    expect(result.memory).toEqual({
+      enabled: true,
+      autoSave: true,
+      requireApproval: false,
+      quarantineExternal: true,
+    });
   });
 
   it('loads user settings from BOOK_HOME', () => {

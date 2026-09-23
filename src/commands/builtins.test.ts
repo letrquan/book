@@ -9,6 +9,7 @@ import {
   type BuiltinCommandContext,
 } from './builtins.js';
 import { defaultConfig } from '../test/fixtures.js';
+import { saveMemory } from '../memory-store.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../models.js';
 
 function context(overrides: Partial<BuiltinCommandContext> = {}): BuiltinCommandContext {
@@ -466,8 +467,87 @@ describe('built-in command contract', () => {
     });
     expect(registry.execute('memory', 'unknown', context())).toEqual({
       type: 'local-message',
-      content: 'Usage: /memory [status|inbox|approve <n|file>|discard <n|file>|on|off|path]',
+      content:
+        'Usage: /memory [status|inbox|approve <n|file>|discard <n|file>|delete <file>|on|off|path]',
     });
+  });
+
+  it('reports and deletes memories from the store on disk', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-command-memory-'));
+    const bookHome = mkdtempSync(join(tmpdir(), 'book-command-memory-home-'));
+    const previousBookHome = process.env.BOOK_HOME;
+    process.env.BOOK_HOME = bookHome;
+    try {
+      const first = saveMemory(
+        workspace,
+        {
+          type: 'project',
+          title: 'Build command',
+          body: 'Use npm run build.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { slug: 'build-cmd.md' },
+      );
+      const second = saveMemory(
+        workspace,
+        {
+          type: 'user',
+          title: 'Prefers terse output',
+          body: 'Keep answers short.',
+          origin: 'model-tool',
+          externalContext: false,
+        },
+        { slug: 'terse.md' },
+      );
+      expect(first.ok && second.ok).toBe(true);
+
+      const registry = createBuiltinCommandRegistry();
+
+      // The runtime config carries the session-start snapshot, which knows
+      // nothing about either write: `/memory status` must read the disk.
+      const status = registry.execute('memory', 'status', context({ workspace }));
+      expect(status).toEqual(
+        expect.objectContaining({
+          type: 'local-message',
+          content: expect.stringContaining('Build command (project)'),
+        }),
+      );
+      expect(status).toEqual(
+        expect.objectContaining({
+          content: expect.stringContaining('Prefers terse output (user)'),
+        }),
+      );
+
+      expect(registry.execute('memory', 'delete terse.md', context({ workspace }))).toEqual({
+        type: 'local-message',
+        content: `Deleted memory → \`${second.path}\``,
+        refreshMemory: true,
+      });
+      expect(existsSync(second.path!)).toBe(false);
+
+      // A file name only. `1` is not an index into the listing `/memory status`
+      // printed: a model write between the two commands can shift it, and the
+      // wrong entry would be deleted with nothing to show for it.
+      expect(registry.execute('memory', 'delete 1', context({ workspace }))).toEqual({
+        type: 'local-message',
+        content: '✕ Memory file not found: 1.md',
+        refreshMemory: false,
+      });
+      expect(existsSync(first.path!)).toBe(true);
+
+      expect(registry.execute('memory', 'delete', context({ workspace }))).toEqual({
+        type: 'local-message',
+        content: '✕ Usage: /memory delete <file>',
+        refreshMemory: false,
+      });
+      expect(existsSync(first.path!)).toBe(true);
+    } finally {
+      if (previousBookHome === undefined) delete process.env.BOOK_HOME;
+      else process.env.BOOK_HOME = previousBookHome;
+      rmSync(workspace, { recursive: true, force: true });
+      rmSync(bookHome, { recursive: true, force: true });
+    }
   });
 
   it('routes ordinary review invocations through the immutable review effect', () => {
