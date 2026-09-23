@@ -23,6 +23,15 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **Book now catches the memories the model forgot to save.** At the next interactive start, idle
+  earlier sessions of the same workspace are read once in the background by the compact model, which
+  writes the durable facts, corrections, and references it finds (`origin: extraction`). Sessions
+  that brought in external content are skipped; only user and assistant text is read. Settings under
+  `memory.extraction`. Verified in the real TUI: a convention the working model had not saved was
+  recovered from the earlier session and applied in a fresh one.
+- **`npm run eval:memory`** measures model-written memory against a no-memory baseline across
+  models: recall on durable items, harm, over- and under-memory, save precision, and poison
+  injection. See README.
 - **Phase 1 part A memory improvements: model writes via `MemorySave`, provenance schema, and opt-in approval.**
   - Added the `MemorySave` tool for saving and deleting memory facts directly from the model loop, with secret rejection via `shouldRejectMemoryText` and body size caps at 1600 characters. Allowed in every permission mode except `plan` mode, where it is hidden, and excluded for subagents; a `permissions.deny` rule still blocks it, and a `permissions.ask` rule prompts in the modes that prompt. The user removes an entry with `/memory delete <file>` (file name only — a model write can shift a listing's numbering between commands), `/memory status` and `/memory inbox` read the store from disk so a memory saved mid-session is visible immediately, and a slug may be given as a path (`memory/build-cmd.md` resolves to `build-cmd.md`).
   - Widened `MemoryCandidate` with provenance metadata (`origin: 'model-tool' | 'extraction' | 'user-text'`, `sessionId`, `externalContext`, `evidence`), while retaining full backward compatibility when reading legacy files with only `source`.

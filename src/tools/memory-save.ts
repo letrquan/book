@@ -39,13 +39,15 @@ const AGENT_TEXT_TOOLS = new Set([
   'EvidenceList',
 ]);
 
+/** Whether a tool brings text this session did not author into the conversation. */
+export function isExternalContextTool(name: string): boolean {
+  const canonical = canonicalToolName(name);
+  return EXTERNAL_CONTEXT_CATEGORIES.has(categoryFor(canonical)) || AGENT_TEXT_TOOLS.has(canonical);
+}
+
 export function hasExternalContext(context: ToolContext): boolean {
   const tools = context.usedToolNames ?? new Set(context.runtime?.toolCallStats.keys() ?? []);
-  for (const name of tools) {
-    const canonical = canonicalToolName(name);
-    if (EXTERNAL_CONTEXT_CATEGORIES.has(categoryFor(canonical))) return true;
-    if (AGENT_TEXT_TOOLS.has(canonical)) return true;
-  }
+  for (const name of tools) if (isExternalContextTool(name)) return true;
   return false;
 }
 

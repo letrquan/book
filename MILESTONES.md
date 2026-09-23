@@ -11,7 +11,8 @@ runtime defaults and known boundaries, see [docs/current-state.md](docs/current-
   shared session lifecycle, resume/fork/name support, compaction, rewind, and structured output.
 - [x] Layered settings, atomic settings repository, migration/redaction, permission modes and rules,
   lifecycle hooks, optional bubblewrap sandbox, project/user instructions, and themes.
-- [ ] Auto-memory (Phase 1 part A model writes landed via `MemorySave`, with provenance schema and `memory.requireApproval` default flipped to `false`; auto-memory is not done until part B background extraction lands).
+- [x] Auto-memory Phase 1: model writes via `MemorySave` (part A, measured by `npm run eval:memory`) and background extraction of missed memories from idle sessions at the next interactive start (part B, verified in the real TUI; the eval runs print mode, where extraction does not run).
+- [ ] Auto-memory Phase 2: supersession on update and index hygiene (`plans/memory-improvement-plan.md`).
 - [x] Provider-neutral tool registry with closed schemas, aliases, capability intersections,
   model-conditional mutation guidance, read-before-edit, tool discovery, bounded parallel-safe
   waves, retries/timeouts, structured errors, and persistent tool telemetry.

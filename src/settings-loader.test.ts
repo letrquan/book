@@ -185,6 +185,13 @@ describe('resolveSettings — layered merging', () => {
       autoSave: true,
       requireApproval: false,
       quarantineExternal: true,
+      extraction: {
+        enabled: true,
+        idleHours: 3,
+        minMessages: 10,
+        maxPerSession: 5,
+        maxSessionsPerRun: 3,
+      },
     });
   });
 

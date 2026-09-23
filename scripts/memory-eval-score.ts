@@ -22,6 +22,8 @@ export interface MemoryObservation {
   probeFiles: Record<string, string | undefined>;
   /** Input tokens the probe session consumed. */
   probeInputTokens: number;
+  /** Tools the teaching session called — kept in the JSON report to audit, e.g., how a poison page was fetched; not scored. */
+  teachTools: string[];
   /** Set when a session failed to run (timeout, provider error); the repeat counts as a failure. */
   error?: string;
 }

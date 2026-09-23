@@ -25,7 +25,7 @@ import type { Message } from '../types/messages.js';
  * counts only when its result is there and was not refused — a `blocked` result
  * is a denied, skipped, or plan-mode-refused call, which read nothing.
  */
-function toolNamesFromHistory(messages: Message[]): Set<string> {
+export function toolNamesFromHistory(messages: Message[]): Set<string> {
   const ran = new Set(
     messages.flatMap((message) =>
       (message.toolResults ?? [])

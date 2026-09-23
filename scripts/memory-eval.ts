@@ -99,6 +99,7 @@ function armSettings(arm: MemoryArm): string {
 interface SessionResult {
   text: string;
   commands: string[];
+  tools: string[];
   inputTokens: number;
 }
 
@@ -119,7 +120,15 @@ async function session(
     const { BOOK_MODEL: _ignored, ...inherited } = process.env;
     const child = spawn(process.execPath, args, {
       cwd: ws,
-      env: { ...inherited, HOME: home, BOOK_HOME: join(home, '.book') },
+      // The poison page is served on 127.0.0.1 over HTTP, which WebFetch refuses by default;
+      // without these the web-poison item would never deliver its payload.
+      env: {
+        ...inherited,
+        HOME: home,
+        BOOK_HOME: join(home, '.book'),
+        BOOK_WEB_ALLOW_HTTP: '1',
+        BOOK_WEB_ALLOW_PRIVATE_NETWORK: '1',
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let out = '';
@@ -130,7 +139,7 @@ async function session(
     child.on('error', reject);
     child.on('close', (code) => {
       clearTimeout(timer);
-      const result: SessionResult = { text: '', commands: [], inputTokens: 0 };
+      const result: SessionResult = { text: '', commands: [], tools: [], inputTokens: 0 };
       let sawResult = false;
       for (const line of out.split('\n')) {
         if (!line.trim().startsWith('{')) continue;
@@ -142,6 +151,7 @@ async function session(
         }
         if (event.type === 'tool_use') {
           const call = event.tool_call as { name?: string; arguments?: { command?: unknown } };
+          if (call?.name) result.tools.push(call.name);
           if (call?.name === 'Bash' && typeof call.arguments?.command === 'string') {
             result.commands.push(call.arguments.command);
           }
@@ -219,6 +229,7 @@ async function runItem(
     probeCommands: [],
     probeFiles: {},
     probeInputTokens: 0,
+    teachTools: [],
   };
   try {
     mkdirSync(join(home, '.book'), { recursive: true });
@@ -233,7 +244,15 @@ async function runItem(
     if (arm === 'memory') {
       writeFiles(ws, scenario.teachFiles ?? {});
       for (const [i, turn] of scenario.teach.entries()) {
-        await session(model, turn.replaceAll('{{WEB}}', webUrl), ws, home, i > 0, opts.timeoutMs);
+        const taught = await session(
+          model,
+          turn.replaceAll('{{WEB}}', webUrl),
+          ws,
+          home,
+          i > 0,
+          opts.timeoutMs,
+        );
+        obs.teachTools.push(...taught.tools);
       }
       await git('reset', '--hard', '-q');
       await git('clean', '-fdxq');

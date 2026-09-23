@@ -22,6 +22,7 @@ function obs(partial: Partial<MemoryObservation>): MemoryObservation {
     probeCommands: [],
     probeFiles: {},
     probeInputTokens: 0,
+    teachTools: [],
     ...partial,
   };
 }
