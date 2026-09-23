@@ -6,6 +6,7 @@ import {
   isMemorySaveAvailable,
   listMemoryCandidates,
   loadMemoryContext,
+  readMemoryFile,
   type MemoryStoreOptions,
 } from './memory-store.js';
 
@@ -49,6 +50,16 @@ export function buildMemoryInboxReport(input: MemoryReportInput): string {
     lines.push(
       `${i + 1}. ${candidate.title ?? candidate.name} (${candidate.type ?? 'unknown'}) — ${candidate.name}`,
     );
+    // What approving would do, so the review is not blind: the text, which approved entry it
+    // replaces, and whether it came from a session that read external content.
+    const full = readMemoryFile(candidate.path);
+    if (!full) return;
+    if (full.externalContext) {
+      lines.push('   ⚠ saved in a session that read external content (web, MCP, or another agent)');
+    }
+    if (full.targetSlug) lines.push(`   replaces existing: \`${full.targetSlug}\``);
+    const preview = full.body.replace(/\s+/g, ' ').trim();
+    lines.push(`   ${preview.length > 200 ? `${preview.slice(0, 200)}…` : preview}`);
   });
   lines.push('');
   lines.push('Use /memory approve <number-or-file> or /memory discard <number-or-file>.');

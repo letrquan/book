@@ -1899,7 +1899,7 @@ export async function runAgentLoop(
           toolPermissionRequired && verdict.decision === 'ask' && verdict.source === 'ask';
 
         if (
-          (userRuleAsked || forceSkillPermission || toolPermissionRequired) &&
+          (forceSkillPermission || toolPermissionRequired) &&
           (persistentBackgroundShell ||
             !approveAllRules.some((rule) => permissionRuleMatchesCall(rule, call))) &&
           (!autoSafeTool || userRuleAsked) &&
@@ -1937,16 +1937,11 @@ export async function runAgentLoop(
                   effectiveMode === 'dontAsk' ? 'dont_ask' : 'user_denied',
                 );
               }
-              const currentVerdict = evaluatePermissionDetail(
-                canonName,
-                call.arguments,
-                config.settings,
-              );
               toolResults[callIndex] = toolFailure('SKIPPED: Permission denied', {
                 toolCallId: call.id,
                 code: 'permission_denied',
                 status: 'blocked',
-                content: permissionDeniedError(canonName, currentVerdict.matchedRule),
+                content: permissionDeniedError(canonName, verdict.matchedRule),
               });
               return undefined;
             }

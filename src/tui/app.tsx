@@ -1717,8 +1717,10 @@ export function App({
           setMemoryAutoSave(effect.enabled);
           addLocalMessage(
             effect.enabled
-              ? 'Memory auto-capture enabled. New candidates will still require approval.'
-              : 'Memory auto-capture disabled. Existing approved memory can still load.',
+              ? liveConfig.settings.memory.requireApproval
+                ? 'Model memory writes enabled. New memories go to /memory inbox for approval.'
+                : 'Model memory writes enabled. The model saves memories directly; sessions that read external content go to /memory inbox.'
+              : 'Model memory writes disabled. Existing approved memory still loads.',
           );
           return;
         }

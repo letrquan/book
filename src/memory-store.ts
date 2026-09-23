@@ -12,6 +12,7 @@ import {
 import { createHash } from 'crypto';
 import { basename, isAbsolute, join, relative, resolve } from 'path';
 import { parseFrontmatter } from './frontmatter.js';
+import { permissionRuleMatchesCall } from './permissions.js';
 import { resolveBookHome } from './book-home.js';
 import { looksLikeSecretOrUnfit } from './secret-detect.js';
 
@@ -64,6 +65,13 @@ export function memoryFileForSlug(
     return { error: 'Target path must stay inside the project memory directory.' };
   }
   return { filename, target };
+}
+
+/** Whether a permission rule list names MemorySave (a bare `MemorySave` or a pattern on it). */
+export function rulesNameMemorySave(rules: readonly string[]): boolean {
+  return rules.some((rule) =>
+    permissionRuleMatchesCall(rule, { id: 'memory', name: 'MemorySave', arguments: {} }),
+  );
 }
 
 export function isMemorySaveAvailable(settings?: {
@@ -405,7 +413,12 @@ export function getMemoryHealth(
   if (existsSync(dir)) {
     try {
       for (const entry of readdirSync(dir)) {
-        if (!entry.endsWith('.md') || entry === INDEX_FILE) continue;
+        // Same rule as listMemoryFiles, so Health agrees with the listing.
+        if (
+          !entry.toLowerCase().endsWith('.md') ||
+          entry.toLowerCase() === INDEX_FILE.toLowerCase()
+        )
+          continue;
         const full = join(dir, entry);
         try {
           const st = lstatSync(full);
@@ -557,14 +570,12 @@ export function readMemoryFile(
     const rawProposed =
       typeof frontmatter.proposedTitle === 'string' ? frontmatter.proposedTitle : undefined;
     const proposedTitle = rawProposed ? sanitizeMemoryTitle(rawProposed) || undefined : undefined;
+    // `||`, not `??`: a title that sanitizes to '' falls through to the next source.
+    const heading = titleFromBody(body)?.replace(/^Candidate:\s*/i, '');
     const title =
-      proposedTitle ??
-      (typeof frontmatter.title === 'string'
-        ? sanitizeMemoryTitle(frontmatter.title)
-        : undefined) ??
-      (titleFromBody(body)?.replace(/^Candidate:\s*/i, '')
-        ? sanitizeMemoryTitle(titleFromBody(body)!.replace(/^Candidate:\s*/i, ''))
-        : undefined) ??
+      proposedTitle ||
+      (typeof frontmatter.title === 'string' ? sanitizeMemoryTitle(frontmatter.title) : '') ||
+      (heading ? sanitizeMemoryTitle(heading) : '') ||
       basename(path, '.md');
     const tags = Array.isArray(frontmatter.tags)
       ? frontmatter.tags.filter((t): t is string => typeof t === 'string')
@@ -660,6 +671,35 @@ function updateMemoryIndex(
   return entry;
 }
 
+/** True for a symlink, dangling or not: `existsSync` follows links, `lstat` does not. */
+function isSymlink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Where an approved memory lands — the named slug's file, or a generated name — with the
+ * original creation time when it updates an entry. Refuses a symlinked target, including a
+ * dangling one, which `writeFileSync` would follow out of the memory directory.
+ */
+function approvedTarget(
+  dir: string,
+  input: { type: MemoryType; title: string },
+  slug: string | undefined,
+  now: Date,
+): { filename: string; target: string; existingCreated?: string } | { error: string } {
+  const named = slug?.trim() ? memoryFileForSlug(dir, slug) : null;
+  if (named && 'error' in named) return { error: named.error };
+  const filename = named?.filename ?? activeMemoryFilename(input as MemoryCandidate, now);
+  const target = named?.target ?? join(dir, filename);
+  if (isSymlink(target)) return { error: 'Refusing to overwrite symlinked memory file.' };
+  const existingCreated = named && existsSync(target) ? readMemoryFile(target)?.created : undefined;
+  return { filename, target, existingCreated };
+}
+
 export function saveMemory(
   workspace: string,
   candidate: MemoryWriteInput,
@@ -709,33 +749,15 @@ export function saveMemory(
     const dir = getProjectMemoryDir(workspace, opts);
     mkdirSync(dir, { recursive: true });
 
-    // A named target goes through the one slug resolver; a generated name is
-    // built from a sanitized title and a hash, so it cannot leave `dir`.
-    const named = opts?.slug?.trim() ? memoryFileForSlug(dir, opts.slug) : null;
-    if (named && 'error' in named) {
-      return { ok: false, error: named.error, status: 'approved' };
-    }
-    const filename = named?.filename ?? activeMemoryFilename({ ...candidate, title }, now);
-    const target = named?.target ?? join(dir, filename);
-    // Updating an entry keeps its original creation time.
-    const existingCreated =
-      named && existsSync(target) ? readMemoryFile(target)?.created : undefined;
-
-    if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
-      return {
-        ok: false,
-        error: 'Refusing to overwrite symlinked memory file.',
-        status: 'approved',
-      };
-    }
-
+    const placed = approvedTarget(dir, { ...candidate, title }, opts?.slug, now);
+    if ('error' in placed) return { ok: false, error: placed.error, status: 'approved' };
+    const { filename, target, existingCreated } = placed;
     const memoryInput: MemoryWriteInput = {
       ...candidate,
       title,
       created: existingCreated ?? candidate.created,
     };
-    const rendered = renderMemoryMarkdown(memoryInput, 'approved', now);
-    writeFileSync(target, rendered, 'utf-8');
+    writeFileSync(target, renderMemoryMarkdown(memoryInput, 'approved', now), 'utf-8');
     const indexLine = updateMemoryIndex(dir, title, filename, candidate.type, now);
     return { ok: true, path: target, indexLine, status: 'approved' };
   } catch (e) {
@@ -809,19 +831,10 @@ export function approveMemoryCandidate(
     const dir = getProjectMemoryDir(workspace, opts);
     mkdirSync(dir, { recursive: true });
 
-    const named = candidate.targetSlug?.trim()
-      ? memoryFileForSlug(dir, candidate.targetSlug)
-      : null;
-    if (named && 'error' in named) return { ok: false, error: named.error };
-    const filename = named?.filename ?? activeMemoryFilename(candidate, now);
-    const target = named?.target ?? join(dir, filename);
-    // Updating an entry keeps its original creation time.
-    const existingCreated =
-      named && existsSync(target) ? readMemoryFile(target)?.created : undefined;
-
-    if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
-      return { ok: false, error: 'Refusing to overwrite symlinked memory file.' };
-    }
+    if (!candidate.title.trim()) return { ok: false, error: 'Candidate has an empty title.' };
+    const placed = approvedTarget(dir, candidate, candidate.targetSlug, now);
+    if ('error' in placed) return { ok: false, error: placed.error };
+    const { filename, target, existingCreated } = placed;
 
     const memoryInput: MemoryWriteInput = {
       ...candidate,

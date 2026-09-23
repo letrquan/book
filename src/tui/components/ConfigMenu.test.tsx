@@ -244,8 +244,8 @@ describe('ConfigMenu', () => {
       expect(frame).toContain(`${letter}  ${label}`);
     }
     // The row with no accelerator advertises none rather than a contrived one.
-    expect(frame).toContain('   Memory auto-capture');
-    expect(frame).not.toMatch(/\S {2}Memory auto-capture/);
+    expect(frame).toContain('   Model memory writes');
+    expect(frame).not.toMatch(/\S {2}Model memory writes/);
   });
 
   it('moves the cursor onto the row an accelerator acts on', () => {

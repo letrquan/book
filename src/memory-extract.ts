@@ -16,10 +16,18 @@
  * - Runs are serialized by a lock file; a stale lock (older than the lock TTL) is taken over.
  * - Nothing here throws to the caller.
  */
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 'fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeSync,
+} from 'fs';
 import { dirname } from 'path';
 import { writeJsonAtomic } from './jobs/persistent-store.js';
-import { permissionRuleMatchesCall } from './permissions.js';
 import { normalizeWorkspace } from './session/store.js';
 import { createProvider, type Provider } from './provider/index.js';
 import { resolveCompactModelConfig } from './config.js';
@@ -31,6 +39,7 @@ import {
   loadMemoryContext,
   MAX_BODY_CHARS,
   MEMORY_TYPES,
+  rulesNameMemorySave,
   saveMemory,
   shouldRejectMemoryText,
   type MemoryStoreOptions,
@@ -50,6 +59,8 @@ const MAX_TRANSCRIPT_CHARS = 60_000;
 const MAX_MESSAGE_CHARS = 4_000;
 /** A session whose extraction call fails this many times is given up on, so it cannot block newer ones. */
 const MAX_ATTEMPTS = 3;
+/** Older sessions are not mined: their facts are the likeliest to have been reversed since. */
+const MAX_AGE_MS = 14 * 24 * 3_600_000;
 
 export interface ExtractionSessionSource {
   list(): SessionMeta[];
@@ -79,6 +90,8 @@ interface ExtractionState {
   processed: Record<string, number>;
   /** Session id → failed extraction attempts. */
   failures: Record<string, number>;
+  /** Session id → transcript length already read, so a grown session is read from there on. */
+  seen: Record<string, number>;
 }
 
 const SYSTEM = `You maintain a coding agent's long-term memory for one repository. You read a finished conversation between a user and the agent, and return the memories the agent should keep for FUTURE sessions — things that will still be true and useful next time.
@@ -103,9 +116,13 @@ function readState(path: string): ExtractionState {
     };
     const record = (v: unknown) =>
       v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, number>) : {};
-    return { processed: record(parsed.processed), failures: record(parsed.failures) };
+    return {
+      processed: record(parsed.processed),
+      failures: record(parsed.failures),
+      seen: record((parsed as { seen?: unknown }).seen),
+    };
   } catch {
-    return { processed: {}, failures: {} };
+    return { processed: {}, failures: {}, seen: {} };
   }
 }
 
@@ -124,12 +141,18 @@ function acquireLock(path: string, nowMs: number): (() => void) | null {
       return null;
     }
   }
+  // The token makes release remove only our own lock, never one another start took over.
+  const token = `${process.pid}-${nowMs}-${Math.random().toString(36).slice(2)}`;
   try {
-    closeSync(openSync(path, 'wx'));
+    const fd = openSync(path, 'wx');
+    writeSync(fd, token);
+    closeSync(fd);
   } catch {
     return null;
   }
-  return () => rmSync(path, { force: true });
+  return () => {
+    if (readFileSync(path, 'utf-8') === token) rmSync(path, { force: true });
+  };
 }
 
 /** Sessions of this workspace that are idle, long enough, and new or grown since last read. */
@@ -153,9 +176,10 @@ export function eligibleSessions(
         s.id !== opts.currentSessionId &&
         (opts.processed[s.id] === undefined || s.messageCount > opts.processed[s.id]) &&
         s.updatedAt <= idleBefore &&
+        s.updatedAt >= opts.nowMs - MAX_AGE_MS &&
         s.messageCount >= opts.minMessages,
     )
-    .sort((a, b) => a.updatedAt - b.updatedAt);
+    .sort((a, b) => b.updatedAt - a.updatedAt); // newest first: the most relevant, and the least stale
 }
 
 /** User and assistant text only — never tool output — keeping the end when too long. */
@@ -234,17 +258,18 @@ async function complete(
 }
 
 /** Apply one session's extracted memories; returns how many operations succeeded. */
-function apply(items: ExtractedMemory[], sessionId: string, opts: MemoryExtractionOptions): number {
+function apply(
+  items: ExtractedMemory[],
+  sessionId: string,
+  opts: MemoryExtractionOptions,
+  gated: boolean,
+): number {
   const { workspace } = opts.config;
   let written = 0;
   for (const item of items) {
     if (item.action === 'delete') {
-      // Deleting needs the user when approval is required, as it does for MemorySave.
-      if (
-        !opts.config.settings.memory.requireApproval &&
-        deleteMemoryEntry(workspace, item.slug!, opts).ok
-      )
-        written++;
+      // Deleting needs the user when writes are gated, as it does for MemorySave.
+      if (!gated && deleteMemoryEntry(workspace, item.slug!, opts).ok) written++;
       continue;
     }
     const body = item.body!.trim();
@@ -263,7 +288,7 @@ function apply(items: ExtractedMemory[], sessionId: string, opts: MemoryExtracti
       {
         ...opts,
         slug: item.action === 'update' ? item.slug : undefined,
-        requireApproval: opts.config.settings.memory.requireApproval,
+        requireApproval: gated,
       },
     );
     if (result.ok) written++;
@@ -276,10 +301,10 @@ export async function runMemoryExtraction(
 ): Promise<MemoryExtractionResult> {
   const { config } = opts;
   const settings = config.settings.memory;
-  // The same gates MemorySave has: a deny rule on it, or plan mode, means no memory writes.
-  const denied = config.settings.permissions.deny.some((rule) =>
-    permissionRuleMatchesCall(rule, { id: 'extraction', name: 'MemorySave', arguments: {} }),
-  );
+  // The same gates MemorySave has: a deny rule on it, or plan mode, means no memory writes;
+  // an ask rule, which would prompt for each MemorySave, routes every write to the inbox.
+  const denied = rulesNameMemorySave(config.settings.permissions.deny);
+  const gated = settings.requireApproval || rulesNameMemorySave(config.settings.permissions.ask);
   if (
     !settings.enabled ||
     !isMemorySaveAvailable(config.settings) ||
@@ -317,8 +342,10 @@ export async function runMemoryExtraction(
     const provider = opts.provider ?? createProvider(modelConfig);
     for (const meta of candidates) {
       if (opts.signal?.aborted) break;
+      let seenLength = state.seen[meta.id] ?? 0;
       const markDone = (entry: MemoryExtractionResult['processed'][number]) => {
         state.processed[meta.id] = meta.messageCount;
+        state.seen[meta.id] = seenLength;
         delete state.failures[meta.id];
         result.processed.push(entry);
         writeJsonAtomic(statePath, state);
@@ -334,7 +361,9 @@ export async function runMemoryExtraction(
         markDone({ id: meta.id, written: 0, skipped: 'external-context' });
         continue;
       }
-      const conversation = renderTranscript(transcript);
+      // A resumed session that grew is read from where the last read stopped.
+      const conversation = renderTranscript(transcript.slice(seenLength));
+      seenLength = transcript.length;
       if (!conversation) {
         markDone({ id: meta.id, written: 0, skipped: 'empty' });
         continue;
@@ -364,11 +393,13 @@ export async function runMemoryExtraction(
         }
         continue;
       }
+      // Providers end an aborted stream quietly; partial text must not mark the session read.
+      if (opts.signal?.aborted) break;
       log.debug('extraction reply', { session: meta.id, reply: text.slice(0, 600) });
       const items = parseExtraction(text, settings.extraction.maxPerSession);
       markDone(
         items
-          ? { id: meta.id, written: apply(items, meta.id, opts) }
+          ? { id: meta.id, written: apply(items, meta.id, opts, gated) }
           : { id: meta.id, written: 0, skipped: 'unparseable' },
       );
     }

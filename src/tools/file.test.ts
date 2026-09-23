@@ -214,6 +214,21 @@ describe('readOnlyRoots', () => {
     expect(rDiscarded.structuredError?.message).toMatch(/outside workspace/i);
   });
 
+  it('refuses the inbox when the memory root sits inside the workspace, or through a symlink', async () => {
+    // Running Book in $HOME puts ~/.book/projects/<p>/memory inside the workspace.
+    const memory = join(ctx.workspaceRoot, '.book', 'memory');
+    mkdirSync(join(memory, '.inbox'), { recursive: true });
+    const candidate = join(memory, '.inbox', 'x.md');
+    writeFileSync(candidate, 'quarantined candidate');
+    symlinkSync(join(memory, '.inbox'), join(memory, 'in'));
+    ctx.readOnlyRoots = [{ root: memory, exclude: ['.inbox'] }];
+
+    for (const path of [candidate, join(memory, 'in', 'x.md')]) {
+      const r = await read.execute({ filePath: path }, ctx);
+      expect(r.status, path).toBe('error');
+    }
+  });
+
   it('refuses relative ../x.md path even when readOnlyRoots is configured', async () => {
     ctx.readOnlyRoots = [readOnlyDir];
 

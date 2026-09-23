@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { hostname, tmpdir } from 'os';
 import { join } from 'path';
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   AgentContextCache,
   buildMessages,
@@ -30,6 +30,20 @@ function systemPrefix(out: Awaited<ReturnType<typeof buildMessages>>): string {
   }
   return content.cachedPrefix;
 }
+
+// Memory writes resolve under BOOK_HOME; pin it so this suite never touches the developer's
+// ~/.book (vitest-setup leaves it unpinned on purpose — suites that write there pin their own).
+let pinnedBookHome: string;
+const previousBookHome = process.env.BOOK_HOME;
+beforeEach(() => {
+  pinnedBookHome = mkdtempSync(join(tmpdir(), 'book-home-test-'));
+  process.env.BOOK_HOME = pinnedBookHome;
+});
+afterEach(() => {
+  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
+  else process.env.BOOK_HOME = previousBookHome;
+  rmSync(pinnedBookHome, { recursive: true, force: true });
+});
 
 describe('buildMessages', () => {
   it('hydrates session-owned image attachments without exposing storage bytes as text', async () => {
@@ -433,6 +447,22 @@ describe('buildMessages', () => {
       );
       expect(systemPrefix(out)).not.toContain('</memory-index>');
       expect(systemPrefix(out)).not.toContain('Approved memory loaded from');
+      // Nothing may point at an index that is not there.
+      expect(systemPrefix(out)).toContain('No memory is stored for this project yet.');
+      expect(systemPrefix(out)).not.toContain('Check <memory-index>');
+      expect(systemPrefix(out)).not.toContain('Use it as local context');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('omits the save spec when a deny rule blocks MemorySave', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-context-deny-'));
+    try {
+      const config = defaultConfig({ workspace: dir, memoryContext: undefined });
+      config.settings.permissions.deny = ['MemorySave'];
+      const out = await buildMessages(config, [userMsg('hi')], []);
+      expect(systemPrefix(out)).not.toContain('Call MemorySave');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

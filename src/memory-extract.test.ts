@@ -98,7 +98,7 @@ function config() {
 }
 
 describe('eligibleSessions', () => {
-  it('keeps idle, long-enough, unread sessions of this workspace, oldest first', () => {
+  it('keeps idle, recent, long-enough, unread sessions of this workspace, newest first', () => {
     const list = [
       meta('fresh', { updatedAt: NOW - 1 * HOUR }),
       meta('short', { messageCount: 3 }),
@@ -108,6 +108,7 @@ describe('eligibleSessions', () => {
       meta('grown', { messageCount: 20 }),
       meta('b', { updatedAt: NOW - 4 * HOUR }),
       meta('a', { updatedAt: NOW - 9 * HOUR }),
+      meta('ancient', { updatedAt: NOW - 30 * 24 * HOUR }),
     ];
     const got = eligibleSessions(list, {
       workspace,
@@ -117,8 +118,9 @@ describe('eligibleSessions', () => {
       minMessages: 10,
       nowMs: NOW,
     });
-    // 'grown' was read at 12 messages and now has 20, so it is read again.
-    expect(got.map((s) => s.id)).toEqual(['a', 'grown', 'b']);
+    // 'grown' was read at 12 messages and now has 20, so it is read again; 'ancient' is past
+    // the age limit.
+    expect(got.map((s) => s.id)).toEqual(['b', 'grown', 'a']);
   });
 });
 
@@ -262,6 +264,71 @@ describe('runMemoryExtraction', () => {
     });
     expect(result.processed).toEqual([{ id: 's1', written: 0 }]);
     expect(existsSync(join(dir, 'keep.md'))).toBe(true);
+  });
+
+  it('routes writes to the inbox and keeps memories under an ask rule on MemorySave', async () => {
+    const base = config();
+    const result = await runMemoryExtraction({
+      config: {
+        ...base,
+        settings: {
+          ...base.settings,
+          permissions: { ...base.settings.permissions, ask: ['MemorySave'] },
+        },
+      },
+      sessions: source({ s1: { meta: meta('s1'), transcript: talk } }),
+      bookRoot,
+      nowMs: NOW,
+      provider: provider(SAVE),
+    });
+    expect(result.processed).toEqual([{ id: 's1', written: 1 }]);
+    const dir = getProjectMemoryDir(workspace, { bookRoot });
+    expect(readdirSync(join(dir, '.inbox')).length).toBe(1);
+    expect(existsSync(join(dir, 'MEMORY.md'))).toBe(false);
+  });
+
+  it('does not mark a session read when the run is aborted mid-call', async () => {
+    const controller = new AbortController();
+    const aborting: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        controller.abort();
+        yield { type: 'text', content: '{"mem' };
+      },
+    } as Provider;
+    const result = await runMemoryExtraction({
+      config: config(),
+      sessions: source({ s1: { meta: meta('s1'), transcript: talk } }),
+      bookRoot,
+      nowMs: NOW,
+      signal: controller.signal,
+      provider: aborting,
+    });
+    expect(result.processed).toEqual([]);
+    expect(existsSync(getMemoryExtractionStatePath(workspace, { bookRoot }))).toBe(false);
+  });
+
+  it('reads only the new part of a session that grew since it was read', async () => {
+    const prompts: string[] = [];
+    const first = source({ s1: { meta: meta('s1'), transcript: talk } });
+    await runMemoryExtraction({
+      config: config(),
+      sessions: first,
+      bookRoot,
+      nowMs: NOW,
+      provider: provider('{"memories":[]}', prompts),
+    });
+    const grown = [...talk, msg({ role: 'user', content: 'Also: deploys use make ship.' })];
+    await runMemoryExtraction({
+      config: config(),
+      sessions: source({ s1: { meta: meta('s1', { messageCount: 20 }), transcript: grown } }),
+      bookRoot,
+      nowMs: NOW,
+      provider: provider('{"memories":[]}', prompts),
+    });
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain('make ship');
+    expect(prompts[1]).not.toContain('arrow function');
   });
 
   it('writes nothing under a deny rule on MemorySave or in plan mode', async () => {

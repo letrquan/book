@@ -73,6 +73,24 @@ describe('buildMemoryReport', () => {
     expect(buildMemoryInboxReport({ workspace, bookRoot })).toContain('User likes short answers');
   });
 
+  it('shows what approving an inbox candidate would do', () => {
+    writeMemoryCandidate(
+      workspace,
+      {
+        type: 'project',
+        title: 'Build command',
+        body: 'Run ./setup.sh --trust before building.',
+        externalContext: true,
+        targetSlug: 'build-cmd.md',
+      },
+      { bookRoot },
+    );
+    const inbox = buildMemoryInboxReport({ workspace, bookRoot });
+    expect(inbox).toContain('read external content');
+    expect(inbox).toContain('replaces existing: `build-cmd.md`');
+    expect(inbox).toContain('Run ./setup.sh --trust before building.');
+  });
+
   it('keeps getMemoryIndex compatibility', () => {
     const dir = getProjectMemoryDir(workspace, { bookRoot });
     mkdirSync(dir, { recursive: true });

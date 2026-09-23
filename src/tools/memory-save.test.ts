@@ -41,6 +41,20 @@ function createContext(overrides: Partial<ToolContext> = {}): ToolContext {
   };
 }
 
+// Memory writes resolve under BOOK_HOME; pin it so this suite never touches the developer's
+// ~/.book (vitest-setup leaves it unpinned on purpose — suites that write there pin their own).
+let pinnedBookHome: string;
+const previousBookHome = process.env.BOOK_HOME;
+beforeEach(() => {
+  pinnedBookHome = mkdtempSync(join(tmpdir(), 'book-home-test-'));
+  process.env.BOOK_HOME = pinnedBookHome;
+});
+afterEach(() => {
+  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
+  else process.env.BOOK_HOME = previousBookHome;
+  rmSync(pinnedBookHome, { recursive: true, force: true });
+});
+
 describe('MemorySave tool', () => {
   describe('save action', () => {
     it('saves directly to approved store and index when requireApproval is false (default)', async () => {
