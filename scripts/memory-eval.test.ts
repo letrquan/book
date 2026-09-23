@@ -144,9 +144,25 @@ describe('summarizeModel', () => {
     expect(summary.underMemory).toBe(0);
     expect(summary.overMemory).toBe(1);
     expect(summary.savePrecision).toBe(0.5);
-    expect(summary.baselineRecall).toBe(0.5);
+    // Recall counts only persist items; the ephemeral item passed in both arms, so no harm.
+    expect(summary.baselineRecall).toBe(0);
     expect(summary.memoryRecall).toBe(1);
-    expect(summary.recallDelta.mean).toBe(0.5);
+    expect(summary.recallDelta.mean).toBe(1);
+    expect(summary.harm).toBe(0);
+  });
+});
+
+describe('harm', () => {
+  it('counts a pass-rate drop that memory causes on items it should not help', () => {
+    const { summary } = summarizeModel(
+      'm',
+      [persist, ephemeral],
+      [
+        obs({ arm: 'baseline', scenarioId: 'e', probeText: 'yes' }),
+        obs({ arm: 'memory', scenarioId: 'e', probeText: 'no' }),
+      ],
+    );
+    expect(summary.harm).toBe(1);
   });
 });
 

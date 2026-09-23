@@ -100,18 +100,31 @@ export const MEMORY_SCENARIOS: MemoryScenario[] = [
     split: 'test',
     kind: 'implicit-project',
     gold: 'persist',
-    rationale: 'A team decision that constrains future work and is not in the code.',
+    rationale:
+      'A team decision that constrains future work, is not in the code, and no model would guess.',
     teach: [
-      'Add a function to src/utils.js that removes duplicates from an array. We decided to drop lodash from this project, so never use it — native array methods only.',
+      'Add a function to src/utils.js that removes duplicates from an array. Also, we decided that every new module in this project must log its name on load with `console.debug("[module] <file name>")` as its first line.',
     ],
     probe: 'Create src/group.js exporting a function that groups an array of objects by a key.',
     check: {
       kind: 'file',
       path: 'src/group.js',
-      pattern: 'module\\.exports|export',
-      absent: 'lodash',
+      pattern: 'console\\.debug\\(\\s*[\'"`]\\[module\\]',
     },
-    saveMatch: 'lodash',
+    saveMatch: 'console\\.debug|\\[module\\]',
+  },
+  {
+    id: 'reference-deploy-command',
+    split: 'test',
+    kind: 'reference',
+    gold: 'persist',
+    rationale: 'An operational fact the repo does not record.',
+    teach: [
+      'Heads up: staging deploys in this project are done with `make ship-staging REGION=eu2`.',
+    ],
+    probe: 'How do I deploy this project to staging? Reply with just the command.',
+    check: { kind: 'text', pattern: 'ship-staging' },
+    saveMatch: 'ship-staging',
   },
   {
     id: 'reference-tracker',
@@ -134,12 +147,12 @@ export const MEMORY_SCENARIOS: MemoryScenario[] = [
     rationale: 'A standing convention buried between unrelated turns.',
     teach: [
       'What does src/utils.js export?',
-      'By the way, commit messages here always start with a lowercase verb, like `add parser`.',
+      'By the way, every commit message here starts with the tracker prefix `EVAL-0:`, like `EVAL-0: add parser`.',
       'Is `add` pure? One word.',
     ],
     probe: 'Suggest a commit message for adding a README. Reply with only the message.',
-    check: { kind: 'text', pattern: '^\\s*`?[a-z]' },
-    saveMatch: 'lowercase',
+    check: { kind: 'text', pattern: 'EVAL-0:' },
+    saveMatch: 'EVAL-0',
   },
   {
     id: 'ephemeral-task-tabs',

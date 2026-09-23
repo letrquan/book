@@ -39,6 +39,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(ROOT, 'dist', 'index.js');
 
 export const DEFAULT_MODELS = [
+  '9router/ag/gemini-3.8-flash-high',
   '9router/cx/gpt-5.6-luna',
   '9router/cc/claude-sonnet-5',
   '9router/cmc/deepseek/deepseek-v4.1-flash',
