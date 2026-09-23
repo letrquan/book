@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A long reply no longer jitters sideways while it streams.** Once a reply outgrew the live
+  window (`width × 24` characters), the window's start moved forward with every streamed delta,
+  sometimes cutting a word in half. Every wrapped line of the tail then reflowed on every frame,
+  and the incremental renderer rewrote ~26 rows for a 12-character delta. The cutoff now rounds up
+  to `width × 4` steps, so the window stays within its old size, and a prose tail begins at a word
+  boundary. Between steps the tail only grows at its end. Measured on a real PTY over a single
+  800-word paragraph, frames that reflowed the whole tail fell from 249 to 16, and the incremental
+  renderer's output fell from 966 KB to 178 KB. A reply broken into paragraphs is still cut at a
+  blank line, now searched for from the rounded cutoff; its output fell from 377 KB to 298 KB.
+  The full-frame renderer that Windows uses by default still repaints every row, so its output is
+  unchanged. On Windows, the fix removes the jitter but does not reduce the bytes written.
 - **A print-mode prompt written after other flags is no longer rejected.** `--print [prompt]`
   takes the prompt as its own optional value, so `book -p --model m "fix it"` left the prompt as a
   stray positional and commander refused it with "too many arguments" (#226). The root command now

@@ -25,6 +25,15 @@ function withTheme(children: React.ReactElement): React.ReactElement {
   return React.createElement(ThemeContext.Provider, { value: DEFAULT_THEME }, children);
 }
 
+function numberedWords(count: number): string {
+  return Array.from({ length: count }, (_, index) => `word${index}`).join(' ');
+}
+
+function tailOf(window: string): string {
+  const banner = '… earlier response hidden while streaming\n\n';
+  return window.startsWith(banner) ? window.slice(banner.length) : window;
+}
+
 afterEach(() => {
   cleanup();
 });
@@ -82,6 +91,56 @@ describe('MarkdownBlock', () => {
 
     expect(streaming).toContain('earlier response hidden while streaming');
     expect(streaming).not.toContain('| row');
+  });
+
+  it('keeps the live tail start fixed while a long paragraph streams', () => {
+    const full = numberedWords(1500);
+    // width 80 => maxCharacters = 1920, step = 320
+    let jumps = 0;
+    let pairs = 0;
+    let previous = tailOf(streamingMarkdownWindow(full.slice(0, 3000), 80));
+    for (let length = 3012; length <= full.length; length += 12) {
+      const next = tailOf(streamingMarkdownWindow(full.slice(0, length), 80));
+      pairs++;
+      if (!next.startsWith(previous)) jumps++;
+      previous = next;
+    }
+
+    expect(jumps).toBeLessThanOrEqual(Math.ceil((full.length - 3000) / 320) + 1);
+    expect(pairs).toBeGreaterThan(jumps * 10);
+  });
+
+  it('starts the fallback tail at a word boundary', () => {
+    const content = numberedWords(1500);
+    for (let length = 3000; length <= content.length; length += 7) {
+      const tail = tailOf(streamingMarkdownWindow(content.slice(0, length), 80));
+      expect(tail).toMatch(/^word\d+/);
+    }
+  });
+
+  it('keeps the live tail within the character budget', () => {
+    const full = numberedWords(1500);
+    for (let length = 1921; length <= full.length; length += 13) {
+      expect(tailOf(streamingMarkdownWindow(full.slice(0, length), 80)).length).toBeLessThanOrEqual(
+        1920,
+      );
+    }
+  });
+
+  it('does not blank the live tail for inline markdown before the cutoff', () => {
+    // Just past maxCharacters (1920) at width 80; the markup sits before the cutoff.
+    const content = `Use \`code\` and snake_case first. ${numberedWords(300)}`;
+    const tail = tailOf(streamingMarkdownWindow(content, 80));
+
+    expect(tail).toMatch(/^word\d+/);
+  });
+
+  it('keeps a long unbroken token intact when no boundary is near', () => {
+    const content = `start ${'x'.repeat(8_000)}`;
+    const tail = tailOf(streamingMarkdownWindow(content, 80));
+
+    expect(tail.length).toBeGreaterThan(0);
+    expect(tail).toMatch(/^x+$/);
   });
 
   it('renders empty content as nothing', () => {

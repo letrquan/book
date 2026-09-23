@@ -365,9 +365,20 @@ function standaloneBlockStart(content: string, offset: number): number | undefin
   return undefined;
 }
 
-function contextualStreamingTail(content: string, maxCharacters: number): string {
-  const desiredStart = content.length - maxCharacters;
-  if (desiredStart <= 0) return content;
+/** The first word start at or after `offset`, when one begins within `limit` characters. */
+function wordBoundaryAfter(content: string, offset: number, limit: number): number {
+  if (offset <= 0) return 0;
+  const match = content.slice(offset - 1, offset + limit).search(/\s\S/);
+  return match === -1 ? offset : offset + match;
+}
+
+function contextualStreamingTail(content: string, maxCharacters: number, step: number): string {
+  const rawStart = content.length - maxCharacters;
+  if (rawStart <= 0) return content;
+  // Round the cutoff up to a multiple of `step`: the start then stays fixed while the
+  // response grows, so the tail only gains text at its end between jumps, and the
+  // window never exceeds `maxCharacters`.
+  const desiredStart = Math.ceil(rawStart / step) * step;
 
   const context = fenceContextAt(content, desiredStart);
   if (context) {
@@ -381,7 +392,7 @@ function contextualStreamingTail(content: string, maxCharacters: number): string
     blankLine === -1 ? standaloneBlockStart(content, desiredStart) : undefined;
   const start = blankLine >= 0 ? blankLine + 2 : standaloneStart;
   if (start === undefined) {
-    const tail = content.slice(desiredStart);
+    const tail = content.slice(wordBoundaryAfter(content, desiredStart, step));
     return /[*_`~[\]<>|\\]/.test(tail) ? '' : tail;
   }
   const startContext = fenceContextAt(content, start);
@@ -396,8 +407,9 @@ export function streamingMarkdownWindow(content: string, terminalWidth?: number)
   // Keep enough history for the live tail to feel continuous without making
   // every throttled Markdown parse scale with the full assistant response.
   const maxCharacters = width * 24;
+  const step = width * 4;
   if (content.length <= maxCharacters) return content;
-  return `… earlier response hidden while streaming\n\n${contextualStreamingTail(content, maxCharacters)}`;
+  return `… earlier response hidden while streaming\n\n${contextualStreamingTail(content, maxCharacters, step)}`;
 }
 
 function InlineRuns({ runs }: { runs: InlineRun[] }) {
