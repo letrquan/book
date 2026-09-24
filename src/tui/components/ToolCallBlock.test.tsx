@@ -503,4 +503,52 @@ describe('ToolCallBlock', () => {
       expect(displayWidth(line), JSON.stringify(line)).toBeLessThanOrEqual(width);
     }
   });
+
+  it('shows the reason of a network-policy refusal but keeps other skipped rows quiet', () => {
+    const policy = render(
+      withTheme(
+        <ToolCallBlock
+          name="WebFetch"
+          args={{ url: 'https://localhost/' }}
+          result={{
+            version: 2,
+            toolCallId: 'call-policy',
+            status: 'blocked',
+            content: '',
+            structuredError: {
+              code: 'private_network_forbidden',
+              message: 'Web fetch blocked because localhost resolves to private address 127.0.0.1.',
+              retryable: false,
+            },
+          }}
+          isExpanded={false}
+          reducedMotion
+        />,
+      ),
+    );
+    expect(frame(policy.lastFrame)).toContain('Web fetch blocked because localhost');
+
+    const inactive = render(
+      withTheme(
+        <ToolCallBlock
+          name="WebFetch"
+          args={{ url: 'https://example.com/' }}
+          result={{
+            version: 2,
+            toolCallId: 'call-inactive',
+            status: 'blocked',
+            content: '',
+            structuredError: {
+              code: 'tool_not_active',
+              message: 'WebFetch is not active; call ToolSearch first.',
+              retryable: false,
+            },
+          }}
+          isExpanded={false}
+          reducedMotion
+        />,
+      ),
+    );
+    expect(frame(inactive.lastFrame)).not.toContain('is not active');
+  });
 });
