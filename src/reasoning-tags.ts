@@ -207,60 +207,56 @@ export function stripReasoningTags(content: string): string {
 const LEADING_REASONING_TAG =
   /^(?:[ \t]*\r?\n)*[ ]{0,3}<(think|thinking|reasoning|reasoning_context)>/i;
 
-/**
- * Byte ranges covered by inline code spans outside fenced code.
- *
- * As in CommonMark, a run of backticks opens a span that the next run of the
- * same length closes, and a run with no partner is literal text. A tag written
- * in one — `<think>` in prose that explains the convention — is being quoted,
- * not used.
- */
-function inlineCodeRanges(
-  content: string,
-  fenced: Array<[number, number]>,
-): Array<[number, number]> {
-  const runs: Array<{ start: number; length: number }> = [];
-  const backticks = /`+/g;
+/** Whether `text` ends inside a code fence it opened, pairing fences the way `fencedRanges` does. */
+function endsInsideFence(text: string): boolean {
+  FENCE_LINE.lastIndex = 0;
+  let marker: string | null = null;
   let match: RegExpExecArray | null;
-  while ((match = backticks.exec(content)) !== null) {
-    const start = match.index;
-    if (!fenced.some(([from, to]) => start >= from && start < to)) {
-      runs.push({ start, length: match[0].length });
-    }
+  while ((match = FENCE_LINE.exec(text)) !== null) {
+    if (marker === null) marker = match[1][0];
+    else if (match[1][0] === marker) marker = null;
   }
-  const ranges: Array<[number, number]> = [];
-  for (let i = 0; i < runs.length; i++) {
-    let j = i + 1;
-    while (j < runs.length && runs[j].length !== runs[i].length) j++;
-    if (j === runs.length) continue;
-    ranges.push([runs[i].start, runs[j].start + runs[j].length]);
-    i = j;
-  }
-  return ranges;
+  return marker !== null;
 }
 
 /**
- * Where the block whose opening `tag` ends at `from` is closed: the end of its
- * text and the offset just past its closing tag, or null if it never closes.
- * Tags of the same name nest, so an inner block does not end the outer one,
- * and a tag that touches quoted code is text rather than markup.
+ * Whether the closing tag at `start`..`end` of a block opened at `blockStart` is quoted rather
+ * than markup: wrapped in a matching backtick run (`` `</think>` ``), or inside a code fence the
+ * block itself opened. Only the block's own text is consulted -- nothing after the tag but the
+ * backtick run touching it -- so an unpaired backtick in the reasoning cannot pair with code in
+ * the answer and move where the block ends.
+ */
+function isQuotedClosingTag(
+  content: string,
+  blockStart: number,
+  start: number,
+  end: number,
+): boolean {
+  const before = /`+$/.exec(content.slice(blockStart, start));
+  const after = /^`+/.exec(content.slice(end));
+  if (before && after && before[0].length === after[0].length) return true;
+  return endsInsideFence(content.slice(blockStart, start));
+}
+
+/**
+ * Where the block whose opening `tag` ends at `from` is closed: the end of its text and the
+ * offset just past its closing tag, or null if it never closes. The first closing tag that is
+ * not quoted ends it. Same-name tags do not nest: a bare opening tag the reasoning mentions must
+ * not push the end into the answer, and an inner block's stray closing tag is left in the
+ * answer rather than taking answer text with it.
  */
 function findBlockClose(
   content: string,
   tag: string,
   from: number,
-  quoted: Array<[number, number]>,
 ): { textEnd: number; after: number } | null {
-  const tags = new RegExp(`<(/?)${tag}>`, 'gi');
-  tags.lastIndex = from;
-  let depth = 1;
+  const closing = new RegExp(`</${tag}>`, 'gi');
+  closing.lastIndex = from;
   let match: RegExpExecArray | null;
-  while ((match = tags.exec(content)) !== null) {
-    const start = match.index;
-    const end = tags.lastIndex;
-    if (quoted.some(([lo, hi]) => start < hi && end > lo)) continue;
-    depth += match[1] ? -1 : 1;
-    if (depth === 0) return { textEnd: start, after: end };
+  while ((match = closing.exec(content)) !== null) {
+    if (!isQuotedClosingTag(content, from, match.index, closing.lastIndex)) {
+      return { textEnd: match.index, after: closing.lastIndex };
+    }
   }
   return null;
 }
@@ -280,9 +276,9 @@ function findBlockClose(
  * this is the narrow reading. Only blocks at the very start of the reply move,
  * one after another; a tag later in the answer is content, because answers
  * quote these tags (a review finding about them, a prompt template, prose in
- * backticks). A tag inside inline or fenced code is never markup, blocks of the
- * same name nest, and a block that never closes is kept as answer text for the
- * same reason `stripReasoningTags` keeps it.
+ * backticks). A block ends at its first closing tag that is not quoted in
+ * backticks or inside a fence the block opened, same-name tags do not nest, and a block that never closes
+ * is kept as answer text for the same reason `stripReasoningTags` keeps it.
  *
  * `found` says whether any block moved, even an empty one: the
  * `<think></think>` a model emits with thinking off has no reasoning to keep
@@ -295,14 +291,12 @@ export function separateInlineReasoning(content: string): {
 } {
   const unchanged = { content, reasoning: '', found: false };
   if (!content.includes('<')) return unchanged;
-  const fenced = fencedRanges(content);
-  const quoted = [...fenced, ...inlineCodeRanges(content, fenced)];
   const blocks: string[] = [];
   let rest = 0;
   for (;;) {
     const open = LEADING_REASONING_TAG.exec(content.slice(rest));
     if (!open) break;
-    const close = findBlockClose(content, open[1], rest + open[0].length, quoted);
+    const close = findBlockClose(content, open[1], rest + open[0].length);
     if (!close) break;
     blocks.push(content.slice(rest + open[0].length, close.textEnd).trim());
     rest = close.after;

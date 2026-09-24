@@ -273,10 +273,10 @@ describe('separateInlineReasoning', () => {
     expect(result.found).toBe(false);
   });
 
-  it('moves a nested block whole instead of leaving a stray closing tag', () => {
+  it('ends a nested same-name block at its first closing tag, losing no answer text', () => {
     const result = separateInlineReasoning('<think>A <think>B</think> C</think>\nAnswer');
-    expect(result.content).toBe('Answer');
-    expect(result.reasoning).toBe('A <think>B</think> C');
+    expect(result.content).toBe('C</think>\nAnswer');
+    expect(result.reasoning).toBe('A <think>B');
     expect(result.found).toBe(true);
   });
 
@@ -319,5 +319,59 @@ describe('separateInlineReasoning', () => {
     expect(result.content).toBe('Answer');
     expect(result.reasoning).toBe('');
     expect(result.found).toBe(true);
+  });
+
+  // Each of the next tests lost, or failed to split, answer text at 8243818.
+  it('ends a block at its first closing tag when the reasoning mentions a bare opening tag', () => {
+    const result = separateInlineReasoning(
+      '<think>User says not to emit <think> tags.</think>The answer. The closing tag </think> ends it. Tail.',
+    );
+    expect(result.content).toBe('The answer. The closing tag </think> ends it. Tail.');
+    expect(result.reasoning).toBe('User says not to emit <think> tags.');
+    expect(result.found).toBe(true);
+  });
+
+  it('splits a block whose reasoning has an unpaired backtick', () => {
+    const result = separateInlineReasoning(
+      '<think>I will use a `x flag</think>Answer with `code` here.',
+    );
+    expect(result.content).toBe('Answer with `code` here.');
+    expect(result.reasoning).toBe('I will use a `x flag');
+    expect(result.found).toBe(true);
+  });
+
+  it('never lets an unpaired backtick in the reasoning pair with a tag the answer quotes', () => {
+    const result = separateInlineReasoning(
+      '<think>reasoning with lone `tick</think>The answer. Use `</think>` to close. More answer.',
+    );
+    expect(result.content).toBe('The answer. Use `</think>` to close. More answer.');
+    expect(result.reasoning).toBe('reasoning with lone `tick');
+  });
+
+  it('skips a closing tag wrapped in a double-backtick span', () => {
+    const result = separateInlineReasoning('<think>quote ``</think>`` here</think>\nAnswer');
+    expect(result.content).toBe('Answer');
+    expect(result.reasoning).toBe('quote ``</think>`` here');
+  });
+
+  it('skips a closing tag inside a fence the reasoning opened and closes after it', () => {
+    const result = separateInlineReasoning(
+      '<think>plan:\n```\n</think>\n```\ndone</think>\nAnswer',
+    );
+    expect(result.content).toBe('Answer');
+    expect(result.reasoning).toBe('plan:\n```\n</think>\n```\ndone');
+  });
+
+  it('closes after a fence that ends right before the closing tag', () => {
+    const result = separateInlineReasoning('<think>plan:\n```\ncode\n```\n</think>\nAnswer');
+    expect(result.content).toBe('Answer');
+    expect(result.reasoning).toBe('plan:\n```\ncode\n```');
+  });
+
+  it('keeps a block whose reasoning never closes its fence as answer text', () => {
+    const input = '<think>plan:\n```ts\nconst x = 1;\n</think>\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
   });
 });

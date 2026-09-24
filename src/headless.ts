@@ -1124,12 +1124,15 @@ function writeTextProgress(event: AgentEvent, opts: HeadlessOptions): void {
   if (event.type === 'tool_result' && opts.verbose === true) {
     const result = event.toolResult;
     const duration = result.metrics?.durationMs;
+    // A turn's call lines all print before its results, so each result names its target.
+    const target = progressLine(result.presentation?.target ?? '', PROGRESS_ARG_MAX);
     const error =
       result.status === 'success'
         ? ''
         : progressLine(toolResultErrorMessage(result) ?? '', PROGRESS_ERROR_MAX);
+    const detail = [target, error].filter(Boolean).join(': ');
     process.stderr.write(
-      `  → ${result.status}${duration !== undefined ? ` ${Math.round(duration)}ms` : ''}${error ? ` ${error}` : ''}\n`,
+      `  → ${result.status}${duration !== undefined ? ` ${Math.round(duration)}ms` : ''}${detail ? ` ${detail}` : ''}\n`,
     );
   }
 }

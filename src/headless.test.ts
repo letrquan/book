@@ -1436,6 +1436,9 @@ describe('runHeadless — text progress on stderr', () => {
     expect(stdoutWrites.join('')).toBe('done\n');
     expect(stderrWrites).toContain(`[Read] ${filePath}\n`);
     expect(stderrWrites.some((line) => line.startsWith('  → success'))).toBe(true);
+    expect(
+      stderrWrites.some((line) => line.startsWith('  → success') && line.includes(filePath)),
+    ).toBe(true);
   });
 
   it('does not write progress to stderr in stream-json mode', async () => {
