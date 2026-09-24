@@ -309,4 +309,63 @@ describe('idle Ctrl+C exit confirmation', () => {
 
     expect(state.endCurrentSession).toHaveBeenCalledWith('exit');
   });
+
+  it('Ctrl+C on a recalled queued input removes it and lets the queue drain', async () => {
+    const appConfig = config();
+    const state = agentState({ isThinking: true });
+    installAgentState(state);
+    const view = render(<App config={appConfig} session={testSession} />);
+    await settle(150);
+
+    view.stdin.write('first queued');
+    await settle(150);
+    view.stdin.write('\r');
+    await settle(150);
+    view.stdin.write('second queued');
+    await settle(150);
+    view.stdin.write('\r');
+    await settle(150);
+    view.stdin.write('\x1b[A');
+    await settle(150);
+    expect(frameOf(view)).toContain('Editing queued input');
+
+    installAgentState({ ...state, isThinking: false });
+    view.rerender(<App config={appConfig} session={testSession} />);
+    await settle(150);
+    expect(state.send).not.toHaveBeenCalled();
+
+    view.stdin.write('\x03');
+    await settle(300);
+
+    expect(frameOf(view)).not.toContain('Editing queued input');
+    expect(state.send).toHaveBeenCalledWith('first queued');
+    expect(state.endCurrentSession).not.toHaveBeenCalled();
+  });
+
+  it('a turn that starts inside the exit window disarms it', async () => {
+    const appConfig = config();
+    const state = agentState();
+    installAgentState(state);
+    const view = render(<App config={appConfig} session={testSession} />);
+    await settle(150);
+
+    view.stdin.write('\x03');
+    await settle(200);
+    expect(frameOf(view)).toContain(CTRL_C_EXIT_HINT_TEXT);
+
+    installAgentState({ ...state, isThinking: true });
+    view.rerender(<App config={appConfig} session={testSession} />);
+    await settle(150);
+    expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
+
+    installAgentState({ ...state, isThinking: false });
+    view.rerender(<App config={appConfig} session={testSession} />);
+    await settle(150);
+
+    view.stdin.write('\x03');
+    await settle(200);
+
+    expect(state.endCurrentSession).not.toHaveBeenCalled();
+    expect(frameOf(view)).toContain(CTRL_C_EXIT_HINT_TEXT);
+  });
 });

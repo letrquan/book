@@ -1263,8 +1263,9 @@ pass or open one to read its transcript — Tab from an empty prompt selects a r
 the panel for explicit management. Those agents belong to the session for display only; they never
 deliver a completion notification, so watching a review costs no extra model turn. Press `Esc` to
 cancel — the in-flight agents are stopped, and a cancelled review reports `inconclusive` with no
-findings rather than presenting its own stopped passes as a result. `Ctrl+C` cancels the review too;
-a second press exits, as it does mid-stream. A cancelled `--fix` pass reports what it had already
+findings rather than presenting its own stopped passes as a result. `Ctrl+C` cancels the review too
+without exiting; after that, Book is idle, so exiting takes the usual two presses (the first shows
+"Press Ctrl+C again to exit"). A cancelled `--fix` pass reports what it had already
 committed before stopping. Progress is a streaming-host feature: a print run has no silence to
 break, so its stdout stays exactly the report (the same target is on `data.target`).
 

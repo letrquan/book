@@ -500,6 +500,11 @@ export function App({
     return armedAt !== undefined && Date.now() - armedAt <= CTRL_C_EXIT_HINT_MS;
   }, []);
   const [sendInFlight, setSendInFlight] = useState(false);
+  // A turn that starts inside the exit window ends it, so a later idle press arms again
+  // rather than exiting at once.
+  useEffect(() => {
+    if (isThinking || sendInFlight) disarmCtrlCExit();
+  }, [isThinking, sendInFlight, disarmCtrlCExit]);
   const [, setQueueDrainTick] = useState(0);
   const [shellCompletionRetryTick, setShellCompletionRetryTick] = useState(0);
   const [followRequestKey, setFollowRequestKey] = useState(0);
@@ -1321,16 +1326,27 @@ export function App({
       }
       uiLog.event('input:Escape', { action: 'noop-idle' });
     }
-    // Ctrl+C cancels active work, clears a non-empty composer, or confirms idle exit.
+    // Ctrl+C cancels active work, drops a recalled queued input, clears a non-empty
+    // composer, or confirms idle exit.
     if (key.ctrl && input === 'c') {
       if (isThinking || sendInFlight || isResolvingCommand) {
         uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
+        disarmCtrlCExit();
         interrupt();
         return;
       }
       // A review is in-flight work too, so Ctrl+C cancels it without exiting.
       if (cancelReview()) {
         uiLog.event('input:Ctrl+C', { action: 'cancel-review' });
+        disarmCtrlCExit();
+        return;
+      }
+      // A recalled queued input is removed, as Esc removes it. Clearing only its text
+      // would leave the queue paused behind the edit.
+      if (editingQueuedInputRef.current) {
+        uiLog.event('input:Ctrl+C', { action: 'cancel-queued-edit' });
+        disarmCtrlCExit();
+        cancelQueuedEdit();
         return;
       }
       if (draftRef.current.length > 0 || draftAttachmentsRef.current.length > 0) {

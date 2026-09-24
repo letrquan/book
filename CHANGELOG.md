@@ -6,11 +6,19 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
-- **Idle Ctrl+C now requires a second press before exiting.** A non-empty composer is cleared
-  without arming the window. An empty, idle composer shows "Press Ctrl+C again to exit" for 2
-  seconds; only another press during that window exits. The startup-fire splash uses the same
-  behavior, with the first press dismissing it. Mid-turn cancellation, modal behavior, and
-  in-flight `/review` cancellation are unchanged.
+- **Idle Ctrl+C now requires a second press before exiting.**
+  - **Composer:** a non-empty composer is cleared without arming the window. A recalled queued
+    input is removed, as Esc removes it, so the queue resumes.
+  - **Empty and idle:** Book shows "Press Ctrl+C again to exit" for 2 seconds, and only another
+    press during that window exits.
+  - **Splash:** the startup-fire splash behaves the same way, and the first press dismisses it.
+  - **Turns and reviews:** a turn that starts inside the window ends it. Ctrl+C that cancels a turn
+    or an in-flight `/review` ends it too, so the next idle press arms again rather than exiting.
+  - **Double handling:** the shortcut layer and the app previously both acted on a single press.
+    One Ctrl+C during `/review` therefore cancelled the review *and* exited, an idle press ran the
+    session-end path twice, and a mid-turn press interrupted twice. The app handler now decides
+    alone.
+  - Modal behavior is unchanged.
 
 ### Fixed
 
