@@ -1256,7 +1256,13 @@ export function App({
       if (key.escape) {
         uiLog.event('input:Escape', { action: 'noop-modal-active' });
       } else if (key.ctrl && input === 'c') {
-        if (pendingUserQuestion || pendingElicitation) {
+        if (isCtrlCExitArmed()) {
+          // The visible "press again to exit" hint is a promise, including over a modal
+          // that took the keyboard after the first press (e.g. behind the startup splash).
+          uiLog.event('input:Ctrl+C', { action: 'exit', context: 'modal' });
+          disarmCtrlCExit();
+          void endCurrentSession('exit').finally(exitApp);
+        } else if (pendingUserQuestion || pendingElicitation) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
           interrupt();
         } else {

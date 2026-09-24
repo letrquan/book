@@ -286,7 +286,7 @@ describe('idle Ctrl+C exit confirmation', () => {
     view.stdin.write('\x03');
     await settle(200);
 
-    expect(state.cancel).toHaveBeenCalled();
+    expect(state.cancel).toHaveBeenCalledTimes(1);
     expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
     expect(state.endCurrentSession).not.toHaveBeenCalled();
   });
@@ -308,6 +308,45 @@ describe('idle Ctrl+C exit confirmation', () => {
     await settle(200);
 
     expect(state.endCurrentSession).toHaveBeenCalledWith('exit');
+  });
+
+  it('exits on the second press when a modal is waiting behind the startup-fire splash', async () => {
+    const fireConfig = config();
+    fireConfig.accessibility = { screenReader: false, reducedMotion: false };
+    const state = agentState({
+      liveConfig: fireConfig,
+      pendingPermission: { toolCall: { id: 'call-1', name: 'Bash', arguments: { command: 'ls' } } },
+    });
+    installAgentState(state);
+    const view = render(<App config={fireConfig} session={testSession} />);
+    await settle(150);
+
+    view.stdin.write('\x03');
+    await settle(200);
+    expect(frameOf(view)).toContain(CTRL_C_EXIT_HINT_TEXT);
+    expect(state.endCurrentSession).not.toHaveBeenCalled();
+
+    view.stdin.write('\x03');
+    await settle(200);
+
+    expect(state.endCurrentSession).toHaveBeenCalledWith('exit');
+  });
+
+  it('keeps Ctrl+C a no-op in a modal once the exit window is not armed', async () => {
+    const state = agentState({
+      pendingPermission: { toolCall: { id: 'call-1', name: 'Bash', arguments: { command: 'ls' } } },
+    });
+    installAgentState(state);
+    const view = render(<App config={config()} session={testSession} />);
+    await settle(150);
+
+    view.stdin.write('\x03');
+    await settle(200);
+    view.stdin.write('\x03');
+    await settle(200);
+
+    expect(state.endCurrentSession).not.toHaveBeenCalled();
+    expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
   });
 
   it('Ctrl+C on a recalled queued input removes it and lets the queue drain', async () => {

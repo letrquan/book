@@ -12,13 +12,16 @@ All notable changes to this project are documented in this file.
   - **Empty and idle:** Book shows "Press Ctrl+C again to exit" for 2 seconds, and only another
     press during that window exits.
   - **Splash:** the startup-fire splash behaves the same way, and the first press dismisses it.
+  - **Hint over a prompt:** while the hint is visible, another press exits even if a prompt now
+    owns the keyboard. An example is the MCP approval prompt that waits behind the splash on the
+    first launch in a repo with an unapproved `.mcp.json`. Once the hint is gone, Ctrl+C in a
+    prompt does nothing, as before.
   - **Turns and reviews:** a turn that starts inside the window ends it. Ctrl+C that cancels a turn
     or an in-flight `/review` ends it too, so the next idle press arms again rather than exiting.
   - **Double handling:** the shortcut layer and the app previously both acted on a single press.
-    One Ctrl+C during `/review` therefore cancelled the review *and* exited, an idle press ran the
-    session-end path twice, and a mid-turn press interrupted twice. The app handler now decides
+    One Ctrl+C during `/review` therefore cancelled the review _and_ exited, an idle press started
+    the session-end path twice, and a mid-turn press interrupted twice. The app handler now decides
     alone.
-  - Modal behavior is unchanged.
 
 ### Fixed
 
