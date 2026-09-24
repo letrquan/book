@@ -17,6 +17,7 @@ import type { AgentConfig } from '../types/runtime.js';
 import type { RewindSnapshotStoreInterface } from '../types/sessions.js';
 import type { HeadlessResult } from '../types/public-sdk.js';
 import { resolveSessionBootstrap } from '../session/resolve.js';
+import { runMemoryExtraction } from '../memory-extract.js';
 import {
   createRewindSnapshotStore,
   createUnavailableRewindSnapshotStore,
@@ -24,6 +25,7 @@ import {
 import { createEphemeralRewindEnvironment } from '../rewind/environment.js';
 import {
   cleanupDebugLogs,
+  createDebugLogger,
   DEFAULT_LOCAL_DATA_RETENTION_DAYS,
   getDebugLogPath,
 } from '../debug-log.js';
@@ -323,6 +325,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       app?.clear();
       process.stdout.write('\x1b[H\x1b[2J');
     };
+    const extraction = new AbortController();
     const restoreScreen = config.accessibility.screenReader
       ? () => {}
       : enterInteractiveScreen(process.stdout);
@@ -351,8 +354,28 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           maxFps: 60,
         },
       );
+      // Phase 1b: read idle earlier sessions of this workspace for memories the model
+      // missed. Background and best-effort: it never blocks or fails the session, and an exit
+      // aborts it; a session it did not finish is read at the next start. It reads through its
+      // own store so old sessions are not cached in the TUI's store for the whole session.
+      if (sessionStore) {
+        void runMemoryExtraction({
+          config,
+          sessions: new SessionStore(SESSION_ROOT),
+          currentSessionId: bootstrap.sessionId,
+          permissionMode: mode,
+          signal: extraction.signal,
+        })
+          .then((result) => createDebugLogger('memory').info('extraction', { ...result }))
+          .catch((error: unknown) =>
+            createDebugLogger('memory').warn('extraction failed', {
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+      }
       await app.waitUntilExit();
     } finally {
+      extraction.abort();
       app?.cleanup();
       restoreScreen();
       await mcpHost.dispose();
