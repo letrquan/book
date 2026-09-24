@@ -39,7 +39,7 @@ import {
 } from './agents/completion-notification.js';
 import { getOrCreateAgentManager } from './agents/manager.js';
 import { resolvePermissionMode } from './permission-mode.js';
-import { stripReasoningTags } from './reasoning-tags.js';
+import { separateInlineReasoning } from './reasoning-tags.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { toolResultErrorMessage } from './tools/result.js';
 
@@ -940,9 +940,13 @@ export async function runHeadless(
         // "did the work".
         stdout.write(`${stopped.plan}\n\n${stopped.message}\n`);
       } else {
+        // Only a reply that opened with a closed reasoning block is rewritten.
+        // Any other answer is printed exactly as the model wrote it, so an
+        // indented first line (YAML, code piped to a file) keeps its indent.
         const last = lastAssistantText(contextHistory);
-        const stripped = stripReasoningTags(last).trim();
-        if (stripped) stdout.write(stripped + '\n');
+        const inline = separateInlineReasoning(last);
+        const answer = inline.found ? inline.content.trimEnd() : last;
+        if (answer) stdout.write(answer + '\n');
       }
     } else if (opts.outputFormat === 'json') {
       // Exactly one top-level document: everything the run produced, including
@@ -1090,6 +1094,20 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
   }
 }
 
+/** Longest primary argument a progress line shows. */
+const PROGRESS_ARG_MAX = 120;
+/** Longest error a `--verbose` result line shows. */
+const PROGRESS_ERROR_MAX = 160;
+
+/**
+ * The first non-blank line of `text`, cut to `max` characters, so a plan, an
+ * agent message or unparsed JSON arguments cannot turn one record into many.
+ */
+function progressLine(text: string, max: number): string {
+  const first = text.trim().split(/\r?\n/, 1)[0].trimEnd();
+  return first.length > max ? `${first.slice(0, max - 1)}…` : first;
+}
+
 /**
  * One line per tool call on stderr in text mode. Without it a print run is
  * silent from the first request to the final answer — 35 minutes and a hundred
@@ -1099,17 +1117,19 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
  */
 function writeTextProgress(event: AgentEvent, opts: HeadlessOptions): void {
   if (event.type === 'tool_use') {
-    const arg = getPrimaryArg(event.toolCall.arguments);
-    process.stderr.write(`[${event.toolCall.name}] ${arg}\n`.replace(/\s+\n$/, '\n'));
+    const arg = progressLine(getPrimaryArg(event.toolCall.arguments), PROGRESS_ARG_MAX);
+    process.stderr.write(`[${event.toolCall.name}]${arg ? ` ${arg}` : ''}\n`);
     return;
   }
   if (event.type === 'tool_result' && opts.verbose === true) {
     const result = event.toolResult;
-    const status = result.status;
     const duration = result.metrics?.durationMs;
-    const detail = status === 'success' ? '' : ` ${toolResultErrorMessage(result) ?? ''}`.trimEnd();
+    const error =
+      result.status === 'success'
+        ? ''
+        : progressLine(toolResultErrorMessage(result) ?? '', PROGRESS_ERROR_MAX);
     process.stderr.write(
-      `  → ${status}${duration !== undefined ? ` ${Math.round(duration)}ms` : ''}${detail.slice(0, 160)}\n`,
+      `  → ${result.status}${duration !== undefined ? ` ${Math.round(duration)}ms` : ''}${error ? ` ${error}` : ''}\n`,
     );
   }
 }

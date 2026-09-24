@@ -5255,4 +5255,55 @@ describe('runAgentLoop inline reasoning separation', () => {
     expect(assistant?.content).toBe('Done.');
     expect(assistant?.reasoningContent).toContain('Reading lines 1006-1025.');
   });
+
+  // A model with thinking off still emits `<think></think>`: the block has no
+  // text, but its tags must not be stored and re-sent as the answer.
+  it('drops an empty think block from the stored answer', async () => {
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: '<think>\n\n</think>\n\nAnswer' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks(),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    const assistant = history.find((m) => m.role === 'assistant');
+    expect(assistant?.content).toBe('Answer');
+    expect(assistant?.reasoningContent ?? '').toBe('');
+  });
+
+  it('keeps a reasoning block quoted in inline code in the stored answer', async () => {
+    const answer = 'Wrap it like `<thinking>plan</thinking>` in your prompt';
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: answer };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks(),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    const assistant = history.find((m) => m.role === 'assistant');
+    expect(assistant?.content).toBe(answer);
+    expect(assistant?.reasoningContent ?? '').toBe('');
+  });
 });

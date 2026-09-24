@@ -154,6 +154,9 @@ export async function* query(
         prompt,
         inputFormat: 'text',
         outputFormat: 'text',
+        // Progress lines are for a person watching `book -p` in a terminal. An
+        // SDK host owns its stderr and receives every tool call as an event.
+        quiet: true,
         history: bootstrap.history,
         transcript: bootstrap.transcript,
         compactBoundaries: bootstrap.compactBoundaries,

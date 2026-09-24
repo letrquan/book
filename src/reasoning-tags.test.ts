@@ -207,7 +207,7 @@ describe('separateInlineReasoning', () => {
       separateInlineReasoning(
         '<reasoning_context>\n**Planning**\n</reasoning_context>\nThe answer.',
       ),
-    ).toEqual({ content: 'The answer.', reasoning: '**Planning**' });
+    ).toEqual({ content: 'The answer.', reasoning: '**Planning**', found: true });
   });
 
   it('joins two closed blocks with a blank line', () => {
@@ -215,6 +215,7 @@ describe('separateInlineReasoning', () => {
     expect(separateInlineReasoning(input)).toEqual({
       content: 'Answer',
       reasoning: 'Block 1\n\nBlock 2',
+      found: true,
     });
   });
 
@@ -237,5 +238,86 @@ describe('separateInlineReasoning', () => {
     const result = separateInlineReasoning(plain);
     expect(result.content).toBe(plain);
     expect(result.reasoning).toBe('');
+  });
+
+  // Each of the next five lost answer text at 4c87d18: the split is permanent,
+  // so a tag the answer merely quotes must never be read as markup.
+  it('keeps a reasoning block quoted in inline code in the answer', () => {
+    const input = 'Wrap it like `<thinking>plan</thinking>` in your prompt';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(false);
+  });
+
+  it('keeps an opening and a closing tag quoted in separate code spans', () => {
+    const input = 'The element `<reasoning>` is closed by `</reasoning>`.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(false);
+  });
+
+  it('keeps a tag quoted in prose ahead of a fenced example intact', () => {
+    const input = [
+      'Use the `<think>` tag like this:',
+      '',
+      '```',
+      '<think>plan</think>',
+      '```',
+      'Done.',
+    ].join('\n');
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(false);
+  });
+
+  it('moves a nested block whole instead of leaving a stray closing tag', () => {
+    const result = separateInlineReasoning('<think>A <think>B</think> C</think>\nAnswer');
+    expect(result.content).toBe('Answer');
+    expect(result.reasoning).toBe('A <think>B</think> C');
+    expect(result.found).toBe(true);
+  });
+
+  it('leaves a JSON report whose findings mention both tags byte-identical', () => {
+    const report = JSON.stringify({
+      findings: [
+        { title: 'Opening tag', body: 'The parser keeps <think> open.' },
+        { title: 'Middle', body: 'Unrelated finding.' },
+        { title: 'Closing tag', body: 'A stray </think> survives.' },
+      ],
+    });
+    const bare = separateInlineReasoning(report);
+    expect(bare.content).toBe(report);
+    expect(bare.reasoning).toBe('');
+    expect(bare.found).toBe(false);
+
+    const prefixed = separateInlineReasoning(`<think>plan the review</think>\n${report}`);
+    expect(prefixed.content).toBe(report);
+    expect(prefixed.reasoning).toBe('plan the review');
+    expect(prefixed.found).toBe(true);
+  });
+
+  it('skips a closing tag the reasoning quotes in inline code', () => {
+    const result = separateInlineReasoning('<think>never write `</think>` early</think>\nAnswer');
+    expect(result.content).toBe('Answer');
+    expect(result.reasoning).toBe('never write `</think>` early');
+    expect(result.found).toBe(true);
+  });
+
+  it('leaves a block in the middle of an answer where it is', () => {
+    const input = 'Answer part 1 <think>more</think> part 2';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(false);
+  });
+
+  it('reports an empty block as found so its tags still leave the answer', () => {
+    const result = separateInlineReasoning('<think>\n\n</think>\n\nAnswer');
+    expect(result.content).toBe('Answer');
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(true);
   });
 });

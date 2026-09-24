@@ -1202,8 +1202,10 @@ export async function runAgentLoop(
 
       assistantContent = textBuffer;
       {
+        // Gate on the block, not on its text: the empty `<think></think>` a
+        // model emits with thinking off still has to leave the answer.
         const inline = separateInlineReasoning(assistantContent);
-        if (inline.reasoning) {
+        if (inline.found) {
           reasoningContent = [reasoningContent, inline.reasoning].filter(Boolean).join('\n\n');
           assistantContent = inline.content;
         }

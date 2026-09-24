@@ -201,28 +201,119 @@ export function stripReasoningTags(content: string): string {
 }
 
 /**
- * Split closed reasoning blocks out of a settled message so they are stored
- * and re-sent as reasoning rather than as answer text.
+ * A reasoning tag that opens the reply: after any blank lines, and indented
+ * less than the four spaces that would make it an indented code block.
+ */
+const LEADING_REASONING_TAG =
+  /^(?:[ \t]*\r?\n)*[ ]{0,3}<(think|thinking|reasoning|reasoning_context)>/i;
+
+/**
+ * Byte ranges covered by inline code spans outside fenced code.
+ *
+ * As in CommonMark, a run of backticks opens a span that the next run of the
+ * same length closes, and a run with no partner is literal text. A tag written
+ * in one — `<think>` in prose that explains the convention — is being quoted,
+ * not used.
+ */
+function inlineCodeRanges(
+  content: string,
+  fenced: Array<[number, number]>,
+): Array<[number, number]> {
+  const runs: Array<{ start: number; length: number }> = [];
+  const backticks = /`+/g;
+  let match: RegExpExecArray | null;
+  while ((match = backticks.exec(content)) !== null) {
+    const start = match.index;
+    if (!fenced.some(([from, to]) => start >= from && start < to)) {
+      runs.push({ start, length: match[0].length });
+    }
+  }
+  const ranges: Array<[number, number]> = [];
+  for (let i = 0; i < runs.length; i++) {
+    let j = i + 1;
+    while (j < runs.length && runs[j].length !== runs[i].length) j++;
+    if (j === runs.length) continue;
+    ranges.push([runs[i].start, runs[j].start + runs[j].length]);
+    i = j;
+  }
+  return ranges;
+}
+
+/**
+ * Where the block whose opening `tag` ends at `from` is closed: the end of its
+ * text and the offset just past its closing tag, or null if it never closes.
+ * Tags of the same name nest, so an inner block does not end the outer one,
+ * and a tag that touches quoted code is text rather than markup.
+ */
+function findBlockClose(
+  content: string,
+  tag: string,
+  from: number,
+  quoted: Array<[number, number]>,
+): { textEnd: number; after: number } | null {
+  const tags = new RegExp(`<(/?)${tag}>`, 'gi');
+  tags.lastIndex = from;
+  let depth = 1;
+  let match: RegExpExecArray | null;
+  while ((match = tags.exec(content)) !== null) {
+    const start = match.index;
+    const end = tags.lastIndex;
+    if (quoted.some(([lo, hi]) => start < hi && end > lo)) continue;
+    depth += match[1] ? -1 : 1;
+    if (depth === 0) return { textEnd: start, after: end };
+  }
+  return null;
+}
+
+/**
+ * Split the closed reasoning blocks a settled reply opens with out of it, so
+ * they are stored and re-sent as reasoning rather than as answer text.
  *
  * Book renders earlier assistant turns to OpenAI-compatible providers as
  * `<reasoning_context>…</reasoning_context>` followed by the answer, and some
  * routers inline thinking the same way, so models start every reply with that
  * block themselves. Left in `content`, it is what print mode prints and what a
- * `--resume` shows as the answer. Only closed blocks move: an unclosed one is
- * kept as answer text for the same reason `stripReasoningTags` keeps it.
+ * `--resume` shows as the answer.
+ *
+ * What moves here leaves the answer for good — print mode, json `messages`, a
+ * managed agent's result and every later request see only what is left — so
+ * this is the narrow reading. Only blocks at the very start of the reply move,
+ * one after another; a tag later in the answer is content, because answers
+ * quote these tags (a review finding about them, a prompt template, prose in
+ * backticks). A tag inside inline or fenced code is never markup, blocks of the
+ * same name nest, and a block that never closes is kept as answer text for the
+ * same reason `stripReasoningTags` keeps it.
+ *
+ * `found` says whether any block moved, even an empty one: the
+ * `<think></think>` a model emits with thinking off has no reasoning to keep
+ * but still has to leave the answer.
  */
-export function separateInlineReasoning(content: string): { content: string; reasoning: string } {
-  if (!content.includes('<')) return { content, reasoning: '' };
-  const { parts } = splitWith(content, CLOSED_REASONING_TAG_PATTERN);
-  const thinkParts = parts.filter((part): part is ThinkBlockPart => part.kind === 'think');
-  if (thinkParts.length === 0) return { content, reasoning: '' };
-
-  const reasoning = thinkParts.map((part) => part.text.trim()).join('\n\n');
-  const markdown = parts
-    .filter((part): part is MarkdownPart => part.kind === 'markdown')
-    .map((part) => part.text)
-    .join('')
-    .replace(/^(?:[ \t]*\r?\n)+/, '');
-
-  return { content: markdown, reasoning };
+export function separateInlineReasoning(content: string): {
+  content: string;
+  reasoning: string;
+  found: boolean;
+} {
+  const unchanged = { content, reasoning: '', found: false };
+  if (!content.includes('<')) return unchanged;
+  const fenced = fencedRanges(content);
+  const quoted = [...fenced, ...inlineCodeRanges(content, fenced)];
+  const blocks: string[] = [];
+  let rest = 0;
+  for (;;) {
+    const open = LEADING_REASONING_TAG.exec(content.slice(rest));
+    if (!open) break;
+    const close = findBlockClose(content, open[1], rest + open[0].length, quoted);
+    if (!close) break;
+    blocks.push(content.slice(rest + open[0].length, close.textEnd).trim());
+    rest = close.after;
+  }
+  if (blocks.length === 0) return unchanged;
+  return {
+    content: content
+      .slice(rest)
+      .replace(/^[ \t]+(?=\S)/, '')
+      .replace(/^(?:[ \t]*\r?\n)+/, ''),
+    reasoning: blocks.filter(Boolean).join('\n\n'),
+    found: true,
+  };
 }

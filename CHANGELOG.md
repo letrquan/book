@@ -47,8 +47,13 @@ All notable changes to this project are documented in this file.
   followed by the answer, and routers inline thinking the same way, so models began every reply
   with that block themselves. It was stored as answer text, re-sent as such, printed by print
   mode, and shown as the answer on `--resume`; at a `--max-turns` stop the same block came out
-  three times (#216, #223). Closed blocks are now split out of a settled message into its
-  reasoning, and text output strips whatever an older session still carries.
+  three times (#216, #223). The closed blocks a settled reply opens with are now split out into
+  its reasoning — several in a row, a nested block whole, and an empty `<think></think>` from a
+  model with thinking off. Only that prefix moves, because the split is permanent: a tag later in
+  the answer, or inside inline or fenced code, stays answer text, so a reply that quotes the tags
+  (a review finding about them, a prompt template) keeps the text between them. Text output applies
+  the same split to an older session's answer and prints any other answer exactly as written, an
+  indented first line included.
 - **`TaskList` no longer rejects a `reason`.** The model habitually explains why it is reading the
   list (`TaskList({ reason: "verify all tasks are complete" })`) and got a hard
   `invalid_arguments` for it, then repeated the call bare — two wasted turns each time (#216). The
@@ -74,9 +79,11 @@ All notable changes to this project are documented in this file.
 
 - **Print mode shows progress.** `book -p` with the default `text` output printed nothing for 35
   minutes while the agent made a hundred tool calls; the only sign of life was the session file
-  (#225). It now writes one line per tool call to stderr — `[Read] src/cli/doctor.ts` — with
-  stdout still the final answer alone. `--verbose`, which was parsed and discarded, adds each
-  call's result; `-q/--quiet` turns the lines off; `json` and `stream-json` are untouched.
+  (#225). It now writes one line per tool call to stderr — `[Read] src/cli/doctor.ts`, cut to the
+  argument's first line and 120 characters — with stdout still the final answer alone.
+  `--verbose`, which was parsed and discarded, adds each call's result; `-q/--quiet` turns the
+  lines off, `retry:` lines included; `json` and `stream-json` get no progress lines. The SDK's
+  `query()` runs quiet, so a host's stderr gets no progress or `retry:` lines either.
 
 - **The turn that trips the compaction threshold no longer waits for the summarizer.** When a
   response reports usage over the threshold and has tool calls to make, the reducer now starts on

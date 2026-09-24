@@ -147,11 +147,26 @@ an error too: the TUI has no initial prompt. `--input-format stream-json` reads 
 process.
 
 In `text` output stdout is the final answer alone, and progress goes to **stderr**: one line per
-tool call (`[Read] src/cli/doctor.ts`, `[Bash] npm test`) so a person watching a terminal can see a
-long run is alive without tailing the session file. `--verbose` adds each call's result
-(`  → success 12ms`, or the error), `--quiet` turns the lines off, retry lines included. `json` and
-`stream-json` write nothing to stderr. Reasoning the model inlines as `<reasoning_context>…</reasoning_context>` is
-stored as reasoning, not answer text, so it never reaches stdout.
+tool call (`[Read] src/cli/doctor.ts`, `[Bash] npm test`), cut to the argument's first line and 120
+characters, so a person watching a terminal can see a long run is alive without tailing the session
+file. `--verbose` adds each call's result (`  → success 12ms`, or the first line of the error), and
+`--quiet` turns the progress lines off, `retry:` lines included.
+
+`json` and `stream-json` write no progress lines, but their stderr is not silent. `json` still
+writes `retry:` lines (unless `--quiet`) and `error:` lines there; `stream-json` carries retries and
+errors as `retry` and `error` records on stdout instead. Every format writes `warning:` lines (a
+slash command whose shell substitution failed) and `⚠` startup notices to stderr. The SDK's
+`query()` runs quiet: no progress or `retry:` lines reach the host's stderr, since every tool call
+reaches it as an event, but `error:` and `warning:` lines still do.
+
+A closed reasoning block the reply opens with (`<think>…</think>`,
+`<reasoning_context>…</reasoning_context>`, several in a row, or an empty one) is stored as
+reasoning, not answer text, so it never reaches stdout. Only blocks at the very start of the reply
+move: a tag later in the answer, or one inside inline or fenced code, is answer text and is printed
+as written, and an answer with no such block is printed exactly as the model wrote it, plus a
+newline. `stream-json` partial deltas
+(`--include-partial-messages`) still carry the raw tags; the complete `assistant` record carries the
+split content.
 
 Three things behave differently in print mode, because there is nobody to ask.
 
