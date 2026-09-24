@@ -25,6 +25,77 @@ All notable changes to this project are documented in this file.
     the session-end path twice, and a mid-turn press interrupted twice. The app handler now decides
     alone.
 
+- **undici 6 -> 8, with the DNS-rebinding guard re-proven rather than re-asserted.** The major had
+  been pinned since dependabot #84 because `web-policy.test.ts` failed on it, and the failure looked
+  like undici had changed the lookup contract the SSRF defense is built on: the policy's `EACCES`
+  never surfaced and `UND_ERR_INVALID_ARG` came back instead. It had not. The contract is unchanged
+  -- undici 8 still calls the hook, still with `all: true`, and still honours an `EACCES` from it.
+  What broke is interop: `strictWebDispatcher` is an `Agent` from the *npm* undici, and it was being
+  handed to Node's **global** `fetch`, which is Node's own bundled undici. undici 8 requires the new
+  request-handler interface (`onRequestStart`), the bundled one still builds the legacy shape, and
+  the dispatcher rejected the request outright -- `invalid onRequestStart method`, thrown before the
+  lookup hook was ever called. `WebFetch`/`WebSearch` now issue their requests through undici's own
+  `fetch`, which puts the guard back on the connect path.
+
+  **Loading undici 8 had a side effect on Node 22.**
+  - **What went wrong:** undici 8 installs its own Agent in both global-dispatcher slots when its
+    new slot is empty. On Node 22 it always is, because the bundled undici reads only the legacy
+    slot. So a static import replaced the dispatcher Node's own `fetch` uses for provider traffic,
+    including the proxy agent `NODE_USE_ENV_PROXY` installs at startup. Model calls silently went
+    around the proxy.
+  - **The fix:**
+    - undici is now imported on first use;
+    - the legacy slot is put back after the import;
+    - the strict dispatcher is built inside `createWebTools`.
+    - Building the tool registry at startup no longer loads undici at all.
+    - A request without the strict dispatcher, when `BOOK_WEB_ALLOW_PRIVATE_NETWORK` is set, goes
+      through Node's own `fetch`, so the host's proxy still applies to it.
+    - A failed import is not cached, so the next call tries again.
+  - **Checked** with a fake proxy on Node 22.23.3. Before the fix, once `web.ts` loaded, Node's
+    `fetch` went direct (`ENOTFOUND`). Now it still reaches the proxy, `WebFetch` still works, and
+    a private-network `WebFetch` goes through the proxy too.
+  - **`bench:runtime`:** its WebFetch case stubbed `globalThis.fetch`, which the tool no longer uses,
+    so it had started hitting the network. The stub now goes in through `createWebTools`.
+
+  Because the diagnosis says the guard was skipped rather than loosened, the fix is only trustworthy
+  if the guard is shown working: `safeNetworkLookup` now has direct tests for **both** callback
+  shapes -- the `options.all` list form and the single-address `(address, family)` form -- proving a
+  private or special-use address is refused on each and a public one passes through, and the
+  end-to-end test drives a real `Agent` so it fails if undici ever stops consulting the hook. Every
+  one of those tests was confirmed to fail with the address check disabled. `safeNetworkLookup` also
+  now refuses an empty resolution instead of reporting success: the single-address form previously
+  fell back to `''`, handing the connector a destination it had never validated.
+
+  Driving that rebinding case through the real tool surfaced a second defect and it is fixed here
+  too: the refusal was invisible. undici reports a lookup failure as the `cause` of a generic
+  `TypeError: fetch failed`, and `WebFetch` was passing that through as `fetch_failed` with
+  `retryable: true` -- so a connection refused on policy grounds was indistinguishable from a flaky
+  network, and the model was invited to retry something that can never succeed. The refusal is now
+  branded on the error itself, survives undici's wrapping, and comes back as
+  `private_network_forbidden`, `status: blocked`, `retryable: false`, carrying the policy's own
+  sentence: `Connection blocked because <host> resolved to private or special-use address <ip>`.
+  An `EACCES` from anything else is deliberately not claimed as a policy refusal.
+
+  `WebSearch` gets the same treatment, because `postMcp` dispatches through the strict dispatcher
+  unconditionally: a refused provider endpoint no longer aggregates as a retryable
+  `Built-in web search providers are unavailable. exa: fetch failed`. A refused provider still
+  enters the normal provider cooldown -- being blocked on policy grounds is not a free retry.
+
+  Every `private_network_forbidden` refusal now comes back `status: blocked`, `retryable: false`,
+  with the policy's sentence as its content. That covers pre-flight, connect-time, and a search
+  provider's endpoint.
+  - The registry no longer retries a refused `WebSearch`. Before, that retry turned the refusal
+    into "is cooling down" with `retryable: true`.
+  - The TUI shows the reason instead of a bare "skipped".
+  - A provider cooling down after a refusal still reports it as final.
+  - A search in which every provider was refused is itself `blocked`.
+
+- **Node.js 22.19 or newer is now required** (previously 22.13). undici 8 declares
+  `engines.node: >=22.19.0`, so the package floor moves with it. CI's low leg is pinned to that
+  exact floor rather than `22.x`: `22.x` resolves to the newest 22, which is why a dependency
+  raising the real floor above the declared one went unnoticed until now. `package-lock.json`'s
+  own engines entry now matches it.
+
 ### Fixed
 
 - **A long reply no longer jitters sideways while it streams.** Once a reply outgrew the live
@@ -221,66 +292,6 @@ All notable changes to this project are documented in this file.
   bypass-2FA tokens in January 2027, so that path was already on a clock. The workflow refuses a tag
   that disagrees with `package.json`, runs the full gate and the installed-artifact smoke test
   before publishing, and gets provenance attached automatically.
-
-### Changed
-
-- **undici 6 -> 8, with the DNS-rebinding guard re-proven rather than re-asserted.** The major had
-  been pinned since dependabot #84 because `web-policy.test.ts` failed on it, and the failure looked
-  like undici had changed the lookup contract the SSRF defense is built on: the policy's `EACCES`
-  never surfaced and `UND_ERR_INVALID_ARG` came back instead. It had not. The contract is unchanged
-  -- undici 8 still calls the hook, still with `all: true`, and still honours an `EACCES` from it.
-  What broke is interop: `strictWebDispatcher` is an `Agent` from the *npm* undici, and it was being
-  handed to Node's **global** `fetch`, which is Node's own bundled undici. undici 8 requires the new
-  request-handler interface (`onRequestStart`), the bundled one still builds the legacy shape, and
-  the dispatcher rejected the request outright -- `invalid onRequestStart method`, thrown before the
-  lookup hook was ever called. `WebFetch`/`WebSearch` now issue their requests through undici's own
-  `fetch`, which puts the guard back on the connect path.
-
-  **Loading undici 8 had a side effect on Node 22.**
-  - **What went wrong:** undici 8 installs its own Agent in both global-dispatcher slots when its
-    new slot is empty. On Node 22 it always is, because the bundled undici reads only the legacy
-    slot. So a static import replaced the dispatcher Node's own `fetch` uses for provider traffic,
-    including the proxy agent `NODE_USE_ENV_PROXY` installs at startup. Model calls silently went
-    around the proxy.
-  - **The fix:**
-    - undici is now imported on first use;
-    - the legacy slot is put back after the import;
-    - the strict dispatcher is built inside `createWebTools`.
-    - Building the tool registry at startup no longer loads undici at all.
-  - **Checked** with a fake proxy on Node 22.23.3. Before the fix, once `web.ts` loaded, Node's
-    `fetch` went direct (`ENOTFOUND`). Now it still reaches the proxy, and `WebFetch` still works.
-  - **`bench:runtime`:** its WebFetch case stubbed `globalThis.fetch`, which the tool no longer uses,
-    so it had started hitting the network. The stub now goes in through `createWebTools`.
-
-  Because the diagnosis says the guard was skipped rather than loosened, the fix is only trustworthy
-  if the guard is shown working: `safeNetworkLookup` now has direct tests for **both** callback
-  shapes -- the `options.all` list form and the single-address `(address, family)` form -- proving a
-  private or special-use address is refused on each and a public one passes through, and the
-  end-to-end test drives a real `Agent` so it fails if undici ever stops consulting the hook. Every
-  one of those tests was confirmed to fail with the address check disabled. `safeNetworkLookup` also
-  now refuses an empty resolution instead of reporting success: the single-address form previously
-  fell back to `''`, handing the connector a destination it had never validated.
-
-  Driving that rebinding case through the real tool surfaced a second defect and it is fixed here
-  too: the refusal was invisible. undici reports a lookup failure as the `cause` of a generic
-  `TypeError: fetch failed`, and `WebFetch` was passing that through as `fetch_failed` with
-  `retryable: true` -- so a connection refused on policy grounds was indistinguishable from a flaky
-  network, and the model was invited to retry something that can never succeed. The refusal is now
-  branded on the error itself, survives undici's wrapping, and comes back as
-  `private_network_forbidden`, `status: blocked`, `retryable: false`, carrying the policy's own
-  sentence: `Connection blocked because <host> resolved to private or special-use address <ip>`.
-  An `EACCES` from anything else is deliberately not claimed as a policy refusal.
-
-  `WebSearch` gets the same treatment, because `postMcp` dispatches through the strict dispatcher
-  unconditionally: a refused provider endpoint no longer aggregates as a retryable
-  `Built-in web search providers are unavailable. exa: fetch failed`. A refused provider still
-  enters the normal provider cooldown -- being blocked on policy grounds is not a free retry.
-
-- **Node.js 22.19 or newer is now required** (previously 22.13). undici 8 declares
-  `engines.node: >=22.19.0`, so the package floor moves with it. CI's low leg is pinned to that
-  exact floor rather than `22.x`: `22.x` resolves to the newest 22, which is why a dependency
-  raising the real floor above the declared one went unnoticed until now. `package-lock.json`'s
-  own engines entry now matches it.
 
 ## [0.2.0] - 2026-09-08
 
