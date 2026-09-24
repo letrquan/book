@@ -7,15 +7,17 @@ All notable changes to this project are documented in this file.
 ### Changed
 
 - **Idle Ctrl+C now requires a second press before exiting.**
-  - **Composer:** a non-empty composer is cleared without arming the window. A recalled queued
-    input is removed, as Esc removes it, so the queue resumes.
+  - **Composer:** when nothing is running, a non-empty composer is cleared without arming the
+    window. A running turn or `/review` is cancelled first. A recalled queued input is removed, as
+    Esc removes it, so the queue resumes.
   - **Empty and idle:** Book shows "Press Ctrl+C again to exit" for 2 seconds, and only another
     press during that window exits.
   - **Splash:** the startup-fire splash behaves the same way, and the first press dismisses it.
   - **Hint over a prompt:** while the hint is visible, another press exits even if a prompt now
-    owns the keyboard. An example is the MCP approval prompt that waits behind the splash on the
-    first launch in a repo with an unapproved `.mcp.json`. Once the hint is gone, Ctrl+C in a
-    prompt does nothing, as before.
+    owns the keyboard. An example is the MCP approval prompt that waits behind the splash on every
+    launch in a repo whose `.mcp.json` server is neither approved nor rejected. Once the hint is
+    gone, Ctrl+C in a prompt behaves as it did before: a question or form cancels the turn, and
+    other prompts ignore it.
   - **Turns and reviews:** a turn that starts inside the window ends it. Ctrl+C that cancels a turn
     or an in-flight `/review` ends it too, so the next idle press arms again rather than exiting.
   - **Double handling:** the shortcut layer and the app previously both acted on a single press.
