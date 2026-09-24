@@ -1117,8 +1117,24 @@ const PROGRESS_ERROR_MAX = 160;
  * agent message or unparsed JSON arguments cannot turn one record into many.
  */
 function progressLine(text: string, max: number): string {
-  const first = text.trim().split(/\r?\n/, 1)[0].trimEnd();
-  return first.length > max ? `${first.slice(0, max - 1)}…` : first;
+  const first = text.trim().split(/\r?\n/, 1)[0];
+  // A control character (a bare CR, an escape sequence, a bidi override) would let an argument or a tool name rewrite the terminal.
+  const printable = Array.from(first, (char) => {
+    const code = char.codePointAt(0) ?? 0;
+    const control =
+      code < 32 ||
+      (code >= 0x7f && code <= 0x9f) ||
+      code === 0x061c ||
+      code === 0x200e ||
+      code === 0x200f ||
+      (code >= 0x2028 && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069);
+    return control ? ' ' : char;
+  })
+    .join('')
+    .trimEnd();
+  const chars = Array.from(printable);
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : printable;
 }
 
 /**
@@ -1131,7 +1147,9 @@ function progressLine(text: string, max: number): string {
 function writeTextProgress(event: AgentEvent, opts: HeadlessOptions): void {
   if (event.type === 'tool_use') {
     const arg = progressLine(getPrimaryArg(event.toolCall.arguments), PROGRESS_ARG_MAX);
-    process.stderr.write(`[${event.toolCall.name}]${arg ? ` ${arg}` : ''}\n`);
+    process.stderr.write(
+      `[${progressLine(event.toolCall.name, PROGRESS_ARG_MAX)}]${arg ? ` ${arg}` : ''}\n`,
+    );
     return;
   }
   if (event.type === 'tool_result' && opts.verbose === true) {

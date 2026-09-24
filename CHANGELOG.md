@@ -190,17 +190,27 @@ All notable changes to this project are documented in this file.
   - **Only that prefix moves, because the split is permanent.** A tag later in the answer stays
     answer text, so a reply that quotes the tags mid-answer (a review finding about them) keeps the
     text between them.
-  - **A block ends at its first closing tag.** Same-name tags do not nest, so a bare `<think>`
-    mentioned in the reasoning can no longer push the end into the answer.
-    - If that tag looks quoted, the reply is left exactly as written. Quoted means wrapped in
-      matching backticks, or inside a fence the block opened.
-    - The split never looks further, because a later tag may be one the answer quotes. Where the
-      reading is unsure, text stays in the answer rather than leaving it.
-    - A stored answer does not split again.
+  - **A block ends only at its first closing tag, and only when its shape leaves no doubt.**
+    - It sits on one line (`<think>…</think>`), or its opening tag ends its line and its closing
+      tag starts one. That is Book's own replay format, and DeepSeek/Qwen output.
+    - The closing tag ends its line.
+    - No other reasoning tag appears inside the block.
+    - The closing tag is outside any fence or inline code span the block opened.
+    - An empty block always ends at its first closing tag.
+  - **Otherwise the reply is left exactly as written.** The split never looks further, because a
+    later tag may be one the answer mentions, and text stays in the answer rather than leaving it.
+    That covers several cases:
+    - a block the model never closed, unless the answer's first closing tag happens to sit in an
+      accepted shape;
+    - reasoning that mentions a reasoning tag;
+    - an answer on the same line as the closing tag;
+    - a close on the last line of prose.
+  - **The accepted cost:** reasoning in any other shape stays in the printed answer.
+  - A stored answer does not split again.
   - **A reply that opens with an unfenced reasoning tag loses that block** even when the reply is
-    itself a template meant to contain one. Fence or quote such a tag to keep it. Text output applies
-  the same split to an older session's answer and prints any other answer exactly as written, an
-  indented first line included.
+    itself a template meant to contain one. Fence or quote such a tag to keep it.
+  - Text output applies the same split to an older session's answer and prints any other answer
+    exactly as written, an indented first line included.
 - **`TaskList` no longer rejects a `reason`.** The model habitually explains why it is reading the
   list (`TaskList({ reason: "verify all tasks are complete" })`) and got a hard
   `invalid_arguments` for it, then repeated the call bare — two wasted turns each time (#216). The
@@ -232,8 +242,13 @@ All notable changes to this project are documented in this file.
   - `-q/--quiet` turns the lines off, `retry:` lines included.
   - `json` and `stream-json` get no progress lines.
   - The SDK's `query()` runs quiet, so a host's stderr gets no progress or `retry:` lines either.
-  - A consumer that stops reading stderr (`2>&1 | head`) no longer kills the run mid-task with an
-    unhandled EPIPE.
+  - A consumer that stops reading (`2>&1 | head`) no longer kills a `text` or `json` run with an
+    unhandled EPIPE. Those formats write stdout once, at the end, and SessionEnd hooks still run.
+  - In `stream-json`, where stdout carries the whole run, a closed stdout aborts the run, so a
+    run whose host has gone does not keep editing files. Like any cancelled print run, it then ends
+    without SessionEnd.
+  - Control characters in a tool argument are replaced in progress lines, so an argument cannot
+    rewrite the terminal.
 
 - **Corrections replace old memories instead of piling up.** `MemorySave` and background extraction
   accept `supersedes`: the replaced entry is kept on disk (`status: superseded`, `supersededBy`) but
