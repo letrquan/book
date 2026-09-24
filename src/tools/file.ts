@@ -240,37 +240,162 @@ export async function applySingleEdit(
 }
 
 /**
- * The lines of a file that a survey is after: top-level declarations and
- * section boundaries, each with its line number, so the model can decide what
- * to read in full without paying for the whole file (#217). Language-agnostic
- * on purpose — a line at indentation zero that is not blank, a closing brace or
- * a comment is a declaration in every language this tool sees, and a shallowly
- * indented `def`/`func`/method line is the next tier. Fenced-off bodies stay
- * out: nothing deeper than `OUTLINE_MAX_INDENT` is shown.
+ * The lines of a file that a survey is after, each with its line number, so the
+ * model can decide what to read in full without paying for the whole file
+ * (#217). Markdown is outlined by its headings. Anything else: a line at
+ * indentation zero that is not blank, closing punctuation or a comment is a
+ * declaration in most languages this tool sees, and a shallowly indented
+ * `def`/`func`/method line is the next tier. Bodies stay out: nothing deeper
+ * than `OUTLINE_MAX_INDENT` is shown.
  */
 const OUTLINE_MAX_INDENT = 4;
+/** An outline is capped at the line count of a whole-file Read. */
+const OUTLINE_MAX_ENTRIES = 2000;
+/** How far below a wrapped signature its closing `)` line is looked for. */
+const OUTLINE_SIGNATURE_LOOKAHEAD = 40;
 // Either a keyword declaration, or a method-shaped line: an identifier, its
 // parameter list, and an opening brace at the end of the line. Control flow
 // has the same shape (`if (x) {`) and is a body, not a declaration; `type` is
 // left out of the shallow tier because there it is an import-list member.
 const OUTLINE_DECLARATION =
   /^\s{1,4}(?:(?:export|public|private|protected|static|async|abstract|override|readonly|pub|final)\s+)*(?:(?:function|class|interface|enum|namespace|def|func|fn|struct|impl|trait|describe|it|test|constructor|get|set)\b|(?!(?:if|for|while|switch|catch|else|do|try|return|await)\b)[A-Za-z_$][\w$]*\s*(?:<[^>]*>)?\([^)]*\)[^;{]*\{\s*$)/;
-function outlineLines(lines: readonly string[]): string[] {
-  const output: string[] = [];
+// A class member bound to an arrow function: `name = (...) => {`, `name = async (...) => {`.
+const OUTLINE_ARROW_MEMBER =
+  /^\s{1,4}(?:(?:public|private|protected|static|readonly|override)\s+)*[A-Za-z_$][\w$]*\s*(?::[^=]*)?=\s*(?:async\s*)?\(.*\)\s*(?::[^=]*)?=>\s*\{\s*$/;
+// A signature whose parameter list wraps onto the next lines: `async send(`.
+// It is kept only when the list closes into a body (`): T {`), so a call that
+// wraps its arguments the same way stays out.
+const OUTLINE_WRAPPED_SIGNATURE =
+  /^\s{1,4}(?:(?:export|public|private|protected|static|async|abstract|override|readonly|pub|final)\s+)*(?!(?:if|for|while|switch|catch|else|do|try|return|await)\b)[A-Za-z_$][\w$]*\s*(?:<.*>)?(?:\s*=\s*(?:async\s*)?)?\([^)]*$/;
+const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdx']);
+// `#` starts a comment only in these languages; elsewhere a `#` line is a
+// C preprocessor directive or a Rust attribute, and belongs in the outline.
+const HASH_COMMENT_EXTENSIONS = new Set([
+  '.py',
+  '.pyi',
+  '.sh',
+  '.bash',
+  '.zsh',
+  '.fish',
+  '.yaml',
+  '.yml',
+  '.toml',
+  '.rb',
+]);
+
+function closesIntoBody(lines: readonly string[], start: number, indent: number): boolean {
+  const end = Math.min(lines.length, start + 1 + OUTLINE_SIGNATURE_LOOKAHEAD);
+  for (let index = start + 1; index < end; index++) {
+    const trimmed = lines[index].trimStart();
+    if (trimmed.length === 0) continue;
+    const lineIndent = lines[index].length - trimmed.length;
+    if (lineIndent < indent) return false;
+    if (lineIndent === indent) return /^\).*\{\s*$/.test(trimmed);
+  }
+  return false;
+}
+
+function codeOutlineIndexes(lines: readonly string[], hashComments: boolean): number[] {
+  const output: number[] = [];
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
-    if (/^[}\])];?,?$/.test(trimmed)) continue;
-    if (/^(?:\/\/|\/\*|\*|#(?!!)|--|<!--)/.test(trimmed)) continue;
+    if (/^[}\])]+[;,]?$/.test(trimmed)) continue;
+    if (/^(?:\/\/|\/\*|\*|--|<!--)/.test(trimmed)) continue;
+    if (hashComments && /^#(?!!)/.test(trimmed)) continue;
     // The closing line of a multi-line import is punctuation, not a declaration.
     if (/^\} from\b/.test(trimmed)) continue;
     const indent = line.length - line.trimStart().length;
-    if (indent === 0 || (indent <= OUTLINE_MAX_INDENT && OUTLINE_DECLARATION.test(line))) {
-      output.push(`${index + 1}: ${line.trimEnd()}`);
+    if (indent === 0) {
+      output.push(index);
+      continue;
+    }
+    if (indent > OUTLINE_MAX_INDENT) continue;
+    if (
+      OUTLINE_DECLARATION.test(line) ||
+      OUTLINE_ARROW_MEMBER.test(line) ||
+      (OUTLINE_WRAPPED_SIGNATURE.test(line) && closesIntoBody(lines, index, indent))
+    ) {
+      output.push(index);
     }
   }
   return output;
+}
+
+function markdownOutlineIndexes(lines: readonly string[]): number[] {
+  const output: number[] = [];
+  let start = 0;
+  if (lines[0]?.trim() === '---') {
+    const close = lines.findIndex((line, index) => index > 0 && /^(?:---|\.\.\.)\s*$/.test(line));
+    if (close > 0) start = close + 1;
+  }
+  let fence: string | undefined;
+  for (let index = start; index < lines.length; index++) {
+    const line = lines[index];
+    if (fence !== undefined) {
+      const closing = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line)?.[1];
+      if (closing && closing[0] === fence[0] && closing.length >= fence.length) fence = undefined;
+      continue;
+    }
+    const opening = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (opening) {
+      fence = opening;
+      continue;
+    }
+    if (/^ {0,3}#{1,6}(?:\s|$)/.test(line)) {
+      output.push(index);
+      continue;
+    }
+    const next = lines[index + 1];
+    if (next !== undefined && /^ {0,3}(?:=+|-+)\s*$/.test(next) && /^ {0,3}[^\s*+>|-]/.test(line)) {
+      output.push(index);
+    }
+  }
+  return output;
+}
+
+function outlineLines(
+  lines: readonly string[],
+  filePath: string,
+): Array<{ line: number; text: string }> {
+  // A byte-order mark is not indentation: measure the first line from after it.
+  const source =
+    lines.length > 0 && lines[0].charCodeAt(0) === 0xfeff
+      ? [lines[0].slice(1), ...lines.slice(1)]
+      : lines;
+  const extension = extname(filePath).toLowerCase();
+  const indexes = MARKDOWN_EXTENSIONS.has(extension)
+    ? markdownOutlineIndexes(source)
+    : codeOutlineIndexes(source, HASH_COMMENT_EXTENSIONS.has(extension));
+  return indexes.map((index) => ({ line: index + 1, text: source[index].trimEnd() }));
+}
+
+async function outlineFile(
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+  filePath: string,
+  lines: readonly string[],
+): Promise<ToolResult> {
+  if (args.offset !== undefined || args.limit !== undefined) {
+    return toolFailure(
+      `An outline covers the whole file and takes no offset or limit. Call Read with only filePath and outline: true to outline ${args.filePath}, or drop outline to read a line range.`,
+      { code: 'invalid_arguments' },
+    );
+  }
+  const entries = outlineLines(lines, filePath);
+  const shown = entries.slice(0, OUTLINE_MAX_ENTRIES);
+  const output = [
+    `Outline of ${args.filePath}: ${lines.length} lines, ${shown.length} shown. An outline is not the file's content: Read the file (whole, or with offset/limit) before editing it.`,
+    ...shown.map((entry) => `${entry.line}: ${entry.text}`),
+  ];
+  if (entries.length > shown.length) {
+    output.push(
+      `[Outline truncated at ${OUTLINE_MAX_ENTRIES} of ${entries.length} entries; the rest start at line ${entries[shown.length].line}. Read from there without outline, with offset/limit.]`,
+    );
+  }
+  const observation = await observeFile(ctx, filePath, 'outline');
+  return toolSuccess(output.join('\n'), { artifacts: { fileObservations: [observation] } });
 }
 
 async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
@@ -297,24 +422,11 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
 
   throwIfAborted(ctx.signal);
   const lines = content.split('\n');
+  if (args.outline === true) return outlineFile(args, ctx, filePath, lines);
   if (offset > lines.length) {
     return toolFailure(
       `Offset ${offset} is past the end of ${args.filePath}: the file has ${lines.length} lines. Read with an offset of at most ${lines.length}.`,
       { code: 'offset_out_of_range' },
-    );
-  }
-  if (args.outline === true) {
-    const shown = outlineLines(lines);
-    const observation = await observeFile(ctx, filePath, 'read', {
-      lineStart: 1,
-      lineEnd: lines.length,
-    });
-    return toolSuccess(
-      [
-        `Outline of ${args.filePath}: ${lines.length} lines, ${shown.length} shown. Read without outline (or with offset/limit) for the full text.`,
-        ...shown,
-      ].join('\n'),
-      { artifacts: { fileObservations: [observation] } },
     );
   }
   const end = Math.min(lines.length, offset - 1 + limit);
@@ -990,7 +1102,7 @@ export const fileTools: ToolDefinition[] = [
     policy: { concurrency: 'parallel' },
     argumentAliases: { file_path: 'filePath', path: 'filePath' },
     description:
-      'Read a file from the workspace. Returns lines with line numbers. The default reads the whole file (up to 2000 lines) in one call — read files whole; use offset/limit only for files longer than that, and never to read a file in small chunks. The "N: " line-number prefixes are display-only and are never part of the file content. Pass outline: true to survey a file\'s declarations first.',
+      'Read a file from the workspace. Returns lines with line numbers. The default reads the whole file (up to 2000 lines) in one call — read files whole; use offset/limit only for files longer than that, and never to read a file in small chunks. The "N: " line-number prefixes are display-only and are never part of the file content. Pass outline: true, without offset or limit, to survey a file\'s declarations (a Markdown file\'s headings) before deciding what to read; an outline is not a read, so Read the file before editing it.',
     parameters: {
       type: 'object',
       properties: {
@@ -1014,7 +1126,7 @@ export const fileTools: ToolDefinition[] = [
         outline: {
           type: 'boolean',
           description:
-            'Return only the top-level declarations and section lines with their line numbers, about a tenth of the file. Use it to survey a file before deciding what to read in full.',
+            "Return only the file's declarations with their line numbers (for Markdown, its headings), up to 2000 of them, to survey a file before deciding what to read in full. Cannot be combined with offset or limit. An outline does not count as reading the file: Edit and Write still need a Read.",
         },
       },
       required: ['filePath'],

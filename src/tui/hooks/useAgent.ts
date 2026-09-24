@@ -64,7 +64,7 @@ import { resolveSettings } from '../../settings-loader.js';
 import { providerConfigFromDraft, type ProviderSaveRequest } from '../model-options.js';
 import type { ProviderRemovalResult } from '../components/ModelPicker.js';
 import { updateEffortLevel } from '../../commands/effort.js';
-import { observationKey } from '../../tools/file-provenance.js';
+import { seedObservationLedger } from '../../tools/file-provenance.js';
 import type { SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';
 import {
@@ -188,15 +188,10 @@ export type CompactUiState = {
 };
 
 function buildObservationLedger(messages: Message[]) {
-  const ledger = new Map<string, NonNullable<Message['fileObservations']>[number]>();
-  for (const message of messages) {
-    for (const observation of message.fileObservations ?? []) {
-      const key = observationKey(observation.workspaceId, observation.path);
-      const current = ledger.get(key);
-      if (!current || current.timestamp <= observation.timestamp) ledger.set(key, observation);
-    }
-  }
-  return ledger;
+  return seedObservationLedger(
+    new Map<string, NonNullable<Message['fileObservations']>[number]>(),
+    messages,
+  );
 }
 
 function withoutRuntimeState(config: AgentConfig): AgentConfig {

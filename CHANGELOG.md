@@ -100,10 +100,14 @@ All notable changes to this project are documented in this file.
 
 - **`Read` has an outline mode.** Before its first edit a run read 40–55 whole files, and each
   survey read cost the entire file on every turn afterwards; the context reached 200k tokens by
-  turn 30 (#217). `Read { outline: true }` returns the declarations and section lines with their
-  line numbers — `src/agent/loop.ts` goes from 2868 lines to 51 — so a survey can decide what to
-  read in full without paying for the file. The tool description steers surveys to it. The
-  issue's second proposal, answering a repeat `Read` of an unchanged file with "unchanged since
+  turn 30 (#217). `Read { outline: true }` returns a file's declarations with their line numbers
+  — `src/agent/loop.ts` goes from 2868 lines to 51 — so a survey can decide what to read in full
+  without paying for the file. A Markdown file outlines to its headings, and a method whose
+  parameter list wraps onto several lines is still listed. An outline is not a read: it is
+  recorded as its own `outline` file observation, so an `Edit` or `Write` after it still needs a
+  `Read`, and it never replaces an earlier read's hash, even after a resume. The outline takes
+  no `offset`/`limit` and is capped at 2000 entries. The tool description steers surveys to it.
+  The issue's second proposal, answering a repeat `Read` of an unchanged file with "unchanged since
   your read", is deliberately not done: after a compaction the earlier bytes are gone from the
   context and the repeat read is the model's only way back to them.
 

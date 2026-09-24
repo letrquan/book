@@ -22,6 +22,51 @@ export function observationKey(workspaceId: string, path: string): string {
   return `${workspaceId}:${process.platform === 'win32' ? normalized.toLowerCase() : normalized}`;
 }
 
+/**
+ * An outline shows the model a file's declarations, not its content. It is
+ * recorded, but it never stands in for having seen the file: it satisfies
+ * neither the observed-file check nor the freshness check below.
+ */
+function isOutline(observation: FileObservation): boolean {
+  return observation.operation === 'outline';
+}
+
+/**
+ * Whether `next` may take `current`'s place in an observation ledger. An
+ * outline never displaces a real observation of the same file, so it cannot
+ * refresh the hash a mutation is checked against.
+ */
+export function mayReplaceObservation(
+  current: FileObservation | undefined,
+  next: FileObservation,
+): boolean {
+  return !current || !isOutline(next) || isOutline(current);
+}
+
+/**
+ * Rebuild a resumed session's ledger from its transcript: the newest
+ * observation of each file wins, under the same rule a live observation
+ * follows, so an outline is still only an outline after a resume.
+ */
+export function seedObservationLedger(
+  ledger: Map<string, FileObservation>,
+  messages: readonly { fileObservations?: readonly FileObservation[] }[],
+): Map<string, FileObservation> {
+  for (const message of messages) {
+    for (const observation of message.fileObservations ?? []) {
+      const key = observationKey(observation.workspaceId, observation.path);
+      const current = ledger.get(key);
+      if (
+        mayReplaceObservation(current, observation) &&
+        (!current || current.timestamp <= observation.timestamp)
+      ) {
+        ledger.set(key, observation);
+      }
+    }
+  }
+  return ledger;
+}
+
 export async function observeFile(
   ctx: ToolContext,
   absolutePath: string,
@@ -42,7 +87,9 @@ export async function observeFile(
     sourceRef: ctx.currentToolTraceId ?? 'runtime-tool',
     timestamp: Date.now(),
   };
-  ctx.fileObservationLedger?.set(observationKey(workspaceId, path), observation);
+  const key = observationKey(workspaceId, path);
+  const ledger = ctx.fileObservationLedger;
+  if (ledger && mayReplaceObservation(ledger.get(key), observation)) ledger.set(key, observation);
   return observation;
 }
 
@@ -54,7 +101,7 @@ export async function requireFreshObservation(
   const workspaceId = workspaceIdentity(ctx.workspaceRoot);
   const normalizedPath = relativePath.replace(/\\/g, '/');
   const remembered = ctx.fileObservationLedger?.get(observationKey(workspaceId, normalizedPath));
-  if (!remembered) return undefined;
+  if (!remembered || isOutline(remembered)) return undefined;
   try {
     const info = await stat(absolutePath);
     if (!info.isFile()) return staleMessage(normalizedPath);
@@ -72,9 +119,10 @@ function staleMessage(path: string): string {
 
 /**
  * Require that the file was observed this session (Read, mention, or a prior
- * mutation) before it may be mutated. Contexts without an observation ledger
- * (bare harnesses, low-level embedding) are exempt. Returns a ready ToolResult
- * failure so every mutating tool reports the same code and remediation.
+ * mutation; an outline does not count) before it may be mutated. Contexts
+ * without an observation ledger (bare harnesses, low-level embedding) are
+ * exempt. Returns a ready ToolResult failure so every mutating tool reports the
+ * same code and remediation.
  */
 export function requireObservationForMutation(
   ctx: ToolContext,
@@ -85,9 +133,13 @@ export function requireObservationForMutation(
   if (!ledger) return undefined;
   const workspaceId = workspaceIdentity(ctx.workspaceRoot);
   const normalizedPath = relativePath.replace(/\\/g, '/');
-  if (ledger.has(observationKey(workspaceId, normalizedPath))) return undefined;
+  const remembered = ledger.get(observationKey(workspaceId, normalizedPath));
+  if (remembered && !isOutline(remembered)) return undefined;
+  const seen = remembered
+    ? "has only been outlined in this session, and an outline is not the file's content"
+    : 'has not been read in this session';
   return toolFailure(
-    `SKIPPED: ${normalizedPath} has not been read in this session. Call Read (or mention the file) before modifying it.`,
+    `SKIPPED: ${normalizedPath} ${seen}. Call Read (or mention the file) before modifying it.`,
     {
       code: 'file_not_observed',
       remediation: `Read the file first, then retry the ${retryVerb}.`,

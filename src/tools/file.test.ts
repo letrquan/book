@@ -204,6 +204,8 @@ describe('read_file', () => {
     expect(outlined.content.split('\n').some((line) => line.trim() === '}')).toBe(false);
 
     expect(outlined.artifacts?.fileObservations).toHaveLength(1);
+    expect(outlined.artifacts?.fileObservations?.[0]?.operation).toBe('outline');
+    expect(outlined.artifacts?.fileObservations?.[0]?.lineEnd).toBeUndefined();
 
     const full = await read.execute({ filePath }, ctx);
     expect(full.status).toBe('success');
@@ -212,6 +214,216 @@ describe('read_file', () => {
     const falseOutline = await read.execute({ filePath, outline: false }, ctx);
     expect(falseOutline.status).toBe('success');
     expect(falseOutline.content).toBe(full.content);
+  });
+
+  it('refuses a Write to an existing file that was only outlined', async () => {
+    writeFileSync(join(dir, 'outlined.ts'), 'export const a = 1;\n');
+    await read.execute({ filePath: 'outlined.ts', outline: true }, ctx);
+
+    const written = await write.execute({ filePath: 'outlined.ts', content: 'clobber' }, ctx);
+    expect(written.status).toBe('error');
+    expect(written.structuredError?.code).toBe('file_not_observed');
+    expect(written.structuredError?.message).toMatch(/only been outlined/);
+    expect(readFileSync(join(dir, 'outlined.ts'), 'utf-8')).toBe('export const a = 1;\n');
+  });
+
+  it('refuses an Edit or MultiEdit of a file that was only outlined', async () => {
+    writeFileSync(join(dir, 'outlined.ts'), 'export const a = 1;\n');
+    await read.execute({ filePath: 'outlined.ts', outline: true }, ctx);
+
+    const edited = await edit.execute(
+      { filePath: 'outlined.ts', oldString: 'a = 1', newString: 'a = 2' },
+      ctx,
+    );
+    expect(edited.status).toBe('error');
+    expect(edited.structuredError?.code).toBe('file_not_observed');
+
+    const multiEdited = await multiEditTool.execute(
+      { filePath: 'outlined.ts', edits: [{ oldString: 'a = 1', newString: 'a = 2' }] },
+      ctx,
+    );
+    expect(multiEdited.structuredError?.code).toBe('file_not_observed');
+    expect(readFileSync(join(dir, 'outlined.ts'), 'utf-8')).toBe('export const a = 1;\n');
+  });
+
+  it('keeps an earlier Read, and its hash, when the file is outlined afterwards', async () => {
+    const path = join(dir, 'kept.ts');
+    writeFileSync(path, 'export const a = 1;\n');
+    await observeFirst('kept.ts');
+    await read.execute({ filePath: 'kept.ts', outline: true }, ctx);
+    const edited = await edit.execute(
+      { filePath: 'kept.ts', oldString: 'a = 1', newString: 'a = 2' },
+      ctx,
+    );
+    expect(edited.status).toBe('success');
+
+    // A formatter rewrites the file after the Read. The outline shows the new
+    // version's declarations, not its content, so the Read's hash must stand.
+    await observeFirst('kept.ts');
+    writeFileSync(path, 'export const a = 3;\n');
+    await read.execute({ filePath: 'kept.ts', outline: true }, ctx);
+    const stale = await edit.execute(
+      { filePath: 'kept.ts', oldString: 'a = 3', newString: 'a = 4' },
+      ctx,
+    );
+    expect(stale.status).toBe('error');
+    expect(stale.structuredError?.code).toBe('stale_file_observation');
+    expect(readFileSync(path, 'utf-8')).toBe('export const a = 3;\n');
+  });
+
+  it('outlines Markdown by its headings', async () => {
+    writeFileSync(
+      join(dir, 'README.md'),
+      [
+        '# Title',
+        '',
+        'Intro prose that is not a heading.',
+        '',
+        '## Install',
+        '',
+        '```bash',
+        '# a shell comment, not a heading',
+        'npm install',
+        '```',
+        '',
+        'Setext section',
+        '--------------',
+        '',
+        '- a list item',
+        '',
+        '### Usage',
+        'More prose.',
+      ].join('\n'),
+    );
+    const outlined = await read.execute({ filePath: 'README.md', outline: true }, ctx);
+    expect(outlined.content.split('\n').slice(1)).toEqual([
+      '1: # Title',
+      '5: ## Install',
+      '12: Setext section',
+      '17: ### Usage',
+    ]);
+  });
+
+  it('keeps preprocessor lines and attributes, and drops # comments only where # starts one', async () => {
+    writeFileSync(
+      join(dir, 'main.c'),
+      '#include <stdio.h>\n#define MAX 3\nint main(void) {\n  return 0;\n}\n',
+    );
+    writeFileSync(join(dir, 'lib.rs'), '#[derive(Debug)]\npub struct Point {\n    x: i32,\n}\n');
+    writeFileSync(join(dir, 'tool.py'), '#!/usr/bin/env python\n# a comment\nimport os\n');
+    const outlineOf = async (filePath: string) =>
+      (await read.execute({ filePath, outline: true }, ctx)).content.split('\n').slice(1);
+
+    expect(await outlineOf('main.c')).toEqual([
+      '1: #include <stdio.h>',
+      '2: #define MAX 3',
+      '3: int main(void) {',
+    ]);
+    expect(await outlineOf('lib.rs')).toEqual(['1: #[derive(Debug)]', '2: pub struct Point {']);
+    expect(await outlineOf('tool.py')).toEqual(['1: #!/usr/bin/env python', '3: import os']);
+  });
+
+  it('keeps wrapped signatures and arrow members, and leaves wrapped calls out', async () => {
+    writeFileSync(
+      join(dir, 'service.ts'),
+      [
+        'export class Service {',
+        '  private count = 0;',
+        '  async send(',
+        '    id: string,',
+        '    message: string,',
+        '  ): Promise<void> {',
+        '    await post(id, message);',
+        '  }',
+        '  handle = (event: string) => {',
+        '    this.count += event.length;',
+        '  };',
+        '  flush = async (): Promise<void> => {',
+        '    this.count = 0;',
+        '  };',
+        '}',
+        '',
+        'export function run(): void {',
+        '  register(',
+        "    'service',",
+        '    new Service(),',
+        '  );',
+        '}',
+      ].join('\n'),
+    );
+    const outlined = await read.execute({ filePath: 'service.ts', outline: true }, ctx);
+    expect(outlined.content.split('\n').slice(1)).toEqual([
+      '1: export class Service {',
+      '3:   async send(',
+      '9:   handle = (event: string) => {',
+      '12:   flush = async (): Promise<void> => {',
+      '17: export function run(): void {',
+    ]);
+  });
+
+  it('leaves closing punctuation lines out of an outline', async () => {
+    writeFileSync(
+      join(dir, 'suite.ts'),
+      [
+        "describe('suite', () => {",
+        "  it('works', () => {});",
+        '});',
+        'const list = [',
+        '  1,',
+        '];',
+        'register([',
+        '  1,',
+        ']);',
+        'wrap(() => {',
+        '})',
+      ].join('\n'),
+    );
+    const outlined = await read.execute({ filePath: 'suite.ts', outline: true }, ctx);
+    expect(outlined.content.split('\n').slice(1)).toEqual([
+      "1: describe('suite', () => {",
+      "2:   it('works', () => {});",
+      '4: const list = [',
+      '7: register([',
+      '10: wrap(() => {',
+    ]);
+  });
+
+  it('measures the first line of a file with a byte-order mark from after the mark', async () => {
+    const bom = String.fromCharCode(0xfeff);
+    writeFileSync(
+      join(dir, 'bom.ts'),
+      `${bom}import { a } from './a.js';\n\nexport const b = a;\n`,
+    );
+    const outlined = await read.execute({ filePath: 'bom.ts', outline: true }, ctx);
+    expect(outlined.content.split('\n').slice(1)).toEqual([
+      "1: import { a } from './a.js';",
+      '3: export const b = a;',
+    ]);
+  });
+
+  it('rejects offset and limit in outline mode instead of ignoring them', async () => {
+    writeFileSync(join(dir, 'short.ts'), 'export const a = 1;\nexport const b = 2;\n');
+    const past = await read.execute({ filePath: 'short.ts', outline: true, offset: 3000 }, ctx);
+    expect(past.status).toBe('error');
+    expect(past.structuredError?.code).toBe('invalid_arguments');
+    expect(past.structuredError?.message).toMatch(/offset or limit/);
+
+    const limited = await read.execute({ filePath: 'short.ts', outline: true, limit: 1 }, ctx);
+    expect(limited.status).toBe('error');
+    expect(limited.structuredError?.code).toBe('invalid_arguments');
+  });
+
+  it('caps an outline at 2000 entries and says where the rest start', async () => {
+    const declarations = Array.from(
+      { length: 2005 },
+      (_, index) => `export const v${index} = ${index};`,
+    );
+    writeFileSync(join(dir, 'many.ts'), declarations.join('\n'));
+    const outlined = await read.execute({ filePath: 'many.ts', outline: true }, ctx);
+    const lines = outlined.content.split('\n');
+    expect(lines).toHaveLength(2002);
+    expect(lines[2000]).toBe('2000: export const v1999 = 1999;');
+    expect(lines[2001]).toMatch(/truncated at 2000 of 2005 entries.*line 2001/);
   });
 });
 

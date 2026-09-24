@@ -22,7 +22,7 @@ import { createAgentRunContext, type AgentRunContext, type AgentRunResult } from
 import { shouldCompact, usagePressureTokens } from './agent/compact.js';
 import { resolveContextLimit } from './models.js';
 import type { ToolRegistry } from './tools/registry.js';
-import { observationKey } from './tools/file-provenance.js';
+import { seedObservationLedger } from './tools/file-provenance.js';
 import { normalizePersistedTodos } from './tools/todo.js';
 import { estimateUsageCost } from './pricing.js';
 import { createSessionHistoryTools } from './tools/session-history.js';
@@ -310,15 +310,7 @@ export async function runHeadless(
     const contextHistory: Message[] = [...opts.history];
     const transcript: Message[] = [...(opts.transcript ?? opts.history)];
     const compactBoundaries: CompactBoundary[] = [...(opts.compactBoundaries ?? [])];
-    for (const message of transcript) {
-      for (const observation of message.fileObservations ?? []) {
-        const key = observationKey(observation.workspaceId, observation.path);
-        const current = runtime.fileObservationLedger.get(key);
-        if (!current || current.timestamp <= observation.timestamp) {
-          runtime.fileObservationLedger.set(key, observation);
-        }
-      }
-    }
+    seedObservationLedger(runtime.fileObservationLedger, transcript);
 
     const loopConfig: AgentConfig = {
       ...config,
