@@ -82,7 +82,7 @@ All notable changes to this project are documented in this file.
   enters the normal provider cooldown -- being blocked on policy grounds is not a free retry.
 
   Every `private_network_forbidden` refusal now comes back `status: blocked`, `retryable: false`,
-  with the policy's sentence as its content. That covers pre-flight, connect-time, and a search
+  with the policy's sentence as its message. That covers pre-flight, connect-time, and a search
   provider's endpoint.
   - The registry no longer retries a refused `WebSearch`. Before, that retry turned the refusal
     into "is cooling down" with `retryable: true`.

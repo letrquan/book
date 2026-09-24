@@ -30,7 +30,10 @@ import { useUiClock } from '../ui-clock.js';
 import type { ToolResult } from '../../types/tools.js';
 
 /** Blocked results whose reason is still shown: a policy refusal the user needs to understand. */
-const BLOCKED_CODES_WITH_REASON = new Set(['private_network_forbidden']);
+const BLOCKED_CODES_WITH_REASON = new Set([
+  'private_network_forbidden',
+  'search_all_providers_failed',
+]);
 
 function showsErrorMessage(result: ToolResult | undefined): boolean {
   if (!result?.structuredError) return false;

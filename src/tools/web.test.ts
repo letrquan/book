@@ -840,7 +840,8 @@ describe('policy refusals are final and visible', () => {
     expect(result.status).toBe('blocked');
     expect(result.structuredError?.code).toBe('private_network_forbidden');
     expect(result.structuredError?.retryable).toBe(false);
-    expect(result.content).toContain('private or special-use address');
+    expect(result.structuredError?.message).toContain('private or special-use address');
+    expect(result.content).toBe('');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -874,7 +875,7 @@ describe('policy refusals are final and visible', () => {
     for (const result of [first, second]) {
       expect(result.status).toBe('blocked');
       expect(result.structuredError?.retryable).toBe(false);
-      expect(result.content).toContain('private or special-use address');
+      expect(result.structuredError?.message).toContain('private or special-use address');
     }
     // One attempt per provider on the first call, none on the second: no registry retry, and the
     // cooldown keeps the refusal.

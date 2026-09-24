@@ -551,4 +551,31 @@ describe('ToolCallBlock', () => {
     );
     expect(frame(inactive.lastFrame)).not.toContain('is not active');
   });
+
+  it('shows the reason of a WebSearch whose every provider was refused', () => {
+    const view = render(
+      withTheme(
+        <ToolCallBlock
+          name="WebSearch"
+          args={{ query: 'anything' }}
+          result={{
+            version: 2,
+            toolCallId: 'call-search',
+            status: 'blocked',
+            content: '',
+            structuredError: {
+              code: 'search_all_providers_failed',
+              message:
+                'Built-in web search providers are unavailable. exa: Connection blocked because mcp.exa.ai resolved to private or special-use address 127.0.0.1.',
+              retryable: false,
+            },
+          }}
+          isExpanded={false}
+          reducedMotion
+        />,
+      ),
+    );
+
+    expect(frame(view.lastFrame)).toContain('Built-in web search providers are unavailable');
+  });
 });

@@ -491,7 +491,6 @@ function privateNetworkBlocked(reason: string, details?: Record<string, unknown>
     code: 'private_network_forbidden',
     status: 'blocked',
     retryable: false,
-    content: reason,
     ...(details ? { details } : {}),
   });
 }
@@ -1071,7 +1070,7 @@ async function builtinWebSearch(
     code: 'search_all_providers_failed',
     retryable: attempts.some((attempt) => attempt.retryable),
     details: { attempts },
-    ...(allBlocked ? { status: 'blocked' as const, content: message } : {}),
+    ...(allBlocked ? { status: 'blocked' as const } : {}),
   });
 }
 
