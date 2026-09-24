@@ -432,6 +432,9 @@ export class AgentManager {
           record.status = 'queued';
           record.stopReason = undefined;
           record.finishedAt = undefined;
+          // Whoever suppressed delivery (Task hands its child's result back itself) died with
+          // the process; nothing is waiting on this re-run, so it reports to the parent.
+          record.notifyParentOnCompletion = undefined;
           this.persist(record);
           this.queue.push(record.id);
           this.emit({ type: 'agent_update', agent: clone(record) });
@@ -1826,6 +1829,8 @@ export class AgentManager {
         record.prompt = record.pendingMessages.shift()!;
         record.status = 'queued';
         record.finishedAt = undefined;
+        // The run that just ended was the spawner's to hand back; this follow-up is the parent's.
+        record.notifyParentOnCompletion = undefined;
         this.queue.push(record.id);
         this.persist(record);
       }

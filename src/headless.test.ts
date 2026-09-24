@@ -1364,6 +1364,49 @@ describe('runHeadless — text progress on stderr', () => {
     expect(stderrWrites).toContain(`[Read] ${filePath}\n`);
   });
 
+  it('strips control characters from progress lines', async () => {
+    const ws = makeWorkspace();
+    const filePath = 'sample.txt';
+    writeFileSync(join(ws, filePath), 'file content');
+    const progressFilePath = `${filePath}\r\u001b]0;pwned\u0007\u202e\u0085\u200f\u2028x`;
+
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount++;
+        if (requestCount === 1) {
+          return sse([toolDelta('call-1', 'Read', { filePath: progressFilePath })]);
+        }
+        return sse([textDelta('done')]);
+      }),
+    );
+
+    const stdoutWrites: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        stdoutWrites.push(s);
+        return true;
+      },
+    };
+
+    await runHeadless(freshConfig({ workspace: ws }), createDefaultRegistry(), {
+      prompt: 'read file',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+    });
+
+    expect(stdoutWrites.join('')).toBe('done\n');
+    expect(stderrWrites.every((write) => !write.includes('\u001b'))).toBe(true);
+    expect(stderrWrites.every((write) => !write.includes('\r'))).toBe(true);
+    for (const control of ['\u202e', '\u0085', '\u200f', '\u2028']) {
+      expect(stderrWrites.every((write) => !write.includes(control))).toBe(true);
+    }
+  });
+
   it('suppresses tool progress on stderr when quiet is true', async () => {
     const ws = makeWorkspace();
     const filePath = 'sample.txt';

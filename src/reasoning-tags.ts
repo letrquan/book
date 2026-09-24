@@ -220,28 +220,49 @@ function endsInsideFence(text: string): boolean {
 }
 
 /**
- * Whether the closing tag at `start`..`end` of a block opened at `blockStart` is quoted rather
- * than markup: wrapped in a matching backtick run (`` `</think>` ``), or inside a code fence the
- * block itself opened. Only the block's own text is consulted -- nothing after the tag but the
- * backtick run touching it -- so an unpaired backtick in the reasoning cannot pair with code in
- * the answer and move where the block ends.
+ * Whether `text` ends inside an inline code span it opened: a backtick run with no later run of
+ * the same length to close it, pairing runs the way CommonMark does.
  */
-function isQuotedClosingTag(
-  content: string,
-  blockStart: number,
-  start: number,
-  end: number,
-): boolean {
-  const before = /`+$/.exec(content.slice(blockStart, start));
-  const after = /^`+/.exec(content.slice(end));
-  if (before && after && before[0].length === after[0].length) return true;
-  return endsInsideFence(content.slice(blockStart, start));
+function endsInsideInlineCode(text: string): boolean {
+  let open: number | null = null;
+  for (const run of text.match(/`+/g) ?? []) {
+    if (open === null) open = run.length;
+    else if (run.length === open) open = null;
+  }
+  return open !== null;
+}
+
+/** A reasoning tag of any of the four names, opening or closing. */
+const ANY_REASONING_TAG = /<\/?(?:think|thinking|reasoning|reasoning_context)>/i;
+
+/**
+ * Whether the closing tag at `start`..`end` of a block opened at `blockStart` ends that block.
+ * An empty block ends at it. Otherwise the block must leave no doubt, because what a split moves
+ * leaves the answer for good:
+ * - the tag ends its line;
+ * - the block sits on one line, or its opening tag ends its line and the closing tag starts one
+ *   (Book's own replay format, and DeepSeek/Qwen output);
+ * - no other reasoning tag appears inside it, which rules out quoted-tag chains and mismatched
+ *   closes;
+ * - the tag is outside any fence or inline code span the block opened.
+ * Only the block's own text is consulted, so nothing in the answer can make a later tag look like
+ * the end.
+ */
+function endsBlock(content: string, blockStart: number, start: number, end: number): boolean {
+  const text = content.slice(blockStart, start);
+  if (text.trim() === '') return true;
+  if (!/^[ \t]*(?:\r?\n|$)/.test(content.slice(end))) return false;
+  if (ANY_REASONING_TAG.test(text)) return false;
+  const oneLine = !text.includes('\n');
+  const ownLines = /^[ \t]*\r?\n/.test(text) && /\n[ \t]*$/.test(text);
+  if (!oneLine && !ownLines) return false;
+  return !endsInsideFence(text) && !endsInsideInlineCode(text);
 }
 
 /**
  * Where the block whose opening `tag` ends at `from` is closed: the end of its text and the
  * offset just past its first closing tag, or null. Only that first closing tag is considered.
- * If it looks quoted -- wrapped in a matching backtick run, or inside a fence the block opened --
+ * If it does not end the block (see `endsBlock`),
  * the reply is left as written rather than looking further: a later tag may be one the answer
  * quotes, and what a split moves leaves the answer for good. Same-name tags do not nest.
  */
@@ -254,7 +275,7 @@ function findBlockClose(
   closing.lastIndex = from;
   const match = closing.exec(content);
   if (!match) return null;
-  if (isQuotedClosingTag(content, from, match.index, closing.lastIndex)) return null;
+  if (!endsBlock(content, from, match.index, closing.lastIndex)) return null;
   return { textEnd: match.index, after: closing.lastIndex };
 }
 
@@ -280,8 +301,8 @@ function answerStart(content: string, rest: number): number {
  * this is the narrow reading. Only blocks at the very start of the reply move,
  * one after another; a tag later in the answer is content, because answers
  * quote these tags (a review finding about them, a prompt template, prose in
- * backticks). A block ends at its first closing tag; if
- * that tag looks quoted (in backticks, or inside a fence the block opened), the reply is left
+ * backticks). A block ends at its first closing tag only if
+ * its shape leaves no doubt (see `endsBlock`; an empty block always ends there); otherwise the reply is left
  * as written, and a block that never closes is kept as answer text for the same reason
  * `stripReasoningTags` keeps it.
  *
