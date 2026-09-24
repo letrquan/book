@@ -40,6 +40,9 @@ import {
 } from './agents/completion-notification.js';
 import { getOrCreateAgentManager } from './agents/manager.js';
 import { resolvePermissionMode } from './permission-mode.js';
+import { separateInlineReasoning } from './reasoning-tags.js';
+import { getPrimaryArg } from './tools/primary-arg.js';
+import { toolResultErrorMessage } from './tools/result.js';
 
 /**
  * Re-price restored tokens.
@@ -371,7 +374,7 @@ export async function runHeadless(
       onRetry: (phase, attempt, max, delayMs) => {
         if (opts.outputFormat === 'stream-json') {
           emit({ type: 'retry', phase, attempt, max, delay_ms: delayMs });
-        } else {
+        } else if (opts.quiet !== true) {
           process.stderr.write(
             `retry: ${phase} attempt ${attempt}${max > 0 ? `/${max}` : ''} in ${Math.round(delayMs / 1000)}s\n`,
           );
@@ -945,8 +948,13 @@ export async function runHeadless(
         // "did the work".
         stdout.write(`${stopped.plan}\n\n${stopped.message}\n`);
       } else {
+        // Only a reply that opened with a closed reasoning block is rewritten.
+        // Any other answer is printed exactly as the model wrote it, so an
+        // indented first line (YAML, code piped to a file) keeps its indent.
         const last = lastAssistantText(contextHistory);
-        if (last) stdout.write(last + '\n');
+        const inline = separateInlineReasoning(last);
+        const answer = inline.found ? inline.content.trimEnd() : last;
+        if (answer) stdout.write(answer + '\n');
       }
     } else if (opts.outputFormat === 'json') {
       // Exactly one top-level document: everything the run produced, including
@@ -1034,6 +1042,9 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
     else process.stderr.write(`error: ${event.error}\n`);
     return;
   }
+  if (opts.outputFormat === 'text' && opts.quiet !== true) {
+    writeTextProgress(event, opts);
+  }
   if (opts.outputFormat !== 'stream-json') return;
 
   switch (event.type) {
@@ -1093,6 +1104,67 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
     case 'result':
     case 'done':
       break;
+  }
+}
+
+/** Longest primary argument a progress line shows. */
+const PROGRESS_ARG_MAX = 120;
+/** Longest error a `--verbose` result line shows. */
+const PROGRESS_ERROR_MAX = 160;
+
+/**
+ * The first non-blank line of `text`, cut to `max` characters, so a plan, an
+ * agent message or unparsed JSON arguments cannot turn one record into many.
+ */
+function progressLine(text: string, max: number): string {
+  const first = text.trim().split(/\r?\n/, 1)[0];
+  // A control character (a bare CR, an escape sequence, a bidi override) would let an argument or a tool name rewrite the terminal.
+  const printable = Array.from(first, (char) => {
+    const code = char.codePointAt(0) ?? 0;
+    const control =
+      code < 32 ||
+      (code >= 0x7f && code <= 0x9f) ||
+      code === 0x061c ||
+      code === 0x200e ||
+      code === 0x200f ||
+      (code >= 0x2028 && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069);
+    return control ? ' ' : char;
+  })
+    .join('')
+    .trimEnd();
+  const chars = Array.from(printable);
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : printable;
+}
+
+/**
+ * One line per tool call on stderr in text mode. Without it a print run is
+ * silent from the first request to the final answer — 35 minutes and a hundred
+ * tool calls with nothing on the terminal (#225) — and the only way to see it was
+ * alive was to tail the session file. `--verbose` adds the result of each call;
+ * `--quiet` turns the lines off. stdout stays the final answer alone.
+ */
+function writeTextProgress(event: AgentEvent, opts: HeadlessOptions): void {
+  if (event.type === 'tool_use') {
+    const arg = progressLine(getPrimaryArg(event.toolCall.arguments), PROGRESS_ARG_MAX);
+    process.stderr.write(
+      `[${progressLine(event.toolCall.name, PROGRESS_ARG_MAX)}]${arg ? ` ${arg}` : ''}\n`,
+    );
+    return;
+  }
+  if (event.type === 'tool_result' && opts.verbose === true) {
+    const result = event.toolResult;
+    const duration = result.metrics?.durationMs;
+    // A turn's call lines all print before its results, so each result names its target.
+    const target = progressLine(result.presentation?.target ?? '', PROGRESS_ARG_MAX);
+    const error =
+      result.status === 'success'
+        ? ''
+        : progressLine(toolResultErrorMessage(result) ?? '', PROGRESS_ERROR_MAX);
+    const detail = [target, error].filter(Boolean).join(': ');
+    process.stderr.write(
+      `  → ${result.status}${duration !== undefined ? ` ${Math.round(duration)}ms` : ''}${detail ? ` ${detail}` : ''}\n`,
+    );
   }
 }
 

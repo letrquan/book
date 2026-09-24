@@ -364,7 +364,18 @@ export const taskTools: ToolDefinition[] = [
   {
     name: 'TaskList',
     description: 'List all non-deleted agent tasks with status and dependency summaries.',
-    parameters: { type: 'object', properties: {} },
+    parameters: {
+      type: 'object',
+      properties: {
+        // Declared so the model's habitual `TaskList({ reason })` is not a hard
+        // invalid_arguments error it then repeats bare; the value is not read.
+        // The schema stays closed like every other built-in tool's.
+        reason: {
+          type: 'string',
+          description: 'Optional note on why the list is being read; not stored.',
+        },
+      },
+    },
     execute: taskList,
   },
   {

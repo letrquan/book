@@ -942,7 +942,7 @@ export const fileTools: ToolDefinition[] = [
     policy: { concurrency: 'parallel' },
     argumentAliases: { file_path: 'filePath', path: 'filePath' },
     description:
-      'Read a file from the workspace. Returns lines with line numbers. Supports offset/limit for large files. The "N: " line-number prefixes are display-only and are never part of the file content.',
+      'Read a file from the workspace. Returns lines with line numbers. The default reads the whole file (up to 2000 lines) in one call — read files whole; use offset/limit only for files longer than that, and never to read a file in small chunks. The "N: " line-number prefixes are display-only and are never part of the file content.',
     parameters: {
       type: 'object',
       properties: {
@@ -953,12 +953,14 @@ export const fileTools: ToolDefinition[] = [
         },
         offset: {
           type: 'number',
-          description: 'Line number to start reading from (1-indexed)',
+          description:
+            'Line number to start reading from (1-indexed). Leave unset unless the file is longer than 2000 lines.',
           default: 1,
         },
         limit: {
           type: 'number',
-          description: 'Maximum number of lines to read',
+          description:
+            'Maximum number of lines to read. Leave unset to read the whole file; only set it for files longer than 2000 lines.',
           default: 2000,
         },
       },

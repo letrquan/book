@@ -52,7 +52,11 @@ import {
   type CapabilityRule,
 } from '../tools/capability-rules.js';
 import { createDebugLogger } from '../debug-log.js';
-import { isUnclosedReasoningOnly, stripReasoningTags } from '../reasoning-tags.js';
+import {
+  isUnclosedReasoningOnly,
+  separateInlineReasoning,
+  stripReasoningTags,
+} from '../reasoning-tags.js';
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import {
@@ -1189,6 +1193,15 @@ export async function runAgentLoop(
       }
 
       assistantContent = textBuffer;
+      {
+        // Gate on the block, not on its text: the empty `<think></think>` a
+        // model emits with thinking off still has to leave the answer.
+        const inline = separateInlineReasoning(assistantContent);
+        if (inline.found) {
+          reasoningContent = [reasoningContent, inline.reasoning].filter(Boolean).join('\n\n');
+          assistantContent = inline.content;
+        }
+      }
       recordTurnUsage();
       if (options?.runContext && !turnUsage) {
         runtime.runAccounting.markUsageUnknown(

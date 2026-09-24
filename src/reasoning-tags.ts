@@ -199,3 +199,141 @@ export function stripReasoningTags(content: string): string {
     .map((part) => part.text)
     .join('');
 }
+
+/**
+ * A reasoning tag that opens the reply: after any blank lines, and indented
+ * less than the four spaces that would make it an indented code block.
+ */
+const LEADING_REASONING_TAG =
+  /^(?:[ \t]*\r?\n)*[ ]{0,3}<(think|thinking|reasoning|reasoning_context)>/i;
+
+/** Whether `text` ends inside a code fence it opened, pairing fences the way `fencedRanges` does. */
+function endsInsideFence(text: string): boolean {
+  FENCE_LINE.lastIndex = 0;
+  let marker: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = FENCE_LINE.exec(text)) !== null) {
+    if (marker === null) marker = match[1][0];
+    else if (match[1][0] === marker) marker = null;
+  }
+  return marker !== null;
+}
+
+/**
+ * Whether `text` ends inside an inline code span it opened: a backtick run with no later run of
+ * the same length to close it, pairing runs the way CommonMark does.
+ */
+function endsInsideInlineCode(text: string): boolean {
+  let open: number | null = null;
+  for (const run of text.match(/`+/g) ?? []) {
+    if (open === null) open = run.length;
+    else if (run.length === open) open = null;
+  }
+  return open !== null;
+}
+
+/** A reasoning tag of any of the four names, opening or closing. */
+const ANY_REASONING_TAG = /<\/?(?:think|thinking|reasoning|reasoning_context)>/i;
+
+/**
+ * Whether the closing tag at `start`..`end` of a block opened at `blockStart` ends that block.
+ * An empty block ends at it. Otherwise the block must leave no doubt, because what a split moves
+ * leaves the answer for good:
+ * - the tag ends its line;
+ * - the block sits on one line, or its opening tag ends its line and the closing tag starts one
+ *   (Book's own replay format, and DeepSeek/Qwen output);
+ * - no other reasoning tag appears inside it, which rules out quoted-tag chains and mismatched
+ *   closes;
+ * - the tag is outside any fence or inline code span the block opened.
+ * Only the block's own text is consulted, so nothing in the answer can make a later tag look like
+ * the end.
+ */
+function endsBlock(content: string, blockStart: number, start: number, end: number): boolean {
+  const text = content.slice(blockStart, start);
+  if (text.trim() === '') return true;
+  if (!/^[ \t]*(?:\r?\n|$)/.test(content.slice(end))) return false;
+  if (ANY_REASONING_TAG.test(text)) return false;
+  const oneLine = !text.includes('\n');
+  const ownLines = /^[ \t]*\r?\n/.test(text) && /\n[ \t]*$/.test(text);
+  if (!oneLine && !ownLines) return false;
+  return !endsInsideFence(text) && !endsInsideInlineCode(text);
+}
+
+/**
+ * Where the block whose opening `tag` ends at `from` is closed: the end of its text and the
+ * offset just past its first closing tag, or null. Only that first closing tag is considered.
+ * If it does not end the block (see `endsBlock`),
+ * the reply is left as written rather than looking further: a later tag may be one the answer
+ * quotes, and what a split moves leaves the answer for good. Same-name tags do not nest.
+ */
+function findBlockClose(
+  content: string,
+  tag: string,
+  from: number,
+): { textEnd: number; after: number } | null {
+  const closing = new RegExp(`</${tag}>`, 'gi');
+  closing.lastIndex = from;
+  const match = closing.exec(content);
+  if (!match) return null;
+  if (!endsBlock(content, from, match.index, closing.lastIndex)) return null;
+  return { textEnd: match.index, after: closing.lastIndex };
+}
+
+/** Where the answer after offset `rest` starts: past the indentation and blank lines it drops. */
+function answerStart(content: string, rest: number): number {
+  const tail = content.slice(rest);
+  const trimmed = tail.replace(/^[ \t]+(?=\S)/, '').replace(/^(?:[ \t]*\r?\n)+/, '');
+  return rest + (tail.length - trimmed.length);
+}
+
+/**
+ * Split the closed reasoning blocks a settled reply opens with out of it, so
+ * they are stored and re-sent as reasoning rather than as answer text.
+ *
+ * Book renders earlier assistant turns to OpenAI-compatible providers as
+ * `<reasoning_context>…</reasoning_context>` followed by the answer, and some
+ * routers inline thinking the same way, so models start every reply with that
+ * block themselves. Left in `content`, it is what print mode prints and what a
+ * `--resume` shows as the answer.
+ *
+ * What moves here leaves the answer for good — print mode, json `messages`, a
+ * managed agent's result and every later request see only what is left — so
+ * this is the narrow reading. Only blocks at the very start of the reply move,
+ * one after another; a tag later in the answer is content, because answers
+ * quote these tags (a review finding about them, a prompt template, prose in
+ * backticks). A block ends at its first closing tag only if
+ * its shape leaves no doubt (see `endsBlock`; an empty block always ends there); otherwise the reply is left
+ * as written, and a block that never closes is kept as answer text for the same reason
+ * `stripReasoningTags` keeps it.
+ *
+ * `found` says whether any block moved, even an empty one: the
+ * `<think></think>` a model emits with thinking off has no reasoning to keep
+ * but still has to leave the answer.
+ */
+export function separateInlineReasoning(content: string): {
+  content: string;
+  reasoning: string;
+  found: boolean;
+} {
+  const unchanged = { content, reasoning: '', found: false };
+  if (!content.includes('<')) return unchanged;
+  const blocks: string[] = [];
+  let rest = 0;
+  for (;;) {
+    // After a block, look for the next one where the stored answer starts, so that splitting
+    // the stored answer again finds nothing more.
+    const at = blocks.length === 0 ? 0 : answerStart(content, rest);
+    const open = LEADING_REASONING_TAG.exec(content.slice(at));
+    if (!open) break;
+    const close = findBlockClose(content, open[1], at + open[0].length);
+    if (!close) break;
+    blocks.push(content.slice(at + open[0].length, close.textEnd).trim());
+    rest = close.after;
+  }
+  if (blocks.length === 0) return unchanged;
+  return {
+    content: content.slice(answerStart(content, rest)),
+    reasoning: blocks.filter(Boolean).join('\n\n'),
+    found: true,
+  };
+}

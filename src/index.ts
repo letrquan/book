@@ -84,7 +84,8 @@ program
     '--permission-mode <mode>',
     'default | acceptEdits | plan | auto | dontAsk | bypassPermissions (overrides settings.defaultMode)',
   )
-  .option('--verbose', 'Full turn-by-turn output')
+  .option('--verbose', 'Print mode: add each tool result to the progress lines on stderr')
+  .option('-q, --quiet', 'Print mode: no progress lines on stderr')
   .option('--json-schema <schema>', 'Return validated JSON matching a JSON Schema (print mode)')
   .option('-r, --resume <id|name>', 'Resume a session by id or name')
   .option('-c, --continue', 'Resume the most recent session in this directory')

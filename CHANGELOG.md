@@ -156,6 +156,46 @@ All notable changes to this project are documented in this file.
 - **Retries are visible to a print-mode host.** `stream-json` gains a `retry` record
   (`phase`, `attempt`, `max`, `delay_ms`); `text` output writes `retry: transport attempt 1/10 in 2s`
   to stderr. Before, a 16-minute retry wall left the last record as the previous turn's tool result.
+- **Inline `<reasoning_context>` blocks are reasoning, not the answer.** Book renders earlier
+  assistant turns to OpenAI-compatible providers as `<reasoning_context>…</reasoning_context>`
+  followed by the answer, and routers inline thinking the same way, so models began every reply
+  with that block themselves. It was stored as answer text, re-sent as such, printed by print
+  mode, and shown as the answer on `--resume`; at a `--max-turns` stop the same block came out
+  three times (#216, #223). The closed blocks a settled reply opens with are now split out into
+  its reasoning. That covers several blocks in a row, and an empty `<think></think>` from a model
+  with thinking off.
+  - **Only that prefix moves, because the split is permanent.** A tag later in the answer stays
+    answer text, so a reply that quotes the tags mid-answer (a review finding about them) keeps the
+    text between them.
+  - **A block ends only at its first closing tag, and only when its shape leaves no doubt.**
+    - It sits on one line (`<think>…</think>`), or its opening tag ends its line and its closing
+      tag starts one. That is Book's own replay format, and DeepSeek/Qwen output.
+    - The closing tag ends its line.
+    - No other reasoning tag appears inside the block.
+    - The closing tag is outside any fence or inline code span the block opened.
+    - An empty block always ends at its first closing tag.
+  - **Otherwise the reply is left exactly as written.** The split never looks further, because a
+    later tag may be one the answer mentions, and text stays in the answer rather than leaving it.
+    That covers several cases:
+    - a block the model never closed, unless the answer's first closing tag happens to sit in an
+      accepted shape;
+    - reasoning that mentions a reasoning tag;
+    - an answer on the same line as the closing tag;
+    - a close on the last line of prose.
+  - **The accepted cost:** reasoning in any other shape stays in the printed answer.
+  - A stored answer does not split again.
+  - **A reply that opens with an unfenced reasoning tag loses that block** even when the reply is
+    itself a template meant to contain one. Fence or quote such a tag to keep it.
+  - Text output applies the same split to an older session's answer and prints any other answer
+    exactly as written, an indented first line included.
+- **`TaskList` no longer rejects a `reason`.** The model habitually explains why it is reading the
+  list (`TaskList({ reason: "verify all tasks are complete" })`) and got a hard
+  `invalid_arguments` for it, then repeated the call bare — two wasted turns each time (#216). The
+  field is declared and ignored; the schema stays closed like every other built-in tool's.
+- **`Read` says its default is the whole file.** The description offered `offset`/`limit` "for
+  large files" and models took the hint too far, reading a 430-line file in four 100-line calls
+  and one 20-line span three times over (#224). It now says the default reads the file whole, and
+  the two parameters are for files longer than 2000 lines only.
 
 - **A lead no longer reports results a delegated agent has not produced.** `AgentSpawn` returns as
   soon as the child is queued, and the only hint in the result was `"status": "queued"` inside an
@@ -170,6 +210,22 @@ All notable changes to this project are documented in this file.
   that is what the server said, and reports the retry.
 
 ### Added
+
+- **Print mode shows progress.** `book -p` with the default `text` output printed nothing for 35
+  minutes while the agent made a hundred tool calls; the only sign of life was the session file
+  (#225). It now writes one line per tool call to stderr — `[Read] src/cli/doctor.ts`, cut to the
+  argument's first line and 120 characters — with stdout still the final answer alone.
+  - `--verbose`, which was parsed and discarded, now adds each call's result, naming its target.
+  - `-q/--quiet` turns the lines off, `retry:` lines included.
+  - `json` and `stream-json` get no progress lines.
+  - The SDK's `query()` runs quiet, so a host's stderr gets no progress or `retry:` lines either.
+  - A consumer that stops reading (`2>&1 | head`) no longer kills a `text` or `json` run with an
+    unhandled EPIPE. Those formats write stdout once, at the end, and SessionEnd hooks still run.
+  - In `stream-json`, where stdout carries the whole run, a closed stdout aborts the run, so a
+    run whose host has gone does not keep editing files. Like any cancelled print run, it then ends
+    without SessionEnd.
+  - Control characters in a tool argument are replaced in progress lines, so an argument cannot
+    rewrite the terminal.
 
 - **Corrections replace old memories instead of piling up.** `MemorySave` and background extraction
   accept `supersedes`: the replaced entry is kept on disk (`status: superseded`, `supersededBy`) but

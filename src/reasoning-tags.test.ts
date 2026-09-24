@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   isUnclosedReasoningOnly,
+  separateInlineReasoning,
   splitReasoningParts,
   stripReasoningTags,
 } from './reasoning-tags.js';
@@ -197,5 +198,297 @@ Now let me continue.
 
       expect(rendered).toBe(counted);
     }
+  });
+});
+
+describe('separateInlineReasoning', () => {
+  it('separates a closed reasoning_context block from the answer', () => {
+    expect(
+      separateInlineReasoning(
+        '<reasoning_context>\n**Planning**\n</reasoning_context>\nThe answer.',
+      ),
+    ).toEqual({ content: 'The answer.', reasoning: '**Planning**', found: true });
+  });
+
+  it('joins two closed blocks with a blank line', () => {
+    const input = '<think>Block 1</think>\n<think>Block 2</think>\nAnswer';
+    expect(separateInlineReasoning(input)).toEqual({
+      content: 'Answer',
+      reasoning: 'Block 1\n\nBlock 2',
+      found: true,
+    });
+  });
+
+  it('returns an unclosed thinking block unchanged with empty reasoning', () => {
+    const unclosed = '<thinking>unclosed thought';
+    const result = separateInlineReasoning(unclosed);
+    expect(result.content).toBe(unclosed);
+    expect(result.reasoning).toBe('');
+  });
+
+  it('leaves a block inside a fenced code block in content', () => {
+    const fenced = ['```', '<thinking>quoted</thinking>', '```'].join('\n');
+    const result = separateInlineReasoning(fenced);
+    expect(result.content).toBe(fenced);
+    expect(result.reasoning).toBe('');
+  });
+
+  it('returns plain text with no < by identity', () => {
+    const plain = 'just an ordinary answer';
+    const result = separateInlineReasoning(plain);
+    expect(result.content).toBe(plain);
+    expect(result.reasoning).toBe('');
+  });
+
+  // Each of the next five lost answer text at 4c87d18: the split is permanent,
+  // so a tag the answer merely quotes must never be read as markup.
+  it('keeps a reasoning block quoted in inline code in the answer', () => {
+    const input = 'Wrap it like `<thinking>plan</thinking>` in your prompt';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(false);
+  });
+
+  it('keeps an opening and a closing tag quoted in separate code spans', () => {
+    const input = 'The element `<reasoning>` is closed by `</reasoning>`.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(false);
+  });
+
+  it('keeps a tag quoted in prose ahead of a fenced example intact', () => {
+    const input = [
+      'Use the `<think>` tag like this:',
+      '',
+      '```',
+      '<think>plan</think>',
+      '```',
+      'Done.',
+    ].join('\n');
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(false);
+  });
+
+  it('leaves a nested same-name block as written when its first closing tag does not end its line', () => {
+    const input = '<think>A <think>B</think> C</think>\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('leaves a JSON report whose findings mention both tags byte-identical', () => {
+    const report = JSON.stringify({
+      findings: [
+        { title: 'Opening tag', body: 'The parser keeps <think> open.' },
+        { title: 'Middle', body: 'Unrelated finding.' },
+        { title: 'Closing tag', body: 'A stray </think> survives.' },
+      ],
+    });
+    const bare = separateInlineReasoning(report);
+    expect(bare.content).toBe(report);
+    expect(bare.reasoning).toBe('');
+    expect(bare.found).toBe(false);
+
+    const prefixed = separateInlineReasoning(`<think>plan the review</think>\n${report}`);
+    expect(prefixed.content).toBe(report);
+    expect(prefixed.reasoning).toBe('plan the review');
+    expect(prefixed.found).toBe(true);
+  });
+
+  it('leaves the reply as written when its first closing tag is quoted', () => {
+    const input = '<think>never write `</think>` early</think>\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('leaves a block in the middle of an answer where it is', () => {
+    const input = 'Answer part 1 <think>more</think> part 2';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(false);
+  });
+
+  it('reports an empty block as found so its tags still leave the answer', () => {
+    const result = separateInlineReasoning('<think>\n\n</think>\n\nAnswer');
+    expect(result.content).toBe('Answer');
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(true);
+  });
+
+  // Each of the next tests lost, or failed to split, answer text at 8243818.
+  it('leaves the reply as written when the reasoning mentions another reasoning tag', () => {
+    const input =
+      '<think>User says not to emit <think> tags.</think>\nThe answer. The closing tag </think> ends it. Tail.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('leaves the reply as written when its reasoning leaves an inline code span open', () => {
+    const input = '<think>I will use a `x flag\n</think>\nAnswer with `code` here.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('never lets an unpaired backtick in the reasoning pair with a tag the answer quotes', () => {
+    const input =
+      '<think>reasoning with lone `tick</think>The answer. Use `</think>` to close. More answer.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('leaves the reply as written when its first closing tag is in a double-backtick span', () => {
+    const input = '<think>quote ``</think>`` here</think>\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('leaves the reply as written when its first closing tag is inside a fence', () => {
+    const input = '<think>plan:\n```\n</think>\n```\ndone</think>\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('closes after a fence that ends right before the closing tag', () => {
+    const result = separateInlineReasoning('<think>\nplan:\n```\ncode\n```\n</think>\nAnswer');
+    expect(result.content).toBe('Answer');
+    expect(result.reasoning).toBe('plan:\n```\ncode\n```');
+  });
+
+  it('keeps a block whose reasoning never closes its fence as answer text', () => {
+    const input = '<think>plan:\n```ts\nconst x = 1;\n</think>\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  // The next three lost answer text at e3628ce: a skipped first tag let a later one, judged
+  // partly by answer text, end the block.
+  it('keeps a reply whose reasoning fence is still open at the closing tag', () => {
+    const input =
+      '<think>Steps:\n1. ```bash\n   npm test\n   ```\n</think>\nUse this template:\n```\n<think>{{reasoning}}</think>\n{{answer}}\n```\nThat is all.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('keeps a reply whose closing tag sits between backticks from the reasoning and the answer', () => {
+    const input =
+      '<think>The fix belongs in `parseArgs`</think>`parseArgs` now rejects the flag. Models close their reasoning with </think> and the router forwards it.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('stops at a later leading block whose closing tag looks quoted', () => {
+    const result = separateInlineReasoning(
+      '<think>a</think>\n<reasoning>run `x`</reasoning>`x` prints </reasoning> and more',
+    );
+    expect(result.reasoning).toBe('a');
+    expect(result.content).toBe('<reasoning>run `x`</reasoning>`x` prints </reasoning> and more');
+  });
+
+  it('stores an answer that splitting again leaves unchanged', () => {
+    const result = separateInlineReasoning('<think>x</think>\n\t<think>y</think>\nAnswer');
+    expect(result.reasoning).toBe('x');
+    expect(separateInlineReasoning(result.content).found).toBe(false);
+  });
+
+  // Each of these lost answer text at 61b48a8: a block the model never closed ended at a tag the
+  // answer merely mentions.
+  it('keeps a reply whose unclosed block is followed by a tag quoted in inline code', () => {
+    const input =
+      '<reasoning_context>Prior turn notes.\n\n## Report\nThe router replays reasoning as `<reasoning_context>…</reasoning_context>` tags.\nMore answer after.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('keeps a reply whose unclosed block is followed by a tag mentioned in prose', () => {
+    const input = '<think>notes\n\nThe answer mentions </think> in passing.\nMore.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('keeps a reply whose unclosed block is followed by a quoted tag', () => {
+    const input = '<think>notes\n"</think>"\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('leaves an answer on the same line as the closing tag as written', () => {
+    const input = '<think>plan</think>The answer.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('splits an empty block even when the answer follows on the same line', () => {
+    expect(separateInlineReasoning('<think></think>The answer.')).toEqual({
+      content: 'The answer.',
+      reasoning: '',
+      found: true,
+    });
+  });
+
+  it('splits a multi-line block whose tags stand on their own lines', () => {
+    expect(
+      separateInlineReasoning('<think>\nStep one.\nStep two.\n</think>\n\nThe answer.'),
+    ).toEqual({ content: 'The answer.', reasoning: 'Step one.\nStep two.', found: true });
+  });
+
+  // Each of these still moved answer text into reasoning at e42bd64.
+  it('keeps an unclosed block whose answer ends a line with a closing tag in prose', () => {
+    const input =
+      '<reasoning_context>Prior turn notes.\n\n## Report\nThe router replays reasoning inside <reasoning_context> and closes it with </reasoning_context>\nMore answer after.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('keeps an unclosed block whose reply ends with a closing tag in prose', () => {
+    const input = '<think>notes\n\nFinal answer: close it with </think>';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('keeps an answer that opens with a tag after an empty block', () => {
+    const result = separateInlineReasoning(
+      '<think>\n\n</think>\n\n<thinking> tags delimit reasoning. Close with\n</thinking>\nThat is all.',
+    );
+    expect(result.content).toBe(
+      '<thinking> tags delimit reasoning. Close with\n</thinking>\nThat is all.',
+    );
+    expect(result.found).toBe(true);
+  });
+
+  it('keeps a block with a mismatched close as written', () => {
+    const input = '<think>r</thinking>\nThe answer. Close with </think>\nTail.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('stops before a quoted-tag chain', () => {
+    const result = separateInlineReasoning(
+      '<think>\nThe raw reply was:\n</think>\n<reasoning_context>\nand it was never closed.\n</think>\nThe fix: stop at the first </reasoning_context>\nDone.',
+    );
+    expect(result.reasoning).toBe('The raw reply was:');
+    expect(result.content).toBe(
+      '<reasoning_context>\nand it was never closed.\n</think>\nThe fix: stop at the first </reasoning_context>\nDone.',
+    );
   });
 });

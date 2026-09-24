@@ -5845,3 +5845,111 @@ describe('content filter and upstream error recoveries', () => {
     expect(result.at(-1)?.content).toBe('recovered');
   });
 });
+
+describe('runAgentLoop inline reasoning separation', () => {
+  it('separates inline reasoning from assistant content and records it in reasoningContent', async () => {
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield {
+          type: 'text',
+          content: '<reasoning_context>\nReading lines 1006-1025.\n</reasoning_context>\nDone.',
+        };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks(),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    const assistant = history.find((m) => m.role === 'assistant');
+    expect(assistant?.content).toBe('Done.');
+    expect(assistant?.reasoningContent).toContain('Reading lines 1006-1025.');
+  });
+
+  it('separates multiple reasoning blocks and preserves final content', async () => {
+    const block = '<reasoning_context>\nReading lines 1006-1025.\n</reasoning_context>\n';
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield {
+          type: 'text',
+          content: `${block}${block}${block}Done.`,
+        };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks(),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    const assistant = history.find((m) => m.role === 'assistant');
+    expect(assistant?.content).toBe('Done.');
+    expect(assistant?.reasoningContent).toContain('Reading lines 1006-1025.');
+  });
+
+  // A model with thinking off still emits `<think></think>`: the block has no
+  // text, but its tags must not be stored and re-sent as the answer.
+  it('drops an empty think block from the stored answer', async () => {
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: '<think>\n\n</think>\n\nAnswer' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks(),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    const assistant = history.find((m) => m.role === 'assistant');
+    expect(assistant?.content).toBe('Answer');
+    expect(assistant?.reasoningContent ?? '').toBe('');
+  });
+
+  it('keeps a reasoning block quoted in inline code in the stored answer', async () => {
+    const answer = 'Wrap it like `<thinking>plan</thinking>` in your prompt';
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: answer };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks(),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    const assistant = history.find((m) => m.role === 'assistant');
+    expect(assistant?.content).toBe(answer);
+    expect(assistant?.reasoningContent ?? '').toBe('');
+  });
+});
