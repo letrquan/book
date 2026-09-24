@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { runHeadless } from './headless.js';
 import { SessionStore } from './session/store.js';
 import { createDefaultRegistry, createRegistry } from './tools/registry.js';
+import { fileTools } from './tools/file.js';
 import { defaultConfig } from './test/fixtures.js';
 import { createRepeatingScriptedProvider, sseResponse } from './test/scripted-provider.js';
 import type { AgentConfig } from './types/runtime.js';
@@ -1550,5 +1551,60 @@ describe('runHeadless — text progress on stderr', () => {
       '[Grep] first line\n',
       `[Grep] ${'x'.repeat(119)}…\n`,
     ]);
+  });
+});
+
+describe('runHeadless — resumed file observations', () => {
+  it('rebuilds an outline as an outline, so a resumed Write still needs a Read', async () => {
+    const ws = makeWorkspace();
+    const filePath = 'outlined.ts';
+    const original = 'export const a = 1;\n';
+    writeFileSync(join(ws, filePath), original);
+    // The earlier session only outlined the file; its transcript carries that observation.
+    const readTool = fileTools.find((tool) => tool.name === 'Read')!;
+    const outlined = await readTool.execute(
+      { filePath, outline: true },
+      { workspaceRoot: ws, env: {}, fileObservationLedger: new Map() },
+    );
+    const history = [
+      {
+        id: 'prior-request',
+        role: 'user' as const,
+        content: 'outline outlined.ts',
+        includeInContext: true,
+        timestamp: 1,
+      },
+      {
+        id: 'prior-assistant',
+        role: 'assistant' as const,
+        content: 'outlined it',
+        includeInContext: true,
+        timestamp: 2,
+        fileObservations: outlined.artifacts?.fileObservations,
+      },
+    ];
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init?: { body?: unknown }) => {
+        bodies.push(String(init?.body ?? ''));
+        if (bodies.length === 1) {
+          return sse([toolDelta('call-1', 'Write', { filePath, content: 'clobbered\n' })]);
+        }
+        return sse([textDelta('done')]);
+      }),
+    );
+
+    await runHeadless(freshConfig({ workspace: ws }), createDefaultRegistry(), {
+      prompt: 'overwrite it',
+      inputFormat: 'text',
+      outputFormat: 'json',
+      history,
+      mode: 'bypassPermissions',
+      stdout: { write: () => true },
+    });
+
+    expect(readFileSync(join(ws, filePath), 'utf-8')).toBe(original);
+    expect(bodies[1]).toContain('only been outlined');
   });
 });

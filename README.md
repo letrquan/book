@@ -404,6 +404,37 @@ stays in `.book/settings.local.json`: skill overrides, approved permission rules
 models. Set `ui.startupAnimation` to `false` in `~/.book/settings.json` to disable the
 effect everywhere.
 
+### Reading files
+
+`Read` returns a whole file by default (up to 2000 lines); `offset`/`limit` are for files longer
+than that. `Read { filePath, outline: true }` is the survey call: it returns only the lines that
+say what a file contains, each with its line number, so the model can decide what to read in full.
+
+- **Markdown** (`.md`, `.markdown`, `.mdx`): the `#`…`######` and setext headings, and nothing
+  else. Front matter and fenced code blocks are skipped, so a `# comment` in a shell example is
+  not taken for a heading.
+- **Everything else**: every line at indentation zero except blank lines, comments, and lines of
+  closing punctuation alone (`}`, `});`, `]);`), plus lines indented by up to four spaces that
+  declare something: a `function`/`class`/`def`/`fn`-style keyword line, a method whose parameter
+  list closes into a body on the same line or a later one (`async send(` … `): Promise<void> {`),
+  or an arrow-function member (`handle = (event) => {`). A `#` line is a comment only in Python,
+  shell, YAML, TOML and Ruby files, so C preprocessor lines and Rust attributes stay in.
+- **What it covers:** these shapes fit TypeScript/JavaScript, Python, Go and Rust. A method
+  written return-type-first (Java, C#, C++, Dart), or a Kotlin `fun`, is not listed yet; read
+  such files in full.
+
+What an outline saves depends on the file: `src/agent/loop.ts` goes from 2876 lines to 51, and
+this README goes to its 33 headings. A test file keeps its `describe`/`it` lines, and a JSON file
+outlines to its opening brace. The outline is capped at 2000 entries, with a note naming
+the line where the rest start. It takes no `offset` or `limit`, and passing either is an error.
+
+An outline is not a read. It is recorded as its own `outline` observation, which satisfies
+neither the observed-file check nor the freshness check. `Edit`, `MultiEdit` and a `Write` over an
+existing file still need a `Read` first. An outline never replaces an earlier `Read` of the file
+or its hash, and that still holds after a resume. `ApplyPatch` checks its hunks against the file
+itself, so after only an outline it proceeds as it would for any file not yet read. If the file
+changed after an earlier `Read`, the patch is refused as stale even if the file was outlined since.
+
 ### File mutations
 
 Book exposes the same mutation tools to every model — `ApplyPatch`, `Edit`, `MultiEdit`, and

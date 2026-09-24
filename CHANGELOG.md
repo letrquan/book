@@ -122,6 +122,12 @@ All notable changes to this project are documented in this file.
   choice, and so is a positional without `--print`, since the TUI has no initial prompt; the
   message says to add `-p` and points at `book --help`, since a mistyped subcommand lands there
   too.
+- **The kernel tells the model not to re-run the finish list to quote it.** Every spec ends
+  with a numbered finish list and asks for the pasted output of each step; the model ran the
+  list, saw it green, then ran every step again to have "fresh" output — six extra turns and a
+  second full `go test ./...` per run (#216). One kernel line says to report verification from
+  the tool results already in the transcript. `SYSTEM_PROMPT_VERSION` is now
+  `book-system-prompt-v3`, so run-ambient records distinguish the two kernels.
 - **A `Task` child that outlives the ceiling is stopped and its work handed back.** The registry's
   120 s default cut a slow-model survey off, discarded the result, and never stopped the child,
   which ran — and billed — for an hour afterwards while the parent redid the survey itself (#215).
@@ -233,6 +239,19 @@ All notable changes to this project are documented in this file.
   that is what the server said, and reports the retry.
 
 ### Added
+
+- **`Read` has an outline mode.** Before its first edit a run read 40–55 whole files, and each
+  survey read cost the entire file on every turn afterwards; the context reached 200k tokens by
+  turn 30 (#217). `Read { outline: true }` returns a file's declarations with their line numbers
+  — `src/agent/loop.ts` goes from 2876 lines to 51 — so a survey can decide what to read in full
+  without paying for the file. A Markdown file outlines to its headings, and a method whose
+  parameter list wraps onto several lines is still listed. An outline is not a read: it is
+  recorded as its own `outline` file observation, so an `Edit` or `Write` after it still needs a
+  `Read`, and it never replaces an earlier read's hash, even after a resume. The outline takes
+  no `offset`/`limit` and is capped at 2000 entries. The tool description steers surveys to it.
+  The issue's second proposal, answering a repeat `Read` of an unchanged file with "unchanged since
+  your read", is deliberately not done: after a compaction the earlier bytes are gone from the
+  context and the repeat read is the model's only way back to them.
 
 - **Print mode shows progress.** `book -p` with the default `text` output printed nothing for 35
   minutes while the agent made a hundred tool calls; the only sign of life was the session file

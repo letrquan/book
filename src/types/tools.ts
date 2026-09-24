@@ -254,8 +254,13 @@ export interface ToolPolicy {
   requiresPermission?: boolean;
 }
 
+/**
+ * How a file came to be observed. `outline` is a Read that showed only the
+ * file's declarations: it is recorded, but it never counts as having seen the
+ * file's content (see `src/tools/file-provenance.ts`).
+ */
 export type FileObservationOperation =
-  'read' | 'mention' | 'edit' | 'write' | 'create' | 'notebook-read';
+  'read' | 'mention' | 'edit' | 'write' | 'create' | 'notebook-read' | 'outline';
 
 export interface FileObservation {
   path: string;

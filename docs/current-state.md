@@ -76,7 +76,7 @@ fresh verification pass.
   a run proceeds.
 - Anthropic Messages and OpenAI-compatible providers, provider auto-detection, model discovery,
   BYOK providers, configurable effort, retries, timeouts, and token/cost accounting.
-- System prompt v2 (`book-system-prompt-v2`): content split by volatility across a cached static
+- System prompt v3 (`book-system-prompt-v3`): content split by volatility across a cached static
   prefix, an uncached activation-class suffix, and a per-turn `<session-state>` block on the newest
   user turn; project instructions fenced and trust-labeled; three Anthropic cache breakpoints
   (last tool, system, moving last message) so the conversation itself is cached.
