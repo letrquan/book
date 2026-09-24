@@ -24,6 +24,7 @@ const CHILD_LIFECYCLE_TOOLS = new Set([
   'AgentStop',
   'AgentApply',
   'Task',
+  'MemorySave',
 ]);
 
 const CHILD_WILDCARD_EXCLUSIONS = new Set(['AskUserQuestion', ...CHILD_LIFECYCLE_TOOLS]);

@@ -86,6 +86,7 @@ describe('plan mode tools', () => {
       'GitCommit',
       'InvokeSkill',
       'Task',
+      'MemorySave',
     ]) {
       expect(READ_ONLY_PLAN_TOOLS.has(name), `expected ${name} blocked`).toBe(false);
     }

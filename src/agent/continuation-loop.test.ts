@@ -473,6 +473,16 @@ describe('the session-state block across a long run', () => {
     expect(renderSessionState({ workspace: '/w' })).not.toContain('Running for');
   });
 
+  it('reports pending memory candidates only when positive', () => {
+    expect(renderSessionState({ workspace: '/w', pendingMemoryCandidates: 3 })).toContain(
+      '- Pending memory candidates: 3 — /memory inbox',
+    );
+    expect(renderSessionState({ workspace: '/w', pendingMemoryCandidates: 0 })).not.toContain(
+      'Pending memory candidates',
+    );
+    expect(renderSessionState({ workspace: '/w' })).not.toContain('Pending memory candidates');
+  });
+
   it('omits elapsed time when the evaluator has frozen the clock', () => {
     // Equivalent evaluation arms must receive byte-identical prompts.
     const previous = process.env.BOOK_EVALUATION_DATE;

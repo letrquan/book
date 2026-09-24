@@ -1,17 +1,19 @@
 import type { ResolvedSettings } from './settings.js';
 import {
+  DEFAULT_MAX_INDEX_LINES,
+  getMemoryHealth,
   getMemoryInboxDir,
   getProjectMemoryDir,
+  isMemorySaveAvailable,
   listMemoryCandidates,
   loadMemoryContext,
-  type LoadedMemoryContext,
+  readMemoryFile,
   type MemoryStoreOptions,
 } from './memory-store.js';
 
 interface MemoryReportInput extends MemoryStoreOptions {
   workspace: string;
   settings?: ResolvedSettings;
-  loaded?: LoadedMemoryContext;
 }
 
 export interface MemoryIndex {
@@ -38,7 +40,7 @@ export function buildMemoryInboxReport(input: MemoryReportInput): string {
     return [
       'Memory inbox: no pending candidates.',
       '',
-      `Inbox: ${getMemoryInboxDir(input.workspace, input)}`,
+      `Inbox: \`${getMemoryInboxDir(input.workspace, input)}\``,
       '',
       'New auto-memory candidates appear here for review before they are loaded.',
     ].join('\n');
@@ -49,6 +51,21 @@ export function buildMemoryInboxReport(input: MemoryReportInput): string {
     lines.push(
       `${i + 1}. ${candidate.title ?? candidate.name} (${candidate.type ?? 'unknown'}) — ${candidate.name}`,
     );
+    // What approving would do, so the review is not blind: the text, which approved entry it
+    // replaces, and whether it came from a session that read external content.
+    const full = readMemoryFile(candidate.path);
+    if (!full) return;
+    if (full.externalContext) {
+      lines.push('   ⚠ saved in a session that read external content (web, MCP, or another agent)');
+    }
+    if (full.targetSlug) lines.push(`   replaces existing: \`${full.targetSlug}\``);
+    if (full.supersedes) {
+      lines.push(
+        `   retires existing: \`${full.supersedes}\` (kept on disk, removed from the index)`,
+      );
+    }
+    const preview = full.body.replace(/\s+/g, ' ').trim();
+    lines.push(`   ${preview.length > 200 ? `${preview.slice(0, 200)}…` : preview}`);
   });
   lines.push('');
   lines.push('Use /memory approve <number-or-file> or /memory discard <number-or-file>.');
@@ -58,21 +75,33 @@ export function buildMemoryInboxReport(input: MemoryReportInput): string {
 export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string): string {
   const input: MemoryReportInput =
     typeof inputOrWorkspace === 'string' ? { workspace: inputOrWorkspace } : inputOrWorkspace;
-  // Prefer the caller-supplied snapshot (already current after /memory approve
-  // refreshes liveConfig.memoryContext). Only walk the disk when no snapshot
-  // is available — avoids a redundant full re-read on every /memory status.
-  const ctx = input.loaded ?? loadMemoryContext(input.workspace, input);
+  // Read the store from disk every time. The session-start snapshot this used
+  // to prefer goes stale the moment the session or the model writes a memory,
+  // and a status report showing yesterday's counts is worse than a re-read.
+  const ctx = loadMemoryContext(input.workspace, input);
   const settings = input.settings;
   const enabled = settings?.memory.enabled ?? true;
-  const autoSave = settings?.memory.autoSave ?? true;
-  const requireApproval = settings?.memory.requireApproval ?? true;
+  const requireApproval = settings?.memory.requireApproval ?? false;
+  const health = getMemoryHealth(ctx, input);
+  const lastWrite = health.lastWrite ? health.lastWrite.toISOString() : 'never';
 
   const lines: string[] = ['Auto-memory for this workspace:', ''];
-  lines.push(`Location: ${ctx.dir}`);
+  lines.push(`Location: \`${ctx.dir}\``);
   lines.push(`Loading: ${enabled ? 'enabled' : 'disabled'}`);
-  lines.push(`Auto-capture: ${autoSave ? 'enabled' : 'disabled'} (writes review candidates only)`);
+  const quarantineExternal = settings?.memory.quarantineExternal ?? true;
+  const modelWrites = !isMemorySaveAvailable(settings)
+    ? 'disabled'
+    : requireApproval
+      ? 'enabled (to inbox, needs approval)'
+      : quarantineExternal
+        ? 'enabled (direct to store; to inbox after external content)'
+        : 'enabled (direct to store)';
+  lines.push(`Model writes: ${modelWrites}`);
   lines.push(`Approval required: ${requireApproval ? 'yes' : 'no'}`);
-  lines.push(`Inbox: ${getMemoryInboxDir(input.workspace, input)}`);
+  lines.push(`Inbox: \`${getMemoryInboxDir(input.workspace, input)}\``);
+  lines.push(
+    `Health: ${health.approvedCount} approved, ${health.supersededCount} superseded, ${health.inboxCount} inbox, ${health.indexLineCount}/${DEFAULT_MAX_INDEX_LINES} index lines, last write: ${lastWrite}`,
+  );
   lines.push('');
 
   if (ctx.indexFile) {
@@ -80,7 +109,7 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
       ctx.loadedLineCount < ctx.indexLineCount
         ? `first ${ctx.loadedLineCount} of ${ctx.indexLineCount} non-empty lines`
         : `${ctx.loadedLineCount} non-empty lines`;
-    lines.push(`Loaded index: ${ctx.indexFile} (${cap})`);
+    lines.push(`Loaded index: \`${ctx.indexFile}\` (${cap})`);
   } else {
     lines.push('Loaded index: none found');
   }
@@ -100,8 +129,8 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
 
   lines.push('');
   lines.push(
-    'Commands: /memory inbox, /memory approve <n|file>, /memory discard <n|file>, /memory on, /memory off, /memory path',
+    'Commands: /memory inbox, /memory approve <n|file>, /memory discard <n|file>, /memory delete <file>, /memory on, /memory off, /memory path',
   );
-  lines.push(`Path: ${getProjectMemoryDir(input.workspace, input)}`);
+  lines.push(`Path: \`${getProjectMemoryDir(input.workspace, input)}\``);
   return lines.join('\n');
 }

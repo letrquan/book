@@ -250,7 +250,18 @@ export type ContinuationSettings = z.infer<typeof continuationSettingsSchema>;
 export const memorySettingsSchema = z.object({
   enabled: z.boolean().default(true),
   autoSave: z.boolean().default(true),
-  requireApproval: z.boolean().default(true),
+  requireApproval: z.boolean().default(false),
+  quarantineExternal: z.boolean().default(true),
+  /** Phase 1b: at the next session start, extract memories the model missed from idle sessions. */
+  extraction: z
+    .object({
+      enabled: z.boolean().default(true),
+      idleHours: z.number().min(0).default(3),
+      minMessages: z.number().int().min(1).default(10),
+      maxPerSession: z.number().int().min(1).max(20).default(5),
+      maxSessionsPerRun: z.number().int().min(1).max(20).default(3),
+    })
+    .default({}),
 });
 
 export const agentSettingsSchema = z.object({
@@ -562,7 +573,15 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   memory: {
     enabled: true,
     autoSave: true,
-    requireApproval: true,
+    requireApproval: false,
+    quarantineExternal: true,
+    extraction: {
+      enabled: true,
+      idleHours: 3,
+      minMessages: 10,
+      maxPerSession: 5,
+      maxSessionsPerRun: 3,
+    },
   },
   agents: {
     mode: 'adaptive',
