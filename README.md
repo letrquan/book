@@ -10,7 +10,7 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **Interactive TUI** (Ink/React) plus **print mode** (`-p`) with `text` / `json` / `stream-json` output for CI.
 - **Providers**: Anthropic Messages API (prompt caching, adaptive thinking) and any OpenAI-compatible endpoint, auto-detected from `baseUrl` / `--provider`. `--effort` reaches both, as `output_config.effort` and as `reasoning_effort`.
 - **Project context**: walks the tree to load Codex-style `AGENTS.md` and Claude-style `CLAUDE.md` instructions (user-global → broad project → specific project → local/rules) into a fenced, trust-labeled block, alongside platform info and discovered skills, slash commands, and subagents. Content is split by how often it changes: a cached static prefix, an uncached suffix for activation-class policy, and a per-turn `<session-state>` block carrying date, git status, and mode on the newest user turn — so an edit or a mode toggle costs one turn of cache, not the whole conversation.
-- **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
+- **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter with provenance (`origin`, `sessionId`, `externalContext`, `evidence`), model writes via the `MemorySave` tool, and an optional **approval flow** (`memory.requireApproval: true`, default `false`, routed via `/memory inbox` → `/memory approve|discard`). Memories saved in sessions that read external content — a web fetch or search, an MCP tool, or agent-produced text (`Task`, `AgentSpawn`/`AgentSend` whose result is delivered back, `AgentRead`/`AgentGet`/`AgentWait`, `EvidenceList`) — are automatically quarantined to `.inbox/` for review (`memory.quarantineExternal: true` by default); a call that was denied, skipped, refused in plan mode, or rejected for invalid arguments never ran and does not count; content pulled in through `Bash` (for example `curl`) is not detected and is not quarantined. The prompt instructs the model to inspect relevant markdown files in the memory directory on demand, use `MemorySave` to record durable facts or corrections, and disclose memory-derived facts as potentially stale. Health metrics (approved count, inbox count, index lines, and last write date) are reported via `/memory status` and `book doctor`, while notices announce memory writes in the TUI, print mode, and SDK. Secret/unfit text is rejected before writing. At the next interactive session start, earlier sessions of the same workspace that have been idle for `memory.extraction.idleHours` (default 3) and have at least `minMessages` (default 10) messages are read once in the background by the compact model, which writes the memories the working model missed (`origin: extraction`, `evidence: session://<id>`). It sees only user and assistant text, never tool output, skips any session that brought in external content, and is capped by `maxPerSession` and `maxSessionsPerRun`; turn it off with `memory.extraction.enabled: false`. When a new memory replaces an old one (`MemorySave` or extraction with `supersedes`), the old file is kept on disk with `status: superseded` and a `supersededBy` pointer but leaves `MEMORY.md`, so corrections replace rather than pile up. Each index line carries a one-line hook (the first line of the body), and once `MEMORY.md` nears the 200 lines that load at session start, `MemorySave` results ask the model to consolidate; `/memory status` and `book doctor` show the superseded count and index lines against that limit. Entries are removed with `/memory delete <file>` (a file name only: model writes can shift a listing's numbering between `/memory status` and the delete). A `permissions.deny` rule on `MemorySave` always applies, and a `permissions.ask` rule prompts in the modes that prompt.
 - **Sessions**: append-only JSONL persistence with automatic titles from the first prompt plus `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, reference-aware `/compact`, and Claude-style `/rewind` for conversation, code, or both. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, remembered file facts are freshness-checked before reuse, your own earlier turns are kept verbatim ahead of the checkpoint instead of being paraphrased (only assistant and tool activity is summarized), and constraints you stated in your own words are additionally pinned in a host-owned ledger the summarizer can read but never rewrite (see "Carried turns and constraints").
 - **Tools**: a provider-neutral capability catalog keeps a practical core loaded and uses `ToolSearch` to activate up to five authorized git, web, session, skill, agent, notebook, or MCP definitions on the next model turn. File, shell, task, clarification, and plan tools stay immediately available when permitted. Existing names such as `Read`, `Bash`, and `AgentSpawn` remain stable.
 - **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`. Print mode resolves commands through the same registries: `/init`, `/security-review`, `/review`, and custom commands run headlessly, and the interactive-only ones fail loudly instead of reaching the model as text.
@@ -26,7 +26,7 @@ See [`docs/current-state.md`](./docs/current-state.md) for the verified product 
 
 ## Installation
 
-Requires **Node.js 22.13+**.
+Requires **Node.js 22.19+**.
 
 ```bash
 npm install -g @letrquan/book
@@ -99,33 +99,33 @@ book tool-stats --since 7       # only the last 7 days
 
 ### Common flags
 
-| Flag                                  | Purpose                                                                            |
-| ------------------------------------- | ---------------------------------------------------------------------------------- |
-| `-w, --workspace <path>`              | Workspace root (default: cwd)                                                      |
-| `-m, --model <model>`                 | Model override                                                                     |
-| `-p, --print [prompt]`                | Non-interactive / CI mode; the prompt may also be the one positional argument      |
-| `--output-format <fmt>`               | `text` \| `json` \| `stream-json`                                                  |
-| `--input-format <fmt>`                | `text` \| `stream-json` (print mode input)                                         |
-| `--permission-mode <mode>`            | `default` \| `acceptEdits` \| `plan` \| `auto` \| `dontAsk` \| `bypassPermissions` |
+| Flag                                  | Purpose                                                                                                                         |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `-w, --workspace <path>`              | Workspace root (default: cwd)                                                                                                   |
+| `-m, --model <model>`                 | Model override                                                                                                                  |
+| `-p, --print [prompt]`                | Non-interactive / CI mode; the prompt may also be the one positional argument                                                   |
+| `--output-format <fmt>`               | `text` \| `json` \| `stream-json`                                                                                               |
+| `--input-format <fmt>`                | `text` \| `stream-json` (print mode input)                                                                                      |
+| `--permission-mode <mode>`            | `default` \| `acceptEdits` \| `plan` \| `auto` \| `dontAsk` \| `bypassPermissions`                                              |
 | `--effort <level>`                    | Thinking effort: `low` \| `medium` \| `high` \| `xhigh` \| `max`; outranks `BOOK_EFFORT`, `settings.effort`, and model metadata |
-| `--provider <type>`                   | `anthropic` \| `openai` \| `auto`                                                  |
-| `--max-turns <n>`                     | Cap agent turns (print mode)                                                       |
-| `--max-budget-usd <amount>`           | Cap spend (print mode)                                                             |
-| `--json-schema <schema>`              | Structured JSON output (print mode)                                                |
-| `-r, --resume <id\|name>`             | Resume a named/id session                                                          |
-| `-c, --continue`                      | Resume most recent session here                                                    |
-| `--session-id <uuid>`                 | Pin a session id                                                                   |
-| `-n, --name <name>`                   | Display name for the session                                                       |
-| `--fork-session`                      | On resume, fork to a new session id                                                |
-| `--no-session-persistence`            | Do not write the session to disk                                                   |
-| `--settings <path>` / `--no-settings` | Ad-hoc settings file, or skip all layers                                           |
-| `--scrollback`                        | Terminal-native scrollback instead of full-screen TUI                              |
-| `--agents <mode>`                     | `adaptive` (default) \| `manual` \| `off`                                          |
-| `--verbose`                           | Print mode: add each tool's result to the progress lines on stderr                 |
-| `-q, --quiet`                         | Print mode: no progress lines on stderr                                            |
-| `--include-hook-events`               | Include hook lifecycle events in stream-JSON output                                |
-| `--include-partial-messages`          | Include partial assistant text deltas in stream-JSON output                        |
-| `--prompt-suggestions`                | Ask for follow-up prompt suggestions after completion                              |
+| `--provider <type>`                   | `anthropic` \| `openai` \| `auto`                                                                                               |
+| `--max-turns <n>`                     | Cap agent turns (print mode)                                                                                                    |
+| `--max-budget-usd <amount>`           | Cap spend (print mode)                                                                                                          |
+| `--json-schema <schema>`              | Structured JSON output (print mode)                                                                                             |
+| `-r, --resume <id\|name>`             | Resume a named/id session                                                                                                       |
+| `-c, --continue`                      | Resume most recent session here                                                                                                 |
+| `--session-id <uuid>`                 | Pin a session id                                                                                                                |
+| `-n, --name <name>`                   | Display name for the session                                                                                                    |
+| `--fork-session`                      | On resume, fork to a new session id                                                                                             |
+| `--no-session-persistence`            | Do not write the session to disk                                                                                                |
+| `--settings <path>` / `--no-settings` | Ad-hoc settings file, or skip all layers                                                                                        |
+| `--scrollback`                        | Terminal-native scrollback instead of full-screen TUI                                                                           |
+| `--agents <mode>`                     | `adaptive` (default) \| `manual` \| `off`                                                                                       |
+| `--verbose`                           | Print mode: add each tool's result to the progress lines on stderr                                                              |
+| `-q, --quiet`                         | Print mode: no progress lines on stderr                                                                                         |
+| `--include-hook-events`               | Include hook lifecycle events in stream-JSON output                                                                             |
+| `--include-partial-messages`          | Include partial assistant text deltas in stream-JSON output                                                                     |
+| `--prompt-suggestions`                | Ask for follow-up prompt suggestions after completion                                                                           |
 
 ### Print mode
 
@@ -147,11 +147,27 @@ an error too: the TUI has no initial prompt. `--input-format stream-json` reads 
 process.
 
 In `text` output stdout is the final answer alone, and progress goes to **stderr**: one line per
-tool call (`[Read] src/cli/doctor.ts`, `[Bash] npm test`) so a person watching a terminal can see a
-long run is alive without tailing the session file. `--verbose` adds each call's result
-(`  → success 12ms`, or the error), `--quiet` turns the lines off, retry lines included. `json` and
-`stream-json` write nothing to stderr. Reasoning the model inlines as `<reasoning_context>…</reasoning_context>` is
-stored as reasoning, not answer text, so it never reaches stdout.
+tool call (`[Read] src/cli/doctor.ts`, `[Bash] npm test`), cut to the argument's first line and 120
+characters, so a person watching a terminal can see a long run is alive without tailing the session
+file. `--verbose` adds each call's result, naming its target, because a turn's call lines all print
+before its results: `  → success 12ms src/cli/doctor.ts`, or `  → error 4ms missing.txt: File not
+found: missing.txt`. `--quiet` turns the progress lines off, `retry:` lines included.
+
+`json` and `stream-json` write no progress lines, but their stderr is not silent. `json` still
+writes `retry:` lines (unless `--quiet`) and `error:` lines there; `stream-json` carries retries and
+errors as `retry` and `error` records on stdout instead. Every format writes `warning:` lines (a
+slash command whose shell substitution failed) and `⚠` startup notices to stderr. The SDK's
+`query()` runs quiet: no progress or `retry:` lines reach the host's stderr, since every tool call
+reaches it as an event, but `error:` and `warning:` lines still do.
+
+A closed reasoning block the reply opens with (`<think>…</think>`,
+`<reasoning_context>…</reasoning_context>`, several in a row, or an empty one) is stored as
+reasoning, not answer text, so it never reaches stdout. Only blocks at the very start of the reply
+move: a tag later in the answer, or one inside inline or fenced code, is answer text and is printed
+as written, and an answer with no such block is printed exactly as the model wrote it, plus a
+newline. `stream-json` partial deltas
+(`--include-partial-messages`) still carry the raw tags; the complete `assistant` record carries the
+split content.
 
 Three things behave differently in print mode, because there is nobody to ask.
 
@@ -212,12 +228,12 @@ preference you set once applies in every checkout. Pass `--project` to write the
 surfaces run the same guards through one shared write, so they cannot disagree about which file a
 preference lands in.
 
-A write is checked against the *merged* configuration, not just the file it lands in, so a value
+A write is checked against the _merged_ configuration, not just the file it lands in, so a value
 that is valid on its own but would leave a configuration nothing can load is refused before it
 lands rather than bricking every later command. A configuration that is already broken stays
 writable, since repairing one is what the command is for.
 
-`book config get` and `book config list` report the *resolved* merge of all layers by default.
+`book config get` and `book config list` report the _resolved_ merge of all layers by default.
 Given a scope they read that one file verbatim instead, which is how you find the stray value
 overriding you — the local layer resolves last, so anything left there outranks a later global
 write. `book config unset <key>` removes a key from a scope (also user-global by default). A
@@ -349,7 +365,7 @@ Writes use an atomic sibling-file replacement, and malformed or non-object
 invalid setting path; provider secrets are redacted.
 
 Inside the TUI, `/config` opens a visual settings menu. Use it to change the main model, compact
-strategy, compact model, effort, memory auto-capture, startup fire, or the model assigned to
+strategy, compact model, effort, model memory writes, startup fire, or the model assigned to
 each managed-agent profile. Choosing a row opens that setting's picker and returns to the menu on
 the same row when it closes, so one `/config` covers as many settings as you want to change.
 
@@ -365,7 +381,7 @@ uses, so `/config model=…` switches the session exactly as `/model …` does r
 file this session will not re-read. They land in the layer that setting belongs to: user-global
 by default. Everything else defaults to the user-global layer.
 
-Naming a scope that setting already uses is the same request as naming none. Naming a *different*
+Naming a scope that setting already uses is the same request as naming none. Naming a _different_
 one is a request to write that one file, and the reply then says the change waits for the next
 start — because that is what a file write on its own does — and warns when a later-resolved layer
 still decides the value.
@@ -373,9 +389,9 @@ The startup fire plays only for a new, empty launch session and is skipped autom
 screen-reader or reduced-motion mode. Press Esc to skip it.
 
 TUI preference changes are saved by whose choice they are. Preferences about how Book behaves for
-*you* — model, effort, compact model, permission default mode, provider registries and API keys,
-thinking display, startup animation, memory auto-capture — are written to the user-global
-`~/.book/settings.json` and follow you across projects. What is genuinely about *this* repository
+_you_ — model, effort, compact model, permission default mode, provider registries and API keys,
+thinking display, startup animation, model memory writes — are written to the user-global
+`~/.book/settings.json` and follow you across projects. What is genuinely about _this_ repository
 stays in `.book/settings.local.json`: skill overrides, approved permission rules, and per-profile agent
 models. Set `ui.startupAnimation` to `false` in `~/.book/settings.json` to disable the
 effect everywhere.
@@ -462,6 +478,25 @@ compaction call, making it possible to test a cheaper reducer while keeping prob
 cheaper reducer or a higher-fidelity reducer can be evaluated independently from the probe model.
 The benchmark requires configured provider credentials and is not part of CI.
 
+`npm run eval:memory` measures whether memory helps the next session and stays safe. Each item is
+a teaching session followed by a probe in a fresh session. The workspace is reset between the two,
+so a probe can pass only through memory, never by reading what the teaching session edited. Every
+item also runs with memory disabled (the baseline) on the same probe. Items cover explicit and
+implicit saves, corrections, a buried convention, scoped requests and keyword traps that must _not_
+be saved, facts already in `CLAUDE.md`, update, forget, and poisoned web and repository content.
+Scoring reads the store and the probe's files, commands and answer, never the model's own claims.
+The report (JSON + Markdown in `.book/reports/`) gives, per model: recall with and without memory
+with a paired bootstrap interval, over-memory, under-memory, save precision, injection and
+obey-poison rates, duplication of `CLAUDE.md`, and extra input tokens. Items are split `dev`/`test`;
+tune prompts on `dev` and report `test`. Design and rationale: `plans/memory-improvement-plan.md`.
+
+```bash
+npm run build
+npm run eval:memory                                   # test split, default models, 3 repeats
+npm run eval:memory -- --models 9router/ag/gemini-3.8-flash-high --split dev --repeats 1
+npm run eval:memory -- --only poison-web,poison-readme --concurrency 3
+```
+
 `Write` remains appropriate for generated or intentional full-file replacement. The
 `apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not silently reinterpreted.
 
@@ -487,7 +522,8 @@ The benchmark requires configured provider credentials and is not part of CI.
   "memory": {
     "enabled": true,
     "autoSave": true,
-    "requireApproval": true
+    "requireApproval": false,
+    "quarantineExternal": true
   },
   "ui": {
     "showThinking": true,
@@ -521,8 +557,10 @@ The benchmark requires configured provider credentials and is not part of CI.
 }
 ```
 
+`memory.enabled` controls loading and reading the project memory index at session start; `memory.autoSave` controls whether the model may write memories via `MemorySave` (omitting the tool and save spec when false); `memory.requireApproval` (default `false`) routes model writes to `.inbox/` for review via `/memory inbox` rather than saving directly to the approved store; `memory.quarantineExternal` (default `true`) routes memories written in sessions that read external content — a web fetch or search, an MCP tool, or agent-produced text from `Task`/`AgentRead`/`AgentGet`/`AgentWait` — to the inbox regardless of requireApproval.
+
 `agents.checkTimeoutMs` caps one `Check` run (default 120 s, maximum 2 h). A check that exceeds it
-is killed and reported as `check_timed_out` — explicitly *not* as a failing check, so an agent does
+is killed and reported as `check_timed_out` — explicitly _not_ as a failing check, so an agent does
 not "fix" code that was passing. Raise it for repositories whose full suite runs longer than the
 default; `npm test` here builds first and routinely does.
 
@@ -567,14 +605,14 @@ run lasts. This is the signal to watch for "is it stuck": the transcript's mtime
 whether a run is working or wedged.
 
 `--max-budget-usd` bounds the **objective**, not one process and not one prompt: spend is carried
-across restarts and across submitted prompts, and enforced against *inclusive* cost, so work done by
+across restarts and across submitted prompts, and enforced against _inclusive_ cost, so work done by
 managed agents and subagents counts against the same ceiling. A cap that cannot be evaluated fails
 closed — a non-finite value is refused at startup rather than silently permitting everything.
 
 Continuation never overrides an abort, an approved plan handoff, a spent budget, or a policy
 refusal. `noProgressLimit` is the brake: when the todo list, the observed-file hashes, and the
 tool-call count are all unchanged across that many boundaries, the run ends as `no_progress` instead
-of spinning. Only tool calls that actually *ran* count toward that witness: a refused call is a
+of spinning. Only tool calls that actually _ran_ count toward that witness: a refused call is a
 policy decision, not work, and counting it would move the one signal meant to prove nothing moved.
 
 `blockedToolTurnLimit` is a second, independent brake, and it is enforced **even when `enabled` is
@@ -612,14 +650,19 @@ earlier versions did. `retry.outputCapContinuations` is a separate allowance for
 provider's output limit, so a large generated file cannot drain the budget a real socket drop needs.
 
 A retryable status is classified by the error it quotes, not by the status alone. A router that
-wraps an upstream 4xx as a 503 with a cooldown (`503 … [400]: {"status":"INVALID_ARGUMENT"}`) is
-answered once and the run ends on that 400; it is not retried ten times and not re-issued, since the
-request itself is what was refused. A 400 on a request of 200k tokens or more is read as a context
-overflow even when the body does not say so, and goes through compaction and the learned-window
-ratchet like a spoken overflow. Two answers that are not answers get one re-issue each: a
-`content_filter` stop on a turn with no tool calls, and a 200 whose text is the upstream's error
-envelope (`[Error] … request ID …`, zero tokens both ways); if either repeats, the run ends
-`failed/provider_error`, never `completed`. Every retry is visible to a print-mode host: a
+wraps an upstream 4xx as a 503 with a cooldown
+(`503 [antigravity/<model>] [400]: {"status":"INVALID_ARGUMENT"}`) is answered once and the run
+ends on that 400; it is not retried ten times and not re-issued, since the request itself is what
+was refused. Only the router's `[<route>] [4xx]:` prefix or a 4xx `code` in a JSON `"error"` object
+counts as a quote: a 503 whose body merely mentions `HTTP 403` or `"code": 4001` is retried like
+any other outage. A quoted 400 on a request of 200k tokens or more is read as a context overflow
+even when the body does not say so, and goes through compaction and the learned-window ratchet like
+a spoken overflow. A plain 400 is never read that way, at any size: it ends the run without
+compacting or lowering the learned window. Two answers that are not answers get one re-issue each:
+a `content_filter` stop on a turn with no tool calls, and a 200 whose text is the upstream's error
+envelope (`[Error] … request ID …`, zero tokens both ways). If either repeats, the run ends
+`failed/provider_error` on that second request, never `completed`; the repeat is not re-issued
+again, and no `[continuation]` message is written. Every retry is visible to a print-mode host: a
 `{"type":"retry","phase","attempt","max","delay_ms"}` record in `stream-json`, a `retry: …` line on
 stderr in `text` output.
 
@@ -662,8 +705,8 @@ Run: finished — timed_out (stream_stall)
 ```
 
 The headline is one of four: `running` (the pid answers), `finished` with the terminal status and
-reason, `crashed` when the process died without recording an outcome, or *no longer running, and
-recorded no outcome* — the case that otherwise looks exactly like a run that had done nothing. A
+reason, `crashed` when the process died without recording an outcome, or _no longer running, and
+recorded no outcome_ — the case that otherwise looks exactly like a run that had done nothing. A
 live process that has not reached a turn boundary in fifteen minutes is called out as possibly
 wedged, since a transcript's mtime advances at the same rate for a productive run and one stuck on a
 permission prompt. `--json` carries the same fields under `run` for a supervisor script.
@@ -677,7 +720,9 @@ is meant to wake anyone — everything else is a line to tail:
 ```json
 {
   "hooks": {
-    "Notification": [{ "command": "[ \"$severity\" = alarm ] && ntfy publish my-topic \"$message\"" }]
+    "Notification": [
+      { "command": "[ \"$severity\" = alarm ] && ntfy publish my-topic \"$message\"" }
+    ]
   }
 }
 ```
@@ -837,7 +882,7 @@ whether your summarizer model is steered is a number rather than a guess.
 
 **The turn that trips the threshold no longer waits for the summarizer.** When a response reports
 usage over the compaction threshold and the model has tool calls to make, Book starts the
-summarizer on a snapshot of the history *before* the tools run and lets the tool wave -- shell
+summarizer on a snapshot of the history _before_ the tools run and lets the tool wave -- shell
 commands, tests, a permission prompt -- be its head start; the turn goes on over the full
 history. At the next turn boundary a **judge** (one small call on the compact model, low effort)
 reads the checkpoint as the agent would and the steps taken while the summarizer ran, and answers
@@ -861,19 +906,19 @@ a judge from another model family -- is `plans/async-compaction-plan.md`; `npm r
 `permissions.allow`, `permissions.ask`, and `permissions.deny` are matched against every tool call.
 `deny` beats `ask`, and `ask` beats `allow`.
 
-Permission *modes* decide whether you are prompted; they never relax a `deny` rule. A rule in
+Permission _modes_ decide whether you are prompted; they never relax a `deny` rule. A rule in
 `permissions.deny` blocks the matching call in every mode, including `auto` and
 `bypassPermissions`, and it is evaluated before the prompt, so a denied call never reaches one.
 Modes differ only in what happens to calls that no `deny` rule matched:
 
-| Mode                | Unmatched calls                                                     |
-| ------------------- | ------------------------------------------------------------------- |
-| `default`           | Checked against `allow`/`ask`, then prompted                          |
-| `acceptEdits`       | As `default`, but file mutations are approved without a prompt        |
-| `plan`              | Read-only tools only; mutations are refused until you approve a plan  |
-| `auto`              | Run without a prompt                                                  |
-| `dontAsk`           | Refused — the mode never prompts, and `allow` rules do not exempt a call |
-| `bypassPermissions` | Run without a prompt                                                  |
+| Mode                | Unmatched calls                                                                                                                              |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `default`           | Checked against `allow`/`ask`, then prompted                                                                                                 |
+| `acceptEdits`       | As `default`, but file mutations are approved without a prompt                                                                               |
+| `plan`              | Read-only tools only; mutations are refused until you approve a plan                                                                         |
+| `auto`              | Run without a prompt                                                                                                                         |
+| `dontAsk`           | Refused except for the built-in always-allowed tools (`MemorySave`) — the mode never prompts, and a user `allow` rule does not exempt a call |
+| `bypassPermissions` | Run without a prompt                                                                                                                         |
 
 `plan` mode needs a host that can approve the plan the agent submits through `ExitPlanMode`. The
 TUI prompts; print/headless and the SDK route the decision through `onUserQuestionRequired`, and a
@@ -885,23 +930,23 @@ host that supplies no handler ends the run with the plan itself rather than reje
 `hooks.<event>` takes a list of `{ command, matcher? }` entries run in declaration order over a
 JSON-over-stdio contract. Supported events:
 
-| Event               | Fires                              | Awaited | Can change the outcome  |
-| ------------------- | ---------------------------------- | ------- | ----------------------- |
-| `SessionStart`      | Session opened                     | yes¹    | no                      |
-| `UserPromptSubmit`  | Before a prompt is sent            | yes     | block, or rewrite it    |
-| `PreToolUse`        | Before each tool call              | yes     | block the call          |
-| `PostToolUse`       | After each tool call               | yes     | rewrite the tool output |
-| `PreCompact`        | Before compaction                  | yes     | block compaction        |
-| `PostCompact`       | After compaction                   | yes     | no                      |
-| `SubagentStart`     | Before each managed-agent run      | yes     | no                      |
-| `SubagentStop`      | After each managed-agent run       | yes     | no                      |
-| `Stop`              | Once, after the agent stops        | no      | no                      |
-| `SessionEnd`        | Session left                       | yes¹    | no                      |
+| Event              | Fires                         | Awaited | Can change the outcome  |
+| ------------------ | ----------------------------- | ------- | ----------------------- |
+| `SessionStart`     | Session opened                | yes¹    | no                      |
+| `UserPromptSubmit` | Before a prompt is sent       | yes     | block, or rewrite it    |
+| `PreToolUse`       | Before each tool call         | yes     | block the call          |
+| `PostToolUse`      | After each tool call          | yes     | rewrite the tool output |
+| `PreCompact`       | Before compaction             | yes     | block compaction        |
+| `PostCompact`      | After compaction              | yes     | no                      |
+| `SubagentStart`    | Before each managed-agent run | yes     | no                      |
+| `SubagentStop`     | After each managed-agent run  | yes     | no                      |
+| `Stop`             | Once, after the agent stops   | no      | no                      |
+| `SessionEnd`       | Session left                  | yes¹    | no                      |
 
 ¹ Awaited by the TUI and other multi-turn hosts; fire-and-forget on the one-shot SDK path.
 
 **Awaited is the property that costs you latency**, and it is not the same as being able to veto.
-A slow `PostToolUse` hook cannot block anything, but it still delays *every tool call* by up to its
+A slow `PostToolUse` hook cannot block anything, but it still delays _every tool call_ by up to its
 runtime — hooks are capped at 10 s each and run sequentially in declaration order. Only
 `UserPromptSubmit`, `PreToolUse`, and `PreCompact` can refuse the operation outright.
 
@@ -979,7 +1024,7 @@ outside the declared range is rejected rather than quietly ignored. Background c
 `BOOK_TOOL_TIMEOUT_MS` overrides the default for every tool, `Bash` included, and where it is set it
 is also the **ceiling** on what a single call may ask for: lowering it to 30000 caps a model that
 asks for ten minutes, and a request above the limit in force is refused rather than quietly shrunk.
-Raising it above 600000 raises the *default* — which needs no argument to reach — but not the
+Raising it above 600000 raises the _default_ — which needs no argument to reach — but not the
 per-call reach, since the schema publishes and validates 600000 as the maximum. Precedence is the
 call's `timeout` (bounded by that ceiling), then a deliberate per-tool setting such as
 `agents.checkTimeoutMs` or `agents.taskTimeoutMs`, then `BOOK_TOOL_TIMEOUT_MS`, then the tool's
@@ -1003,41 +1048,41 @@ message names the deadline it hit and the ways past it.
 
 `sandbox.enabled` runs `Bash` commands inside [bubblewrap](https://github.com/containers/bubblewrap), which must be installed and is Linux-oriented; the sandbox is unavailable on Windows. When it cannot be created, `sandbox.failIfUnavailable` decides whether the command fails or runs unsandboxed. `sandbox.excludedCommands` skips the sandbox for matching commands, and sandboxed output is prefixed with `[sandboxed]`.
 
-The sandbox gives the command fresh PID/IPC/UTS namespaces, a private `/tmp`, read-only system directories, all capabilities dropped, and a lifetime tied to the spawning process. Commands are spawned as a direct argument vector — never as a shell string — so the command text is parsed only by the shell running *inside* the sandbox. Ordinary shell syntax (pipes, `&&`, redirection, substitution) works normally there.
+The sandbox gives the command fresh PID/IPC/UTS namespaces, a private `/tmp`, read-only system directories, all capabilities dropped, and a lifetime tied to the spawning process. Commands are spawned as a direct argument vector — never as a shell string — so the command text is parsed only by the shell running _inside_ the sandbox. Ordinary shell syntax (pipes, `&&`, redirection, substitution) works normally there.
 
 **The workspace root is the only directory bound writable by default**, and it is bound regardless of the `workdir` argument. A sandboxed `Bash` call whose `workdir` falls outside the workspace is rejected rather than granted a wider mount; use `sandbox.filesystem.allowWrite` to add directories deliberately.
 
 `sandbox.filesystem` adjusts the default mounts, applied after the workspace bind so they take precedence:
 
-| Key          | Effect                                                                  |
-| ------------ | ----------------------------------------------------------------------- |
-| `allowWrite` | Bind the path writable inside the sandbox                               |
-| `denyWrite`  | Bind the path read-only                                                 |
-| `denyRead`   | Mask the path — an empty tmpfs for a directory, `/dev/null` for a file  |
+| Key          | Effect                                                                 |
+| ------------ | ---------------------------------------------------------------------- |
+| `allowWrite` | Bind the path writable inside the sandbox                              |
+| `denyWrite`  | Bind the path read-only                                                |
+| `denyRead`   | Mask the path — an empty tmpfs for a directory, `/dev/null` for a file |
 
 Entries may start with `~`. Paths that do not exist are skipped — bubblewrap rejects a bind with a missing source — and the skipped entries are reported once at startup and by `book doctor`, since a skipped rule is policy you might otherwise believe is active.
 
 `sandbox.network` **fails closed**. Bubblewrap has no DNS or per-domain filtering, so it can only share or unshare the network as a whole. If `allowedDomains` or `deniedDomains` contains anything, Book cannot honour the rule as written and disables network access entirely for sandboxed commands, with a warning. Leave both empty to share the host network.
 
-Two further keys decide what happens *around* that boundary. Both are consulted on every `Bash`
+Two further keys decide what happens _around_ that boundary. Both are consulted on every `Bash`
 call, and both answer the same question — will this exact command really execute inside a
 namespace? — from one shared predicate, so they can never disagree about a command:
 
-| Key                                | Default | Effect                                                                     |
+| Key                                | Default | Effect                                                                      |
 | ---------------------------------- | ------- | --------------------------------------------------------------------------- |
 | `sandbox.allowUnsandboxedCommands` | `true`  | Set `false` to refuse any `Bash` command that would run outside the sandbox |
 | `sandbox.autoAllowBashIfSandboxed` | `true`  | Run a genuinely sandboxed `Bash` command without a permission prompt        |
 
 `allowUnsandboxedCommands: false` covers all three ways a command escapes: sandboxing is turned
 off, the command matched an `excludedCommands` pattern, or bubblewrap is missing on this platform.
-The refusal names the setting *and* the specific reason, so it is actionable rather than a bare
+The refusal names the setting _and_ the specific reason, so it is actionable rather than a bare
 denial. Note that with `sandbox.enabled` at its default `false`, nothing is sandboxed and this key
 therefore refuses **every** `Bash` command — it is meant to be paired with `sandbox.enabled: true`.
 It does not require independent approval for an `excludedCommands` match; it only makes that bypass
 refusable outright.
 
 `autoAllowBashIfSandboxed` is deliberately the weakest thing in the permission stack. It replaces
-only the *default* ask — the prompt Book raises when nothing else matched:
+only the _default_ ask — the prompt Book raises when nothing else matched:
 
 - `permissions.deny` is evaluated first and is never softened by it.
 - An explicit `permissions.ask` rule still prompts.
@@ -1053,7 +1098,7 @@ only the *default* ask — the prompt Book raises when nothing else matched:
   sandboxed.
 
 `book doctor` prints the number of `excludedCommands` patterns and the **effective** state of both
-keys, reporting `autoAllowBashIfSandboxed: true` as *inert* whenever nothing can actually be
+keys, reporting `autoAllowBashIfSandboxed: true` as _inert_ whenever nothing can actually be
 auto-allowed, so the reported policy never overstates the enforced one.
 
 ### Tool-use telemetry
@@ -1190,7 +1235,7 @@ book trust command deploy --reject # refuse it
 the command that decides the pending ones. Until a decision exists the command is refused — in
 the TUI and in print mode alike — naming the shell it wanted to run.
 
-The decision is keyed by command name but *validated* by fingerprint: a name is the handle you
+The decision is keyed by command name but _validated_ by fingerprint: a name is the handle you
 already have for `/deploy`, and the fingerprint recorded alongside it is re-checked on every
 invocation, so editing what the body runs re-asks under the same name. That fingerprint covers
 the shell the body runs, in order, not the prose around it: rewording the instructions does not
@@ -1234,13 +1279,13 @@ same `allowed-tools` and `model` frontmatter enforcement as the TUI — it is ne
 model as literal text. What differs is only what a host with no interactive surface is allowed to
 do with the result:
 
-| Command                                                    | In print mode                                           |
-| ---------------------------------------------------------- | -------------------------------------------------------- |
-| `/init`, `/security-review`, any `.book/commands/*.md`     | Run as the prompt for that turn                          |
-| `/review` (and `/review --help`)                           | Performed by the host itself; see [Code review](#code-review) |
-| Everything else — session controls, pickers, panels, `/config`, `/export`, `/memory` | Refused with an error listing what *is* supported, and exit code 1 |
+| Command                                                                              | In print mode                                                      |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| `/init`, `/security-review`, any `.book/commands/*.md`                               | Run as the prompt for that turn                                    |
+| `/review` (and `/review --help`)                                                     | Performed by the host itself; see [Code review](#code-review)      |
+| Everything else — session controls, pickers, panels, `/config`, `/export`, `/memory` | Refused with an error listing what _is_ supported, and exit code 1 |
 
-Refusal happens *before* the command's own code runs, so a command with a side effect (`/config`
+Refusal happens _before_ the command's own code runs, so a command with a side effect (`/config`
 writes `settings.local.json`, `/export` writes a file, `/memory approve` mutates memory) can never
 half-fire in a host that cannot show its result. A `/name` that is not a command at all is still
 forwarded to the model verbatim, so an ordinary prompt like `book -p "/etc/hosts is a file"` is
@@ -1286,8 +1331,9 @@ pass or open one to read its transcript — Tab from an empty prompt selects a r
 the panel for explicit management. Those agents belong to the session for display only; they never
 deliver a completion notification, so watching a review costs no extra model turn. Press `Esc` to
 cancel — the in-flight agents are stopped, and a cancelled review reports `inconclusive` with no
-findings rather than presenting its own stopped passes as a result. `Ctrl+C` cancels the review too;
-a second press exits, as it does mid-stream. A cancelled `--fix` pass reports what it had already
+findings rather than presenting its own stopped passes as a result. `Ctrl+C` cancels the review too
+without exiting; once it is cancelled, exiting takes the usual two presses (the first shows "Press
+Ctrl+C again to exit"). A cancelled `--fix` pass reports what it had already
 committed before stopping. Progress is a streaming-host feature: a print run has no silence to
 break, so its stdout stays exactly the report (the same target is on `data.target`).
 
@@ -1317,7 +1363,7 @@ resolves the review target and hands the reviewers an immutable diff. The report
 stdout as text by default. `--fix` is interactive-only: a non-interactive host cannot approve a
 patcher's tool calls, so `book -p "/review --fix"` exits 1 with an explanation instead of editing
 and committing unattended. A review that could not run at all — a bad ref, `agents.mode = off`, an
-unknown option — also exits 1. An inconclusive *verdict* does not: the review ran, so gate on the
+unknown option — also exits 1. An inconclusive _verdict_ does not: the review ran, so gate on the
 verdict field rather than on the exit code.
 
 Under `--output-format json` and `stream-json` the review is emitted as one record, with `data`
@@ -1476,7 +1522,7 @@ for await (const event of query('Explain this code', {
 }
 ```
 
-`AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop` — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK.
+`AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop` — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK. Host notices (such as saved memories or review candidates) emit `notice` (`{type: 'notice', message}`).
 
 Auth and model selection come from settings / env (`BOOK_API_KEY`, `BOOK_MODEL`, and provider blocks), not from `query()` options. See `src/sdk.ts` for the full `QueryEvent` / `QueryOptions` surface.
 

@@ -207,7 +207,7 @@ describe('separateInlineReasoning', () => {
       separateInlineReasoning(
         '<reasoning_context>\n**Planning**\n</reasoning_context>\nThe answer.',
       ),
-    ).toEqual({ content: 'The answer.', reasoning: '**Planning**' });
+    ).toEqual({ content: 'The answer.', reasoning: '**Planning**', found: true });
   });
 
   it('joins two closed blocks with a blank line', () => {
@@ -215,6 +215,7 @@ describe('separateInlineReasoning', () => {
     expect(separateInlineReasoning(input)).toEqual({
       content: 'Answer',
       reasoning: 'Block 1\n\nBlock 2',
+      found: true,
     });
   });
 
@@ -237,5 +238,173 @@ describe('separateInlineReasoning', () => {
     const result = separateInlineReasoning(plain);
     expect(result.content).toBe(plain);
     expect(result.reasoning).toBe('');
+  });
+
+  // Each of the next five lost answer text at 4c87d18: the split is permanent,
+  // so a tag the answer merely quotes must never be read as markup.
+  it('keeps a reasoning block quoted in inline code in the answer', () => {
+    const input = 'Wrap it like `<thinking>plan</thinking>` in your prompt';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(false);
+  });
+
+  it('keeps an opening and a closing tag quoted in separate code spans', () => {
+    const input = 'The element `<reasoning>` is closed by `</reasoning>`.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(false);
+  });
+
+  it('keeps a tag quoted in prose ahead of a fenced example intact', () => {
+    const input = [
+      'Use the `<think>` tag like this:',
+      '',
+      '```',
+      '<think>plan</think>',
+      '```',
+      'Done.',
+    ].join('\n');
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(false);
+  });
+
+  it('ends a nested same-name block at its first closing tag, losing no answer text', () => {
+    const result = separateInlineReasoning('<think>A <think>B</think> C</think>\nAnswer');
+    expect(result.content).toBe('C</think>\nAnswer');
+    expect(result.reasoning).toBe('A <think>B');
+    expect(result.found).toBe(true);
+  });
+
+  it('leaves a JSON report whose findings mention both tags byte-identical', () => {
+    const report = JSON.stringify({
+      findings: [
+        { title: 'Opening tag', body: 'The parser keeps <think> open.' },
+        { title: 'Middle', body: 'Unrelated finding.' },
+        { title: 'Closing tag', body: 'A stray </think> survives.' },
+      ],
+    });
+    const bare = separateInlineReasoning(report);
+    expect(bare.content).toBe(report);
+    expect(bare.reasoning).toBe('');
+    expect(bare.found).toBe(false);
+
+    const prefixed = separateInlineReasoning(`<think>plan the review</think>\n${report}`);
+    expect(prefixed.content).toBe(report);
+    expect(prefixed.reasoning).toBe('plan the review');
+    expect(prefixed.found).toBe(true);
+  });
+
+  it('leaves the reply as written when its first closing tag is quoted', () => {
+    const input = '<think>never write `</think>` early</think>\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('leaves a block in the middle of an answer where it is', () => {
+    const input = 'Answer part 1 <think>more</think> part 2';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(false);
+  });
+
+  it('reports an empty block as found so its tags still leave the answer', () => {
+    const result = separateInlineReasoning('<think>\n\n</think>\n\nAnswer');
+    expect(result.content).toBe('Answer');
+    expect(result.reasoning).toBe('');
+    expect(result.found).toBe(true);
+  });
+
+  // Each of the next tests lost, or failed to split, answer text at 8243818.
+  it('ends a block at its first closing tag when the reasoning mentions a bare opening tag', () => {
+    const result = separateInlineReasoning(
+      '<think>User says not to emit <think> tags.</think>The answer. The closing tag </think> ends it. Tail.',
+    );
+    expect(result.content).toBe('The answer. The closing tag </think> ends it. Tail.');
+    expect(result.reasoning).toBe('User says not to emit <think> tags.');
+    expect(result.found).toBe(true);
+  });
+
+  it('splits a block whose reasoning has an unpaired backtick', () => {
+    const result = separateInlineReasoning(
+      '<think>I will use a `x flag</think>Answer with `code` here.',
+    );
+    expect(result.content).toBe('Answer with `code` here.');
+    expect(result.reasoning).toBe('I will use a `x flag');
+    expect(result.found).toBe(true);
+  });
+
+  it('never lets an unpaired backtick in the reasoning pair with a tag the answer quotes', () => {
+    const result = separateInlineReasoning(
+      '<think>reasoning with lone `tick</think>The answer. Use `</think>` to close. More answer.',
+    );
+    expect(result.content).toBe('The answer. Use `</think>` to close. More answer.');
+    expect(result.reasoning).toBe('reasoning with lone `tick');
+  });
+
+  it('leaves the reply as written when its first closing tag is in a double-backtick span', () => {
+    const input = '<think>quote ``</think>`` here</think>\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('leaves the reply as written when its first closing tag is inside a fence', () => {
+    const input = '<think>plan:\n```\n</think>\n```\ndone</think>\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('closes after a fence that ends right before the closing tag', () => {
+    const result = separateInlineReasoning('<think>plan:\n```\ncode\n```\n</think>\nAnswer');
+    expect(result.content).toBe('Answer');
+    expect(result.reasoning).toBe('plan:\n```\ncode\n```');
+  });
+
+  it('keeps a block whose reasoning never closes its fence as answer text', () => {
+    const input = '<think>plan:\n```ts\nconst x = 1;\n</think>\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  // The next three lost answer text at e3628ce: a skipped first tag let a later one, judged
+  // partly by answer text, end the block.
+  it('keeps a reply whose reasoning fence is still open at the closing tag', () => {
+    const input =
+      '<think>Steps:\n1. ```bash\n   npm test\n   ```\n</think>\nUse this template:\n```\n<think>{{reasoning}}</think>\n{{answer}}\n```\nThat is all.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('keeps a reply whose closing tag sits between backticks from the reasoning and the answer', () => {
+    const input =
+      '<think>The fix belongs in `parseArgs`</think>`parseArgs` now rejects the flag. Models close their reasoning with </think> and the router forwards it.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('stops at a later leading block whose closing tag looks quoted', () => {
+    const result = separateInlineReasoning(
+      '<think>a</think>\n<reasoning>run `x`</reasoning>`x` prints </reasoning> and more',
+    );
+    expect(result.reasoning).toBe('a');
+    expect(result.content).toBe('<reasoning>run `x`</reasoning>`x` prints </reasoning> and more');
+  });
+
+  it('stores an answer that splitting again leaves unchanged', () => {
+    const result = separateInlineReasoning('<think>x</think>\t<think>y</think>\nAnswer');
+    expect(result.content).toBe('Answer');
+    expect(result.reasoning).toBe('x\n\ny');
+    expect(separateInlineReasoning(result.content).found).toBe(false);
   });
 });

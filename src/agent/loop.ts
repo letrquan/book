@@ -37,6 +37,7 @@ import {
   type ModelWindowStore,
 } from '../model-window-store.js';
 import {
+  ALWAYS_ALLOWED_TOOLS,
   evaluatePermissionDetail,
   permissionResultOf,
   permissionRuleForToolCall,
@@ -56,7 +57,6 @@ import {
   separateInlineReasoning,
   stripReasoningTags,
 } from '../reasoning-tags.js';
-import { maybeCaptureMemoryCandidate } from '../memory-autosave.js';
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import {
@@ -100,12 +100,16 @@ const log = createDebugLogger('agent');
 const SKILL_INFRASTRUCTURE_TOOLS = new Set(['InvokeSkill', 'ReadSkillResource', 'ToolSearch']);
 
 /**
- * A 400 on a prompt this large is read as a context overflow even when the
- * body does not say so. The antigravity Gemini route answers a ~330k-token
- * request with `INVALID_ARGUMENT` and no mention of length (#221), which is
- * its practical window, not the 1M the model publishes; treating it as an
- * overflow puts it through the same compaction and learned-window ratchet a
- * spoken overflow gets. A 400 below the floor is still the request's own fault.
+ * A 400 that a router quoted inside a retryable status, on a prompt this large,
+ * is read as a context overflow even when the body does not say so. The
+ * antigravity Gemini route behind 9router answers a ~330k-token request with
+ * `503 … [400]: INVALID_ARGUMENT` and no mention of length (#221), which is its
+ * practical window, not the 1M the model publishes; treating it as an overflow
+ * puts it through the same compaction and learned-window ratchet a spoken
+ * overflow gets. A plain 400 is the provider's own verdict on the request at any
+ * size: reading it as an overflow compacted for nothing and lowered a 1M model's
+ * learned window for every later session. A wrapped 400 below the floor is still
+ * the request's own fault.
  */
 const LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS = 200_000;
 
@@ -214,6 +218,7 @@ export async function runAgentLoop(
     agentId?: string;
     agentRole?: import('../agents/types.js').AgentRole;
     parentSessionId?: string;
+    sessionId?: string;
     /** Non-owning managed-agent coordinator used by child-only evidence tools. */
     agentManager?: ToolContext['agentManager'];
     /** Mutable resources owned by the logical session. */
@@ -310,7 +315,7 @@ export async function runAgentLoop(
   const hasPartialOutput = (): boolean => assistantOutputProduced;
   const retry = config.retry;
   const ownsRuntime = !options?.runtime;
-  const runtime = options?.runtime ?? new SessionRuntime();
+  const runtime = options?.runtime ?? new SessionRuntime({ history });
   runtime.toolExecutionScheduler.setLimit(config.settings.toolExecution.maxConcurrent);
   runtime.agentContextCache.beginTurn();
   if (!registry.getTool('ToolSearch')) registry.registerAll(toolSearchTools);
@@ -482,32 +487,12 @@ export async function runAgentLoop(
     timestamp: options?.userMessageTimestamp ?? Date.now(),
   });
 
-  if (!options?.isSubagent && !options?.skipUserPromptHooks) {
-    try {
-      let previousAssistant: string | undefined;
-      for (let i = history.length - 1; i >= 0; i--) {
-        if (history[i].role === 'assistant' && history[i].includeInContext) {
-          previousAssistant = history[i].content;
-          break;
-        }
-      }
-      const memoryCapture = maybeCaptureMemoryCandidate({
-        workspace: config.workspace,
-        settings: config.settings,
-        userMessage: effectivePrompt,
-        previousAssistant,
-      });
-      if (memoryCapture.saved) log.info('memory candidate captured', { path: memoryCapture.path });
-    } catch (e) {
-      log.warn('memory candidate capture failed', {
-        error: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }
-
   const initialMode = mode as PermissionMode;
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
+    readOnlyRoots: config.memoryContext?.dir
+      ? [{ root: config.memoryContext.dir, exclude: ['.inbox'] }]
+      : undefined,
     env: process.env as Record<string, string>,
     envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,
@@ -532,9 +517,12 @@ export async function runAgentLoop(
     agentId: options?.agentId,
     agentRole: options?.agentRole,
     parentSessionId: options?.parentSessionId,
+    sessionId: options?.sessionId ?? options?.runContext?.sessionId ?? options?.parentSessionId,
     runContext: options?.runContext,
     onAgentEvent: callbacks.onAgentEvent,
     onHookEvent: callbacks.onHookEvent,
+    onNotice: callbacks.onNotice,
+    usedToolNames: runtime.usedToolNames,
     runtime,
   };
   const toolSurface = createToolSurface({
@@ -912,6 +900,7 @@ export async function runAgentLoop(
           append: options?.systemPromptAppend,
           dynamicPolicy: dynamicPolicy(turn),
           hideAgents: options?.hideAgents,
+          isSubagent: options?.isSubagent,
           toolCatalogSummary: toolSurface.catalogSummary(),
           planMode: effectiveMode === 'plan',
           planUnrestored: runtime.planUnrestored,
@@ -933,6 +922,7 @@ export async function runAgentLoop(
             append: options?.systemPromptAppend,
             dynamicPolicy: dynamicPolicy(turn),
             hideAgents: options?.hideAgents,
+            isSubagent: options?.isSubagent,
             toolCatalogSummary: toolSurface.catalogSummary(),
             planMode: effectiveMode === 'plan',
             planUnrestored: runtime.planUnrestored,
@@ -1125,6 +1115,7 @@ export async function runAgentLoop(
 
       let streamError: string | null = null;
       let streamErrorCode: string | undefined;
+      let streamUpstreamStatus: number | undefined;
       let streamDone = false;
 
       try {
@@ -1166,6 +1157,7 @@ export async function runAgentLoop(
           } else if (event.type === 'error' && event.error) {
             streamError = event.error;
             streamErrorCode = event.errorCode;
+            streamUpstreamStatus = event.upstreamStatus;
             break;
           } else if (event.type === 'done') {
             streamDone = true;
@@ -1202,8 +1194,10 @@ export async function runAgentLoop(
 
       assistantContent = textBuffer;
       {
+        // Gate on the block, not on its text: the empty `<think></think>` a
+        // model emits with thinking off still has to leave the answer.
         const inline = separateInlineReasoning(assistantContent);
-        if (inline.reasoning) {
+        if (inline.found) {
           reasoningContent = [reasoningContent, inline.reasoning].filter(Boolean).join('\n\n');
           assistantContent = inline.content;
         }
@@ -1324,7 +1318,10 @@ export async function runAgentLoop(
       // Gemini's safety filter fires on ordinary code-shaped prose now and then, and
       // a `content_filter` stop on a turn that called no tool is a lost turn, not a
       // refusal the run should end on. It gets the same single re-issue as an empty
-      // completion; only when it repeats on the retry does the run end.
+      // completion; only when it repeats on the retry does the run end. The repeat
+      // ends it with the `content_filter` code, which `terminalRecovery` maps to
+      // `none`: a stream-level re-issue would send the same prompt a third time,
+      // behind a host-written `[continuation]` the session would keep.
       const filteredNarration =
         finishReason === 'content_filter' && toolCalls.length === 0 && !signal?.aborted;
       if (filteredNarration) {
@@ -1342,7 +1339,7 @@ export async function runAgentLoop(
           retrySameTurn = true;
           continue;
         }
-        streamErrorCode = 'provider_error';
+        streamErrorCode = 'content_filter';
       }
 
       const routerOverflowResponse =
@@ -1376,8 +1373,10 @@ export async function runAgentLoop(
           retrySameTurn = true;
           continue;
         }
+        // Its one re-issue is spent. `error_envelope` keeps the stream-level
+        // re-issue from sending it again (`terminalRecovery` maps it to `none`).
         streamError = assistantContent.trim();
-        streamErrorCode = 'provider_error';
+        streamErrorCode = 'error_envelope';
         assistantContent = '';
       }
 
@@ -1394,6 +1393,7 @@ export async function runAgentLoop(
         const overflowByShape =
           isContextOverflowError(streamError) ||
           (streamErrorCode === 'bad_request' &&
+            streamUpstreamStatus === 400 &&
             requestTokens >= LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS);
         const canRecoverContextOverflow =
           forcedCompactTurn !== turn &&
@@ -1964,8 +1964,8 @@ export async function runAgentLoop(
         // while `deny: ["Write(.env)"]` in the same list held. Modes decide
         // whether the user is *asked*; they do not decide whether a rule the user
         // already wrote applies.
-        const hardDeny = evaluatePermissionDetail(canonName, call.arguments, config.settings);
-        if (hardDeny.decision === 'deny') {
+        const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
+        if (verdict.decision === 'deny') {
           // Consent was requested a few lines up; close it out, or the registry
           // keeps an activation request that never resolves. The later
           // permission-block deny does the same.
@@ -1976,30 +1976,40 @@ export async function runAgentLoop(
             toolCallId: call.id,
             code: 'permission_denied',
             status: 'blocked',
-            content: permissionDeniedError(canonName, hardDeny.matchedRule),
+            content: permissionDeniedError(canonName, verdict.matchedRule),
           });
           return undefined;
         }
 
+        const toolPermissionRequired = requiresToolPermission(
+          effectiveMode,
+          persistentBackgroundShell,
+        );
+        const userRuleAsked =
+          toolPermissionRequired && verdict.decision === 'ask' && verdict.source === 'ask';
+
         if (
-          (forceSkillPermission ||
-            requiresToolPermission(effectiveMode, persistentBackgroundShell)) &&
+          (forceSkillPermission || toolPermissionRequired) &&
           (persistentBackgroundShell ||
             !approveAllRules.some((rule) => permissionRuleMatchesCall(rule, call))) &&
-          !autoSafeTool &&
+          (!autoSafeTool || userRuleAsked) &&
           (effectiveMode !== 'plan' || planReadOnly)
         ) {
           const autoApproved = effectiveMode === 'accept-edits' && isFileMutatingTool(canonName);
-          if (!autoApproved) {
+          if (!autoApproved || userRuleAsked) {
             let permission: 'allow' | 'deny' | 'always' | undefined;
             let chosenRule: string | undefined;
+            // A tool on the always-allowed list is never prompted for in any
+            // mode, so `dontAsk` — which refuses what it cannot ask about —
+            // has nothing to refuse. A `deny` rule already returned above, and
+            // an `ask` rule still lands on the deny below rather than a prompt.
+            const autoAllowed = ALWAYS_ALLOWED_TOOLS.has(canonName);
             if (
-              (forceSkillPermission || effectiveMode !== 'dontAsk') &&
+              !userRuleAsked &&
+              (forceSkillPermission || effectiveMode !== 'dontAsk' || autoAllowed) &&
               !persistentBackgroundShell
             ) {
-              const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
               if (verdict.decision === 'allow') permission = 'allow';
-              else if (verdict.decision === 'deny') permission = 'deny';
             }
             if (permission === undefined && effectiveMode !== 'dontAsk') {
               const decision = await callbacks.onPermissionRequired(call);
@@ -2017,7 +2027,6 @@ export async function runAgentLoop(
                   effectiveMode === 'dontAsk' ? 'dont_ask' : 'user_denied',
                 );
               }
-              const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
               toolResults[callIndex] = toolFailure('SKIPPED: Permission denied', {
                 toolCallId: call.id,
                 code: 'permission_denied',
@@ -2085,6 +2094,7 @@ export async function runAgentLoop(
 
       const executeToolCall = async (entry: PreparedLoopCall): Promise<ToolResult> => {
         const toolStartMs = clock.monotonicNowMs();
+        runtime.usedToolNames.add(entry.canonName);
         log.debug('tool start', {
           name: entry.canonName,
           id: entry.call.id,

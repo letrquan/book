@@ -68,15 +68,20 @@ EOF
 | `expect <regex>` | Assert the current screen matches now; fail otherwise. |
 | `send <text>` | Type text, then submit. Writes the text and `\r` as separate PTY reads — one chunk would be parsed as a paste and the submit dropped. |
 | `type <text>` | Type without submitting. |
-| `key <name>...` | `enter esc tab shift-tab up down left right backspace space ctrl-c ctrl-d ctrl-r ctrl-l ctrl-o pageup pagedown` |
+| `key <name>...` | `enter esc tab shift-tab up down left right backspace space ctrl-c ctrl-d ctrl-e ctrl-j ctrl-l ctrl-o ctrl-r ctrl-t ctrl-u home end pageup pagedown` |
 | `sleep [ms]`, `resize <cols> <rows>` | Timing and layout. |
 | `screen`, `raw`, `shot <name>` | Dump the screen to stdout, dump the raw tail, or write the screen to `<shots>/<name>.txt`. |
+| `rawbytes [n]` | Print the last `n` (default 3000) bytes of the PTY stream JSON-encoded, escapes kept — the only faithful record of what the renderer emitted when the xterm replay looks wrong. |
 | `quit` | Ctrl-C twice and wait for exit. |
 
 Options: `--mock` (start the mock provider), `--mock-script <json>`, `--mock-port` (8919),
 `--workspace <dir>`, `--book-home <dir>` (default: a fresh temp dir), `--shots <dir>`
 (`/tmp/book-shots`), `--cols` (120), `--rows` (40), `--timeout` (20000), `--ready-settle` (2500),
-`--send-gap` (250).
+`--send-gap` (250), `--bin <exe>` (spawn another executable — the Go build's `bin/book.exe` — in
+place of `node dist/index.js`, with the same flags; under `--mock` the `BOOKGO_*` variables are set
+beside the `BOOK_*` ones). The driver sets `USERPROFILE` as well as `HOME` to the throwaway home:
+on Windows `os.homedir()` and Go's `os.UserHomeDir()` read `USERPROFILE`, and with `HOME` alone the
+driven binary found the developer's real `~/.claude/skills`.
 
 ### `mock-provider.mjs` — a provider without an API key
 
@@ -123,6 +128,13 @@ any failure. Run it after changing anything on that path.
 
 ## Traps the scripts do not cover
 
+- **`--bin` replays without `convertEol`.** xterm.js with `convertEol: true` turns a bare LF into
+  CRLF. Bubble Tea's renderer moves the cursor down with bare LFs (column kept), so every first
+  body line of a tool row replayed at column 0 — a "missing indent" that does not exist in a real
+  terminal. The driver passes `convertEol: !BIN`; Ink never emits a bare LF as cursor motion, so the
+  TS build is unaffected either way. A second limit: the inline renderer's print-above of content
+  taller than the screen (CSI L after homing) does not replay faithfully in headless xterm.js —
+  judge such screens by `rawbytes` or a live terminal, not by `shot`.
 - **Most tools are deferred.** A direct call to an inactive tool returns `status:'blocked'` /
   `code:'tool_not_active'`. Script a `ToolSearch` turn first. Book's `ToolSearch` takes only `query`
   (no `select:` syntax, closed schema — an extra argument is rejected), matched against the keywords

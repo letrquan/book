@@ -503,4 +503,79 @@ describe('ToolCallBlock', () => {
       expect(displayWidth(line), JSON.stringify(line)).toBeLessThanOrEqual(width);
     }
   });
+
+  it('shows the reason of a network-policy refusal but keeps other skipped rows quiet', () => {
+    const policy = render(
+      withTheme(
+        <ToolCallBlock
+          name="WebFetch"
+          args={{ url: 'https://localhost/' }}
+          result={{
+            version: 2,
+            toolCallId: 'call-policy',
+            status: 'blocked',
+            content: '',
+            structuredError: {
+              code: 'private_network_forbidden',
+              message: 'Web fetch blocked because localhost resolves to private address 127.0.0.1.',
+              retryable: false,
+            },
+          }}
+          isExpanded={false}
+          reducedMotion
+        />,
+      ),
+    );
+    expect(frame(policy.lastFrame)).toContain('Web fetch blocked because localhost');
+
+    const inactive = render(
+      withTheme(
+        <ToolCallBlock
+          name="WebFetch"
+          args={{ url: 'https://example.com/' }}
+          result={{
+            version: 2,
+            toolCallId: 'call-inactive',
+            status: 'blocked',
+            content: '',
+            structuredError: {
+              code: 'tool_not_active',
+              message: 'WebFetch is not active; call ToolSearch first.',
+              retryable: false,
+            },
+          }}
+          isExpanded={false}
+          reducedMotion
+        />,
+      ),
+    );
+    expect(frame(inactive.lastFrame)).not.toContain('is not active');
+  });
+
+  it('shows the reason of a WebSearch whose every provider was refused', () => {
+    const view = render(
+      withTheme(
+        <ToolCallBlock
+          name="WebSearch"
+          args={{ query: 'anything' }}
+          result={{
+            version: 2,
+            toolCallId: 'call-search',
+            status: 'blocked',
+            content: '',
+            structuredError: {
+              code: 'search_all_providers_failed',
+              message:
+                'Built-in web search providers are unavailable. exa: Connection blocked because mcp.exa.ai resolved to private or special-use address 127.0.0.1.',
+              retryable: false,
+            },
+          }}
+          isExpanded={false}
+          reducedMotion
+        />,
+      ),
+    );
+
+    expect(frame(view.lastFrame)).toContain('Built-in web search providers are unavailable');
+  });
 });

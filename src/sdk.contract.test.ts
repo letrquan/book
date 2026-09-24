@@ -62,6 +62,7 @@ vi.mock('./headless.js', () => ({
 }));
 
 import { query } from './sdk.js';
+import { runHeadless } from './headless.js';
 
 let sessionFixture: SessionFixture | undefined;
 let previousApiKey: string | undefined;
@@ -212,5 +213,23 @@ describe('SDK runtime event bridge', () => {
     const report = warnings.join('\n');
     expect(report).toContain('Ignoring 1 project-declared hook(s) (PreToolUse x1)');
     expect(report).toContain('Run `book doctor` to approve them.');
+  });
+
+  // Progress lines are for a person watching `book -p` in a terminal. An SDK
+  // host owns its stderr and already receives every tool call as an event.
+  it('runs headless quietly so the host stderr gets no progress lines', async () => {
+    sessionFixture = createSessionFixture('book-sdk-quiet-');
+    state.release();
+    const types: string[] = [];
+    for await (const event of query('hello', {
+      workspace: sessionFixture.root,
+      noSettings: true,
+      sessionStore: sessionFixture.store,
+    })) {
+      types.push(event.type);
+    }
+
+    expect(types).toContain('result');
+    expect(vi.mocked(runHeadless).mock.calls.at(-1)?.[2].quiet).toBe(true);
   });
 });

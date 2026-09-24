@@ -32,6 +32,7 @@ import {
   type StreamJsonEvent,
 } from './stream-json.js';
 import { AgentSession, type AgentSessionRunRequest } from './session/agent-session.js';
+import { SessionRuntime } from './session/runtime.js';
 import type { AgentEvent } from './session/agent-events.js';
 import {
   buildAgentCompletionMessage,
@@ -39,7 +40,7 @@ import {
 } from './agents/completion-notification.js';
 import { getOrCreateAgentManager } from './agents/manager.js';
 import { resolvePermissionMode } from './permission-mode.js';
-import { stripReasoningTags } from './reasoning-tags.js';
+import { separateInlineReasoning } from './reasoning-tags.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { toolResultErrorMessage } from './tools/result.js';
 
@@ -97,7 +98,14 @@ export async function runHeadless(
   };
   /** Set once the run's liveness file exists; released in the outer `finally`. */
   let disposeCrashHandlers: (() => void) | undefined;
-  const agentSession = new AgentSession();
+  const agentSession = new AgentSession({
+    // The transcript is the rendered conversation and still carries the tool
+    // records compaction summarized out of the context history, so prefer it
+    // when a resume supplies both.
+    runtime: new SessionRuntime({
+      history: opts.transcript?.length ? opts.transcript : opts.history,
+    }),
+  });
   const runtime = agentSession.getRuntime();
   // Seed the plan from the resumed session. Both lists are mutated in place by
   // their tools, so pushing into the runtime's arrays is what makes the plan
@@ -940,9 +948,13 @@ export async function runHeadless(
         // "did the work".
         stdout.write(`${stopped.plan}\n\n${stopped.message}\n`);
       } else {
+        // Only a reply that opened with a closed reasoning block is rewritten.
+        // Any other answer is printed exactly as the model wrote it, so an
+        // indented first line (YAML, code piped to a file) keeps its indent.
         const last = lastAssistantText(contextHistory);
-        const stripped = stripReasoningTags(last).trim();
-        if (stripped) stdout.write(stripped + '\n');
+        const inline = separateInlineReasoning(last);
+        const answer = inline.found ? inline.content.trimEnd() : last;
+        if (answer) stdout.write(answer + '\n');
       }
     } else if (opts.outputFormat === 'json') {
       // Exactly one top-level document: everything the run produced, including
@@ -1020,6 +1032,11 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
   if (event.type === 'terminal') return;
   if (event.type === 'agent_text_delta' && opts.forwardSubagentText !== true) return;
   opts.onAgentEvent?.(event);
+  if (event.type === 'notice') {
+    if (opts.outputFormat === 'stream-json') emit({ type: 'notice', message: event.message });
+    else console.warn(event.message);
+    return;
+  }
   if (event.type === 'error') {
     if (opts.outputFormat === 'stream-json') emit({ type: 'error', error: event.error });
     else process.stderr.write(`error: ${event.error}\n`);
@@ -1090,6 +1107,20 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
   }
 }
 
+/** Longest primary argument a progress line shows. */
+const PROGRESS_ARG_MAX = 120;
+/** Longest error a `--verbose` result line shows. */
+const PROGRESS_ERROR_MAX = 160;
+
+/**
+ * The first non-blank line of `text`, cut to `max` characters, so a plan, an
+ * agent message or unparsed JSON arguments cannot turn one record into many.
+ */
+function progressLine(text: string, max: number): string {
+  const first = text.trim().split(/\r?\n/, 1)[0].trimEnd();
+  return first.length > max ? `${first.slice(0, max - 1)}…` : first;
+}
+
 /**
  * One line per tool call on stderr in text mode. Without it a print run is
  * silent from the first request to the final answer — 35 minutes and a hundred
@@ -1099,17 +1130,22 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
  */
 function writeTextProgress(event: AgentEvent, opts: HeadlessOptions): void {
   if (event.type === 'tool_use') {
-    const arg = getPrimaryArg(event.toolCall.arguments);
-    process.stderr.write(`[${event.toolCall.name}] ${arg}\n`.replace(/\s+\n$/, '\n'));
+    const arg = progressLine(getPrimaryArg(event.toolCall.arguments), PROGRESS_ARG_MAX);
+    process.stderr.write(`[${event.toolCall.name}]${arg ? ` ${arg}` : ''}\n`);
     return;
   }
   if (event.type === 'tool_result' && opts.verbose === true) {
     const result = event.toolResult;
-    const status = result.status;
     const duration = result.metrics?.durationMs;
-    const detail = status === 'success' ? '' : ` ${toolResultErrorMessage(result) ?? ''}`.trimEnd();
+    // A turn's call lines all print before its results, so each result names its target.
+    const target = progressLine(result.presentation?.target ?? '', PROGRESS_ARG_MAX);
+    const error =
+      result.status === 'success'
+        ? ''
+        : progressLine(toolResultErrorMessage(result) ?? '', PROGRESS_ERROR_MAX);
+    const detail = [target, error].filter(Boolean).join(': ');
     process.stderr.write(
-      `  → ${status}${duration !== undefined ? ` ${Math.round(duration)}ms` : ''}${detail.slice(0, 160)}\n`,
+      `  → ${result.status}${duration !== undefined ? ` ${Math.round(duration)}ms` : ''}${detail ? ` ${detail}` : ''}\n`,
     );
   }
 }

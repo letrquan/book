@@ -41,16 +41,19 @@ export function classifyHttpStatus(status: number): {
  * 9router wraps an upstream 4xx as a 503 plus a cooldown, so the wrapper's status
  * says "transient" while the body says the request itself is invalid. Only a 4xx
  * is ever taken from the body: a quoted 5xx says nothing the wrapper did not.
+ *
+ * Only two shapes count as a quote: 9router's own `[<route>] [400]:` prefix, and
+ * a JSON `"error"` object whose `code` is a 4xx. A status mentioned in prose
+ * (`upstream sent HTTP 403`, `chunk [404]`) or a longer number that merely starts
+ * like one (`"code": 4001`) is not: misreading an outage body ends the run after
+ * a single request, or parks it as a rejected credential.
  */
 export function quotedUpstreamStatus(body: string): number | undefined {
   if (!body) return undefined;
   const text = body.length > 65536 ? body.slice(0, 65536) : body;
   const patterns = [
-    /\[(4\d\d)\]/,
-    /"code"\s*:\s*"?(4\d\d)"?/,
-    /"status"\s*:\s*"?(4\d\d)"?/,
-    /\bHTTP\s+(4\d\d)\b/,
-    /\b(4\d\d)\s+(?:Bad Request|Unauthorized|Forbidden|Not Found|Payload Too Large|Too Many Requests)\b/i,
+    /\[[^\]\s]+\]\s*\[(4\d\d)\]:/,
+    /"error"\s*:\s*\{[^{}]*?"code"\s*:\s*"?(4\d\d)(?![\d.])/,
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
@@ -61,15 +64,17 @@ export function quotedUpstreamStatus(body: string): number | undefined {
   return undefined;
 }
 
+/**
+ * The upstream 4xx quoted inside a retryable response, when that quote is what
+ * classifies it: 9router answers 503 and names the real status in the body. A
+ * non-retryable status is its own answer, and its body is never re-read.
+ */
+export function wrappedUpstreamStatus(status: number, body: string): number | undefined {
+  return classifyHttpStatus(status).retryable ? quotedUpstreamStatus(body) : undefined;
+}
+
 export function classifyApiError(status: number, body: string): ProviderErrorCode {
-  const statusInfo = classifyHttpStatus(status);
-  let code = statusInfo.code;
-  if (statusInfo.retryable) {
-    const quoted = quotedUpstreamStatus(body);
-    if (quoted !== undefined) {
-      code = classifyHttpStatus(quoted).code;
-    }
-  }
+  const code = classifyHttpStatus(wrappedUpstreamStatus(status, body) ?? status).code;
   return code === 'bad_request' && isContextOverflowError(body) ? 'context_overflow' : code;
 }
 

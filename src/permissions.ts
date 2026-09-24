@@ -360,6 +360,12 @@ export function evaluatePermissionDetail(
     return { decision: 'allow', source: 'sandbox' };
   }
 
+  if (ALWAYS_ALLOWED_TOOLS.has(canonicalToolName(toolName))) {
+    return { decision: 'allow', source: 'default' };
+  }
+
   // No rule matched — default to asking.
   return { decision: 'ask', source: 'default' };
 }
+
+export const ALWAYS_ALLOWED_TOOLS = new Set(['MemorySave']);
