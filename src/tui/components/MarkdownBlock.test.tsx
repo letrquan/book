@@ -3,6 +3,7 @@ import { render, cleanup } from 'ink-testing-library';
 import { Text } from 'ink';
 import chalk from 'chalk';
 import React from 'react';
+import { marked } from 'marked';
 import { ThemeContext } from '../theme.js';
 import { DEFAULT_THEME } from '../../types/theme.js';
 import {
@@ -32,6 +33,14 @@ function numberedWords(count: number): string {
 function tailOf(window: string): string {
   const banner = '… earlier response hidden while streaming\n\n';
   return window.startsWith(banner) ? window.slice(banner.length) : window;
+}
+
+const MARKER_WORDS = ['-', '+', '#', '3.', '2)', '2019.', '##'];
+
+function markerProse(count: number): string {
+  return Array.from({ length: count }, (_, index) =>
+    index % 3 === 2 ? MARKER_WORDS[index % MARKER_WORDS.length] : `word${index}`,
+  ).join(' ');
 }
 
 afterEach(() => {
@@ -127,20 +136,56 @@ describe('MarkdownBlock', () => {
     }
   });
 
-  it('does not blank the live tail for inline markdown before the cutoff', () => {
-    // Just past maxCharacters (1920) at width 80; the markup sits before the cutoff.
-    const content = `Use \`code\` and snake_case first. ${numberedWords(300)}`;
-    const tail = tailOf(streamingMarkdownWindow(content, 80));
+  it('does not snap the cutoff back over inline markdown near the start', () => {
+    // Rounding the cutoff down would snap it to 0 here and put the markup in the tail, which
+    // blanks the live view; rounding up starts past it.
+    const content = `Use \`code\` and snake_case first. ${numberedWords(270)}`;
+    expect(content.length).toBeGreaterThan(1920);
+    expect(content.length - 1920).toBeLessThan(320);
 
-    expect(tail).toMatch(/^word\d+/);
+    expect(tailOf(streamingMarkdownWindow(content, 80))).toMatch(/^word\d+/);
   });
 
-  it('keeps a long unbroken token intact when no boundary is near', () => {
+  it('falls back to the rounded cutoff when no word starts within a step', () => {
     const content = `start ${'x'.repeat(8_000)}`;
+    const rounded = Math.ceil((content.length - 1920) / 320) * 320;
+
+    expect(tailOf(streamingMarkdownWindow(content, 80))).toBe(content.slice(rounded));
+  });
+
+  it('never starts the prose tail on a heading, list or quote marker', () => {
+    const full = markerProse(1200);
+    for (let length = 1921; length <= full.length; length += 7) {
+      const tail = tailOf(streamingMarkdownWindow(full.slice(0, length), 80));
+      expect(marked.lexer(tail)[0]?.type).toBe('paragraph');
+    }
+  });
+
+  it('keeps the live tail within the character budget when marker words are skipped', () => {
+    const full = markerProse(1500);
+    for (let length = 1921; length <= full.length; length += 13) {
+      expect(tailOf(streamingMarkdownWindow(full.slice(0, length), 80)).length).toBeLessThanOrEqual(
+        1920,
+      );
+    }
+  });
+
+  it('keeps a paragraph break found from the raw cutoff', () => {
+    const content = `${'a '.repeat(125)}\n\n${'b '.repeat(925)}\n\nxy`;
     const tail = tailOf(streamingMarkdownWindow(content, 80));
 
-    expect(tail.length).toBeGreaterThan(0);
-    expect(tail).toMatch(/^x+$/);
+    expect(tail.startsWith('b b ')).toBe(true);
+    expect(tail.endsWith('xy')).toBe(true);
+  });
+
+  it('starts a code block tail at the raw cutoff', () => {
+    const content = `\`\`\`ts\n${Array.from({ length: 200 }, (_, index) => `const value${index} = ${index};`).join('\n')}`;
+    const rawCutoff = content.length - 1920;
+    expect(rawCutoff % 320).not.toBe(0);
+
+    expect(tailOf(streamingMarkdownWindow(content, 80))).toBe(
+      `\`\`\`ts\n${content.slice(rawCutoff)}`,
+    );
   });
 
   it('renders empty content as nothing', () => {

@@ -365,20 +365,35 @@ function standaloneBlockStart(content: string, offset: number): number | undefin
   return undefined;
 }
 
-/** The first word start at or after `offset`, when one begins within `limit` characters. */
-function wordBoundaryAfter(content: string, offset: number, limit: number): number {
-  if (offset <= 0) return 0;
-  const match = content.slice(offset - 1, offset + limit).search(/\s\S/);
-  return match === -1 ? offset : offset + match;
+/** A prose word that would open a Markdown block (heading, list item, quote) at a tail's start. */
+const BLOCK_MARKER_WORD = /^(?:#{1,6}|[-+*>]|\d{1,9}[.)])(?:\s|$)/;
+
+/** The first word start at or after `offset` and before `limit`, if there is one. */
+function wordStartAfter(content: string, offset: number, limit: number): number | undefined {
+  const match = content.slice(offset - 1, limit).search(/\s\S/);
+  return match === -1 ? undefined : offset + match;
+}
+
+/**
+ * Where the prose fallback tail starts. The cutoff rounds up to a multiple of `step`, so the
+ * start stays fixed while the response grows and the tail only gains text at its end between
+ * jumps. It then moves to the first word that does not read as a heading, list item or quote
+ * marker, which would turn the whole tail into that block. With no such word within one step,
+ * the rounded cutoff is used as is.
+ */
+function proseTailStart(content: string, cutoff: number, step: number): number {
+  const rounded = Math.ceil(cutoff / step) * step;
+  const limit = rounded + step;
+  let start = wordStartAfter(content, rounded, limit);
+  while (start !== undefined && BLOCK_MARKER_WORD.test(content.slice(start, start + 12))) {
+    start = wordStartAfter(content, start + 1, limit);
+  }
+  return start ?? rounded;
 }
 
 function contextualStreamingTail(content: string, maxCharacters: number, step: number): string {
-  const rawStart = content.length - maxCharacters;
-  if (rawStart <= 0) return content;
-  // Round the cutoff up to a multiple of `step`: the start then stays fixed while the
-  // response grows, so the tail only gains text at its end between jumps, and the
-  // window never exceeds `maxCharacters`.
-  const desiredStart = Math.ceil(rawStart / step) * step;
+  const desiredStart = content.length - maxCharacters;
+  if (desiredStart <= 0) return content;
 
   const context = fenceContextAt(content, desiredStart);
   if (context) {
@@ -392,7 +407,7 @@ function contextualStreamingTail(content: string, maxCharacters: number, step: n
     blankLine === -1 ? standaloneBlockStart(content, desiredStart) : undefined;
   const start = blankLine >= 0 ? blankLine + 2 : standaloneStart;
   if (start === undefined) {
-    const tail = content.slice(wordBoundaryAfter(content, desiredStart, step));
+    const tail = content.slice(proseTailStart(content, desiredStart, step));
     return /[*_`~[\]<>|\\]/.test(tail) ? '' : tail;
   }
   const startContext = fenceContextAt(content, start);
