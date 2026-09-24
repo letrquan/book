@@ -32,6 +32,7 @@ import {
   type StreamJsonEvent,
 } from './stream-json.js';
 import { AgentSession, type AgentSessionRunRequest } from './session/agent-session.js';
+import { SessionRuntime } from './session/runtime.js';
 import type { AgentEvent } from './session/agent-events.js';
 import {
   buildAgentCompletionMessage,
@@ -94,7 +95,14 @@ export async function runHeadless(
   };
   /** Set once the run's liveness file exists; released in the outer `finally`. */
   let disposeCrashHandlers: (() => void) | undefined;
-  const agentSession = new AgentSession();
+  const agentSession = new AgentSession({
+    // The transcript is the rendered conversation and still carries the tool
+    // records compaction summarized out of the context history, so prefer it
+    // when a resume supplies both.
+    runtime: new SessionRuntime({
+      history: opts.transcript?.length ? opts.transcript : opts.history,
+    }),
+  });
   const runtime = agentSession.getRuntime();
   // Seed the plan from the resumed session. Both lists are mutated in place by
   // their tools, so pushing into the runtime's arrays is what makes the plan
@@ -1016,6 +1024,11 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
   if (event.type === 'terminal') return;
   if (event.type === 'agent_text_delta' && opts.forwardSubagentText !== true) return;
   opts.onAgentEvent?.(event);
+  if (event.type === 'notice') {
+    if (opts.outputFormat === 'stream-json') emit({ type: 'notice', message: event.message });
+    else console.warn(event.message);
+    return;
+  }
   if (event.type === 'error') {
     if (opts.outputFormat === 'stream-json') emit({ type: 'error', error: event.error });
     else process.stderr.write(`error: ${event.error}\n`);

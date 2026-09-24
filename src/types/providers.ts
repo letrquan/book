@@ -184,4 +184,6 @@ export interface AgentLoopCallbacks {
   onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
   /** Called for managed-agent lifecycle, evidence, and application events. */
   onAgentEvent?: (event: AgentRuntimeEvent) => void;
+  /** Called when a host or system notice should be surfaced (e.g. memory candidate saved). */
+  onNotice?: (notice: string) => void;
 }

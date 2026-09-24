@@ -112,6 +112,9 @@ const uiLog = createUiDebugLogger('tui:app');
 const MAIN_TRANSCRIPT_SCOPE = 'main';
 const EMPTY_TOOL_EXPANSION_OVERRIDES = new Map<string, boolean>();
 const EMPTY_SHOW_ALL_TOOL_OUTPUT_IDS = new Set<string>();
+/** Duration of the idle Ctrl+C exit confirmation window. */
+export const CTRL_C_EXIT_HINT_MS = 2_000;
+export const CTRL_C_EXIT_HINT_TEXT = 'Press Ctrl+C again to exit';
 
 export function ownsModalInput(
   pendingPermission: unknown,
@@ -252,7 +255,8 @@ interface AppProps {
  *
  * Keyboard shortcuts:
  *   Esc      — cancel permission / abort stream
- *   Ctrl+C   — abort stream
+ *   Ctrl+C   — abort stream; when idle, clears a non-empty composer, or
+ *              press twice within CTRL_C_EXIT_HINT_MS to exit
  *   Ctrl+T   — toggle task list
  *   Ctrl+O   — toggle detailed transcript
  *   Ctrl+E   — expand the current tool output
@@ -468,7 +472,39 @@ export function App({
       setCopyNotice(undefined);
     }, 2_000);
   }, []);
+  // The timestamp ref keeps the second-press check current before React rerenders.
+  // The timer only controls the visible hint and is cleared on replacement or unmount.
+  const [ctrlCExitHintVisible, setCtrlCExitHintVisible] = useState(false);
+  const ctrlCExitArmedAtRef = useRef<number | undefined>(undefined);
+  const ctrlCExitHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armCtrlCExit = useCallback(() => {
+    ctrlCExitArmedAtRef.current = Date.now();
+    setCtrlCExitHintVisible(true);
+    if (ctrlCExitHintTimerRef.current) clearTimeout(ctrlCExitHintTimerRef.current);
+    ctrlCExitHintTimerRef.current = setTimeout(() => {
+      ctrlCExitHintTimerRef.current = null;
+      ctrlCExitArmedAtRef.current = undefined;
+      setCtrlCExitHintVisible(false);
+    }, CTRL_C_EXIT_HINT_MS);
+  }, []);
+  const disarmCtrlCExit = useCallback(() => {
+    ctrlCExitArmedAtRef.current = undefined;
+    if (ctrlCExitHintTimerRef.current) {
+      clearTimeout(ctrlCExitHintTimerRef.current);
+      ctrlCExitHintTimerRef.current = null;
+    }
+    setCtrlCExitHintVisible(false);
+  }, []);
+  const isCtrlCExitArmed = useCallback(() => {
+    const armedAt = ctrlCExitArmedAtRef.current;
+    return armedAt !== undefined && Date.now() - armedAt <= CTRL_C_EXIT_HINT_MS;
+  }, []);
   const [sendInFlight, setSendInFlight] = useState(false);
+  // A turn that starts inside the exit window ends it, so a later idle press arms again
+  // rather than exiting at once.
+  useEffect(() => {
+    if (isThinking || sendInFlight) disarmCtrlCExit();
+  }, [isThinking, sendInFlight, disarmCtrlCExit]);
   const [, setQueueDrainTick] = useState(0);
   const [shellCompletionRetryTick, setShellCompletionRetryTick] = useState(0);
   const [followRequestKey, setFollowRequestKey] = useState(0);
@@ -1164,8 +1200,16 @@ export function App({
   useInput((input, key) => {
     if (startupFireActive) {
       if (key.ctrl && input === 'c') {
-        uiLog.event('input:Ctrl+C', { action: 'exit-startup-fire' });
-        void endCurrentSession('exit').finally(exitApp);
+        // Match idle Ctrl+C: dismiss the splash and show the exit hint first.
+        if (isCtrlCExitArmed()) {
+          uiLog.event('input:Ctrl+C', { action: 'exit-startup-fire' });
+          disarmCtrlCExit();
+          void endCurrentSession('exit').finally(exitApp);
+          return;
+        }
+        uiLog.event('input:Ctrl+C', { action: 'exit-armed', context: 'startup-fire' });
+        armCtrlCExit();
+        setStartupFireActive(false);
         return;
       }
       if (key.escape) {
@@ -1212,7 +1256,13 @@ export function App({
       if (key.escape) {
         uiLog.event('input:Escape', { action: 'noop-modal-active' });
       } else if (key.ctrl && input === 'c') {
-        if (pendingUserQuestion || pendingElicitation) {
+        if (isCtrlCExitArmed()) {
+          // The visible "press again to exit" hint is a promise, including over a modal
+          // that took the keyboard after the first press (e.g. behind the startup splash).
+          uiLog.event('input:Ctrl+C', { action: 'exit', context: 'modal' });
+          disarmCtrlCExit();
+          void endCurrentSession('exit').finally(exitApp);
+        } else if (pendingUserQuestion || pendingElicitation) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
           interrupt();
         } else {
@@ -1282,21 +1332,46 @@ export function App({
       }
       uiLog.event('input:Escape', { action: 'noop-idle' });
     }
-    // Ctrl+C — cancel in-flight work; otherwise preserve normal terminal exit.
+    // Ctrl+C cancels active work, drops a recalled queued input, clears a non-empty
+    // composer, or confirms idle exit.
     if (key.ctrl && input === 'c') {
       if (isThinking || sendInFlight || isResolvingCommand) {
         uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
+        disarmCtrlCExit();
         interrupt();
         return;
       }
-      // A review is in-flight work too, and exiting here would orphan the
-      // agents it spawned. A second Ctrl+C still exits, as it does mid-stream.
+      // A review is in-flight work too, so Ctrl+C cancels it without exiting.
       if (cancelReview()) {
         uiLog.event('input:Ctrl+C', { action: 'cancel-review' });
+        disarmCtrlCExit();
         return;
       }
-      uiLog.event('input:Ctrl+C', { action: 'exit' });
-      void endCurrentSession('exit').finally(exitApp);
+      // A recalled queued input is removed, as Esc removes it. Clearing only its text
+      // would leave the queue paused behind the edit.
+      if (editingQueuedInputRef.current) {
+        uiLog.event('input:Ctrl+C', { action: 'cancel-queued-edit' });
+        disarmCtrlCExit();
+        cancelQueuedEdit();
+        return;
+      }
+      if (draftRef.current.length > 0 || draftAttachmentsRef.current.length > 0) {
+        uiLog.event('input:Ctrl+C', { action: 'clear-composer' });
+        disarmCtrlCExit();
+        setDraftRestore((current) => ({
+          key: (current?.key ?? 0) + 1,
+          value: '',
+        }));
+        return;
+      }
+      if (isCtrlCExitArmed()) {
+        uiLog.event('input:Ctrl+C', { action: 'exit' });
+        disarmCtrlCExit();
+        void endCurrentSession('exit').finally(exitApp);
+        return;
+      }
+      uiLog.event('input:Ctrl+C', { action: 'exit-armed' });
+      armCtrlCExit();
       return;
     }
     // Ctrl+T — toggle task list
@@ -1464,6 +1539,7 @@ export function App({
   useEffect(
     () => () => {
       if (copyNoticeTimerRef.current) clearTimeout(copyNoticeTimerRef.current);
+      if (ctrlCExitHintTimerRef.current) clearTimeout(ctrlCExitHintTimerRef.current);
     },
     [],
   );
@@ -1717,8 +1793,10 @@ export function App({
           setMemoryAutoSave(effect.enabled);
           addLocalMessage(
             effect.enabled
-              ? 'Memory auto-capture enabled. New candidates will still require approval.'
-              : 'Memory auto-capture disabled. Existing approved memory can still load.',
+              ? liveConfig.settings.memory.requireApproval
+                ? 'Model memory writes enabled. New memories go to /memory inbox for approval.'
+                : 'Model memory writes enabled. The model saves memories directly; sessions that read external content go to /memory inbox.'
+              : 'Model memory writes disabled. Existing approved memory still loads.',
           );
           return;
         }
@@ -1959,23 +2037,10 @@ export function App({
         showSkills
       )
         return true;
+      // Ink broadcasts keypresses to every mounted input handler. The top-level
+      // handler decides Ctrl+C behavior; this branch only consumes the key so
+      // InputBar does not insert it into the composer.
       if (key.ctrl && input === 'c') {
-        if (pendingUserQuestion || pendingElicitation) {
-          uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
-          interrupt();
-          return true;
-        }
-        if (pendingPermission || pendingPlanApproval) {
-          uiLog.event('input:Ctrl+C', { action: 'noop-approval-active' });
-          return true;
-        }
-        if (isThinking || sendInFlight || isResolvingCommand) {
-          uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
-          interrupt();
-          return true;
-        }
-        uiLog.event('input:Ctrl+C', { action: 'exit' });
-        void endCurrentSession('exit').finally(exitApp);
         return true;
       }
       if (key.ctrl && input === 'l') {
@@ -2014,16 +2079,6 @@ export function App({
       return false; // not consumed — let text input handle it
     },
     [
-      interrupt,
-      endCurrentSession,
-      exitApp,
-      isThinking,
-      sendInFlight,
-      isResolvingCommand,
-      pendingPermission,
-      pendingPlanApproval,
-      pendingUserQuestion,
-      pendingElicitation,
       redrawViewport,
       showEffortPicker,
       showPermissionModePicker,
@@ -2427,7 +2482,11 @@ export function App({
                       description="Deny a prompt, cancel the turn, or close this panel"
                       theme={theme}
                     />
-                    <HelpRow label="Ctrl+C" description="Cancel current turn" theme={theme} />
+                    <HelpRow
+                      label="Ctrl+C"
+                      description="Cancel current turn, clear the composer, or press twice idle to exit"
+                      theme={theme}
+                    />
                     <HelpRow
                       label="Ctrl+T"
                       description="Toggle the main agent checklist (not background tasks)"
@@ -2997,7 +3056,8 @@ export function App({
             <QueuedInputPreview
               items={queuedInputs}
               terminalWidth={termWidth}
-              notice={queueNotice ?? copyNotice}
+              // Keep the exit hint visible even when another transient notice remains.
+              notice={ctrlCExitHintVisible ? CTRL_C_EXIT_HINT_TEXT : (queueNotice ?? copyNotice)}
             />
             <InputBar
               key={sessionId}

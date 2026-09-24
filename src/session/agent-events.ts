@@ -43,6 +43,7 @@ export type AgentEvent =
     >
   | { type: 'evidence_update'; evidence: EvidenceItem }
   | { type: 'attempt_discarded'; reason: 'empty_response' }
+  | { type: 'notice'; message: string; title?: string }
   | { type: 'error'; error: string }
   | {
       type: 'result';
@@ -168,6 +169,7 @@ export function reduceAgentSessionSnapshot(
     case 'agent_permission':
     case 'agent_persistence':
     case 'skill_lifecycle':
+    case 'notice':
     case 'background_job_start':
     case 'background_job_update':
     case 'background_job_output':

@@ -105,7 +105,7 @@ fresh verification pass.
   likewise ignored from both workspace layers and must come from the user-global file, an explicit
   `--settings` document, or the process environment; all three writers (`book config set`, the
   `/config` slash command, and the TUI's local persistence) refuse them through one shared list. Other settings include hooks, the optional bubblewrap sandbox, themes,
-  auto-memory, rewind snapshots, telemetry, and diagnostics. Every declared sandbox key is now read
+  auto-memory (model writes via `MemorySave`, provenance schema, and `memory.requireApproval` default flipped to `false`), rewind snapshots, telemetry, and diagnostics. Every declared sandbox key is now read
   by an execution or permission path: `sandbox.allowUnsandboxedCommands` can refuse any command that
   would leave the
   namespace, and `sandbox.autoAllowBashIfSandboxed` can replace the default ask for a command that
