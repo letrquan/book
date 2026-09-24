@@ -21,7 +21,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        node-version: [22.x, 24.x]
+        # The low leg is pinned to the declared `engines.node` floor, not `22.x`.
+        # `22.x` resolves to the newest 22, so a dependency that quietly raises the
+        # floor above our declared minimum still goes green -- which is how undici 8's
+        # `>=22.19.0` requirement reached main under a `>=22.13.0` declaration.
+        node-version: [22.19.x, 24.x]
 
     steps:
       - uses: actions/checkout@v7

@@ -29,6 +29,17 @@ import { useToolRowInteractionRegistry } from './tool-row-interactions.js';
 import { useUiClock } from '../ui-clock.js';
 import type { ToolResult } from '../../types/tools.js';
 
+/** Blocked results whose reason is still shown: a policy refusal the user needs to understand. */
+const BLOCKED_CODES_WITH_REASON = new Set([
+  'private_network_forbidden',
+  'search_all_providers_failed',
+]);
+
+function showsErrorMessage(result: ToolResult | undefined): boolean {
+  if (!result?.structuredError) return false;
+  return result.status !== 'blocked' || BLOCKED_CODES_WITH_REASON.has(result.structuredError.code);
+}
+
 interface ToolCallBlockProps {
   toolId?: string;
   name: string;
@@ -146,7 +157,7 @@ function ScreenReaderTool({
         {status} {accessibleSummary}
       </Text>
       {result?.content ? <Text>{result.content}</Text> : null}
-      {result?.structuredError && result.status !== 'blocked' ? (
+      {result?.structuredError && showsErrorMessage(result) ? (
         <Text>Error: {result.structuredError.message}</Text>
       ) : null}
     </Box>
@@ -266,7 +277,7 @@ function ToolCallBlockInner({
     isRunning && !reducedMotion
       ? formatElapsedDuration(Math.floor(runningElapsedMs / 1000))
       : undefined;
-  const inlineError = result?.status !== 'blocked' ? result?.structuredError?.message : undefined;
+  const inlineError = showsErrorMessage(result) ? result?.structuredError?.message : undefined;
   const mutationSummary = useMemo(
     () => getFileMutationDisplaySummary(name, args, result),
     [args, name, result],
