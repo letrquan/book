@@ -170,7 +170,7 @@ export function ConfigMenu({
       description: 'Control automatic matching and explicit use',
     },
     memory: {
-      label: 'Memory auto-capture',
+      label: 'Model memory writes',
       value: memoryAutoSave ? 'on' : 'off',
       description: 'Capture useful corrections for approval later',
     },

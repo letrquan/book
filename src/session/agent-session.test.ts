@@ -15,6 +15,7 @@ import type {
 import type { Message } from '../types/messages.js';
 import { createSessionFixture } from '../test/session-fixture.js';
 import { createAgentRunContext } from '../types/runs.js';
+import { hasExternalContext } from '../tools/memory-save.js';
 import { SessionRuntime } from './runtime.js';
 
 function compactedResult(): Extract<CompactResult, { status: 'compacted' }> {
@@ -1093,6 +1094,56 @@ describe('AgentSession', () => {
         }),
       ).resolves.toEqual({ status: 'unchanged', sessionId: selectedSessionId });
       expect(order).toEqual([]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('installs the resumed conversation as the runtime tool history', async () => {
+    // The runtime is replaced wholesale on a resume, so a host that projects the
+    // conversation without rebuilding one (`onTransition` omitted) used to leave
+    // the session with no record of what it had read — and the next memory write
+    // skipped quarantine even though this conversation had fetched the web.
+    const fixture = createSessionFixture('book-agent-session-resume-tools-');
+    try {
+      const currentSessionId = fixture.store.create({ cwd: '/proj' });
+      const selectedSessionId = fixture.store.create({ cwd: '/proj', name: 'web' });
+      const config = { ...defaultConfig(), workspace: '/proj' };
+      fixture.store.append(selectedSessionId, {
+        type: 'assistant',
+        eventId: 'assistant-web',
+        timestamp: 1,
+        data: {
+          id: 'assistant-web',
+          content: 'fetched',
+          complete: true,
+          kind: 'conversation',
+          includeInContext: true,
+          toolCalls: [{ id: 'call-web', name: 'WebFetch', arguments: { url: 'https://e.com' } }],
+          toolResults: [
+            { version: 2, toolCallId: 'call-web', status: 'success', content: 'page text' },
+          ],
+        },
+      });
+
+      const session = new AgentSession();
+      await session.startLifecycle(config, currentSessionId, 'startup');
+      const result = await session.resumeSession({
+        config,
+        currentSessionId,
+        store: fixture.store,
+        selector: 'web',
+      });
+
+      expect(result.status).toBe('transitioned');
+      expect(session.getRuntime().usedToolNames.has('WebFetch')).toBe(true);
+      expect(
+        hasExternalContext({
+          workspaceRoot: config.workspace,
+          env: {},
+          usedToolNames: session.getRuntime().usedToolNames,
+        }),
+      ).toBe(true);
     } finally {
       fixture.cleanup();
     }

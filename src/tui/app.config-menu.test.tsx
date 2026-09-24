@@ -60,7 +60,12 @@ function config(): AgentConfig {
       maxTokens: 128000,
       autoCompactEnabled: true,
       defaultMode: 'default',
-      memory: { enabled: false, autoSave: false, requireApproval: true },
+      memory: {
+        ...DEFAULT_SETTINGS.memory,
+        enabled: false,
+        autoSave: false,
+        requireApproval: true,
+      },
       ui: { ...DEFAULT_SETTINGS.ui, startupAnimation: false },
     },
     retry: {

@@ -125,6 +125,8 @@ const env = {
   CI: 'false',
   CONTINUOUS_INTEGRATION: 'false',
   HOME: BOOK_HOME,
+  // Windows resolves the home directory from USERPROFILE, not HOME.
+  USERPROFILE: BOOK_HOME,
   BOOK_HOME: join(BOOK_HOME, '.book'),
   // Book's loadConfig throws without an API key even for `doctor`, so always set one.
   BOOK_API_KEY: process.env.BOOK_API_KEY ?? 'mock-key',
@@ -134,6 +136,12 @@ if (USE_MOCK) {
   env.BOOK_PROVIDER = 'openai';
   env.BOOK_MODEL = process.env.BOOK_MODEL ?? 'mock-model';
   env.BOOK_API_KEY = 'mock-key';
+  // The Go build (--bin) reads the BOOKGO_* names and its own home directory.
+  env.BOOKGO_BASE_URL = env.BOOK_BASE_URL;
+  env.BOOKGO_PROVIDER = 'openai';
+  env.BOOKGO_MODEL = env.BOOK_MODEL;
+  env.BOOKGO_API_KEY = 'mock-key';
+  env.BOOKGO_HOME = join(BOOK_HOME, '.bookgo');
 }
 
 const extraArgs = (() => {
@@ -141,11 +149,18 @@ const extraArgs = (() => {
   return i === -1 ? [] : argv.slice(i + 1);
 })();
 
-const pty = ptySpawn(
-  process.execPath,
-  [DIST_INDEX, '--workspace', WORKSPACE, '--no-session-persistence', ...extraArgs],
-  { cwd: WORKSPACE, cols: COLS, rows: ROWS, env, name: 'xterm-256color' },
-);
+// --bin <path> drives a different executable (e.g. the Go build, bin/book.exe)
+// instead of node dist/index.js; the same flags are passed through.
+const BIN = opt('bin', null);
+const pty = BIN
+  ? ptySpawn(BIN, ['--workspace', WORKSPACE, '--no-session-persistence', ...extraArgs], {
+      cwd: WORKSPACE, cols: COLS, rows: ROWS, env, name: 'xterm-256color',
+    })
+  : ptySpawn(
+      process.execPath,
+      [DIST_INDEX, '--workspace', WORKSPACE, '--no-session-persistence', ...extraArgs],
+      { cwd: WORKSPACE, cols: COLS, rows: ROWS, env, name: 'xterm-256color' },
+    );
 pty.onData((d) => {
   raw += d;
 });
@@ -158,7 +173,9 @@ let cols = COLS;
 let rows = ROWS;
 
 async function screen() {
-  const term = new Terminal({ cols, rows, allowProposedApi: true, convertEol: true });
+  // convertEol turns a bare LF into CRLF; Bubble Tea moves the cursor with bare
+  // LFs (column kept), so the Go build must be replayed without it.
+  const term = new Terminal({ cols, rows, allowProposedApi: true, convertEol: !BIN });
   try {
     await new Promise((res) => term.write(raw, res));
     return Array.from({ length: rows }, (_, i) =>
@@ -206,6 +223,12 @@ const KEYS = {
   'ctrl-r': '\x12',
   'ctrl-l': '\x0c',
   'ctrl-o': '\x0f',
+  'ctrl-e': '\x05',
+  'ctrl-j': '\x0a',
+  'ctrl-t': '\x14',
+  'ctrl-u': '\x15',
+  home: '\x1b[H',
+  end: '\x1b[F',
   pageup: '\x1b[5~',
   pagedown: '\x1b[6~',
 };
@@ -373,6 +396,11 @@ async function run() {
       }
       case 'raw':
         console.log(stripAnsi(raw).slice(-4000));
+        break;
+      case 'rawbytes':
+        // Escapes kept (JSON-encoded): the only faithful record of what the
+        // renderer emitted, when the xterm replay looks wrong.
+        console.log(JSON.stringify(raw.slice(-Number(rest || '3000'))));
         break;
       case 'quit':
         pty.write('\x03');

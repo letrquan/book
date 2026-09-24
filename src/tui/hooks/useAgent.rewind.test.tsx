@@ -522,3 +522,82 @@ describe('useAgent rewind integration', () => {
     expect(timeline.readRecords(sessionId).some((record) => record.type === 'rewind')).toBe(false);
   });
 });
+
+/** An assistant turn that fetched the web — the record memory quarantine keys on. */
+function appendWebFetchRecord(timeline: SessionStore, sessionId: string): void {
+  timeline.append(sessionId, {
+    type: 'assistant',
+    eventId: 'assistant-web',
+    timestamp: Date.now(),
+    data: {
+      id: 'assistant-web',
+      content: 'fetched',
+      complete: true,
+      kind: 'conversation',
+      includeInContext: true,
+      toolCalls: [{ id: 'call-web', name: 'WebFetch', arguments: { url: 'https://e.com' } }],
+      // The call ran: only executed tools mark a conversation as external context.
+      toolResults: [{ toolCallId: 'call-web', success: true, output: 'page body' }],
+    },
+  });
+}
+
+describe('useAgent external context across session transitions', () => {
+  it('seeds the tool history when resuming into another session', async () => {
+    const { config, timeline, sessionId } = fixture();
+    const otherId = timeline.create({ cwd: config.workspace, name: 'web' });
+    appendWebFetchRecord(timeline, otherId);
+    render(
+      <Harness
+        config={config}
+        session={{ ...bootstrap(timeline, sessionId), store: timeline, timelineStore: timeline }}
+      />,
+    );
+    await tick();
+
+    await latest!.resumeConversation('web');
+    await tick();
+
+    // `/resume` hands the projection a different conversation; the runtime built
+    // for it must count what that conversation read, or the next memory write
+    // would skip quarantine.
+    expect(latest!.sessionId).toBe(otherId);
+    expect(latest!.runtime.usedToolNames.has('WebFetch')).toBe(true);
+  });
+
+  it('seeds the tool history of the rewound conversation', async () => {
+    const { config, timeline, sessionId } = fixture();
+    appendWebFetchRecord(timeline, sessionId);
+    timeline.append(sessionId, {
+      type: 'turn_checkpoint',
+      eventId: 'cp1',
+      timestamp: Date.now(),
+      data: {
+        version: 1,
+        checkpointId: 'cp1',
+        userEventId: 'u1',
+        prompt: 'prompt',
+        checkpoint: { codeUnavailableReason: 'capture failed' },
+      } satisfies TurnCheckpointRecordData,
+    });
+    timeline.append(sessionId, {
+      type: 'user',
+      eventId: 'u1',
+      timestamp: Date.now(),
+      data: { id: 'u1', content: 'prompt', kind: 'conversation' },
+    });
+    render(
+      <Harness
+        config={config}
+        session={{ ...bootstrap(timeline, sessionId), snapshotStore: snapshotStore() }}
+      />,
+    );
+    await tick();
+
+    const result = await latest!.rewind('cp1', 'conversation');
+    await tick();
+
+    expect(result.ok).toBe(true);
+    expect(latest!.runtime.usedToolNames.has('WebFetch')).toBe(true);
+  });
+});

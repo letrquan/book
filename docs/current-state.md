@@ -20,7 +20,7 @@ fresh verification pass.
   is `book`; the package is scoped because the unscoped name was taken.
 - License: PolyForm Small Business 1.0.0 — source-available, commercial use limited to companies
   under 100 people and 1,000,000 USD (2019) revenue. See `LICENSE`.
-- Runtime: Node.js 22.13 or newer; CI exercises Node.js 22 and 24 on Ubuntu and Windows.
+- Runtime: Node.js 22.19 or newer; CI exercises Node.js 22 and 24 on Ubuntu and Windows.
 - Build: `tsup` emits ESM CLI, SDK, and job-runner bundles plus declarations into `dist/`.
 
 ## Shipped Surfaces
@@ -105,7 +105,7 @@ fresh verification pass.
   likewise ignored from both workspace layers and must come from the user-global file, an explicit
   `--settings` document, or the process environment; all three writers (`book config set`, the
   `/config` slash command, and the TUI's local persistence) refuse them through one shared list. Other settings include hooks, the optional bubblewrap sandbox, themes,
-  auto-memory, rewind snapshots, telemetry, and diagnostics. Every declared sandbox key is now read
+  auto-memory (model writes via `MemorySave`, provenance schema, and `memory.requireApproval` default flipped to `false`), rewind snapshots, telemetry, and diagnostics. Every declared sandbox key is now read
   by an execution or permission path: `sandbox.allowUnsandboxedCommands` can refuse any command that
   would leave the
   namespace, and `sandbox.autoAllowBashIfSandboxed` can replace the default ask for a command that

@@ -188,4 +188,62 @@ describe('provider reliability transport', () => {
       }),
     ).toBe(false);
   });
+
+  it('reads a quoted status only from the router prefix or a JSON code field', () => {
+    // 9router's own JSON error: its message carries `[<route>] [400]:` and the
+    // upstream body with its quotes escaped (#194, #221).
+    const escapedNineRouterBody = JSON.stringify({
+      error: {
+        message:
+          '[antigravity/gemini-3.8-flash-high] [400]: {\n  "error": {\n    "code": 400,\n    "status": "INVALID_ARGUMENT"\n  }\n} (reset after 29s)',
+      },
+    });
+    expect(quotedUpstreamStatus(escapedNineRouterBody)).toBe(400);
+    expect(classifyApiError(503, escapedNineRouterBody)).toBe('bad_request');
+
+    // A number that only starts like a 4xx, or a 4xx mentioned in prose, is not a quote.
+    const outageBodies = [
+      '{"error":{"code":4001,"message":"upstream busy"}}',
+      '{"error":{"code":"40003","message":"upstream busy"}}',
+      '{"error":{"message":"service unavailable: upstream sent HTTP 403 while refreshing"}}',
+      '{"error":{"message":"upstream sent HTTP 403 Forbidden"}}',
+      'stream reset after chunk [404] of the upstream response',
+    ];
+    for (const body of outageBodies) {
+      expect(quotedUpstreamStatus(body)).toBeUndefined();
+      expect(classifyApiError(503, body)).toBe('server_error');
+    }
+  });
+
+  it('keeps retrying a 503 whose body only mentions a 4xx-looking number', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response('{"error":{"code":4001,"message":"upstream busy"}}', { status: 503 }),
+      )
+      .mockResolvedValueOnce(
+        new Response('{"error":{"message":"upstream sent HTTP 403 while refreshing"}}', {
+          status: 503,
+        }),
+      )
+      .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = defaultConfig();
+
+    const response = await fetchWithRetry(
+      'https://example.test',
+      {},
+      {
+        ...config.retry,
+        maxAttempts: 3,
+        baseDelayMs: 1,
+        maxDelayMs: 2,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(response.status).toBe(200);
+  });
 });

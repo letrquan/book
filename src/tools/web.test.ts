@@ -3,6 +3,7 @@ import type { ToolContext, ToolDefinition } from '../types/tools.js';
 import { createRegistry } from './registry.js';
 import { TOOL_RESULT_MAX_BYTES, toolResultModelContent } from './result.js';
 import { createWebTools } from './web.js';
+import { safeNetworkLookup } from './web-policy.js';
 
 const publicResolver = vi.fn(async () => ['93.184.216.34']);
 
@@ -32,6 +33,25 @@ function toolsFor(
 }
 
 describe('WebFetch', () => {
+  it('reports a connect-time policy refusal as blocked, not as a retryable fetch failure', async () => {
+    // A real refusal from the connector guard, wrapped the way undici wraps it. This is the
+    // rebinding case: pre-flight validation passed, and only the connect-time lookup caught it.
+    const refused = await new Promise<unknown>((resolve) => {
+      safeNetworkLookup('127.0.0.1', { all: true }, (error) => resolve(error));
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw Object.assign(new TypeError('fetch failed'), { cause: refused });
+    });
+
+    const { fetchTool } = toolsFor(fetchImpl);
+    const result = await fetchTool.execute({ url: 'https://example.com/' }, context());
+
+    expect(result.status).toBe('blocked');
+    expect(result.structuredError?.code).toBe('private_network_forbidden');
+    expect(result.structuredError?.retryable).toBe(false);
+    expect(result.structuredError?.message).toContain('127.0.0.1');
+  });
+
   it('converts HTML to markdown, strips active content, and returns provenance', async () => {
     const fetchImpl = vi.fn(async () => {
       const html =
@@ -125,7 +145,7 @@ describe('WebFetch', () => {
 
     const result = await fetchTool.execute({ url: 'https://example.com/' }, context());
 
-    expect(result.status).toBe('error');
+    expect(result.status).toBe('blocked');
     expect(result.structuredError?.code).toBe('private_network_forbidden');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -277,6 +297,34 @@ describe('WebFetch', () => {
 });
 
 describe('WebSearch', () => {
+  it('reports a refused search provider as blocked, not as a retryable request failure', async () => {
+    // Search always dispatches through the strict dispatcher, so a provider endpoint that
+    // resolves privately is refused by the same connect-time guard WebFetch uses.
+    const refused = await new Promise<unknown>((resolve) => {
+      safeNetworkLookup('127.0.0.1', { all: true }, (error) => resolve(error));
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw Object.assign(new TypeError('fetch failed'), { cause: refused });
+    });
+
+    const { searchTool } = toolsFor(fetchImpl);
+    const result = await searchTool.execute({ query: 'anything' }, context());
+
+    // Every provider is refused, so the aggregate must not invite a retry and must carry the
+    // policy's reason -- it previously reported `retryable: true` and the opaque 'fetch failed'.
+    expect(result.structuredError?.code).toBe('search_all_providers_failed');
+    expect(result.structuredError?.retryable).toBe(false);
+    expect(result.structuredError?.message).toContain('private or special-use address');
+
+    const attempts = result.structuredError?.details?.attempts as Array<{
+      code?: string;
+      retryable?: boolean;
+    }>;
+    expect(attempts.length).toBeGreaterThan(0);
+    expect(attempts.every((attempt) => attempt.code === 'private_network_forbidden')).toBe(true);
+    expect(attempts.every((attempt) => attempt.retryable === false)).toBe(true);
+  });
+
   it('uses the built-in Exa MCP search first without configuration', async () => {
     const fetchImpl = vi
       .fn<(input: string, init?: RequestInit) => Promise<Response>>()
@@ -674,5 +722,163 @@ describe('WebSearch', () => {
     expect(result.structuredError?.code).toBe('invalid_arguments');
     expect(result.structuredError?.message).toContain('arguments.backend is not allowed');
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('default web transport', () => {
+  const LEGACY_SLOT = Symbol.for('undici.globalDispatcher.1');
+
+  function fakeUndici(onImport: () => void = () => {}) {
+    class FakeAgent {
+      constructor(readonly options: unknown) {}
+    }
+    const fetch = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>(
+      async () => new Response('hello', { status: 200, headers: { 'content-type': 'text/plain' } }),
+    );
+    const importUndici = vi.fn(async () => {
+      onImport();
+      return { Agent: FakeAgent, fetch } as unknown as typeof import('undici');
+    });
+    return { FakeAgent, fetch, importUndici };
+  }
+
+  it('sends WebFetch through undici with the strict dispatcher when no fetch is injected', async () => {
+    const { FakeAgent, fetch, importUndici } = fakeUndici();
+    const tools = createWebTools({ resolveHostname: publicResolver, importUndici });
+
+    const result = await findTool(tools, 'WebFetch').execute(
+      { url: 'https://example.com/' },
+      context(),
+    );
+
+    expect(result.status).toBe('success');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const init = fetch.mock.calls[0]?.[1] as { dispatcher?: unknown } | undefined;
+    expect(init?.dispatcher).toBeInstanceOf(FakeAgent);
+    expect((init?.dispatcher as { options?: unknown }).options).toEqual({
+      connect: { lookup: safeNetworkLookup },
+    });
+  });
+
+  it('puts back the global dispatcher Node uses when undici loads', async () => {
+    const slots = globalThis as unknown as Record<symbol, unknown>;
+    const original = slots[LEGACY_SLOT];
+    const nodeDispatcher = { name: 'node-bundled-dispatcher' };
+    slots[LEGACY_SLOT] = nodeDispatcher;
+    try {
+      const { importUndici } = fakeUndici(() => {
+        // What undici 8 does on load when its own slot is empty, as it always is on Node 22.
+        slots[LEGACY_SLOT] = { name: 'undici-8-agent' };
+      });
+      const tools = createWebTools({ resolveHostname: publicResolver, importUndici });
+
+      await findTool(tools, 'WebFetch').execute({ url: 'https://example.com/' }, context());
+
+      expect(importUndici).toHaveBeenCalledTimes(1);
+      expect(slots[LEGACY_SLOT]).toBe(nodeDispatcher);
+    } finally {
+      slots[LEGACY_SLOT] = original;
+    }
+  });
+
+  it('does not load undici until a web tool runs', () => {
+    const { importUndici } = fakeUndici();
+    createWebTools({ resolveHostname: publicResolver, importUndici });
+
+    expect(importUndici).not.toHaveBeenCalled();
+  });
+
+  it('uses Node fetch, not undici, when private networks are allowed', async () => {
+    const { importUndici } = fakeUndici();
+    const nodeFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response('hello', { status: 200, headers: { 'content-type': 'text/plain' } }),
+      );
+    try {
+      const tools = createWebTools({ resolveHostname: publicResolver, importUndici });
+
+      const result = await findTool(tools, 'WebFetch').execute(
+        { url: 'https://example.com/' },
+        context({ BOOK_WEB_ALLOW_PRIVATE_NETWORK: '1' }),
+      );
+
+      expect(result.status).toBe('success');
+      expect(nodeFetch).toHaveBeenCalledTimes(1);
+      expect(importUndici).not.toHaveBeenCalled();
+    } finally {
+      nodeFetch.mockRestore();
+    }
+  });
+
+  it('retries loading undici after a failed load', async () => {
+    const { fetch, importUndici } = fakeUndici();
+    importUndici.mockRejectedValueOnce(new Error('EMFILE: too many open files'));
+    const tools = createWebTools({ resolveHostname: publicResolver, importUndici });
+    const webFetch = findTool(tools, 'WebFetch');
+
+    const first = await webFetch.execute({ url: 'https://example.com/' }, context());
+    const second = await webFetch.execute({ url: 'https://example.com/' }, context());
+
+    expect(first.status).not.toBe('success');
+    expect(second.status).toBe('success');
+    expect(importUndici).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('policy refusals are final and visible', () => {
+  it('reports a pre-flight private-network refusal as blocked with its reason', async () => {
+    const fetchImpl = vi.fn(async () => new Response('never'));
+    const { fetchTool } = toolsFor(
+      fetchImpl,
+      vi.fn(async () => ['10.0.0.1']),
+    );
+
+    const result = await fetchTool.execute({ url: 'https://internal.example/' }, context());
+
+    expect(result.status).toBe('blocked');
+    expect(result.structuredError?.code).toBe('private_network_forbidden');
+    expect(result.structuredError?.retryable).toBe(false);
+    expect(result.structuredError?.message).toContain('private or special-use address');
+    expect(result.content).toBe('');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps a refused WebSearch blocked and non-retryable through the registry and its cooldown', async () => {
+    const refused = await new Promise<unknown>((resolve) => {
+      safeNetworkLookup('127.0.0.1', { all: true }, (error) => resolve(error));
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw Object.assign(new TypeError('fetch failed'), { cause: refused });
+    });
+    const registry = createRegistry();
+    registry.registerAll(
+      createWebTools({
+        fetch: fetchImpl,
+        resolveHostname: publicResolver,
+        now: () => new Date('2026-07-31T00:00:00.000Z'),
+      }),
+    );
+
+    const first = await registry.execute(
+      { id: 'call-1', name: 'WebSearch', arguments: { query: 'anything' } },
+      context(),
+      1,
+    );
+    const second = await registry.execute(
+      { id: 'call-2', name: 'WebSearch', arguments: { query: 'anything' } },
+      context(),
+      1,
+    );
+
+    for (const result of [first, second]) {
+      expect(result.status).toBe('blocked');
+      expect(result.structuredError?.retryable).toBe(false);
+      expect(result.structuredError?.message).toContain('private or special-use address');
+    }
+    // One attempt per provider on the first call, none on the second: no registry retry, and the
+    // cooldown keeps the refusal.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });
