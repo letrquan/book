@@ -145,7 +145,7 @@ describe('WebFetch', () => {
 
     const result = await fetchTool.execute({ url: 'https://example.com/' }, context());
 
-    expect(result.status).toBe('error');
+    expect(result.status).toBe('blocked');
     expect(result.structuredError?.code).toBe('private_network_forbidden');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -755,6 +755,9 @@ describe('default web transport', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     const init = fetch.mock.calls[0]?.[1] as { dispatcher?: unknown } | undefined;
     expect(init?.dispatcher).toBeInstanceOf(FakeAgent);
+    expect((init?.dispatcher as { options?: unknown }).options).toEqual({
+      connect: { lookup: safeNetworkLookup },
+    });
   });
 
   it('puts back the global dispatcher Node uses when undici loads', async () => {
@@ -783,5 +786,98 @@ describe('default web transport', () => {
     createWebTools({ resolveHostname: publicResolver, importUndici });
 
     expect(importUndici).not.toHaveBeenCalled();
+  });
+
+  it('uses Node fetch, not undici, when private networks are allowed', async () => {
+    const { importUndici } = fakeUndici();
+    const nodeFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response('hello', { status: 200, headers: { 'content-type': 'text/plain' } }),
+      );
+    try {
+      const tools = createWebTools({ resolveHostname: publicResolver, importUndici });
+
+      const result = await findTool(tools, 'WebFetch').execute(
+        { url: 'https://example.com/' },
+        context({ BOOK_WEB_ALLOW_PRIVATE_NETWORK: '1' }),
+      );
+
+      expect(result.status).toBe('success');
+      expect(nodeFetch).toHaveBeenCalledTimes(1);
+      expect(importUndici).not.toHaveBeenCalled();
+    } finally {
+      nodeFetch.mockRestore();
+    }
+  });
+
+  it('retries loading undici after a failed load', async () => {
+    const { fetch, importUndici } = fakeUndici();
+    importUndici.mockRejectedValueOnce(new Error('EMFILE: too many open files'));
+    const tools = createWebTools({ resolveHostname: publicResolver, importUndici });
+    const webFetch = findTool(tools, 'WebFetch');
+
+    const first = await webFetch.execute({ url: 'https://example.com/' }, context());
+    const second = await webFetch.execute({ url: 'https://example.com/' }, context());
+
+    expect(first.status).not.toBe('success');
+    expect(second.status).toBe('success');
+    expect(importUndici).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('policy refusals are final and visible', () => {
+  it('reports a pre-flight private-network refusal as blocked with its reason', async () => {
+    const fetchImpl = vi.fn(async () => new Response('never'));
+    const { fetchTool } = toolsFor(
+      fetchImpl,
+      vi.fn(async () => ['10.0.0.1']),
+    );
+
+    const result = await fetchTool.execute({ url: 'https://internal.example/' }, context());
+
+    expect(result.status).toBe('blocked');
+    expect(result.structuredError?.code).toBe('private_network_forbidden');
+    expect(result.structuredError?.retryable).toBe(false);
+    expect(result.content).toContain('private or special-use address');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps a refused WebSearch blocked and non-retryable through the registry and its cooldown', async () => {
+    const refused = await new Promise<unknown>((resolve) => {
+      safeNetworkLookup('127.0.0.1', { all: true }, (error) => resolve(error));
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw Object.assign(new TypeError('fetch failed'), { cause: refused });
+    });
+    const registry = createRegistry();
+    registry.registerAll(
+      createWebTools({
+        fetch: fetchImpl,
+        resolveHostname: publicResolver,
+        now: () => new Date('2026-07-31T00:00:00.000Z'),
+      }),
+    );
+
+    const first = await registry.execute(
+      { id: 'call-1', name: 'WebSearch', arguments: { query: 'anything' } },
+      context(),
+      1,
+    );
+    const second = await registry.execute(
+      { id: 'call-2', name: 'WebSearch', arguments: { query: 'anything' } },
+      context(),
+      1,
+    );
+
+    for (const result of [first, second]) {
+      expect(result.status).toBe('blocked');
+      expect(result.structuredError?.retryable).toBe(false);
+      expect(result.content).toContain('private or special-use address');
+    }
+    // One attempt per provider on the first call, none on the second: no registry retry, and the
+    // cooldown keeps the refusal.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });

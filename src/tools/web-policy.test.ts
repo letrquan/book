@@ -110,9 +110,8 @@ describe('web URL policy', () => {
   });
 
   it('enforces the connection-time lookup through an undici dispatcher', async () => {
-    // The dispatcher carries the guard, and only the undici that created it consults that
-    // dispatcher -- so the request has to be issued by undici's own fetch, exactly as
-    // `undiciWebFetch` does in web.ts. Node's global fetch is a different, bundled undici.
+    // The dispatcher carries the guard. Node's bundled fetch rejects this package's Agent, so the
+    // request is issued by undici's own fetch, as `web.ts` does for guarded requests.
     const dispatcher = new Agent({ connect: { lookup: safeNetworkLookup } });
     let caught: unknown;
     try {

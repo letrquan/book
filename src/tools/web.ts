@@ -72,6 +72,12 @@ interface SearchProviderAttempt {
   retryAfterMs?: number;
 }
 
+interface SearchProviderCooldown {
+  until: number;
+  /** Set when the provider was refused on policy grounds: the refusal outlives the cooldown's retry hint. */
+  blockedReason?: string;
+}
+
 const BUILTIN_SEARCH_PROVIDERS: readonly BuiltinSearchProvider[] = [
   {
     id: 'exa',
@@ -479,21 +485,28 @@ async function fetchWithPolicy(
   }
 }
 
+/** A request refused by the network policy: final, never retried, and its reason shown. */
+function privateNetworkBlocked(reason: string, details?: Record<string, unknown>): ToolResult {
+  return toolFailure(reason, {
+    code: 'private_network_forbidden',
+    status: 'blocked',
+    retryable: false,
+    content: reason,
+    ...(details ? { details } : {}),
+  });
+}
+
 function webPolicyFailure(error: unknown): ToolResult | undefined {
   if (error instanceof WebPolicyError) {
-    return toolFailure(error.message, { code: error.code });
+    return error.code === 'private_network_forbidden'
+      ? privateNetworkBlocked(error.message)
+      : toolFailure(error.message, { code: error.code });
   }
   // The connect-time guard refuses after pre-flight validation has already passed -- a rebinding
   // answer, or a redirect target that resolves privately. Report the policy's own reason instead
   // of the `fetch failed` undici wraps it in, and do not invite a retry that cannot succeed.
   const blockedReason = connectionBlockedReason(error);
-  if (blockedReason) {
-    return toolFailure(blockedReason, {
-      code: 'private_network_forbidden',
-      status: 'blocked',
-      retryable: false,
-    });
-  }
+  if (blockedReason) return privateNetworkBlocked(blockedReason);
   if (error instanceof CrossOriginRedirectError) {
     return toolFailure(error.message, {
       code: 'cross_origin_redirect',
@@ -746,14 +759,7 @@ function providerRequestFailure(
   // resolves to a private address is refused by the connect-time guard. Report that the same
   // way WebFetch does: it is a policy decision, not a transient network fault.
   const blockedReason = connectionBlockedReason(error);
-  if (blockedReason) {
-    return toolFailure(blockedReason, {
-      code: 'private_network_forbidden',
-      status: 'blocked',
-      retryable: false,
-      details: { provider: provider.id, phase },
-    });
-  }
+  if (blockedReason) return privateNetworkBlocked(blockedReason, { provider: provider.id, phase });
   return toolFailure(
     `${provider.label} ${phase} failed: ${error instanceof Error ? error.message : String(error)}`,
     {
@@ -806,6 +812,12 @@ async function runBuiltinSearchProvider(
       resolver,
     );
   } catch (error) {
+    if (error instanceof WebPolicyError && error.code === 'private_network_forbidden') {
+      return privateNetworkBlocked(error.message, {
+        provider: provider.id,
+        phase: 'endpoint_validation',
+      });
+    }
     return toolFailure(
       `${provider.label} endpoint is unavailable: ${error instanceof Error ? error.message : String(error)}`,
       {
@@ -974,7 +986,7 @@ async function builtinWebSearch(
   fetchImpl: FetchLike,
   strictDispatcher: () => Promise<Agent>,
   resolver: HostResolver,
-  cooldowns: Map<BuiltinSearchProviderId, number>,
+  cooldowns: Map<BuiltinSearchProviderId, SearchProviderCooldown>,
   now: () => Date,
 ): Promise<ToolResult> {
   const query = args.query as string;
@@ -992,13 +1004,19 @@ async function builtinWebSearch(
   const attempts: SearchProviderAttempt[] = [];
   for (const provider of BUILTIN_SEARCH_PROVIDERS) {
     const currentTime = now().getTime();
-    const cooldownUntil = cooldowns.get(provider.id);
-    if (cooldownUntil !== undefined && cooldownUntil > currentTime) {
+    const cooldown = cooldowns.get(provider.id);
+    if (cooldown !== undefined && cooldown.until > currentTime) {
       attempts.push({
         provider: provider.id,
         status: 'cooldown',
-        retryable: true,
-        retryAfterMs: cooldownUntil - currentTime,
+        ...(cooldown.blockedReason === undefined
+          ? { retryable: true }
+          : {
+              code: 'private_network_forbidden',
+              message: cooldown.blockedReason,
+              retryable: false,
+            }),
+        retryAfterMs: cooldown.until - currentTime,
       });
       continue;
     }
@@ -1018,7 +1036,14 @@ async function builtinWebSearch(
     if (result.status === 'success' || result.status === 'cancelled') return result;
 
     const cooldownMs = providerCooldownMs(result);
-    if (cooldownMs !== undefined) cooldowns.set(provider.id, now().getTime() + cooldownMs);
+    if (cooldownMs !== undefined) {
+      cooldowns.set(provider.id, {
+        until: now().getTime() + cooldownMs,
+        ...(result.structuredError?.code === 'private_network_forbidden'
+          ? { blockedReason: result.structuredError.message }
+          : {}),
+      });
+    }
     attempts.push({
       provider: provider.id,
       status: 'failed',
@@ -1031,15 +1056,22 @@ async function builtinWebSearch(
 
   const failures = attempts
     .map((attempt) =>
-      attempt.status === 'cooldown'
+      attempt.status === 'cooldown' && attempt.message === undefined
         ? `${attempt.provider} is cooling down`
         : `${attempt.provider}: ${attempt.message ?? attempt.code ?? 'unknown error'}`,
     )
     .join('; ');
-  return toolFailure(`Built-in web search providers are unavailable. ${failures}`, {
+  const message = `Built-in web search providers are unavailable. ${failures}`;
+  // Every provider refused on policy grounds: final, like a WebFetch refusal, so the registry
+  // does not retry it and the reason is shown.
+  const allBlocked =
+    attempts.length > 0 &&
+    attempts.every((attempt) => attempt.code === 'private_network_forbidden');
+  return toolFailure(message, {
     code: 'search_all_providers_failed',
     retryable: attempts.some((attempt) => attempt.retryable),
     details: { attempts },
+    ...(allBlocked ? { status: 'blocked' as const, content: message } : {}),
   });
 }
 
@@ -1049,7 +1081,7 @@ async function webSearch(
   fetchImpl: FetchLike,
   strictDispatcher: () => Promise<Agent>,
   resolver: HostResolver,
-  cooldowns: Map<BuiltinSearchProviderId, number>,
+  cooldowns: Map<BuiltinSearchProviderId, SearchProviderCooldown>,
   now?: () => Date,
 ): Promise<ToolResult> {
   const query = (args.query as string).trim();
@@ -1075,17 +1107,29 @@ export function createWebTools(dependencies: WebToolDependencies = {}): ToolDefi
   const loadUndici = (): Promise<UndiciModule> =>
     (undici ??= importUndiciKeepingNodeDispatcher(
       dependencies.importUndici ?? (() => import('undici')),
-    ));
+    ).catch((error: unknown) => {
+      // A failed load is not cached, so a later call can try again.
+      undici = undefined;
+      throw error;
+    }));
   let strictDispatcher: Promise<Agent> | undefined;
   const loadStrictDispatcher = (): Promise<Agent> =>
-    (strictDispatcher ??= loadUndici().then(
-      (undiciModule) => new undiciModule.Agent({ connect: { lookup: safeNetworkLookup } }),
-    ));
-  // Fetch through undici's own `fetch`: an undici 8 Agent handed to Node's bundled `fetch` is
-  // rejected (`invalid onRequestStart method`) before the lookup hook runs.
+    (strictDispatcher ??= loadUndici()
+      .then((undiciModule) => new undiciModule.Agent({ connect: { lookup: safeNetworkLookup } }))
+      .catch((error: unknown) => {
+        strictDispatcher = undefined;
+        throw error;
+      }));
+  // A request with the strict dispatcher goes through undici's own `fetch`: an undici 8 Agent
+  // handed to Node's bundled `fetch` is rejected (`invalid onRequestStart method`) before the
+  // lookup hook runs. One without it (private networks allowed) uses Node's own `fetch`, as
+  // before undici 8, so the host's global dispatcher, e.g. the env proxy, still applies.
   const fetchImpl: FetchLike =
     dependencies.fetch ??
     (async (input, init) => {
+      if ((init as { dispatcher?: unknown } | undefined)?.dispatcher === undefined) {
+        return globalThis.fetch(input, init);
+      }
       const undiciModule = await loadUndici();
       return undiciModule.fetch(
         input,
@@ -1093,7 +1137,7 @@ export function createWebTools(dependencies: WebToolDependencies = {}): ToolDefi
       ) as unknown as Promise<Response>;
     });
   const resolver = dependencies.resolveHostname ?? resolveHostname;
-  const searchProviderCooldowns = new Map<BuiltinSearchProviderId, number>();
+  const searchProviderCooldowns = new Map<BuiltinSearchProviderId, SearchProviderCooldown>();
 
   return [
     {

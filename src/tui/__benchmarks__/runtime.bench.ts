@@ -333,6 +333,8 @@ async function main(): Promise<void> {
       fetch: async () => new Response('x'.repeat(1024 * 1024)),
     }).find((tool) => tool.name === 'WebFetch');
     if (!fetchTool) throw new Error('WebFetch tool unavailable');
+    // Load undici and the strict dispatcher once, outside the measurement.
+    await fetchTool.execute({ url: 'https://example.com/large' }, grepContext);
     await measure(
       'resources: large WebFetch response',
       async () => {
