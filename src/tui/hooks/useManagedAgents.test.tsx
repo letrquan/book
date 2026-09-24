@@ -451,4 +451,44 @@ describe('host-orchestrated agents in the session surface', () => {
     await vi.waitFor(() => expect(latest?.summaries).toEqual([]));
     view.unmount();
   });
+
+  it('clears the row of a finished Task child, whose result goes back through Task', async () => {
+    let listener: ((event: AgentRuntimeEvent) => void) | undefined;
+    const running: AgentRecord = {
+      ...record('task-child', 10),
+      status: 'running',
+      pendingQuestion: undefined,
+      pendingQuestionCreatedAt: undefined,
+      parentToolCallId: 'call-task-1',
+    };
+    const manager = {
+      list: vi.fn(async () => [running]),
+      listPendingCompletions: vi.fn(async () => []),
+      subscribe: vi.fn((next: (event: AgentRuntimeEvent) => void) => {
+        listener = next;
+        return vi.fn();
+      }),
+      setInteractivePermissions: vi.fn(),
+    } as unknown as AgentManager;
+    let latest: ManagedAgentState | undefined;
+    function Harness() {
+      latest = useManagedAgents(manager);
+      return <Text>{String(latest.summaries.length)}</Text>;
+    }
+
+    const view = render(<Harness />);
+    await vi.waitFor(() =>
+      expect(latest?.summaries.map((summary) => summary.agentId)).toEqual(['task-child']),
+    );
+
+    listener?.({
+      type: 'agent_result',
+      agent: { ...running, status: 'completed', result: 'Done', finishedAt: 40, updatedAt: 40 },
+    });
+    await wait(0);
+
+    expect(latest?.summaries).toEqual([]);
+    expect(latest?.records.get('task-child')?.result).toBe('Done');
+    view.unmount();
+  });
 });

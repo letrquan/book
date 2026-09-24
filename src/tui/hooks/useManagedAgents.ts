@@ -197,6 +197,14 @@ export function useManagedAgents(
           if (!belongsToCurrentSession(event.agent.parentSessionId)) return;
           visibleAgentIds.current.add(event.agent.id);
           setRecords((current) => new Map(current).set(event.agent.id, event.agent));
+          // A Task child's result goes back through Task's own tool row and raises no completion,
+          // and acknowledging a completion is what clears a finished row. Clear it here instead;
+          // the record stays, so the Task row can still open the child's transcript.
+          if (event.agent.parentToolCallId && !deferredDismissals.current.has(event.agent.id)) {
+            const agentId = event.agent.id;
+            setSummaries((current) => current.filter((summary) => summary.agentId !== agentId));
+            return;
+          }
           setSummaries((current) => upsertSummary(current, projectAgentSummary(event.agent)));
           return;
         }
