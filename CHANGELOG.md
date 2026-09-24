@@ -22,6 +22,19 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A long reply no longer jitters sideways while it streams.** Once a reply outgrew the live
+  window (`width × 24` characters), the window's start moved forward with every streamed delta,
+  sometimes cutting a word in half. Every wrapped line of the tail then reflowed on every frame,
+  and the incremental renderer rewrote ~26 rows for a 12-character delta. When no paragraph break
+  or block start follows the cutoff, the tail now starts at a cutoff rounded up to `width × 4`
+  steps, so the window stays within its old size and only grows at its end between steps. It
+  begins at the first word that does not read as a heading, list or quote marker (`#`, `-`, `3.`,
+  …), which would otherwise turn the whole live tail into that block. Measured on a real PTY over
+  a single 800-word paragraph, frames that reflowed the whole tail fell from 249 to 16, and the
+  incremental renderer's output fell from 966 KB to 178 KB. A reply broken into paragraphs, and a
+  code block, are still cut from the raw cutoff as before. The full-frame renderer that Windows
+  uses by default still repaints every row, so its output is unchanged. On Windows, the fix removes
+  the jitter but does not reduce the bytes written.
 - **Windows paths in `/memory` commands no longer lose backslashes to markdown parsing.** `/memory`
   reports and effects rendered paths unescaped through `marked`, which treated backslashes as
   markdown escape sequences. Paths are now wrapped in inline code spans.
