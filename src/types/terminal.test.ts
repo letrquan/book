@@ -17,6 +17,42 @@ describe('terminalRecovery', () => {
     }
   });
 
+  it('treats deterministic 4xx provider errors as non-recoverable', () => {
+    // A 4xx pinned on the request itself cannot succeed on re-issue, while
+    // server errors or unspecified provider errors are retried.
+    expect(
+      terminalRecovery(
+        createTerminalOutcome('failed', 'provider_error', {
+          partialOutput: false,
+          providerCode: 'bad_request',
+        }),
+      ),
+    ).toBe('none');
+    expect(
+      terminalRecovery(
+        createTerminalOutcome('failed', 'provider_error', {
+          partialOutput: false,
+          providerCode: 'not_found',
+        }),
+      ),
+    ).toBe('none');
+    expect(
+      terminalRecovery(
+        createTerminalOutcome('failed', 'provider_error', {
+          partialOutput: false,
+          providerCode: 'server_error',
+        }),
+      ),
+    ).toBe('reissue');
+    expect(
+      terminalRecovery(
+        createTerminalOutcome('failed', 'provider_error', {
+          partialOutput: false,
+        }),
+      ),
+    ).toBe('reissue');
+  });
+
   it('separates an output cap from a transport fault', () => {
     // Not a fault at all — the model was cut off mid-answer and should carry on.
     // Kept distinct so a large generated file, which hits the cap turn after turn,
@@ -49,6 +85,18 @@ describe('terminalRecovery', () => {
       'missing_terminal',
     ] as const) {
       expect(recoveryFor(reason), reason).toBe('none');
+    }
+  });
+
+  it('ends on a filtered or error-envelope answer that repeated after its one re-issue', () => {
+    // The loop already spent the turn's single re-issue on these; a stream-level
+    // re-issue would send the same prompt again behind a host-written continuation.
+    for (const providerCode of ['content_filter', 'error_envelope']) {
+      expect(
+        terminalRecovery(
+          createTerminalOutcome('failed', 'provider_error', { partialOutput: false, providerCode }),
+        ),
+      ).toBe('none');
     }
   });
 });

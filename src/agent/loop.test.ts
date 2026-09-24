@@ -19,6 +19,7 @@ import type { AgentTerminalOutcome } from '../types/terminal.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { MemoryModelWindowStore } from '../model-window-store.js';
 import type { LoadedMemoryContext } from '../memory-store.js';
+import { DEFAULT_SETTINGS } from '../settings.js';
 
 function writeLoopSkill(
   workspace: string,
@@ -5416,5 +5417,431 @@ describe('runAgentLoop deferred compaction', () => {
     expect(prepareCompact).toHaveBeenCalledOnce();
     expect(commitCompact).not.toHaveBeenCalled();
     expect(prepareSignal?.aborted).toBe(true);
+  });
+});
+
+describe('content filter and upstream error recoveries', () => {
+  it('retries once when provider stops with content_filter on a turn with no tool calls', async () => {
+    let calls = 0;
+    const discards: number[] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        if (calls === 1) {
+          yield { type: 'text', content: 'x'.repeat(48) };
+          yield { type: 'done', finishReasons: ['content_filter'] };
+          return;
+        }
+        yield { type: 'text', content: 'normal answer' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onAttemptDiscarded: () => discards.push(calls),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(discards).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ status: 'completed', reason: 'normal_completion' });
+    expect(history.at(-1)?.content).toBe('normal answer');
+  });
+
+  it('fails with provider_error when content_filter repeats on retry', async () => {
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'text', content: 'x'.repeat(48) };
+        yield { type: 'done', finishReasons: ['content_filter'] };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    const errors: string[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onError: (err) => errors.push(err),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'provider_error' });
+    expect(errors[0] || outcomes[0].message).toContain('content_filter');
+  });
+
+  it('retries once when provider streams an upstream error envelope as content', async () => {
+    const errorEnvelope =
+      '[Error] An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID bef67f5c-a3e8-4c5e-9a88-ba86facfddfa in your message.';
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        if (calls === 1) {
+          yield { type: 'text', content: errorEnvelope };
+          yield {
+            type: 'done',
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            finishReasons: ['stop'],
+          };
+          return;
+        }
+        yield { type: 'text', content: 'recovered answer' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(outcomes[0]).toMatchObject({ status: 'completed', reason: 'normal_completion' });
+    expect(history.at(-1)?.content).toBe('recovered answer');
+  });
+
+  it('fails with provider_error when upstream error envelope repeats, without persisting it as content', async () => {
+    const errorEnvelope =
+      '[Error] An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID bef67f5c-a3e8-4c5e-9a88-ba86facfddfa in your message.';
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'text', content: errorEnvelope };
+        yield {
+          type: 'done',
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          finishReasons: ['stop'],
+        };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    const errors: string[] = [];
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onError: (err) => errors.push(err),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(outcomes[0]).toMatchObject({
+      status: 'failed',
+      reason: 'provider_error',
+      message: errorEnvelope,
+    });
+    expect(history.some((m) => m.role === 'assistant' && m.content === errorEnvelope)).toBe(false);
+  });
+
+  it('treats 400 on large prompt as context overflow, compactor is called with recovery: true and re-issues', async () => {
+    const nineRouterBody =
+      'API Error: 503 [antigravity/...] [400]: {"error":{"code":400,"status":"INVALID_ARGUMENT",...}} (reset after 29s)';
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) {
+          return new Response(nineRouterBody, { status: 503 });
+        }
+        return new Response(textStream('recovered'), { status: 200 });
+      }),
+    );
+
+    const compactHints: Array<CompactRequestHints | undefined> = [];
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, hints?: CompactRequestHints) => {
+        compactHints.push(hints);
+        return compactedForRetry();
+      },
+    );
+
+    const largeUserMessage = 'x '.repeat(450_000); // 900,000 characters
+    const result = await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        modelInfo: { contextWindow: 1_000_000 },
+      }),
+      createRegistry(),
+      largeUserMessage,
+      [],
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(compactHints[0]?.recovery).toBe(true);
+    expect(fetchCalls).toBe(2);
+    expect(result.at(-1)?.content).toBe('recovered');
+  });
+
+  it('ends failed after one fetch without retry for 503 quoting 400 when history is small', async () => {
+    const nineRouterBody =
+      'API Error: 503 [antigravity/...] [400]: {"error":{"code":400,"status":"INVALID_ARGUMENT",...}} (reset after 29s)';
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        return new Response(nineRouterBody, { status: 503 });
+      }),
+    );
+
+    const compact = vi.fn(async () => compactedForRetry());
+    const errors: string[] = [];
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        retry: {
+          ...defaultConfig().retry,
+          streamReissueAttempts: 3,
+        },
+      }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onCompact: compact,
+        onError: (err) => errors.push(err),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { isNewSession: false },
+    );
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(fetchCalls).toBe(1);
+    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'provider_error' });
+    expect(errors[0] || outcomes[0].message).toContain('INVALID_ARGUMENT');
+  });
+
+  it('ends the run on a repeated content_filter without spending the stream re-issue allowance', async () => {
+    const filtered = 'Here is the refactored parser loop, step by step.';
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'text', content: filtered };
+        yield { type: 'done', finishReasons: ['content_filter'] };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    const retries: string[] = [];
+    const history = await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        // The shipped allowance, not the fixture's 0: with it, a repeat used to be
+        // re-sent three more times, each behind a host-written `[continuation]`.
+        retry: {
+          ...defaultConfig().retry,
+          streamReissueAttempts: DEFAULT_SETTINGS.retry.streamReissueAttempts,
+        },
+      }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onRetry: (phase) => retries.push(phase),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(DEFAULT_SETTINGS.retry.streamReissueAttempts).toBeGreaterThan(0);
+    expect(calls).toBe(2);
+    expect(retries).toEqual([]);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      status: 'failed',
+      reason: 'provider_error',
+      providerCode: 'content_filter',
+    });
+    expect(
+      history.filter((m) => m.role === 'user' && m.content.startsWith('[continuation]')),
+    ).toEqual([]);
+    expect(history.filter((m) => m.role === 'assistant' && m.content === filtered)).toHaveLength(1);
+  });
+
+  it('ends the run failed/provider_error on a repeated error envelope after exactly two requests', async () => {
+    const errorEnvelope =
+      '[Error] An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID bef67f5c-a3e8-4c5e-9a88-ba86facfddfa in your message.';
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'text', content: errorEnvelope };
+        yield {
+          type: 'done',
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          finishReasons: ['stop'],
+        };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    const retries: string[] = [];
+    const history = await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        retry: {
+          ...defaultConfig().retry,
+          streamReissueAttempts: DEFAULT_SETTINGS.retry.streamReissueAttempts,
+        },
+      }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onRetry: (phase) => retries.push(phase),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(retries).toEqual([]);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      status: 'failed',
+      reason: 'provider_error',
+      providerCode: 'error_envelope',
+      message: errorEnvelope,
+    });
+    expect(
+      history.filter((m) => m.role === 'user' && m.content.startsWith('[continuation]')),
+    ).toEqual([]);
+    expect(history.some((m) => m.role === 'assistant' && m.content === errorEnvelope)).toBe(false);
+  });
+
+  it('does not read a plain 400 on a large request as a context overflow', async () => {
+    const plainBadRequest = JSON.stringify({
+      error: {
+        code: 400,
+        message: 'Request contains an invalid argument.',
+        status: 'INVALID_ARGUMENT',
+      },
+    });
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        return new Response(plainBadRequest, { status: 400 });
+      }),
+    );
+
+    const compact = vi.fn(async () => compactedForRetry());
+    const store = new MemoryModelWindowStore();
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    // ~225k estimated tokens on a model whose window is not declared: the shape
+    // that used to force a compaction and ratchet the learned window to ~180k.
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1, model: 'gemini-2.5-pro' }),
+      createRegistry(),
+      'x '.repeat(450_000),
+      [],
+      noopCallbacks({
+        onCompact: compact,
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { isNewSession: false, modelWindowStore: store },
+    );
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(store.get('gemini-2.5-pro')).toBeUndefined();
+    expect(fetchCalls).toBe(1);
+    expect(outcomes[0]).toMatchObject({
+      status: 'failed',
+      reason: 'provider_error',
+      providerCode: 'bad_request',
+    });
+  });
+
+  it('still reads a 503-wrapped quoted 400 on a large request as a context overflow', async () => {
+    const nineRouterBody =
+      'API Error: 503 [antigravity/...] [400]: {"error":{"code":400,"status":"INVALID_ARGUMENT",...}} (reset after 29s)';
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) {
+          return new Response(nineRouterBody, { status: 503 });
+        }
+        return new Response(textStream('recovered'), { status: 200 });
+      }),
+    );
+
+    const compactHints: Array<CompactRequestHints | undefined> = [];
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, hints?: CompactRequestHints) => {
+        compactHints.push(hints);
+        return compactedForRetry();
+      },
+    );
+    const store = new MemoryModelWindowStore();
+
+    const result = await runAgentLoop(
+      defaultConfig({ maxTurns: 1, model: 'gemini-2.5-pro' }),
+      createRegistry(),
+      'x '.repeat(450_000),
+      [],
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { isNewSession: false, modelWindowStore: store },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(compactHints[0]?.recovery).toBe(true);
+    expect(store.get('gemini-2.5-pro')).toBeGreaterThan(0);
+    expect(fetchCalls).toBe(2);
+    expect(result.at(-1)?.content).toBe('recovered');
   });
 });

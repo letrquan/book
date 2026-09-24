@@ -49,6 +49,22 @@ export type AgentTerminalReason =
 export type TerminalRecovery = 'none' | 'reissue' | 'continue' | 'park';
 
 export function terminalRecovery(outcome: AgentTerminalOutcome): TerminalRecovery {
+  // Some provider errors are reproduced by re-sending the turn; the transport was
+  // fine. A 4xx the provider or its router pinned on the request itself
+  // (`bad_request`, `not_found`), and an answer the loop already re-issued once and
+  // got back the same way (`content_filter`, `error_envelope`). `providerCode` is
+  // what the loop copied from the stream's error code, so only the loop's provider
+  // outcomes carry it.
+  if (
+    outcome.reason === 'provider_error' &&
+    (outcome.providerCode === 'bad_request' ||
+      outcome.providerCode === 'not_found' ||
+      outcome.providerCode === 'content_filter' ||
+      outcome.providerCode === 'error_envelope')
+  ) {
+    return 'none';
+  }
+
   switch (outcome.reason) {
     case 'stream_stall':
     case 'provider_timeout':

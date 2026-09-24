@@ -123,7 +123,9 @@ export function toolResultErrorMessage(result: ToolResult): string | undefined {
 
 function rawToolResultModelContent(result: ToolResult): string {
   const content = result.content;
-  if (toolResultSucceeded(result)) return content;
+  if (toolResultSucceeded(result)) {
+    return content.trim().length === 0 ? '(no output)' : content;
+  }
   const remediation = result.structuredError?.remediation;
   const fix = remediation ? `\nFix: ${remediation}` : '';
   const detail = content ? `\n${content}` : '';

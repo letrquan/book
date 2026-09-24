@@ -35,8 +35,46 @@ export function classifyHttpStatus(status: number): {
   return { code: 'unknown', retryable: false };
 }
 
+/**
+ * The upstream HTTP status a router quoted inside its own error body, if any.
+ *
+ * 9router wraps an upstream 4xx as a 503 plus a cooldown, so the wrapper's status
+ * says "transient" while the body says the request itself is invalid. Only a 4xx
+ * is ever taken from the body: a quoted 5xx says nothing the wrapper did not.
+ *
+ * Only two shapes count as a quote: 9router's own `[<route>] [400]:` prefix, and
+ * a JSON `"error"` object whose `code` is a 4xx. A status mentioned in prose
+ * (`upstream sent HTTP 403`, `chunk [404]`) or a longer number that merely starts
+ * like one (`"code": 4001`) is not: misreading an outage body ends the run after
+ * a single request, or parks it as a rejected credential.
+ */
+export function quotedUpstreamStatus(body: string): number | undefined {
+  if (!body) return undefined;
+  const text = body.length > 65536 ? body.slice(0, 65536) : body;
+  const patterns = [
+    /\[[^\]\s]+\]\s*\[(4\d\d)\]:/,
+    /"error"\s*:\s*\{[^{}]*?"code"\s*:\s*"?(4\d\d)(?![\d.])/,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      return Number(match[1]);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The upstream 4xx quoted inside a retryable response, when that quote is what
+ * classifies it: 9router answers 503 and names the real status in the body. A
+ * non-retryable status is its own answer, and its body is never re-read.
+ */
+export function wrappedUpstreamStatus(status: number, body: string): number | undefined {
+  return classifyHttpStatus(status).retryable ? quotedUpstreamStatus(body) : undefined;
+}
+
 export function classifyApiError(status: number, body: string): ProviderErrorCode {
-  const code = classifyHttpStatus(status).code;
+  const code = classifyHttpStatus(wrappedUpstreamStatus(status, body) ?? status).code;
   return code === 'bad_request' && isContextOverflowError(body) ? 'context_overflow' : code;
 }
 
@@ -96,6 +134,37 @@ export function isContextOverflowError(error: unknown): boolean {
   );
 }
 
+/**
+ * A router that answers 200 with the upstream's error as the assistant text —
+ * `[Error] An error occurred while processing your request. ... Please include
+ * the request ID ... in your message.` — has not answered. The leading `[Error]`
+ * is required; the rest of the sentence, or a usage block reporting zero tokens
+ * both ways, confirms it.
+ */
+export function isUpstreamErrorEnvelope(
+  text: string,
+  usage?: { promptTokens: number; completionTokens: number } | null,
+): boolean {
+  if (!/^\s*\[Error\]/i.test(text)) return false;
+  const zeroUsage = usage != null && usage.promptTokens === 0 && usage.completionTokens === 0;
+  return (
+    zeroUsage ||
+    /\brequest id\b/i.test(text) ||
+    /help\.openai\.com/i.test(text) ||
+    /error occurred while processing/i.test(text)
+  );
+}
+
+async function readErrorBody(response: Response, signal?: AbortSignal): Promise<string> {
+  if (signal?.aborted) return '';
+  try {
+    const text = await response.text();
+    return text.length > 65536 ? text.slice(0, 65536) : text;
+  } catch {
+    return '';
+  }
+}
+
 export async function fetchWithRetry(
   url: string,
   init: RequestInit,
@@ -137,10 +206,30 @@ export async function fetchWithRetry(
     const classification = classifyHttpStatus(response.status);
     if (!classification.retryable) return response;
     lastError = `API error ${response.status}`;
+
+    const bodyText = await readErrorBody(response, signal);
+    const quoted = quotedUpstreamStatus(bodyText);
+    if (quoted !== undefined && !classifyHttpStatus(quoted).retryable) {
+      logger?.warn('upstream error quoted in retryable status; not retrying', {
+        status: response.status,
+        upstreamStatus: quoted,
+      });
+      return new Response(bodyText, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }
+
     const watchdogRetry = retry.watchdog && (response.status === 429 || response.status === 529);
     const effectiveMax = watchdogRetry ? Number.MAX_SAFE_INTEGER : maxAttempts;
-    if (attempt >= effectiveMax || budgetExhausted(clock, startMs, retry.totalBudgetMs))
-      return response;
+    if (attempt >= effectiveMax || budgetExhausted(clock, startMs, retry.totalBudgetMs)) {
+      return new Response(bodyText, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }
 
     const delay = boundedDelay(
       clock,
@@ -157,7 +246,11 @@ export async function fetchWithRetry(
     try {
       await sleep(delay, signal);
     } catch {
-      return response;
+      return new Response(bodyText, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
     }
     try {
       await response.body?.cancel();

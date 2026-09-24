@@ -244,7 +244,7 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath } = resolved;
   const offset = (args.offset as number) || 1;
-  const limit = (args.limit as number) || 2000;
+  const limit = Math.max(1, (args.limit as number) || 2000);
 
   let content: string;
   try {
@@ -259,6 +259,16 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
 
   throwIfAborted(ctx.signal);
   const lines = content.split('\n');
+  // A trailing newline ends the last line rather than starting another, and an
+  // empty file has none; offset 1 still reads either.
+  const lineCount = content.length === 0 ? 0 : lines.length - (content.endsWith('\n') ? 1 : 0);
+  const maxOffset = Math.max(1, lineCount);
+  if (offset > maxOffset) {
+    return toolFailure(
+      `Offset ${offset} is past the end of ${args.filePath}: the file has ${lineCount} ${lineCount === 1 ? 'line' : 'lines'}. Read with an offset of at most ${maxOffset}.`,
+      { code: 'offset_out_of_range' },
+    );
+  }
   const end = Math.min(lines.length, offset - 1 + limit);
   const output: string[] = [];
   for (let index = offset - 1; index < end; index++) {

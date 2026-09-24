@@ -881,6 +881,59 @@ describe('runHeadless — stream-json output', () => {
       }),
     );
   });
+
+  it('emits retry records and finishes with a result record on transient failures', async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) {
+          return new Response(JSON.stringify({ error: { message: 'busy' } }), {
+            status: 503,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return sse([textDelta('Recovered!')]);
+      }),
+    );
+
+    const writes: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        writes.push(s);
+        return true;
+      },
+    };
+    const runtimeConfig = freshConfig({
+      retry: {
+        ...defaultConfig().retry,
+        baseDelayMs: 1,
+        maxDelayMs: 2,
+      },
+    });
+
+    const result = await runHeadless(runtimeConfig, createDefaultRegistry(), {
+      prompt: 'say hi',
+      inputFormat: 'text',
+      outputFormat: 'stream-json',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+    });
+
+    expect(fetchCalls).toBe(2);
+    const lines = writes.join('').split('\n').filter(Boolean);
+    const events = lines.map((line) => JSON.parse(line));
+    const retryEvents = events.filter((e) => e.type === 'retry');
+    expect(retryEvents).toHaveLength(1);
+    expect(retryEvents[0]).toMatchObject({
+      type: 'retry',
+      attempt: 1,
+    });
+    expect(events.at(-1)?.type).toBe('result');
+    expect(result.outcome.status).toBe('completed');
+  });
 });
 
 describe('runHeadless — stream-json input', () => {

@@ -113,6 +113,13 @@ usage-triggered compaction never fires against it; pass `--mock-usage-from-estim
 a small `contextWindow` in the throwaway BOOK_HOME's `settings.json` and a couple of long replies put
 a request over the threshold.
 
+Three provider failure shapes can be scripted, one per turn. `{ "status": 503, "body": "…" }` answers
+with that HTTP status and body instead of a stream (a router wrapping an upstream 4xx; the next
+request consumes the next turn, so a retry is scripted as the turn after it). A text turn may carry
+`"finishReason": "content_filter"`, or `"usage": { "prompt_tokens": 0, "completion_tokens": 0,
+"total_tokens": 0 }` to override the usage block — the tell of a router that rendered an upstream
+error as content. Count requests in the `.requests.jsonl` to tell "retried" from "not retried".
+
 ### `smoke.sh` — the end-to-end check
 
 `bash .claude/skills/run-book/smoke.sh` boots the real TUI against the mock and drives one full
