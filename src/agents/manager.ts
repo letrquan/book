@@ -432,9 +432,10 @@ export class AgentManager {
           record.status = 'queued';
           record.stopReason = undefined;
           record.finishedAt = undefined;
-          // Whoever suppressed delivery (Task hands its child's result back itself) died with
-          // the process; nothing is waiting on this re-run, so it reports to the parent.
-          record.notifyParentOnCompletion = undefined;
+          // A Task child's first run is handed back by Task itself, which died with the process;
+          // nothing waits on this re-run, so it reports to the parent. Other hosts that suppress
+          // delivery (`/review` renders its own report) still own their agents' output.
+          if (record.parentToolCallId) record.notifyParentOnCompletion = undefined;
           this.persist(record);
           this.queue.push(record.id);
           this.emit({ type: 'agent_update', agent: clone(record) });
