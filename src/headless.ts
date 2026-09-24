@@ -1117,8 +1117,15 @@ const PROGRESS_ERROR_MAX = 160;
  * agent message or unparsed JSON arguments cannot turn one record into many.
  */
 function progressLine(text: string, max: number): string {
-  const first = text.trim().split(/\r?\n/, 1)[0].trimEnd();
-  return first.length > max ? `${first.slice(0, max - 1)}…` : first;
+  const first = text.trim().split(/\r?\n/, 1)[0];
+  // A control character (a bare CR, an escape sequence) would let an argument rewrite the terminal.
+  const printable = Array.from(first, (char) => {
+    const code = char.charCodeAt(0);
+    return code < 32 || code === 127 ? ' ' : char;
+  })
+    .join('')
+    .trimEnd();
+  return printable.length > max ? `${printable.slice(0, max - 1)}…` : printable;
 }
 
 /**

@@ -167,17 +167,20 @@ All notable changes to this project are documented in this file.
   - **Only that prefix moves, because the split is permanent.** A tag later in the answer stays
     answer text, so a reply that quotes the tags mid-answer (a review finding about them) keeps the
     text between them.
-  - **A block ends at its first closing tag.** Same-name tags do not nest, so a bare `<think>`
+  - **A block ends only at its first closing tag.** Same-name tags do not nest, so a bare `<think>`
     mentioned in the reasoning can no longer push the end into the answer.
-    - If that tag looks quoted, the reply is left exactly as written. Quoted means wrapped in
-      matching backticks, or inside a fence the block opened.
-    - The split never looks further, because a later tag may be one the answer quotes. Where the
-      reading is unsure, text stays in the answer rather than leaving it.
+    - That tag must end its line, as in Book's own replay format.
+    - It must also be outside any fence or inline code span the block opened.
+    - An empty block ends there regardless.
+    - Otherwise the reply is left exactly as written, and the split never looks further. A later
+      tag may be one the answer mentions in prose, code or quotes, and where the reading is unsure,
+      text stays in the answer rather than leaving it.
+    - A reasoning block with the answer on the same line as its closing tag is therefore not split.
     - A stored answer does not split again.
   - **A reply that opens with an unfenced reasoning tag loses that block** even when the reply is
-    itself a template meant to contain one. Fence or quote such a tag to keep it. Text output applies
-  the same split to an older session's answer and prints any other answer exactly as written, an
-  indented first line included.
+    itself a template meant to contain one. Fence or quote such a tag to keep it.
+  - Text output applies the same split to an older session's answer and prints any other answer
+    exactly as written, an indented first line included.
 - **`TaskList` no longer rejects a `reason`.** The model habitually explains why it is reading the
   list (`TaskList({ reason: "verify all tasks are complete" })`) and got a hard
   `invalid_arguments` for it, then repeated the call bare — two wasted turns each time (#216). The
@@ -209,8 +212,10 @@ All notable changes to this project are documented in this file.
   - `-q/--quiet` turns the lines off, `retry:` lines included.
   - `json` and `stream-json` get no progress lines.
   - The SDK's `query()` runs quiet, so a host's stderr gets no progress or `retry:` lines either.
-  - A consumer that stops reading stderr (`2>&1 | head`) no longer kills the run mid-task with an
-    unhandled EPIPE.
+  - A consumer that stops reading (`2>&1 | head`) no longer kills the run with an unhandled EPIPE,
+    and SessionEnd hooks still run.
+  - Control characters in a tool argument are replaced in progress lines, so an argument cannot
+    rewrite the terminal.
 
 - **Corrections replace old memories instead of piling up.** `MemorySave` and background extraction
   accept `supersedes`: the replaced entry is kept on disk (`status: superseded`, `supersededBy`) but

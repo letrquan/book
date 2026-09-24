@@ -162,10 +162,11 @@ reaches it as an event, but `error:` and `warning:` lines still do.
 
 A closed reasoning block the reply opens with (`<think>…</think>`,
 `<reasoning_context>…</reasoning_context>`, several in a row, or an empty one) is stored as
-reasoning, not answer text, so it never reaches stdout. Only blocks at the very start of the reply
-move: a tag later in the answer, or one inside inline or fenced code, is answer text and is printed
-as written, and an answer with no such block is printed exactly as the model wrote it, plus a
-newline. `stream-json` partial deltas
+reasoning, not answer text, and is not printed. Only blocks at the very start of the reply move.
+A block ends at its first closing tag, and only if that tag ends its line outside any code the
+block opened. When it doesn't, the reply is left and printed exactly as the model wrote it,
+reasoning included, rather than risk cutting answer text. A tag later in the answer is answer
+text, and an answer with no such block is printed exactly as written, plus a newline. `stream-json` partial deltas
 (`--include-partial-messages`) still carry the raw tags; the complete `assistant` record carries the
 split content.
 

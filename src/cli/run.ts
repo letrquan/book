@@ -231,11 +231,14 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         });
         sessionStore?.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
 
-        // Progress and retry lines on stderr are best-effort: a consumer that stops reading it
-        // (`2>&1 | head`) must not crash the run with an unhandled EPIPE.
-        process.stderr.on('error', (error: NodeJS.ErrnoException) => {
+        // Once the reader is gone, output is best-effort: a consumer that stops reading
+        // (`book -p … 2>&1 | head`) must not crash the run with an unhandled EPIPE, which also
+        // skipped its SessionEnd hooks.
+        const ignoreClosedPipe = (error: NodeJS.ErrnoException) => {
           if (error.code !== 'EPIPE') throw error;
-        });
+        };
+        process.stderr.on('error', ignoreClosedPipe);
+        process.stdout.on('error', ignoreClosedPipe);
         result = await runHeadless(config, registry, {
           prompt: typeof options.print === 'string' ? (options.print as string) : undefined,
           inputFormat: options.inputFormat as 'text' | 'stream-json',
