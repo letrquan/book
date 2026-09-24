@@ -358,6 +358,13 @@ export function createRegistry() {
         requested: tool.inputSchema?.properties?.timeout
           ? normalizedCall.arguments.timeout
           : undefined,
+        // A function-form declaration is the tool's own resolution: it has
+        // already ranked its setting against BOOK_TOOL_TIMEOUT_MS (Check, Task),
+        // so it outranks the override here too. Ranked the other way round, a
+        // one-hour `agents.taskTimeoutMs` under a ten-minute override had the
+        // backstop fire first at 610s and the child's partial result lost. A
+        // constant declaration is only a default beneath the override.
+        configured: typeof tool.timeoutMs === 'function' ? declaredTimeoutMs : undefined,
         env: context.env,
         fallback: declaredTimeoutMs,
       });

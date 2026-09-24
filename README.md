@@ -526,13 +526,18 @@ is killed and reported as `check_timed_out` — explicitly *not* as a failing ch
 not "fix" code that was passing. Raise it for repositories whose full suite runs longer than the
 default; `npm test` here builds first and routinely does.
 
-`agents.taskTimeoutMs` caps one foreground `Task` delegation (default 30 min; `BOOK_TOOL_TIMEOUT_MS`
-also applies). The registry's 120 s default assumed a fast model; on a route where one max-effort
-turn takes minutes the child was cut off mid-survey, its result discarded, and — because nothing
-stopped it — it ran and billed for an hour afterwards. When the ceiling passes the child is now
-stopped, and the parent gets what exists so far: the child's last assistant text, its summary, and
-the `AgentRead` id for the full transcript, so the work is continued rather than redone. Cancelling
-the parent stops the child too.
+`agents.taskTimeoutMs` caps one foreground `Task` delegation. Precedence is `agents.taskTimeoutMs`,
+then `BOOK_TOOL_TIMEOUT_MS`, then the 30 min default, and the host's backstop ranks them the same
+way, so it always outlasts the ceiling. The registry's 120 s default assumed a fast model; on a
+route where one max-effort turn takes minutes the child was cut off mid-survey, its result
+discarded, and — because nothing stopped it — it ran and billed for an hour afterwards. When the
+ceiling passes the child is now stopped, and the parent gets whatever the child had finished: its
+last complete assistant text and its summary, both often empty when the ceiling lands mid-turn,
+plus the agent id. `AgentRead` on that id returns the summary or error the child recorded when it
+stopped, not its transcript. Cancelling the parent stops the child too, including a cancel that
+lands while the child is still being spawned. A `Task` child never comes back to the parent as a
+completion notification, stopped or not: `Task` already returned its result, and the notification
+only made the parent run another turn to re-read it.
 
 ### Unattended runs
 
@@ -695,8 +700,14 @@ reach the same place — the typed form is the menu row, not a separate write.
 `compactEffort` sets the reducer's reasoning effort. Left unset, the reducer runs at the session's
 effort capped at `medium`: a checkpoint does not need minutes of reasoning, and at `--effort max`
 on a slow route the reducer's request produced no byte for long enough that the proxy dropped it,
-ten times over. The reducer's request is also retried at most twice before compaction falls back to
-the deterministic checkpoint, instead of the full `retry.maxAttempts`.
+ten times over. When the reducer model's catalog lists effort levels and that level is not one of
+them, it is clamped down to the highest listed level below it, never back up to the session's
+effort; a catalog with no level at or below it gets no effort at all. On an OpenAI-compatible route
+the reducer sends `reasoning_effort` only when a level was chosen (`compactEffort`, or `--effort`,
+`BOOK_EFFORT` or `settings.effort`) or its catalog lists levels. With neither, as on the default
+`gpt-4o`, its request carries none, like the main agent's. The reducer's request is also retried at
+most twice before compaction falls back to the deterministic checkpoint, instead of the full
+`retry.maxAttempts`, and `retry.watchdog` does not lift that cap.
 
 `toolDiscovery.mode` accepts `auto`, `eager`, or `deferred`. Auto mode sends all authorized definitions only when there are at most ten and their schemas fit the configured budget; otherwise the provider receives the practical core plus `ToolSearch`. Search never returns tools outside the current command, skill, agent-role, permission-mode, or runtime-state capability intersection.
 
@@ -971,15 +982,17 @@ asks for ten minutes, and a request above the limit in force is refused rather t
 Raising it above 600000 raises the *default* — which needs no argument to reach — but not the
 per-call reach, since the schema publishes and validates 600000 as the maximum. Precedence is the
 call's `timeout` (bounded by that ceiling), then a deliberate per-tool setting such as
-`agents.checkTimeoutMs`, then `BOOK_TOOL_TIMEOUT_MS`, then the tool's default. No source can resolve
-past 2147483647 ms (~24 days), the largest delay a timer can hold; beyond it Node silently fires
-after 1 ms.
+`agents.checkTimeoutMs` or `agents.taskTimeoutMs`, then `BOOK_TOOL_TIMEOUT_MS`, then the tool's
+default. No source can resolve past 2147483647 ms (~24 days), the largest delay a timer can hold;
+beyond it Node silently fires after 1 ms.
 
-The same resolution governs every tool that enforces a deadline of its own — `Bash`, `Check`, and
-`WebFetch`. Each declares its budget so the host's backstop outlasts it; when the two are equal the
-backstop fires first and replaces the tool's report, including its output, with a bare timeout. A
-`timeout` argument sets the host budget only for a tool that publishes one, so a stray value cannot
-pull the backstop underneath a tool that times itself.
+The same resolution governs every tool that enforces a deadline of its own — `Bash`, `Check`,
+`Task`, and `WebFetch`. Each declares its budget so the host's backstop outlasts it; when the two
+are equal the backstop fires first and replaces the tool's report, including its output, with a
+bare timeout. The backstop ranks a per-tool setting above `BOOK_TOOL_TIMEOUT_MS` exactly as the tool
+does, so a lower blanket override cannot fire it ahead of `Check` or `Task`. A `timeout` argument
+sets the host budget only for a tool that publishes one, so a stray value cannot pull the backstop
+underneath a tool that times itself.
 
 A killed command reports itself as killed rather than failed, and returns whatever it printed on
 stdout and stderr before the kill. The two outcomes call for different next moves — retrying a

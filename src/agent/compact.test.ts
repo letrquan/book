@@ -796,12 +796,16 @@ describe('runCompact', () => {
     await runCompact(config, twoTurns, { trigger: 'manual' });
 
     expect(mockedStream).toHaveBeenCalledTimes(1);
+    // The catalog default `high` is capped at `medium` for the reducer, and this
+    // catalog does not list `medium`, so it clamps down to `low` rather than
+    // falling back to the uncapped default.
     expect(mockedStream.mock.calls[0]?.[0]).toMatchObject({
       model: 'gemini-flash',
       modelSelection: 'router/gemini-flash',
       baseUrl: 'https://router.example/v1',
       apiKey: 'router-key',
-      effort: 'high',
+      effort: 'low',
+      effortExplicit: true,
     });
   });
 

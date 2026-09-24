@@ -17,15 +17,26 @@ All notable changes to this project are documented in this file.
 - **A `Task` child that outlives the ceiling is stopped and its work handed back.** The registry's
   120 s default cut a slow-model survey off, discarded the result, and never stopped the child,
   which ran — and billed — for an hour afterwards while the parent redid the survey itself (#215).
-  `Task` now has its own ceiling (30 min, `agents.taskTimeoutMs`, `BOOK_TOOL_TIMEOUT_MS`), stops
-  the child when it passes or when the parent is cancelled, and returns `subagent_timeout` with the
-  child's last assistant text, its summary so far, and the `AgentRead` id.
+  `Task` now has its own ceiling (`agents.taskTimeoutMs`, then `BOOK_TOOL_TIMEOUT_MS`, then
+  30 min), and the registry's backstop ranks those sources the same way, so a lower
+  `BOOK_TOOL_TIMEOUT_MS` no longer fires the backstop first and loses the child's partial result;
+  `Check` had the same inversion with `agents.checkTimeoutMs`. `Task` stops the child when the
+  ceiling passes or when the parent is cancelled, including a cancel that lands during the spawn,
+  and returns `subagent_timeout` with whatever the child had finished (its last assistant text and
+  summary) and the agent id; `AgentRead` on it returns the child's summary or error, not its
+  transcript. A `Task` child no longer reports back as a completion notification: `Task` already
+  returns its result, and the notification made the parent run an extra turn to re-read it, after
+  every `Task` in the TUI and after a stopped one in print mode. `agent_result` still reports the
+  child's end.
 - **The compaction reducer no longer inherits `--effort max`, and gives up faster.** A 167k-token
   reducer request at max effort produced no byte for long enough that the proxy dropped it, and it
   was retried ten times at the same size — 17 minutes with no compaction (#214). The reducer now
-  runs at the session's effort capped at `medium` (`compactEffort` overrides), only when the
-  reducer model's catalog accepts it, and its request is retried at most twice before compaction
-  falls back to the deterministic checkpoint.
+  runs at `compactEffort`, or else at the session's effort capped at `medium`. A catalog that lists
+  levels clamps that down to the highest listed level at or below it, never back up to the
+  session's effort. It sends `reasoning_effort` only when a level was chosen or its catalog lists
+  levels, so on a model with no catalog entry, such as the default `gpt-4o`, the request carries
+  none, as the main agent's does. Its request is retried at most twice before compaction falls back
+  to the deterministic checkpoint, `retry.watchdog` included.
 - **A 4xx quoted inside a router's 503 is no longer retried to exhaustion.** 9router wraps an
   upstream `400 INVALID_ARGUMENT` as a `503` plus a cooldown, and the retry policy decided on the
   status alone, so a request the provider had refused outright was re-sent ten times at 30 s, then

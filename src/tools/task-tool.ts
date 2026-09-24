@@ -108,6 +108,12 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
       // child is finished, so this is the only moment at which the transcript can
       // learn which child this row is waiting on.
       parentToolCallId: ctx.currentToolTraceId,
+      // Task hands the child's result back as its own tool result, so a
+      // completion notification only made the parent run another turn to re-read
+      // it. A stopped child (ceiling or parent cancel) also opens a second
+      // terminal generation as it unwinds, after any acknowledgement Task could
+      // make. `/review` suppresses delivery the same way.
+      notifyParentOnCompletion: false,
     });
     const spawnedAt = Date.now();
     const timeoutMs = resolveToolTimeoutMs({
@@ -118,7 +124,10 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
     const onParentAbort = () => {
       void manager.stop(spawned.id, 'parent cancelled').catch(() => undefined);
     };
-    ctx.signal?.addEventListener('abort', onParentAbort, { once: true });
+    // A cancel that landed while `spawn` was still running has already fired; a
+    // listener added now would never run, and the child would go on to the ceiling.
+    if (ctx.signal?.aborted) onParentAbort();
+    else ctx.signal?.addEventListener('abort', onParentAbort, { once: true });
     let completed: AgentRecord;
     try {
       completed = await manager.wait(spawned.id, timeoutMs);
@@ -140,7 +149,7 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
             `Partial result (the child was stopped; nothing below is final):`,
             lastText ? `\nLast assistant text:\n${lastText}` : '',
             partial.summary ? `\nSummary so far:\n${partial.summary}` : '',
-            `\nUse AgentRead with agentId ${completed.id} for the full transcript; raise agents.taskTimeoutMs or BOOK_TOOL_TIMEOUT_MS for a slower model.`,
+            `\nUse AgentRead with agentId ${completed.id} for the summary or error the child recorded when it stopped; raise agents.taskTimeoutMs or BOOK_TOOL_TIMEOUT_MS for a slower model.`,
           ]
             .filter(Boolean)
             .join('\n'),
@@ -149,9 +158,6 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
       );
     }
     const settledAt = Date.now();
-    if (TERMINAL_TASK_STATUSES.has(completed.status)) {
-      await manager.acknowledgeCompletion(`${completed.id}:${completed.completionSequence ?? 0}`);
-    }
     const projection = projectAgentCompletion(completed);
     const resultField = completed.status === 'completed' || !completed.error ? 'summary' : 'error';
     const resultText =
