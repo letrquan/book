@@ -296,13 +296,6 @@ export interface ToolDefinition {
 
 export interface ToolContext {
   workspaceRoot: string;
-  /**
-   * Directories outside the workspace that read-only tools may open. The
-   * project memory directory lives under `BOOK_HOME`, never in the workspace,
-   * so without this the model is told to read a memory file and refused.
-   * Mutating tools never consult it.
-   */
-  readOnlyRoots?: readonly string[];
   env: Record<string, string>;
   /** Explicit environment overrides safe to persist for opt-in persistent jobs. */
   envOverrides?: Record<string, string>;

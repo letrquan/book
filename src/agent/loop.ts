@@ -508,7 +508,6 @@ export async function runAgentLoop(
   const initialMode = mode as PermissionMode;
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
-    readOnlyRoots: config.memoryContext ? [config.memoryContext.dir] : [],
     env: process.env as Record<string, string>,
     envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,

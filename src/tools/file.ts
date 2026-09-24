@@ -6,11 +6,7 @@ import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js'
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { findRelaxedMatch } from './fuzzy-match.js';
-import {
-  pathOutsideWorkspaceResult,
-  resolveReadablePath,
-  resolveWorkspacePath,
-} from './path-utils.js';
+import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
 import {
   observeFile,
   requireFreshObservation,
@@ -240,11 +236,7 @@ export async function applySingleEdit(
 }
 
 async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const resolved = resolveReadablePath(
-    ctx.workspaceRoot,
-    ctx.readOnlyRoots,
-    args.filePath as string,
-  );
+  const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath } = resolved;
   const offset = (args.offset as number) || 1;
