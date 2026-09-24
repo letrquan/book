@@ -136,6 +136,28 @@ describe('read_file', () => {
     expect(wholeFile.content).toContain('2: line 2');
     expect(wholeFile.content).toContain('3: line 3');
   });
+
+  it('counts lines without the trailing newline when an offset is past the end', async () => {
+    writeFileSync(join(dir, 'trailing-newline.txt'), 'a\nb\nc\n');
+    const past = await read.execute({ filePath: 'trailing-newline.txt', offset: 4 }, ctx);
+    expect(past.status).toBe('error');
+    expect(past.structuredError?.code).toBe('offset_out_of_range');
+    expect(past.structuredError?.message).toContain('the file has 3 lines');
+    expect(past.structuredError?.message).toContain('an offset of at most 3');
+
+    const lastLine = await read.execute({ filePath: 'trailing-newline.txt', offset: 3 }, ctx);
+    expect(lastLine.status).toBe('success');
+    expect(lastLine.content).toContain('3: c');
+
+    writeFileSync(join(dir, 'empty.txt'), '');
+    const emptyWhole = await read.execute({ filePath: 'empty.txt' }, ctx);
+    expect(emptyWhole.status).toBe('success');
+
+    const emptyPast = await read.execute({ filePath: 'empty.txt', offset: 2 }, ctx);
+    expect(emptyPast.status).toBe('error');
+    expect(emptyPast.structuredError?.code).toBe('offset_out_of_range');
+    expect(emptyPast.structuredError?.message).toContain('the file has 0 lines');
+  });
 });
 
 describe('write_file', () => {

@@ -96,12 +96,16 @@ const log = createDebugLogger('agent');
 const SKILL_INFRASTRUCTURE_TOOLS = new Set(['InvokeSkill', 'ReadSkillResource', 'ToolSearch']);
 
 /**
- * A 400 on a prompt this large is read as a context overflow even when the
- * body does not say so. The antigravity Gemini route answers a ~330k-token
- * request with `INVALID_ARGUMENT` and no mention of length (#221), which is
- * its practical window, not the 1M the model publishes; treating it as an
- * overflow puts it through the same compaction and learned-window ratchet a
- * spoken overflow gets. A 400 below the floor is still the request's own fault.
+ * A 400 that a router quoted inside a retryable status, on a prompt this large,
+ * is read as a context overflow even when the body does not say so. The
+ * antigravity Gemini route behind 9router answers a ~330k-token request with
+ * `503 … [400]: INVALID_ARGUMENT` and no mention of length (#221), which is its
+ * practical window, not the 1M the model publishes; treating it as an overflow
+ * puts it through the same compaction and learned-window ratchet a spoken
+ * overflow gets. A plain 400 is the provider's own verdict on the request at any
+ * size: reading it as an overflow compacted for nothing and lowered a 1M model's
+ * learned window for every later session. A wrapped 400 below the floor is still
+ * the request's own fault.
  */
 const LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS = 200_000;
 
@@ -1121,6 +1125,7 @@ export async function runAgentLoop(
 
       let streamError: string | null = null;
       let streamErrorCode: string | undefined;
+      let streamUpstreamStatus: number | undefined;
       let streamDone = false;
 
       try {
@@ -1162,6 +1167,7 @@ export async function runAgentLoop(
           } else if (event.type === 'error' && event.error) {
             streamError = event.error;
             streamErrorCode = event.errorCode;
+            streamUpstreamStatus = event.upstreamStatus;
             break;
           } else if (event.type === 'done') {
             streamDone = true;
@@ -1313,7 +1319,10 @@ export async function runAgentLoop(
       // Gemini's safety filter fires on ordinary code-shaped prose now and then, and
       // a `content_filter` stop on a turn that called no tool is a lost turn, not a
       // refusal the run should end on. It gets the same single re-issue as an empty
-      // completion; only when it repeats on the retry does the run end.
+      // completion; only when it repeats on the retry does the run end. The repeat
+      // ends it with the `content_filter` code, which `terminalRecovery` maps to
+      // `none`: a stream-level re-issue would send the same prompt a third time,
+      // behind a host-written `[continuation]` the session would keep.
       const filteredNarration =
         finishReason === 'content_filter' && toolCalls.length === 0 && !signal?.aborted;
       if (filteredNarration) {
@@ -1331,7 +1340,7 @@ export async function runAgentLoop(
           retrySameTurn = true;
           continue;
         }
-        streamErrorCode = 'provider_error';
+        streamErrorCode = 'content_filter';
       }
 
       const routerOverflowResponse =
@@ -1365,8 +1374,10 @@ export async function runAgentLoop(
           retrySameTurn = true;
           continue;
         }
+        // Its one re-issue is spent. `error_envelope` keeps the stream-level
+        // re-issue from sending it again (`terminalRecovery` maps it to `none`).
         streamError = assistantContent.trim();
-        streamErrorCode = 'provider_error';
+        streamErrorCode = 'error_envelope';
         assistantContent = '';
       }
 
@@ -1383,6 +1394,7 @@ export async function runAgentLoop(
         const overflowByShape =
           isContextOverflowError(streamError) ||
           (streamErrorCode === 'bad_request' &&
+            streamUpstreamStatus === 400 &&
             requestTokens >= LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS);
         const canRecoverContextOverflow =
           forcedCompactTurn !== turn &&

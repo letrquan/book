@@ -87,4 +87,16 @@ describe('terminalRecovery', () => {
       expect(recoveryFor(reason), reason).toBe('none');
     }
   });
+
+  it('ends on a filtered or error-envelope answer that repeated after its one re-issue', () => {
+    // The loop already spent the turn's single re-issue on these; a stream-level
+    // re-issue would send the same prompt again behind a host-written continuation.
+    for (const providerCode of ['content_filter', 'error_envelope']) {
+      expect(
+        terminalRecovery(
+          createTerminalOutcome('failed', 'provider_error', { partialOutput: false, providerCode }),
+        ),
+      ).toBe('none');
+    }
+  });
 });

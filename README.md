@@ -591,14 +591,19 @@ earlier versions did. `retry.outputCapContinuations` is a separate allowance for
 provider's output limit, so a large generated file cannot drain the budget a real socket drop needs.
 
 A retryable status is classified by the error it quotes, not by the status alone. A router that
-wraps an upstream 4xx as a 503 with a cooldown (`503 … [400]: {"status":"INVALID_ARGUMENT"}`) is
-answered once and the run ends on that 400; it is not retried ten times and not re-issued, since the
-request itself is what was refused. A 400 on a request of 200k tokens or more is read as a context
-overflow even when the body does not say so, and goes through compaction and the learned-window
-ratchet like a spoken overflow. Two answers that are not answers get one re-issue each: a
-`content_filter` stop on a turn with no tool calls, and a 200 whose text is the upstream's error
-envelope (`[Error] … request ID …`, zero tokens both ways); if either repeats, the run ends
-`failed/provider_error`, never `completed`. Every retry is visible to a print-mode host: a
+wraps an upstream 4xx as a 503 with a cooldown
+(`503 [antigravity/<model>] [400]: {"status":"INVALID_ARGUMENT"}`) is answered once and the run
+ends on that 400; it is not retried ten times and not re-issued, since the request itself is what
+was refused. Only the router's `[<route>] [4xx]:` prefix or a 4xx `code` in a JSON `"error"` object
+counts as a quote: a 503 whose body merely mentions `HTTP 403` or `"code": 4001` is retried like
+any other outage. A quoted 400 on a request of 200k tokens or more is read as a context overflow
+even when the body does not say so, and goes through compaction and the learned-window ratchet like
+a spoken overflow. A plain 400 is never read that way, at any size: it ends the run without
+compacting or lowering the learned window. Two answers that are not answers get one re-issue each:
+a `content_filter` stop on a turn with no tool calls, and a 200 whose text is the upstream's error
+envelope (`[Error] … request ID …`, zero tokens both ways). If either repeats, the run ends
+`failed/provider_error` on that second request, never `completed`; the repeat is not re-issued
+again, and no `[continuation]` message is written. Every retry is visible to a print-mode host: a
 `{"type":"retry","phase","attempt","max","delay_ms"}` record in `stream-json`, a `retry: …` line on
 stderr in `text` output.
 

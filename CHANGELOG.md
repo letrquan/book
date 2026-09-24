@@ -20,25 +20,31 @@ All notable changes to this project are documented in this file.
   re-issued three more times — 16 minutes with no progress and nothing said to the host (#194,
   #221). A retryable status now has its body read before the decision; a quoted 4xx classifies as
   that 4xx, comes back after one fetch, and a `bad_request`/`not_found` is not re-issued at the
-  stream level either, since re-sending it byte for byte reproduces it. A 400 on a request of
-  200k tokens or more is read as a context overflow — the antigravity Gemini route refuses at
-  ~300k without saying why — and takes the compaction-and-ratchet recovery a spoken overflow gets.
+  stream level either, since re-sending it byte for byte reproduces it. Only the router's own
+  `[<route>] [4xx]:` prefix or a 4xx `code` in a JSON `"error"` object counts as a quote, so an
+  outage body that mentions `HTTP 403`, `chunk [404]` or `"code": 4001` is still retried. A quoted
+  400 on a request of 200k tokens or more is read as a context overflow — the antigravity Gemini
+  route refuses at ~300k without saying why — and takes the compaction-and-ratchet recovery a
+  spoken overflow gets. The rule covers only that wrapped case: a plain 400 at any size is the
+  provider's verdict on the request, and neither compacts nor lowers the learned window.
 - **An upstream error rendered as the answer no longer completes the run.** A router answered
   200 with `[Error] An error occurred while processing your request … request ID …` and zero
   tokens both ways, and Book accepted it as the model's final message: exit 0,
   `normal_completion`, 31 turns of work abandoned mid-task (#220). The envelope is now recognised
   (`[Error]` prefix plus the sentence, the request id, or 0/0 usage), the turn is re-issued once,
-  and a repeat ends the run `failed/provider_error` with the text as the message.
+  and a repeat ends the run `failed/provider_error` with the text as the message, after exactly
+  two requests: the repeat is not sent again as a stream re-issue.
 - **A `content_filter` stop on a narration turn is re-issued once.** Gemini's filter fires on
   ordinary code-shaped prose now and then; a turn with no tool calls that stopped that way ended
   the run `failed/protocol_error` (#222). It now gets the same single re-issue as an empty
-  completion, and only a repeat ends the run.
+  completion. A repeat ends the run `failed/provider_error` on that second request: it is not
+  re-issued again, and no host-written `[continuation]` message goes into the session.
 - **`Read` past the end of a file says so.** An offset beyond the last line returned a successful
   result with empty content and an observation whose range ended before it began; the empty tool
   message then made the provider refuse every later request in the session, and a `--resume`
   rebuilt the same refusal (#194). The read now fails with `offset_out_of_range` naming the file's
-  line count, and a successful tool result that would reach the model empty is sent as
-  `(no output)`.
+  line count (a trailing newline does not start another line, and an empty file has 0), and a
+  successful tool result that would reach the model empty is sent as `(no output)`.
 - **Retries are visible to a print-mode host.** `stream-json` gains a `retry` record
   (`phase`, `attempt`, `max`, `delay_ms`); `text` output writes `retry: transport attempt 1/10 in 2s`
   to stderr. Before, a 16-minute retry wall left the last record as the previous turn's tool result.

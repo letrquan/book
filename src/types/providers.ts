@@ -49,6 +49,12 @@ export interface ProviderStreamEvent {
   error?: string;
   /** Stable machine-readable provider/transport classification when available. */
   errorCode?: string;
+  /**
+   * The 4xx a router quoted inside a retryable response's body (9router answers
+   * 503 and names the upstream's status there), when that quote decided
+   * `errorCode`. Absent for a status the provider sent as itself.
+   */
+  upstreamStatus?: number;
   usage?: Usage;
   /** Provider response identity when the stream exposes it. */
   responseModel?: string;
