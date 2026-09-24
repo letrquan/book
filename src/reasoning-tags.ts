@@ -240,10 +240,10 @@ function isQuotedClosingTag(
 
 /**
  * Where the block whose opening `tag` ends at `from` is closed: the end of its text and the
- * offset just past its closing tag, or null if it never closes. The first closing tag that is
- * not quoted ends it. Same-name tags do not nest: a bare opening tag the reasoning mentions must
- * not push the end into the answer, and an inner block's stray closing tag is left in the
- * answer rather than taking answer text with it.
+ * offset just past its first closing tag, or null. Only that first closing tag is considered.
+ * If it looks quoted -- wrapped in a matching backtick run, or inside a fence the block opened --
+ * the reply is left as written rather than looking further: a later tag may be one the answer
+ * quotes, and what a split moves leaves the answer for good. Same-name tags do not nest.
  */
 function findBlockClose(
   content: string,
@@ -252,13 +252,17 @@ function findBlockClose(
 ): { textEnd: number; after: number } | null {
   const closing = new RegExp(`</${tag}>`, 'gi');
   closing.lastIndex = from;
-  let match: RegExpExecArray | null;
-  while ((match = closing.exec(content)) !== null) {
-    if (!isQuotedClosingTag(content, from, match.index, closing.lastIndex)) {
-      return { textEnd: match.index, after: closing.lastIndex };
-    }
-  }
-  return null;
+  const match = closing.exec(content);
+  if (!match) return null;
+  if (isQuotedClosingTag(content, from, match.index, closing.lastIndex)) return null;
+  return { textEnd: match.index, after: closing.lastIndex };
+}
+
+/** Where the answer after offset `rest` starts: past the indentation and blank lines it drops. */
+function answerStart(content: string, rest: number): number {
+  const tail = content.slice(rest);
+  const trimmed = tail.replace(/^[ \t]+(?=\S)/, '').replace(/^(?:[ \t]*\r?\n)+/, '');
+  return rest + (tail.length - trimmed.length);
 }
 
 /**
@@ -276,9 +280,10 @@ function findBlockClose(
  * this is the narrow reading. Only blocks at the very start of the reply move,
  * one after another; a tag later in the answer is content, because answers
  * quote these tags (a review finding about them, a prompt template, prose in
- * backticks). A block ends at its first closing tag that is not quoted in
- * backticks or inside a fence the block opened, same-name tags do not nest, and a block that never closes
- * is kept as answer text for the same reason `stripReasoningTags` keeps it.
+ * backticks). A block ends at its first closing tag; if
+ * that tag looks quoted (in backticks, or inside a fence the block opened), the reply is left
+ * as written, and a block that never closes is kept as answer text for the same reason
+ * `stripReasoningTags` keeps it.
  *
  * `found` says whether any block moved, even an empty one: the
  * `<think></think>` a model emits with thinking off has no reasoning to keep
@@ -294,19 +299,19 @@ export function separateInlineReasoning(content: string): {
   const blocks: string[] = [];
   let rest = 0;
   for (;;) {
-    const open = LEADING_REASONING_TAG.exec(content.slice(rest));
+    // After a block, look for the next one where the stored answer starts, so that splitting
+    // the stored answer again finds nothing more.
+    const at = blocks.length === 0 ? 0 : answerStart(content, rest);
+    const open = LEADING_REASONING_TAG.exec(content.slice(at));
     if (!open) break;
-    const close = findBlockClose(content, open[1], rest + open[0].length);
+    const close = findBlockClose(content, open[1], at + open[0].length);
     if (!close) break;
-    blocks.push(content.slice(rest + open[0].length, close.textEnd).trim());
+    blocks.push(content.slice(at + open[0].length, close.textEnd).trim());
     rest = close.after;
   }
   if (blocks.length === 0) return unchanged;
   return {
-    content: content
-      .slice(rest)
-      .replace(/^[ \t]+(?=\S)/, '')
-      .replace(/^(?:[ \t]*\r?\n)+/, ''),
+    content: content.slice(answerStart(content, rest)),
     reasoning: blocks.filter(Boolean).join('\n\n'),
     found: true,
   };

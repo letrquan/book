@@ -167,12 +167,13 @@ All notable changes to this project are documented in this file.
   - **Only that prefix moves, because the split is permanent.** A tag later in the answer stays
     answer text, so a reply that quotes the tags mid-answer (a review finding about them) keeps the
     text between them.
-  - **A block ends at its first closing tag that is not quoted.** Quoted means wrapped in matching
-    backticks, or inside a fence the block itself opened.
-    - Same-name tags do not nest. A bare `<think>` mentioned in the reasoning can no longer push the
-      end into the answer.
-    - A backtick in the reasoning cannot pair with one in the answer.
-    - Where that reading is unsure, text stays in the answer rather than leaving it.
+  - **A block ends at its first closing tag.** Same-name tags do not nest, so a bare `<think>`
+    mentioned in the reasoning can no longer push the end into the answer.
+    - If that tag looks quoted, the reply is left exactly as written. Quoted means wrapped in
+      matching backticks, or inside a fence the block opened.
+    - The split never looks further, because a later tag may be one the answer quotes. Where the
+      reading is unsure, text stays in the answer rather than leaving it.
+    - A stored answer does not split again.
   - **A reply that opens with an unfenced reasoning tag loses that block** even when the reply is
     itself a template meant to contain one. Fence or quote such a tag to keep it. Text output applies
   the same split to an older session's answer and prints any other answer exactly as written, an
@@ -204,9 +205,12 @@ All notable changes to this project are documented in this file.
   minutes while the agent made a hundred tool calls; the only sign of life was the session file
   (#225). It now writes one line per tool call to stderr — `[Read] src/cli/doctor.ts`, cut to the
   argument's first line and 120 characters — with stdout still the final answer alone.
-  `--verbose`, which was parsed and discarded, adds each call's result; `-q/--quiet` turns the
-  lines off, `retry:` lines included; `json` and `stream-json` get no progress lines. The SDK's
-  `query()` runs quiet, so a host's stderr gets no progress or `retry:` lines either.
+  - `--verbose`, which was parsed and discarded, now adds each call's result, naming its target.
+  - `-q/--quiet` turns the lines off, `retry:` lines included.
+  - `json` and `stream-json` get no progress lines.
+  - The SDK's `query()` runs quiet, so a host's stderr gets no progress or `retry:` lines either.
+  - A consumer that stops reading stderr (`2>&1 | head`) no longer kills the run mid-task with an
+    unhandled EPIPE.
 
 - **Corrections replace old memories instead of piling up.** `MemorySave` and background extraction
   accept `supersedes`: the replaced entry is kept on disk (`status: superseded`, `supersededBy`) but

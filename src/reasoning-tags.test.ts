@@ -299,11 +299,11 @@ describe('separateInlineReasoning', () => {
     expect(prefixed.found).toBe(true);
   });
 
-  it('skips a closing tag the reasoning quotes in inline code', () => {
-    const result = separateInlineReasoning('<think>never write `</think>` early</think>\nAnswer');
-    expect(result.content).toBe('Answer');
-    expect(result.reasoning).toBe('never write `</think>` early');
-    expect(result.found).toBe(true);
+  it('leaves the reply as written when its first closing tag is quoted', () => {
+    const input = '<think>never write `</think>` early</think>\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
   });
 
   it('leaves a block in the middle of an answer where it is', () => {
@@ -348,18 +348,18 @@ describe('separateInlineReasoning', () => {
     expect(result.reasoning).toBe('reasoning with lone `tick');
   });
 
-  it('skips a closing tag wrapped in a double-backtick span', () => {
-    const result = separateInlineReasoning('<think>quote ``</think>`` here</think>\nAnswer');
-    expect(result.content).toBe('Answer');
-    expect(result.reasoning).toBe('quote ``</think>`` here');
+  it('leaves the reply as written when its first closing tag is in a double-backtick span', () => {
+    const input = '<think>quote ``</think>`` here</think>\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
   });
 
-  it('skips a closing tag inside a fence the reasoning opened and closes after it', () => {
-    const result = separateInlineReasoning(
-      '<think>plan:\n```\n</think>\n```\ndone</think>\nAnswer',
-    );
-    expect(result.content).toBe('Answer');
-    expect(result.reasoning).toBe('plan:\n```\n</think>\n```\ndone');
+  it('leaves the reply as written when its first closing tag is inside a fence', () => {
+    const input = '<think>plan:\n```\n</think>\n```\ndone</think>\nAnswer';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
   });
 
   it('closes after a fence that ends right before the closing tag', () => {
@@ -373,5 +373,38 @@ describe('separateInlineReasoning', () => {
     const result = separateInlineReasoning(input);
     expect(result.content).toBe(input);
     expect(result.found).toBe(false);
+  });
+
+  // The next three lost answer text at e3628ce: a skipped first tag let a later one, judged
+  // partly by answer text, end the block.
+  it('keeps a reply whose reasoning fence is still open at the closing tag', () => {
+    const input =
+      '<think>Steps:\n1. ```bash\n   npm test\n   ```\n</think>\nUse this template:\n```\n<think>{{reasoning}}</think>\n{{answer}}\n```\nThat is all.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('keeps a reply whose closing tag sits between backticks from the reasoning and the answer', () => {
+    const input =
+      '<think>The fix belongs in `parseArgs`</think>`parseArgs` now rejects the flag. Models close their reasoning with </think> and the router forwards it.';
+    const result = separateInlineReasoning(input);
+    expect(result.content).toBe(input);
+    expect(result.found).toBe(false);
+  });
+
+  it('stops at a later leading block whose closing tag looks quoted', () => {
+    const result = separateInlineReasoning(
+      '<think>a</think>\n<reasoning>run `x`</reasoning>`x` prints </reasoning> and more',
+    );
+    expect(result.reasoning).toBe('a');
+    expect(result.content).toBe('<reasoning>run `x`</reasoning>`x` prints </reasoning> and more');
+  });
+
+  it('stores an answer that splitting again leaves unchanged', () => {
+    const result = separateInlineReasoning('<think>x</think>\t<think>y</think>\nAnswer');
+    expect(result.content).toBe('Answer');
+    expect(result.reasoning).toBe('x\n\ny');
+    expect(separateInlineReasoning(result.content).found).toBe(false);
   });
 });
