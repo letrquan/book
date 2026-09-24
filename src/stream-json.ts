@@ -43,6 +43,7 @@ export type StreamJsonEvent =
    */
   | { type: 'command_result'; command?: string; output?: string; data?: unknown }
   | { type: 'prompt_suggestions'; suggestions?: string[] }
+  | { type: 'notice'; message?: string }
   | { type: 'error'; error?: string }
   | { type: 'result'; result?: unknown; stopReason?: string }
   | { type: 'done' };
@@ -95,6 +96,7 @@ const EVENT_TYPES = new Set<StreamJsonEvent['type']>([
   'plan_approval',
   'command_result',
   'prompt_suggestions',
+  'notice',
   'error',
   'result',
   'done',

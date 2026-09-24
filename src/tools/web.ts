@@ -1,6 +1,7 @@
 import { DomUtils, parseDocument } from 'htmlparser2';
 import TurndownService from 'turndown';
-import { Agent } from 'undici';
+import type { Agent } from 'undici';
+import type * as Undici from 'undici';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { toolFailure, toolSuccess } from './result.js';
@@ -8,6 +9,7 @@ import { resolveToolTimeoutMs } from './timeouts.js';
 import {
   type HostResolver,
   WebPolicyError,
+  connectionBlockedReason,
   resolveHostname,
   safeNetworkLookup,
   validateWebUrl,
@@ -24,11 +26,34 @@ const SEARCH_PROVIDER_FAILURE_COOLDOWN_MS = 30_000;
 const SEARCH_PROVIDER_RATE_LIMIT_COOLDOWN_MS = 5 * 60_000;
 const SEARCH_PROVIDER_MAX_COOLDOWN_MS = 24 * 60 * 60_000;
 const MCP_PROTOCOL_VERSION = '2024-11-05';
-const strictWebDispatcher = new Agent({ connect: { lookup: safeNetworkLookup } });
 
 type WebFetchFormat = 'markdown' | 'text' | 'html';
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 type BuiltinSearchProviderId = 'exa' | 'parallel';
+
+type UndiciModule = typeof Undici;
+const LEGACY_GLOBAL_DISPATCHER = Symbol.for('undici.globalDispatcher.1');
+
+/**
+ * Import undici and put back the legacy global dispatcher the import replaced.
+ *
+ * undici 8 installs its own Agent in both global-dispatcher slots when its new slot is empty. On
+ * Node 22 that slot is always empty, because the bundled undici reads only the legacy one, so the
+ * import replaced the dispatcher Node's own `fetch` sends provider traffic through. That includes
+ * the proxy agent `NODE_USE_ENV_PROXY` installs at startup. The import is dynamic because a static
+ * one is hoisted above any code that could save the slot.
+ */
+async function importUndiciKeepingNodeDispatcher(
+  importUndici: () => Promise<UndiciModule>,
+): Promise<UndiciModule> {
+  const slots = globalThis as unknown as Record<symbol, unknown>;
+  const nodeDispatcher = slots[LEGACY_GLOBAL_DISPATCHER];
+  const undici = await importUndici();
+  if (nodeDispatcher !== undefined && slots[LEGACY_GLOBAL_DISPATCHER] !== nodeDispatcher) {
+    slots[LEGACY_GLOBAL_DISPATCHER] = nodeDispatcher;
+  }
+  return undici;
+}
 
 interface BuiltinSearchProvider {
   id: BuiltinSearchProviderId;
@@ -45,6 +70,12 @@ interface SearchProviderAttempt {
   message?: string;
   retryable: boolean;
   retryAfterMs?: number;
+}
+
+interface SearchProviderCooldown {
+  until: number;
+  /** Set when the provider was refused on policy grounds: the refusal outlives the cooldown's retry hint. */
+  blockedReason?: string;
 }
 
 const BUILTIN_SEARCH_PROVIDERS: readonly BuiltinSearchProvider[] = [
@@ -77,6 +108,8 @@ export interface WebToolDependencies {
   fetch?: FetchLike;
   resolveHostname?: HostResolver;
   now?: () => Date;
+  /** Loads undici; tests inject a fake. Defaults to a dynamic `import('undici')`. */
+  importUndici?: () => Promise<UndiciModule>;
 }
 
 interface LimitedResponseBody {
@@ -394,7 +427,9 @@ async function cancelResponse(response: Response): Promise<void> {
 async function fetchWithPolicy(
   rawUrl: string,
   ctx: ToolContext,
-  deps: Required<Pick<WebToolDependencies, 'fetch' | 'resolveHostname'>>,
+  deps: Required<Pick<WebToolDependencies, 'fetch' | 'resolveHostname'>> & {
+    strictDispatcher: () => Promise<Agent>;
+  },
   timeoutMs: number,
   format: WebFetchFormat,
 ): Promise<FetchedResponse> {
@@ -419,7 +454,7 @@ async function fetchWithPolicy(
       },
       redirect: 'manual',
       signal,
-      ...(policy.allowPrivateNetwork ? {} : { dispatcher: strictWebDispatcher }),
+      ...(policy.allowPrivateNetwork ? {} : { dispatcher: await deps.strictDispatcher() }),
     };
     const response = await deps.fetch(current.toString(), requestInit);
 
@@ -450,10 +485,27 @@ async function fetchWithPolicy(
   }
 }
 
+/** A request refused by the network policy: final, never retried, and its reason shown. */
+function privateNetworkBlocked(reason: string, details?: Record<string, unknown>): ToolResult {
+  return toolFailure(reason, {
+    code: 'private_network_forbidden',
+    status: 'blocked',
+    retryable: false,
+    ...(details ? { details } : {}),
+  });
+}
+
 function webPolicyFailure(error: unknown): ToolResult | undefined {
   if (error instanceof WebPolicyError) {
-    return toolFailure(error.message, { code: error.code });
+    return error.code === 'private_network_forbidden'
+      ? privateNetworkBlocked(error.message)
+      : toolFailure(error.message, { code: error.code });
   }
+  // The connect-time guard refuses after pre-flight validation has already passed -- a rebinding
+  // answer, or a redirect target that resolves privately. Report the policy's own reason instead
+  // of the `fetch failed` undici wraps it in, and do not invite a retry that cannot succeed.
+  const blockedReason = connectionBlockedReason(error);
+  if (blockedReason) return privateNetworkBlocked(blockedReason);
   if (error instanceof CrossOriginRedirectError) {
     return toolFailure(error.message, {
       code: 'cross_origin_redirect',
@@ -475,7 +527,7 @@ async function webFetch(
   args: Record<string, unknown>,
   ctx: ToolContext,
   deps: Required<Pick<WebToolDependencies, 'fetch' | 'resolveHostname'>> &
-    Pick<WebToolDependencies, 'now'>,
+    Pick<WebToolDependencies, 'now'> & { strictDispatcher: () => Promise<Agent> },
 ): Promise<ToolResult> {
   const url = args.url as string;
   const prompt = args.prompt as string | undefined;
@@ -702,6 +754,11 @@ function providerRequestFailure(
       details: { provider: provider.id, phase },
     });
   }
+  // `postMcp` always dispatches through the strict dispatcher, so a provider endpoint that
+  // resolves to a private address is refused by the connect-time guard. Report that the same
+  // way WebFetch does: it is a policy decision, not a transient network fault.
+  const blockedReason = connectionBlockedReason(error);
+  if (blockedReason) return privateNetworkBlocked(blockedReason, { provider: provider.id, phase });
   return toolFailure(
     `${provider.label} ${phase} failed: ${error instanceof Error ? error.message : String(error)}`,
     {
@@ -742,6 +799,7 @@ async function runBuiltinSearchProvider(
   resultLimit: number,
   ctx: ToolContext,
   fetchImpl: FetchLike,
+  strictDispatcher: () => Promise<Agent>,
   resolver: HostResolver,
   now: () => Date,
 ): Promise<ToolResult> {
@@ -753,6 +811,12 @@ async function runBuiltinSearchProvider(
       resolver,
     );
   } catch (error) {
+    if (error instanceof WebPolicyError && error.code === 'private_network_forbidden') {
+      return privateNetworkBlocked(error.message, {
+        provider: provider.id,
+        phase: 'endpoint_validation',
+      });
+    }
     return toolFailure(
       `${provider.label} endpoint is unavailable: ${error instanceof Error ? error.message : String(error)}`,
       {
@@ -768,14 +832,14 @@ async function runBuiltinSearchProvider(
     'Content-Type': 'application/json',
     'User-Agent': 'book-agent/0.1 (+https://github.com/letrquan/book)',
   };
-  const postMcp = (body: Record<string, unknown>, headers: Record<string, string> = {}) =>
+  const postMcp = async (body: Record<string, unknown>, headers: Record<string, string> = {}) =>
     fetchImpl(endpoint.toString(), {
       method: 'POST',
       headers: { ...baseHeaders, ...headers },
       body: JSON.stringify(body),
       redirect: 'error',
       signal: combinedSignal(ctx.signal, 25_000),
-      dispatcher: strictWebDispatcher,
+      dispatcher: await strictDispatcher(),
     } as RequestInit & { dispatcher?: Agent });
 
   let initializeResponse: Response;
@@ -903,7 +967,9 @@ async function runBuiltinSearchProvider(
 }
 
 function providerCooldownMs(result: ToolResult): number | undefined {
-  if (result.status !== 'error') return undefined;
+  // `blocked` counts: a provider refused on policy grounds will be refused again, so it
+  // earns the same cooldown rather than being retried on every search. `cancelled` does not.
+  if (result.status !== 'error' && result.status !== 'blocked') return undefined;
   const details = result.structuredError?.details;
   if (details?.status === 429) {
     return typeof details.retryAfterMs === 'number'
@@ -917,8 +983,9 @@ async function builtinWebSearch(
   args: Record<string, unknown>,
   ctx: ToolContext,
   fetchImpl: FetchLike,
+  strictDispatcher: () => Promise<Agent>,
   resolver: HostResolver,
-  cooldowns: Map<BuiltinSearchProviderId, number>,
+  cooldowns: Map<BuiltinSearchProviderId, SearchProviderCooldown>,
   now: () => Date,
 ): Promise<ToolResult> {
   const query = args.query as string;
@@ -936,13 +1003,19 @@ async function builtinWebSearch(
   const attempts: SearchProviderAttempt[] = [];
   for (const provider of BUILTIN_SEARCH_PROVIDERS) {
     const currentTime = now().getTime();
-    const cooldownUntil = cooldowns.get(provider.id);
-    if (cooldownUntil !== undefined && cooldownUntil > currentTime) {
+    const cooldown = cooldowns.get(provider.id);
+    if (cooldown !== undefined && cooldown.until > currentTime) {
       attempts.push({
         provider: provider.id,
         status: 'cooldown',
-        retryable: true,
-        retryAfterMs: cooldownUntil - currentTime,
+        ...(cooldown.blockedReason === undefined
+          ? { retryable: true }
+          : {
+              code: 'private_network_forbidden',
+              message: cooldown.blockedReason,
+              retryable: false,
+            }),
+        retryAfterMs: cooldown.until - currentTime,
       });
       continue;
     }
@@ -955,13 +1028,21 @@ async function builtinWebSearch(
       resultLimit,
       ctx,
       fetchImpl,
+      strictDispatcher,
       resolver,
       now,
     );
     if (result.status === 'success' || result.status === 'cancelled') return result;
 
     const cooldownMs = providerCooldownMs(result);
-    if (cooldownMs !== undefined) cooldowns.set(provider.id, now().getTime() + cooldownMs);
+    if (cooldownMs !== undefined) {
+      cooldowns.set(provider.id, {
+        until: now().getTime() + cooldownMs,
+        ...(result.structuredError?.code === 'private_network_forbidden'
+          ? { blockedReason: result.structuredError.message }
+          : {}),
+      });
+    }
     attempts.push({
       provider: provider.id,
       status: 'failed',
@@ -974,15 +1055,22 @@ async function builtinWebSearch(
 
   const failures = attempts
     .map((attempt) =>
-      attempt.status === 'cooldown'
+      attempt.status === 'cooldown' && attempt.message === undefined
         ? `${attempt.provider} is cooling down`
         : `${attempt.provider}: ${attempt.message ?? attempt.code ?? 'unknown error'}`,
     )
     .join('; ');
-  return toolFailure(`Built-in web search providers are unavailable. ${failures}`, {
+  const message = `Built-in web search providers are unavailable. ${failures}`;
+  // Every provider refused on policy grounds: final, like a WebFetch refusal, so the registry
+  // does not retry it and the reason is shown.
+  const allBlocked =
+    attempts.length > 0 &&
+    attempts.every((attempt) => attempt.code === 'private_network_forbidden');
+  return toolFailure(message, {
     code: 'search_all_providers_failed',
     retryable: attempts.some((attempt) => attempt.retryable),
     details: { attempts },
+    ...(allBlocked ? { status: 'blocked' as const } : {}),
   });
 }
 
@@ -990,8 +1078,9 @@ async function webSearch(
   args: Record<string, unknown>,
   ctx: ToolContext,
   fetchImpl: FetchLike,
+  strictDispatcher: () => Promise<Agent>,
   resolver: HostResolver,
-  cooldowns: Map<BuiltinSearchProviderId, number>,
+  cooldowns: Map<BuiltinSearchProviderId, SearchProviderCooldown>,
   now?: () => Date,
 ): Promise<ToolResult> {
   const query = (args.query as string).trim();
@@ -999,14 +1088,55 @@ async function webSearch(
     return toolFailure('Search query must not be blank.', { code: 'invalid_search_query' });
   }
   const currentTime = now ?? (() => new Date());
-  return builtinWebSearch({ ...args, query }, ctx, fetchImpl, resolver, cooldowns, currentTime);
+  return builtinWebSearch(
+    { ...args, query },
+    ctx,
+    fetchImpl,
+    strictDispatcher,
+    resolver,
+    cooldowns,
+    currentTime,
+  );
 }
 
 export function createWebTools(dependencies: WebToolDependencies = {}): ToolDefinition[] {
+  // undici and the strict dispatcher are created on first use, so building the tools (at
+  // startup, for the registry) never loads undici.
+  let undici: Promise<UndiciModule> | undefined;
+  const loadUndici = (): Promise<UndiciModule> =>
+    (undici ??= importUndiciKeepingNodeDispatcher(
+      dependencies.importUndici ?? (() => import('undici')),
+    ).catch((error: unknown) => {
+      // A failed load is not cached, so a later call can try again.
+      undici = undefined;
+      throw error;
+    }));
+  let strictDispatcher: Promise<Agent> | undefined;
+  const loadStrictDispatcher = (): Promise<Agent> =>
+    (strictDispatcher ??= loadUndici()
+      .then((undiciModule) => new undiciModule.Agent({ connect: { lookup: safeNetworkLookup } }))
+      .catch((error: unknown) => {
+        strictDispatcher = undefined;
+        throw error;
+      }));
+  // A request with the strict dispatcher goes through undici's own `fetch`: an undici 8 Agent
+  // handed to Node's bundled `fetch` is rejected (`invalid onRequestStart method`) before the
+  // lookup hook runs. One without it (private networks allowed) uses Node's own `fetch`, as
+  // before undici 8, so the host's global dispatcher, e.g. the env proxy, still applies.
   const fetchImpl: FetchLike =
-    dependencies.fetch ?? ((input, init) => globalThis.fetch(input, init));
+    dependencies.fetch ??
+    (async (input, init) => {
+      if ((init as { dispatcher?: unknown } | undefined)?.dispatcher === undefined) {
+        return globalThis.fetch(input, init);
+      }
+      const undiciModule = await loadUndici();
+      return undiciModule.fetch(
+        input,
+        init as Parameters<UndiciModule['fetch']>[1],
+      ) as unknown as Promise<Response>;
+    });
   const resolver = dependencies.resolveHostname ?? resolveHostname;
-  const searchProviderCooldowns = new Map<BuiltinSearchProviderId, number>();
+  const searchProviderCooldowns = new Map<BuiltinSearchProviderId, SearchProviderCooldown>();
 
   return [
     {
@@ -1046,6 +1176,7 @@ export function createWebTools(dependencies: WebToolDependencies = {}): ToolDefi
           fetch: fetchImpl,
           resolveHostname: resolver,
           now: dependencies.now,
+          strictDispatcher: loadStrictDispatcher,
         }),
     },
     {
@@ -1091,7 +1222,15 @@ export function createWebTools(dependencies: WebToolDependencies = {}): ToolDefi
         required: ['query'],
       },
       execute: (args, ctx) =>
-        webSearch(args, ctx, fetchImpl, resolver, searchProviderCooldowns, dependencies.now),
+        webSearch(
+          args,
+          ctx,
+          fetchImpl,
+          loadStrictDispatcher,
+          resolver,
+          searchProviderCooldowns,
+          dependencies.now,
+        ),
     },
   ];
 }

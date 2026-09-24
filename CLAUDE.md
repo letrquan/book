@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Book is a proprietary, provider-agnostic alternative to Claude Code. It provides an interactive terminal UI (TUI), print/headless mode, an SDK, and managed background execution for AI-assisted coding.
 
-**Tech stack**: TypeScript (ES2022/ESM, `moduleResolution: bundler`), React 19 via Ink 6.8.0 for the TUI, tsup for building, Vitest 4 for testing, Zod 3 for config validation. Node.js 22.13+.
+**Tech stack**: TypeScript (ES2022/ESM, `moduleResolution: bundler`), React 19 via Ink 6.8.0 for the TUI, tsup for building, Vitest 4 for testing, Zod 3 for config validation. Node.js 22.19+.
 
 **Version**: `0.1.0` plus the unreleased changes in `CHANGELOG.md`. `docs/current-state.md` is the authoritative status snapshot, `README.md` is the usage reference, and `MILESTONES.md` tracks remaining work.
 
@@ -55,8 +55,8 @@ src/
   debug-log.ts          Debug logging (BOOK_DEBUG*)
   secret-detect.ts      Reject secret/unfit text before memory writes
   async.ts              Small async utilities
-  memory-*.ts           memory-store.ts (file store + MEMORY.md index),
-                        memory-autosave.ts (capture candidates), memory-display.ts (/memory)
+  memory-*.ts           memory-store.ts (file store + MEMORY.md index + provenance),
+                        memory-display.ts (/memory)
   jobs/                 Background shell manager, persistent state, and restart recovery
   agent/
     loop.ts             Core agent loop (runAgentLoop)
@@ -228,7 +228,7 @@ When changing these, update `README.md` / `CHANGELOG.md` / `MILESTONES.md` as ap
 - Built-in slash commands in `src/commands/builtins.ts` (+ dispatch in `src/tui/app.tsx`)
 - Default tool set in `src/tools/registry.ts` `createDefaultRegistry()`
 - Permission modes: `PermissionMode` in `src/types/runtime.ts`
-- Memory paths and approval flow in `src/memory-store.ts` / `src/memory-autosave.ts`
+- Memory paths and approval flow in `src/memory-store.ts` / `src/tools/memory-save.ts`
 - Managed-agent behavior in `src/agents/` (README "Managed agents" is the detailed spec)
 - `/review` pipeline behavior in `src/review/` (README "Code review" is the detailed spec). The
   review target is resolved by the host, never by the reviewer — reviewer agents have no diff tool,

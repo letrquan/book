@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from 'fs';
-import { dirname, isAbsolute, relative, resolve, sep } from 'path';
-import type { ToolResult } from '../types/tools.js';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
+import type { ReadOnlyRoot, ToolResult } from '../types/tools.js';
 import { toolFailure } from './result.js';
 
 function isOutside(root: string, candidate: string): boolean {
@@ -46,22 +46,63 @@ export function resolveWorkspacePath(
   return { filePath, canonicalPath, relativePath: rel.replace(/\\/g, '/') };
 }
 
+export interface ResolvedReadablePath {
+  filePath: string;
+  canonicalPath: string;
+  relativePath: string;
+}
+
 /**
- * Resolve a path against the workspace first, then each read-only root, with
- * the same lexical and realpath containment checks. Returns the first root
- * that contains the path.
+ * Whether a resolved path falls under an excluded subpath of a read-only root (the memory
+ * inbox). Checked on the canonical path — after symlinks — and case-folded where the file
+ * system folds case, so `.INBOX/` or a link into `.inbox` cannot slip past it.
  */
+function isExcludedPath(
+  canonicalPath: string,
+  roots: readonly (string | ReadOnlyRoot)[] | undefined,
+): boolean {
+  const fold = (p: string) => (process.platform === 'linux' ? p : p.toLowerCase());
+  const target = fold(canonicalPath);
+  for (const entry of roots ?? []) {
+    if (typeof entry === 'string' || !entry.exclude?.length) continue;
+    let base: string;
+    try {
+      base = realpathSync.native(entry.root);
+    } catch {
+      base = resolve(entry.root);
+    }
+    for (const sub of entry.exclude) {
+      const dir = fold(join(base, sub));
+      if (target === dir || target.startsWith(`${dir}${sep}`)) return true;
+    }
+  }
+  return false;
+}
+
 export function resolveReadablePath(
-  workspaceRoot: string,
-  readOnlyRoots: readonly string[] | undefined,
+  context: { workspaceRoot: string; readOnlyRoots?: readonly (string | ReadOnlyRoot)[] },
   inputPath: string,
-): { filePath: string; canonicalPath: string; relativePath: string; root: string } | null {
-  const ws = resolveWorkspacePath(workspaceRoot, inputPath);
-  if (ws) return { ...ws, root: workspaceRoot };
+): ResolvedReadablePath | null {
+  const pick = (match: ReturnType<typeof resolveWorkspacePath>): ResolvedReadablePath | null =>
+    match && !isExcludedPath(match.canonicalPath, context.readOnlyRoots)
+      ? {
+          filePath: match.filePath,
+          canonicalPath: match.canonicalPath,
+          relativePath: match.relativePath,
+        }
+      : null;
+
+  // The exclusion applies whichever root matched: a memory directory inside the workspace
+  // (running in $HOME) must not expose its inbox through the workspace branch.
+  const wsMatch = resolveWorkspacePath(context.workspaceRoot, inputPath);
+  if (wsMatch) return pick(wsMatch);
+
+  // Only absolute inputs may be tried against read-only roots; relative inputs stay workspace-anchored.
   if (!isAbsolute(inputPath)) return null;
-  for (const root of readOnlyRoots ?? []) {
-    const candidate = resolveWorkspacePath(root, inputPath);
-    if (candidate) return { ...candidate, root };
+  for (const entry of context.readOnlyRoots ?? []) {
+    const root = typeof entry === 'string' ? entry : entry.root;
+    const match = resolveWorkspacePath(root, inputPath);
+    if (match) return pick(match);
   }
   return null;
 }

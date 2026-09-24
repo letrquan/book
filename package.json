@@ -24,7 +24,7 @@
     "agent"
   ],
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.19.0"
   },
   "packageManager": "npm@11.16.0",
   "files": [
@@ -72,6 +72,7 @@
     "bench:runtime": "tsx src/tui/__benchmarks__/runtime.bench.ts",
     "eval:edit": "tsx scripts/edit-eval.ts",
     "eval:compact": "tsx scripts/compact-eval.ts",
+    "eval:memory": "tsx scripts/memory-eval.ts",
     "eval:skills": "tsx scripts/skill-eval.ts",
     "eval:review": "tsx scripts/review-eval.ts",
     "apply:ink-patch": "node scripts/apply-ink-patch.mjs",
@@ -103,7 +104,7 @@
     "marked": "^18.0.9",
     "react": "^19.2.8",
     "turndown": "^7.2.4",
-    "undici": "^6.28.0",
+    "undici": "^8.10.1",
     "zod": "3.25.76"
   },
   "devDependencies": {
@@ -112,8 +113,8 @@
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/turndown": "^5.0.6",
-    "@typescript-eslint/eslint-plugin": "8.67.0",
-    "@typescript-eslint/parser": "8.67.0",
+    "@typescript-eslint/eslint-plugin": "8.70.0",
+    "@typescript-eslint/parser": "8.70.0",
     "@vitest/coverage-v8": "^4.1.9",
     "@xterm/headless": "^6.0.0",
     "eslint": "^10.8.1",

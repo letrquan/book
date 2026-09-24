@@ -209,6 +209,14 @@ describe('evaluatePermission', () => {
     expect(evaluatePermission('mcp__gitlab__search', {}, s)).toBe('ask');
   });
 
+  it('auto-allows ALWAYS_ALLOWED_TOOLS like MemorySave by default but respects explicit deny', () => {
+    const defaultS = settings({});
+    expect(evaluatePermission('MemorySave', { action: 'save' }, defaultS)).toBe('allow');
+
+    const denyS = settings({ deny: ['MemorySave'] });
+    expect(evaluatePermission('MemorySave', { action: 'save' }, denyS)).toBe('deny');
+  });
+
   it('globstar matches across path separators', () => {
     const s = settings({ deny: ['Read(./secrets/**)'] });
     expect(evaluatePermission('Read', { filePath: './secrets/db/passwords.txt' }, s)).toBe('deny');

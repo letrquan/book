@@ -399,11 +399,7 @@ async function outlineFile(
 }
 
 async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const resolved = resolveReadablePath(
-    ctx.workspaceRoot,
-    ctx.readOnlyRoots,
-    args.filePath as string,
-  );
+  const resolved = resolveReadablePath(ctx, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath } = resolved;
   const offset = (args.offset as number) || 1;
@@ -423,9 +419,13 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   throwIfAborted(ctx.signal);
   const lines = content.split('\n');
   if (args.outline === true) return outlineFile(args, ctx, filePath, lines);
-  if (offset > lines.length) {
+  // A trailing newline ends the last line rather than starting another, and an
+  // empty file has none; offset 1 still reads either.
+  const lineCount = content.length === 0 ? 0 : lines.length - (content.endsWith('\n') ? 1 : 0);
+  const maxOffset = Math.max(1, lineCount);
+  if (offset > maxOffset) {
     return toolFailure(
-      `Offset ${offset} is past the end of ${args.filePath}: the file has ${lines.length} lines. Read with an offset of at most ${lines.length}.`,
+      `Offset ${offset} is past the end of ${args.filePath}: the file has ${lineCount} ${lineCount === 1 ? 'line' : 'lines'}. Read with an offset of at most ${maxOffset}.`,
       { code: 'offset_out_of_range' },
     );
   }

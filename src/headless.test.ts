@@ -1238,6 +1238,76 @@ describe('runHeadless — reasoning tags in text mode', () => {
     });
     expect(writes.join('')).toBe('Answer\n');
   });
+
+  it('prints an answer with no reasoning block unchanged, first-line indent included', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sse([textDelta('    indented: true\nnext: 1')])),
+    );
+    const writes: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        writes.push(s);
+        return true;
+      },
+    };
+    await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'say hi',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+    });
+    expect(writes.join('')).toBe('    indented: true\nnext: 1\n');
+  });
+
+  it('keeps a reasoning block quoted in inline code on stdout', async () => {
+    const answer = 'Wrap it like `<thinking>plan</thinking>` in your prompt';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sse([textDelta(answer)])),
+    );
+    const writes: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        writes.push(s);
+        return true;
+      },
+    };
+    await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'say hi',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+    });
+    expect(writes.join('')).toBe(`${answer}\n`);
+  });
+
+  it('prints only the answer after an empty think block', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sse([textDelta('<think>\n\n</think>\n\nAnswer')])),
+    );
+    const writes: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        writes.push(s);
+        return true;
+      },
+    };
+    await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'say hi',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+    });
+    expect(writes.join('')).toBe('Answer\n');
+  });
 });
 
 describe('runHeadless — text progress on stderr', () => {
@@ -1367,6 +1437,9 @@ describe('runHeadless — text progress on stderr', () => {
     expect(stdoutWrites.join('')).toBe('done\n');
     expect(stderrWrites).toContain(`[Read] ${filePath}\n`);
     expect(stderrWrites.some((line) => line.startsWith('  → success'))).toBe(true);
+    expect(
+      stderrWrites.some((line) => line.startsWith('  → success') && line.includes(filePath)),
+    ).toBe(true);
   });
 
   it('does not write progress to stderr in stream-json mode', async () => {
@@ -1403,6 +1476,38 @@ describe('runHeadless — text progress on stderr', () => {
 
     expect(stderrWrites.some((line) => line.includes('[Read]'))).toBe(false);
     expect(stderrWrites.some((line) => line.startsWith('  → '))).toBe(false);
+  });
+
+  it('keeps each progress record to one line of bounded length', async () => {
+    const ws = makeWorkspace();
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount++;
+        if (requestCount === 1) {
+          return sse([toolDelta('call-1', 'Grep', { pattern: 'first line\nsecond line' })]);
+        }
+        if (requestCount === 2) {
+          return sse([toolDelta('call-2', 'Grep', { pattern: 'x'.repeat(300) })]);
+        }
+        return sse([textDelta('done')]);
+      }),
+    );
+
+    await runHeadless(freshConfig({ workspace: ws }), createDefaultRegistry(), {
+      prompt: 'search',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout: { write: () => true },
+    });
+
+    expect(stderrWrites.filter((line) => line.startsWith('[Grep]'))).toEqual([
+      '[Grep] first line\n',
+      `[Grep] ${'x'.repeat(119)}…\n`,
+    ]);
   });
 });
 

@@ -4,8 +4,116 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Idle Ctrl+C now requires a second press before exiting.**
+  - **Composer:** when nothing is running, a non-empty composer is cleared without arming the
+    window. A running turn or `/review` is cancelled first. A recalled queued input is removed, as
+    Esc removes it, so the queue resumes.
+  - **Empty and idle:** Book shows "Press Ctrl+C again to exit" for 2 seconds, and only another
+    press during that window exits.
+  - **Splash:** the startup-fire splash behaves the same way, and the first press dismisses it.
+  - **Hint over a prompt:** while the hint is visible, another press exits even if a prompt now
+    owns the keyboard. An example is the MCP approval prompt that waits behind the splash on every
+    launch in a repo whose `.mcp.json` server is neither approved nor rejected. Once the hint is
+    gone, Ctrl+C in a prompt behaves as it did before: a question or form cancels the turn, and
+    other prompts ignore it.
+  - **Turns and reviews:** a turn that starts inside the window ends it. Ctrl+C that cancels a turn
+    or an in-flight `/review` ends it too, so the next idle press arms again rather than exiting.
+  - **Double handling:** the shortcut layer and the app previously both acted on a single press.
+    One Ctrl+C during `/review` therefore cancelled the review _and_ exited, an idle press started
+    the session-end path twice, and a mid-turn press interrupted twice. The app handler now decides
+    alone.
+
+- **undici 6 -> 8, with the DNS-rebinding guard re-proven rather than re-asserted.** The major had
+  been pinned since dependabot #84 because `web-policy.test.ts` failed on it, and the failure looked
+  like undici had changed the lookup contract the SSRF defense is built on: the policy's `EACCES`
+  never surfaced and `UND_ERR_INVALID_ARG` came back instead. It had not. The contract is unchanged
+  -- undici 8 still calls the hook, still with `all: true`, and still honours an `EACCES` from it.
+  What broke is interop: `strictWebDispatcher` is an `Agent` from the *npm* undici, and it was being
+  handed to Node's **global** `fetch`, which is Node's own bundled undici. undici 8 requires the new
+  request-handler interface (`onRequestStart`), the bundled one still builds the legacy shape, and
+  the dispatcher rejected the request outright -- `invalid onRequestStart method`, thrown before the
+  lookup hook was ever called. `WebFetch`/`WebSearch` now issue their requests through undici's own
+  `fetch`, which puts the guard back on the connect path.
+
+  **Loading undici 8 had a side effect on Node 22.**
+  - **What went wrong:** undici 8 installs its own Agent in both global-dispatcher slots when its
+    new slot is empty. On Node 22 it always is, because the bundled undici reads only the legacy
+    slot. So a static import replaced the dispatcher Node's own `fetch` uses for provider traffic,
+    including the proxy agent `NODE_USE_ENV_PROXY` installs at startup. Model calls silently went
+    around the proxy.
+  - **The fix:**
+    - undici is now imported on first use;
+    - the legacy slot is put back after the import;
+    - the strict dispatcher is built inside `createWebTools`.
+    - Building the tool registry at startup no longer loads undici at all.
+    - A request without the strict dispatcher, when `BOOK_WEB_ALLOW_PRIVATE_NETWORK` is set, goes
+      through Node's own `fetch`, so the host's proxy still applies to it.
+    - A failed import is not cached, so the next call tries again.
+  - **Checked** with a fake proxy on Node 22.23.3. Before the fix, once `web.ts` loaded, Node's
+    `fetch` went direct (`ENOTFOUND`). Now it still reaches the proxy, `WebFetch` still works, and
+    a private-network `WebFetch` goes through the proxy too.
+  - **`bench:runtime`:** its WebFetch case stubbed `globalThis.fetch`, which the tool no longer uses,
+    so it had started hitting the network. The stub now goes in through `createWebTools`.
+
+  Because the diagnosis says the guard was skipped rather than loosened, the fix is only trustworthy
+  if the guard is shown working: `safeNetworkLookup` now has direct tests for **both** callback
+  shapes -- the `options.all` list form and the single-address `(address, family)` form -- proving a
+  private or special-use address is refused on each and a public one passes through, and the
+  end-to-end test drives a real `Agent` so it fails if undici ever stops consulting the hook. Every
+  one of those tests was confirmed to fail with the address check disabled. `safeNetworkLookup` also
+  now refuses an empty resolution instead of reporting success: the single-address form previously
+  fell back to `''`, handing the connector a destination it had never validated.
+
+  Driving that rebinding case through the real tool surfaced a second defect and it is fixed here
+  too: the refusal was invisible. undici reports a lookup failure as the `cause` of a generic
+  `TypeError: fetch failed`, and `WebFetch` was passing that through as `fetch_failed` with
+  `retryable: true` -- so a connection refused on policy grounds was indistinguishable from a flaky
+  network, and the model was invited to retry something that can never succeed. The refusal is now
+  branded on the error itself, survives undici's wrapping, and comes back as
+  `private_network_forbidden`, `status: blocked`, `retryable: false`, carrying the policy's own
+  sentence: `Connection blocked because <host> resolved to private or special-use address <ip>`.
+  An `EACCES` from anything else is deliberately not claimed as a policy refusal.
+
+  `WebSearch` gets the same treatment, because `postMcp` dispatches through the strict dispatcher
+  unconditionally: a refused provider endpoint no longer aggregates as a retryable
+  `Built-in web search providers are unavailable. exa: fetch failed`. A refused provider still
+  enters the normal provider cooldown -- being blocked on policy grounds is not a free retry.
+
+  Every `private_network_forbidden` refusal now comes back `status: blocked`, `retryable: false`,
+  with the policy's sentence as its message. That covers pre-flight, connect-time, and a search
+  provider's endpoint.
+  - The registry no longer retries a refused `WebSearch`. Before, that retry turned the refusal
+    into "is cooling down" with `retryable: true`.
+  - The TUI shows the reason instead of a bare "skipped".
+  - A provider cooling down after a refusal still reports it as final.
+  - A search in which every provider was refused is itself `blocked`.
+
+- **Node.js 22.19 or newer is now required** (previously 22.13). undici 8 declares
+  `engines.node: >=22.19.0`, so the package floor moves with it. CI's low leg is pinned to that
+  exact floor rather than `22.x`: `22.x` resolves to the newest 22, which is why a dependency
+  raising the real floor above the declared one went unnoticed until now. `package-lock.json`'s
+  own engines entry now matches it.
+
 ### Fixed
 
+- **A long reply no longer jitters sideways while it streams.** Once a reply outgrew the live
+  window (`width × 24` characters), the window's start moved forward with every streamed delta,
+  sometimes cutting a word in half. Every wrapped line of the tail then reflowed on every frame,
+  and the incremental renderer rewrote ~26 rows for a 12-character delta. When no paragraph break
+  or block start follows the cutoff, the tail now starts at a cutoff rounded up to `width × 4`
+  steps, so the window stays within its old size and only grows at its end between steps. It
+  begins at the first word that does not read as a heading, list or quote marker (`#`, `-`, `3.`,
+  …), which would otherwise turn the whole live tail into that block. Measured on a real PTY over
+  a single 800-word paragraph, frames that reflowed the whole tail fell from 249 to 16, and the
+  incremental renderer's output fell from 966 KB to 178 KB. A reply broken into paragraphs, and a
+  code block, are still cut from the raw cutoff as before. The full-frame renderer that Windows
+  uses by default still repaints every row, so its output is unchanged. On Windows, the fix removes
+  the jitter but does not reduce the bytes written.
+- **Windows paths in `/memory` commands no longer lose backslashes to markdown parsing.** `/memory`
+  reports and effects rendered paths unescaped through `marked`, which treated backslashes as
+  markdown escape sequences. Paths are now wrapped in inline code spans.
 - **A print-mode prompt written after other flags is no longer rejected.** `--print [prompt]`
   takes the prompt as its own optional value, so `book -p --model m "fix it"` left the prompt as a
   stray positional and commander refused it with "too many arguments" (#226). The root command now
@@ -20,51 +128,60 @@ All notable changes to this project are documented in this file.
   second full `go test ./...` per run (#216). One kernel line says to report verification from
   the tool results already in the transcript. `SYSTEM_PROMPT_VERSION` is now
   `book-system-prompt-v3`, so run-ambient records distinguish the two kernels.
-
-- **`Read` can open the project memory directory.** The memory index told the model to read a
-  memory file when its entry was relevant, and `Read` refused with `Path outside workspace`: every
-  path resolved against the single workspace root, and memory lives under `BOOK_HOME` (#227). The
-  tool context now carries read-only roots — the project memory directory — that `Read` tries
-  after the workspace, with the same lexical and realpath containment checks; `Write`, `Edit`,
-  `ApplyPatch`, `Glob` and `Grep` stay workspace-only.
 - **A `Task` child that outlives the ceiling is stopped and its work handed back.** The registry's
   120 s default cut a slow-model survey off, discarded the result, and never stopped the child,
   which ran — and billed — for an hour afterwards while the parent redid the survey itself (#215).
-  `Task` now has its own ceiling (30 min, `agents.taskTimeoutMs`, `BOOK_TOOL_TIMEOUT_MS`), stops
-  the child when it passes or when the parent is cancelled, and returns `subagent_timeout` with the
-  child's last assistant text, its summary so far, and the `AgentRead` id.
+  `Task` now has its own ceiling (`agents.taskTimeoutMs`, then `BOOK_TOOL_TIMEOUT_MS`, then
+  30 min), and the registry's backstop ranks those sources the same way, so a lower
+  `BOOK_TOOL_TIMEOUT_MS` no longer fires the backstop first and loses the child's partial result;
+  `Check` had the same inversion with `agents.checkTimeoutMs`. `Task` stops the child when the
+  ceiling passes or when the parent is cancelled, including a cancel that lands during the spawn,
+  and returns `subagent_timeout` with whatever the child had finished (its last assistant text and
+  summary) and the agent id; `AgentRead` on it returns the child's summary or error, not its
+  transcript. A `Task` child no longer reports back as a completion notification: `Task` already
+  returns its result, and the notification made the parent run an extra turn to re-read it, after
+  every `Task` in the TUI and after a stopped one in print mode. `agent_result` still reports the
+  child's end.
 - **The compaction reducer no longer inherits `--effort max`, and gives up faster.** A 167k-token
   reducer request at max effort produced no byte for long enough that the proxy dropped it, and it
   was retried ten times at the same size — 17 minutes with no compaction (#214). The reducer now
-  runs at the session's effort capped at `medium` (`compactEffort` overrides), only when the
-  reducer model's catalog accepts it, and its request is retried at most twice before compaction
-  falls back to the deterministic checkpoint.
-
+  runs at `compactEffort`, or else at the session's effort capped at `medium`. A catalog that lists
+  levels clamps that down to the highest listed level at or below it, never back up to the
+  session's effort. It sends `reasoning_effort` only when a level was chosen or its catalog lists
+  levels, so on a model with no catalog entry, such as the default `gpt-4o`, the request carries
+  none, as the main agent's does. Its request is retried at most twice before compaction falls back
+  to the deterministic checkpoint, `retry.watchdog` included.
 - **A 4xx quoted inside a router's 503 is no longer retried to exhaustion.** 9router wraps an
   upstream `400 INVALID_ARGUMENT` as a `503` plus a cooldown, and the retry policy decided on the
   status alone, so a request the provider had refused outright was re-sent ten times at 30 s, then
   re-issued three more times — 16 minutes with no progress and nothing said to the host (#194,
   #221). A retryable status now has its body read before the decision; a quoted 4xx classifies as
   that 4xx, comes back after one fetch, and a `bad_request`/`not_found` is not re-issued at the
-  stream level either, since re-sending it byte for byte reproduces it. A 400 on a request of
-  200k tokens or more is read as a context overflow — the antigravity Gemini route refuses at
-  ~300k without saying why — and takes the compaction-and-ratchet recovery a spoken overflow gets.
+  stream level either, since re-sending it byte for byte reproduces it. Only the router's own
+  `[<route>] [4xx]:` prefix or a 4xx `code` in a JSON `"error"` object counts as a quote, so an
+  outage body that mentions `HTTP 403`, `chunk [404]` or `"code": 4001` is still retried. A quoted
+  400 on a request of 200k tokens or more is read as a context overflow — the antigravity Gemini
+  route refuses at ~300k without saying why — and takes the compaction-and-ratchet recovery a
+  spoken overflow gets. The rule covers only that wrapped case: a plain 400 at any size is the
+  provider's verdict on the request, and neither compacts nor lowers the learned window.
 - **An upstream error rendered as the answer no longer completes the run.** A router answered
   200 with `[Error] An error occurred while processing your request … request ID …` and zero
   tokens both ways, and Book accepted it as the model's final message: exit 0,
   `normal_completion`, 31 turns of work abandoned mid-task (#220). The envelope is now recognised
   (`[Error]` prefix plus the sentence, the request id, or 0/0 usage), the turn is re-issued once,
-  and a repeat ends the run `failed/provider_error` with the text as the message.
+  and a repeat ends the run `failed/provider_error` with the text as the message, after exactly
+  two requests: the repeat is not sent again as a stream re-issue.
 - **A `content_filter` stop on a narration turn is re-issued once.** Gemini's filter fires on
   ordinary code-shaped prose now and then; a turn with no tool calls that stopped that way ended
   the run `failed/protocol_error` (#222). It now gets the same single re-issue as an empty
-  completion, and only a repeat ends the run.
+  completion. A repeat ends the run `failed/provider_error` on that second request: it is not
+  re-issued again, and no host-written `[continuation]` message goes into the session.
 - **`Read` past the end of a file says so.** An offset beyond the last line returned a successful
   result with empty content and an observation whose range ended before it began; the empty tool
   message then made the provider refuse every later request in the session, and a `--resume`
   rebuilt the same refusal (#194). The read now fails with `offset_out_of_range` naming the file's
-  line count, and a successful tool result that would reach the model empty is sent as
-  `(no output)`.
+  line count (a trailing newline does not start another line, and an empty file has 0), and a
+  successful tool result that would reach the model empty is sent as `(no output)`.
 - **Retries are visible to a print-mode host.** `stream-json` gains a `retry` record
   (`phase`, `attempt`, `max`, `delay_ms`); `text` output writes `retry: transport attempt 1/10 in 2s`
   to stderr. Before, a 16-minute retry wall left the last record as the previous turn's tool result.
@@ -73,8 +190,23 @@ All notable changes to this project are documented in this file.
   followed by the answer, and routers inline thinking the same way, so models began every reply
   with that block themselves. It was stored as answer text, re-sent as such, printed by print
   mode, and shown as the answer on `--resume`; at a `--max-turns` stop the same block came out
-  three times (#216, #223). Closed blocks are now split out of a settled message into its
-  reasoning, and text output strips whatever an older session still carries.
+  three times (#216, #223). The closed blocks a settled reply opens with are now split out into
+  its reasoning. That covers several blocks in a row, and an empty `<think></think>` from a model
+  with thinking off.
+  - **Only that prefix moves, because the split is permanent.** A tag later in the answer stays
+    answer text, so a reply that quotes the tags mid-answer (a review finding about them) keeps the
+    text between them.
+  - **A block ends at its first closing tag.** Same-name tags do not nest, so a bare `<think>`
+    mentioned in the reasoning can no longer push the end into the answer.
+    - If that tag looks quoted, the reply is left exactly as written. Quoted means wrapped in
+      matching backticks, or inside a fence the block opened.
+    - The split never looks further, because a later tag may be one the answer quotes. Where the
+      reading is unsure, text stays in the answer rather than leaving it.
+    - A stored answer does not split again.
+  - **A reply that opens with an unfenced reasoning tag loses that block** even when the reply is
+    itself a template meant to contain one. Fence or quote such a tag to keep it. Text output applies
+  the same split to an older session's answer and prints any other answer exactly as written, an
+  indented first line included.
 - **`TaskList` no longer rejects a `reason`.** The model habitually explains why it is reading the
   list (`TaskList({ reason: "verify all tasks are complete" })`) and got a hard
   `invalid_arguments` for it, then repeated the call bare — two wasted turns each time (#216). The
@@ -101,7 +233,7 @@ All notable changes to this project are documented in this file.
 - **`Read` has an outline mode.** Before its first edit a run read 40–55 whole files, and each
   survey read cost the entire file on every turn afterwards; the context reached 200k tokens by
   turn 30 (#217). `Read { outline: true }` returns a file's declarations with their line numbers
-  — `src/agent/loop.ts` goes from 2868 lines to 51 — so a survey can decide what to read in full
+  — `src/agent/loop.ts` goes from 2876 lines to 51 — so a survey can decide what to read in full
   without paying for the file. A Markdown file outlines to its headings, and a method whose
   parameter list wraps onto several lines is still listed. An outline is not a read: it is
   recorded as its own `outline` file observation, so an `Edit` or `Write` after it still needs a
@@ -113,10 +245,45 @@ All notable changes to this project are documented in this file.
 
 - **Print mode shows progress.** `book -p` with the default `text` output printed nothing for 35
   minutes while the agent made a hundred tool calls; the only sign of life was the session file
-  (#225). It now writes one line per tool call to stderr — `[Read] src/cli/doctor.ts` — with
-  stdout still the final answer alone. `--verbose`, which was parsed and discarded, adds each
-  call's result; `-q/--quiet` turns the lines off; `json` and `stream-json` are untouched.
+  (#225). It now writes one line per tool call to stderr — `[Read] src/cli/doctor.ts`, cut to the
+  argument's first line and 120 characters — with stdout still the final answer alone.
+  - `--verbose`, which was parsed and discarded, now adds each call's result, naming its target.
+  - `-q/--quiet` turns the lines off, `retry:` lines included.
+  - `json` and `stream-json` get no progress lines.
+  - The SDK's `query()` runs quiet, so a host's stderr gets no progress or `retry:` lines either.
+  - A consumer that stops reading stderr (`2>&1 | head`) no longer kills the run mid-task with an
+    unhandled EPIPE.
 
+- **Corrections replace old memories instead of piling up.** `MemorySave` and background extraction
+  accept `supersedes`: the replaced entry is kept on disk (`status: superseded`, `supersededBy`) but
+  leaves `MEMORY.md`, so it no longer loads. Index lines now carry a one-line hook from the body, and
+  near the 200-line load limit `MemorySave` asks the model to consolidate.
+- **Book now catches the memories the model forgot to save.** At the next interactive start, idle
+  earlier sessions of the same workspace are read once in the background by the compact model, which
+  writes the durable facts, corrections, and references it finds (`origin: extraction`). Sessions
+  that brought in external content are skipped; only user and assistant text is read. Settings under
+  `memory.extraction`. Verified in the real TUI: a convention the working model had not saved was
+  recovered from the earlier session and applied in a fresh one.
+- **`npm run eval:memory`** measures model-written memory against a no-memory baseline across
+  models: recall on durable items, harm, over- and under-memory, save precision, and poison
+  injection. See README.
+- **Phase 1 part A memory improvements: model writes via `MemorySave`, provenance schema, and opt-in approval.**
+  - Added the `MemorySave` tool for saving and deleting memory facts directly from the model loop, with secret rejection via `shouldRejectMemoryText` and body size caps at 1600 characters. Allowed in every permission mode except `plan` mode, where it is hidden, and excluded for subagents; a `permissions.deny` rule still blocks it, and a `permissions.ask` rule prompts in the modes that prompt. The user removes an entry with `/memory delete <file>` (file name only — a model write can shift a listing's numbering between commands), `/memory status` and `/memory inbox` read the store from disk so a memory saved mid-session is visible immediately, and a slug may be given as a path (`memory/build-cmd.md` resolves to `build-cmd.md`).
+  - Widened `MemoryCandidate` with provenance metadata (`origin: 'model-tool' | 'extraction' | 'user-text'`, `sessionId`, `externalContext`, `evidence`), while retaining full backward compatibility when reading legacy files with only `source`.
+  - Changed `memory.requireApproval` to opt-in with default `false`: memory writes go directly to the approved store and `MEMORY.md` index by default, with `.inbox/` routing preserved when set to `true`.
+  - Added `memory.quarantineExternal` (default `true`) to automatically quarantine memories saved in sessions that read external content — a web fetch or search, an MCP tool, or a `Task`/`AgentRead`/`AgentGet`/`AgentWait` result — to `.inbox/` for review regardless of `memory.requireApproval`. Content read through `Bash` is not detected, and a call that was denied, skipped, or refused in plan mode does not count as having read anything.
+  - Replaced the regex-based auto-capture on user messages with the `MemorySave` tool and updated the system prompt spec to guide model writes and prevent storing instructions found in files or tool output.
+- **Phase 0 memory improvements: read-path instructions, visibility, and health reporting.**
+  The system prompt's cached local memory section now provides the absolute memory directory,
+  instructs the model to read relevant memory markdown files on demand, and directs it to note when
+  a fact is memory-derived and potentially stale while preserving evaluation-path masking determinism.
+  The Read tool now admits read-only roots outside the workspace, allowing the model to read memory
+  files in the memory directory while mutation tools continue to reject writes outside the workspace.
+  Captured memory candidates now emit an agent notice rendered as a single-line message in the TUI
+  (`memory candidate saved: <title> — /memory inbox`) and surfaced in print mode and the SDK, while
+  pending candidate counts are delivered in the per-turn `<session-state>` block. `/memory status` and
+  `book doctor` now report a filesystem-only memory health line (approved memory count, inbox count,
+  index lines, and newest write date).
 - **The turn that trips the compaction threshold no longer waits for the summarizer.** When a
   response reports usage over the threshold and has tool calls to make, the reducer now starts on
   a snapshot of the history ahead of the tool wave and the turn goes on over the full history; at

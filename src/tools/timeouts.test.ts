@@ -131,6 +131,35 @@ describe('registry budget for a tool that enforces its own deadline', () => {
     expect(prepared.prepared.timeoutMs).toBeGreaterThan(600_000);
   });
 
+  // Task and Check resolve their own deadline and rank their setting above
+  // BOOK_TOOL_TIMEOUT_MS. Ranked the other way round here, a lower blanket
+  // override fired the backstop first: a one-hour Task ceiling under a
+  // ten-minute override was cut at 610s and the child's partial result lost.
+  it('outlasts a settings-driven deadline when BOOK_TOOL_TIMEOUT_MS is lower', () => {
+    const context = {
+      workspaceRoot: process.cwd(),
+      env: { BOOK_TOOL_TIMEOUT_MS: '600000' },
+      agentConfig: {
+        settings: { agents: { taskTimeoutMs: 3_600_000, checkTimeoutMs: 2_400_000 } },
+      },
+    } as unknown as ToolContext;
+    const registry = createDefaultRegistry();
+
+    const task = registry.prepare(
+      { id: 'task-1', name: 'Task', arguments: { agent: 'explorer', prompt: 'survey' } },
+      context,
+    );
+    if (task.status !== 'ready') throw new Error('Task call was rejected');
+    expect(task.prepared.timeoutMs).toBeGreaterThan(3_600_000);
+
+    const check = registry.prepare(
+      { id: 'check-3', name: 'Check', arguments: { name: 'test' } },
+      context,
+    );
+    if (check.status !== 'ready') throw new Error('Check call was rejected');
+    expect(check.prepared.timeoutMs).toBeGreaterThan(2_400_000);
+  });
+
   // Only a tool that publishes `timeout` lets the model set the budget.
   // Honouring a stray value everywhere let one shrink the backstop under a tool
   // that times itself -- `Check` with `timeout: 5000` got a 15s budget against

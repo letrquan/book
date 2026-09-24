@@ -53,16 +53,17 @@ function evaluationIsolationEnabled(): boolean {
 /** Hide evaluator-owned temporary paths so equivalent arms receive the same prompt. */
 export function normalizePromptPath(path: string, workspace: string): string {
   if (!evaluationIsolationEnabled()) return path;
+  const resolved = resolve(workspace, path);
   const replacements = [
     [resolve(workspace), '<evaluation-workspace>'],
     [resolveBookHome(), '<evaluation-book-home>'],
     [resolve(homedir()), '<evaluation-home>'],
   ].sort(([left], [right]) => right.length - left.length);
   for (const [root, label] of replacements) {
-    if (path === root) return label;
+    if (resolved === root) return label;
     const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
-    if (path.startsWith(prefix))
-      return `${label}/${path.slice(prefix.length).replaceAll(sep, '/')}`;
+    if (resolved.startsWith(prefix))
+      return `${label}/${resolved.slice(prefix.length).replaceAll(sep, '/')}`;
   }
   return path;
 }

@@ -13,6 +13,7 @@ import {
   fetchWithRetry,
   formatApiError,
   readStreamChunk,
+  wrappedUpstreamStatus,
 } from './reliability.js';
 
 const log = createDebugLogger('provider:anthropic');
@@ -502,6 +503,7 @@ export async function* chatCompletionStream(
       type: 'error',
       error: formatApiError(response.status, errorText),
       errorCode: classifyApiError(response.status, errorText),
+      upstreamStatus: wrappedUpstreamStatus(response.status, errorText),
     };
     return;
   }

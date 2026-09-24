@@ -24,8 +24,19 @@ import { READ_ONLY_PLAN_TOOLS } from './plan-mode.js';
 import { normalizeToolSchema } from './schema.js';
 import { toolSearchTools } from './tool-search.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
+import { isMemorySaveAvailable } from '../memory-store.js';
 
-const ALWAYS_CORE = new Set(['Read', 'Glob', 'Grep', 'AskUserQuestion', 'TodoWrite', 'ToolSearch']);
+const ALWAYS_CORE = new Set([
+  'Read',
+  'Glob',
+  'Grep',
+  'AskUserQuestion',
+  'TodoWrite',
+  'ToolSearch',
+  // Core, and hidden in plan mode by `READ_ONLY_PLAN_TOOLS` like every other
+  // tool that is not on that list — it needs no gate of its own.
+  'MemorySave',
+]);
 const MUTATION_CORE = new Set(['ApplyPatch', 'Write', 'Edit', 'MultiEdit', 'Bash']);
 const MANAGED_TASK_CORE = new Set(['TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate']);
 const RUNTIME_CORE = new Set(['BashOutput', 'KillShell']);
@@ -39,10 +50,16 @@ const ROOT_ONLY = new Set([
   'AgentWait',
   'AgentStop',
   'AgentApply',
+  'MemorySave',
 ]);
 const CHILD_ONLY = new Set(['EvidencePublish', 'EvidenceReview']);
 
-function categoryFor(name: string): ToolCategory {
+/**
+ * The catalog category of a canonical tool name. Exported because a name's
+ * category is a capability fact — memory quarantine reads it to decide what
+ * counts as external content — not just search metadata.
+ */
+export function categoryFor(name: string): ToolCategory {
   if (name.startsWith('mcp__')) return 'mcp';
   if (['Read', 'ApplyPatch', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep'].includes(name))
     return 'filesystem';
@@ -84,6 +101,7 @@ function keywordsFor(name: string): string[] {
     AgentRead: ['subagent', 'result', 'output', 'continuation'],
     WebSearch: ['internet', 'research'],
     WebFetch: ['url', 'page', 'download'],
+    MemorySave: ['remember', 'memory', 'save fact'],
   };
   return common[name] ?? [];
 }
@@ -228,6 +246,9 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       const name = canonicalToolName(definition.name);
       if (name === 'ToolSearch') return true;
       if (!definition.catalog?.roles?.includes(role)) return false;
+      if (name === 'MemorySave' && !isMemorySaveAvailable(config.settings)) {
+        return false;
+      }
       if ([...ruleSets.values()].some((rules) => !isToolDefinitionAllowed(rules, definition)))
         return false;
       if (additionalRules && !isToolDefinitionAllowed(additionalRules, definition)) return false;

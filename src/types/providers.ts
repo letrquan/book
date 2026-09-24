@@ -49,6 +49,12 @@ export interface ProviderStreamEvent {
   error?: string;
   /** Stable machine-readable provider/transport classification when available. */
   errorCode?: string;
+  /**
+   * The 4xx a router quoted inside a retryable response's body (9router answers
+   * 503 and names the upstream's status there), when that quote decided
+   * `errorCode`. Absent for a status the provider sent as itself.
+   */
+  upstreamStatus?: number;
   usage?: Usage;
   /** Provider response identity when the stream exposes it. */
   responseModel?: string;
@@ -178,4 +184,6 @@ export interface AgentLoopCallbacks {
   onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
   /** Called for managed-agent lifecycle, evidence, and application events. */
   onAgentEvent?: (event: AgentRuntimeEvent) => void;
+  /** Called when a host or system notice should be surfaced (e.g. memory candidate saved). */
+  onNotice?: (notice: string) => void;
 }

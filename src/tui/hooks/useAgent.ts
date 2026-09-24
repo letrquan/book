@@ -238,6 +238,7 @@ function createSeededRuntime(
 ): SessionRuntime {
   const runtime = new SessionRuntime({
     fileObservationLedger: buildObservationLedger(initialTranscript),
+    history: initialTranscript,
   });
   runtime.todos.push(...normalizePersistedTodos(session.plan?.todos));
   if (session.plan?.tasks?.length) runtime.tasks.push(...session.plan.tasks);
@@ -493,7 +494,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setRetryMax(0);
       setRetryCountdownMs(0);
       const nextRuntime = agentSession.replaceRuntime(
-        { fileObservationLedger: buildObservationLedger(transcript) },
+        {
+          fileObservationLedger: buildObservationLedger(transcript),
+          // The projected conversation is the runtime's: a resumed or rewound
+          // session keeps the tool history that memory quarantine reads.
+          history: transcript,
+        },
         'session_transition',
       );
       // `replaceRuntime` hands back empty lists, so without this a transition into
@@ -859,6 +865,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 break;
               case 'tool_result':
                 activeAccumulator?.addToolResult(event.toolResult);
+                break;
+              case 'notice':
+                appendLocalMessage(event.message);
                 break;
               case 'attempt_discarded': {
                 // Land anything still queued before clearing, or it would flush
@@ -2180,7 +2189,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     refreshMemoryContext: () => {
       setLiveConfig((c) => ({
         ...c,
-        memoryContext: loadMemoryContext(config.workspace),
+        memoryContext: c.settings.memory.enabled ? loadMemoryContext(config.workspace) : undefined,
       }));
     },
 
