@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Idle Ctrl+C now requires a second press before exiting.**
+  - **Composer:** when nothing is running, a non-empty composer is cleared without arming the
+    window. A running turn or `/review` is cancelled first. A recalled queued input is removed, as
+    Esc removes it, so the queue resumes.
+  - **Empty and idle:** Book shows "Press Ctrl+C again to exit" for 2 seconds, and only another
+    press during that window exits.
+  - **Splash:** the startup-fire splash behaves the same way, and the first press dismisses it.
+  - **Hint over a prompt:** while the hint is visible, another press exits even if a prompt now
+    owns the keyboard. An example is the MCP approval prompt that waits behind the splash on every
+    launch in a repo whose `.mcp.json` server is neither approved nor rejected. Once the hint is
+    gone, Ctrl+C in a prompt behaves as it did before: a question or form cancels the turn, and
+    other prompts ignore it.
+  - **Turns and reviews:** a turn that starts inside the window ends it. Ctrl+C that cancels a turn
+    or an in-flight `/review` ends it too, so the next idle press arms again rather than exiting.
+  - **Double handling:** the shortcut layer and the app previously both acted on a single press.
+    One Ctrl+C during `/review` therefore cancelled the review _and_ exited, an idle press started
+    the session-end path twice, and a mid-turn press interrupted twice. The app handler now decides
+    alone.
+
 ### Fixed
 
 - **A long reply no longer jitters sideways while it streams.** Once a reply outgrew the live
