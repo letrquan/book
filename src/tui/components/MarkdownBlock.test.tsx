@@ -3,6 +3,7 @@ import { render, cleanup } from 'ink-testing-library';
 import { Text } from 'ink';
 import chalk from 'chalk';
 import React from 'react';
+import { marked } from 'marked';
 import { ThemeContext } from '../theme.js';
 import { DEFAULT_THEME } from '../../types/theme.js';
 import {
@@ -23,6 +24,23 @@ function frame(lastFrame: () => string | undefined): string {
 
 function withTheme(children: React.ReactElement): React.ReactElement {
   return React.createElement(ThemeContext.Provider, { value: DEFAULT_THEME }, children);
+}
+
+function numberedWords(count: number): string {
+  return Array.from({ length: count }, (_, index) => `word${index}`).join(' ');
+}
+
+function tailOf(window: string): string {
+  const banner = '… earlier response hidden while streaming\n\n';
+  return window.startsWith(banner) ? window.slice(banner.length) : window;
+}
+
+const MARKER_WORDS = ['-', '+', '#', '3.', '2)', '2019.', '##'];
+
+function markerProse(count: number): string {
+  return Array.from({ length: count }, (_, index) =>
+    index % 3 === 2 ? MARKER_WORDS[index % MARKER_WORDS.length] : `word${index}`,
+  ).join(' ');
 }
 
 afterEach(() => {
@@ -82,6 +100,92 @@ describe('MarkdownBlock', () => {
 
     expect(streaming).toContain('earlier response hidden while streaming');
     expect(streaming).not.toContain('| row');
+  });
+
+  it('keeps the live tail start fixed while a long paragraph streams', () => {
+    const full = numberedWords(1500);
+    // width 80 => maxCharacters = 1920, step = 320
+    let jumps = 0;
+    let pairs = 0;
+    let previous = tailOf(streamingMarkdownWindow(full.slice(0, 3000), 80));
+    for (let length = 3012; length <= full.length; length += 12) {
+      const next = tailOf(streamingMarkdownWindow(full.slice(0, length), 80));
+      pairs++;
+      if (!next.startsWith(previous)) jumps++;
+      previous = next;
+    }
+
+    expect(jumps).toBeLessThanOrEqual(Math.ceil((full.length - 3000) / 320) + 1);
+    expect(pairs).toBeGreaterThan(jumps * 10);
+  });
+
+  it('starts the fallback tail at a word boundary', () => {
+    const content = numberedWords(1500);
+    for (let length = 3000; length <= content.length; length += 7) {
+      const tail = tailOf(streamingMarkdownWindow(content.slice(0, length), 80));
+      expect(tail).toMatch(/^word\d+/);
+    }
+  });
+
+  it('keeps the live tail within the character budget', () => {
+    const full = numberedWords(1500);
+    for (let length = 1921; length <= full.length; length += 13) {
+      expect(tailOf(streamingMarkdownWindow(full.slice(0, length), 80)).length).toBeLessThanOrEqual(
+        1920,
+      );
+    }
+  });
+
+  it('does not snap the cutoff back over inline markdown near the start', () => {
+    // Rounding the cutoff down would snap it to 0 here and put the markup in the tail, which
+    // blanks the live view; rounding up starts past it.
+    const content = `Use \`code\` and snake_case first. ${numberedWords(270)}`;
+    expect(content.length).toBeGreaterThan(1920);
+    expect(content.length - 1920).toBeLessThan(320);
+
+    expect(tailOf(streamingMarkdownWindow(content, 80))).toMatch(/^word\d+/);
+  });
+
+  it('falls back to the rounded cutoff when no word starts within a step', () => {
+    const content = `start ${'x'.repeat(8_000)}`;
+    const rounded = Math.ceil((content.length - 1920) / 320) * 320;
+
+    expect(tailOf(streamingMarkdownWindow(content, 80))).toBe(content.slice(rounded));
+  });
+
+  it('never starts the prose tail on a heading, list or quote marker', () => {
+    const full = markerProse(1200);
+    for (let length = 1921; length <= full.length; length += 7) {
+      const tail = tailOf(streamingMarkdownWindow(full.slice(0, length), 80));
+      expect(marked.lexer(tail)[0]?.type).toBe('paragraph');
+    }
+  });
+
+  it('keeps the live tail within the character budget when marker words are skipped', () => {
+    const full = markerProse(1500);
+    for (let length = 1921; length <= full.length; length += 13) {
+      expect(tailOf(streamingMarkdownWindow(full.slice(0, length), 80)).length).toBeLessThanOrEqual(
+        1920,
+      );
+    }
+  });
+
+  it('keeps a paragraph break found from the raw cutoff', () => {
+    const content = `${'a '.repeat(125)}\n\n${'b '.repeat(925)}\n\nxy`;
+    const tail = tailOf(streamingMarkdownWindow(content, 80));
+
+    expect(tail.startsWith('b b ')).toBe(true);
+    expect(tail.endsWith('xy')).toBe(true);
+  });
+
+  it('starts a code block tail at the raw cutoff', () => {
+    const content = `\`\`\`ts\n${Array.from({ length: 200 }, (_, index) => `const value${index} = ${index};`).join('\n')}`;
+    const rawCutoff = content.length - 1920;
+    expect(rawCutoff % 320).not.toBe(0);
+
+    expect(tailOf(streamingMarkdownWindow(content, 80))).toBe(
+      `\`\`\`ts\n${content.slice(rawCutoff)}`,
+    );
   });
 
   it('renders empty content as nothing', () => {
