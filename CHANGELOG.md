@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Idle Ctrl+C now requires a second press before exiting.** A non-empty composer is cleared
+  without arming the window. An empty, idle composer shows "Press Ctrl+C again to exit" for 2
+  seconds; only another press during that window exits. The startup-fire splash uses the same
+  behavior, with the first press dismissing it. Mid-turn cancellation, modal behavior, and
+  in-flight `/review` cancellation are unchanged.
+
 ### Fixed
 
 - **Windows paths in `/memory` commands no longer lose backslashes to markdown parsing.** `/memory`
