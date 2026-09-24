@@ -96,7 +96,7 @@ describe('Task tool', () => {
 
       expect(result.status).toBe('error');
       expect(result.structuredError?.code).toBe('subagent_timeout');
-      expect(result.content).toContain('AgentRead with agentId');
+      expect(result.content).toContain('The child (agentId');
       expect(result.content).not.toContain('full transcript');
 
       const agents = await manager.list();

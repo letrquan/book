@@ -149,7 +149,7 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
             `Partial result (the child was stopped; nothing below is final):`,
             lastText ? `\nLast assistant text:\n${lastText}` : '',
             partial.summary ? `\nSummary so far:\n${partial.summary}` : '',
-            `\nUse AgentRead with agentId ${completed.id} for the summary or error the child recorded when it stopped; raise agents.taskTimeoutMs or BOOK_TOOL_TIMEOUT_MS for a slower model.`,
+            `\nThe child (agentId ${completed.id}) was stopped and holds no further result. For a slower model, raise agents.taskTimeoutMs (or BOOK_TOOL_TIMEOUT_MS when that is unset).`,
           ]
             .filter(Boolean)
             .join('\n'),

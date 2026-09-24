@@ -571,11 +571,15 @@ route where one max-effort turn takes minutes the child was cut off mid-survey, 
 discarded, and — because nothing stopped it — it ran and billed for an hour afterwards. When the
 ceiling passes the child is now stopped, and the parent gets whatever the child had finished: its
 last complete assistant text and its summary, both often empty when the ceiling lands mid-turn,
-plus the agent id. `AgentRead` on that id returns the summary or error the child recorded when it
-stopped, not its transcript. Cancelling the parent stops the child too, including a cancel that
-lands while the child is still being spawned. A `Task` child never comes back to the parent as a
-completion notification, stopped or not: `Task` already returned its result, and the notification
-only made the parent run another turn to re-read it.
+plus the agent id. The stopped child holds no further result, so there is nothing more to fetch.
+Cancelling the parent stops the child too, including a cancel that lands while the child is still
+being spawned.
+
+The run `Task` waited on never comes back to the parent as a completion notification, stopped or
+not: `Task` already returned its result, and the notification only made the parent run another
+turn to re-read it. A later run of the same child does report back, because nothing is waiting on
+it. That covers an `AgentSend` follow-up, a re-run after Book restarts, and a queued message
+after a failed run.
 
 ### Unattended runs
 

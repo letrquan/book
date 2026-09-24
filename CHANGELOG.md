@@ -131,11 +131,11 @@ All notable changes to this project are documented in this file.
   `Check` had the same inversion with `agents.checkTimeoutMs`. `Task` stops the child when the
   ceiling passes or when the parent is cancelled, including a cancel that lands during the spawn,
   and returns `subagent_timeout` with whatever the child had finished (its last assistant text and
-  summary) and the agent id; `AgentRead` on it returns the child's summary or error, not its
-  transcript. A `Task` child no longer reports back as a completion notification: `Task` already
-  returns its result, and the notification made the parent run an extra turn to re-read it, after
-  every `Task` in the TUI and after a stopped one in print mode. `agent_result` still reports the
-  child's end.
+  summary) and the agent id. The run `Task` waited on no longer reports back as a completion
+  notification: `Task` already returns its result, and the notification made the parent run an
+  extra turn to re-read it, after every `Task` in the TUI and after a stopped one in print mode.
+  A later run of the child still reports back: an `AgentSend` follow-up, a re-run after a
+  restart, or a queued message after a failed run. `agent_result` still reports the child's end.
 - **The compaction reducer no longer inherits `--effort max`, and gives up faster.** A 167k-token
   reducer request at max effort produced no byte for long enough that the proxy dropped it, and it
   was retried ten times at the same size — 17 minutes with no compaction (#214). The reducer now
