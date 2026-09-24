@@ -426,7 +426,8 @@ describe('runDoctorCommand memory health', () => {
     expect(output).not.toContain('Health:');
     expect(output).toContain('Approved memories: 1');
     expect(output).toContain('Inbox candidates:  1');
-    expect(output).toContain('Index lines:       2');
+    expect(output).toContain('Index lines:       2 / 200');
+    expect(output).toContain('Superseded:        0');
     expect(output).toMatch(/Last write:\s+\d{4}-\d{2}-\d{2}T/);
   });
 });

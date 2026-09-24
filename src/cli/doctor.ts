@@ -445,13 +445,14 @@ export async function runDoctorCommand(
   console.log();
 
   // Memory.
-  const { getMemoryHealth } = await import('../memory-store.js');
+  const { DEFAULT_MAX_INDEX_LINES, getMemoryHealth } = await import('../memory-store.js');
   const memoryHealth = getMemoryHealth(config.workspace);
   const lastWrite = memoryHealth.lastWrite ? memoryHealth.lastWrite.toISOString() : 'never';
   console.log('Memory:');
   console.log('  Approved memories: ' + memoryHealth.approvedCount);
+  console.log('  Superseded:        ' + memoryHealth.supersededCount);
   console.log('  Inbox candidates:  ' + memoryHealth.inboxCount);
-  console.log('  Index lines:       ' + memoryHealth.indexLineCount);
+  console.log(`  Index lines:       ${memoryHealth.indexLineCount} / ${DEFAULT_MAX_INDEX_LINES}`);
   console.log('  Last write:        ' + lastWrite);
   console.log();
 

@@ -1,5 +1,6 @@
 import type { ResolvedSettings } from './settings.js';
 import {
+  DEFAULT_MAX_INDEX_LINES,
   getMemoryHealth,
   getMemoryInboxDir,
   getProjectMemoryDir,
@@ -58,6 +59,11 @@ export function buildMemoryInboxReport(input: MemoryReportInput): string {
       lines.push('   ⚠ saved in a session that read external content (web, MCP, or another agent)');
     }
     if (full.targetSlug) lines.push(`   replaces existing: \`${full.targetSlug}\``);
+    if (full.supersedes) {
+      lines.push(
+        `   retires existing: \`${full.supersedes}\` (kept on disk, removed from the index)`,
+      );
+    }
     const preview = full.body.replace(/\s+/g, ' ').trim();
     lines.push(`   ${preview.length > 200 ? `${preview.slice(0, 200)}…` : preview}`);
   });
@@ -94,7 +100,7 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
   lines.push(`Approval required: ${requireApproval ? 'yes' : 'no'}`);
   lines.push(`Inbox: \`${getMemoryInboxDir(input.workspace, input)}\``);
   lines.push(
-    `Health: ${health.approvedCount} approved, ${health.inboxCount} inbox, ${health.indexLineCount} index lines, last write: ${lastWrite}`,
+    `Health: ${health.approvedCount} approved, ${health.supersededCount} superseded, ${health.inboxCount} inbox, ${health.indexLineCount}/${DEFAULT_MAX_INDEX_LINES} index lines, last write: ${lastWrite}`,
   );
   lines.push('');
 

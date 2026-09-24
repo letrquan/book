@@ -1,6 +1,6 @@
 # Memory improvement plan
 
-Status: Phase 0, 1a and 1b implemented on `feat/memory-model-writes` (PR #234, 2026-09-23); Phase 2 open. Revised 2026-09-18: **no approval gate by default** — owner decision.
+Status: Phases 0, 1a, 1b and 2 implemented on `feat/memory-model-writes` (PR #234, 2026-09-24). Revised 2026-09-18: **no approval gate by default** — owner decision.
 Evidence: `memory-lit-review.md` in the session scratchpad — an `orx` literature pass (8 papers read)
 plus a deep-research pass over product docs (Claude Code, Codex, Gemini CLI, Copilot, Cursor, Letta,
 LangMem, Mem0, Zep) and 8 HCI studies.

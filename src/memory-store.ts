@@ -18,7 +18,7 @@ import { looksLikeSecretOrUnfit } from './secret-detect.js';
 
 export const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
 export type MemoryType = (typeof MEMORY_TYPES)[number];
-export type MemoryStatus = 'approved' | 'pending' | 'discarded';
+export type MemoryStatus = 'approved' | 'pending' | 'discarded' | 'superseded';
 export type MemoryOrigin = 'model-tool' | 'extraction' | 'user-text';
 
 export const MAX_BODY_CHARS = 1600;
@@ -133,9 +133,12 @@ export interface MemoryCandidate {
   externalContext: boolean;
   evidence?: string[];
   targetSlug?: string;
+  /** File name of an approved memory this one replaces; it is kept on disk, out of the index. */
+  supersedes?: string;
 }
 
 export interface MemoryWriteInput extends Partial<MemoryCandidate> {
+  supersededBy?: string;
   type: MemoryType;
   title: string;
   body: string;
@@ -167,12 +170,14 @@ export interface SaveMemoryResult {
   ok: boolean;
   path?: string;
   indexLine?: string;
+  /** Lines in MEMORY.md after the write — the model is asked to consolidate near the load limit. */
+  indexLineCount?: number;
   status: MemoryStatus;
   quarantined?: boolean;
   error?: string;
 }
 
-const DEFAULT_MAX_INDEX_LINES = 200;
+export const DEFAULT_MAX_INDEX_LINES = 200;
 const INDEX_FILE = 'MEMORY.md';
 const INBOX_DIR = '.inbox';
 const DISCARDED_DIR = 'discarded';
@@ -213,7 +218,9 @@ function isMemoryType(value: unknown): value is MemoryType {
 }
 
 function isMemoryStatus(value: unknown): value is MemoryStatus {
-  return value === 'approved' || value === 'pending' || value === 'discarded';
+  return (
+    value === 'approved' || value === 'pending' || value === 'discarded' || value === 'superseded'
+  );
 }
 
 function titleFromBody(body: string): string | undefined {
@@ -258,7 +265,8 @@ export function listMemoryFiles(workspace: string, opts?: MemoryStoreOptions): M
       if (entry.toLowerCase() === INDEX_FILE.toLowerCase()) continue; // MEMORY.md is the index, not an approved memory file.
       const full = join(dir, entry);
       const summary = summarizeMemoryFile(full, entry);
-      if (summary) files.push(summary);
+      // A superseded memory stays on disk as history but is no longer an active entry.
+      if (summary && summary.status !== 'superseded') files.push(summary);
     }
   } catch {
     return files;
@@ -355,6 +363,7 @@ export function loadMemoryContext(
 
 export interface MemoryHealth {
   approvedCount: number;
+  supersededCount: number;
   inboxCount: number;
   indexLineCount: number;
   lastWrite: Date | null;
@@ -410,6 +419,7 @@ export function getMemoryHealth(
   const workspace = typeof workspaceOrContext === 'string' ? workspaceOrContext : '';
 
   let approvedCount = 0;
+  let supersededCount = 0;
   if (existsSync(dir)) {
     try {
       for (const entry of readdirSync(dir)) {
@@ -426,6 +436,8 @@ export function getMemoryHealth(
           const summary = summarizeMemoryFile(full, entry);
           if (summary && (summary.status === 'approved' || summary.status === undefined)) {
             approvedCount++;
+          } else if (summary?.status === 'superseded') {
+            supersededCount++;
           }
         } catch {
           // ignore unreadable file
@@ -452,6 +464,7 @@ export function getMemoryHealth(
   const lastWrite = getNewestMemoryWriteTime(dir);
   return {
     approvedCount,
+    supersededCount,
     inboxCount,
     indexLineCount,
     lastWrite,
@@ -506,6 +519,8 @@ function renderMemoryMarkdown(input: MemoryWriteInput, status: MemoryStatus, now
   // Already a resolved file name: `memoryFileForSlug` sanitized it (and
   // `readMemoryFile` did the same for a candidate read back from disk).
   if (input.targetSlug) fm.push(`targetSlug: ${input.targetSlug}`);
+  if (input.supersedes) fm.push(`supersedes: ${input.supersedes}`);
+  if (input.supersededBy) fm.push(`supersededBy: ${input.supersededBy}`);
   if ('confidence' in input && input.confidence) fm.push(`confidence: ${input.confidence}`);
   if (status === 'pending') fm.push(`proposedTitle: ${sanitizedTitle}`);
   if (input.tags?.length) {
@@ -560,6 +575,11 @@ function activeMemoryFilename(
   return `${date}-${input.type}-${safeTitle(input.title)}-${hash}.md`;
 }
 
+/** A slug read back from frontmatter: last path segment, then sanitized (as on write). */
+function frontmatterSlug(raw: string | undefined): string | undefined {
+  return raw?.trim() ? (sanitizeMemorySlug(lastSlugSegment(raw.trim())) ?? undefined) : undefined;
+}
+
 export function readMemoryFile(
   path: string,
 ): (MemoryCandidate & { created?: string; updated?: string; status?: MemoryStatus }) | null {
@@ -604,13 +624,15 @@ export function readMemoryFile(
     // The last path segment, the same rule `memoryFileForSlug` applies on write:
     // a legacy `targetSlug: notes/build` names a file in the memory directory,
     // and sanitizing alone would glue the segments together.
-    const targetSlug = rawTargetSlug?.trim()
-      ? (sanitizeMemorySlug(lastSlugSegment(rawTargetSlug.trim())) ?? undefined)
-      : undefined;
+    const targetSlug = frontmatterSlug(rawTargetSlug);
     const status = isMemoryStatus(frontmatter.status) ? frontmatter.status : undefined;
     const created = typeof frontmatter.created === 'string' ? frontmatter.created : undefined;
     const updated = typeof frontmatter.updated === 'string' ? frontmatter.updated : undefined;
+    const supersedes = frontmatterSlug(
+      typeof frontmatter.supersedes === 'string' ? frontmatter.supersedes : undefined,
+    );
     return {
+      supersedes,
       type: frontmatter.type,
       title,
       body: cleanBody,
@@ -640,35 +662,120 @@ function parseCandidateFile(path: string): (MemoryCandidate & { created?: string
   return readMemoryFile(path);
 }
 
+/** The first line of a memory's body — the fact itself — as a short index hook. */
+function indexHook(body: string): string {
+  // Same characters titles lose: index lines are matched by `](file)`, and the index is
+  // embedded in a <memory-index> block, so links and angle brackets must not survive.
+  const first =
+    body
+      .trim()
+      .split('\n')[0]
+      ?.replace(/[[\]()<>]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim() ?? '';
+  return first.length > 100 ? `${first.slice(0, 100)}…` : first;
+}
+
+/** The index's non-empty lines; throws when it exists but cannot be read, so a caller never
+ * rewrites (and wipes) an index it could not read. */
+function readIndexLines(dir: string): string[] {
+  const indexPath = join(dir, INDEX_FILE);
+  if (!existsSync(indexPath)) return [];
+  return readFileSync(indexPath, 'utf-8')
+    .split('\n')
+    .filter((line) => line.trim().length > 0);
+}
+
+function writeIndexLines(dir: string, lines: string[]): void {
+  writeFileSync(
+    join(dir, INDEX_FILE),
+    lines.length > 0 ? lines.join('\n') + '\n' : '# Book memory index\n',
+    'utf-8',
+  );
+}
+
+/** Drop a file's line from MEMORY.md. */
+function removeIndexEntry(dir: string, filename: string): void {
+  writeIndexLines(
+    dir,
+    readIndexLines(dir).filter((line) => !line.includes(`](${filename})`)),
+  );
+}
+
+/**
+ * Write or replace a file's line in MEMORY.md in one read-modify-write, also dropping the line
+ * of a memory it supersedes; returns the line and the index's line count.
+ */
 function updateMemoryIndex(
   dir: string,
   title: string,
   filename: string,
   type: MemoryType,
   now: Date,
-): string {
-  const indexPath = join(dir, INDEX_FILE);
-  const entry = `- [${title}](${filename}) — ${type} — ${now.toISOString().slice(0, 10)}`;
-  let lines: string[] = [];
-  if (existsSync(indexPath)) {
-    try {
-      lines = readFileSync(indexPath, 'utf-8')
-        .split('\n')
-        .filter((line) => line.trim().length > 0);
-    } catch {
-      lines = [];
-    }
-  }
-  lines = lines.filter((line) => !line.includes(`](${filename})`));
+  body: string,
+  supersedes?: string,
+): { entry: string; lineCount: number } {
+  const hook = indexHook(body);
+  const entry = `- [${title}](${filename}) — ${type} — ${now.toISOString().slice(0, 10)}${hook && hook !== title ? ` — ${hook}` : ''}`;
+  let lines = readIndexLines(dir).filter(
+    (line) =>
+      !line.includes(`](${filename})`) && !(supersedes && line.includes(`](${supersedes})`)),
+  );
   if (lines.length === 0) {
     lines = ['# Book memory index', '', entry];
   } else if (lines[0].startsWith('#')) {
-    lines = [lines[0], entry, ...lines.slice(1).filter((line) => line.trim() !== '')];
+    lines = [lines[0], entry, ...lines.slice(1)];
   } else {
     lines = [entry, ...lines];
   }
-  writeFileSync(indexPath, lines.join('\n') + '\n', 'utf-8');
-  return entry;
+  writeIndexLines(dir, lines);
+  return { entry, lineCount: lines.length };
+}
+
+/**
+ * Retire an approved memory that a newer one replaces: kept on disk with `status: superseded`
+ * and a `supersededBy` pointer (the history stays), removed from the index so it no longer loads.
+ */
+function markSuperseded(dir: string, oldFilename: string, byFilename: string, now: Date): void {
+  // Best effort, after the index already dropped the old line: if the rewrite fails, the old
+  // file stays `approved` on disk but no longer loads, which is the part that matters.
+  try {
+    const target = join(dir, oldFilename);
+    if (isSymlink(target)) return;
+    const current = readMemoryFile(target);
+    if (!current) return;
+    writeFileSync(
+      target,
+      renderMemoryMarkdown({ ...current, supersededBy: byFilename }, 'superseded', now),
+      'utf-8',
+    );
+  } catch {
+    // see above
+  }
+}
+
+const sameFile = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+/**
+ * Resolve a `supersedes` slug to an existing approved memory file other than `own`. A name that
+ * matches no file is an error the caller reports, not a silent no-op that leaves both versions
+ * loading.
+ */
+function resolveSupersedes(
+  dir: string,
+  raw: string | undefined,
+  own: string | undefined,
+): { filename?: string } | { error: string } {
+  if (!raw?.trim()) return {};
+  const named = memoryFileForSlug(dir, raw);
+  if ('error' in named) return { error: `supersedes: ${named.error}` };
+  if (own && sameFile(named.filename, own)) return {};
+  if (!existsSync(named.target) || isSymlink(named.target)) {
+    return {
+      error: `supersedes: no memory file ${named.filename}. Use the file name from <memory-index>.`,
+    };
+  }
+  return { filename: named.filename };
 }
 
 /** True for a symlink, dangling or not: `existsSync` follows links, `lstat` does not. */
@@ -718,6 +825,25 @@ export function saveMemory(
     };
   }
 
+  // Resolve `supersedes` once, before either path, so only an existing file name other than the
+  // entry's own reaches the frontmatter.
+  const ownSlug = opts?.slug?.trim() || candidate.targetSlug?.trim();
+  const ownName = ownSlug ? memoryFileForSlug(getProjectMemoryDir(workspace, opts), ownSlug) : null;
+  const superseded = resolveSupersedes(
+    getProjectMemoryDir(workspace, opts),
+    candidate.supersedes,
+    ownName && !('error' in ownName) ? ownName.filename : undefined,
+  );
+  if ('error' in superseded) {
+    return {
+      ok: false,
+      error: superseded.error,
+      status: requireApproval ? 'pending' : 'approved',
+      quarantined: isQuarantined,
+    };
+  }
+  candidate = { ...candidate, supersedes: superseded.filename };
+
   if (requireApproval) {
     const rawSlug = opts?.slug?.trim()
       ? opts.slug
@@ -758,8 +884,23 @@ export function saveMemory(
       created: existingCreated ?? candidate.created,
     };
     writeFileSync(target, renderMemoryMarkdown(memoryInput, 'approved', now), 'utf-8');
-    const indexLine = updateMemoryIndex(dir, title, filename, candidate.type, now);
-    return { ok: true, path: target, indexLine, status: 'approved' };
+    const index = updateMemoryIndex(
+      dir,
+      title,
+      filename,
+      candidate.type,
+      now,
+      candidate.body,
+      memoryInput.supersedes,
+    );
+    if (memoryInput.supersedes) markSuperseded(dir, memoryInput.supersedes, filename, now);
+    return {
+      ok: true,
+      path: target,
+      indexLine: index.entry,
+      indexLineCount: index.lineCount,
+      status: 'approved',
+    };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e), status: 'approved' };
   }
@@ -783,26 +924,12 @@ export function deleteMemoryEntry(
     }
 
     unlinkSync(target);
-
-    // Remove from MEMORY.md
-    const indexPath = join(dir, INDEX_FILE);
-    if (existsSync(indexPath)) {
-      try {
-        const raw = readFileSync(indexPath, 'utf-8');
-        const lines = raw
-          .split('\n')
-          .filter((line) => line.trim().length > 0)
-          .filter((line) => !line.includes(`](${filename})`));
-        writeFileSync(
-          indexPath,
-          lines.length > 0 ? lines.join('\n') + '\n' : '# Book memory index\n',
-          'utf-8',
-        );
-      } catch {
-        // ignore
-      }
+    try {
+      removeIndexEntry(dir, filename);
+    } catch {
+      // The file is gone either way; a stale index line points at nothing and is dropped by the
+      // next index write.
     }
-
     return { ok: true, path: target };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -836,8 +963,13 @@ export function approveMemoryCandidate(
     if ('error' in placed) return { ok: false, error: placed.error };
     const { filename, target, existingCreated } = placed;
 
+    // A candidate's `supersedes` was resolved when it was saved; re-check it now, since the
+    // target may have gone or be the entry being approved.
+    const retire = resolveSupersedes(dir, candidate.supersedes, filename);
+    const supersedes = 'error' in retire ? undefined : retire.filename;
     const memoryInput: MemoryWriteInput = {
       ...candidate,
+      supersedes,
       created: existingCreated ?? candidate.created,
     };
     const rendered = renderMemoryMarkdown(memoryInput, 'approved', now);
@@ -847,7 +979,16 @@ export function approveMemoryCandidate(
     // been committed yet and the caller can safely retry.
     renameSync(candidatePath, join(getDiscardedDir(workspace, opts), basename(candidatePath)));
     writeFileSync(target, rendered, 'utf-8');
-    updateMemoryIndex(dir, candidate.title, filename, candidate.type, now);
+    updateMemoryIndex(
+      dir,
+      candidate.title,
+      filename,
+      candidate.type,
+      now,
+      candidate.body,
+      supersedes,
+    );
+    if (supersedes) markSuperseded(dir, supersedes, filename, now);
     return { ok: true, path: target };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

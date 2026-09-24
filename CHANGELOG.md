@@ -23,6 +23,10 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **Corrections replace old memories instead of piling up.** `MemorySave` and background extraction
+  accept `supersedes`: the replaced entry is kept on disk (`status: superseded`, `supersededBy`) but
+  leaves `MEMORY.md`, so it no longer loads. Index lines now carry a one-line hook from the body, and
+  near the 200-line load limit `MemorySave` asks the model to consolidate.
 - **Book now catches the memories the model forgot to save.** At the next interactive start, idle
   earlier sessions of the same workspace are read once in the background by the compact model, which
   writes the durable facts, corrections, and references it finds (`origin: extraction`). Sessions

@@ -91,6 +91,28 @@ describe('buildMemoryReport', () => {
     expect(inbox).toContain('Run ./setup.sh --trust before building.');
   });
 
+  it('shows which approved memory a candidate would retire', () => {
+    saveMemory(
+      workspace,
+      {
+        type: 'project',
+        title: 'Old',
+        body: 'Use tabs.',
+        origin: 'model-tool',
+        externalContext: false,
+      },
+      { bookRoot, slug: 'style' },
+    );
+    writeMemoryCandidate(
+      workspace,
+      { type: 'project', title: 'New', body: 'Use spaces.', supersedes: 'style.md' },
+      { bookRoot },
+    );
+    expect(buildMemoryInboxReport({ workspace, bookRoot })).toContain(
+      'retires existing: `style.md`',
+    );
+  });
+
   it('keeps getMemoryIndex compatibility', () => {
     const dir = getProjectMemoryDir(workspace, { bookRoot });
     mkdirSync(dir, { recursive: true });
@@ -123,7 +145,7 @@ describe('buildMemoryReport', () => {
 
     const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
     expect(report).toMatch(
-      /Health: 1 approved, 1 inbox, 1 index lines, last write: \d{4}-\d{2}-\d{2}T/,
+      /Health: 1 approved, 0 superseded, 1 inbox, 1\/200 index lines, last write: \d{4}-\d{2}-\d{2}T/,
     );
   });
 
@@ -146,7 +168,7 @@ describe('buildMemoryReport', () => {
 
     const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
     expect(report).toContain('Fresh fact (project)');
-    expect(report).toMatch(/Health: 1 approved, 0 inbox/);
+    expect(report).toMatch(/Health: 1 approved, 0 superseded, 0 inbox/);
   });
 
   it('renders paths in inline code spans so marked preserves backslashes', () => {

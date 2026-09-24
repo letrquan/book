@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { ToolContext } from '../types/tools.js';
@@ -57,6 +65,47 @@ afterEach(() => {
 
 describe('MemorySave tool', () => {
   describe('save action', () => {
+    it('asks the model to consolidate as the index nears its load limit', async () => {
+      const memoryDir = getProjectMemoryDir(workspace);
+      mkdirSync(memoryDir, { recursive: true });
+      const filler = Array.from({ length: 165 }, (_, i) => `- [Fact ${i}](fact-${i}.md) — project`);
+      writeFileSync(join(memoryDir, 'MEMORY.md'), ['# Book memory index', ...filler].join('\n'));
+      const near = await memorySaveTool.execute(
+        { action: 'save', type: 'project', title: 'One more', body: 'A fact.' },
+        createContext(),
+      );
+      expect(near.content).toContain('Consolidate soon');
+
+      const over = Array.from({ length: 205 }, (_, i) => `- [Fact ${i}](fact-${i}.md) — project`);
+      writeFileSync(join(memoryDir, 'MEMORY.md'), ['# Book memory index', ...over].join('\n'));
+      const past = await memorySaveTool.execute(
+        { action: 'save', type: 'project', title: 'Yet another', body: 'A fact.' },
+        createContext(),
+      );
+      expect(past.content).toContain('only the first 200 load');
+    });
+
+    it('supersedes an existing entry when asked', async () => {
+      await memorySaveTool.execute(
+        { action: 'save', type: 'project', title: 'Old rule', body: 'Use tabs.', slug: 'style' },
+        createContext(),
+      );
+      const result = await memorySaveTool.execute(
+        {
+          action: 'save',
+          type: 'project',
+          title: 'New rule',
+          body: 'Use spaces.',
+          supersedes: 'style',
+        },
+        createContext(),
+      );
+      expect(result.status).toBe('success');
+      const memoryDir = getProjectMemoryDir(workspace);
+      expect(readFileSync(join(memoryDir, 'style.md'), 'utf-8')).toContain('status: superseded');
+      expect(readFileSync(join(memoryDir, 'MEMORY.md'), 'utf-8')).not.toContain('style.md');
+    });
+
     it('saves directly to approved store and index when requireApproval is false (default)', async () => {
       const notices: string[] = [];
       const context = createContext({

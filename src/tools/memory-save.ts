@@ -1,6 +1,7 @@
 import { basename } from 'path';
 import type { ToolCategory, ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import {
+  DEFAULT_MAX_INDEX_LINES,
   MAX_BODY_CHARS,
   MEMORY_TYPES,
   type MemoryType,
@@ -129,6 +130,8 @@ export async function memorySaveExecute(
   const sessionId = context.sessionId;
   // Raw: `saveMemory` resolves and sanitizes the slug through `memoryFileForSlug`.
   const slug = typeof args.slug === 'string' && args.slug.trim() ? args.slug : undefined;
+  const supersedes =
+    typeof args.supersedes === 'string' && args.supersedes.trim() ? args.supersedes : undefined;
 
   const result = saveMemory(
     workspace,
@@ -140,6 +143,7 @@ export async function memorySaveExecute(
       source: 'auto',
       externalContext,
       sessionId,
+      supersedes,
     },
     {
       requireApproval,
@@ -174,7 +178,15 @@ export async function memorySaveExecute(
 
   const notice = `memory saved: ${title}`;
   context.onNotice?.(notice);
-  return toolSuccess(`Memory saved: ${result.path}\n${result.indexLine ?? ''}`.trim(), {
+  // Near the load limit, ask the model to consolidate: entries past the limit do not load.
+  const lines = result.indexLineCount ?? 0;
+  const pressure =
+    lines > DEFAULT_MAX_INDEX_LINES
+      ? `\nMEMORY.md has ${lines} lines; only the first ${DEFAULT_MAX_INDEX_LINES} load in a new session. Consolidate now: merge related entries (update one, supersede the rest) and delete stale ones.`
+      : lines >= Math.floor(DEFAULT_MAX_INDEX_LINES * 0.8)
+        ? `\nMEMORY.md has ${lines} of ${DEFAULT_MAX_INDEX_LINES} loadable lines. Consolidate soon: merge related entries and delete stale ones.`
+        : '';
+  return toolSuccess(`Memory saved: ${result.path}\n${result.indexLine ?? ''}${pressure}`.trim(), {
     data: {
       memorySaved: true,
       action: 'save',
@@ -215,6 +227,11 @@ export const memorySaveTools: ToolDefinition[] = [
         slug: {
           type: 'string',
           description: 'Existing memory file slug/name to update or delete.',
+        },
+        supersedes: {
+          type: 'string',
+          description:
+            'For save: slug of an existing memory this new one replaces (a correction or a newer decision). The old entry leaves the index and is kept on disk as history. To change an entry in place, pass its slug instead.',
         },
       },
       required: ['action'],
