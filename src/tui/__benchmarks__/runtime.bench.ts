@@ -7,7 +7,7 @@ import { performance } from 'perf_hooks';
 import { RewindSnapshotStore } from '../../rewind/snapshot-store.js';
 import { SessionStore } from '../../session/store.js';
 import { fileTools } from '../../tools/file.js';
-import { webTools } from '../../tools/web.js';
+import { createWebTools } from '../../tools/web.js';
 import { shellTools } from '../../tools/shell.js';
 import { AgentContextCache, buildMessages } from '../../agent/context.js';
 import { defaultConfig } from '../../test/fixtures.js';
@@ -329,10 +329,10 @@ async function main(): Promise<void> {
       });
     }
 
-    const fetchTool = webTools.find((tool) => tool.name === 'WebFetch');
+    const fetchTool = createWebTools({
+      fetch: async () => new Response('x'.repeat(1024 * 1024)),
+    }).find((tool) => tool.name === 'WebFetch');
     if (!fetchTool) throw new Error('WebFetch tool unavailable');
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => new Response('x'.repeat(1024 * 1024));
     await measure(
       'resources: large WebFetch response',
       async () => {
@@ -343,8 +343,6 @@ async function main(): Promise<void> {
       },
       { bytesRead: 256 * 1024 },
     );
-    globalThis.fetch = originalFetch;
-
     const shellOutput = shellTools.find((tool) => tool.name === 'BashOutput');
     if (!shellOutput) throw new Error('BashOutput tool unavailable');
     const shells: BackgroundShellStore = { nextId: 101, shells: new Map() };

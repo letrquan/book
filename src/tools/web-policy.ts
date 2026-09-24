@@ -189,8 +189,9 @@ export function connectionBlockedReason(error: unknown): string | undefined {
 /**
  * Validate every address returned to the HTTP connector to close the DNS-rebinding gap.
  *
- * A dispatcher is only consulted by the undici that created it, so this hook guards a request
- * only when that same undici issues it -- see `undiciWebFetch` in `web.ts`. Both callback shapes
+ * The hook guards a request only when an undici `Agent` built with it issues the request. Node's
+ * bundled `fetch` rejects this package's Agent, so `web.ts` fetches through undici's own
+ * `fetch`. Both callback shapes
  * are supported because the contract allows either: `options.all` takes the address list, and the
  * single-address form takes one address plus its family.
  */

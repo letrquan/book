@@ -212,9 +212,24 @@ All notable changes to this project are documented in this file.
   handed to Node's **global** `fetch`, which is Node's own bundled undici. undici 8 requires the new
   request-handler interface (`onRequestStart`), the bundled one still builds the legacy shape, and
   the dispatcher rejected the request outright -- `invalid onRequestStart method`, thrown before the
-  lookup hook was ever called. A dispatcher is only consulted by the undici that created it, so
-  `WebFetch`/`WebSearch` now issue their requests through undici's own `fetch` (`undiciWebFetch`),
-  which puts the guard back on the connect path.
+  lookup hook was ever called. `WebFetch`/`WebSearch` now issue their requests through undici's own
+  `fetch`, which puts the guard back on the connect path.
+
+  **Loading undici 8 had a side effect on Node 22.**
+  - **What went wrong:** undici 8 installs its own Agent in both global-dispatcher slots when its
+    new slot is empty. On Node 22 it always is, because the bundled undici reads only the legacy
+    slot. So a static import replaced the dispatcher Node's own `fetch` uses for provider traffic,
+    including the proxy agent `NODE_USE_ENV_PROXY` installs at startup. Model calls silently went
+    around the proxy.
+  - **The fix:**
+    - undici is now imported on first use;
+    - the legacy slot is put back after the import;
+    - the strict dispatcher is built inside `createWebTools`.
+    - Building the tool registry at startup no longer loads undici at all.
+  - **Checked** with a fake proxy on Node 22.23.3. Before the fix, once `web.ts` loaded, Node's
+    `fetch` went direct (`ENOTFOUND`). Now it still reaches the proxy, and `WebFetch` still works.
+  - **`bench:runtime`:** its WebFetch case stubbed `globalThis.fetch`, which the tool no longer uses,
+    so it had started hitting the network. The stub now goes in through `createWebTools`.
 
   Because the diagnosis says the guard was skipped rather than loosened, the fix is only trustworthy
   if the guard is shown working: `safeNetworkLookup` now has direct tests for **both** callback
@@ -243,8 +258,8 @@ All notable changes to this project are documented in this file.
 - **Node.js 22.19 or newer is now required** (previously 22.13). undici 8 declares
   `engines.node: >=22.19.0`, so the package floor moves with it. CI's low leg is pinned to that
   exact floor rather than `22.x`: `22.x` resolves to the newest 22, which is why a dependency
-  raising the real floor above the declared one went unnoticed until now.
-
+  raising the real floor above the declared one went unnoticed until now. `package-lock.json`'s
+  own engines entry now matches it.
 
 ## [0.2.0] - 2026-09-08
 

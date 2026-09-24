@@ -724,3 +724,64 @@ describe('WebSearch', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+
+describe('default web transport', () => {
+  const LEGACY_SLOT = Symbol.for('undici.globalDispatcher.1');
+
+  function fakeUndici(onImport: () => void = () => {}) {
+    class FakeAgent {
+      constructor(readonly options: unknown) {}
+    }
+    const fetch = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>(
+      async () => new Response('hello', { status: 200, headers: { 'content-type': 'text/plain' } }),
+    );
+    const importUndici = vi.fn(async () => {
+      onImport();
+      return { Agent: FakeAgent, fetch } as unknown as typeof import('undici');
+    });
+    return { FakeAgent, fetch, importUndici };
+  }
+
+  it('sends WebFetch through undici with the strict dispatcher when no fetch is injected', async () => {
+    const { FakeAgent, fetch, importUndici } = fakeUndici();
+    const tools = createWebTools({ resolveHostname: publicResolver, importUndici });
+
+    const result = await findTool(tools, 'WebFetch').execute(
+      { url: 'https://example.com/' },
+      context(),
+    );
+
+    expect(result.status).toBe('success');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const init = fetch.mock.calls[0]?.[1] as { dispatcher?: unknown } | undefined;
+    expect(init?.dispatcher).toBeInstanceOf(FakeAgent);
+  });
+
+  it('puts back the global dispatcher Node uses when undici loads', async () => {
+    const slots = globalThis as unknown as Record<symbol, unknown>;
+    const original = slots[LEGACY_SLOT];
+    const nodeDispatcher = { name: 'node-bundled-dispatcher' };
+    slots[LEGACY_SLOT] = nodeDispatcher;
+    try {
+      const { importUndici } = fakeUndici(() => {
+        // What undici 8 does on load when its own slot is empty, as it always is on Node 22.
+        slots[LEGACY_SLOT] = { name: 'undici-8-agent' };
+      });
+      const tools = createWebTools({ resolveHostname: publicResolver, importUndici });
+
+      await findTool(tools, 'WebFetch').execute({ url: 'https://example.com/' }, context());
+
+      expect(importUndici).toHaveBeenCalledTimes(1);
+      expect(slots[LEGACY_SLOT]).toBe(nodeDispatcher);
+    } finally {
+      slots[LEGACY_SLOT] = original;
+    }
+  });
+
+  it('does not load undici until a web tool runs', () => {
+    const { importUndici } = fakeUndici();
+    createWebTools({ resolveHostname: publicResolver, importUndici });
+
+    expect(importUndici).not.toHaveBeenCalled();
+  });
+});
