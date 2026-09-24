@@ -1624,7 +1624,7 @@ describe('resuming an interrupted backlog', () => {
   });
 });
 
-describe('Task-style child re-driven after a restart', () => {
+describe('children re-driven after a restart', () => {
   const previousBookHome = process.env.BOOK_HOME;
   let root: string;
 
@@ -1666,8 +1666,9 @@ describe('Task-style child re-driven after a restart', () => {
     return new Response(stream, { status: 200 });
   }
 
-  it('delivers the re-run of a child whose spawner suppressed delivery', async () => {
-    root = mkdtempSync(join(tmpdir(), 'resume-task-child-'));
+  /** Spawns a child, kills the process while it runs, restarts, and collects completions. */
+  async function restartAndCollect(parentToolCallId: string | undefined) {
+    root = mkdtempSync(join(tmpdir(), 'resume-child-'));
     process.env.BOOK_HOME = join(root, 'book-home');
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
@@ -1686,9 +1687,10 @@ describe('Task-style child re-driven after a restart', () => {
       prompt: 'survey',
       parentSessionId: 'parent-1',
       notifyParentOnCompletion: false,
+      ...(parentToolCallId ? { parentToolCallId } : {}),
     });
     await new Promise((resolve) => setTimeout(resolve, 200));
-    // The process exits (Ctrl-C, quit) while Task is still waiting on the child.
+    // The process exits (Ctrl-C, quit) while the spawner is still waiting on the child.
     const internals = first as unknown as {
       exitHandler: () => void;
       store?: { dispose?: () => void };
@@ -1714,11 +1716,26 @@ describe('Task-style child re-driven after a restart', () => {
       await new Promise((resolve) => setTimeout(resolve, 300));
       await second.waitForIdle();
       await new Promise((resolve) => setTimeout(resolve, 100));
-
-      expect((await second.get(spawned.id))?.result).toBe('resumed answer');
-      expect(completions).toHaveLength(1);
+      return { result: (await second.get(spawned.id))?.result, completions };
     } finally {
       second.dispose();
+      try {
+        first.dispose();
+      } catch {
+        /* already disposed */
+      }
     }
+  }
+
+  it('delivers the re-run of a Task child whose first run Task would have handed back', async () => {
+    const { result, completions } = await restartAndCollect('call-task-1');
+    expect(result).toBe('resumed answer');
+    expect(completions).toHaveLength(1);
+  });
+
+  it('keeps a /review-style child silent after a restart', async () => {
+    const { result, completions } = await restartAndCollect(undefined);
+    expect(result).toBe('resumed answer');
+    expect(completions).toHaveLength(0);
   });
 });
