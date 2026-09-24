@@ -169,8 +169,10 @@ A block ends at its first closing tag, and only when its shape leaves no doubt:
 - the closing tag ends its line, outside any code the block opened;
 - no other reasoning tag appears inside the block.
 
-Otherwise the reply is left and printed exactly as the model wrote it, reasoning included, rather
-than risk cutting answer text. A tag later in the answer is answer
+An empty block (`<think></think>`) always splits. Otherwise the reply is left and printed exactly
+as the model wrote it, reasoning included, rather than risk cutting answer text. A reply that
+itself opens with an unfenced reasoning tag, such as a template, loses that block; fence or quote
+the tag to keep it. A tag later in the answer is answer
 text, and an answer with no such block is printed exactly as written, plus a newline. `stream-json` partial deltas
 (`--include-partial-messages`) still carry the raw tags; the complete `assistant` record carries the
 split content.

@@ -1124,13 +1124,17 @@ function progressLine(text: string, max: number): string {
     const control =
       code < 32 ||
       (code >= 0x7f && code <= 0x9f) ||
-      (code >= 0x202a && code <= 0x202e) ||
+      code === 0x061c ||
+      code === 0x200e ||
+      code === 0x200f ||
+      (code >= 0x2028 && code <= 0x202e) ||
       (code >= 0x2066 && code <= 0x2069);
     return control ? ' ' : char;
   })
     .join('')
     .trimEnd();
-  return printable.length > max ? `${printable.slice(0, max - 1)}…` : printable;
+  const chars = Array.from(printable);
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : printable;
 }
 
 /**

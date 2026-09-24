@@ -177,7 +177,8 @@ All notable changes to this project are documented in this file.
   - **Otherwise the reply is left exactly as written.** The split never looks further, because a
     later tag may be one the answer mentions, and text stays in the answer rather than leaving it.
     That covers several cases:
-    - a block the model never closed;
+    - a block the model never closed, unless the answer's first closing tag happens to sit in an
+      accepted shape;
     - reasoning that mentions a reasoning tag;
     - an answer on the same line as the closing tag;
     - a close on the last line of prose.
@@ -218,10 +219,11 @@ All notable changes to this project are documented in this file.
   - `-q/--quiet` turns the lines off, `retry:` lines included.
   - `json` and `stream-json` get no progress lines.
   - The SDK's `query()` runs quiet, so a host's stderr gets no progress or `retry:` lines either.
-  - A consumer that stops reading (`2>&1 | head`) no longer kills a text-mode run with an
-    unhandled EPIPE, and SessionEnd hooks still run.
-  - In `json` and `stream-json`, where stdout carries the whole run, a closed stdout stops the run
-    instead, so a run whose host has gone does not keep editing files.
+  - A consumer that stops reading (`2>&1 | head`) no longer kills a `text` or `json` run with an
+    unhandled EPIPE. Those formats write stdout once, at the end, and SessionEnd hooks still run.
+  - In `stream-json`, where stdout carries the whole run, a closed stdout aborts the run, so a
+    run whose host has gone does not keep editing files. Like any cancelled print run, it then ends
+    without SessionEnd.
   - Control characters in a tool argument are replaced in progress lines, so an argument cannot
     rewrite the terminal.
 

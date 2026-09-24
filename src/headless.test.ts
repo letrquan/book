@@ -1367,7 +1367,7 @@ describe('runHeadless — text progress on stderr', () => {
     const ws = makeWorkspace();
     const filePath = 'sample.txt';
     writeFileSync(join(ws, filePath), 'file content');
-    const progressFilePath = `${filePath}\r\u001b]0;pwned\u0007`;
+    const progressFilePath = `${filePath}\r\u001b]0;pwned\u0007\u202e\u0085\u200f\u2028x`;
 
     let requestCount = 0;
     vi.stubGlobal(
@@ -1401,6 +1401,9 @@ describe('runHeadless — text progress on stderr', () => {
     expect(stdoutWrites.join('')).toBe('done\n');
     expect(stderrWrites.every((write) => !write.includes('\u001b'))).toBe(true);
     expect(stderrWrites.every((write) => !write.includes('\r'))).toBe(true);
+    for (const control of ['\u202e', '\u0085', '\u200f', '\u2028']) {
+      expect(stderrWrites.every((write) => !write.includes(control))).toBe(true);
+    }
   });
 
   it('suppresses tool progress on stderr when quiet is true', async () => {
