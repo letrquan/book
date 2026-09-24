@@ -232,17 +232,30 @@ function endsInsideInlineCode(text: string): boolean {
   return open !== null;
 }
 
+/** A reasoning tag of any of the four names, opening or closing. */
+const ANY_REASONING_TAG = /<\/?(?:think|thinking|reasoning|reasoning_context)>/i;
+
 /**
- * Whether the closing tag at `start`..`end` of a block opened at `blockStart` ends that block. An
- * empty block ends at it. Otherwise the tag must end its line and be outside any fence or inline
- * code span the block itself opened. Only the block's own text is consulted, so nothing in the
- * answer can make a later tag look like the end, and a tag the answer merely mentions -- in
- * prose, in code, in quotes -- does not end the block.
+ * Whether the closing tag at `start`..`end` of a block opened at `blockStart` ends that block.
+ * An empty block ends at it. Otherwise the block must leave no doubt, because what a split moves
+ * leaves the answer for good:
+ * - the tag ends its line;
+ * - the block sits on one line, or its opening tag ends its line and the closing tag starts one
+ *   (Book's own replay format, and DeepSeek/Qwen output);
+ * - no other reasoning tag appears inside it, which rules out quoted-tag chains and mismatched
+ *   closes;
+ * - the tag is outside any fence or inline code span the block opened.
+ * Only the block's own text is consulted, so nothing in the answer can make a later tag look like
+ * the end.
  */
 function endsBlock(content: string, blockStart: number, start: number, end: number): boolean {
   const text = content.slice(blockStart, start);
   if (text.trim() === '') return true;
   if (!/^[ \t]*(?:\r?\n|$)/.test(content.slice(end))) return false;
+  if (ANY_REASONING_TAG.test(text)) return false;
+  const oneLine = !text.includes('\n');
+  const ownLines = /^[ \t]*\r?\n/.test(text) && /\n[ \t]*$/.test(text);
+  if (!oneLine && !ownLines) return false;
   return !endsInsideFence(text) && !endsInsideInlineCode(text);
 }
 
@@ -289,8 +302,7 @@ function answerStart(content: string, rest: number): number {
  * one after another; a tag later in the answer is content, because answers
  * quote these tags (a review finding about them, a prompt template, prose in
  * backticks). A block ends at its first closing tag only if
- * that tag ends its line outside any fence or inline code the block opened (an empty block
- * always ends there); otherwise the reply is left
+ * its shape leaves no doubt (see `endsBlock`; an empty block always ends there); otherwise the reply is left
  * as written, and a block that never closes is kept as answer text for the same reason
  * `stripReasoningTags` keeps it.
  *

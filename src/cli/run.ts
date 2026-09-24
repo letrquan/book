@@ -231,14 +231,22 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         });
         sessionStore?.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
 
-        // Once the reader is gone, output is best-effort: a consumer that stops reading
-        // (`book -p … 2>&1 | head`) must not crash the run with an unhandled EPIPE, which also
-        // skipped its SessionEnd hooks.
-        const ignoreClosedPipe = (error: NodeJS.ErrnoException) => {
+        // Once a reader is gone, stderr and a text answer are best-effort: `book -p … 2>&1 | head`
+        // must not crash the run with an unhandled EPIPE, which also skipped its SessionEnd hooks.
+        // json and stream-json write stdout for the whole run, so a closed stdout means the host
+        // has gone: stop the run (SessionEnd still runs) rather than keep editing files for no one.
+        const printFormat = options.outputFormat as 'text' | 'json' | 'stream-json';
+        const readerGone = new AbortController();
+        const callerSignal = options.signal as AbortSignal | undefined;
+        const printSignal = callerSignal
+          ? AbortSignal.any([callerSignal, readerGone.signal])
+          : readerGone.signal;
+        const onClosedPipe = (stream: 'stdout' | 'stderr') => (error: NodeJS.ErrnoException) => {
           if (error.code !== 'EPIPE') throw error;
+          if (stream === 'stdout' && printFormat !== 'text') readerGone.abort();
         };
-        process.stderr.on('error', ignoreClosedPipe);
-        process.stdout.on('error', ignoreClosedPipe);
+        process.stderr.on('error', onClosedPipe('stderr'));
+        process.stdout.on('error', onClosedPipe('stdout'));
         result = await runHeadless(config, registry, {
           prompt: typeof options.print === 'string' ? (options.print as string) : undefined,
           inputFormat: options.inputFormat as 'text' | 'stream-json',
@@ -250,7 +258,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           carriedUsage: bootstrap.carriedUsage,
           carriedModels: bootstrap.carriedModels,
           mode,
-          signal: options.signal as AbortSignal | undefined,
+          signal: printSignal,
           maxTurns: parseNumericFlag(options.maxTurns, '--max-turns', { integer: true }),
           maxBudgetUsd: parseNumericFlag(options.maxBudgetUsd, '--max-budget-usd'),
           verbose: options.verbose as boolean | undefined,

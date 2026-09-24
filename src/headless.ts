@@ -1118,10 +1118,15 @@ const PROGRESS_ERROR_MAX = 160;
  */
 function progressLine(text: string, max: number): string {
   const first = text.trim().split(/\r?\n/, 1)[0];
-  // A control character (a bare CR, an escape sequence) would let an argument rewrite the terminal.
+  // A control character (a bare CR, an escape sequence, a bidi override) would let an argument or a tool name rewrite the terminal.
   const printable = Array.from(first, (char) => {
-    const code = char.charCodeAt(0);
-    return code < 32 || code === 127 ? ' ' : char;
+    const code = char.codePointAt(0) ?? 0;
+    const control =
+      code < 32 ||
+      (code >= 0x7f && code <= 0x9f) ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069);
+    return control ? ' ' : char;
   })
     .join('')
     .trimEnd();
@@ -1138,7 +1143,9 @@ function progressLine(text: string, max: number): string {
 function writeTextProgress(event: AgentEvent, opts: HeadlessOptions): void {
   if (event.type === 'tool_use') {
     const arg = progressLine(getPrimaryArg(event.toolCall.arguments), PROGRESS_ARG_MAX);
-    process.stderr.write(`[${event.toolCall.name}]${arg ? ` ${arg}` : ''}\n`);
+    process.stderr.write(
+      `[${progressLine(event.toolCall.name, PROGRESS_ARG_MAX)}]${arg ? ` ${arg}` : ''}\n`,
+    );
     return;
   }
   if (event.type === 'tool_result' && opts.verbose === true) {
