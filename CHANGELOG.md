@@ -6,6 +6,30 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A long reply no longer jitters sideways while it streams.** Once a reply outgrew the live
+  window (`width × 24` characters), the window's start moved forward with every streamed delta,
+  sometimes cutting a word in half. Every wrapped line of the tail then reflowed on every frame,
+  and the incremental renderer rewrote ~26 rows for a 12-character delta. When no paragraph break
+  or block start follows the cutoff, the tail now starts at a cutoff rounded up to `width × 4`
+  steps, so the window stays within its old size and only grows at its end between steps. It
+  begins at the first word that does not read as a heading, list or quote marker (`#`, `-`, `3.`,
+  …), which would otherwise turn the whole live tail into that block. Measured on a real PTY over
+  a single 800-word paragraph, frames that reflowed the whole tail fell from 249 to 16, and the
+  incremental renderer's output fell from 966 KB to 178 KB. A reply broken into paragraphs, and a
+  code block, are still cut from the raw cutoff as before. The full-frame renderer that Windows
+  uses by default still repaints every row, so its output is unchanged. On Windows, the fix removes
+  the jitter but does not reduce the bytes written.
+- **Windows paths in `/memory` commands no longer lose backslashes to markdown parsing.** `/memory`
+  reports and effects rendered paths unescaped through `marked`, which treated backslashes as
+  markdown escape sequences. Paths are now wrapped in inline code spans.
+- **A print-mode prompt written after other flags is no longer rejected.** `--print [prompt]`
+  takes the prompt as its own optional value, so `book -p --model m "fix it"` left the prompt as a
+  stray positional and commander refused it with "too many arguments" (#226). The root command now
+  takes one positional argument, the prompt, and treats it as the `--print` value in either
+  position, the way Claude Code does. Giving the prompt twice is an error rather than a silent
+  choice, and so is a positional without `--print`, since the TUI has no initial prompt; the
+  message says to add `-p` and points at `book --help`, since a mistyped subcommand lands there
+  too.
 - **A lead no longer reports results a delegated agent has not produced.** `AgentSpawn` returns as
   soon as the child is queued, and the only hint in the result was `"status": "queued"` inside an
   otherwise bare record. Watched in the TUI, the lead read that and printed "Sidekick reported.
@@ -20,6 +44,36 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **Corrections replace old memories instead of piling up.** `MemorySave` and background extraction
+  accept `supersedes`: the replaced entry is kept on disk (`status: superseded`, `supersededBy`) but
+  leaves `MEMORY.md`, so it no longer loads. Index lines now carry a one-line hook from the body, and
+  near the 200-line load limit `MemorySave` asks the model to consolidate.
+- **Book now catches the memories the model forgot to save.** At the next interactive start, idle
+  earlier sessions of the same workspace are read once in the background by the compact model, which
+  writes the durable facts, corrections, and references it finds (`origin: extraction`). Sessions
+  that brought in external content are skipped; only user and assistant text is read. Settings under
+  `memory.extraction`. Verified in the real TUI: a convention the working model had not saved was
+  recovered from the earlier session and applied in a fresh one.
+- **`npm run eval:memory`** measures model-written memory against a no-memory baseline across
+  models: recall on durable items, harm, over- and under-memory, save precision, and poison
+  injection. See README.
+- **Phase 1 part A memory improvements: model writes via `MemorySave`, provenance schema, and opt-in approval.**
+  - Added the `MemorySave` tool for saving and deleting memory facts directly from the model loop, with secret rejection via `shouldRejectMemoryText` and body size caps at 1600 characters. Allowed in every permission mode except `plan` mode, where it is hidden, and excluded for subagents; a `permissions.deny` rule still blocks it, and a `permissions.ask` rule prompts in the modes that prompt. The user removes an entry with `/memory delete <file>` (file name only — a model write can shift a listing's numbering between commands), `/memory status` and `/memory inbox` read the store from disk so a memory saved mid-session is visible immediately, and a slug may be given as a path (`memory/build-cmd.md` resolves to `build-cmd.md`).
+  - Widened `MemoryCandidate` with provenance metadata (`origin: 'model-tool' | 'extraction' | 'user-text'`, `sessionId`, `externalContext`, `evidence`), while retaining full backward compatibility when reading legacy files with only `source`.
+  - Changed `memory.requireApproval` to opt-in with default `false`: memory writes go directly to the approved store and `MEMORY.md` index by default, with `.inbox/` routing preserved when set to `true`.
+  - Added `memory.quarantineExternal` (default `true`) to automatically quarantine memories saved in sessions that read external content — a web fetch or search, an MCP tool, or a `Task`/`AgentRead`/`AgentGet`/`AgentWait` result — to `.inbox/` for review regardless of `memory.requireApproval`. Content read through `Bash` is not detected, and a call that was denied, skipped, or refused in plan mode does not count as having read anything.
+  - Replaced the regex-based auto-capture on user messages with the `MemorySave` tool and updated the system prompt spec to guide model writes and prevent storing instructions found in files or tool output.
+- **Phase 0 memory improvements: read-path instructions, visibility, and health reporting.**
+  The system prompt's cached local memory section now provides the absolute memory directory,
+  instructs the model to read relevant memory markdown files on demand, and directs it to note when
+  a fact is memory-derived and potentially stale while preserving evaluation-path masking determinism.
+  The Read tool now admits read-only roots outside the workspace, allowing the model to read memory
+  files in the memory directory while mutation tools continue to reject writes outside the workspace.
+  Captured memory candidates now emit an agent notice rendered as a single-line message in the TUI
+  (`memory candidate saved: <title> — /memory inbox`) and surfaced in print mode and the SDK, while
+  pending candidate counts are delivered in the per-turn `<session-state>` block. `/memory status` and
+  `book doctor` now report a filesystem-only memory health line (approved memory count, inbox count,
+  index lines, and newest write date).
 - **The turn that trips the compaction threshold no longer waits for the summarizer.** When a
   response reports usage over the threshold and has tool calls to make, the reducer now starts on
   a snapshot of the history ahead of the tool wave and the turn goes on over the full history; at

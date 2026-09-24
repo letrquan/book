@@ -55,8 +55,8 @@ src/
   debug-log.ts          Debug logging (BOOK_DEBUG*)
   secret-detect.ts      Reject secret/unfit text before memory writes
   async.ts              Small async utilities
-  memory-*.ts           memory-store.ts (file store + MEMORY.md index),
-                        memory-autosave.ts (capture candidates), memory-display.ts (/memory)
+  memory-*.ts           memory-store.ts (file store + MEMORY.md index + provenance),
+                        memory-display.ts (/memory)
   jobs/                 Background shell manager, persistent state, and restart recovery
   agent/
     loop.ts             Core agent loop (runAgentLoop)
@@ -228,7 +228,7 @@ When changing these, update `README.md` / `CHANGELOG.md` / `MILESTONES.md` as ap
 - Built-in slash commands in `src/commands/builtins.ts` (+ dispatch in `src/tui/app.tsx`)
 - Default tool set in `src/tools/registry.ts` `createDefaultRegistry()`
 - Permission modes: `PermissionMode` in `src/types/runtime.ts`
-- Memory paths and approval flow in `src/memory-store.ts` / `src/memory-autosave.ts`
+- Memory paths and approval flow in `src/memory-store.ts` / `src/tools/memory-save.ts`
 - Managed-agent behavior in `src/agents/` (README "Managed agents" is the detailed spec)
 - `/review` pipeline behavior in `src/review/` (README "Code review" is the detailed spec). The
   review target is resolved by the host, never by the reviewer — reviewer agents have no diff tool,

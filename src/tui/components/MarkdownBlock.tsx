@@ -365,7 +365,33 @@ function standaloneBlockStart(content: string, offset: number): number | undefin
   return undefined;
 }
 
-function contextualStreamingTail(content: string, maxCharacters: number): string {
+/** A prose word that would open a Markdown block (heading, list item, quote) at a tail's start. */
+const BLOCK_MARKER_WORD = /^(?:#{1,6}|[-+*>]|\d{1,9}[.)])(?:\s|$)/;
+
+/** The first word start at or after `offset` and before `limit`, if there is one. */
+function wordStartAfter(content: string, offset: number, limit: number): number | undefined {
+  const match = content.slice(offset - 1, limit).search(/\s\S/);
+  return match === -1 ? undefined : offset + match;
+}
+
+/**
+ * Where the prose fallback tail starts. The cutoff rounds up to a multiple of `step`, so the
+ * start stays fixed while the response grows and the tail only gains text at its end between
+ * jumps. It then moves to the first word that does not read as a heading, list item or quote
+ * marker, which would turn the whole tail into that block. With no such word within one step,
+ * the rounded cutoff is used as is.
+ */
+function proseTailStart(content: string, cutoff: number, step: number): number {
+  const rounded = Math.ceil(cutoff / step) * step;
+  const limit = rounded + step;
+  let start = wordStartAfter(content, rounded, limit);
+  while (start !== undefined && BLOCK_MARKER_WORD.test(content.slice(start, start + 12))) {
+    start = wordStartAfter(content, start + 1, limit);
+  }
+  return start ?? rounded;
+}
+
+function contextualStreamingTail(content: string, maxCharacters: number, step: number): string {
   const desiredStart = content.length - maxCharacters;
   if (desiredStart <= 0) return content;
 
@@ -381,7 +407,7 @@ function contextualStreamingTail(content: string, maxCharacters: number): string
     blankLine === -1 ? standaloneBlockStart(content, desiredStart) : undefined;
   const start = blankLine >= 0 ? blankLine + 2 : standaloneStart;
   if (start === undefined) {
-    const tail = content.slice(desiredStart);
+    const tail = content.slice(proseTailStart(content, desiredStart, step));
     return /[*_`~[\]<>|\\]/.test(tail) ? '' : tail;
   }
   const startContext = fenceContextAt(content, start);
@@ -396,8 +422,9 @@ export function streamingMarkdownWindow(content: string, terminalWidth?: number)
   // Keep enough history for the live tail to feel continuous without making
   // every throttled Markdown parse scale with the full assistant response.
   const maxCharacters = width * 24;
+  const step = width * 4;
   if (content.length <= maxCharacters) return content;
-  return `… earlier response hidden while streaming\n\n${contextualStreamingTail(content, maxCharacters)}`;
+  return `… earlier response hidden while streaming\n\n${contextualStreamingTail(content, maxCharacters, step)}`;
 }
 
 function InlineRuns({ runs }: { runs: InlineRun[] }) {
