@@ -7,6 +7,7 @@ import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { toolFailure, toolSuccess } from './result.js';
+import { MAX_SAFE_TIMEOUT_MS } from './timeouts.js';
 
 let dir: string;
 const ctx: ToolContext = { workspaceRoot: '', env: {} };
@@ -717,5 +718,28 @@ describe('tool retry', () => {
     expect(callCount).toBe(2);
     expect(result.status).toBe('success');
     expect(result.metrics?.retryAttempt).toBe(2);
+  });
+});
+
+describe('timeout backstop', () => {
+  it('never schedules a backstop past the timer limit', () => {
+    const registry = createDefaultRegistry();
+    for (const context of [
+      { workspaceRoot: process.cwd(), env: { BOOK_TOOL_TIMEOUT_MS: '3000000000' } },
+      {
+        workspaceRoot: process.cwd(),
+        env: {},
+        agentConfig: { settings: { agents: { taskTimeoutMs: 3_000_000_000 } } },
+      },
+    ]) {
+      const prepared = registry.prepare(
+        { id: 'task-1', name: 'Task', arguments: { agent: 'explorer', prompt: 'x' } },
+        context as unknown as ToolContext,
+      );
+      expect(prepared.status).toBe('ready');
+      if (prepared.status === 'ready') {
+        expect(prepared.prepared.timeoutMs).toBeLessThanOrEqual(MAX_SAFE_TIMEOUT_MS);
+      }
+    }
   });
 });

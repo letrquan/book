@@ -265,3 +265,84 @@ describe('Task tool', () => {
     }
   });
 });
+
+describe('Task child continued with AgentSend', () => {
+  let root: string;
+  let bookHome: string;
+  const previousBookHome = process.env.BOOK_HOME;
+
+  beforeEach(() => {
+    bookHome = mkdtempSync(join(tmpdir(), 'task-send-home-'));
+    process.env.BOOK_HOME = bookHome;
+    root = mkdtempSync(join(tmpdir(), 'task-send-root-'));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    if (previousBookHome === undefined) delete process.env.BOOK_HOME;
+    else process.env.BOOK_HOME = previousBookHome;
+    rmSync(bookHome, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function streamed(text: string): Response {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'data: ' + JSON.stringify({ choices: [{ delta: { content: text } }] }) + '\n\n',
+          ),
+        );
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }
+
+  it('delivers the follow-up run of a Task child to the parent', async () => {
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => streamed(call++ === 0 ? 'first answer' : 'follow-up answer')),
+    );
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const manager = new AgentManager(config, [], {
+      storeRoot: root,
+      findGitRoot: async () => undefined,
+    });
+    const completions: string[] = [];
+    manager.subscribe((event) => {
+      if (event.type === 'agent_completion') completions.push(event.type);
+    });
+    const runtime = new SessionRuntime();
+    runtime.agentManager = manager;
+    const context: ToolContext = {
+      workspaceRoot: root,
+      env: {},
+      agentConfig: config,
+      availableTools: [],
+      currentMode: 'bypassPermissions',
+      runtime,
+    };
+    try {
+      const result = await taskTool[0].execute({ agent: 'explorer', prompt: 'explore' }, context);
+      expect(result.status).toBe('success');
+      // Task hands its own run back, so that run is not delivered again.
+      expect(completions).toHaveLength(0);
+
+      const [child] = await manager.list();
+      await manager.send(child.id, 'please continue');
+      await manager.waitForIdle();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect((await manager.get(child.id))?.result).toBe('follow-up answer');
+      expect(completions).toHaveLength(1);
+    } finally {
+      manager.dispose();
+      runtime.dispose();
+    }
+  });
+});

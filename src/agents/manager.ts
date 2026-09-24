@@ -1004,6 +1004,9 @@ export class AgentManager {
     }
 
     record.prompt = trimmed;
+    // A follow-up run is the parent's, not the spawner's: a Task child's first run is handed
+    // back by Task itself (notifyParentOnCompletion: false), but nothing is waiting on this one.
+    record.notifyParentOnCompletion = undefined;
     record.pendingMessages = [];
     record.error = undefined;
     record.result = undefined;

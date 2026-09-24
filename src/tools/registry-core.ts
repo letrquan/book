@@ -4,7 +4,7 @@ import { TOOL_ALIASES } from './aliases.js';
 import { normalizeToolDefinition } from './catalog.js';
 import { validateToolArguments } from './schema.js';
 import { enrichToolResultPresentation, normalizeToolResult, toolFailure } from './result.js';
-import { resolveToolTimeoutMs, SELF_TIMEOUT_GRACE_MS } from './timeouts.js';
+import { MAX_SAFE_TIMEOUT_MS, resolveToolTimeoutMs, SELF_TIMEOUT_GRACE_MS } from './timeouts.js';
 
 const TOOL_ABORT_GRACE_MS = 250;
 const REPEATED_FAILURE_MEMORY_CAP = 32;
@@ -370,10 +370,12 @@ export function createRegistry() {
       });
       // A tool that enforces its own deadline reports the timeout itself, with
       // whatever output it captured. The registry stays a backstop behind it.
+      // The grace must not push the backstop past the timer limit: Node fires a longer timer
+      // almost at once, which timed out every Task configured with a very large ceiling.
       const toolTimeoutMs =
         declaredTimeoutMs === undefined
           ? resolvedTimeoutMs
-          : resolvedTimeoutMs + SELF_TIMEOUT_GRACE_MS;
+          : Math.min(resolvedTimeoutMs + SELF_TIMEOUT_GRACE_MS, MAX_SAFE_TIMEOUT_MS);
       return {
         status: 'ready',
         prepared: { call: normalizedCall, tool, timeoutMs: toolTimeoutMs },
