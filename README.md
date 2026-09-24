@@ -103,7 +103,7 @@ book tool-stats --since 7       # only the last 7 days
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `-w, --workspace <path>`              | Workspace root (default: cwd)                                                                                                   |
 | `-m, --model <model>`                 | Model override                                                                                                                  |
-| `-p, --print [prompt]`                | Non-interactive / CI mode                                                                                                       |
+| `-p, --print [prompt]`                | Non-interactive / CI mode; the prompt may also be the one positional argument                                                   |
 | `--output-format <fmt>`               | `text` \| `json` \| `stream-json`                                                                                               |
 | `--input-format <fmt>`                | `text` \| `stream-json` (print mode input)                                                                                      |
 | `--permission-mode <mode>`            | `default` \| `acceptEdits` \| `plan` \| `auto` \| `dontAsk` \| `bypassPermissions`                                              |
@@ -129,15 +129,19 @@ book tool-stats --since 7       # only the last 7 days
 ### Print mode
 
 `-p/--print` runs one or more prompts with no terminal attached, for CI and scripting. The prompt
-comes from the flag or from stdin, so a long one need not be interpolated into argv:
+comes from the flag, from the one positional argument, or from stdin, so a long one need not be
+interpolated into argv:
 
 ```sh
 book -p "explain this repo"
+book -p --model m "explain this repo"   # the positional is the prompt, in either position
 book -p < prompt.txt
 git diff | book -p            # the diff is the prompt
 ```
 
-The flag wins when both are given. `--input-format stream-json` reads stdin as newline-delimited
+A prompt on the command line wins over stdin. Giving it twice, as the `--print` value and as the
+argument, is an error rather than a silent choice, and a positional argument without `--print` is
+an error too: the TUI has no initial prompt. `--input-format stream-json` reads stdin as newline-delimited
 `{type:'user', content}` records instead, which is how you submit more than one prompt to a single
 process.
 
@@ -454,7 +458,7 @@ The benchmark requires configured provider credentials and is not part of CI.
 a teaching session followed by a probe in a fresh session. The workspace is reset between the two,
 so a probe can pass only through memory, never by reading what the teaching session edited. Every
 item also runs with memory disabled (the baseline) on the same probe. Items cover explicit and
-implicit saves, corrections, a buried convention, scoped requests and keyword traps that must *not*
+implicit saves, corrections, a buried convention, scoped requests and keyword traps that must _not_
 be saved, facts already in `CLAUDE.md`, update, forget, and poisoned web and repository content.
 Scoring reads the store and the probe's files, commands and answer, never the model's own claims.
 The report (JSON + Markdown in `.book/reports/`) gives, per model: recall with and without memory

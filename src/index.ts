@@ -9,6 +9,7 @@ import { runToolStatsCommand } from './cli/tool-stats.js';
 import { runConfigCommand } from './cli/config-cmd.js';
 import { runTrustCommand } from './cli/trust-cmd.js';
 import { runMainAction } from './cli/run.js';
+import { resolvePrintPrompt } from './cli/utils.js';
 import { getPackageVersion } from './version-info.js';
 import { formatSettingsKeyHelp } from './settings-repository.js';
 import {
@@ -64,11 +65,16 @@ program
   // any root option a subcommand's action reads must be re-declared on it.
   .enablePositionalOptions()
   .version(getPackageVersion())
+  // `--print [prompt]` takes the prompt as its own optional value, so a prompt
+  // written after a later flag was a stray positional and commander rejected
+  // it (#226). The positional is the print-mode prompt; the root action merges
+  // the two placements and refuses both at once.
+  .argument('[prompt]', 'Prompt for print mode; the same as the -p value, in either position')
   .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
   .option('-m, --model <model>', 'Model to use')
   .option(
     '-p, --print [prompt]',
-    'Print mode (non-interactive). Reads prompt from the flag or stdin.',
+    'Print mode (non-interactive). Reads the prompt from the flag, the [prompt] argument, or stdin.',
   )
   .option('--output-format <format>', 'text | json | stream-json (print mode)', 'text')
   .option('--input-format <format>', 'text | stream-json (print mode)', 'text')
@@ -347,8 +353,13 @@ program
   );
 
 // ---- main (interactive / headless) ----
-program.action(async (options: Record<string, unknown>) => {
-  await runMainAction(options);
+program.action(async (prompt: string | undefined, options: Record<string, unknown>) => {
+  // Resolved before the await: `program.parse()` does not await an async
+  // action, so an error thrown past this point would surface as an unhandled
+  // rejection with a stack trace instead of a usage error.
+  const resolved = resolvePrintPrompt(options.print as string | boolean | undefined, prompt);
+  if ('error' in resolved) program.error(`error: ${resolved.error}`);
+  await runMainAction({ ...options, print: resolved.print });
 });
 
 program.parse();

@@ -9,6 +9,14 @@ All notable changes to this project are documented in this file.
 - **Windows paths in `/memory` commands no longer lose backslashes to markdown parsing.** `/memory`
   reports and effects rendered paths unescaped through `marked`, which treated backslashes as
   markdown escape sequences. Paths are now wrapped in inline code spans.
+- **A print-mode prompt written after other flags is no longer rejected.** `--print [prompt]`
+  takes the prompt as its own optional value, so `book -p --model m "fix it"` left the prompt as a
+  stray positional and commander refused it with "too many arguments" (#226). The root command now
+  takes one positional argument, the prompt, and treats it as the `--print` value in either
+  position, the way Claude Code does. Giving the prompt twice is an error rather than a silent
+  choice, and so is a positional without `--print`, since the TUI has no initial prompt; the
+  message says to add `-p` and points at `book --help`, since a mistyped subcommand lands there
+  too.
 - **A lead no longer reports results a delegated agent has not produced.** `AgentSpawn` returns as
   soon as the child is queued, and the only hint in the result was `"status": "queued"` inside an
   otherwise bare record. Watched in the TUI, the lead read that and printed "Sidekick reported.

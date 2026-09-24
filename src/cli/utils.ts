@@ -100,3 +100,34 @@ export function parseNumericFlag(
   }
   return value;
 }
+
+/**
+ * Merge the root positional argument into `-p/--print [prompt]`.
+ *
+ * `--print` carries its prompt as its own optional value, so a prompt written
+ * after a later flag (`book -p --model m "fix it"`) is a stray positional that
+ * commander rejected with "too many arguments" (#226). Claude Code accepts the
+ * prompt in either place, and so does Book now: the positional is the prompt
+ * when the flag has no value of its own. Both at once is an error rather than a
+ * silent choice, and a positional without `--print` is an error too, because the
+ * TUI has nowhere to put it — and it is the shape a mistyped subcommand takes.
+ *
+ * Returns the resolved `--print` value, or `{ error }` for commander to report.
+ */
+export function resolvePrintPrompt(
+  print: string | boolean | undefined,
+  positional: string | undefined,
+): { print: string | boolean | undefined } | { error: string } {
+  if (positional === undefined) return { print };
+  if (print === undefined) {
+    return {
+      error: `unexpected argument '${positional}'. A prompt on the command line needs -p/--print (book -p "${positional}"); run book --help for the subcommands.`,
+    };
+  }
+  if (typeof print === 'string') {
+    return {
+      error: `the prompt was given twice: --print '${print}' and the argument '${positional}'. Pass it once, either as the --print value or as the argument.`,
+    };
+  }
+  return { print: positional };
+}
