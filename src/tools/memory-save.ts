@@ -176,7 +176,8 @@ export async function memorySaveExecute(
     });
   }
 
-  const notice = `memory saved: ${title}`;
+  const replaces = result.retired ? ` (replaces ${result.retired})` : '';
+  const notice = `memory saved: ${title}${replaces}`;
   context.onNotice?.(notice);
   // Near the load limit, ask the model to consolidate: entries past the limit do not load.
   const lines = result.indexLineCount ?? 0;
@@ -186,14 +187,21 @@ export async function memorySaveExecute(
       : lines >= Math.floor(DEFAULT_MAX_INDEX_LINES * 0.8)
         ? `\nMEMORY.md has ${lines} of ${DEFAULT_MAX_INDEX_LINES} loadable lines. Consolidate soon: merge related entries and delete stale ones.`
         : '';
-  return toolSuccess(`Memory saved: ${result.path}\n${result.indexLine ?? ''}${pressure}`.trim(), {
-    data: {
-      memorySaved: true,
-      action: 'save',
-      path: result.path,
-      status: result.status,
+  const retired = result.retired
+    ? `\nRetired ${result.retired}: kept as history, no longer loads.`
+    : '';
+  return toolSuccess(
+    `Memory saved: ${result.path}\n${result.indexLine ?? ''}${retired}${pressure}`.trim(),
+    {
+      data: {
+        memorySaved: true,
+        action: 'save',
+        path: result.path,
+        status: result.status,
+        ...(result.retired ? { retired: result.retired } : {}),
+      },
     },
-  });
+  );
 }
 
 export const memorySaveTools: ToolDefinition[] = [

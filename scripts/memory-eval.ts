@@ -194,8 +194,10 @@ function readStore(home: string): { approved: string[]; inbox: string[] } {
     const dir = join(projects, project, 'memory');
     if (!existsSync(dir)) continue;
     for (const f of readdirSync(dir)) {
-      if (f.toLowerCase().endsWith('.md') && f !== 'MEMORY.md')
-        approved.push(readFileSync(join(dir, f), 'utf8'));
+      if (!f.toLowerCase().endsWith('.md') || f === 'MEMORY.md') continue;
+      const raw = readFileSync(join(dir, f), 'utf8');
+      // A superseded memory is history, not something the model still remembers.
+      if (!/^status:\s*superseded\s*$/m.test(raw)) approved.push(raw);
     }
     const inboxDir = join(dir, '.inbox');
     if (existsSync(inboxDir)) {

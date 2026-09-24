@@ -215,6 +215,12 @@ interface LiveSetting {
   effect: (value: unknown, context: BuiltinCommandContext) => BuiltinCommandEffect;
 }
 
+/** What an approval retired: the entry it replaces, or why a recorded retirement was skipped. */
+function retirement(result: { retired?: string; retireSkipped?: string }): string {
+  if (result.retireSkipped) return ` (nothing retired: ${result.retireSkipped})`;
+  return result.retired ? ` (retired \`${result.retired}\`)` : '';
+}
+
 function textOf(value: unknown): string {
   return typeof value === 'string' ? value.trim() : String(value);
 }
@@ -448,7 +454,7 @@ function memoryCommandEffect(
     return {
       type: 'local-message',
       content: result.ok
-        ? `${approve ? 'Approved' : 'Discarded'} memory candidate → \`${result.path}\``
+        ? `${approve ? 'Approved' : 'Discarded'} memory candidate → \`${result.path}\`${retirement(result)}`
         : `✕ ${result.error}`,
       refreshMemory: result.ok && approve,
     };

@@ -1069,6 +1069,59 @@ describe('Phase 2: supersession and index hygiene', () => {
   it('writes a one-line hook from the body into the index line', () => {
     const r = save('Test command', 'Run npm run test:fast, not npm test.\n\nWhy: speed.');
     expect(r.indexLine).toMatch(/— Run npm run test:fast, not npm test\.$/);
-    expect(r.indexLineCount).toBe(3);
+    expect(r.indexLineCount).toBe(2);
+  });
+
+  it('strips control characters and link syntax from the hook', () => {
+    const r = save('Hook', 'Run \u001b[31mx\u0007 (fast) <b>.');
+    expect(r.indexLine).toMatch(/— Run 31mx fast b \.$/);
+  });
+
+  it('matches supersedes case-insensitively and records the on-disk name', () => {
+    save('Deploy branch', 'We deploy from release.', {}, 'deploy-branch');
+    const next = save('Prod', 'We deploy from prod.', { supersedes: 'Deploy-Branch.MD' });
+    expect(next.ok).toBe(true);
+    expect(next.retired).toBe('deploy-branch.md');
+    const dir = getProjectMemoryDir(ws, opts());
+    expect(readFileSync(join(dir, 'deploy-branch.md'), 'utf-8')).toContain('status: superseded');
+  });
+
+  it('refuses to supersede a missing or already superseded entry', () => {
+    expect(save('X', 'x.', { supersedes: 'nope' })).toMatchObject({ ok: false });
+    save('Old', 'Old fact.', {}, 'old');
+    expect(save('New', 'New fact.', { supersedes: 'old' }).ok).toBe(true);
+    expect(save('Newer', 'Newer fact.', { supersedes: 'old' })).toMatchObject({ ok: false });
+  });
+
+  it('retires by editing frontmatter only, keeping every other field and the body', () => {
+    save('Old', 'Old fact.\n\nWhy: history.', { tags: ['keep'] }, 'old');
+    const dir = getProjectMemoryDir(ws, opts());
+    const before = readFileSync(join(dir, 'old.md'), 'utf-8');
+    save('New', 'New fact.', { supersedes: 'old' });
+    const after = readFileSync(join(dir, 'old.md'), 'utf-8');
+    const unchanged = (raw: string) =>
+      raw.split('\n').filter((l) => !/^(status|supersededBy|updated):/.test(l));
+    expect(unchanged(after)).toEqual(unchanged(before));
+  });
+
+  it('prunes index lines whose file is gone, and keeps free-form lines', () => {
+    const dir = getProjectMemoryDir(ws, opts());
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'MEMORY.md'),
+      '# Book memory index\n- [Gone](gone.md) — project\n- a hand-written note\n',
+    );
+    save('Fresh', 'A fact.');
+    const index = readFileSync(join(dir, 'MEMORY.md'), 'utf-8');
+    expect(index).not.toContain('gone.md');
+    expect(index).toContain('- a hand-written note');
+  });
+
+  it('does not create an index when deleting', () => {
+    const dir = getProjectMemoryDir(ws, opts());
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'loose.md'), '---\ntype: project\n---\n\n# Loose\n\nA fact.\n');
+    expect(deleteMemoryEntry(ws, 'loose', opts()).ok).toBe(true);
+    expect(existsSync(join(dir, 'MEMORY.md'))).toBe(false);
   });
 });

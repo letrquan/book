@@ -204,6 +204,21 @@ describe('runMemoryExtraction', () => {
     expect(existsSync(getMemoryExtractionLockPath(workspace, { bookRoot }))).toBe(false);
   });
 
+  it('keeps the fact when its supersedes names no existing entry', async () => {
+    const wrong = JSON.parse(SAVE) as { memories: Array<Record<string, unknown>> };
+    wrong.memories[0].supersedes = 'no-such-entry';
+    const result = await runMemoryExtraction({
+      config: config(),
+      sessions: source({ s1: { meta: meta('s1'), transcript: talk } }),
+      bookRoot,
+      nowMs: NOW,
+      provider: provider(JSON.stringify(wrong)),
+    });
+    expect(result.processed).toEqual([{ id: 's1', written: 1 }]);
+    const dir = getProjectMemoryDir(workspace, { bookRoot });
+    expect(readFileSync(join(dir, 'MEMORY.md'), 'utf-8')).toContain('Arrow functions only');
+  });
+
   it('never reads a session that brought in external content', async () => {
     const prompts: string[] = [];
     const web: Message[] = [

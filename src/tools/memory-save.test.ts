@@ -68,7 +68,8 @@ describe('MemorySave tool', () => {
     it('asks the model to consolidate as the index nears its load limit', async () => {
       const memoryDir = getProjectMemoryDir(workspace);
       mkdirSync(memoryDir, { recursive: true });
-      const filler = Array.from({ length: 165 }, (_, i) => `- [Fact ${i}](fact-${i}.md) — project`);
+      // Free-form lines: entries linking to missing files would be pruned on the write.
+      const filler = Array.from({ length: 165 }, (_, i) => `- note ${i}`);
       writeFileSync(join(memoryDir, 'MEMORY.md'), ['# Book memory index', ...filler].join('\n'));
       const near = await memorySaveTool.execute(
         { action: 'save', type: 'project', title: 'One more', body: 'A fact.' },
@@ -76,7 +77,7 @@ describe('MemorySave tool', () => {
       );
       expect(near.content).toContain('Consolidate soon');
 
-      const over = Array.from({ length: 205 }, (_, i) => `- [Fact ${i}](fact-${i}.md) — project`);
+      const over = Array.from({ length: 205 }, (_, i) => `- note ${i}`);
       writeFileSync(join(memoryDir, 'MEMORY.md'), ['# Book memory index', ...over].join('\n'));
       const past = await memorySaveTool.execute(
         { action: 'save', type: 'project', title: 'Yet another', body: 'A fact.' },
@@ -101,6 +102,7 @@ describe('MemorySave tool', () => {
         createContext(),
       );
       expect(result.status).toBe('success');
+      expect(result.content).toContain('Retired style.md');
       const memoryDir = getProjectMemoryDir(workspace);
       expect(readFileSync(join(memoryDir, 'style.md'), 'utf-8')).toContain('status: superseded');
       expect(readFileSync(join(memoryDir, 'MEMORY.md'), 'utf-8')).not.toContain('style.md');

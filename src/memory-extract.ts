@@ -286,24 +286,28 @@ function apply(
     }
     const body = item.body!.trim();
     if (body.length > MAX_BODY_CHARS || shouldRejectMemoryText(`${item.title}\n${body}`)) continue;
-    const result = saveMemory(
-      workspace,
-      {
-        type: item.type!,
-        title: item.title!,
-        body,
-        origin: 'extraction',
-        sessionId,
-        externalContext: false,
-        evidence: [`session://${sessionId}`],
-        supersedes: item.supersedes,
-      },
-      {
-        ...opts,
-        slug: item.action === 'update' ? item.slug : undefined,
-        requireApproval: gated,
-      },
-    );
+    const save = (supersedes: string | undefined) =>
+      saveMemory(
+        workspace,
+        {
+          type: item.type!,
+          title: item.title!,
+          body,
+          origin: 'extraction',
+          sessionId,
+          externalContext: false,
+          evidence: [`session://${sessionId}`],
+          supersedes,
+        },
+        {
+          ...opts,
+          slug: item.action === 'update' ? item.slug : undefined,
+          requireApproval: gated,
+        },
+      );
+    let result = save(item.supersedes);
+    // A wrong file name in `supersedes` should not cost the fact itself: keep it, retire nothing.
+    if (!result.ok && item.supersedes) result = save(undefined);
     if (result.ok) written++;
   }
   return written;
