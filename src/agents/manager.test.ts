@@ -1623,3 +1623,119 @@ describe('resuming an interrupted backlog', () => {
     expect(prompts).toEqual([]);
   });
 });
+
+describe('children re-driven after a restart', () => {
+  const previousBookHome = process.env.BOOK_HOME;
+  let root: string;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    if (previousBookHome === undefined) delete process.env.BOOK_HOME;
+    else process.env.BOOK_HOME = previousBookHome;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function held(signal?: AbortSignal | null): Response {
+    const stream = new ReadableStream({
+      start(controller) {
+        signal?.addEventListener('abort', () => {
+          try {
+            controller.close();
+          } catch {
+            /* closed */
+          }
+        });
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }
+
+  function answered(text: string): Response {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'data: ' + JSON.stringify({ choices: [{ delta: { content: text } }] }) + '\n\n',
+          ),
+        );
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }
+
+  /** Spawns a child, kills the process while it runs, restarts, and collects completions. */
+  async function restartAndCollect(parentToolCallId: string | undefined) {
+    root = mkdtempSync(join(tmpdir(), 'resume-child-'));
+    process.env.BOOK_HOME = join(root, 'book-home');
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+    config.settings.agents.resumeInterrupted = true;
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init?: RequestInit) => held(init?.signal)),
+    );
+    const first = new AgentManager(config, [], {
+      storeRoot: root,
+      findGitRoot: async () => undefined,
+    });
+    const spawned = await first.spawn({
+      agent: 'explorer',
+      prompt: 'survey',
+      parentSessionId: 'parent-1',
+      notifyParentOnCompletion: false,
+      ...(parentToolCallId ? { parentToolCallId } : {}),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    // The process exits (Ctrl-C, quit) while the spawner is still waiting on the child.
+    const internals = first as unknown as {
+      exitHandler: () => void;
+      store?: { dispose?: () => void };
+    };
+    internals.exitHandler();
+    process.off('exit', internals.exitHandler);
+    internals.store?.dispose?.();
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => answered('resumed answer')),
+    );
+    const second = new AgentManager(config, [], {
+      storeRoot: root,
+      findGitRoot: async () => undefined,
+    });
+    const completions: string[] = [];
+    second.subscribe((event) => {
+      if (event.type === 'agent_completion') completions.push(event.type);
+    });
+    try {
+      await second.list();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await second.waitForIdle();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return { result: (await second.get(spawned.id))?.result, completions };
+    } finally {
+      second.dispose();
+      try {
+        first.dispose();
+      } catch {
+        /* already disposed */
+      }
+    }
+  }
+
+  it('delivers the re-run of a Task child whose first run Task would have handed back', async () => {
+    const { result, completions } = await restartAndCollect('call-task-1');
+    expect(result).toBe('resumed answer');
+    expect(completions).toHaveLength(1);
+  });
+
+  it('keeps a /review-style child silent after a restart', async () => {
+    const { result, completions } = await restartAndCollect(undefined);
+    expect(result).toBe('resumed answer');
+    expect(completions).toHaveLength(0);
+  });
+});

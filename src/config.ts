@@ -12,7 +12,7 @@ import { hadRemovedAuthConfiguration } from './settings-removed.js';
 import type { SettingsResolutionPaths } from './settings-loader.js';
 import { DEFAULT_SETTINGS, type CompactStrategy, type ResolvedSettings } from './settings.js';
 import { loadMemoryContext } from './memory-store.js';
-import { isEffortLevel } from './commands/effort.js';
+import { EFFORT_LEVELS, getAvailableEffortLevels, isEffortLevel } from './commands/effort.js';
 import { createModelWindowStore, type ModelWindowStore } from './model-window-store.js';
 import { resolveShell } from './shell-selection.js';
 
@@ -173,6 +173,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const rawModel =
     options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
+  const compactEffort = settings.compactEffort;
   const compactStrategy: CompactStrategy = 'summary';
   // Resolved once here: the Bash tool, the system prompt, and `book doctor`
   // must all name the same shell for the whole session.
@@ -194,6 +195,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     model: rawModel,
     modelSelection: rawModel,
     compactModel,
+    compactEffort,
     compactStrategy,
     // Undefined = unlimited. Only set when env/settings/legacy explicitly provide a value.
     maxTurns: process.env.BOOK_MAX_TURNS
@@ -365,13 +367,63 @@ export function resolveModelProviderConfig(
   };
 }
 
+/**
+ * The reducer's effort. A checkpoint does not need minutes of reasoning, and
+ * at `--effort max` on a slow route the reducer's request produced no byte for
+ * long enough that the proxy dropped it, ten times over (#214). The target is
+ * `compactEffort`, or else the session's effort capped at `medium`. A catalog
+ * that lists levels clamps the target down to the highest listed level at or
+ * below it, and one that lists none at or below it gets no effort at all: the
+ * reducer never falls back to the uncapped session effort.
+ */
+function reducerEffort(config: AgentConfig): AgentConfig['effort'] {
+  const levels = getAvailableEffortLevels(config);
+  if (levels === null) return undefined;
+  const cap = EFFORT_LEVELS.indexOf('medium');
+  const target =
+    config.compactEffort ??
+    (config.effort && EFFORT_LEVELS.indexOf(config.effort) > cap ? 'medium' : config.effort);
+  if (!target) return undefined;
+  const ceiling = EFFORT_LEVELS.indexOf(target);
+  return levels.filter((level) => EFFORT_LEVELS.indexOf(level) <= ceiling).at(-1);
+}
+
 /** Resolve the optional reducer model without changing the active agent model. */
 export function resolveCompactModelConfig(config: AgentConfig): AgentConfig {
   const compactModel = config.compactModel?.trim() || config.settings.compactModel?.trim();
-  if (!compactModel || compactModel === config.modelSelection || compactModel === config.model) {
-    return config;
-  }
-  return applyModelDefaults(resolveModelProviderConfig(config, compactModel));
+  const resolved =
+    !compactModel || compactModel === config.modelSelection || compactModel === config.model
+      ? config
+      : applyModelDefaults(resolveModelProviderConfig(config, compactModel));
+
+  const effort = reducerEffort(resolved);
+  const catalog = resolved.modelInfo?.effort;
+  // `effortExplicit` is what makes the OpenAI-compatible path send
+  // `reasoning_effort`. The reducer sends one only when a level was chosen --
+  // `compactEffort`, or an explicit session effort -- or when its catalog lists
+  // the levels it accepts. With neither (the default `gpt-4o`) its request
+  // carries none, exactly like the main agent's.
+  const effortExplicit =
+    effort !== undefined &&
+    (resolved.compactEffort !== undefined ||
+      resolved.effortExplicit === true ||
+      (typeof catalog === 'object' && (catalog.levels?.length ?? 0) > 0));
+
+  return {
+    ...resolved,
+    effort,
+    effortExplicit,
+    // A reducer request that dies before its first byte twice is not going to succeed
+    // at that size, and runCompaction already falls back to the deterministic
+    // checkpoint when the model path fails — ten attempts at five minutes each only
+    // delayed that fallback. The watchdog retries 429/529 without limit, which
+    // would lift this cap, so it is off for the reducer.
+    retry: {
+      ...resolved.retry,
+      maxAttempts: Math.min(resolved.retry.maxAttempts, 2),
+      watchdog: false,
+    },
+  };
 }
 
 export function resolveSecret(raw: string | undefined, workspace: string): string | undefined {

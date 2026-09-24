@@ -281,6 +281,8 @@ export const agentSettingsSchema = z.object({
    * reported as a failing suite. Raise it per project rather than per invocation.
    */
   checkTimeoutMs: z.number().int().min(1_000).max(7_200_000).default(120_000),
+  /** Ceiling on a foreground delegation via the Task tool; overrides the 1800s default. */
+  taskTimeoutMs: z.number().int().min(1000).optional(),
   /**
    * Simultaneous agent worktrees per repository; 0 disables the check.
    *
@@ -443,6 +445,8 @@ export const bookSettingsSchema = z.object({
   compactStrategy: compactStrategySchema.optional(),
   /** Optional model used only to generate historical conversation checkpoints. */
   compactModel: z.string().min(1).optional(),
+  /** Reasoning effort for the compaction reducer; defaults to the session effort capped at medium. */
+  compactEffort: effortLevelSchema.optional(),
   /** Max agent turns per user message. Omit for unlimited. */
   maxTurns: z.number().int().min(1).optional(),
   maxTokens: z.number().int().min(1000).optional(),
@@ -491,6 +495,7 @@ export type ResolvedSettings = Required<
     BookSettings,
     | 'model'
     | 'compactModel'
+    | 'compactEffort'
     | 'maxTurns'
     | 'maxTokens'
     | 'effort'
@@ -505,6 +510,7 @@ export type ResolvedSettings = Required<
     BookSettings,
     | 'model'
     | 'compactModel'
+    | 'compactEffort'
     | 'maxTurns'
     | 'maxTokens'
     | 'effort'

@@ -1,8 +1,32 @@
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
+import type { Message } from '../types/messages.js';
+import type { AgentRecord } from '../agents/types.js';
 import { AgentManagerError, getOrCreateAgentManager } from '../agents/manager.js';
 import { toolFailure, toolSuccess } from './result.js';
 import { deriveAgentDisplayName } from '../agents/naming.js';
 import { projectAgentCompletion } from '../agents/projections.js';
+import { resolveToolTimeoutMs } from './timeouts.js';
+
+/**
+ * Default ceiling on a foreground delegation. The registry's 120 s default
+ * assumes a fast model; on a route where one max-effort turn takes minutes the
+ * child was cut off mid-survey, its result discarded, and — because nothing
+ * stopped it — it ran and billed for an hour afterwards (#215).
+ * `BOOK_TOOL_TIMEOUT_MS` and `agents.taskTimeoutMs` still override it.
+ */
+const TASK_DEFAULT_TIMEOUT_MS = 1_800_000;
+
+const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'stopped', 'interrupted']);
+
+function lastAssistantText(transcript: Message[]): string {
+  for (let index = transcript.length - 1; index >= 0; index--) {
+    const message = transcript[index];
+    if (message.role === 'assistant' && message.content) {
+      return message.content.trim().slice(0, 4000);
+    }
+  }
+  return '';
+}
 
 /**
  * Wall-clock breakdown of one foreground delegation round trip.
@@ -84,13 +108,56 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
       // child is finished, so this is the only moment at which the transcript can
       // learn which child this row is waiting on.
       parentToolCallId: ctx.currentToolTraceId,
+      // Task hands the child's result back as its own tool result, so a
+      // completion notification only made the parent run another turn to re-read
+      // it. A stopped child (ceiling or parent cancel) also opens a second
+      // terminal generation as it unwinds, after any acknowledgement Task could
+      // make. `/review` suppresses delivery the same way.
+      notifyParentOnCompletion: false,
     });
     const spawnedAt = Date.now();
-    const completed = await manager.wait(spawned.id);
-    const settledAt = Date.now();
-    if (['completed', 'failed', 'stopped', 'interrupted'].includes(completed.status)) {
-      await manager.acknowledgeCompletion(`${completed.id}:${completed.completionSequence ?? 0}`);
+    const timeoutMs = resolveToolTimeoutMs({
+      configured: ctx.agentConfig?.settings.agents?.taskTimeoutMs,
+      env: ctx.env,
+      fallback: TASK_DEFAULT_TIMEOUT_MS,
+    });
+    const onParentAbort = () => {
+      void manager.stop(spawned.id, 'parent cancelled').catch(() => undefined);
+    };
+    // A cancel that landed while `spawn` was still running has already fired; a
+    // listener added now would never run, and the child would go on to the ceiling.
+    if (ctx.signal?.aborted) onParentAbort();
+    else ctx.signal?.addEventListener('abort', onParentAbort, { once: true });
+    let completed: AgentRecord;
+    try {
+      completed = await manager.wait(spawned.id, timeoutMs);
+    } finally {
+      ctx.signal?.removeEventListener('abort', onParentAbort);
     }
+    if (!TERMINAL_TASK_STATUSES.has(completed.status)) {
+      // The ceiling passed with the child still running. Stop it — a child nobody
+      // is waiting for keeps running and billing otherwise — and hand the parent
+      // what exists so far, so the work is continued rather than redone.
+      completed = await manager.stop(spawned.id, `Task ceiling of ${timeoutMs}ms reached`);
+      const partial = projectAgentCompletion(completed);
+      const lastText = lastAssistantText(completed.transcript);
+      return toolFailure(
+        `Subagent ${completed.displayName ?? completed.name} did not finish within ${Math.round(timeoutMs / 1000)}s and was stopped.`,
+        {
+          code: 'subagent_timeout',
+          content: [
+            `Partial result (the child was stopped; nothing below is final):`,
+            lastText ? `\nLast assistant text:\n${lastText}` : '',
+            partial.summary ? `\nSummary so far:\n${partial.summary}` : '',
+            `\nThe child (agentId ${completed.id}) was stopped and holds no further result. For a slower model, raise agents.taskTimeoutMs (or BOOK_TOOL_TIMEOUT_MS when that is unset).`,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          data: partial,
+        },
+      );
+    }
+    const settledAt = Date.now();
     const projection = projectAgentCompletion(completed);
     const resultField = completed.status === 'completed' || !completed.error ? 'summary' : 'error';
     const resultText =
@@ -138,6 +205,12 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
 export const taskTool: ToolDefinition[] = [
   {
     name: 'Task',
+    timeoutMs: (ctx) =>
+      resolveToolTimeoutMs({
+        configured: ctx.agentConfig?.settings.agents?.taskTimeoutMs,
+        env: ctx.env,
+        fallback: TASK_DEFAULT_TIMEOUT_MS,
+      }),
     description:
       'Deprecated synchronous adapter for AgentSpawn followed by AgentWait. Prefer the managed agent lifecycle tools.',
     parameters: {
