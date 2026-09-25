@@ -98,6 +98,26 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The Windows-flaky tests no longer depend on how fast the runner is, and the local gate passes
+  on Windows (#249).** Each test waited on the clock where it should have waited for the result.
+  - **`ByokWizard`** sent Enter 20 ms after the typed text and assumed React had rendered by then.
+    A stalled runner once rendered the key's bullets beside "API key is required". Each keypress
+    now goes through `act`, and the helpers wait for the typed text to render.
+  - **`delegation-latency`** compared one sample per child duration and failed in both directions.
+    A one-second stall of the short sample failed it as `1117 < 1000`. It now takes the best of
+    three samples, removes the child timer's own lateness, and fails only when the long delegation
+    costs more.
+  - **`settings-cli`** gave each tsx spawn a 15 s ceiling, and a spawn that normally takes 2 s once
+    ran past it. The ceiling is now 60 s: a latency limit, not a wait.
+  - **`shell-manager`** gave the persistent SIGTERM test the interactive stop budget (5 s), not the
+    30 s budget the other persistent test already used. Its cleanup trusted `rmSync`'s
+    `maxRetries`, which Node 24's native `rm` ignores for EPERM. The cleanup now polls until
+    Windows releases the directory.
+  - **`file.test`:** the inbox test no longer dies creating a symlink on a Windows account without
+    that privilege. It skips only the symlinked half, the way `snapshot-store.test.ts` already does.
+  - **`run-ambient` and `persist`** failed when the suite ran with `BOOK_HOME` set, which is the safe
+    way to run it. They now clear it themselves. The `persist` global-scope tests had also written
+    their settings into that `BOOK_HOME` rather than the fake home.
 - **A long reply no longer jitters sideways while it streams.** Once a reply outgrew the live
   window (`width × 24` characters), the window's start moved forward with every streamed delta,
   sometimes cutting a word in half. Every wrapped line of the tail then reflowed on every frame,

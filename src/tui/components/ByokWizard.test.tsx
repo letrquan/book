@@ -1,4 +1,5 @@
 import { setTimeout as wait } from 'node:timers/promises';
+import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
@@ -37,21 +38,42 @@ function createWizard(
   return { view, onSave, onCancel, discover };
 }
 
+/**
+ * One stdin chunk, rendered before the next one arrives. Inside `act`, React commits the
+ * chunk's updates, including those of a discovery promise the chunk started, and runs the
+ * effects that re-bind Ink's input handlers before `write` resolves. Before this, a 20ms sleep
+ * was all that kept a following Enter off the previous render's handler and its stale field
+ * value, and a stalled runner outlasts a sleep. Windows CI once rendered the typed key's
+ * bullets beside "API key is required". Several keypresses in one chunk still land in one
+ * React batch, which the batched tests need.
+ */
 async function write(view: ReturnType<typeof render>, value: string) {
-  view.stdin.write(value);
-  await wait(20);
+  await act(async () => {
+    view.stdin.write(value);
+  });
 }
 
+/** Polls rather than sleeps: returns on the first frame that shows `text`. */
 async function waitForText(view: ReturnType<typeof render>, text: string) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (stripAnsi(view.lastFrame()).includes(text)) return;
-    await wait(10);
-  }
-  throw new Error(`Timed out waiting for "${text}" in:\n${stripAnsi(view.lastFrame())}`);
+  await vi.waitFor(
+    () => {
+      const frame = stripAnsi(view.lastFrame());
+      if (!frame.includes(text)) {
+        throw new Error(`Timed out waiting for "${text}" in:\n${frame}`);
+      }
+    },
+    { timeout: 5_000, interval: 10 },
+  );
+}
+
+/** Types into the focused field and waits until the field shows it, as a user would. */
+async function type(view: ReturnType<typeof render>, value: string, shown = value) {
+  await write(view, value);
+  await waitForText(view, shown);
 }
 
 async function advanceToApiKey(view: ReturnType<typeof render>) {
-  await write(view, 'gateway');
+  await type(view, 'gateway');
   await write(view, '\r');
   await waitForText(view, 'Protocol');
   await write(view, '\r');
@@ -62,7 +84,7 @@ async function advanceToApiKey(view: ReturnType<typeof render>) {
 
 async function advanceToModelSource(view: ReturnType<typeof render>, key = 'super-secret-key') {
   await advanceToApiKey(view);
-  await write(view, key);
+  await type(view, key, '•'.repeat(key.length));
   await write(view, '\r');
   await waitForText(view, 'Discover models automatically');
 }
@@ -273,13 +295,19 @@ describe('ByokWizard', () => {
     // repeating faster than a frame. It is the case a per-keypress test cannot
     // reach.
     await write(view, '\u001b[B ');
-    expect(stripAnsi(view.lastFrame())).toContain('1 selected');
+    await waitForText(view, '1 selected');
 
     await write(view, '\r');
+    await waitForText(view, 'Display label');
     await write(view, '\r');
+    await waitForText(view, 'Review');
     await write(view, '\r');
-    expect(onSave).toHaveBeenCalledWith(
-      expect.objectContaining({ models: [{ id: 'model-a', label: 'Model A' }] }),
+    await vi.waitFor(
+      () =>
+        expect(onSave).toHaveBeenCalledWith(
+          expect.objectContaining({ models: [{ id: 'model-a', label: 'Model A' }] }),
+        ),
+      { timeout: 5_000, interval: 10 },
     );
   });
 

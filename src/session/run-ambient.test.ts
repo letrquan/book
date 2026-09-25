@@ -87,6 +87,10 @@ describe('createRunAmbientSnapshot', () => {
   });
 
   it('redacts credential values and declares inputs that are not frozen yet', () => {
+    // `isolation: 'shared'` is what an unset BOOK_HOME means, so unset it here rather than
+    // inherit it: running the suite with BOOK_HOME pointed at a temp dir is the safe way.
+    vi.stubEnv('BOOK_HOME', undefined);
+    expect(process.env.BOOK_HOME).toBeUndefined();
     const registry = createRegistry();
     const firstConfig = defaultConfig({ apiKey: 'first-secret' });
     const secondConfig = defaultConfig({ apiKey: 'second-secret' });

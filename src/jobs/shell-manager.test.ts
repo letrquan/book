@@ -50,6 +50,14 @@ async function waitForWorkerToDisappear(workerPid: number): Promise<void> {
   );
 }
 
+/**
+ * Contended windows-latest runners push the detached runner's start and stop
+ * transitions past the interactive-host defaults (3s/5s). The transitions are
+ * eventual, so every persistent test observes them through these wide windows:
+ * a ceiling, not a wait, and a green run never gets near it.
+ */
+const ciBudgets = { runnerStartBudgetMs: 30_000, runnerStopBudgetMs: 30_000 };
+
 afterEach(async () => {
   for (const manager of managers) {
     for (const shell of manager.list()) {
@@ -64,11 +72,31 @@ afterEach(async () => {
     manager.dispose();
   }
   managers = [];
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  if (directory) {
-    rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  if (directory) await removeWhenReleased(directory);
+}, 60_000);
+
+/**
+ * Remove a test directory once Windows lets go of it. The detached runner exits a moment after it
+ * publishes the terminal record, and until it and the killed worker have been torn down, and any
+ * scanner has closed their files, Windows refuses the removal with EBUSY or EPERM. Node 24's
+ * native `rmSync` reports that as EPERM on the first attempt whatever `maxRetries` says, so the
+ * retry lives here. It polls for the release rather than guessing how long teardown takes.
+ */
+async function removeWhenReleased(path: string, timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? '';
+      if (!['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY'].includes(code) || Date.now() >= deadline) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   }
-});
+}
 
 describe('ShellJobManager persistent jobs', () => {
   it('reattaches after manager disposal and cleans files after stop and dismiss', async () => {
@@ -77,10 +105,6 @@ describe('ShellJobManager persistent jobs', () => {
     const script = join(directory, 'persistent.cjs');
     writeFileSync(script, `console.log('persistent-ready');\nsetInterval(() => {}, 1000);\n`);
     const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
-    // Contended windows-latest runners push the detached runner's start and
-    // stop transitions past the interactive-host defaults (3s/5s); the
-    // transitions are eventual, so the test observes with wide windows.
-    const ciBudgets = { runnerStartBudgetMs: 30_000, runnerStopBudgetMs: 30_000 };
     const firstStore: BackgroundShellStore = { nextId: 1, shells: new Map() };
     const first = new ShellJobManager(firstStore, { persistentRoot, ...ciBudgets });
     managers.push(first);
@@ -141,7 +165,10 @@ describe('ShellJobManager persistent jobs', () => {
     const pidPath = join(directory, 'worker.pid');
     writeFileSync(script, resistantWorker(pidPath));
     const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
-    const manager = new ShellJobManager({ nextId: 1, shells: new Map() }, { persistentRoot });
+    const manager = new ShellJobManager(
+      { nextId: 1, shells: new Map() },
+      { persistentRoot, ...ciBudgets },
+    );
     managers.push(manager);
     manager.configureWorkspace(directory);
     const started = await manager.start({
@@ -154,13 +181,15 @@ describe('ShellJobManager persistent jobs', () => {
       lifetime: 'persistent',
       workspace: directory,
     });
-    await waitFor(() => existsSync(pidPath), 'worker pid file');
+    // Two cold node spawns (the detached runner, then the worker) stand between start and the
+    // pid file, so this gets the same wide window as the persistent output wait above.
+    await waitFor(() => existsSync(pidPath), 'worker pid file', 30_000);
     const workerPid = Number(readFileSync(pidPath, 'utf8'));
 
     expect(await manager.stop(started.id)).toBe(true);
     expect(manager.get(started.id)?.status).toBe('killed');
     await waitForWorkerToDisappear(workerPid);
-  }, 15_000);
+  }, 60_000);
 });
 
 describe('ShellJobManager session jobs', () => {
