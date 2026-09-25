@@ -98,6 +98,47 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A whole-file `Read` of a large file now says where to continue (#248).** Every tool result
+  over 50 KB is clipped, and the clip's notice names a file under `BOOK_HOME/tool-output` that
+  `Read` cannot open. So a whole-file Read of `src/agents/manager.ts` (1894 lines, 75 KB) stopped
+  mid-line near line 1169 with no way on, and a Read cut at its 2000-line default said nothing at
+  all.
+  - **The stop:** `Read` now stops at a line boundary before the clip and ends with a notice, for
+    example `[Lines 1-1163 of 1894 shown, the most one Read returns (50 KB). Continue with offset:
+    1164.]`. A Read that its line limit stops gets the same notice.
+  - **Long lines:** a single line longer than the whole budget is shown cut, and the notice points
+    past it.
+  - **Outlines:** an outline also stops under the clip, keeping its own note on where the rest start.
+  - **Descriptions:** the `Read` description and its `offset`/`limit` descriptions now say the
+    default is 2000 lines or 50 KB. These strings are part of the cached tool schema, so the prompt
+    changes, and the first request after upgrading misses the prompt cache once.
+  - **TUI:** the TUI's Read row counts the notice as one more line (`1164 lines` for 1163 shown).
+- **`Read { outline: true }` lists Java, Kotlin, C# and Dart methods, and fewer lines that are not
+  declarations (#247).**
+  - **Methods that were missing:** a method written return-type-first (`public int getN() {`) or
+    declared with Kotlin's `fun`. `Foo.java` outlined to its package, class and constructor only.
+  - **Shapes now listed:** those methods, C# Allman braces and block-scoped namespaces, Java and C#
+    interface methods without a body, `async *` generators, `#private` methods, nested type
+    arguments, and a destructured parameter that wraps.
+  - **Lines that no longer leak in:** statements (`if (`, `else if (`, `go func() {`); a call that
+    closes into a callback (`useEffect(() => {`, `).then(() => {`); object keys and import-list
+    members named like keywords (`enum: [...]`, `describe,`); JavaScript/TypeScript template text
+    at column 0; an Allman-style `{` line; and `#` comments in Makefiles, Dockerfiles, PowerShell
+    files and extension-less scripts that start with `#!`.
+  - **Markdown:** a file that opens with a `---` rule keeps the headings after it. Front matter now
+    needs YAML `key:` lines up to its closing `---`.
+  - **Header:** it no longer counts the empty line after a trailing newline.
+  - **The contract:** the supported shapes are a table in `src/tools/file.test.ts`, which the
+    README's scope statement follows.
+  - **Measured on this repository:** outlining `src/` and `scripts/` added 9 lines (methods whose
+    object return type holds a `;`, and wrapped signatures) and dropped 645. Every dropped line was
+    a call, template text, a keyword-named key or member, or an anonymous `async (…) =>` callback.
+- **After a resume, a file read in the same parallel batch as its outline still counts as read
+  (#247).** Suppose the model sent `Read{X, outline: true}` and `Read{X}` together, and the outline
+  finished last. The batch records results in call order, and the resume rebuild went by
+  timestamps, so it kept the outline, and an `Edit` after the resume was refused as "only
+  outlined". A rebuilt ledger now lets a real observation replace an outline, and never the
+  reverse, whatever the timestamps. A checkpoint's file observations follow the same rule.
 - **A long reply no longer jitters sideways while it streams.** Once a reply outgrew the live
   window (`width × 24` characters), the window's start moved forward with every streamed delta,
   sometimes cutting a word in half. Every wrapped line of the tail then reflowed on every frame,
