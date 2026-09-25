@@ -130,9 +130,13 @@ All notable changes to this project are documented in this file.
   - **Header:** it no longer counts the empty line after a trailing newline.
   - **The contract:** the supported shapes are a table in `src/tools/file.test.ts`, which the
     README's scope statement follows.
-  - **Measured on this repository:** outlining `src/` and `scripts/` added 9 lines (methods whose
-    object return type holds a `;`, and wrapped signatures) and dropped 645. Every dropped line was
-    a call, template text, a keyword-named key or member, or an anonymous `async (…) =>` callback.
+  - **Measured on this repository:** outlining the 606 tracked files of `src/` and `scripts/` added
+    9 lines (methods whose object return type holds a `;`, and wrapped signatures) and dropped 645.
+    Of those, 365 were `expect(…)` chains, 81 React hook calls, 49 test hooks (`beforeEach(() => {`
+    and the like, which a test file's outline no longer lists), and 41 anonymous `async (…) =>`
+    callbacks. The rest were template text, keyword-named keys and members, and other calls.
+  - **Speed:** the template scanner looks back a bounded distance from each `/`, so a 1 MB
+    minified line outlines in about 50 ms.
 - **After a resume, a file read in the same parallel batch as its outline still counts as read
   (#247).** Suppose the model sent `Read{X, outline: true}` and `Read{X}` together, and the outline
   finished last. The batch records results in call order, and the resume rebuild went by
