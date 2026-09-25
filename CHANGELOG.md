@@ -113,7 +113,9 @@ All notable changes to this project are documented in this file.
   - **Descriptions:** the `Read` description and its `offset`/`limit` descriptions now say the
     default is 2000 lines or 50 KB. These strings are part of the cached tool schema, so the prompt
     changes, and the first request after upgrading misses the prompt cache once.
-  - **TUI:** the TUI's Read row counts the notice as one more line (`1164 lines` for 1163 shown).
+  - **Pagination:** a Read that stops early also reports `pagination: { truncated: true,
+    nextCursor }`, with the offset to continue from, as the shared clip's truncation did.
+  - **TUI:** the Read row does not count the notice as a line of the file.
 - **`Read { outline: true }` lists Java, Kotlin, C# and Dart methods, and fewer lines that are not
   declarations (#247).**
   - **Methods that were missing:** a method written return-type-first (`public int getN() {`) or
@@ -122,8 +124,9 @@ All notable changes to this project are documented in this file.
     interface methods without a body, `async *entries()` generator methods (a plain `*values()`
     generator method is still not listed), `#private` methods, nested type arguments, and a
     destructured parameter that wraps.
-  - **Lines that no longer leak in:** statements (`if (`, `else if (`, `foreach(`, `assert x;`,
-    `go func() {`); a call that closes into a callback (`useEffect(() => {`, `).then(() => {`);
+  - **Lines that no longer leak in:** statements (`if (`, `else if (`, `foreach (`, `assert x;`,
+    `go func() {`; in Java and C#, also `foreach(`, `using(`, `lock(`, `synchronized(` with no
+    space, which elsewhere may be method names such as `using(plugin) {`); a call that closes into a callback (`useEffect(() => {`, `).then(() => {`);
     object keys and import-list members named like keywords (`enum: [...]`, `describe,`);
     template text at column 0 in `.ts`, `.mts`, `.cts`, `.mjs` and `.cjs` files; an Allman-style
     `{` line; and `#` comments in Makefiles, Dockerfiles, PowerShell files and extension-less
@@ -132,10 +135,12 @@ All notable changes to this project are documented in this file.
   - **JSX-capable files** (`.tsx`, `.jsx`, `.js`) are not scanned for template text. JSX text is
     not JavaScript, and a `/*` or a lone backtick in it (`<p>All requests to /api/* are
     proxied</p>`) would open a comment or template that never closes, hiding every later
-    declaration.
+    declaration. In the scanned files, a scan that ends inside a comment or template has lost its
+    place, and masks nothing.
   - **Markdown:** a file that opens with a `---` rule keeps the headings after it. Front matter now
     needs YAML up to its closing `---`: a `key:` line first, then `key:` lines (quoted keys, keys
-    with spaces and `$schema:` included), indented or `- ` lines, and `#` comments.
+    with spaces and `$schema:` included), indented or `- ` lines, and `#` comments. A `#` line
+    after a blank line is a heading, so such a block is not front matter.
   - **Header:** it no longer counts the empty line after a trailing newline.
   - **The contract:** the supported shapes are a table in `src/tools/file.test.ts`, which the
     README's scope statement follows.

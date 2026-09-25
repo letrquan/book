@@ -420,7 +420,8 @@ can decide what to read in full.
   else. Fenced code blocks are skipped, so a `# comment` in a shell example is not taken for a
   heading. A leading `---` opens front matter, which is skipped, only when YAML runs up to a
   closing `---`: a `key:` line first, then `key:` lines (any text up to a colon), indented or `- `
-  lines, and `#` comments. Otherwise it is a horizontal rule, and the headings after it count.
+  lines, and `#` comments. A `#` line after a blank line is a heading, so such a block is not
+  front matter. Otherwise it is a horizontal rule, and the headings after it count.
 - **Everything else**: every line at indentation zero except blank lines, comments, lines of
   closing punctuation alone (`}`, `});`, `]);`) and an Allman-style `{` line, plus lines indented
   by up to four spaces that declare something:
@@ -436,12 +437,14 @@ can decide what to read in full.
   - an arrow-function member (`handle = (event) => {`).
 
   Lines shaped like these that are not declarations stay out: control flow (`if (`, `else if (`,
-  `for (`, `foreach(`, `using(`, `switch (`, `catch (`, `synchronized(`), `assert x;`,
+  `for (`, `foreach (`, `using (`, `lock (`, `switch (`, `catch (`; in Java and C# also with no
+  space, as in `foreach(` and `lock(`, which elsewhere may be method names), `assert x;`,
   `return foo(`, `new Foo(`, `go func() {`, `defer func() {`, a call that closes into a callback
   (`useEffect(() => {`, `).then(() => {`), and a chained call (`foo(x).then(`). In `.ts`, `.mts`,
   `.cts`, `.mjs` and `.cjs` files, the text of a multi-line template literal is skipped at any
   indentation. `.tsx`, `.jsx` and `.js` files are not scanned for it, because JSX text may hold a
-  `/*` or a lone backtick that would open a comment or template that never closes. A `#` line is a
+  `/*` or a lone backtick that would open a comment or template that never closes, and a scan
+  that still ends inside one masks nothing. A `#` line is a
   comment in Python, shell, YAML, TOML, Ruby and PowerShell files, Makefiles, Dockerfiles (unless
   the name ends in a code extension, as `makefile.c` does), and extension-less scripts that start
   with `#!`; elsewhere C preprocessor lines and Rust attributes stay in.
