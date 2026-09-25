@@ -1545,6 +1545,9 @@ export class AgentManager {
           parentSessionId: record.parentSessionId,
         });
       };
+      // This run's opening message, so its answer is read from this run and never
+      // from the task before it (every child prompt is host-written).
+      const openingMessageId = randomUUID();
       const updated = await (this.options.runLoop ?? runAgentLoop)(
         agentConfig,
         registry,
@@ -1676,6 +1679,7 @@ export class AgentManager {
           // `record.prompt` is the task the delegating model wrote, not a person's
           // words, even though it takes the `user` position in the child's history.
           userMessageDerived: true,
+          userMessageId: openingMessageId,
           agentPath: [record.name],
           systemPromptAppend,
           hideAgents: true,
@@ -1690,7 +1694,7 @@ export class AgentManager {
       finishRunningActivities(false);
       this.flushTextDelta(record.id);
       record.transcript = updated;
-      record.result = finalAnswerText(updated);
+      record.result = finalAnswerText(updated, openingMessageId);
       record.error = loopError;
 
       if (terminalOutcome && terminalOutcome.status !== 'completed') {

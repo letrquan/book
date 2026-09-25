@@ -88,4 +88,23 @@ describe('finalAnswerText (#248)', () => {
   ])('%s', (_shape, history, expected) => {
     expect(finalAnswerText(history)).toBe(expected);
   });
+
+  it("stops at the run's opening message, even when that prompt is host-written", () => {
+    // A managed child's follow-up task is derived, like every child prompt. The run
+    // it opened recorded nothing, so the answer is empty, not the first task's.
+    const followUp = { ...host('Now check b.txt.'), id: 'follow-up' };
+    const history = [host('Read a.txt and report.'), assistant('TASK-A-ANSWER'), followUp];
+
+    expect(finalAnswerText(history, 'follow-up')).toBe('');
+    expect(finalAnswerText([...history, assistant('TASK-B-ANSWER')], 'follow-up')).toBe(
+      'TASK-B-ANSWER',
+    );
+  });
+
+  it('stops at a compaction checkpoint when compaction replaced the opening message', () => {
+    const checkpoint: Message = { ...user('[checkpoint]'), kind: 'checkpoint' };
+
+    expect(finalAnswerText([checkpoint, narration], 'replaced-opening')).toBe('');
+    expect(finalAnswerText([checkpoint, assistant('Done.')], 'replaced-opening')).toBe('Done.');
+  });
 });

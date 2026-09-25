@@ -195,12 +195,18 @@ describe('runMainAction — slash commands in print mode', () => {
     setExitFn(((code: number) => {
       throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    // Print failures set the exit code rather than exit(), so guard that seam too.
+    const exitCodes: number[] = [];
+    setExitCodeFn((code: number) => {
+      exitCodes.push(code);
+    });
 
     await runMainAction(printOptions(workspace, '/triage parser'));
 
     expect(provider.requests.length).toBe(1);
     expect(String(provider.requests[0].init?.body)).toContain('Triage parser please');
     expect(writes.join('')).toContain('ok');
+    expect(exitCodes).toEqual([]);
   });
 
   /** Dirty git worktree so `/review` has a real target to resolve. */
@@ -252,6 +258,11 @@ describe('runMainAction — slash commands in print mode', () => {
     setExitFn(((code: number) => {
       throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    // Print failures set the exit code rather than exit(), so guard that seam too.
+    const exitCodes: number[] = [];
+    setExitCodeFn((code: number) => {
+      exitCodes.push(code);
+    });
 
     await runMainAction(printOptions(workspace, '/review'));
 
@@ -259,6 +270,7 @@ describe('runMainAction — slash commands in print mode', () => {
     expect(writes.join('')).toContain('the exported constant changed meaning');
     // The reviewer agent was asked; the parent loop never was.
     expect(provider.requests.length).toBe(1);
+    expect(exitCodes).toEqual([]);
   }, 30000);
 
   it('fails /review --fix through the exit code instead of patching unattended', async () => {

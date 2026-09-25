@@ -1736,6 +1736,51 @@ describe('runHeadless — SessionEnd on an aborted run (#248)', () => {
 
     expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['error']);
   });
+
+  it('reports reason aborted when a signal timeout ends the run as timed out', async () => {
+    const signal = AbortSignal.timeout(50);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        // Still thinking when the timeout fires.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return sse([]);
+      }),
+    );
+    const writes: string[] = [];
+
+    const result = await runHeadless(
+      sessionEndConfig(),
+      createDefaultRegistry(),
+      streamOptions(signal, writes),
+    );
+
+    expect(result.outcome.status).toBe('timed_out');
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['aborted']);
+  });
+
+  it('reports reason error for a run that returns a failed outcome', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ error: { message: 'bad request', type: 'invalid_request_error' } }),
+            { status: 400, headers: { 'content-type': 'application/json' } },
+          ),
+      ),
+    );
+    const writes: string[] = [];
+
+    const result = await runHeadless(
+      sessionEndConfig(),
+      createDefaultRegistry(),
+      streamOptions(undefined, writes),
+    );
+
+    expect(result.outcome.status).toBe('failed');
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['error']);
+  });
 });
 
 describe('runHeadless — the answer is the final turn only (#248)', () => {

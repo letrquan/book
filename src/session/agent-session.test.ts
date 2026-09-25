@@ -14,6 +14,7 @@ import type {
 } from '../types/sessions.js';
 import type { Message } from '../types/messages.js';
 import { createSessionFixture } from '../test/session-fixture.js';
+import { SessionStore } from './store.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { hasExternalContext } from '../tools/memory-save.js';
 import { SessionRuntime } from './runtime.js';
@@ -629,6 +630,56 @@ describe('AgentSession', () => {
         }),
       }),
     ]);
+  });
+
+  it('persists a host-appended user message as host-written, and reloads it that way', async () => {
+    const fixture = createSessionFixture();
+    try {
+      const sessionId = fixture.store.create({ cwd: fixture.root });
+      const workState: Message = {
+        id: 'work-state-1',
+        role: 'user',
+        content: '[work-state] Current plan, restated by the host.',
+        includeInContext: true,
+        kind: 'conversation',
+        derivedContent: true,
+        timestamp: 30,
+      };
+      // Shaped like a record an older Book wrote: no `derivedContent` at all.
+      const legacy: Message = {
+        id: 'legacy-1',
+        role: 'user',
+        content: 'appended before the flag was persisted',
+        includeInContext: true,
+        kind: 'conversation',
+        timestamp: 31,
+      };
+      const session = new AgentSession({
+        runLoop: async (_config, _registry, _prompt, _history, callbacks) => {
+          callbacks.onUserMessageAppended?.(workState);
+          callbacks.onUserMessageAppended?.(legacy);
+          return [workState, legacy];
+        },
+      });
+
+      await session.run({
+        config: defaultConfig(),
+        registry: {} as ToolRegistry,
+        prompt: 'prompt',
+        history: [],
+        sessionId,
+        timelineStore: fixture.store,
+        callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+      });
+
+      const reloaded = new SessionStore(fixture.root).load(sessionId).transcript;
+      expect(reloaded.find((message) => message.id === 'work-state-1')?.derivedContent).toBe(true);
+      const legacyReloaded = reloaded.find((message) => message.id === 'legacy-1');
+      expect(legacyReloaded?.content).toBe('appended before the flag was persisted');
+      expect(legacyReloaded?.derivedContent).toBeUndefined();
+    } finally {
+      fixture.cleanup();
+    }
   });
 
   it('does not persist finalized assistant messages after the host becomes stale', async () => {

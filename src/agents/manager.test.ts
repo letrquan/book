@@ -1049,6 +1049,72 @@ describe('AgentManager lifecycle', () => {
     }
   });
 
+  it('keeps the previous task out of a follow-up run that recorded nothing (#248)', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const failure =
+      'The provider returned an empty response after one retry. Please retry the request.';
+    let runs = 0;
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      worktreeRoot: tempRoot(),
+      findGitRoot: async () => root,
+      createSnapshot: async () => snapshot(root),
+      createWorktree: async (_snapshot, agentId) => ({ path: root, branch: `branch-${agentId}` }),
+      runLoop: async (_config, _registry, prompt, history, callbacks, _mode, options) => {
+        runs++;
+        // The loop opens every run with the task prompt, under the id its caller supplies.
+        const opening: Message = {
+          id: options?.userMessageId ?? `opening-${runs}`,
+          role: 'user',
+          content: prompt,
+          includeInContext: true,
+          derivedContent: true,
+          timestamp: runs,
+        };
+        if (runs === 1) {
+          callbacks.onTerminal?.({
+            status: 'completed',
+            reason: 'normal_completion',
+            partialOutput: false,
+          });
+          return [
+            ...history,
+            opening,
+            {
+              id: 'answer-1',
+              role: 'assistant',
+              content: 'TASK-A-ANSWER',
+              includeInContext: true,
+              timestamp: 2,
+            },
+          ];
+        }
+        callbacks.onError(failure);
+        callbacks.onTerminal?.({
+          status: 'failed',
+          reason: 'protocol_error',
+          message: failure,
+          partialOutput: false,
+        });
+        return [...history, opening];
+      },
+    });
+    try {
+      const record = await manager.spawn({ agent: 'explorer', prompt: 'task A' });
+      expect((await manager.wait(record.id)).result).toBe('TASK-A-ANSWER');
+
+      await manager.send(record.id, 'task B');
+      const followUp = await manager.wait(record.id);
+
+      expect(followUp.status).toBe('failed');
+      expect(followUp.result).toBe('');
+    } finally {
+      manager.dispose();
+    }
+  });
+
   it('runs explorer without Git, snapshots, or worktrees', async () => {
     const root = tempRoot();
     const config = defaultConfig({ workspace: root });

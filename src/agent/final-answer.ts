@@ -14,17 +14,20 @@ import type { Message } from '../types/messages.js';
  * The first other message decides. An assistant turn that called no tools is the
  * answer. Anything else (a turn that called tools, or a message the user wrote)
  * means the model stopped before it answered again, so the answer is empty rather
- * than an older turn's narration (#248). The supported shapes are pinned by
- * `final-answer.test.ts`.
+ * than an older turn's narration (#248).
  *
- * Known limit: a delegated task prompt and a slash-command body are
- * `derivedContent` too. When one opens a run that records nothing, the walk passes
- * over it, and an answer to an earlier prompt in the same history is returned, as
- * the pre-#248 rule did.
+ * `openingMessageId` bounds the walk to one run: it is the id of the message that
+ * opened the run, and reaching it means the run recorded no answer. That prompt can
+ * be host-written itself (every managed child's task is), and without the bound the
+ * walk would pass over it into the previous run's answer. When compaction replaced
+ * the opening message, the walk stops at the checkpoint instead, a user message the
+ * host does not mark derived. The supported shapes are pinned by
+ * `final-answer.test.ts`.
  */
-export function finalAnswerText(history: readonly Message[]): string {
+export function finalAnswerText(history: readonly Message[], openingMessageId?: string): string {
   for (let index = history.length - 1; index >= 0; index--) {
     const message = history[index];
+    if (message.id === openingMessageId) return '';
     if (message.role === 'user') {
       if (message.derivedContent) continue;
       return '';

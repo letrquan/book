@@ -258,6 +258,8 @@ export async function runHeadless(
 
     let lastUsage: Usage | null = null;
     let lastOutcome: AgentTerminalOutcome | null = null;
+    /** The opening message of the latest model run: the answer is read from that run only. */
+    let finalRunOpeningId: string | undefined;
     const runResults: AgentRunResult[] = [];
     const recordRunResult = (result: AgentRunResult): void => {
       const existing = runResults.findIndex(
@@ -485,6 +487,7 @@ export async function runHeadless(
       commandContext?: CommandContext,
     ): Promise<void> => {
       let runOutcome: AgentTerminalOutcome | undefined;
+      finalRunOpeningId = userMessage.id;
       lastUsage = null;
       let updated: Message[];
       try {
@@ -925,7 +928,7 @@ export async function runHeadless(
     };
 
     if (opts.jsonSchema) {
-      const text = finalAnswerText(contextHistory);
+      const text = finalAnswerText(contextHistory, finalRunOpeningId);
       try {
         result.structured = JSON.parse(text);
       } catch {
@@ -964,7 +967,7 @@ export async function runHeadless(
         // Only a reply that opened with a closed reasoning block is rewritten.
         // Any other answer is printed exactly as the model wrote it, so an
         // indented first line (YAML, code piped to a file) keeps its indent.
-        const last = finalAnswerText(contextHistory);
+        const last = finalAnswerText(contextHistory, finalRunOpeningId);
         const inline = separateInlineReasoning(last);
         const answer = inline.found ? inline.content.trimEnd() : last;
         if (answer) stdout.write(answer + '\n');
@@ -1006,15 +1009,20 @@ export async function runHeadless(
     }
 
     if (sessionId) {
-      // An abort the loop absorbed reaches this point as a cancelled outcome. The
-      // outcome decides, not the signal: a run that completed and then lost its
-      // reader still completed.
-      await agentSession.endLifecycle(
-        config,
-        sessionId,
-        outcome.status === 'cancelled' ? 'aborted' : 'completion',
-        { onHookEvent: createHookEventHandler(opts, emit) },
-      );
+      // A run that completed reports `completion`, even when its reader went away
+      // afterwards. Otherwise an aborted signal (a cancel, or an `AbortSignal.timeout`
+      // that ended the run as timed out) reports `aborted`, and a failed run `error`.
+      const sessionEndReason =
+        outcome.status === 'completed'
+          ? 'completion'
+          : opts.signal?.aborted || outcome.status === 'cancelled'
+            ? 'aborted'
+            : outcome.status === 'failed'
+              ? 'error'
+              : 'completion';
+      await agentSession.endLifecycle(config, sessionId, sessionEndReason, {
+        onHookEvent: createHookEventHandler(opts, emit),
+      });
     }
 
     return result;
