@@ -26,6 +26,16 @@ jobs:
         # floor above our declared minimum still goes green -- which is how undici 8's
         # `>=22.19.0` requirement reached main under a `>=22.13.0` declaration.
         node-version: [22.19.x, 24.x]
+        # The floor leg cannot see what only newer 22 releases do. `NODE_USE_ENV_PROXY`
+        # exists only on later 22.x, so 22.19 cannot exercise the path the #146 proxy
+        # regression broke (undici 8 replacing the dispatcher Node's own `fetch` uses);
+        # it was reproduced on 22.23.3. One leg on the newest 22 covers that. It is Linux
+        # only: the dispatcher behaviour is not platform-specific, and a Windows leg would
+        # add another run of the Windows-only flakes to the Stability policy's green-run
+        # window.
+        include:
+          - os: ubuntu-latest
+            node-version: 22.x
 
     steps:
       - uses: actions/checkout@v7
