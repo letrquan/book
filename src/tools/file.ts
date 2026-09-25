@@ -263,15 +263,17 @@ const OUTLINE_MAX_ENTRIES = 2000;
 const OUTLINE_SIGNATURE_LOOKAHEAD = 40;
 const OUTLINE_MODIFIERS =
   '(?:(?:export|public|private|protected|internal|static|async|abstract|override|virtual|sealed|partial|readonly|final|pub|open|suspend|inline|operator|infix|data|inner|synchronized|native|default|extern|unsafe)\\s+)*';
-// Statements shaped like a method line: `if (x) {`, `return (a) => {`, and with
-// a space before the parenthesis, `foreach (var x in xs)`, `lock (gate)`, `when (x) {`.
-// A method may still be called `lock()` or `match(pattern)`.
+// Statements shaped like a method line: `if (x) {`, `return (a) => {`,
+// `foreach(var x in xs)`, `synchronized(this) {`, and, with a space before the
+// parenthesis, `lock (gate)`, `when (x) {`, `match (a, b) {`, `with (o) {`. A
+// method may still be called `lock()`, `match(pattern)`, `with()` or `when()`.
 const OUTLINE_STATEMENT =
-  '(?:(?:if|for|while|switch|catch|else|do|try|return|await|async)\\b|(?:foreach|using|lock|fixed|when|match|with|synchronized)\\s)';
+  '(?:(?:if|for|foreach|while|switch|catch|using|fixed|checked|unchecked|synchronized|else|do|try|return|await|async)\\b|(?:lock|when|match|with)\\s)';
 // Words that start a statement where a return type would stand: `else if (`,
-// `return new Foo(`, `go func() {`, `defer func() {`, Rust's `match parse(x) {`.
+// `return new Foo(`, `go func() {`, `defer func() {`, Rust's `match parse(x) {`,
+// Java's `assert isValid(x);`.
 const OUTLINE_STATEMENT_WORD =
-  '(?:if|else|elif|for|foreach|while|do|switch|case|when|match|catch|try|finally|return|await|yield|throw|new|delete|typeof|using|lock|fixed|synchronized|with|go|defer)\\b';
+  '(?:if|else|elif|for|foreach|while|do|switch|case|when|match|catch|try|finally|return|await|yield|throw|new|delete|typeof|using|lock|fixed|synchronized|with|go|defer|assert)\\b';
 // Type arguments nested up to three deep: `Map<String, List<Set<Integer>>>`.
 const OUTLINE_GENERIC = '<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>';
 const OUTLINE_TYPE = `[A-Za-z_$][\\w$.]*(?:${OUTLINE_GENERIC})?(?:\\[\\])*\\??`;
@@ -318,16 +320,49 @@ const HASH_COMMENT_EXTENSIONS = new Set([
   '.mk',
   '.dockerfile',
 ]);
-// Files named for their tool rather than given an extension: `Makefile`, `Dockerfile.dev`.
+// Files named for their tool rather than given an extension: `Makefile`,
+// `Dockerfile.dev`. A code extension still wins: `makefile.c` is C.
 const HASH_COMMENT_BASENAME = /^(?:(?:gnu)?makefile|dockerfile|containerfile)(?:\.[\w.-]+)?$/i;
-// Where a backtick opens a string that may run over several lines.
-const TEMPLATE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
+// Code extensions whose `#` lines are code: C preprocessor directives, Rust
+// attributes, C# and Swift directives, JavaScript private members.
+const HASH_CODE_EXTENSIONS = new Set([
+  '.c',
+  '.h',
+  '.cc',
+  '.cpp',
+  '.cxx',
+  '.hpp',
+  '.hh',
+  '.hxx',
+  '.m',
+  '.mm',
+  '.rs',
+  '.cs',
+  '.swift',
+  '.ts',
+  '.tsx',
+  '.mts',
+  '.cts',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+]);
+// Where a backtick opens a string that may run over several lines, and the
+// scanner that finds its text can be trusted. JSX text is not JavaScript: a
+// `/*` or a lone backtick in `<p>All requests to /api/* are proxied</p>` opens
+// a comment or a template that never closes, and every later declaration would
+// be dropped. So `.tsx`, `.jsx` and `.js`, which many toolchains compile as
+// JSX, are outlined without the scanner.
+const TEMPLATE_EXTENSIONS = new Set(['.ts', '.mts', '.cts', '.mjs', '.cjs']);
 // Kotlin declares every function with `fun`, so a `name(args) {` line there is a
 // call taking a trailing lambda (`repeat(3) {`), not a method.
 const KEYWORD_ONLY_EXTENSIONS = new Set(['.kt', '.kts']);
 // Java and C# declare interface and abstract methods without a body: `int size();`.
 const BODILESS_METHOD_EXTENSIONS = new Set(['.java', '.cs']);
-const FRONT_MATTER_KEY = /^[A-Za-z_][\w.-]*\s*:(?:\s|$)/;
+// A front-matter key is anything up to a colon: `title:`, `"quoted key":`,
+// `my key:`, `$schema:`, `título:`.
+const FRONT_MATTER_KEY = /^[^\s#:-][^:]*:(?:\s|$)/;
 
 interface OutlineProfile {
   hashComments: boolean;
@@ -343,7 +378,7 @@ function outlineProfile(filePath: string, lines: readonly string[]): OutlineProf
   return {
     hashComments:
       HASH_COMMENT_EXTENSIONS.has(extension) ||
-      HASH_COMMENT_BASENAME.test(name) ||
+      (HASH_COMMENT_BASENAME.test(name) && !HASH_CODE_EXTENSIONS.has(extension)) ||
       (extension === '' && lines[0]?.startsWith('#!') === true),
     templates: TEMPLATE_EXTENSIONS.has(extension),
     keywordsOnly: KEYWORD_ONLY_EXTENSIONS.has(extension),
@@ -549,8 +584,9 @@ function codeOutlineIndexes(lines: readonly string[], profile: OutlineProfile): 
 
 /**
  * Where Markdown content starts. A leading `---` opens front matter only when a
- * closing `---` (or `...`) follows and every line between reads as YAML, a
- * `key:` line first. Otherwise it is a horizontal rule and the headings after it count.
+ * closing `---` (or `...`) follows and every line between reads as YAML: a
+ * `key:` line first, then `key:` lines, indented or `- ` lines, and `#`
+ * comments. Otherwise it is a horizontal rule and the headings after it count.
  */
 function markdownContentStart(lines: readonly string[]): number {
   if (lines[0]?.trim() !== '---') return 0;
@@ -561,7 +597,11 @@ function markdownContentStart(lines: readonly string[]): number {
     body.length > 0 &&
     FRONT_MATTER_KEY.test(body[0]) &&
     body.every(
-      (line) => FRONT_MATTER_KEY.test(line) || /^\s+\S/.test(line) || /^-(?:\s|$)/.test(line),
+      (line) =>
+        FRONT_MATTER_KEY.test(line) ||
+        /^\s+\S/.test(line) ||
+        /^-(?:\s|$)/.test(line) ||
+        line.startsWith('#'),
     );
   return yaml ? close + 1 : 0;
 }
@@ -680,16 +720,11 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   const output: string[] = [];
   let bytes = 0;
   let last = offset - 1;
-  let cutLine = false;
   for (let index = offset - 1; index < end; index++) {
-    let text = `${index + 1}: ${lines[index]}`;
+    const text = `${index + 1}: ${lines[index]}`;
     const size = Buffer.byteLength(text) + 1;
-    if (bytes + size > READ_OUTPUT_MAX_BYTES) {
-      if (output.length > 0) break;
-      // One line over the whole budget is shown cut, so the next Read moves past it.
-      text = utf8Prefix(text, READ_OUTPUT_MAX_BYTES);
-      cutLine = true;
-    }
+    // A page stops at the byte budget, but always holds its first line.
+    if (output.length > 0 && bytes + size > READ_OUTPUT_MAX_BYTES) break;
     output.push(text);
     bytes += size;
     last = index + 1;
@@ -697,22 +732,28 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   }
   // A Read that stops before the end of the file, at the byte budget or at its
   // line limit, says so and names the offset to continue from.
-  if (cutLine) {
-    const next = last < lineCount ? ` Continue with offset: ${last + 1}.` : '';
-    output.push(
-      `[Line ${last} is longer than ${READ_OUTPUT_MAX_BYTES} bytes and was cut there.${next}]`,
-    );
-  } else if (last < lineCount) {
+  let notice: string | undefined;
+  if (last < lineCount) {
     const reason = last < end ? ', the most one Read returns (50 KB)' : '';
-    output.push(
-      `[Lines ${offset}-${last} of ${lineCount} shown${reason}. Continue with offset: ${last + 1}.]`,
-    );
+    notice = `[Lines ${offset}-${last} of ${lineCount} shown${reason}. Continue with offset: ${last + 1}.]`;
+  }
+  let page = notice === undefined ? output.join('\n') : `${output.join('\n')}\n${notice}`;
+  // Only a page of one line can pass the clip. A line that does not fit even on
+  // its own is shown cut to what the notice leaves, and the notice says so.
+  if (Buffer.byteLength(page) > TOOL_RESULT_MAX_BYTES) {
+    const cutNote = `Line ${last} (${Buffer.byteLength(lines[last - 1])} bytes) was cut to fit`;
+    const cut =
+      notice === undefined
+        ? `[${cutNote} one Read (50 KB).]`
+        : `${notice.slice(0, -1)} ${cutNote}.]`;
+    const room = TOOL_RESULT_MAX_BYTES - Buffer.byteLength(cut) - 1;
+    page = `${utf8Prefix(output[0], room)}\n${cut}`;
   }
   const observation = await observeFile(ctx, filePath, 'read', {
     lineStart: offset,
     lineEnd: last,
   });
-  return toolSuccess(output.join('\n'), {
+  return toolSuccess(page, {
     artifacts: { fileObservations: [observation] },
   });
 }

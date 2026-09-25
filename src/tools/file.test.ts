@@ -1632,6 +1632,120 @@ const OUTLINE_CONTRACT: Array<{ shape: string; file: string; lines: string[]; ou
       lines: ['---', 'title: Guide', 'tags:', '  - docs', '---', '# Guide'],
       outline: ['6: # Guide'],
     },
+    {
+      shape: 'Markdown: front matter may hold comments, quoted keys, keys with spaces and $schema',
+      file: 'loose.md',
+      lines: [
+        '---',
+        'title: Guide',
+        '# draft: true',
+        '"quoted key": 1',
+        'my key: 2',
+        '$schema: https://example.com/schema.json',
+        'título: Guía',
+        '---',
+        '# Guide',
+      ],
+      outline: ['9: # Guide'],
+    },
+    {
+      shape: 'TSX: a /* in JSX text does not hide the declarations after it',
+      file: 'api.tsx',
+      lines: [
+        'export function A() {',
+        '  return (',
+        '    <div>',
+        '      <p>All requests to /api/* are proxied to the backend.</p>',
+        '    </div>',
+        '  );',
+        '}',
+        'export function Next() {',
+        '  return 1;',
+        '}',
+      ],
+      outline: ['1: export function A() {', '8: export function Next() {'],
+    },
+    {
+      shape: 'JSX: a node_modules/** in JSX text does not hide the declarations after it',
+      file: 'list.jsx',
+      lines: [
+        'export function A() {',
+        '  return (',
+        '    <ul>',
+        '      <li>Ignores node_modules/** by default</li>',
+        '    </ul>',
+        '  );',
+        '}',
+        'export function Next() {',
+        '  return 1;',
+        '}',
+      ],
+      outline: ['1: export function A() {', '8: export function Next() {'],
+    },
+    {
+      shape: 'JavaScript: a lone backtick in JSX text does not hide the declarations after it',
+      file: 'keys.js',
+      lines: [
+        'export function A() {',
+        '  return (',
+        '    <p>',
+        '      Press <kbd>`</kbd> to open the console.',
+        '    </p>',
+        '  );',
+        '}',
+        'export function Next() {',
+        '  return 1;',
+        '}',
+      ],
+      outline: ['1: export function A() {', '8: export function Next() {'],
+    },
+    {
+      shape: 'C#: statements with no space before the parenthesis are not declarations',
+      file: 'P.cs',
+      lines: [
+        'class P {',
+        '  static void Main(string[] args)',
+        '  {',
+        '    foreach(var a in args)',
+        '    {',
+        '    }',
+        '    using(var s = File.OpenRead(x))',
+        '    {',
+        '    }',
+        '    fixed(byte* p = buf)',
+        '    {',
+        '    }',
+        '  }',
+        '}',
+      ],
+      outline: ['1: class P {', '2:   static void Main(string[] args)'],
+    },
+    {
+      shape: 'Java: assert and synchronized statements are not declarations',
+      file: 'A.java',
+      lines: [
+        'class A {',
+        '  void run() {',
+        '    assert isValid(x);',
+        '    synchronized(this) {',
+        '    }',
+        '  }',
+        '}',
+      ],
+      outline: ['1: class A {', '2:   void run() {'],
+    },
+    {
+      shape: 'A file named makefile.c keeps its preprocessor lines',
+      file: 'makefile.c',
+      lines: ['#include <stdio.h>', 'int main(void) {', '  return 0;', '}'],
+      outline: ['1: #include <stdio.h>', '2: int main(void) {'],
+    },
+    {
+      shape: 'A file named dockerfile.rs keeps its attributes',
+      file: 'dockerfile.rs',
+      lines: ['#[derive(Debug)]', 'struct S;'],
+      outline: ['1: #[derive(Debug)]', '2: struct S;'],
+    },
   ];
 
 describe('Read outline contract', () => {
@@ -1709,12 +1823,47 @@ describe('Read output budget', () => {
     const shown = first.content.split('\n');
     expect(shown).toHaveLength(2);
     expect(shown[0].startsWith('1: xxx')).toBe(true);
-    expect(shown[1]).toMatch(
-      /^\[Line 1 is longer than \d+ bytes and was cut there\. Continue with offset: 2\.\]$/,
+    expect(shown[1]).toBe(
+      '[Lines 1-1 of 2 shown, the most one Read returns (50 KB). Continue with offset: 2. Line 1 (60000 bytes) was cut to fit.]',
     );
+    // The cut line fills what the notice leaves of the clip, to the byte.
+    expect(Buffer.byteLength(first.content)).toBe(TOOL_RESULT_MAX_BYTES);
 
     const rest = await read.execute({ filePath: 'minified.js', offset: 2 }, ctx);
     expect(rest.content).toBe('2: last');
+
+    writeFileSync(join(dir, 'only.js'), 'x'.repeat(60_000));
+    const only = await read.execute({ filePath: 'only.js' }, ctx);
+    expect(only.content.split('\n').at(-1)).toBe(
+      '[Line 1 (60000 bytes) was cut to fit one Read (50 KB).]',
+    );
+    expect(Buffer.byteLength(only.content)).toBe(TOOL_RESULT_MAX_BYTES);
+  });
+
+  it('returns a line that fits under the clip on its own whole, with no cut notice', async () => {
+    // 50,700 bytes: over the page budget, under the clip. Returned whole before the budget too.
+    writeFileSync(join(dir, 'one.txt'), 'x'.repeat(50_700));
+    const one = await read.execute({ filePath: 'one.txt' }, ctx);
+    expect(one.content).toBe(`1: ${'x'.repeat(50_700)}`);
+
+    // A line whose numbered form is exactly the clip.
+    const full = 'z'.repeat(TOOL_RESULT_MAX_BYTES - Buffer.byteLength('1: '));
+    writeFileSync(join(dir, 'full.txt'), full);
+    const whole = await read.execute({ filePath: 'full.txt' }, ctx);
+    expect(whole.content).toBe(`1: ${full}`);
+  });
+
+  it('does not call a line cut when it and its notice fill the clip exactly', async () => {
+    const notice =
+      '[Lines 1-1 of 2 shown, the most one Read returns (50 KB). Continue with offset: 2.]';
+    const line = 'y'.repeat(TOOL_RESULT_MAX_BYTES - Buffer.byteLength(`1: \n${notice}`));
+    writeFileSync(join(dir, 'exact.txt'), `${line}\nnext`);
+    const page = await read.execute({ filePath: 'exact.txt' }, ctx);
+    expect(page.content).toBe(`1: ${line}\n${notice}`);
+    expect(Buffer.byteLength(page.content)).toBe(TOOL_RESULT_MAX_BYTES);
+
+    const rest = await read.execute({ filePath: 'exact.txt', offset: 2 }, ctx);
+    expect(rest.content).toBe('2: next');
   });
 
   it('stops an outline under the clip too, and says where the rest start', async () => {
