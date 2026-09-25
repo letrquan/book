@@ -1006,26 +1006,30 @@ export async function runHeadless(
     }
 
     if (sessionId) {
-      // An abort the loop absorbed still reaches this point, as a cancelled outcome.
+      // An abort the loop absorbed reaches this point as a cancelled outcome. The
+      // outcome decides, not the signal: a run that completed and then lost its
+      // reader still completed.
       await agentSession.endLifecycle(
         config,
         sessionId,
-        opts.signal?.aborted ? 'aborted' : 'completion',
+        outcome.status === 'cancelled' ? 'aborted' : 'completion',
         { onHookEvent: createHookEventHandler(opts, emit) },
       );
     }
 
     return result;
   } catch (error) {
-    // An abort that lands inside a tool throws out of the loop instead (a hook call
-    // rethrows the aborted signal), and used to skip SessionEnd entirely: a cancelled
-    // print run, or a stream-json run whose reader went away, ended without it (#248).
-    // End the session SessionStart opened, then rethrow. `endLifecycle` fires at most
-    // once per session. It gets no signal, as in the TUI: the run's signal is the one
-    // that aborted, and every hook already runs under its own fresh 10 s timeout.
-    if (startedSessionId && opts.signal?.aborted) {
+    // A run that throws after SessionStart used to skip SessionEnd entirely (#248).
+    // An abort that lands inside a tool is the common case (a hook call rethrows the
+    // aborted signal): a cancelled print run, or a stream-json run whose reader went
+    // away. A missing prompt is another. End the session SessionStart opened, then
+    // rethrow. There is no outcome here, so the signal decides between `aborted` and
+    // `error`. `endLifecycle` fires at most once per session. It gets no signal, as in
+    // the TUI: the run's signal may be the one that aborted, and every hook already
+    // runs under its own fresh 10 s timeout.
+    if (startedSessionId) {
       await agentSession
-        .endLifecycle(config, startedSessionId, 'aborted', {
+        .endLifecycle(config, startedSessionId, opts.signal?.aborted ? 'aborted' : 'error', {
           onHookEvent: createHookEventHandler(opts, emit),
         })
         .catch((hookError: unknown) => {

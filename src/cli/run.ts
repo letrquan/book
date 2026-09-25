@@ -406,6 +406,13 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
   } catch (e) {
     if (isExiting()) throw e;
     console.error(e instanceof Error ? e.message : String(e));
+    // A thrown print failure gets the same treatment as a returned one (#243): mark
+    // the exit code and let Node exit once its handles close. The TUI still exits at
+    // once, since Ink may still hold stdin.
+    if (options.print !== undefined) {
+      setExitCode(1);
+      return;
+    }
     exit(1);
   }
 }

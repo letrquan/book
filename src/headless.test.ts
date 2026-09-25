@@ -1702,6 +1702,40 @@ describe('runHeadless — SessionEnd on an aborted run (#248)', () => {
 
     expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['completion']);
   });
+
+  it('reports reason completion for a run that completed before its signal aborted', async () => {
+    const controller = new AbortController();
+    const writes: string[] = [];
+
+    await runHeadless(sessionEndConfig(), createDefaultRegistry(), {
+      ...streamOptions(controller.signal, writes),
+      stdout: {
+        write: (s: string) => {
+          writes.push(s);
+          // The reader goes away right after the result record: the run itself completed.
+          if (s.includes('"type":"result"')) controller.abort();
+          return true;
+        },
+      },
+    });
+
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['completion']);
+  });
+
+  it('ends the session with reason error when the run throws after SessionStart', async () => {
+    const { Readable } = await import('stream');
+    const writes: string[] = [];
+
+    await expect(
+      runHeadless(sessionEndConfig(), createDefaultRegistry(), {
+        ...streamOptions(undefined, writes),
+        prompt: undefined,
+        stdin: Readable.from([]),
+      }),
+    ).rejects.toThrow('print mode requires a prompt');
+
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['error']);
+  });
 });
 
 describe('runHeadless — the answer is the final turn only (#248)', () => {
@@ -1775,6 +1809,91 @@ describe('runHeadless — the answer is the final turn only (#248)', () => {
 
     expect(result.structured).toBeUndefined();
     expect(result.structuredError).toBe('Failed to parse JSON from assistant output');
+  });
+
+  it('keeps the answer when the host appended a continuation after it', async () => {
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount++;
+        if (requestCount === 1) {
+          return sse([
+            toolDelta('call-1', 'TodoWrite', {
+              todos: [{ content: 'second step', status: 'pending' }],
+            }),
+          ]);
+        }
+        return sse([textDelta('FINAL-ANSWER')]);
+      }),
+    );
+    const config = freshConfig({ workspace: makeWorkspace() });
+    config.settings.continuation.enabled = true;
+    const writes: string[] = [];
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'go',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      quiet: true,
+      maxTurns: 2,
+      stdout: {
+        write: (s: string) => {
+          writes.push(s);
+          return true;
+        },
+      },
+    });
+
+    // The shape under test: the open todo made the host append a continuation after the answer.
+    expect(result.messages.at(-1)?.content).toMatch(/^\[continuation\]/);
+    expect(writes.join('')).toBe('FINAL-ANSWER\n');
+  });
+
+  it('keeps output-cap partial text when the resumed request fails', async () => {
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount++;
+        if (requestCount === 1) {
+          return sse([
+            textDelta('PART-ONE'),
+            `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\n`,
+          ]);
+        }
+        return new Response(
+          JSON.stringify({
+            error: { message: 'probe bad request', type: 'invalid_request_error' },
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        );
+      }),
+    );
+    const config = freshConfig({ workspace: makeWorkspace() });
+    config.retry = { ...config.retry, outputCapContinuations: 1 };
+    const writes: string[] = [];
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'go',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      quiet: true,
+      stdout: {
+        write: (s: string) => {
+          writes.push(s);
+          return true;
+        },
+      },
+    });
+
+    expect(result.outcome.status).toBe('failed');
+    expect(result.messages.at(-1)?.content).toMatch(/^\[continuation\]/);
+    expect(writes.join('')).toBe('PART-ONE\n');
   });
 });
 

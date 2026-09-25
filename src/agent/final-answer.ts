@@ -1,23 +1,36 @@
 import type { Message } from '../types/messages.js';
 
 /**
- * The run's answer: the text of its final turn, and never an earlier turn's.
+ * The run's answer: the model's final answer, and never an earlier turn's narration.
  *
- * The final turn answered only when the history ends with an assistant message
- * that called no tools. Any other ending means the model stopped before it
- * answered, so the answer is empty rather than an older turn's narration
- * (#248). The supported shapes, pinned by `final-answer.test.ts`:
+ * Walking back from the end of the history, two kinds of message are passed over,
+ * because neither ends an answer:
+ * - a user-role message the host wrote itself (`derivedContent`): the
+ *   `[continuation]` and completion-gate prompts, the output-cap resume, and the
+ *   `[work-state]` refresh the loop appends mid-run;
+ * - an assistant turn with no text and no tool calls, such as a failed turn that
+ *   was only reasoning.
  *
- * - An assistant turn with no tool calls (an answer, or a failed turn's partial
- *   text): its text.
- * - A failed final turn that was only reasoning, recorded with empty content: `''`.
- * - A turn that called tools, because a failure recorded nothing after it, the
- *   run hit max turns, or it was cancelled inside a tool: `''`.
- * - A user message nothing answered: `''`.
- * - An empty history: `''`.
+ * The first other message decides. An assistant turn that called no tools is the
+ * answer. Anything else (a turn that called tools, or a message the user wrote)
+ * means the model stopped before it answered again, so the answer is empty rather
+ * than an older turn's narration (#248). The supported shapes are pinned by
+ * `final-answer.test.ts`.
+ *
+ * Known limit: a delegated task prompt and a slash-command body are
+ * `derivedContent` too. When one opens a run that records nothing, the walk passes
+ * over it, and an answer to an earlier prompt in the same history is returned, as
+ * the pre-#248 rule did.
  */
 export function finalAnswerText(history: readonly Message[]): string {
-  const last = history.at(-1);
-  if (!last || last.role !== 'assistant' || (last.toolCalls?.length ?? 0) > 0) return '';
-  return last.content;
+  for (let index = history.length - 1; index >= 0; index--) {
+    const message = history[index];
+    if (message.role === 'user') {
+      if (message.derivedContent) continue;
+      return '';
+    }
+    if ((message.toolCalls?.length ?? 0) > 0) return '';
+    if (message.content.trim()) return message.content;
+  }
+  return '';
 }

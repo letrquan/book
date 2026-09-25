@@ -146,23 +146,29 @@ describe('runMainAction — slash commands in print mode', () => {
     tempDirs = [];
   });
 
-  it('exits non-zero through the exit abstraction for an interactive-only command', async () => {
+  it('fails an interactive-only command through the exit code, not exit() (#243)', async () => {
     const workspace = printWorkspace();
     const provider = createRepeatingScriptedProvider(() => sseResponse([]));
     vi.stubGlobal('fetch', provider.fetch);
-    const codes: number[] = [];
+    const exits: number[] = [];
+    const exitCodes: number[] = [];
     setExitFn(((code: number) => {
-      codes.push(code);
-      throw new Error('process.exit');
+      exits.push(code);
+      throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      exitCodes.push(code);
+    });
     const errors: string[] = [];
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
       errors.push(args.map(String).join(' '));
     });
 
-    await expect(runMainAction(printOptions(workspace, '/clear'))).rejects.toThrow('process.exit');
+    // A thrown print failure returns like a returned one: no exit() while handles close.
+    await runMainAction(printOptions(workspace, '/clear'));
 
-    expect(codes).toEqual([1]);
+    expect(exits).toEqual([]);
+    expect(exitCodes).toEqual([1]);
     expect(errors.join('\n')).toContain('/clear');
     expect(errors.join('\n')).toContain('Commands supported in print mode:');
     // The refusal happens before the model is ever asked.
@@ -255,25 +261,28 @@ describe('runMainAction — slash commands in print mode', () => {
     expect(provider.requests.length).toBe(1);
   }, 30000);
 
-  it('exits non-zero for /review --fix instead of patching unattended', async () => {
+  it('fails /review --fix through the exit code instead of patching unattended', async () => {
     const workspace = reviewWorkspace();
     const provider = createRepeatingScriptedProvider(() => sseResponse([]));
     vi.stubGlobal('fetch', provider.fetch);
-    const codes: number[] = [];
+    const exits: number[] = [];
+    const exitCodes: number[] = [];
     setExitFn(((code: number) => {
-      codes.push(code);
-      throw new Error('process.exit');
+      exits.push(code);
+      throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      exitCodes.push(code);
+    });
     const errors: string[] = [];
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
       errors.push(args.map(String).join(' '));
     });
 
-    await expect(runMainAction(printOptions(workspace, '/review --fix'))).rejects.toThrow(
-      'process.exit',
-    );
+    await runMainAction(printOptions(workspace, '/review --fix'));
 
-    expect(codes).toEqual([1]);
+    expect(exits).toEqual([]);
+    expect(exitCodes).toEqual([1]);
     expect(errors.join('\n')).toContain('/review --fix needs an interactive session');
     expect(provider.requests.length).toBe(0);
   }, 30000);
