@@ -29,11 +29,14 @@ export function toolNamesFromHistory(messages: Message[]): Set<string> {
   const ran = new Set(
     messages.flatMap((message) =>
       (message.toolResults ?? [])
-        // Blocked calls and calls rejected at argument validation never ran;
-        // the live path (executeToolCall) never counts them either.
+        // Blocked calls and calls rejected at argument validation (a schema
+        // mismatch, or arguments that were not valid JSON) never ran; the live
+        // path (executeToolCall) never counts them either.
         .filter(
           (result) =>
-            result.status !== 'blocked' && result.structuredError?.code !== 'invalid_arguments',
+            result.status !== 'blocked' &&
+            result.structuredError?.code !== 'invalid_arguments' &&
+            result.structuredError?.code !== 'invalid_json_arguments',
         )
         .map((result) => result.toolCallId),
     ),

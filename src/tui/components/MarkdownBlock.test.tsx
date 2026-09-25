@@ -188,6 +188,57 @@ describe('MarkdownBlock', () => {
     );
   });
 
+  it('opens the tail with the fence line when the cutoff lands inside it', () => {
+    // width 80 => maxCharacters = 1920
+    const head = `${numberedWords(120)}\n`;
+    const code = Array.from({ length: 120 }, (_, index) => `const value${index} = ${index};`);
+    const full = `${head}\`\`\`ts\n${code.join('\n')}`;
+
+    // Every cutoff from the first backtick to the newline that ends the line.
+    for (let offset = 0; offset <= '```ts'.length; offset++) {
+      const length = head.length + offset + 1920;
+      const tail = tailOf(streamingMarkdownWindow(full.slice(0, length), 80));
+      expect(tail).toBe(full.slice(head.length, length));
+      expect(marked.lexer(tail)[0]?.type).toBe('code');
+    }
+  });
+
+  it('starts the tail after a closing fence line the cutoff lands inside', () => {
+    const code = Array.from({ length: 40 }, (_, index) => `const value${index} = ${index};`);
+    const head = `\`\`\`ts\n${code.join('\n')}\n`;
+    const full = `${head}\`\`\`\n${numberedWords(400)}`;
+
+    for (let offset = 0; offset <= '```'.length; offset++) {
+      const tail = tailOf(streamingMarkdownWindow(full.slice(0, head.length + offset + 1920), 80));
+      expect(marked.lexer(tail)[0]?.type).toBe('paragraph');
+      expect(tail).toMatch(/^word\d+ /);
+    }
+  });
+
+  // The dash thematic breaks the prose fallback skips. `*` and `_` rules need no entry: the
+  // fallback drops any tail that holds either character.
+  it.each(['---', '-- -', '- - -', '-----', '---   '])(
+    'never starts the prose tail on the thematic break %j',
+    (rule) => {
+      // width 80 => maxCharacters = 1920, step = 320: a 2100-character response puts the raw
+      // cutoff at 180 and the rounded one at 320, where the rule starts.
+      const lead = 'a '.repeat(160).slice(0, 319);
+      const content = `${lead} ${rule}\n${numberedWords(400)}`.slice(0, 2100);
+
+      const tail = tailOf(streamingMarkdownWindow(content, 80));
+
+      expect(marked.lexer(tail)[0]?.type).toBe('paragraph');
+      expect(tail).toMatch(/^word0 /);
+    },
+  );
+
+  it('keeps a dash word that does not end its line at the start of the prose tail', () => {
+    const lead = 'a '.repeat(160).slice(0, 319);
+    const content = `${lead} --- and more\n${numberedWords(400)}`.slice(0, 2100);
+
+    expect(tailOf(streamingMarkdownWindow(content, 80))).toBe(content.slice(320));
+  });
+
   it('renders empty content as nothing', () => {
     const view = render(withTheme(React.createElement(MarkdownBlock, { content: '' })));
     const output = frame(view.lastFrame);

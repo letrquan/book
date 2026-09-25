@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
-import { SessionRuntime } from './runtime.js';
+import { SessionRuntime, toolNamesFromHistory } from './runtime.js';
+import { toolFailure, toolSuccess } from '../tools/result.js';
+import type { Message } from '../types/messages.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
 
 // Skill discovery walks up to the nearest existing directory, so a runtime left on the real
@@ -193,5 +195,37 @@ describe('SessionRuntime', () => {
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
+  });
+});
+
+describe('toolNamesFromHistory', () => {
+  it('does not count calls rejected for their arguments, including invalid JSON', () => {
+    const messages: Message[] = [
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        timestamp: 1,
+        toolCalls: [
+          { id: 'ran', name: 'WebFetch', arguments: { url: 'https://example.com' } },
+          { id: 'schema', name: 'WebSearch', arguments: { nonsense: true } },
+          { id: 'json', name: 'Task', arguments: { __raw: '{"prompt":' } },
+        ],
+        toolResults: [
+          toolSuccess('page', { toolCallId: 'ran' }),
+          toolFailure('Invalid arguments for WebSearch', {
+            toolCallId: 'schema',
+            code: 'invalid_arguments',
+          }),
+          toolFailure('Invalid JSON arguments for Task', {
+            toolCallId: 'json',
+            code: 'invalid_json_arguments',
+          }),
+        ],
+      },
+    ];
+
+    expect([...toolNamesFromHistory(messages)]).toEqual(['WebFetch']);
   });
 });

@@ -232,9 +232,10 @@ export const continuationSettingsSchema = z.object({
    * predates continuation and needs no continuation to happen: a headless run in
    * the default permission mode answers every prompt `deny`, so the model can
    * re-issue a refused call forever while `toolCalls.length > 0` keeps the
-   * turn-end gate from ever firing. None of the existing anti-loop signals see it
-   * either — the repeated-failure breaker ignores anything that is not `error`,
-   * and `toolCallStats.failures` excludes `blocked` by construction.
+   * turn-end gate from ever firing. None of the existing anti-loop signals stop it
+   * either — the repeated-failure breaker only annotates a repeated call and never
+   * sees the loop's own permission refusals, and `toolCallStats.failures` excludes
+   * `blocked` by construction.
    *
    * 0 disables the guard.
    */

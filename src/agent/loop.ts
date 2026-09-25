@@ -60,6 +60,11 @@ import {
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import {
+  NETWORK_POLICY_REMEDIES,
+  networkPolicyRefusal,
+  type NetworkPolicyRefusal,
+} from '../tools/web-policy.js';
+import {
   formatUserQuestionAnswers,
   validateUserQuestionResponse,
 } from '../tools/ask-user-question.js';
@@ -78,7 +83,11 @@ import type { ToolUseRecord } from '../types/tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
 import { permissionDeniedError } from './actionable-errors.js';
-import { isContextOverflowError, isUpstreamErrorEnvelope } from '../provider/reliability.js';
+import {
+  isContextOverflowError,
+  isErrorEnvelopeShape,
+  isUpstreamErrorEnvelope,
+} from '../provider/reliability.js';
 import {
   classifyAbortReason,
   createTerminalOutcome,
@@ -100,16 +109,23 @@ const log = createDebugLogger('agent');
 const SKILL_INFRASTRUCTURE_TOOLS = new Set(['InvokeSkill', 'ReadSkillResource', 'ToolSearch']);
 
 /**
- * A 400 that a router quoted inside a retryable status, on a prompt this large,
- * is read as a context overflow even when the body does not say so. The
- * antigravity Gemini route behind 9router answers a ~330k-token request with
- * `503 … [400]: INVALID_ARGUMENT` and no mention of length (#221), which is its
- * practical window, not the 1M the model publishes; treating it as an overflow
- * puts it through the same compaction and learned-window ratchet a spoken
- * overflow gets. A plain 400 is the provider's own verdict on the request at any
- * size: reading it as an overflow compacted for nothing and lowered a 1M model's
- * learned window for every later session. A wrapped 400 below the floor is still
- * the request's own fault.
+ * A `bad_request` on a prompt this large is read as a context overflow even when
+ * the body does not say so. The antigravity Gemini route behind 9router refuses a
+ * ~330k-token request with `INVALID_ARGUMENT` and no mention of length (#221):
+ * that is its practical window, not the 1M the model publishes. 9router used to
+ * wrap the refusal as `503 … [400]:`; 0.5.86 answers a plain
+ * `400 {"error":{"message":"[400]: …","code":"bad_request"}}`, so both count
+ * (#244). The recovery is the compaction a stated overflow gets, and no more:
+ *   - the learned window is ratcheted only when the error states an overflow: a
+ *     413, an overflow `error.code` or `error.type`, or the overflow wording in
+ *     the error message (`classifyApiError`, `isContextOverflowError`). An
+ *     overflow inferred from size alone never lowers it: a 400 that was really
+ *     about the request would shrink a 1M model's window for every later session;
+ *   - the compacted request is retried only if it is below this floor. At or
+ *     above it the same request would be refused the same way, so the run ends
+ *     on the real error.
+ * A repeat of the 400 right after compacting ends the run as well: the recovery
+ * runs once per turn (`forcedCompactTurn`).
  */
 const LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS = 200_000;
 
@@ -716,8 +732,17 @@ export async function runAgentLoop(
     let executedToolCalls = 0;
     /** Consecutive turns whose every tool call was refused. */
     let blockedTurnStreak = 0;
-    /** The tools refused on the streak's most recent turn, for the terminal message. */
-    let blockedTurnTools: string[] = [];
+    /**
+     * Every tool refused over the streak, for the terminal message. The whole streak, not its
+     * last turn: in a mixed streak the call a remedy is for may be turns back.
+     */
+    const blockedTurnTools = new Set<string>();
+    /**
+     * What refused the streak's calls: a kind of network-policy refusal, or `other` for a
+     * permission or any other refusal. Kept over every turn of the streak, not only the last,
+     * because each kind names a different remedy in the terminal message.
+     */
+    const blockedStreakCauses = new Set<NetworkPolicyRefusal | 'other'>();
     // Monotonic, and never leaves this function as a stamp. Over a run measured
     // in days a wall-clock correction would silently rewrite how long the model
     // is told it has been working, in either direction.
@@ -873,6 +898,9 @@ export async function runAgentLoop(
             content: workState,
             includeInContext: true,
             kind: 'conversation',
+            // Host-authored, like the continuation prompts: neither the ledger nor
+            // Carried Turns may treat it as the user's own words, and it ends no answer.
+            derivedContent: true,
             timestamp: Date.now(),
           };
           newHistory.push(message);
@@ -1346,7 +1374,7 @@ export async function runAgentLoop(
         !streamError &&
         streamDone &&
         toolCalls.length === 0 &&
-        /^\s*\[Error\]/i.test(assistantContent) &&
+        isErrorEnvelopeShape(assistantContent, turnUsage) &&
         isContextOverflowError(assistantContent);
       if (routerOverflowResponse) {
         streamError = assistantContent.trim();
@@ -1390,22 +1418,26 @@ export async function runAgentLoop(
       // any partial assistant text/tool call metadata in returned history so
       // callers that persist sessions do not lose what was already rendered.
       if (streamError && !signal?.aborted) {
-        const overflowByShape =
-          isContextOverflowError(streamError) ||
-          (streamErrorCode === 'bad_request' &&
-            streamUpstreamStatus === 400 &&
-            requestTokens >= LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS);
+        const statedOverflow =
+          streamErrorCode === 'context_overflow' || isContextOverflowError(streamError);
+        const overflowBySize =
+          !statedOverflow &&
+          streamErrorCode === 'bad_request' &&
+          requestTokens >= LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS;
         const canRecoverContextOverflow =
           forcedCompactTurn !== turn &&
           assistantContent.length === 0 &&
           toolCalls.length === 0 &&
-          overflowByShape;
+          (statedOverflow || overflowBySize);
         if (canRecoverContextOverflow) {
           forcedCompactTurn = turn;
           log.warn('provider context overflow; forcing compaction before retry', {
             turn,
             historyLength: newHistory.length,
             error: streamError,
+            inferredFromSize: overflowBySize,
+            requestTokens,
+            upstreamStatus: streamUpstreamStatus,
           });
           let beforeTokens = estimateHistoryTokens(newHistory);
 
@@ -1413,11 +1445,18 @@ export async function runAgentLoop(
           // too large rather than an accepted limit. Applying LEARNED_WINDOW_SAFETY_MARGIN
           // guarantees the recorded ceiling is strictly below the refused size rather than
           // the refused size itself, converging below the real context window.
+          // Only a stated overflow is recorded: one inferred from the request's size alone
+          // may have been about the request, not the window.
           // Only record when the window in force came from family or default (not declared):
           // if the user explicitly declared contextWindow in settings, leave their setting
           // authoritative and do not overwrite it from a heuristic.
           const overflowModelKey = resolveModelKey(effectiveConfig);
-          if (!hasDeclaredContextWindow(effectiveConfig) && beforeTokens > 0 && overflowModelKey) {
+          if (
+            statedOverflow &&
+            !hasDeclaredContextWindow(effectiveConfig) &&
+            beforeTokens > 0 &&
+            overflowModelKey
+          ) {
             // effectiveConfig carries the override in BOTH model and modelSelection, so
             // this is the same key the read side resolves. Spelling the precedence out
             // again here is how the two drifted apart in the first place.
@@ -1455,6 +1494,10 @@ export async function runAgentLoop(
               const result = await callbacks.onCompact(newHistory, estimatedUsage, {
                 recovery: true,
                 requestOverheadTokens: lastRequestEstimate?.overheadTokens,
+                // Planned below the size just refused. A size-inferred overflow leaves
+                // the learned window alone, so without this the reducer's first request
+                // would be nearly as large as the refused one.
+                planningWindowCap: Math.floor(requestTokens * LEARNED_WINDOW_SAFETY_MARGIN),
               });
               if (result.status === 'compacted') {
                 newHistory.length = 0;
@@ -1484,13 +1527,24 @@ export async function runAgentLoop(
             newHistory.push(...clippedHistory);
           }
           const afterTokens = compactedTokens ?? estimateHistoryTokens(newHistory);
-          if (afterTokens < beforeTokens) {
+          // A size-inferred overflow is retried only below the floor that inferred it: at
+          // or above it the same request would be refused the same way.
+          const retryRequestTokens = afterTokens + requestOverheadTokens;
+          const belowInferenceFloor =
+            !overflowBySize || retryRequestTokens < LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS;
+          if (afterTokens < beforeTokens && belowInferenceFloor) {
             log.warn('context overflow recovered; retrying with reduced history', {
               beforeTokens,
               afterTokens,
             });
             retrySameTurn = true;
             continue;
+          }
+          if (!belowInferenceFloor) {
+            log.warn('size-inferred overflow is still above the floor after compaction', {
+              afterTokens,
+              retryRequestTokens,
+            });
           }
         }
         log.warn('stream error', {
@@ -2481,10 +2535,14 @@ export async function runAgentLoop(
       }
       if (toolCalls.length > 0 && refusedThisTurn === toolCalls.length) {
         blockedTurnStreak++;
-        blockedTurnTools = toolCalls.map((call) => canonicalToolName(call.name));
+        for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
+        for (const result of orderedToolResults) {
+          blockedStreakCauses.add(networkPolicyRefusal(result) ?? 'other');
+        }
       } else {
         blockedTurnStreak = 0;
-        blockedTurnTools = [];
+        blockedTurnTools.clear();
+        blockedStreakCauses.clear();
       }
 
       const toolStats = toolContext.runtime?.toolCallStats;
@@ -2585,8 +2643,9 @@ export async function runAgentLoop(
       // whole point: a refusal spin never has an empty turn, so the gate never
       // fires and the continuation brake never gets to look at it. The run simply
       // bills forever with a plan that cannot move. Nothing else catches it either
-      // — `noteRepeatedFailure` returns early unless the status is `error`, and
-      // `toolCallStats.failures` excludes `blocked` by construction.
+      // — `noteRepeatedFailure` only annotates a repeated call and never sees the
+      // loop's own permission refusals, and `toolCallStats.failures` excludes
+      // `blocked` by construction.
       //
       // Not gated on `continuation.enabled`: this spin predates continuation and
       // happens today in headless, which answers every unresolved prompt `deny`.
@@ -2604,15 +2663,26 @@ export async function runAgentLoop(
         effectiveMode !== 'plan' &&
         blockedTurnStreak >= blockedTurnLimit
       ) {
-        const refused = [...new Set(blockedTurnTools)].sort().join(', ');
+        const refused = [...blockedTurnTools].sort().join(', ');
         log.warn('every tool call refused on consecutive turns; stopping', {
           turn,
           turns: blockedTurnStreak,
           tools: refused,
         });
+        // Each kind of refusal has its own remedy, and a streak that mixes kinds names
+        // each one, because every refused call needs its own fix before anything can
+        // proceed. A permission refusal is lifted by a rule or a mode. A network-policy
+        // refusal is lifted by neither, bypassPermissions included: a refused WebFetch
+        // by the host's opt-in, a refused WebSearch only by fixing the host's DNS.
+        const remedies: string[] = [];
+        if (blockedStreakCauses.has('other') || blockedStreakCauses.size === 0) {
+          remedies.push('grant the permission, add an allow rule, or change the permission mode');
+        }
+        if (blockedStreakCauses.has('fetch')) remedies.push(NETWORK_POLICY_REMEDIES.fetch);
+        if (blockedStreakCauses.has('search')) remedies.push(NETWORK_POLICY_REMEDIES.search);
         const detail =
           `Every tool call was refused on ${blockedTurnStreak} consecutive turns (${refused}). ` +
-          'Nothing can proceed: grant the permission, add an allow rule, or change the permission mode.';
+          `Nothing can proceed: ${remedies.join('. Separately, ')}.`;
         callbacks.onError(detail);
         finishTerminal(
           createTerminalOutcome('failed', 'all_tools_blocked', {

@@ -1245,6 +1245,44 @@ describe('runCompact', () => {
     }
   });
 
+  it('halves the budget when the reducer is refused with a coded overflow and no wording', async () => {
+    // An older 9router wraps an upstream 413 in a 503. The provider classifies it
+    // `context_overflow`, but the text it formats names no length.
+    mockedStream
+      .mockImplementationOnce(async function* () {
+        yield {
+          type: 'error',
+          error:
+            'API Error: 503 [antigravity/gemini-3.8-flash-high] [413]: request rejected Reduce the conversation or tool output and try again.',
+          errorCode: 'context_overflow',
+        };
+      })
+      .mockImplementation(async function* () {
+        yield { type: 'text', content: validCheckpoint() };
+        yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+      });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'evidence '.repeat(7_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result).toMatchObject({ status: 'compacted', strategy: 'multi-pass' });
+    expect(mockedStream.mock.calls.length).toBeGreaterThan(1);
+    if (result.status === 'compacted') {
+      expect(result.checkpoint.coverage?.reasons).toContain('context-overflow');
+    }
+  });
+
   it('counts repeated context overflows toward the 16-call operation cap', async () => {
     mockedStream.mockImplementation(async function* () {
       yield { type: 'error', error: 'prompt is too long for the context window' };

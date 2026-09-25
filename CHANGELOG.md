@@ -24,6 +24,35 @@ All notable changes to this project are documented in this file.
     One Ctrl+C during `/review` therefore cancelled the review _and_ exited, an idle press started
     the session-end path twice, and a mid-turn press interrupted twice. The app handler now decides
     alone.
+  - **Compaction, rewind and command resolution** end the window as a turn does (#250). A press,
+    then `/compact`, used to leave the window armed, so one more press during the compaction
+    exited.
+  - **Exit in progress:** once the second press starts the exit, further presses do nothing while
+    SessionEnd runs (#250). With a slow SessionEnd hook, a third press showed the hint again and a
+    fourth started a second exit, which returned at once and tore the UI down seconds before the
+    first SessionEnd finished. `/exit` and the crash screen's Ctrl+C go through the same latch,
+    and once an exit has started nothing more is submitted or sent from the queue.
+  - **A recalled queued input ends when anything is submitted** (#250). Replacing it with a slash
+    command left its marker and its "Editing queued input" notice behind, so the next idle press
+    removed an edit that no longer existed instead of arming the window. Any submission now ends
+    the edit. Resubmitted text goes back to the end of the queue, so the inputs queued before it
+    are still sent first. Anything else, a slash command included, leaves those inputs paused and
+    says so: Up then Enter resumes them, `/queue clear` drops them.
+  - **Up right after Enter recalls the input Enter just queued** (#250). Keys that arrive in one
+    read, as they do while a busy turn holds up the event loop, all reach the composer's handler
+    from before the first of them, so the Up still saw the typed text and walked the input
+    history instead. The arrow keys now read the composer's value and history as the key ahead
+    of them left them.
+  - **Ctrl+C right after typing clears the draft** (#250). The composer reported its draft to
+    the app only from an effect after each render, so a press between the render and that effect
+    saw an empty composer, armed the exit instead of clearing the draft, and the composer then
+    wrote its stale empty value back over it. The draft now reaches the app as it changes, and
+    the write-back after Alt shortcuts and Ctrl+E keeps the current text.
+  - **Keys act on what is on screen** (#250). Ink hands a key to the handler subscribed at the
+    last effect flush, which can be a render behind the frame, so Ctrl+C just after a command
+    resolution ended still cancelled it instead of arming the window. The app's key handler is
+    now the latest render's, and the state it sets itself (a send in flight, a command
+    resolving, a recalled queued edit) is read from refs written with it.
 
 - **undici 6 -> 8, with the DNS-rebinding guard re-proven rather than re-asserted.** The major had
   been pinned since dependabot #84 because `web-policy.test.ts` failed on it, and the failure looked
@@ -98,6 +127,174 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A whole-file `Read` of a large file now says where to continue (#248).** Every tool result
+  over 50 KB is clipped, and the clip's notice names a file under `BOOK_HOME/tool-output` that
+  `Read` cannot open. So a whole-file Read of `src/agents/manager.ts` (1894 lines, 75 KB) stopped
+  mid-line near line 1169 with no way on, and a Read cut at its 2000-line default said nothing at
+  all.
+  - **The stop:** `Read` now stops at a line boundary before the clip and ends with a notice, for
+    example `[Lines 1-1163 of 1894 shown, the most one Read returns (50 KB). Continue with offset:
+    1164.]`. A Read that its line limit stops gets the same notice.
+  - **Long lines:** a line that fits under the clip on its own is returned whole, as before. A line
+    too long for that is shown cut to fill the clip, and the notice gives its size in bytes and
+    points past it: `… Continue with offset: 2. Line 1 (60000 bytes) was cut to fit.]`.
+  - **Outlines:** an outline also stops under the clip, keeping its own note on where the rest start.
+  - **Descriptions:** the `Read` description and its `offset`/`limit` descriptions now say the
+    default is 2000 lines or 50 KB. These strings are part of the cached tool schema, so the prompt
+    changes, and the first request after upgrading misses the prompt cache once.
+  - **Pagination:** a Read that stops early also reports `pagination: { truncated: true,
+    nextCursor }`, with the offset to continue from, as the shared clip's truncation did.
+  - **TUI:** the Read row still counts the notice as one more line (`5 lines` for 4 shown). The
+    row's line count comes from the shared result presentation, which counts the notice; only the
+    fallback path for results without a presentation strips it.
+- **`Read { outline: true }` lists Java, Kotlin, C# and Dart methods, and fewer lines that are not
+  declarations (#247).**
+  - **Methods that were missing:** a method written return-type-first (`public int getN() {`) or
+    declared with Kotlin's `fun`. `Foo.java` outlined to its package, class and constructor only.
+  - **Shapes now listed:** those methods, C# Allman braces and block-scoped namespaces, Java and C#
+    interface methods without a body, `async *entries()` generator methods (a plain `*values()`
+    generator method is still not listed), `#private` methods, nested type arguments, and a
+    destructured parameter that wraps.
+  - **Lines that no longer leak in:** statements (`if (`, `else if (`, `foreach (`, `assert x;`,
+    `go func() {`; in Java and C#, also `foreach(`, `using(`, `lock(`, `synchronized(` with no
+    space, which elsewhere may be method names such as `using(plugin) {`); a call that closes into a callback (`useEffect(() => {`, `).then(() => {`);
+    object keys and import-list members named like keywords (`enum: [...]`, `describe,`);
+    template text at column 0 in `.ts`, `.mts`, `.cts`, `.mjs` and `.cjs` files; an Allman-style
+    `{` line; and `#` comments in Makefiles, Dockerfiles, PowerShell files and extension-less
+    scripts that start with `#!`. A file named like a tool but with a code extension
+    (`makefile.c`, `dockerfile.rs`) keeps its `#` lines.
+  - **JSX-capable files** (`.tsx`, `.jsx`, `.js`) are not scanned for template text. JSX text is
+    not JavaScript, and a `/*` or a lone backtick in it (`<p>All requests to /api/* are
+    proxied</p>`) would open a comment or template that never closes, hiding every later
+    declaration. In the scanned files, a scan that ends inside a comment or template has lost its
+    place, and masks nothing.
+  - **Markdown:** a file that opens with a `---` rule keeps the headings after it. Front matter now
+    needs YAML up to its closing `---`: a `key:` line first, then `key:` lines (quoted keys, keys
+    with spaces and `$schema:` included), indented or `- ` lines, and `#` comments. A `#` line
+    after a blank line is a heading, so such a block is not front matter.
+  - **Header:** it no longer counts the empty line after a trailing newline.
+  - **The contract:** the supported shapes are a table in `src/tools/file.test.ts`, which the
+    README's scope statement follows.
+  - **Measured on this repository:** outlining the 606 tracked files of `src/` and `scripts/` added
+    9 lines (methods whose object return type holds a `;`, and wrapped signatures) and dropped 645.
+    Of those, 365 were `expect(…)` chains, 81 React hook calls, 49 test hooks (`beforeEach(() => {`
+    and the like, which a test file's outline no longer lists), and 41 anonymous `async (…) =>`
+    callbacks. The rest were template text, keyword-named keys and members, and other calls.
+  - **Speed:** the template scanner looks back a bounded distance from each `/`, so a 1 MB
+    minified line outlines in about 50 ms.
+- **After a resume, a file read in the same parallel batch as its outline still counts as read
+  (#247).** Suppose the model sent `Read{X, outline: true}` and `Read{X}` together, and the outline
+  finished last. The batch records results in call order, and the resume rebuild went by
+  timestamps, so it kept the outline, and an `Edit` after the resume was refused as "only
+  outlined". A rebuilt ledger now lets a real observation replace an outline, and never the
+  reverse, whatever the timestamps. A checkpoint's file observations follow the same rule.
+- **A failed print run exits 1 on Windows, not 127.** Print mode ended a failed run with
+  `exit(1)` straight after its last provider request, while libuv was still closing the pooled
+  sockets. On Windows that aborted with
+  `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 94` and exit
+  code 127, which a supervisor reads as "command not found" (#243). A failed run, returned or
+  thrown, now records exit code 1 through the `cli/exit.ts` seam and returns, and Node exits once
+  its handles have closed. A configured SessionEnd hook delayed the exit enough to hide the abort,
+  so not every setup saw it.
+- **A failed final turn no longer prints an older turn's narration as the answer.** Text mode's
+  answer, `--json-schema` parsing, and a managed agent's result (which is also the `Task` tool's
+  output) took the most recent assistant message that had any text. When the final turn wrote no
+  answer (it was only a reasoning block, or the provider failed without recording one), that was
+  an earlier turn's narration, such as "Let me check the tests." from a turn that went on to call
+  `Read` (#248). The answer is now the model's final answer: walking back from the end, past the
+  prompts Book appends mid-run (`[continuation]`, the completion gate, the output-cap resume,
+  `[work-state]`) and past turns with no text, the first assistant turn that called no tools. A
+  turn that called tools, or a message the user wrote, ends the walk with an empty answer. So a
+  run stopped by `--max-turns` on a turn that called tools now prints nothing on stdout, and a
+  managed child that hits its turn limit that way reports an empty result. A `Task` child stopped
+  at its time limit still quotes its latest text, labelled as a partial result. The walk stops at
+  the run's own opening message, so a managed child's follow-up task that fails before recording
+  anything reports an empty result, not the previous task's answer. The `[work-state]` refresh is
+  now marked host-written like the other appended prompts, and the session file keeps that flag
+  for every appended prompt, so the carried ledger, Carried Turns, and memory extraction no longer
+  read them as the user's own words, before or after a reload.
+- **Print mode shows a delegated child's tool calls.** A lead that delegated printed
+  `[Task] explorer` on stderr and then nothing until the child finished (#248). Each call a managed
+  child makes (through `Task`, `AgentSpawn`, or `/review`) now prints as it starts, indented and
+  named after the child's profile: `  [explorer] [Read] src/a.ts`. Under `--verbose` its result
+  follows one level deeper: `    → success 3ms src/a.ts`. `--quiet` turns them off with the rest.
+  `stream-json` output is unchanged; it already carried these calls as `agent_activity` records.
+- **SessionEnd runs for an aborted or failing print or SDK run.** A run that threw after
+  SessionStart skipped SessionEnd: an abort that landed inside a tool (a cancelled SDK query, or a
+  `stream-json` run whose reader went away mid-tool), or a missing prompt (#248). SessionEnd now
+  runs once on that path too, with reason `aborted` for an abort and the new reason `error`
+  otherwise. On the normal path a completed run reports `completion`, even when its reader went
+  away afterwards; otherwise an aborted signal reports `aborted` (a cancel, or an
+  `AbortSignal.timeout` that ended the run as timed out), and a `failed` run reports `error`.
+  Both used to say `completion`. The hooks run without the run's own signal, each under its usual
+  10 s timeout. Ctrl+C on `book -p` still ends the process at once, since print mode installs no
+  SIGINT handler.
+- **IPv6 addresses that carry an IPv4 destination are judged by that IPv4 address** (#246). On a
+  host with a NAT64 gateway or a 6to4/Teredo relay, `https://[64:ff9b::a00:1]/` reaches 10.0.0.1,
+  and it passed both the pre-flight check and the connect-time check. `isBlockedIpv6` now decodes
+  the embedded address and applies the IPv4 policy to it, as it already did for `::ffff:` mapped
+  addresses, so both check sites are covered:
+  - NAT64 `64:ff9b::/96`: the last 32 bits.
+  - 6to4 `2002::/16`: bits 16-47.
+  - Teredo `2001::/32`: the server (bits 32-63) and the XOR-obfuscated client (the last 32 bits).
+    Either one being private blocks the address.
+  - Local-use NAT64 `64:ff9b:1::/48`, laid out like the /96 above (bits 48-95 zero): the last 32
+    bits. Any other shape in that range is blocked, because RFC 8215 lets the operator pick the
+    prefix length, so where the IPv4 bits sit cannot be known.
+- **A run stopped by network-policy refusals now says what lifts them** (#246). Three turns of
+  refused `WebFetch` calls to a private address stopped an unattended run as `all_tools_blocked`
+  with "grant the permission, add an allow rule, or change the permission mode", even under
+  `bypassPermissions`, where none of that applies. The message now names the remedy for each kind
+  of refusal in the streak:
+  - a refused `WebFetch`: `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment;
+  - a refused `WebSearch` (every built-in provider resolved to a private destination): the host's
+    DNS or proxy, such as a fake-IP DNS in 198.18.0.0/15. The variable does nothing for it, because
+    the search providers always validate strictly, so the message does not suggest it;
+  - a permission refusal: the old text.
+
+  The message also lists every tool refused over the streak rather than only its last turn's,
+  because in a mixed streak the call a remedy is for may be turns back.
+- **A repeated identical refusal from a tool gets the "Do not retry it unchanged" escalation**
+  (#246). The registry returned every `blocked` tool result before its repeated-failure note, so a
+  model re-issuing the same refused `WebFetch` never heard it. Refusals the loop issues itself, such
+  as a denied permission, are unchanged.
+- **On Windows, a persistent background shell job no longer loses its runner while Book polls its
+  record (#249).** Windows fails a rename over a file that another process has open, even just to
+  read it, with EPERM. The detached runner rewrites the job record every second while the shell
+  manager keeps reading it, and nothing in the runner caught that EPERM, so the runner died on it.
+  The job was left recorded as `running`, and its command kept running with nothing left to stop
+  it. Ten seconds later Book reported the job `lost`.
+  - **Retry:** `writeJsonAtomic` now retries a contended rename on win32 only, and only for
+    EPERM/EACCES/EBUSY. The runner waits up to 1 s. Writers in the TUI's own process (the shell
+    manager, memory extraction) wait up to 100 ms, so rendering never stalls for long.
+  - **Non-terminal writes:** a heartbeat, child-pid or `stopping` write that still fails no longer
+    ends the runner. It leaves a note in the job's log, and the next heartbeat writes the same
+    state.
+  - **Terminal record:** it is retried on a timer until written (20 attempts) rather than lost.
+  - **Temp files:** a failed write no longer leaves its `.tmp` file beside the record.
+  - **Before and after:** with a second process reading the record in a tight loop, the runner
+    died with EPERM within a second in 3/3 runs. It now survives in 12/12, and a stop request ends
+    it with exit code 0 and a `killed` record.
+- **The Windows-flaky tests no longer depend on how fast the runner is, and the local gate passes
+  on Windows (#249).** Each test waited on the clock where it should have waited for the result.
+  - **`ByokWizard`** sent Enter 20 ms after the typed text and assumed React had rendered by then.
+    A stalled runner once rendered the key's bullets beside "API key is required". Each keypress
+    now goes through `act`, and the helpers wait for the typed text to render.
+  - **`delegation-latency`** compared one sample per child duration and failed in both directions.
+    A one-second stall of the short sample failed it as `1117 < 1000`. It now takes the best of
+    three samples, removes the child timer's own lateness, and fails only when the long delegation
+    costs more.
+  - **`settings-cli`** gave each tsx spawn a 15 s ceiling, and a spawn that normally takes 2 s once
+    ran past it. The ceiling is now 60 s: a latency limit, not a wait.
+  - **`shell-manager`** gave the persistent SIGTERM test the interactive stop budget (5 s), not the
+    30 s budget the other persistent test already used. Its cleanup trusted `rmSync`'s
+    `maxRetries`, which Node 24's native `rm` ignores for EPERM. The cleanup now polls until
+    Windows releases the directory.
+  - **`file.test`:** the inbox test no longer dies creating a symlink on a Windows account without
+    that privilege. It skips only the symlinked half, the way `snapshot-store.test.ts` already does.
+  - **`run-ambient` and `persist`** failed when the suite ran with `BOOK_HOME` set, which is the safe
+    way to run it. They now clear it themselves. The `persist` global-scope tests had also written
+    their settings into that `BOOK_HOME` rather than the fake home.
 - **A long reply no longer jitters sideways while it streams.** Once a reply outgrew the live
   window (`width × 24` characters), the window's start moved forward with every streamed delta,
   sometimes cutting a word in half. Every wrapped line of the tail then reflowed on every frame,
@@ -111,6 +308,15 @@ All notable changes to this project are documented in this file.
   code block, are still cut from the raw cutoff as before. The full-frame renderer that Windows
   uses by default still repaints every row, so its output is unchanged. On Windows, the fix removes
   the jitter but does not reduce the bytes written.
+- **The live tail no longer shows code as prose, or turns a trailing `---` into a rule.** When the
+  streaming window's cutoff landed inside a fence's opening line (such as ` ```ts `), the fence
+  check, which reads only whole lines, missed it, and the tail started inside the code as a prose
+  paragraph; inside a closing line, the fence stayed open over the prose after it (#250). A cutoff
+  inside a delimiter line now moves to that line's outer edge, so an opening line opens the tail
+  and a closing one is left behind. When the prose fallback's first word was a dash thematic break
+  that ends its line (`---`, `-- -`, `-----` after other words on that line), the tail opened with a
+  rule; that word is now skipped. A tail that starts on a line that is only `---` still opens with a
+  rule, including one that underlines a heading in the full reply (a setext heading).
 - **Windows paths in `/memory` commands no longer lose backslashes to markdown parsing.** `/memory`
   reports and effects rendered paths unescaped through `marked`, which treated backslashes as
   markdown escape sequences. Paths are now wrapped in inline code spans.
@@ -200,11 +406,59 @@ All notable changes to this project are documented in this file.
   that 4xx, comes back after one fetch, and a `bad_request`/`not_found` is not re-issued at the
   stream level either, since re-sending it byte for byte reproduces it. Only the router's own
   `[<route>] [4xx]:` prefix or a 4xx `code` in a JSON `"error"` object counts as a quote, so an
-  outage body that mentions `HTTP 403`, `chunk [404]` or `"code": 4001` is still retried. A quoted
-  400 on a request of 200k tokens or more is read as a context overflow — the antigravity Gemini
-  route refuses at ~300k without saying why — and takes the compaction-and-ratchet recovery a
-  spoken overflow gets. The rule covers only that wrapped case: a plain 400 at any size is the
-  provider's verdict on the request, and neither compacts nor lowers the learned window.
+  outage body that mentions `HTTP 403`, `chunk [404]` or `"code": 4001` is still retried. A
+  `bad_request` on a request of 200k tokens or more is read as a context overflow — the
+  antigravity Gemini route refuses at ~300k without saying why — and compacted; the next entry
+  says when that also lowers the learned window.
+- **A plain 400 on a 200k-token request compacts, and only a stated overflow lowers the learned
+  window.** 9router 0.5.86 stopped wrapping the antigravity route's refusal in a 503: a
+  330k-token `INVALID_ARGUMENT` now arrives as a plain
+  `400 {"error":{"message":"[400]: …","code":"bad_request"}}`, so the overflow recovery above never
+  fired and the run ended after one request (#244). Any `bad_request` on a request of 200k
+  estimated tokens or more, plain or wrapped, is now compacted and the turn retried once. The
+  learned context window is lowered only when the error states an overflow: a 413 status, an
+  `error.code` or `error.type` of `context_length_exceeded`, `request_too_large` or llama.cpp's
+  `exceed_context_size_error`, or overflow wording in the error message ("maximum context length",
+  "prompt is too long", …), including the upstream body OpenRouter forwards in
+  `error.metadata.raw`. Gemini's `The input token count (N) exceeds the maximum …` now counts as
+  stated; its parenthesised count used to hide it. One inferred from size alone compacts without
+  lowering it, so a 400 that was really about the request cannot shrink a 1M model's window for
+  every later session. That includes the wrapped 503 case, which used to lower it. Since the window
+  stays at the published size, the recovery compaction plans the reducer's requests against 80% of
+  the refused request instead: a 330k refusal on a 1M model used to send a 308k reducer request,
+  which a route that had just refused 330k would likely refuse too. The whole raw body is no longer
+  scanned for that wording, and a 413 counts only where it is named as a status (`API Error: 413`,
+  `HTTP 413`): a 400 whose body held a `contents[413]` field path or a `req-413-x` request id was
+  classified `context_overflow`. The compacted request is retried only if it is below 200k tokens,
+  and another overflow right after compacting ends the run on the provider's error. A reducer
+  refused with a coded overflow (`context_overflow`) whose text names no length now halves its
+  window and replans, as a worded one did.
+- **A stalled error body no longer holds a retry attempt for the whole request timeout.** The
+  retry loop read a retryable response's body with `text()` before deciding, so a 503 that sent
+  its headers and then stalled made each attempt wait the full `requestTimeoutMs` — up to about
+  110 minutes with the defaults — and a large body was buffered whole before being cut to 64 KB
+  (#244). The body is now stream-read up to 64 KB for at most 5 s (`ERROR_BODY_READ_TIMEOUT_MS`),
+  the rest is cancelled, and the decision is made on what arrived.
+- **A 422 and a mid-stream `invalid_request_error` are not re-issued.** A 422, plain or quoted in
+  a 503, stopped the fetch retries but was still re-sent three times at the stream level, 14 s of
+  backoff for the same refusal; Anthropic's mid-stream `invalid_request_error` was re-sent the same
+  way (#244). Both now end the run on the first answer, and a 422 has its own code,
+  `unprocessable`. Every other 4xx the classifier has no name for (`unknown`: a 409, 423, 425, or
+  Google's 499) is still re-sent: 9router's antigravity route treats a 409 like a 429 with a strike
+  counter, passing the first two through and, on the third within 60 s, locking that account and
+  switching to the next one, so the third re-send is the one that can succeed. 5xx, 408, 429,
+  529, Anthropic's `overloaded_error` and `api_error`, and transport faults are re-issued as
+  before.
+- **A real answer that quotes an `[Error]` line is no longer taken for a router error.** The
+  envelope check accepted any answer that began with `[Error]` and mentioned a request id, and
+  with 0/0 usage any `[Error]` answer at all, so an explanation that opened with a quoted error
+  line was held back, re-issued, and reported as `provider_error` (#244). When a model may have
+  written the text, an envelope must now be the whole answer: one `[Error] …` line of at most 2,000
+  characters, the shape 9router's Responses translator writes. With 0/0 usage (what a router
+  reports for text it wrote itself, and what a provider that doesn't report usage sends), any
+  answer that opens with `[Error]` still counts, one line or many. The same rule gates
+  the `[Error] … context window` overflow answer. The supported shapes are the table in
+  `src/provider/reliability.test.ts`.
 - **An upstream error rendered as the answer no longer completes the run.** A router answered
   200 with `[Error] An error occurred while processing your request … request ID …` and zero
   tokens both ways, and Book accepted it as the model's final message: exit 0,
@@ -262,6 +516,31 @@ All notable changes to this project are documented in this file.
   list (`TaskList({ reason: "verify all tasks are complete" })`) and got a hard
   `invalid_arguments` for it, then repeated the call bare — two wasted turns each time (#216). The
   field is declared and ignored; the schema stays closed like every other built-in tool's.
+- **Tool-call arguments that are not valid JSON get their own error.** The provider clients keep
+  such arguments as `{ __raw: "<text>" }`, and schema validation then answered
+  `arguments.filePath is required; … arguments.__raw is not allowed` with the allowed-arguments
+  list, although the model had sent every one of those arguments. Models usually resent the same
+  payload: about 25 rejected calls across 16 dogfood runs, mostly large `Edit`, `ApplyPatch` and
+  `Bash` arguments with an unescaped backslash or newline (#242).
+  - **The error:** the call now fails with `invalid_json_arguments`, which names the parse error
+    and its position (`Invalid JSON arguments for Edit: Bad escaped character in JSON at position
+    49 …`). Its fix line says to resend the whole call with valid JSON and to escape backslashes
+    and newlines inside strings. The status, the retry behaviour and the escalation of identical
+    resends are the same as for `invalid_arguments`.
+  - **Order:** a tool that is not active is still refused as `tool_not_active`, whatever its
+    arguments. The JSON check comes after that, and before argument-scoped rules such as
+    `Bash(git *)`, which cannot match text that never parsed.
+  - **SDK:** `ToolDiscoveryContext` gains an optional `isActive(name)`, the name-only half of
+    `canExecute`. A discovery object an SDK caller builds without it keeps working. Its
+    `canExecute` then runs before the JSON check, where it always ran, so it refuses the same
+    calls as before.
+  - **History:** like a schema rejection, such a call never counts as run when a session's
+    history is reloaded.
+  - **TUI:** the tool row shows the raw text as its target. A row's target now has every run of
+    control characters (tab, CR, LF and the other C0 characters, DEL, C1) folded to one space, so
+    a newline no longer breaks a row in two. The summary Book builds from that target is folded
+    too; a summary that a tool supplies itself is shown as the tool wrote it. Ordinary spaces are
+    kept verbatim, so a Grep pattern `^    def ` still shows its four spaces.
 - **`Read` says its default is the whole file.** The description offered `offset`/`limit` "for
   large files" and models took the hint too far, reading a 430-line file in four 100-line calls
   and one 20-line span three times over (#224). It now says the default reads the file whole, and

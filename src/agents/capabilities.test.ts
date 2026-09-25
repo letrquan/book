@@ -146,6 +146,7 @@ describe('managed agent capabilities', () => {
           pushRestriction: () => () => {},
           restrict: () => {},
           previewRestriction: () => [],
+          isActive: () => true,
           canExecute: () => true,
           activeDefinitions: () => [],
           catalogSummary: () => '',

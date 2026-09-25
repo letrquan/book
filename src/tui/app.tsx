@@ -1,4 +1,4 @@
-import { Box, Text, useInput, useStdout, useApp } from 'ink';
+import { Box, Text, useInput, useStdout, useApp, type Key } from 'ink';
 import {
   useState,
   useCallback,
@@ -448,7 +448,13 @@ export function App({
   const [selectingCompactModel, setSelectingCompactModel] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [showRewindPicker, setShowRewindPicker] = useState(false);
-  const [isResolvingCommand, setIsResolvingCommand] = useState(false);
+  const [isResolvingCommand, setIsResolvingCommandState] = useState(false);
+  // Written with the state for the key handler, which a key can reach before the next render.
+  const isResolvingCommandRef = useRef(false);
+  const setIsResolvingCommand = useCallback((next: boolean) => {
+    isResolvingCommandRef.current = next;
+    setIsResolvingCommandState(next);
+  }, []);
   /** Set for the lifetime of a `/review`; drives its status line and Esc. */
   const [reviewStatus, setReviewStatus] = useState<string | undefined>(undefined);
   const reviewAbortRef = useRef<AbortController | null>(null);
@@ -499,12 +505,20 @@ export function App({
     const armedAt = ctrlCExitArmedAtRef.current;
     return armedAt !== undefined && Date.now() - armedAt <= CTRL_C_EXIT_HINT_MS;
   }, []);
-  const [sendInFlight, setSendInFlight] = useState(false);
-  // A turn that starts inside the exit window ends it, so a later idle press arms again
-  // rather than exiting at once.
+  const [sendInFlight, setSendInFlightState] = useState(false);
+  // Written with the state for the key handler, as `isResolvingCommandRef` is.
+  const sendInFlightRef = useRef(false);
+  const setSendInFlight = useCallback((next: boolean) => {
+    sendInFlightRef.current = next;
+    setSendInFlightState(next);
+  }, []);
+  // Work that starts inside the exit window ends it, so a later idle press arms again rather
+  // than exiting at once: a turn, and equally a compaction, a rewind or a command resolution.
   useEffect(() => {
-    if (isThinking || sendInFlight) disarmCtrlCExit();
-  }, [isThinking, sendInFlight, disarmCtrlCExit]);
+    if (isThinking || sendInFlight || isCompacting || isRewinding || isResolvingCommand) {
+      disarmCtrlCExit();
+    }
+  }, [isThinking, sendInFlight, isCompacting, isRewinding, isResolvingCommand, disarmCtrlCExit]);
   const [, setQueueDrainTick] = useState(0);
   const [shellCompletionRetryTick, setShellCompletionRetryTick] = useState(0);
   const [followRequestKey, setFollowRequestKey] = useState(0);
@@ -538,6 +552,35 @@ export function App({
   const { tasks, addTask, updateTaskStatus, removeTask, clearTasks } = useTasks();
   const theme = currentTheme.tokens;
   const { exit: exitApp } = useApp();
+  // Set once an exit starts. SessionEnd can take seconds, and a press meanwhile must neither
+  // arm the window again nor start a second exit: the session-end guard returns at once for a
+  // session that is already ending, so a second exit would unmount Ink before the first
+  // SessionEnd finished.
+  const exitStartedRef = useRef(false);
+  // The same fact as state, for what renders and effects gate on: nothing new is dispatched
+  // while SessionEnd runs.
+  const [exitStarted, setExitStarted] = useState(false);
+  const exitOnce = useCallback(() => {
+    if (exitStartedRef.current) return;
+    exitStartedRef.current = true;
+    setExitStarted(true);
+    disarmCtrlCExit();
+    void endCurrentSession('exit').finally(exitApp);
+  }, [disarmCtrlCExit, endCurrentSession, exitApp]);
+  /** The idle Ctrl+C decision: exit when the window is armed, otherwise arm it. True on exit. */
+  const exitOrArmOnCtrlC = useCallback(
+    (context: string): boolean => {
+      if (isCtrlCExitArmed()) {
+        uiLog.event('input:Ctrl+C', { action: 'exit', context });
+        exitOnce();
+        return true;
+      }
+      uiLog.event('input:Ctrl+C', { action: 'exit-armed', context });
+      armCtrlCExit();
+      return false;
+    },
+    [armCtrlCExit, exitOnce, isCtrlCExitArmed],
+  );
   const replaceQueuedInputs = useCallback((next: QueuedInput[]) => {
     queuedInputsRef.current = next;
     setQueuedInputs(next);
@@ -546,6 +589,17 @@ export function App({
     editingQueuedInputRef.current = next;
     setEditingQueuedInput(next);
   }, []);
+  /**
+   * Ends a recalled queued edit: drops its marker and resumes the queue, unless `keepPaused`
+   * leaves the inputs queued before it waiting.
+   */
+  const endQueuedEdit = useCallback(
+    (keepPaused = false) => {
+      replaceEditingQueuedInput(undefined);
+      queueDrainPausedRef.current = keepPaused;
+    },
+    [replaceEditingQueuedInput],
+  );
   const dispatchAgentSend = useCallback(
     async (value: string, commandContext?: CommandContext, attachments?: ImageAttachment[]) => {
       setSendInFlight(true);
@@ -570,12 +624,11 @@ export function App({
         return false;
       }
       replaceQueuedInputs(result.queue);
-      replaceEditingQueuedInput(undefined);
-      queueDrainPausedRef.current = false;
+      endQueuedEdit();
       setQueueNotice(undefined);
       return true;
     },
-    [replaceEditingQueuedInput, replaceQueuedInputs, sessionId],
+    [endQueuedEdit, replaceQueuedInputs, sessionId],
   );
   const recallQueuedInput = useCallback(():
     { value: string; attachments?: ImageAttachment[] } | undefined => {
@@ -588,14 +641,13 @@ export function App({
     return { value: result.recalled.value, attachments: result.recalled.attachments };
   }, [replaceEditingQueuedInput, replaceQueuedInputs]);
   const cancelQueuedEdit = useCallback(() => {
-    replaceEditingQueuedInput(undefined);
-    queueDrainPausedRef.current = false;
+    endQueuedEdit();
     setQueueNotice('Queued input removed.');
     setDraftRestore((current) => ({
       key: (current?.key ?? 0) + 1,
       value: '',
     }));
-  }, [replaceEditingQueuedInput]);
+  }, [endQueuedEdit]);
   const pasteClipboardImage = useCallback(async (): Promise<ImageAttachment> => {
     if (liveConfig.modelInfo?.vision === false) {
       throw new Error(`${liveConfig.model} does not support image input.`);
@@ -749,6 +801,7 @@ export function App({
     pending: managedAgents.pendingCompletions,
     parentSessionId: sessionId,
     blocked: Boolean(
+      exitStarted ||
       isThinking ||
       isCompacting ||
       isRewinding ||
@@ -944,6 +997,7 @@ export function App({
     }
   }, [mcpSnapshot, isThinking, sendInFlight, addLocalMessage]);
   const queueDrainBlocked = Boolean(
+    exitStarted ||
     isThinking ||
     sendInFlight ||
     isCompacting ||
@@ -1213,19 +1267,29 @@ export function App({
   useDebugValueChange(uiLog, 'showConfigPicker', showConfigPicker, (v) => String(v));
   useDebugValueChange(uiLog, 'showAgentProfilePicker', showAgentProfilePicker, (v) => String(v));
 
-  useInput((input, key) => {
+  // Ink hands a key to the handler its hook subscribed at the last passive-effect flush, which
+  // can be a render behind the frame on screen, so a press could act on state the user no longer
+  // sees: Ctrl+C just after a command resolution ended still cancelled it instead of arming the
+  // exit window. The subscription forwards to the latest render's handler instead, and the state
+  // this app sets itself before a key in the same read can follow (a send in flight, a command
+  // resolving, a recalled queued edit) is read from refs written with it.
+  const handleInputRef = useRef<(input: string, key: Key) => void>(() => {});
+  const forwardInput = useCallback(
+    (input: string, key: Key) => handleInputRef.current(input, key),
+    [],
+  );
+  useInput(forwardInput);
+  handleInputRef.current = (input: string, key: Key) => {
+    // Once an exit has started, Ctrl+C has nothing left to do: SessionEnd is running and the
+    // app unmounts when it finishes.
+    if (key.ctrl && input === 'c' && exitStartedRef.current) {
+      uiLog.event('input:Ctrl+C', { action: 'noop-exiting' });
+      return;
+    }
     if (startupFireActive) {
       if (key.ctrl && input === 'c') {
-        // Match idle Ctrl+C: dismiss the splash and show the exit hint first.
-        if (isCtrlCExitArmed()) {
-          uiLog.event('input:Ctrl+C', { action: 'exit-startup-fire' });
-          disarmCtrlCExit();
-          void endCurrentSession('exit').finally(exitApp);
-          return;
-        }
-        uiLog.event('input:Ctrl+C', { action: 'exit-armed', context: 'startup-fire' });
-        armCtrlCExit();
-        setStartupFireActive(false);
+        // The idle decision. Arming dismisses the splash so the hint shows; an exit leaves it up.
+        if (!exitOrArmOnCtrlC('startup-fire')) setStartupFireActive(false);
         return;
       }
       if (key.escape) {
@@ -1276,8 +1340,7 @@ export function App({
           // The visible "press again to exit" hint is a promise, including over a modal
           // that took the keyboard after the first press (e.g. behind the startup splash).
           uiLog.event('input:Ctrl+C', { action: 'exit', context: 'modal' });
-          disarmCtrlCExit();
-          void endCurrentSession('exit').finally(exitApp);
+          exitOnce();
         } else if (pendingUserQuestion || pendingElicitation) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
           interrupt();
@@ -1319,7 +1382,7 @@ export function App({
       return;
     }
 
-    if (key.escape && editingQueuedInput) {
+    if (key.escape && editingQueuedInputRef.current) {
       uiLog.event('input:Escape', { action: 'cancel-queued-edit' });
       cancelQueuedEdit();
       return;
@@ -1329,7 +1392,7 @@ export function App({
     // A streaming turn outranks a background review: cancelling the thing the
     // user is watching is the established meaning of Esc.
     if (key.escape) {
-      if (isThinking || sendInFlight || isResolvingCommand) {
+      if (isThinking || sendInFlightRef.current || isResolvingCommandRef.current) {
         uiLog.event('input:Escape', { action: 'cancel-stream' });
         interrupt();
         return;
@@ -1351,7 +1414,7 @@ export function App({
     // Ctrl+C cancels active work, drops a recalled queued input, clears a non-empty
     // composer, or confirms idle exit.
     if (key.ctrl && input === 'c') {
-      if (isThinking || sendInFlight || isResolvingCommand) {
+      if (isThinking || sendInFlightRef.current || isResolvingCommandRef.current) {
         uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
         disarmCtrlCExit();
         interrupt();
@@ -1380,14 +1443,7 @@ export function App({
         }));
         return;
       }
-      if (isCtrlCExitArmed()) {
-        uiLog.event('input:Ctrl+C', { action: 'exit' });
-        disarmCtrlCExit();
-        void endCurrentSession('exit').finally(exitApp);
-        return;
-      }
-      uiLog.event('input:Ctrl+C', { action: 'exit-armed' });
-      armCtrlCExit();
+      exitOrArmOnCtrlC('idle');
       return;
     }
     // Ctrl+T — toggle task list
@@ -1414,7 +1470,7 @@ export function App({
       redrawViewport?.();
       return;
     }
-  });
+  };
 
   // Log slash-command dispatches at a coarse level (command name + arg).
   // The detailed branching in handleSubmit stays unchanged; this only emits
@@ -1570,6 +1626,8 @@ export function App({
 
   const handleSubmit = useCallback(
     async (value: string, attachments: ImageAttachment[] = []) => {
+      // Nothing is submitted once an exit has started: SessionEnd is running.
+      if (exitStartedRef.current) return;
       if (attachments.length > 0 && liveConfig.modelInfo?.vision === false) {
         addLocalMessage(`${liveConfig.model} does not support image input.`);
         setDraftRestore((current) => ({
@@ -1578,6 +1636,26 @@ export function App({
           attachments,
         }));
         return;
+      }
+      // A submission ends a recalled queued edit; a stale marker made the next idle Ctrl+C
+      // remove an edit that no longer existed. What happens to the inputs queued before it
+      // depends on what replaced it.
+      if (editingQueuedInputRef.current) {
+        const othersQueued = queuedInputsRef.current.length > 0;
+        if (othersQueued && !value.startsWith('/') && managedAgents.surface === 'main') {
+          // The edited text goes back to the end of the queue, where it was recalled from, so
+          // the inputs queued before it are still sent first.
+          enqueueFollowUp(value, attachments);
+          return;
+        }
+        // Anything else, a slash command such as /exit included, leaves them waiting instead
+        // of sending them behind it.
+        endQueuedEdit(othersQueued);
+        setQueueNotice(
+          othersQueued
+            ? 'Queue paused. Up then Enter resumes it; /queue clear drops it.'
+            : undefined,
+        );
       }
       setFollowRequestKey((key) => key + 1);
       const selectedChild = managedAgents.selectedAgentId
@@ -1616,8 +1694,7 @@ export function App({
         const operation = parsedSlash.rawArguments.trim().toLowerCase();
         if (operation === 'clear') {
           replaceQueuedInputs([]);
-          replaceEditingQueuedInput(undefined);
-          queueDrainPausedRef.current = false;
+          endQueuedEdit();
           setQueueNotice('Queued follow-up inputs cleared.');
         } else {
           const count = queuedInputsRef.current.length;
@@ -1735,7 +1812,7 @@ export function App({
           return;
         }
         if (effect?.type === 'exit') {
-          void endCurrentSession('exit').finally(exitApp);
+          exitOnce();
           return;
         }
         if (effect?.type === 'show-modal') {
@@ -1980,7 +2057,6 @@ export function App({
           void dispatchAgentSend(value);
         }
       } else {
-        replaceEditingQueuedInput(undefined);
         void dispatchAgentSend(value, undefined, attachments);
       }
     },
@@ -1994,8 +2070,7 @@ export function App({
       compact,
       addTask,
       commands,
-      exitApp,
-      endCurrentSession,
+      exitOnce,
       usage,
       liveConfig,
       addLocalMessage,
@@ -2014,7 +2089,8 @@ export function App({
       builtinCommandRegistry,
       managedAgentManager,
       managedAgents,
-      replaceEditingQueuedInput,
+      endQueuedEdit,
+      enqueueFollowUp,
       replaceQueuedInputs,
     ],
   );
@@ -2167,10 +2243,8 @@ export function App({
   // mounted with whatever state it held when the render blew up, so it swallows
   // Ctrl+C behind `ownsModalInput` if a picker was open and spends it on
   // `interrupt()` if a turn was streaming. It gets the same exit path either
-  // way, so the session still ends cleanly.
-  const exitFromCrash = () => {
-    void endCurrentSession('exit').finally(exitApp);
-  };
+  // way, latch included, so the session still ends cleanly and only once.
+  const exitFromCrash = exitOnce;
 
   if (startupFireActive) {
     return (

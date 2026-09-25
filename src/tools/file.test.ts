@@ -10,6 +10,7 @@ vi.mock('../async.js', async (importOriginal) => {
   return { ...actual, yieldToEventLoop: vi.fn(actual.yieldToEventLoop) };
 });
 import { fileTools } from './file.js';
+import { boundToolResultOutput, TOOL_RESULT_MAX_BYTES } from './result.js';
 import type { ToolContext } from '../types/tools.js';
 import {
   existsSync,
@@ -101,10 +102,8 @@ describe('read_file', () => {
    */
   it('yields while formatting large reads', async () => {
     const lines = 5_000;
-    writeFileSync(
-      join(dir, 'large.txt'),
-      Array.from({ length: lines }, (_, index) => `line ${index}`).join('\n'),
-    );
+    // One-character lines keep all 5 000 under Read's 50 KB stop.
+    writeFileSync(join(dir, 'large.txt'), Array.from({ length: lines }, () => 'x').join('\n'));
     const { yieldToEventLoop } = await import('../async.js');
     vi.mocked(yieldToEventLoop).mockClear();
 
@@ -393,15 +392,13 @@ describe('read_file', () => {
   });
 
   it('caps an outline at 2000 entries and says where the rest start', async () => {
-    const declarations = Array.from(
-      { length: 2005 },
-      (_, index) => `export const v${index} = ${index};`,
-    );
+    // Short lines, so the 2000-entry cap binds before the 50 KB one.
+    const declarations = Array.from({ length: 2005 }, (_, index) => `let v${index};`);
     writeFileSync(join(dir, 'many.ts'), declarations.join('\n'));
     const outlined = await read.execute({ filePath: 'many.ts', outline: true }, ctx);
     const lines = outlined.content.split('\n');
     expect(lines).toHaveLength(2002);
-    expect(lines[2000]).toBe('2000: export const v1999 = 1999;');
+    expect(lines[2000]).toBe('2000: let v1999;');
     expect(lines[2001]).toMatch(/truncated at 2000 of 2005 entries.*line 2001/);
   });
 
@@ -530,13 +527,21 @@ describe('readOnlyRoots', () => {
     mkdirSync(join(memory, '.inbox'), { recursive: true });
     const candidate = join(memory, '.inbox', 'x.md');
     writeFileSync(candidate, 'quarantined candidate');
-    symlinkSync(join(memory, '.inbox'), join(memory, 'in'));
     ctx.readOnlyRoots = [{ root: memory, exclude: ['.inbox'] }];
 
-    for (const path of [candidate, join(memory, 'in', 'x.md')]) {
-      const r = await read.execute({ filePath: path }, ctx);
-      expect(r.status, path).toBe('error');
+    const direct = await read.execute({ filePath: candidate }, ctx);
+    expect(direct.status, candidate).toBe('error');
+
+    const throughLink = join(memory, 'in');
+    try {
+      symlinkSync(join(memory, '.inbox'), throughLink);
+    } catch {
+      // Symlink creation needs a privilege Windows withholds by default; the direct
+      // path above is still covered there.
+      return;
     }
+    const linked = await read.execute({ filePath: join(throughLink, 'x.md') }, ctx);
+    expect(linked.status, join(throughLink, 'x.md')).toBe('error');
   });
 
   it('refuses relative ../x.md path even when readOnlyRoots is configured', async () => {
@@ -1160,5 +1165,798 @@ describe('grep', () => {
     );
     setTimeout(() => controller.abort(new Error('grep cancelled')), 0);
     await expect(pending).rejects.toThrow('grep cancelled');
+  });
+});
+
+/**
+ * The outline contract (#247): the shapes each language's outline promises,
+ * written as a file's lines and the outline lines they produce. The README's
+ * statement of what an outline covers is this table; a shape outside it is not
+ * promised either way.
+ */
+const OUTLINE_CONTRACT: Array<{ shape: string; file: string; lines: string[]; outline: string[] }> =
+  [
+    {
+      shape: 'Java: return-type-first methods, generic methods and constructors',
+      file: 'Foo.java',
+      lines: [
+        'package x;',
+        '',
+        'import java.util.List;',
+        '',
+        'public class Foo {',
+        '    private final int n;',
+        '',
+        '    public Foo(int n) {',
+        '        this.n = n;',
+        '    }',
+        '',
+        '    public int getN() {',
+        '        return n;',
+        '    }',
+        '',
+        '    @Override',
+        '    public String toString() {',
+        '        return "Foo(" + n + ")";',
+        '    }',
+        '',
+        '    public static <T> List<T> wrap(T item) throws IllegalStateException {',
+        '        return List.of(item);',
+        '    }',
+        '',
+        '    private Map<String, List<Integer>> index() {',
+        '        return null;',
+        '    }',
+        '',
+        '    public static void main(String[] args) {',
+        '        if (args.length > 0) {',
+        '            System.out.println(new Foo(1).getN());',
+        '        }',
+        '    }',
+        '}',
+      ],
+      outline: [
+        '1: package x;',
+        '3: import java.util.List;',
+        '5: public class Foo {',
+        '8:     public Foo(int n) {',
+        '12:     public int getN() {',
+        '17:     public String toString() {',
+        '21:     public static <T> List<T> wrap(T item) throws IllegalStateException {',
+        '25:     private Map<String, List<Integer>> index() {',
+        '29:     public static void main(String[] args) {',
+      ],
+    },
+    {
+      shape: 'Java: interface methods without a body',
+      file: 'Shape.java',
+      lines: [
+        'public interface Shape {',
+        '    double area();',
+        '    String name() throws IOException;',
+        '    default String label() {',
+        '        return name();',
+        '    }',
+        '}',
+      ],
+      outline: [
+        '1: public interface Shape {',
+        '2:     double area();',
+        '3:     String name() throws IOException;',
+        '4:     default String label() {',
+      ],
+    },
+    {
+      shape: 'Java: a wrapped signature that closes into its body',
+      file: 'Factory.java',
+      lines: [
+        'public class Factory {',
+        '    public static Factory create(',
+        '        int a,',
+        '        int b',
+        '    ) {',
+        '        return new Factory();',
+        '    }',
+        '}',
+      ],
+      outline: ['1: public class Factory {', '2:     public static Factory create('],
+    },
+    {
+      shape: 'Kotlin: fun declarations only; a trailing-lambda call is not one',
+      file: 'Foo.kt',
+      lines: [
+        'package x',
+        '',
+        'class Foo(private val n: Int) {',
+        '    fun getN(): Int {',
+        '        return n',
+        '    }',
+        '',
+        '    override fun toString(): String = "Foo($n)"',
+        '',
+        '    private suspend fun load(',
+        '        id: String,',
+        '    ): Foo = this',
+        '}',
+        '',
+        'fun main() {',
+        '    repeat(3) {',
+        '        println(Foo(1).getN())',
+        '    }',
+        '    when (args.size) {',
+        '        0 -> println("none")',
+        '    }',
+        '}',
+      ],
+      outline: [
+        '1: package x',
+        '3: class Foo(private val n: Int) {',
+        '4:     fun getN(): Int {',
+        '8:     override fun toString(): String = "Foo($n)"',
+        '10:     private suspend fun load(',
+        '15: fun main() {',
+      ],
+    },
+    {
+      shape: 'C#: Allman braces, expression bodies and interface members, file-scoped namespace',
+      file: 'Counter.cs',
+      lines: [
+        'using System;',
+        '',
+        'namespace Demo;',
+        '',
+        'public class Counter',
+        '{',
+        '    private int _n;',
+        '',
+        '    public Counter(int n)',
+        '    {',
+        '        _n = n;',
+        '    }',
+        '',
+        '    public int Next()',
+        '    {',
+        '        return ++_n;',
+        '    }',
+        '',
+        '    public async Task<List<int>> LoadAsync(int id)',
+        '    {',
+        '        return await Task.FromResult(new List<int>());',
+        '    }',
+        '',
+        '    public int Twice(int x) => x * 2;',
+        '',
+        '    public int Count { get; set; }',
+        '}',
+        '',
+        'public interface IStore',
+        '{',
+        '    Task<int> GetAsync(int id);',
+        '}',
+      ],
+      outline: [
+        '1: using System;',
+        '3: namespace Demo;',
+        '5: public class Counter',
+        '9:     public Counter(int n)',
+        '14:     public int Next()',
+        '19:     public async Task<List<int>> LoadAsync(int id)',
+        '24:     public int Twice(int x) => x * 2;',
+        '29: public interface IStore',
+        '31:     Task<int> GetAsync(int id);',
+      ],
+    },
+    {
+      shape: 'C#: a block-scoped namespace shifts members one level deeper',
+      file: 'Nested.cs',
+      lines: [
+        'namespace Demo',
+        '{',
+        '    public class Counter',
+        '    {',
+        '        public int Next()',
+        '        {',
+        '            if (_n > 0)',
+        '            {',
+        '            }',
+        '            return ++_n;',
+        '        }',
+        '    }',
+        '}',
+      ],
+      outline: ['1: namespace Demo', '3:     public class Counter', '5:         public int Next()'],
+    },
+    {
+      shape: 'C#: statements with Allman braces are not declarations',
+      file: 'Program.cs',
+      lines: [
+        'if (args.Length > 0)',
+        '{',
+        '    foreach (var a in args)',
+        '    {',
+        '    }',
+        '    using (var s = File.OpenRead(args[0]))',
+        '    {',
+        '    }',
+        '    lock (gate)',
+        '    {',
+        '    }',
+        '    try',
+        '    {',
+        '    }',
+        '    catch (IOException e)',
+        '    {',
+        '    }',
+        '    while (busy)',
+        '    {',
+        '    }',
+        '    new Worker(args)',
+        '    {',
+        '        Name = "x",',
+        '    };',
+        '}',
+      ],
+      outline: ['1: if (args.Length > 0)'],
+    },
+    {
+      shape: 'Dart: return-type-first methods; a call taking a callback is not one',
+      file: 'counter.dart',
+      lines: [
+        'class Counter {',
+        '  int _n = 0;',
+        '',
+        '  int next() {',
+        '    return ++_n;',
+        '  }',
+        '',
+        '  Future<List<int>> load(String id) async {',
+        '    setState(() {',
+        '    });',
+        '    return [];',
+        '  }',
+        '',
+        "  Widget build(BuildContext context) => Text('$_n');",
+        '}',
+      ],
+      outline: [
+        '1: class Counter {',
+        '4:   int next() {',
+        '8:   Future<List<int>> load(String id) async {',
+        "14:   Widget build(BuildContext context) => Text('$_n');",
+      ],
+    },
+    {
+      shape:
+        'TypeScript: generators, #private, nested generics, destructured and function-typed parameters',
+      file: 'store.ts',
+      lines: [
+        'export class Store {',
+        '  #items = new Map<string, number>();',
+        '  async *entries(): AsyncGenerator<[string, number]> {',
+        '    yield* this.#items;',
+        '  }',
+        '  #secret(): string {',
+        "    return 'x';",
+        '  }',
+        '  pick<T extends Record<string, Array<number>>>(value: T): T {',
+        '    return value;',
+        '  }',
+        '  async send({',
+        '    id,',
+        '    message,',
+        '  }: SendArgs): Promise<void> {',
+        '    await post(id, message);',
+        '  }',
+        '  on(handler: (event: string) => void): void {',
+        '    this.handler = handler;',
+        '  }',
+        '}',
+      ],
+      outline: [
+        '1: export class Store {',
+        '3:   async *entries(): AsyncGenerator<[string, number]> {',
+        '6:   #secret(): string {',
+        '9:   pick<T extends Record<string, Array<number>>>(value: T): T {',
+        '12:   async send({',
+        '18:   on(handler: (event: string) => void): void {',
+      ],
+    },
+    {
+      shape:
+        'TypeScript: control flow, calls, import members, object keys and template text stay out',
+      file: 'run.ts',
+      lines: [
+        'import {',
+        '  describe,',
+        '  it,',
+        '  expect,',
+        "} from 'vitest';",
+        '',
+        'export const schema = {',
+        "  type: 'object',",
+        "  enum: ['a', 'b'],",
+        '  test: true,',
+        '  get: () => 1,',
+        '};',
+        '',
+        'export function run(): void {',
+        '  if (ready) {',
+        '  }',
+        '  else if (later) {',
+        '  }',
+        '  for (const x of xs) {',
+        '  }',
+        '  while (busy()) {',
+        '  }',
+        '  switch (mode) {',
+        '  }',
+        '  try {',
+        '  } catch (error) {',
+        '  }',
+        '  useEffect(() => {',
+        '  });',
+        '  fetchAll(',
+        '    a,',
+        '  ).then(() => {',
+        '  });',
+        '  return new Promise((resolve) => {',
+        '  });',
+        '}',
+        '',
+        'const prompt = `',
+        'Summary:',
+        'Keep it short.',
+        '`;',
+        'const after = 1;',
+      ],
+      outline: [
+        '1: import {',
+        '7: export const schema = {',
+        '14: export function run(): void {',
+        '38: const prompt = `',
+        '42: const after = 1;',
+      ],
+    },
+    {
+      shape:
+        'TypeScript: methods named like statements, backticks in strings and regexes, callbacks',
+      file: 'gate.ts',
+      lines: [
+        'export class Gate {',
+        '  lock(): void {',
+        '  }',
+        '  match(pattern: RegExp): boolean {',
+        "    return pattern.test('`');",
+        '  }',
+        '  delete(key: string): boolean {',
+        '    return /`{3,}/.test(key);',
+        '  }',
+        '  defer(name: string): void {',
+        '  }',
+        '  private apply(',
+        '    manifest: Manifest,',
+        '  ): { ok: true } | { ok: false; error: string } {',
+        '    return { ok: true };',
+        '  }',
+        '}',
+        "const quote = (value: string) => `'${value.replace(/'/g, `'\\\\''`)}'`;",
+        'export const after = 1;',
+        'program.action(',
+        '  async (options: {',
+        '    json?: boolean;',
+        '  }) => {',
+        '    await run(options);',
+        '  },',
+        ');',
+      ],
+      outline: [
+        '1: export class Gate {',
+        '2:   lock(): void {',
+        '4:   match(pattern: RegExp): boolean {',
+        '7:   delete(key: string): boolean {',
+        '10:   defer(name: string): void {',
+        '12:   private apply(',
+        "18: const quote = (value: string) => `'${value.replace(/'/g, `'\\\\''`)}'`;",
+        '19: export const after = 1;',
+        '20: program.action(',
+      ],
+    },
+    {
+      shape: 'Go: go and defer statements are not declarations',
+      file: 'main.go',
+      lines: [
+        'package main',
+        '',
+        'func main() {',
+        '\tgo func() {',
+        '\t}()',
+        '\tdefer func() {',
+        '\t}()',
+        '\tfor i := range 3 {',
+        '\t}',
+        '\tt.Run("x", func(t *testing.T) {',
+        '\t})',
+        '}',
+      ],
+      outline: ['1: package main', '3: func main() {'],
+    },
+    {
+      shape: 'Rust: a match on a call is not a declaration',
+      file: 'main.rs',
+      lines: ['fn main() {', '    match parse(input) {', '        Ok(v) => {}', '    }', '}'],
+      outline: ['1: fn main() {'],
+    },
+    {
+      shape: 'C: an Allman-style brace line is left out',
+      file: 'main.c',
+      lines: ['int main(void)', '{', '    return 0;', '}'],
+      outline: ['1: int main(void)'],
+    },
+    {
+      shape: 'JSON: a file that opens with a brace keeps it',
+      file: 'package.json',
+      lines: ['{', '  "name": "x"', '}'],
+      outline: ['1: {'],
+    },
+    {
+      shape: 'Makefile: # starts a comment',
+      file: 'Makefile',
+      lines: ['# build rules', 'CC = gcc', '', 'all: main', '\t$(CC) -o main main.c'],
+      outline: ['2: CC = gcc', '4: all: main'],
+    },
+    {
+      shape: 'Dockerfile: # starts a comment, whatever the suffix',
+      file: 'Dockerfile.dev',
+      lines: ['# syntax=docker/dockerfile:1', 'FROM node:22', '# install deps', 'RUN npm ci'],
+      outline: ['2: FROM node:22', '4: RUN npm ci'],
+    },
+    {
+      shape: 'PowerShell: # starts a comment',
+      file: 'build.ps1',
+      lines: ['# Build script', 'param([string]$Target)', 'function Build {', '}'],
+      outline: ['2: param([string]$Target)', '3: function Build {'],
+    },
+    {
+      shape: 'An extension-less script with a shebang: # starts a comment',
+      file: 'deploy',
+      lines: ['#!/usr/bin/env bash', '# deploy the site', 'set -e'],
+      outline: ['1: #!/usr/bin/env bash', '3: set -e'],
+    },
+    {
+      shape: 'An extension-less file without a shebang is left alone',
+      file: 'NOTES',
+      lines: ['# not a script', 'plain line'],
+      outline: ['1: # not a script', '2: plain line'],
+    },
+    {
+      shape: 'Markdown: a leading --- rule is not front matter',
+      file: 'hr.md',
+      lines: ['---', '', '# First', '', 'Intro.', '', '---', '', '## Second'],
+      outline: ['3: # First', '9: ## Second'],
+    },
+    {
+      shape: 'Markdown: YAML front matter is skipped',
+      file: 'guide.md',
+      lines: ['---', 'title: Guide', 'tags:', '  - docs', '---', '# Guide'],
+      outline: ['6: # Guide'],
+    },
+    {
+      shape: 'Markdown: front matter may hold comments, quoted keys, keys with spaces and $schema',
+      file: 'loose.md',
+      lines: [
+        '---',
+        'title: Guide',
+        '# draft: true',
+        '"quoted key": 1',
+        'my key: 2',
+        '$schema: https://example.com/schema.json',
+        'título: Guía',
+        '---',
+        '# Guide',
+      ],
+      outline: ['9: # Guide'],
+    },
+    {
+      shape: 'TSX: a /* in JSX text does not hide the declarations after it',
+      file: 'api.tsx',
+      lines: [
+        'export function A() {',
+        '  return (',
+        '    <div>',
+        '      <p>All requests to /api/* are proxied to the backend.</p>',
+        '    </div>',
+        '  );',
+        '}',
+        'export function Next() {',
+        '  return 1;',
+        '}',
+      ],
+      outline: ['1: export function A() {', '8: export function Next() {'],
+    },
+    {
+      shape: 'JSX: a node_modules/** in JSX text does not hide the declarations after it',
+      file: 'list.jsx',
+      lines: [
+        'export function A() {',
+        '  return (',
+        '    <ul>',
+        '      <li>Ignores node_modules/** by default</li>',
+        '    </ul>',
+        '  );',
+        '}',
+        'export function Next() {',
+        '  return 1;',
+        '}',
+      ],
+      outline: ['1: export function A() {', '8: export function Next() {'],
+    },
+    {
+      shape: 'JavaScript: a lone backtick in JSX text does not hide the declarations after it',
+      file: 'keys.js',
+      lines: [
+        'export function A() {',
+        '  return (',
+        '    <p>',
+        '      Press <kbd>`</kbd> to open the console.',
+        '    </p>',
+        '  );',
+        '}',
+        'export function Next() {',
+        '  return 1;',
+        '}',
+      ],
+      outline: ['1: export function A() {', '8: export function Next() {'],
+    },
+    {
+      shape: 'C#: statements with no space before the parenthesis are not declarations',
+      file: 'P.cs',
+      lines: [
+        'class P {',
+        '  static void Main(string[] args)',
+        '  {',
+        '    foreach(var a in args)',
+        '    {',
+        '    }',
+        '    using(var s = File.OpenRead(x))',
+        '    {',
+        '    }',
+        '    fixed(byte* p = buf)',
+        '    {',
+        '    }',
+        '  }',
+        '}',
+      ],
+      outline: ['1: class P {', '2:   static void Main(string[] args)'],
+    },
+    {
+      shape: 'Java: assert and synchronized statements are not declarations',
+      file: 'A.java',
+      lines: [
+        'class A {',
+        '  void run() {',
+        '    assert isValid(x);',
+        '    synchronized(this) {',
+        '    }',
+        '  }',
+        '}',
+      ],
+      outline: ['1: class A {', '2:   void run() {'],
+    },
+    {
+      shape: 'A file named makefile.c keeps its preprocessor lines',
+      file: 'makefile.c',
+      lines: ['#include <stdio.h>', 'int main(void) {', '  return 0;', '}'],
+      outline: ['1: #include <stdio.h>', '2: int main(void) {'],
+    },
+    {
+      shape: 'A file named dockerfile.rs keeps its attributes',
+      file: 'dockerfile.rs',
+      lines: ['#[derive(Debug)]', 'struct S;'],
+      outline: ['1: #[derive(Debug)]', '2: struct S;'],
+    },
+    {
+      shape: 'TypeScript: methods named using, checked and fixed are declarations',
+      file: 'plugins.ts',
+      lines: [
+        'export class Plugins {',
+        '  using(plugin: Plugin): this {',
+        '    return this;',
+        '  }',
+        '  checked(): boolean {',
+        '    return true;',
+        '  }',
+        '  fixed(n: number): string {',
+        '    return n.toFixed(2);',
+        '  }',
+        '}',
+      ],
+      outline: [
+        '1: export class Plugins {',
+        '2:   using(plugin: Plugin): this {',
+        '5:   checked(): boolean {',
+        '8:   fixed(n: number): string {',
+      ],
+    },
+    {
+      shape: 'C#: a lock statement with no space before the parenthesis is not a declaration',
+      file: 'Gate.cs',
+      lines: [
+        'class Gate {',
+        '  void Run()',
+        '  {',
+        '    lock(_gate)',
+        '    {',
+        '    }',
+        '  }',
+        '}',
+      ],
+      outline: ['1: class Gate {', '2:   void Run()'],
+    },
+    {
+      shape: 'TypeScript: a slash after i++ divides, so the template after it closes',
+      file: 'count.ts',
+      lines: [
+        'let i = 0;',
+        'const half = i++ / 2 + `a/b`;',
+        'export function later() {',
+        '  return half;',
+        '}',
+      ],
+      outline: [
+        '1: let i = 0;',
+        '2: const half = i++ / 2 + `a/b`;',
+        '3: export function later() {',
+      ],
+    },
+    {
+      shape: 'TypeScript: a scan that ends inside a template masks nothing',
+      file: 'continued.ts',
+      lines: ["const s = 'a \\", "`';", 'export function later() {', '  return s;', '}'],
+      outline: ["1: const s = 'a \\", "2: `';", '3: export function later() {'],
+    },
+    {
+      shape: 'Markdown: a heading after a blank line inside a --- block is a heading',
+      file: 'intro.md',
+      lines: ['---', 'Title: something', '', '# Intro', '', '---', '', 'Body text.', '', '## Next'],
+      outline: ['4: # Intro', '10: ## Next'],
+    },
+  ];
+
+describe('Read outline contract', () => {
+  for (const { shape, file, lines, outline } of OUTLINE_CONTRACT) {
+    it(shape, async () => {
+      writeFileSync(join(dir, file), lines.join('\n'));
+      const outlined = await read.execute({ filePath: file, outline: true }, ctx);
+      expect(outlined.content.split('\n').slice(1)).toEqual(outline);
+    });
+  }
+
+  it('counts the lines of a file that ends in a newline without the empty one after it', async () => {
+    writeFileSync(join(dir, 'counted.ts'), 'export const a = 1;\nexport const b = 2;\n');
+    const outlined = await read.execute({ filePath: 'counted.ts', outline: true }, ctx);
+    expect(outlined.content.split('\n')[0]).toMatch(/^Outline of counted\.ts: 2 lines, 2 shown\./);
+  });
+});
+
+describe('Read output budget', () => {
+  it('stops under the tool-result clip and names the offset a second Read continues from', async () => {
+    // 1885 lines and about 74 KB, the shape of src/agents/manager.ts (#248).
+    const lines = Array.from(
+      { length: 1885 },
+      (_, index) => `export const value${index} = '${'x'.repeat(6)}';`,
+    );
+    writeFileSync(join(dir, 'big.ts'), `${lines.join('\n')}\n`);
+
+    const first = await read.execute({ filePath: 'big.ts' }, ctx);
+    expect(Buffer.byteLength(first.content)).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
+    // The shared clip, whose notice names a file Read cannot open, never fires.
+    const bounded = await boundToolResultOutput(first, dir, undefined, join(dir, 'tool-output'));
+    expect(bounded.pagination?.omittedBytes).toBeUndefined();
+    expect(bounded.content).toBe(first.content);
+
+    const shown = first.content.split('\n');
+    const notice = shown.at(-1)!;
+    const next = Number(/Continue with offset: (\d+)\.\]$/.exec(notice)?.[1]);
+    expect(notice).toBe(
+      `[Lines 1-${next - 1} of 1885 shown, the most one Read returns (50 KB). Continue with offset: ${next}.]`,
+    );
+    expect(shown.at(-2)).toBe(`${next - 1}: ${lines[next - 2]}`);
+    expect(first.artifacts?.fileObservations?.[0]?.lineEnd).toBe(next - 1);
+    // The result says it was truncated, as the shared clip's did, and where it continues.
+    expect(first.pagination).toEqual({ truncated: true, nextCursor: String(next) });
+    expect(bounded.pagination).toEqual({ truncated: true, nextCursor: String(next) });
+
+    const rest = await read.execute({ filePath: 'big.ts', offset: next }, ctx);
+    expect(rest.content).not.toContain('Continue with offset');
+    const numbered = [...shown.slice(0, -1), ...rest.content.split('\n')];
+    expect(numbered.slice(0, 1885)).toEqual(lines.map((line, index) => `${index + 1}: ${line}`));
+  });
+
+  it('says where a Read stopped by its line limit continues', async () => {
+    writeFileSync(
+      join(dir, 'long.txt'),
+      Array.from({ length: 2500 }, (_, index) => `l${index + 1}`).join('\n'),
+    );
+    const whole = await read.execute({ filePath: 'long.txt' }, ctx);
+    const wholeLines = whole.content.split('\n');
+    expect(wholeLines).toHaveLength(2001);
+    expect(wholeLines[1999]).toBe('2000: l2000');
+    expect(wholeLines[2000]).toBe('[Lines 1-2000 of 2500 shown. Continue with offset: 2001.]');
+    expect(whole.pagination).toEqual({ truncated: true, nextCursor: '2001' });
+
+    const window = await read.execute({ filePath: 'long.txt', offset: 10, limit: 5 }, ctx);
+    expect(window.content.split('\n').at(-1)).toBe(
+      '[Lines 10-14 of 2500 shown. Continue with offset: 15.]',
+    );
+
+    const tail = await read.execute({ filePath: 'long.txt', offset: 2001 }, ctx);
+    expect(tail.content).not.toContain('Continue with offset');
+    expect(tail.content.split('\n').at(-1)).toBe('2500: l2500');
+    expect(tail.pagination).toBeUndefined();
+  });
+
+  it('shows a line longer than the budget cut, and continues after it', async () => {
+    writeFileSync(join(dir, 'minified.js'), `${'x'.repeat(60_000)}\nlast`);
+    const first = await read.execute({ filePath: 'minified.js' }, ctx);
+    expect(Buffer.byteLength(first.content)).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
+    const shown = first.content.split('\n');
+    expect(shown).toHaveLength(2);
+    expect(shown[0].startsWith('1: xxx')).toBe(true);
+    expect(shown[1]).toBe(
+      '[Lines 1-1 of 2 shown, the most one Read returns (50 KB). Continue with offset: 2. Line 1 (60000 bytes) was cut to fit.]',
+    );
+    // The cut line fills what the notice leaves of the clip, to the byte.
+    expect(Buffer.byteLength(first.content)).toBe(TOOL_RESULT_MAX_BYTES);
+
+    const rest = await read.execute({ filePath: 'minified.js', offset: 2 }, ctx);
+    expect(rest.content).toBe('2: last');
+
+    writeFileSync(join(dir, 'only.js'), 'x'.repeat(60_000));
+    const only = await read.execute({ filePath: 'only.js' }, ctx);
+    expect(only.content.split('\n').at(-1)).toBe(
+      '[Line 1 (60000 bytes) was cut to fit one Read (50 KB).]',
+    );
+    expect(Buffer.byteLength(only.content)).toBe(TOOL_RESULT_MAX_BYTES);
+    expect(only.pagination).toEqual({ truncated: true });
+  });
+
+  it('returns a line that fits under the clip on its own whole, with no cut notice', async () => {
+    // 50,700 bytes: over the page budget, under the clip. Returned whole before the budget too.
+    writeFileSync(join(dir, 'one.txt'), 'x'.repeat(50_700));
+    const one = await read.execute({ filePath: 'one.txt' }, ctx);
+    expect(one.content).toBe(`1: ${'x'.repeat(50_700)}`);
+
+    // A line whose numbered form is exactly the clip.
+    const full = 'z'.repeat(TOOL_RESULT_MAX_BYTES - Buffer.byteLength('1: '));
+    writeFileSync(join(dir, 'full.txt'), full);
+    const whole = await read.execute({ filePath: 'full.txt' }, ctx);
+    expect(whole.content).toBe(`1: ${full}`);
+  });
+
+  it('does not call a line cut when it and its notice fill the clip exactly', async () => {
+    const notice =
+      '[Lines 1-1 of 2 shown, the most one Read returns (50 KB). Continue with offset: 2.]';
+    const line = 'y'.repeat(TOOL_RESULT_MAX_BYTES - Buffer.byteLength(`1: \n${notice}`));
+    writeFileSync(join(dir, 'exact.txt'), `${line}\nnext`);
+    const page = await read.execute({ filePath: 'exact.txt' }, ctx);
+    expect(page.content).toBe(`1: ${line}\n${notice}`);
+    expect(Buffer.byteLength(page.content)).toBe(TOOL_RESULT_MAX_BYTES);
+
+    const rest = await read.execute({ filePath: 'exact.txt', offset: 2 }, ctx);
+    expect(rest.content).toBe('2: next');
+  });
+
+  it('stops an outline under the clip too, and says where the rest start', async () => {
+    const declarations = Array.from(
+      { length: 1500 },
+      (_, index) => `export const value${index} = '${'x'.repeat(40)}';`,
+    );
+    writeFileSync(join(dir, 'wide.ts'), declarations.join('\n'));
+    const outlined = await read.execute({ filePath: 'wide.ts', outline: true }, ctx);
+    expect(Buffer.byteLength(outlined.content)).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
+    const note = outlined.content.split('\n').at(-1)!;
+    const shownCount = Number(/^\[Outline truncated at (\d+) of 1500 entries;/.exec(note)?.[1]);
+    expect(shownCount).toBeGreaterThan(0);
+    expect(note).toContain(`the rest start at line ${shownCount + 1}.`);
   });
 });

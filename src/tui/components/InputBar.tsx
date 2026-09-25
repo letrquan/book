@@ -207,10 +207,49 @@ export function InputBar({
 }: InputBarProps) {
   const theme = useTheme();
   useDebugMount(uiLog, { compact, screenReader, commandsLen: commands.length });
-  const [value, setValue] = useState('');
-  const [history, setHistory] = useState<string[]>([]);
-  const [historyIndex, setHistoryIndex] = useState(-1);
-  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  const [value, setValueState] = useState('');
+  // Ink hands a key to the handler subscribed at the last effect flush, and every key in one
+  // stdin read to the same handler, so a key can see the closure from before the key ahead of
+  // it: Up right after the Enter that queued an input still saw the typed text and walked the
+  // history instead of recalling the queued input. Each update writes these refs at once, and
+  // the arrow keys read them. The history is never rendered, so it lives in refs alone.
+  const valueRef = useRef('');
+  const historyRef = useRef<string[]>([]);
+  const historyIndexRef = useRef(-1);
+  const [attachments, setAttachmentsState] = useState<ImageAttachment[]>([]);
+  const attachmentsRef = useRef<ImageAttachment[]>([]);
+  // The draft reaches the app as each update is made, not only from the effect after the
+  // render: the app decides what Ctrl+C does from it, and a press between the render and that
+  // effect saw an empty composer and armed the exit instead of clearing the draft.
+  const onDraftChangeRef = useRef(onDraftChange);
+  onDraftChangeRef.current = onDraftChange;
+  const reportDraft = useCallback(() => {
+    const current = attachmentsRef.current;
+    onDraftChangeRef.current?.(valueRef.current, current.length > 0 ? current : undefined);
+  }, []);
+  const setValue = useCallback(
+    (next: string) => {
+      valueRef.current = next;
+      setValueState(next);
+      reportDraft();
+    },
+    [reportDraft],
+  );
+  const setHistory = useCallback((update: (current: string[]) => string[]) => {
+    historyRef.current = update(historyRef.current);
+  }, []);
+  const setHistoryIndex = useCallback((next: number) => {
+    historyIndexRef.current = next;
+  }, []);
+  const setAttachments = useCallback(
+    (update: ImageAttachment[] | ((current: ImageAttachment[]) => ImageAttachment[])) => {
+      attachmentsRef.current =
+        typeof update === 'function' ? update(attachmentsRef.current) : update;
+      setAttachmentsState(attachmentsRef.current);
+      reportDraft();
+    },
+    [reportDraft],
+  );
   const [attachmentError, setAttachmentError] = useState<string | undefined>();
   const suggestion = compact ? 'Ask...' : 'Ask me anything...';
 
@@ -401,7 +440,7 @@ export function InputBar({
     // Filter out Alt/Meta-modified keys — they're shortcuts, not text input.
     // Preserve the editor value while the parent handles Alt/Meta shortcuts.
     if (key.meta) {
-      const preservedValue = value;
+      const preservedValue = valueRef.current;
       queueMicrotask(() => setValue(preservedValue));
       return;
     }
@@ -573,18 +612,23 @@ export function InputBar({
     // `isShortcutsToggleKey`), so gating on `key.ctrl` alone would swallow it here.
     if ((key.ctrl || isShortcutsToggleKey(_input, key)) && onGlobalShortcut) {
       if (onGlobalShortcut(_input, key)) {
-        const preservedValue = value;
+        const preservedValue = valueRef.current;
         queueMicrotask(() => setValue(preservedValue));
         return;
       }
     }
     // Claude Code-style task access: Down from a fresh, empty prompt moves
     // focus into the task list. Enter is then handled by SubagentPanel.
-    if (key.downArrow && !value && historyIndex < 0 && onFocusBackgroundTask?.()) {
+    if (
+      key.downArrow &&
+      !valueRef.current &&
+      historyIndexRef.current < 0 &&
+      onFocusBackgroundTask?.()
+    ) {
       uiLog.event('input:Down', { action: 'focus-background-task' });
       return;
     }
-    if (key.upArrow && !value) {
+    if (key.upArrow && !valueRef.current) {
       const recalled = onRecallQueued?.();
       if (recalled !== undefined) {
         setHistoryIndex(-1);
@@ -599,18 +643,20 @@ export function InputBar({
       }
     }
     // Up arrow — navigate history backward
-    if (key.upArrow && history.length > 0 && historyIndex < history.length - 1) {
-      const newIdx = historyIndex + 1;
+    const currentHistory = historyRef.current;
+    const currentIndex = historyIndexRef.current;
+    if (key.upArrow && currentHistory.length > 0 && currentIndex < currentHistory.length - 1) {
+      const newIdx = currentIndex + 1;
       setHistoryIndex(newIdx);
-      setValue(history[newIdx]);
+      setValue(currentHistory[newIdx]);
       uiLog.event('input:Up', { action: 'history-back', newIdx });
       return;
     }
     // Down arrow — navigate history forward
-    if (key.downArrow && historyIndex >= 0) {
-      const newIdx = historyIndex - 1;
+    if (key.downArrow && currentIndex >= 0) {
+      const newIdx = currentIndex - 1;
       setHistoryIndex(newIdx);
-      setValue(newIdx >= 0 ? history[newIdx] : '');
+      setValue(newIdx >= 0 ? currentHistory[newIdx] : '');
       uiLog.event('input:Down', { action: 'history-forward', newIdx });
       return;
     }

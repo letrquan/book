@@ -57,6 +57,10 @@ const DEFAULT_TIMEOUT = Number(opt('timeout', '20000'));
 // keystrokes, 600ms does not. 2500ms is the comfortable margin.
 const READY_SETTLE_MS = Number(opt('ready-settle', '2500'));
 const SEND_GAP_MS = Number(opt('send-gap', '250'));
+// Forwarded to the mock: the pause before each streamed delta (see mock-provider.mjs).
+const CHUNK_DELAY_MS = opt('chunk-delay-ms', null);
+// Leave the startup splash on: skip the workspace settings.json that turns it off.
+const STARTUP_ANIMATION = flag('startup-animation');
 
 // A scratch workspace keeps the driver from touching the repo. Override with
 // --workspace <path> when you want the TUI pointed at real code.
@@ -80,6 +84,7 @@ async function startMock() {
   if (MOCK_SCRIPT) args.push('--script', MOCK_SCRIPT);
   // Pass-through for the mock's own flags: `--mock-usage-from-estimate` etc.
   if (process.argv.includes('--mock-usage-from-estimate')) args.push('--usage-from-estimate');
+  if (CHUNK_DELAY_MS) args.push('--chunk-delay-ms', CHUNK_DELAY_MS);
   mockProc = procSpawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((res, rej) => {
     const timer = setTimeout(
@@ -87,8 +92,9 @@ async function startMock() {
         rej(
           new Error(
             `mock provider did not become ready on port ${MOCK_PORT} — ` +
-              `if it says EADDRINUSE above, a previous run is still listening ` +
-              `(pkill -f mock-provider) or pass --mock-port <other>`,
+              `if it says EADDRINUSE above, another process holds the port — ` +
+              `pass --mock-port <other>, and never kill mocks by name: on a shared ` +
+              `machine they belong to other runs`,
           ),
         ),
       10000,
@@ -112,11 +118,14 @@ let exited = false;
 let exitCode = null;
 
 // The startup fire animation delays the first render past short waits.
-mkdirSync(join(WORKSPACE, '.book'), { recursive: true });
-writeFileSync(
-  join(WORKSPACE, '.book', 'settings.json'),
-  JSON.stringify({ ui: { startupAnimation: false } }, null, 2),
-);
+// `--startup-animation` keeps it, for driving the splash itself.
+if (!STARTUP_ANIMATION) {
+  mkdirSync(join(WORKSPACE, '.book'), { recursive: true });
+  writeFileSync(
+    join(WORKSPACE, '.book', 'settings.json'),
+    JSON.stringify({ ui: { startupAnimation: false } }, null, 2),
+  );
+}
 
 const env = {
   ...process.env,
@@ -318,6 +327,17 @@ async function cleanup() {
   if (scratch) rmSync(scratch, { recursive: true, force: true });
 }
 
+// A signal skips cleanup(), and the mock would outlive the driver holding its port. Kill
+// that one child — the only mock this driver may kill; others belong to other runs. (On
+// Windows only a console Ctrl-C arrives as SIGINT; a kill there is TerminateProcess.)
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    releasePty();
+    mockProc?.kill();
+    process.exit(1);
+  });
+}
+
 async function run() {
   if (USE_MOCK) await startMock();
   console.log(`[driver] workspace=${WORKSPACE} shots=${SHOT_DIR}`);
@@ -377,6 +397,10 @@ async function run() {
       }
       case 'sleep':
         await sleep(Number(rest || '500'));
+        break;
+      case 'status':
+        // Whether the TUI process is still running, without sending it a key.
+        console.log(`[driver] status exited=${exited} code=${exitCode} at=${new Date().toISOString()}`);
         break;
       case 'resize':
         [cols, rows] = rest.split(/\s+/).map(Number);
