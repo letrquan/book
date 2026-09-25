@@ -1427,7 +1427,7 @@ describe('AgentManager lifecycle', () => {
     manager.dispose();
   });
 
-  it('lets a follow-up to a /review agent resume after a restart again (#245)', async () => {
+  it('keeps the no-resume mark on a follow-up the review still waits on, and drops it on one it does not (#245)', async () => {
     const root = tempRoot();
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = false;
@@ -1445,21 +1445,19 @@ describe('AgentManager lifecycle', () => {
     });
     const runner = reviewRunnerFor(manager);
 
-    // A follow-up sent while the review's own run is going is queued behind it.
+    // A follow-up sent while the review's own run is going is queued behind it. That run
+    // never reaches a finished status, so the review's `wait` receives the follow-up's
+    // result: the follow-up is still the review's, and a restart must not re-run it.
     const queued = await runner.spawn('explorer', 'review this');
     await vi.waitFor(async () => expect((await manager.get(queued.id))?.status).toBe('running'));
     expect((await manager.get(queued.id))?.resumeAfterRestart).toBe(false);
     await manager.send(queued.id, 'queued follow-up');
+    const reviewWait = runner.wait(queued.id, 5000);
     release();
-    // The review's run completes before the SubagentStop hook, and only then is the
-    // follow-up re-queued, so wait for the follow-up's own run to complete.
-    await vi.waitFor(async () =>
-      expect(await manager.get(queued.id)).toMatchObject({
-        prompt: 'queued follow-up',
-        status: 'completed',
-      }),
-    );
-    expect((await manager.get(queued.id))?.resumeAfterRestart).toBeUndefined();
+    const received = await reviewWait;
+    expect(received.status).toBe('completed');
+    expect((await manager.get(queued.id))?.prompt).toBe('queued follow-up');
+    expect((await manager.get(queued.id))?.resumeAfterRestart).toBe(false);
 
     // A follow-up sent after the review's run finished starts a run of its own.
     const finished = await runner.spawn('explorer', 'quick look');

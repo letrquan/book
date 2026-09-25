@@ -184,8 +184,9 @@ All notable changes to this project are documented in this file.
   reviewer interrupted by a crash was re-run on the next start and billed a run whose report
   nobody received, since the review had died with the process (#245). `/review` now spawns its
   agents with `resumeAfterRestart: false`, and a restart leaves them `interrupted`, with an error
-  that says why they were not resumed. A follow-up sent to such an agent clears the mark, since
-  that run belongs to the parent and not to the review.
+  that says why they were not resumed. A follow-up that starts after the review's run finished
+  clears the mark, since that run belongs to the parent. A follow-up queued while the review's run
+  is going keeps it, because the review is still waiting and receives that result.
 - **A finished child no longer offers a Tab that opens nothing.** Once a finished child's
   Background-panel row is cleared (a `Task` child's as soon as its result arrives), Tab cannot
   reach it, yet its transcript block still said "Transcript retained · Tab to open" (#245). That

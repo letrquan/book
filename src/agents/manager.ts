@@ -1797,8 +1797,9 @@ export class AgentManager {
           record.prompt = record.pendingMessages.shift()!;
           record.status = 'queued';
           record.finishedAt = undefined;
-          // A follow-up queued during the run is the parent's, not the review's.
-          record.resumeAfterRestart = undefined;
+          // The run never reached a finished status, so the spawner's `wait` is still
+          // pending and receives this follow-up's result: it stays the spawner's, and
+          // keeps both `notifyParentOnCompletion` and `resumeAfterRestart` as they are.
           this.queue.push(record.id);
           this.persist(record);
         } else {
