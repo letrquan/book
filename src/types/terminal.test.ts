@@ -99,4 +99,28 @@ describe('terminalRecovery', () => {
       ).toBe('none');
     }
   });
+
+  it('ends on an unnamed 4xx or a mid-stream invalid request, and still re-issues transient errors', () => {
+    const recoveryForCode = (providerCode: string) =>
+      terminalRecovery(
+        createTerminalOutcome('failed', 'provider_error', { partialOutput: false, providerCode }),
+      );
+    // `unknown` is a 4xx the classifier has no name for (9router's 409 quota lock,
+    // a 422); `invalid_request_error` is Anthropic's mid-stream verdict on the request.
+    for (const providerCode of ['unknown', 'invalid_request_error']) {
+      expect(recoveryForCode(providerCode), providerCode).toBe('none');
+    }
+    for (const providerCode of [
+      'server_error',
+      'overloaded',
+      'rate_limited',
+      'timeout',
+      'network',
+      'overloaded_error',
+      'api_error',
+      'provider_error',
+    ]) {
+      expect(recoveryForCode(providerCode), providerCode).toBe('reissue');
+    }
+  });
 });

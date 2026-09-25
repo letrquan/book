@@ -48,19 +48,35 @@ export type AgentTerminalReason =
  */
 export type TerminalRecovery = 'none' | 'reissue' | 'continue' | 'park';
 
+/**
+ * Provider error codes that a re-sent turn would only reproduce. Each is a
+ * verdict on the request itself, or an answer the loop already re-issued once:
+ * - `bad_request`, `not_found`: a 400 or 404 the provider or its router pinned
+ *   on the request.
+ * - `unknown`: any other status the classifier has no name for, in practice a
+ *   4xx such as 9router's 409 quota lock or a 422. `classifyHttpStatus` gives
+ *   5xx, 408 and 429 their own retryable codes, so nothing transient lands here.
+ * - `invalid_request_error`: Anthropic's mid-stream error type for a malformed
+ *   request, the same verdict delivered inside a 200 stream.
+ * - `content_filter`, `error_envelope`: an answer that came back the same way
+ *   after its one re-issue.
+ */
+const NON_REISSUABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
+  'bad_request',
+  'not_found',
+  'unknown',
+  'invalid_request_error',
+  'content_filter',
+  'error_envelope',
+]);
+
 export function terminalRecovery(outcome: AgentTerminalOutcome): TerminalRecovery {
-  // Some provider errors are reproduced by re-sending the turn; the transport was
-  // fine. A 4xx the provider or its router pinned on the request itself
-  // (`bad_request`, `not_found`), and an answer the loop already re-issued once and
-  // got back the same way (`content_filter`, `error_envelope`). `providerCode` is
-  // what the loop copied from the stream's error code, so only the loop's provider
-  // outcomes carry it.
+  // `providerCode` is what the loop copied from the stream's error code, so only
+  // the loop's provider outcomes carry it.
   if (
     outcome.reason === 'provider_error' &&
-    (outcome.providerCode === 'bad_request' ||
-      outcome.providerCode === 'not_found' ||
-      outcome.providerCode === 'content_filter' ||
-      outcome.providerCode === 'error_envelope')
+    outcome.providerCode !== undefined &&
+    NON_REISSUABLE_PROVIDER_CODES.has(outcome.providerCode)
   ) {
     return 'none';
   }

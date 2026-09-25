@@ -135,17 +135,46 @@ export function isContextOverflowError(error: unknown): boolean {
 }
 
 /**
- * A router that answers 200 with the upstream's error as the assistant text —
- * `[Error] An error occurred while processing your request. ... Please include
- * the request ID ... in your message.` — has not answered. The leading `[Error]`
- * is required; the rest of the sentence, or a usage block reporting zero tokens
- * both ways, confirms it.
+ * The longest text still read as an error envelope rather than an answer.
+ * OpenAI's server-error sentence is about 260 characters, and a JSON-rendered
+ * upstream error rarely passes 1,000.
+ */
+const ERROR_ENVELOPE_MAX_CHARS = 2_000;
+
+/**
+ * True when `text` has the shape a router gives an upstream error it renders as
+ * the answer: the whole answer is one `[Error] …` line. 9router's Responses
+ * translator writes an upstream `error` or `response.failed` event as
+ * `[Error] <message>` (or the error object as JSON when it has no message) and
+ * ends the stream there, so an envelope is never one line of a longer reply. An
+ * answer that quotes an `[Error]` line and goes on to explain it is an answer.
+ */
+export function isErrorEnvelopeShape(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    trimmed.length <= ERROR_ENVELOPE_MAX_CHARS &&
+    /^\[Error\]/i.test(trimmed) &&
+    !/[\r\n]/.test(trimmed)
+  );
+}
+
+/**
+ * A router that answers 200 with the upstream's error as the assistant text has
+ * not answered. The envelope shape (`isErrorEnvelopeShape`) is required; then
+ * either a usage block reporting zero tokens both ways (the router wrote the
+ * text, no model did) or the upstream's own server-error wording confirms it.
+ * The supported shapes are the table in `reliability.test.ts`:
+ *   - OpenAI's `[Error] An error occurred while processing your request. …
+ *     help.openai.com … Please include the request ID <id> in your message.`,
+ *     whatever the usage says;
+ *   - any other one-line server error that names its request ID;
+ *   - any one-line `[Error] …` with 0/0 usage.
  */
 export function isUpstreamErrorEnvelope(
   text: string,
   usage?: { promptTokens: number; completionTokens: number } | null,
 ): boolean {
-  if (!/^\s*\[Error\]/i.test(text)) return false;
+  if (!isErrorEnvelopeShape(text)) return false;
   const zeroUsage = usage != null && usage.promptTokens === 0 && usage.completionTokens === 0;
   return (
     zeroUsage ||
@@ -155,14 +184,66 @@ export function isUpstreamErrorEnvelope(
   );
 }
 
+/**
+ * How long a retryable response's error body may take to arrive. The body only
+ * informs the retry decision (a quoted upstream 4xx stops the retries), so a
+ * router that sends its headers and then stalls must not hold every attempt for
+ * the full `requestTimeoutMs`: ten attempts at 600 s each by default. After this
+ * long the decision is made on what arrived.
+ */
+export const ERROR_BODY_READ_TIMEOUT_MS = 5_000;
+
+/** The most of an error body that is ever read; the rest is cancelled unread. */
+const ERROR_BODY_MAX_BYTES = 65_536;
+
+/**
+ * Read at most ERROR_BODY_MAX_BYTES of an error body, for at most
+ * ERROR_BODY_READ_TIMEOUT_MS. What arrived before the cap, the deadline, an
+ * abort or a stream error is kept, and the rest of the body is cancelled.
+ */
 async function readErrorBody(response: Response, signal?: AbortSignal): Promise<string> {
-  if (signal?.aborted) return '';
+  if (signal?.aborted || !response.body) return '';
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
   try {
-    const text = await response.text();
-    return text.length > 65536 ? text.slice(0, 65536) : text;
+    reader = response.body.getReader();
   } catch {
+    // A body something else already locked has nothing left to read here.
     return '';
   }
+  const decoder = new TextDecoder();
+  let text = '';
+  let received = 0;
+  let finished = false;
+  // Cancelling resolves the pending read as done, which ends the loop below.
+  const stop = (): void => {
+    reader.cancel().catch(() => {});
+  };
+  const timer = setTimeout(stop, ERROR_BODY_READ_TIMEOUT_MS);
+  signal?.addEventListener('abort', stop, { once: true });
+  try {
+    while (received < ERROR_BODY_MAX_BYTES) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        finished = true;
+        break;
+      }
+      const bytes = chunk.value.subarray(0, ERROR_BODY_MAX_BYTES - received);
+      received += bytes.byteLength;
+      text += decoder.decode(bytes, { stream: true });
+    }
+  } catch {
+    // A body that fails part-way still leaves what arrived before it.
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', stop);
+    if (!finished) stop();
+    try {
+      reader.releaseLock();
+    } catch {
+      // Nothing is pending once the loop has ended.
+    }
+  }
+  return text + decoder.decode();
 }
 
 export async function fetchWithRetry(

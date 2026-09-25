@@ -159,11 +159,41 @@ All notable changes to this project are documented in this file.
   that 4xx, comes back after one fetch, and a `bad_request`/`not_found` is not re-issued at the
   stream level either, since re-sending it byte for byte reproduces it. Only the router's own
   `[<route>] [4xx]:` prefix or a 4xx `code` in a JSON `"error"` object counts as a quote, so an
-  outage body that mentions `HTTP 403`, `chunk [404]` or `"code": 4001` is still retried. A quoted
-  400 on a request of 200k tokens or more is read as a context overflow — the antigravity Gemini
-  route refuses at ~300k without saying why — and takes the compaction-and-ratchet recovery a
-  spoken overflow gets. The rule covers only that wrapped case: a plain 400 at any size is the
-  provider's verdict on the request, and neither compacts nor lowers the learned window.
+  outage body that mentions `HTTP 403`, `chunk [404]` or `"code": 4001` is still retried. A
+  `bad_request` on a request of 200k tokens or more is read as a context overflow — the
+  antigravity Gemini route refuses at ~300k without saying why — and compacted; the next entry
+  says when that also lowers the learned window.
+- **A plain 400 on a 200k-token request compacts, and only a stated overflow lowers the learned
+  window.** 9router 0.5.86 stopped wrapping the antigravity route's refusal in a 503: a
+  330k-token `INVALID_ARGUMENT` now arrives as a plain
+  `400 {"error":{"message":"[400]: …","code":"bad_request"}}`, so the overflow recovery above never
+  fired and the run ended after one request (#244). Any `bad_request` on a request of 200k
+  estimated tokens or more, plain or wrapped, is now compacted and the turn retried once. The
+  learned context window is lowered only when the error states an overflow
+  (`context_length_exceeded`, "maximum context length", a 413, …); one inferred from size alone
+  compacts without lowering it, so a 400 that was really about the request cannot shrink a 1M
+  model's window for every later session. That includes the wrapped 503 case, which used to lower
+  it. The compacted request is retried only if it is below 200k tokens, and the same 400 right
+  after compacting ends the run on the provider's error.
+- **A stalled error body no longer holds a retry attempt for the whole request timeout.** The
+  retry loop read a retryable response's body with `text()` before deciding, so a 503 that sent
+  its headers and then stalled made each attempt wait the full `requestTimeoutMs` — up to about
+  110 minutes with the defaults — and a large body was buffered whole before being cut to 64 KB
+  (#244). The body is now stream-read up to 64 KB for at most 5 s (`ERROR_BODY_READ_TIMEOUT_MS`),
+  the rest is cancelled, and the decision is made on what arrived.
+- **A 409 quota lock and a mid-stream `invalid_request_error` are not re-issued.** A 4xx the
+  classifier has no name for (`unknown`: 9router's antigravity 409 quota lock, a 422), plain or
+  quoted in a 503, stopped the fetch retries but was still re-sent three times at the stream
+  level, 14 s of backoff for the same refusal; Anthropic's mid-stream `invalid_request_error` was
+  re-sent the same way (#244). Both now end the run on the first answer. 5xx, 429, 529, Anthropic's
+  `overloaded_error` and `api_error`, and transport faults are still re-issued.
+- **A real answer that quotes an `[Error]` line is no longer taken for a router error.** The
+  envelope check accepted any answer that began with `[Error]` and mentioned a request id, and
+  with 0/0 usage any `[Error]` answer at all, so an explanation that opened with a quoted error
+  line was held back, re-issued, and reported as `provider_error` (#244). An envelope must now be
+  the whole answer: one `[Error] …` line of at most 2,000 characters, the shape 9router's
+  Responses translator writes. The same rule gates the `[Error] … context window` overflow answer.
+  The supported shapes are the table in `src/provider/reliability.test.ts`.
 - **An upstream error rendered as the answer no longer completes the run.** A router answered
   200 with `[Error] An error occurred while processing your request … request ID …` and zero
   tokens both ways, and Book accepted it as the model's final message: exit 0,

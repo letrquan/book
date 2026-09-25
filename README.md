@@ -698,12 +698,24 @@ wraps an upstream 4xx as a 503 with a cooldown
 ends on that 400; it is not retried ten times and not re-issued, since the request itself is what
 was refused. Only the router's `[<route>] [4xx]:` prefix or a 4xx `code` in a JSON `"error"` object
 counts as a quote: a 503 whose body merely mentions `HTTP 403` or `"code": 4001` is retried like
-any other outage. A quoted 400 on a request of 200k tokens or more is read as a context overflow
-even when the body does not say so, and goes through compaction and the learned-window ratchet like
-a spoken overflow. A plain 400 is never read that way, at any size: it ends the run without
-compacting or lowering the learned window. Two answers that are not answers get one re-issue each:
-a `content_filter` stop on a turn with no tool calls, and a 200 whose text is the upstream's error
-envelope (`[Error] … request ID …`, zero tokens both ways). If either repeats, the run ends
+any other outage. The body behind a retryable status is read for at most 5 s and 64 KB, and the
+decision is made on what arrived, so a router that sends its headers and then stalls cannot hold an
+attempt for the whole request timeout. No other 4xx is re-issued either: a 409 quota lock, a 422,
+or Anthropic's mid-stream `invalid_request_error` ends the run on the first answer.
+
+A `bad_request` on a request of 200k estimated tokens or more, plain
+(`400 {"error":{"message":"[400]: …","code":"bad_request"}}`) or quoted inside a 503, is read as a
+context overflow even when the body does not say so: the antigravity Gemini route refuses at ~300k
+without naming the length. The history is compacted and the turn retried once, provided the
+compacted request is below 200k tokens. Only an error that states an overflow
+(`context_length_exceeded`, "maximum context length", a 413, …) also lowers the learned context
+window; an overflow inferred from size alone never does. A 400 on a smaller request, or the same 400
+right after compacting, ends the run on the provider's error.
+
+Two answers that are not answers get one re-issue each: a `content_filter` stop on a turn with no
+tool calls, and a 200 whose whole text is the upstream's one-line error envelope (`[Error] …
+request ID …`, or any `[Error] …` line with zero tokens both ways). An answer that quotes such a
+line and goes on to explain it is an answer. If either repeats, the run ends
 `failed/provider_error` on that second request, never `completed`; the repeat is not re-issued
 again, and no `[continuation]` message is written. Every retry is visible to a print-mode host: a
 `{"type":"retry","phase","attempt","max","delay_ms"}` record in `stream-json`, a `retry: …` line on

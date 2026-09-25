@@ -78,7 +78,11 @@ import type { ToolUseRecord } from '../types/tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
 import { permissionDeniedError } from './actionable-errors.js';
-import { isContextOverflowError, isUpstreamErrorEnvelope } from '../provider/reliability.js';
+import {
+  isContextOverflowError,
+  isErrorEnvelopeShape,
+  isUpstreamErrorEnvelope,
+} from '../provider/reliability.js';
 import {
   classifyAbortReason,
   createTerminalOutcome,
@@ -100,16 +104,23 @@ const log = createDebugLogger('agent');
 const SKILL_INFRASTRUCTURE_TOOLS = new Set(['InvokeSkill', 'ReadSkillResource', 'ToolSearch']);
 
 /**
- * A 400 that a router quoted inside a retryable status, on a prompt this large,
- * is read as a context overflow even when the body does not say so. The
- * antigravity Gemini route behind 9router answers a ~330k-token request with
- * `503 … [400]: INVALID_ARGUMENT` and no mention of length (#221), which is its
- * practical window, not the 1M the model publishes; treating it as an overflow
- * puts it through the same compaction and learned-window ratchet a spoken
- * overflow gets. A plain 400 is the provider's own verdict on the request at any
- * size: reading it as an overflow compacted for nothing and lowered a 1M model's
- * learned window for every later session. A wrapped 400 below the floor is still
- * the request's own fault.
+ * A `bad_request` on a prompt this large is read as a context overflow even when
+ * the body does not say so. The antigravity Gemini route behind 9router refuses a
+ * ~330k-token request with `INVALID_ARGUMENT` and no mention of length (#221):
+ * that is its practical window, not the 1M the model publishes. 9router used to
+ * wrap the refusal as `503 … [400]:`; 0.5.86 answers a plain
+ * `400 {"error":{"message":"[400]: …","code":"bad_request"}}`, so both count
+ * (#244). The recovery is the compaction a stated overflow gets, and no more:
+ *   - the learned window is ratcheted only when the error states an overflow
+ *     (`isContextOverflowError`, or the `context_overflow` code the provider
+ *     derived from it). An overflow inferred from size alone never lowers it: a
+ *     400 that was really about the request would shrink a 1M model's window for
+ *     every later session;
+ *   - the compacted request is retried only if it is below this floor. At or
+ *     above it the same request would be refused the same way, so the run ends
+ *     on the real error.
+ * A repeat of the 400 right after compacting ends the run as well: the recovery
+ * runs once per turn (`forcedCompactTurn`).
  */
 const LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS = 200_000;
 
@@ -1346,7 +1357,7 @@ export async function runAgentLoop(
         !streamError &&
         streamDone &&
         toolCalls.length === 0 &&
-        /^\s*\[Error\]/i.test(assistantContent) &&
+        isErrorEnvelopeShape(assistantContent) &&
         isContextOverflowError(assistantContent);
       if (routerOverflowResponse) {
         streamError = assistantContent.trim();
@@ -1390,22 +1401,26 @@ export async function runAgentLoop(
       // any partial assistant text/tool call metadata in returned history so
       // callers that persist sessions do not lose what was already rendered.
       if (streamError && !signal?.aborted) {
-        const overflowByShape =
-          isContextOverflowError(streamError) ||
-          (streamErrorCode === 'bad_request' &&
-            streamUpstreamStatus === 400 &&
-            requestTokens >= LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS);
+        const statedOverflow =
+          streamErrorCode === 'context_overflow' || isContextOverflowError(streamError);
+        const overflowBySize =
+          !statedOverflow &&
+          streamErrorCode === 'bad_request' &&
+          requestTokens >= LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS;
         const canRecoverContextOverflow =
           forcedCompactTurn !== turn &&
           assistantContent.length === 0 &&
           toolCalls.length === 0 &&
-          overflowByShape;
+          (statedOverflow || overflowBySize);
         if (canRecoverContextOverflow) {
           forcedCompactTurn = turn;
           log.warn('provider context overflow; forcing compaction before retry', {
             turn,
             historyLength: newHistory.length,
             error: streamError,
+            inferredFromSize: overflowBySize,
+            requestTokens,
+            upstreamStatus: streamUpstreamStatus,
           });
           let beforeTokens = estimateHistoryTokens(newHistory);
 
@@ -1413,11 +1428,18 @@ export async function runAgentLoop(
           // too large rather than an accepted limit. Applying LEARNED_WINDOW_SAFETY_MARGIN
           // guarantees the recorded ceiling is strictly below the refused size rather than
           // the refused size itself, converging below the real context window.
+          // Only a stated overflow is recorded: one inferred from the request's size alone
+          // may have been about the request, not the window.
           // Only record when the window in force came from family or default (not declared):
           // if the user explicitly declared contextWindow in settings, leave their setting
           // authoritative and do not overwrite it from a heuristic.
           const overflowModelKey = resolveModelKey(effectiveConfig);
-          if (!hasDeclaredContextWindow(effectiveConfig) && beforeTokens > 0 && overflowModelKey) {
+          if (
+            statedOverflow &&
+            !hasDeclaredContextWindow(effectiveConfig) &&
+            beforeTokens > 0 &&
+            overflowModelKey
+          ) {
             // effectiveConfig carries the override in BOTH model and modelSelection, so
             // this is the same key the read side resolves. Spelling the precedence out
             // again here is how the two drifted apart in the first place.
@@ -1484,13 +1506,24 @@ export async function runAgentLoop(
             newHistory.push(...clippedHistory);
           }
           const afterTokens = compactedTokens ?? estimateHistoryTokens(newHistory);
-          if (afterTokens < beforeTokens) {
+          // A size-inferred overflow is retried only below the floor that inferred it: at
+          // or above it the same request would be refused the same way.
+          const retryRequestTokens = afterTokens + requestOverheadTokens;
+          const belowInferenceFloor =
+            !overflowBySize || retryRequestTokens < LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS;
+          if (afterTokens < beforeTokens && belowInferenceFloor) {
             log.warn('context overflow recovered; retrying with reduced history', {
               beforeTokens,
               afterTokens,
             });
             retrySameTurn = true;
             continue;
+          }
+          if (!belowInferenceFloor) {
+            log.warn('size-inferred overflow is still above the floor after compaction', {
+              afterTokens,
+              retryRequestTokens,
+            });
           }
         }
         log.warn('stream error', {

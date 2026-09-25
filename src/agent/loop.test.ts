@@ -5758,12 +5758,62 @@ describe('content filter and upstream error recoveries', () => {
     expect(history.some((m) => m.role === 'assistant' && m.content === errorEnvelope)).toBe(false);
   });
 
-  it('does not read a plain 400 on a large request as a context overflow', async () => {
+  it('compacts a plain 400 on a large request without lowering the learned window', async () => {
+    // 9router 0.5.86 no longer wraps the antigravity route's refusal in a 503: it
+    // answers with the upstream's own 400 and a `bad_request` code (#244).
     const plainBadRequest = JSON.stringify({
       error: {
-        code: 400,
-        message: 'Request contains an invalid argument.',
-        status: 'INVALID_ARGUMENT',
+        message:
+          '[400]: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}',
+        code: 'bad_request',
+      },
+    });
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) {
+          return new Response(plainBadRequest, { status: 400 });
+        }
+        return new Response(textStream('recovered'), { status: 200 });
+      }),
+    );
+
+    const compactHints: Array<CompactRequestHints | undefined> = [];
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, hints?: CompactRequestHints) => {
+        compactHints.push(hints);
+        return compactedForRetry();
+      },
+    );
+    const store = new MemoryModelWindowStore();
+
+    // ~225k estimated tokens on a model whose window is not declared.
+    const result = await runAgentLoop(
+      defaultConfig({ maxTurns: 1, model: 'gemini-2.5-pro' }),
+      createRegistry(),
+      'x '.repeat(450_000),
+      [],
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { isNewSession: false, modelWindowStore: store },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(compactHints[0]?.recovery).toBe(true);
+    // Inferred from the size alone, so the learned window is left where it was.
+    expect(store.get('gemini-2.5-pro')).toBeUndefined();
+    expect(fetchCalls).toBe(2);
+    expect(result.at(-1)?.content).toBe('recovered');
+  });
+
+  it('ends on a plain 400 on a small request without compacting', async () => {
+    const plainBadRequest = JSON.stringify({
+      error: {
+        message:
+          '[400]: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}',
+        code: 'bad_request',
       },
     });
     let fetchCalls = 0;
@@ -5774,28 +5824,26 @@ describe('content filter and upstream error recoveries', () => {
         return new Response(plainBadRequest, { status: 400 });
       }),
     );
-
     const compact = vi.fn(async () => compactedForRetry());
-    const store = new MemoryModelWindowStore();
     const outcomes: AgentTerminalOutcome[] = [];
 
-    // ~225k estimated tokens on a model whose window is not declared: the shape
-    // that used to force a compaction and ratchet the learned window to ~180k.
     await runAgentLoop(
-      defaultConfig({ maxTurns: 1, model: 'gemini-2.5-pro' }),
+      defaultConfig({
+        maxTurns: 1,
+        retry: { ...defaultConfig().retry, streamReissueAttempts: 3 },
+      }),
       createRegistry(),
-      'x '.repeat(450_000),
+      'hello',
       [],
       noopCallbacks({
         onCompact: compact,
         onTerminal: (outcome) => outcomes.push(outcome),
       }),
       'default',
-      { isNewSession: false, modelWindowStore: store },
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
     );
 
     expect(compact).not.toHaveBeenCalled();
-    expect(store.get('gemini-2.5-pro')).toBeUndefined();
     expect(fetchCalls).toBe(1);
     expect(outcomes[0]).toMatchObject({
       status: 'failed',
@@ -5804,7 +5852,46 @@ describe('content filter and upstream error recoveries', () => {
     });
   });
 
-  it('still reads a 503-wrapped quoted 400 on a large request as a context overflow', async () => {
+  it('compacts and lowers the learned window on a 400 that states an overflow', async () => {
+    const statedOverflow = JSON.stringify({
+      error: {
+        message:
+          "This model's maximum context length is 128000 tokens. However, your messages resulted in 131072 tokens.",
+        type: 'invalid_request_error',
+        code: 'context_length_exceeded',
+      },
+    });
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) {
+          return new Response(statedOverflow, { status: 400 });
+        }
+        return new Response(textStream('recovered'), { status: 200 });
+      }),
+    );
+    const compact = vi.fn(async () => compactedForRetry());
+    const store = new MemoryModelWindowStore();
+
+    const result = await runAgentLoop(
+      defaultConfig({ maxTurns: 1, model: 'router/stated-overflow-model' }),
+      createRegistry(),
+      'hello',
+      [userMsg('x'.repeat(100_000))],
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { isNewSession: false, modelWindowStore: store },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(store.get('router/stated-overflow-model')).toBeGreaterThan(0);
+    expect(fetchCalls).toBe(2);
+    expect(result.at(-1)?.content).toBe('recovered');
+  });
+
+  it('compacts a 503-wrapped quoted 400 on a large request without lowering the learned window', async () => {
     const nineRouterBody =
       'API Error: 503 [antigravity/...] [400]: {"error":{"code":400,"status":"INVALID_ARGUMENT",...}} (reset after 29s)';
     let fetchCalls = 0;
@@ -5840,9 +5927,273 @@ describe('content filter and upstream error recoveries', () => {
 
     expect(compact).toHaveBeenCalledOnce();
     expect(compactHints[0]?.recovery).toBe(true);
-    expect(store.get('gemini-2.5-pro')).toBeGreaterThan(0);
+    expect(store.get('gemini-2.5-pro')).toBeUndefined();
     expect(fetchCalls).toBe(2);
     expect(result.at(-1)?.content).toBe('recovered');
+  });
+
+  it('ends on the provider error when compaction leaves a size-inferred overflow above the floor', async () => {
+    const nineRouterBody =
+      'API Error: 503 [antigravity/...] [400]: {"error":{"code":400,"status":"INVALID_ARGUMENT",...}} (reset after 29s)';
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        return new Response(nineRouterBody, { status: 503 });
+      }),
+    );
+    // Smaller than the refused request, but still over 200k estimated tokens.
+    const stillLarge = userMsg('y '.repeat(420_000));
+    const compact = vi.fn(async () => ({
+      ...compactedForRetry(),
+      replacementHistory: [stillLarge],
+      postContextTokens: estimateHistoryTokens([stillLarge]),
+    }));
+    const errors: string[] = [];
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1, model: 'gemini-2.5-pro' }),
+      createRegistry(),
+      'x '.repeat(450_000),
+      [],
+      noopCallbacks({
+        onCompact: compact,
+        onError: (error) => errors.push(error),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(fetchCalls).toBe(1);
+    expect(outcomes[0]).toMatchObject({
+      status: 'failed',
+      reason: 'provider_error',
+      providerCode: 'bad_request',
+    });
+    expect(errors[0]).toContain('INVALID_ARGUMENT');
+  });
+
+  it('ends on the provider error when the same 400 repeats right after compacting', async () => {
+    const plainBadRequest = JSON.stringify({
+      error: {
+        message:
+          '[400]: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}',
+        code: 'bad_request',
+      },
+    });
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        return new Response(plainBadRequest, { status: 400 });
+      }),
+    );
+    const compact = vi.fn(async () => compactedForRetry());
+    const errors: string[] = [];
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        model: 'gemini-2.5-pro',
+        retry: { ...defaultConfig().retry, streamReissueAttempts: 3 },
+      }),
+      createRegistry(),
+      'x '.repeat(450_000),
+      [],
+      noopCallbacks({
+        onCompact: compact,
+        onError: (error) => errors.push(error),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(fetchCalls).toBe(2);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      status: 'failed',
+      reason: 'provider_error',
+      providerCode: 'bad_request',
+    });
+    expect(errors[0]).toContain('INVALID_ARGUMENT');
+  });
+
+  it('keeps a real answer that opens with a quoted router context error', async () => {
+    const answer =
+      '[Error] Your input exceeds the context window of this model.\n\nThat is the line the router prints when a request is too large; split the file and send it in parts.';
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'text', content: answer };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+    const compact = vi.fn(async () => compactedForRetry());
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'what does that router error mean?',
+      [],
+      noopCallbacks({ onCompact: compact, onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(calls).toBe(1);
+    expect(compact).not.toHaveBeenCalled();
+    expect(outcomes[0]).toMatchObject({ status: 'completed' });
+    expect(history.at(-1)?.content).toBe(answer);
+  });
+
+  it('keeps a real answer that quotes the upstream error envelope as its first line', async () => {
+    const answer =
+      '[Error] An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID bef67f5c-a3e8-4c5e-9a88-ba86facfddfa in your message.\n\nThat is what the API sent back. It is a transient server error; retrying the request usually clears it.';
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'text', content: answer };
+        yield {
+          type: 'done',
+          usage: { promptTokens: 1_200, completionTokens: 40, totalTokens: 1_240 },
+          finishReasons: ['stop'],
+        };
+      },
+    };
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'what does this error mean?',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(calls).toBe(1);
+    expect(outcomes[0]).toMatchObject({ status: 'completed' });
+    expect(history.at(-1)?.content).toBe(answer);
+  });
+
+  it('does not re-issue a 409 quota lock, plain or wrapped in a 503', async () => {
+    const shapes: Array<[number, string]> = [
+      [
+        409,
+        JSON.stringify({
+          error: { message: '[409]: quota lock held by another request', code: 'conflict' },
+        }),
+      ],
+      [
+        503,
+        JSON.stringify({
+          error: {
+            message:
+              '[antigravity/gemini-3.8-flash-high] [409]: {"error":{"code":409,"status":"ABORTED","message":"quota lock held by another request"}} (reset after 29s)',
+          },
+        }),
+      ],
+    ];
+    for (const [status, body] of shapes) {
+      let fetchCalls = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          fetchCalls++;
+          return new Response(body, { status });
+        }),
+      );
+      const retries: string[] = [];
+      const outcomes: AgentTerminalOutcome[] = [];
+
+      await runAgentLoop(
+        defaultConfig({
+          maxTurns: 1,
+          retry: {
+            ...defaultConfig().retry,
+            streamReissueAttempts: DEFAULT_SETTINGS.retry.streamReissueAttempts,
+          },
+        }),
+        createRegistry(),
+        'hello',
+        [],
+        noopCallbacks({
+          onRetry: (phase) => retries.push(phase),
+          onTerminal: (outcome) => outcomes.push(outcome),
+        }),
+        'default',
+        { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+      );
+
+      expect(fetchCalls, String(status)).toBe(1);
+      expect(retries, String(status)).toEqual([]);
+      expect(outcomes[0], String(status)).toMatchObject({
+        status: 'failed',
+        reason: 'provider_error',
+        providerCode: 'unknown',
+      });
+    }
+  });
+
+  it('does not re-issue a mid-stream invalid_request_error, and still re-issues an overloaded one', async () => {
+    const runWith = async (errorCode: string, error: string) => {
+      let calls = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          calls++;
+          if (calls === 1) {
+            yield { type: 'error', error, errorCode };
+            return;
+          }
+          yield { type: 'text', content: 'recovered' };
+          yield { type: 'done', finishReasons: ['stop'] };
+        },
+      };
+      const outcomes: AgentTerminalOutcome[] = [];
+      await runAgentLoop(
+        defaultConfig({
+          maxTurns: 1,
+          retry: { ...defaultConfig().retry, streamReissueAttempts: 3 },
+        }),
+        createRegistry(),
+        'hello',
+        [],
+        noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+        'default',
+        { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+      );
+      return { calls, outcome: outcomes[0] };
+    };
+
+    const invalid = await runWith(
+      'invalid_request_error',
+      'messages: roles must alternate between "user" and "assistant"',
+    );
+    expect(invalid.calls).toBe(1);
+    expect(invalid.outcome).toMatchObject({
+      status: 'failed',
+      reason: 'provider_error',
+      providerCode: 'invalid_request_error',
+    });
+
+    const overloaded = await runWith('overloaded_error', 'Overloaded');
+    expect(overloaded.calls).toBe(2);
+    expect(overloaded.outcome).toMatchObject({ status: 'completed' });
   });
 });
 
