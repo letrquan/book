@@ -661,7 +661,9 @@ policy decision, not work, and counting it would move the one signal meant to pr
 `blockedToolTurnLimit` is a second, independent brake, and it is enforced **even when `enabled` is
 false**. It stops a run whose every tool call was refused on that many consecutive turns, ending it
 as `all_tools_blocked` and naming every tool refused over the streak and what lifts the refusal. A permission
-refusal is lifted by a grant, an allow rule, or another permission mode. A refusal by the web
+refusal is lifted by a grant, an allow rule, or another permission mode, except one made by a
+`permissions.deny` rule: deny rules are checked before allow rules and every mode, so only removing
+or narrowing that rule lifts it. A refusal by the web
 network policy (a private or special-use destination) is lifted by none of those, bypassPermissions
 included. For a refused `WebFetch` the message names `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the
 host environment. For a refused `WebSearch`, whose built-in providers resolved to a private
