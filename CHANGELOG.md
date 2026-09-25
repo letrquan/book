@@ -102,33 +102,39 @@ All notable changes to this project are documented in this file.
   `exit(1)` straight after its last provider request, while libuv was still closing the pooled
   sockets. On Windows that aborted with
   `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 94` and exit
-  code 127, which a supervisor reads as "command not found" (#243). A failed run now records exit
-  code 1 through the `cli/exit.ts` seam and returns, and Node exits once its handles have closed.
-  A configured SessionEnd hook delayed the exit enough to hide the abort, so not every setup saw
-  it.
+  code 127, which a supervisor reads as "command not found" (#243). A failed run, returned or
+  thrown, now records exit code 1 through the `cli/exit.ts` seam and returns, and Node exits once
+  its handles have closed. A configured SessionEnd hook delayed the exit enough to hide the abort,
+  so not every setup saw it.
 - **A failed final turn no longer prints an older turn's narration as the answer.** Text mode's
   answer, `--json-schema` parsing, and a managed agent's result (which is also the `Task` tool's
   output) took the most recent assistant message that had any text. When the final turn wrote no
   answer (it was only a reasoning block, or the provider failed without recording one), that was
   an earlier turn's narration, such as "Let me check the tests." from a turn that went on to call
-  `Read` (#248). The answer now comes from the final turn only: the history's last message, when
-  it is an assistant turn that called no tools. Any other ending gives an empty answer. That
-  includes a run stopped by `--max-turns` on a turn that called tools, which now prints nothing on
-  stdout; a managed child that hits its turn limit that way reports an empty result. A `Task`
-  child stopped at its time limit still quotes its latest text, labelled as a partial result.
+  `Read` (#248). The answer is now the model's final answer: walking back from the end, past the
+  prompts Book appends mid-run (`[continuation]`, the completion gate, the output-cap resume,
+  `[work-state]`) and past turns with no text, the first assistant turn that called no tools. A
+  turn that called tools, or a message the user wrote, ends the walk with an empty answer. So a
+  run stopped by `--max-turns` on a turn that called tools now prints nothing on stdout, and a
+  managed child that hits its turn limit that way reports an empty result. A `Task` child stopped
+  at its time limit still quotes its latest text, labelled as a partial result. The `[work-state]`
+  refresh is now marked host-written like the other appended prompts, so the carried ledger,
+  Carried Turns, and memory extraction no longer read it as the user's own words.
 - **Print mode shows a delegated child's tool calls.** A lead that delegated printed
   `[Task] explorer` on stderr and then nothing until the child finished (#248). Each call a managed
   child makes (through `Task`, `AgentSpawn`, or `/review`) now prints as it starts, indented and
   named after the child's profile: `  [explorer] [Read] src/a.ts`. Under `--verbose` its result
   follows one level deeper: `    → success 3ms src/a.ts`. `--quiet` turns them off with the rest.
   `stream-json` output is unchanged; it already carried these calls as `agent_activity` records.
-- **SessionEnd runs for an aborted print or SDK run, with reason `aborted`.** An abort that landed
-  inside a tool threw out of the run before SessionEnd, so a cancelled SDK query, or a
-  `stream-json` run whose reader went away mid-tool, ended without it (#248). SessionEnd now runs
-  once on that path too. An aborted run that ended on a cancelled outcome already ran SessionEnd,
-  but reported `completion`; it now reports `aborted`. The hooks run without the run's own
-  (aborted) signal, each under its usual 10 s timeout. Ctrl+C on `book -p` still ends the process
-  at once, since print mode installs no SIGINT handler.
+- **SessionEnd runs for an aborted or failing print or SDK run.** A run that threw after
+  SessionStart skipped SessionEnd: an abort that landed inside a tool (a cancelled SDK query, or a
+  `stream-json` run whose reader went away mid-tool), or a missing prompt (#248). SessionEnd now
+  runs once on that path too, with reason `aborted` for an abort and the new reason `error`
+  otherwise. On the normal path the reason follows the outcome: a cancelled outcome reports
+  `aborted` (it used to say `completion`), and a run that completed before its reader went away
+  still reports `completion`. The hooks run without the run's own signal, each under its usual
+  10 s timeout. Ctrl+C on `book -p` still ends the process at once, since print mode installs no
+  SIGINT handler.
 - **A long reply no longer jitters sideways while it streams.** Once a reply outgrew the live
   window (`width × 24` characters), the window's start moved forward with every streamed delta,
   sometimes cutting a word in half. Every wrapped line of the tail then reflowed on every frame,

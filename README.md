@@ -156,9 +156,13 @@ well, indented and named after the child's profile: `  [explorer] [Read] src/a.t
 `    → success 3ms src/a.ts` under `--verbose`. `--quiet` turns the progress lines off, `retry:`
 lines included.
 
-The answer on stdout is the final turn's text. A run whose final turn wrote no answer (a provider
-failure, a turn that was only reasoning, or `--max-turns` reached on a turn that called tools)
-prints nothing there rather than an earlier turn's narration, and exits non-zero.
+The answer on stdout is the model's final answer: the text of the last turn that called no tools,
+read past the prompts Book appends mid-run (`[continuation]`, `[work-state]`, the output-cap
+resume). When the run stopped before the model answered again (a provider failure, a turn that was
+only reasoning, or `--max-turns` reached on a turn that called tools), stdout stays empty rather
+than repeating an earlier turn's narration. The exit status does not depend on the answer: a
+`failed` outcome exits 1, and a run that stalled, timed out, or lost its connection exits 0 like a
+completed one.
 
 `json` and `stream-json` write no progress lines, but their stderr is not silent. `json` still
 writes `retry:` lines (unless `--quiet`) and `error:` lines there; `stream-json` carries retries and
@@ -995,10 +999,11 @@ JSON-over-stdio contract. Supported events:
 
 ¹ Awaited by the TUI and other multi-turn hosts; fire-and-forget on the one-shot SDK path.
 
-`SessionEnd` receives `reason`: `exit`, `clear`, or `resume` from the TUI, `completion` when a
-print or SDK run ends, and `aborted` when that run was cancelled, including a `stream-json` run
-whose stdout reader went away. It runs once per session, and never under the cancelled run's own
-signal.
+`SessionEnd` receives `reason`: `exit`, `clear`, or `resume` from the TUI. A print or SDK run
+reports `completion`, `aborted` when the run was cancelled (including a `stream-json` run whose
+stdout reader went away), or `error` when it threw after `SessionStart`, for example on a missing
+prompt. It runs at most once per session, and never under the cancelled run's own signal. Ctrl+C
+on `book -p` still ends the process without it, since print mode installs no SIGINT handler.
 
 **Awaited is the property that costs you latency**, and it is not the same as being able to veto.
 A slow `PostToolUse` hook cannot block anything, but it still delays _every tool call_ by up to its
