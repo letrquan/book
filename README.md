@@ -660,7 +660,11 @@ policy decision, not work, and counting it would move the one signal meant to pr
 
 `blockedToolTurnLimit` is a second, independent brake, and it is enforced **even when `enabled` is
 false**. It stops a run whose every tool call was refused on that many consecutive turns, ending it
-as `all_tools_blocked` and naming the tools to unblock. It is separate because a refusal spin never
+as `all_tools_blocked` and naming every tool refused over the streak and what lifts the refusal. A permission
+refusal is lifted by a grant, an allow rule, or another permission mode. A refusal by the web
+network policy (a private or special-use destination) is lifted by none of those, bypassPermissions
+included, so the message names `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment
+instead. A streak holding both kinds names both remedies. It is separate because a refusal spin never
 produces a tool-free turn, so the turn-end gate — and therefore every brake behind it — never fires:
 a headless run in the default permission mode answers each prompt `deny` and would otherwise
 re-issue refused calls until the budget ran out. Set it to `0` to disable. `planRefreshTurns` restates the open plan periodically, which also keeps compaction from
@@ -1235,7 +1239,11 @@ Project themes can override any token in `.book/themes/<name>.json`:
 
 `WebFetch` requires HTTPS by default, validates DNS results and the address used by the network
 connection, blocks private/special-use destinations, and stops on cross-origin redirects so the
-new origin receives its own permission decision. It returns Markdown by default; `format` can be
+new origin receives its own permission decision. An IPv6 address in one of these IPv4-embedding
+ranges is judged by the IPv4 address it carries: IPv4-mapped `::ffff:0:0/96`, IPv4-compatible `::/96`, NAT64
+`64:ff9b::/96`, 6to4 `2002::/16`, and Teredo `2001::/32`, where either the server or the client
+address being private blocks it. The local-use NAT64 prefix `64:ff9b:1::/48` is blocked whole, because where its IPv4
+bits sit depends on a prefix length only the local network knows. It returns Markdown by default; `format` can be
 `markdown`, `text`, or sanitized `html`. `WebSearch` works without configuration through the
 built-in Exa MCP provider and accepts optional `limit`, `domains`, `recencyDays`, and `country`
 hints. Its provider endpoint is built in and cannot be overridden through settings or environment

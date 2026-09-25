@@ -368,6 +368,35 @@ describe('repeated identical failure escalation', () => {
     expect(second.structuredError?.remediation).toBeUndefined();
     runtime.dispose();
   });
+
+  it('escalates a repeated identical refusal from the tool itself', async () => {
+    // A refusal the tool returns, such as the web network policy's, is final: the registry never
+    // retries it. A model that re-issues it unchanged must still be told so, as for an error.
+    const registry = createRegistry();
+    registry.register({
+      name: 'Refuser',
+      description: 'always refused by policy',
+      parameters: { type: 'object', properties: { url: { type: 'string' } } },
+      execute: async () =>
+        toolFailure('Web fetch blocked for private or special-use address: 10.0.0.1', {
+          code: 'private_network_forbidden',
+          status: 'blocked',
+          retryable: false,
+        }),
+    });
+    const runtime = new SessionRuntime();
+    const context: ToolContext = { workspaceRoot: dir, env: {}, runtime };
+    const args = { url: 'https://10.0.0.1/' };
+
+    const first = await registry.execute({ id: 'b1', name: 'Refuser', arguments: args }, context);
+    const second = await registry.execute({ id: 'b2', name: 'Refuser', arguments: args }, context);
+
+    expect(first.status).toBe('blocked');
+    expect(first.structuredError?.remediation).toBeUndefined();
+    expect(second.status).toBe('blocked');
+    expect(second.structuredError?.remediation).toMatch(/Do not retry it unchanged/);
+    runtime.dispose();
+  });
 });
 
 describe('tool cancellation and timeout', () => {

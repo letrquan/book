@@ -1,6 +1,7 @@
 import { lookup as lookupCallback } from 'node:dns';
 import { lookup } from 'node:dns/promises';
 import { isIP, type LookupFunction } from 'node:net';
+import type { ToolResult } from '../types/tools.js';
 
 export interface WebUrlPolicy {
   allowHttp: boolean;
@@ -25,6 +26,33 @@ export class WebPolicyError extends Error {
     this.name = 'WebPolicyError';
   }
 }
+
+/**
+ * Refusal codes that only the host's network policy lifts: a request to a private or special-use
+ * destination, and a WebSearch whose every provider was refused on those grounds (web.ts marks
+ * `search_all_providers_failed` as `blocked` only then; otherwise it is an ordinary error).
+ */
+const NETWORK_POLICY_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  'private_network_forbidden',
+  'search_all_providers_failed',
+]);
+
+/**
+ * Whether a tool result is a refusal by the web network policy. No permission rule or mode lifts
+ * one, bypassPermissions included; only the host's BOOK_WEB_ALLOW_PRIVATE_NETWORK does.
+ */
+export function isNetworkPolicyRefusal(
+  result: Pick<ToolResult, 'status' | 'structuredError'> | undefined,
+): boolean {
+  return (
+    result?.status === 'blocked' &&
+    NETWORK_POLICY_REFUSAL_CODES.has(result.structuredError?.code ?? '')
+  );
+}
+
+/** What lifts a network-policy refusal, worded to follow "Nothing can proceed: ". */
+export const NETWORK_POLICY_REMEDY =
+  'the web network policy refused a private or special-use address, which no permission rule or mode lifts; set BOOK_WEB_ALLOW_PRIVATE_NETWORK=true in the host environment to allow it';
 
 function envFlag(value: string | undefined): boolean {
   return /^(1|true|yes|on)$/i.test(value?.trim() ?? '');
@@ -117,6 +145,39 @@ function expandIpv6(address: string): number[] | undefined {
   return groups;
 }
 
+/** The dotted IPv4 address held in two 16-bit groups, high group first. */
+function ipv4FromGroups(high: number, low: number): string {
+  return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
+}
+
+/**
+ * The IPv4 destinations an IPv6 transition address carries, or `undefined` when it carries none.
+ * Through a NAT64 gateway or a 6to4/Teredo relay such an address reaches the embedded IPv4 host
+ * (`https://[64:ff9b::a00:1]/` reaches 10.0.0.1), so the IPv4 policy has to decide it.
+ *
+ * - NAT64 well-known prefix `64:ff9b::/96` (RFC 6052): the last 32 bits.
+ * - 6to4 `2002::/16` (RFC 3056): bits 16-47.
+ * - Teredo `2001::/32` (RFC 4380): the server in bits 32-63, and the client in the last 32 bits,
+ *   obfuscated by XOR with 0xffffffff. Both are returned, and either one being forbidden blocks.
+ *
+ * The local-use NAT64 prefix `64:ff9b:1::/48` is not decoded here: `isBlockedIpv6` blocks all of it.
+ */
+function embeddedIpv4Destinations(groups: number[]): string[] | undefined {
+  const nat64 =
+    groups[0] === 0x0064 &&
+    groups[1] === 0xff9b &&
+    groups.slice(2, 6).every((group) => group === 0);
+  if (nat64) return [ipv4FromGroups(groups[6], groups[7])];
+  if (groups[0] === 0x2002) return [ipv4FromGroups(groups[1], groups[2])];
+  if (groups[0] === 0x2001 && groups[1] === 0x0000) {
+    return [
+      ipv4FromGroups(groups[2], groups[3]),
+      ipv4FromGroups(~groups[6] & 0xffff, ~groups[7] & 0xffff),
+    ];
+  }
+  return undefined;
+}
+
 function isBlockedIpv6(address: string): boolean {
   const groups = expandIpv6(address);
   if (!groups) return true;
@@ -128,14 +189,15 @@ function isBlockedIpv6(address: string): boolean {
   const documentation = groups[0] === 0x2001 && groups[1] === 0x0db8;
   const ipv4Mapped = groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff;
   const ipv4Compatible = groups.slice(0, 6).every((group) => group === 0);
-  if (ipv4Mapped) {
-    const mapped = `${groups[6] >> 8}.${groups[6] & 0xff}.${groups[7] >> 8}.${groups[7] & 0xff}`;
-    return isBlockedIpv4(mapped);
-  }
-  if (ipv4Compatible) {
-    const compatible = `${groups[6] >> 8}.${groups[6] & 0xff}.${groups[7] >> 8}.${groups[7] & 0xff}`;
-    return isBlockedIpv4(compatible);
-  }
+  if (ipv4Mapped || ipv4Compatible) return isBlockedIpv4(ipv4FromGroups(groups[6], groups[7]));
+  // RFC 8215 lets the operator of the local-use NAT64 prefix choose any RFC 6052 prefix length
+  // inside it, from /48 to /96, and the position of the IPv4 bits moves with that choice. Without
+  // knowing the local network the destination cannot be decoded, and the range is local-use by
+  // definition, like a unique-local address, so all of it is blocked.
+  const localUseNat64 = groups[0] === 0x0064 && groups[1] === 0xff9b && groups[2] === 0x0001;
+  if (localUseNat64) return true;
+  const embedded = embeddedIpv4Destinations(groups);
+  if (embedded) return embedded.some(isBlockedIpv4);
   const siteLocal = (groups[0] & 0xffc0) === 0xfec0;
   const discardOnly = groups[0] === 0x0100 && groups.slice(1, 4).every((group) => group === 0);
   const benchmarking = groups[0] === 0x2001 && groups[1] === 0x0002;

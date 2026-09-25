@@ -59,6 +59,7 @@ import {
 } from '../reasoning-tags.js';
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
+import { isNetworkPolicyRefusal, NETWORK_POLICY_REMEDY } from '../tools/web-policy.js';
 import {
   formatUserQuestionAnswers,
   validateUserQuestionResponse,
@@ -716,8 +717,18 @@ export async function runAgentLoop(
     let executedToolCalls = 0;
     /** Consecutive turns whose every tool call was refused. */
     let blockedTurnStreak = 0;
-    /** The tools refused on the streak's most recent turn, for the terminal message. */
-    let blockedTurnTools: string[] = [];
+    /**
+     * Every tool refused over the streak, for the terminal message. The whole streak, not its
+     * last turn: in a mixed streak the call a remedy is for may be turns back.
+     */
+    const blockedTurnTools = new Set<string>();
+    /**
+     * Whether the streak holds a network-policy refusal, and whether it holds any other. Kept
+     * over every turn of the streak, not only the last, because each kind names a different
+     * remedy in the terminal message.
+     */
+    let blockedStreakNetworkPolicy = false;
+    let blockedStreakOther = false;
     // Monotonic, and never leaves this function as a stamp. Over a run measured
     // in days a wall-clock correction would silently rewrite how long the model
     // is told it has been working, in either direction.
@@ -2481,10 +2492,16 @@ export async function runAgentLoop(
       }
       if (toolCalls.length > 0 && refusedThisTurn === toolCalls.length) {
         blockedTurnStreak++;
-        blockedTurnTools = toolCalls.map((call) => canonicalToolName(call.name));
+        for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
+        for (const result of orderedToolResults) {
+          if (isNetworkPolicyRefusal(result)) blockedStreakNetworkPolicy = true;
+          else blockedStreakOther = true;
+        }
       } else {
         blockedTurnStreak = 0;
-        blockedTurnTools = [];
+        blockedTurnTools.clear();
+        blockedStreakNetworkPolicy = false;
+        blockedStreakOther = false;
       }
 
       const toolStats = toolContext.runtime?.toolCallStats;
@@ -2585,8 +2602,9 @@ export async function runAgentLoop(
       // whole point: a refusal spin never has an empty turn, so the gate never
       // fires and the continuation brake never gets to look at it. The run simply
       // bills forever with a plan that cannot move. Nothing else catches it either
-      // — `noteRepeatedFailure` returns early unless the status is `error`, and
-      // `toolCallStats.failures` excludes `blocked` by construction.
+      // — `noteRepeatedFailure` only annotates a repeated call and never sees the
+      // loop's own permission refusals, and `toolCallStats.failures` excludes
+      // `blocked` by construction.
       //
       // Not gated on `continuation.enabled`: this spin predates continuation and
       // happens today in headless, which answers every unresolved prompt `deny`.
@@ -2604,15 +2622,27 @@ export async function runAgentLoop(
         effectiveMode !== 'plan' &&
         blockedTurnStreak >= blockedTurnLimit
       ) {
-        const refused = [...new Set(blockedTurnTools)].sort().join(', ');
+        const refused = [...blockedTurnTools].sort().join(', ');
         log.warn('every tool call refused on consecutive turns; stopping', {
           turn,
           turns: blockedTurnStreak,
           tools: refused,
         });
+        // Each kind of refusal has its own remedy. A permission refusal is lifted by a
+        // rule or a mode. A network-policy refusal (a private or special-use web
+        // destination) is lifted by neither, bypassPermissions included, only by the
+        // host's opt-in. A streak that mixes them names both, because every refused
+        // call needs its own fix before anything can proceed.
+        const permissionRemedy =
+          'grant the permission, add an allow rule, or change the permission mode';
+        const remedy = !blockedStreakNetworkPolicy
+          ? permissionRemedy
+          : blockedStreakOther
+            ? `${permissionRemedy}. Separately, ${NETWORK_POLICY_REMEDY}`
+            : NETWORK_POLICY_REMEDY;
         const detail =
           `Every tool call was refused on ${blockedTurnStreak} consecutive turns (${refused}). ` +
-          'Nothing can proceed: grant the permission, add an allow rule, or change the permission mode.';
+          `Nothing can proceed: ${remedy}.`;
         callbacks.onError(detail);
         finishTerminal(
           createTerminalOutcome('failed', 'all_tools_blocked', {

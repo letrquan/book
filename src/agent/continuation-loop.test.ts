@@ -9,6 +9,7 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { Provider } from '../provider/index.js';
 import type { AgentTerminalOutcome } from '../types/terminal.js';
 import type { Message } from '../types/messages.js';
+import type { ToolResult } from '../types/tools.js';
 
 function configWith(continuation: Partial<{ enabled: boolean; noProgressLimit: number }>) {
   const config = defaultConfig();
@@ -388,6 +389,8 @@ describe('a run whose every tool call is refused', () => {
     expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
     // The operator has to be told which tool to unblock, or the exit is not actionable.
     expect(outcome?.message).toContain('Write');
+    expect(outcome?.message).toContain('grant the permission');
+    expect(outcome?.message).not.toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
     expect(denials).toBe(3);
   });
 
@@ -530,5 +533,122 @@ describe('the refusal brake only applies where nobody can say otherwise', () => 
     return runDenied(config, refusedToolProvider(), false).then(({ outcome }) => {
       expect(outcome?.reason).not.toBe('all_tools_blocked');
     });
+  });
+});
+
+/**
+ * A provider that activates WebFetch, then fetches a loopback address on every turn. With
+ * `alternateWrite`, every other turn is a Write instead, which the host refuses on permission
+ * grounds, so the streak holds both kinds of refusal while its last turn holds only one.
+ */
+function privateFetchProvider(alternateWrite = false): Provider {
+  let call = 0;
+  return {
+    id: 'scripted',
+    stream: async function* () {
+      call++;
+      if (call === 1) {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'search-1', name: 'ToolSearch', arguments: { query: 'WebFetch' } },
+        };
+      } else if (alternateWrite && call % 2 === 1) {
+        yield {
+          type: 'tool_call',
+          toolCall: {
+            id: `write-${call}`,
+            name: 'Write',
+            arguments: { file_path: 'generated.txt', content: 'work' },
+          },
+        };
+      } else {
+        yield {
+          type: 'tool_call',
+          toolCall: {
+            id: `fetch-${call}`,
+            name: 'WebFetch',
+            arguments: { url: 'https://127.0.0.1/' },
+          },
+        };
+      }
+      yield { type: 'done' };
+    },
+  } as unknown as Provider;
+}
+
+/** An unattended run with the refusal brake at 3, recording the code of every refused call. */
+async function runRefusals(
+  provider: Provider,
+  mode: 'default' | 'bypassPermissions',
+): Promise<{ outcome?: AgentTerminalOutcome; codes: string[] }> {
+  const config = configWith({ enabled: false });
+  config.settings.continuation.blockedToolTurnLimit = 3;
+  config.maxTurns = 25;
+  let outcome: AgentTerminalOutcome | undefined;
+  const codes: string[] = [];
+  const callbacks = {
+    onText: () => {},
+    onToolCall: () => {},
+    onToolResult: (result: ToolResult) => {
+      if (result.status === 'blocked') codes.push(result.structuredError?.code ?? 'none');
+    },
+    onError: () => {},
+    onTurnStart: () => {},
+    onDone: () => {},
+    onTerminal: (value: AgentTerminalOutcome) => (outcome = value),
+    onPermissionRequired: async (call: { name: string }) =>
+      call.name === 'Write' ? ('deny' as const) : ('allow' as const),
+  } as unknown as AgentLoopCallbacks;
+
+  await runAgentLoop(
+    config,
+    createDefaultRegistry(),
+    'check the local service',
+    [],
+    callbacks,
+    mode,
+    {
+      provider,
+      isNewSession: false,
+      runtime: new SessionRuntime(),
+      unattended: true,
+    },
+  );
+  return { outcome, codes };
+}
+
+describe('the refusal brake names the cause it stopped on', () => {
+  it('points a streak of network-policy refusals at the host opt-in, not at permissions', async () => {
+    // Under bypassPermissions there is no permission left to grant, so "grant the permission, add
+    // an allow rule, or change the permission mode" is a dead end. No rule or mode lifts the web
+    // network policy; only the host's opt-in does.
+    const { outcome, codes } = await runRefusals(privateFetchProvider(), 'bypassPermissions');
+
+    expect(codes).toEqual([
+      'private_network_forbidden',
+      'private_network_forbidden',
+      'private_network_forbidden',
+    ]);
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('WebFetch');
+    expect(outcome?.message).toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
+    expect(outcome?.message).not.toContain('grant the permission');
+  });
+
+  it('names both remedies when the streak mixes network-policy and permission refusals', async () => {
+    // The streak's last turn is a WebFetch alone, so a message built from that turn would drop the
+    // permission advice the Write refused before it still needs.
+    const { outcome, codes } = await runRefusals(privateFetchProvider(true), 'default');
+
+    expect(codes).toEqual([
+      'private_network_forbidden',
+      'permission_denied',
+      'private_network_forbidden',
+    ]);
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
+    expect(outcome?.message).toContain('grant the permission');
+    // The Write refused two turns back is the call the permission remedy is for, so it is named.
+    expect(outcome?.message).toContain('Write');
   });
 });
