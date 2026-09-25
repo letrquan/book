@@ -365,14 +365,28 @@ function stringEnd(line: string, start: number): number {
 }
 
 // What a `/` must follow to open a regex literal rather than divide: an
-// operator, an opening bracket, a keyword such as `return`, or nothing.
+// operator, an opening bracket, a keyword such as `return`, or nothing but
+// indentation. Only the last REGEX_LOOKBACK characters are examined, and a
+// literal's closing `/` is looked for over at most REGEX_MAX_LENGTH, so a long
+// minified line is scanned in linear time.
 const REGEX_MAY_FOLLOW =
-  /(?:^|[(,=:[!&|?{};+\-*%<>~^]|\b(?:return|typeof|case|do|else|in|of|yield|await|void|throw|delete|instanceof))\s*$/;
+  /(?:[(,=:[!&|?{};+\-*%<>~^]|\b(?:return|typeof|case|do|else|in|of|yield|await|void|throw|delete|instanceof))\s*$/;
+const REGEX_LOOKBACK = 32;
+const REGEX_MAX_LENGTH = 512;
 
-/** The index of the `/` that closes a regex literal opening at `start`, or `start` when none does on the line. */
+/** Whether the `/` at `index` of a line indented by `indent` can open a regex literal. */
+function regexMayStart(line: string, index: number, indent: number): boolean {
+  return (
+    index === indent ||
+    REGEX_MAY_FOLLOW.test(line.slice(Math.max(0, index - REGEX_LOOKBACK), index))
+  );
+}
+
+/** The index of the `/` that closes a regex literal opening at `start`, or `start` when none does soon. */
 function regexEnd(line: string, start: number): number {
   let inClass = false;
-  for (let index = start + 1; index < line.length; index++) {
+  const end = Math.min(line.length, start + REGEX_MAX_LENGTH);
+  for (let index = start + 1; index < end; index++) {
     const char = line[index];
     if (char === '\\') index++;
     else if (char === '[') inClass = true;
@@ -394,6 +408,7 @@ function textLines(lines: readonly string[]): boolean[] {
   let comment = false;
   for (const line of lines) {
     text.push(comment || stack.at(-1) === 'template');
+    const indent = line.length - line.trimStart().length;
     for (let index = 0; index < line.length; index++) {
       const char = line[index];
       const top = stack.at(-1);
@@ -418,7 +433,7 @@ function textLines(lines: readonly string[]): boolean[] {
         index = stringEnd(line, index);
       } else if (char === '`') {
         stack.push('template');
-      } else if (char === '/' && REGEX_MAY_FOLLOW.test(line.slice(0, index))) {
+      } else if (char === '/' && regexMayStart(line, index, indent)) {
         index = regexEnd(line, index);
       } else if (typeof top === 'number' && char === '{') {
         stack[stack.length - 1] = top + 1;
