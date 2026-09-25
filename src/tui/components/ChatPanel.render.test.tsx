@@ -143,8 +143,9 @@ describe('ChatPanel Ink rendering', () => {
     );
 
     const output = frame(view.lastFrame);
-    expect(output).toContain(`${DROP_CAP[0]}  ook`);
-    expect(output).toContain('book  ·  model-x');
+    expect(output).toContain(DROP_CAP[0].trimEnd());
+    expect(output).toMatch(/O O K\s+book · model-x/);
+    expect(output).toContain('C O N T E N T S');
     expect(output).toContain('/help');
   });
 

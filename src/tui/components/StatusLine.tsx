@@ -10,6 +10,7 @@ import { createRenderDebugLogger } from '../../debug-log.js';
 import { modeColorToken, modeLabel } from '../mode-style.js';
 import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
 import { useDebugRender } from '../debug.js';
+import { romanNumeral } from '../roman.js';
 
 const renderLog = createRenderDebugLogger('tui:statusline');
 
@@ -78,36 +79,9 @@ export function buildColoredSegments(
   return result;
 }
 
-/**
- * A page number the way a book prints it in its front matter: `i`, `iv`, `xii`.
- * Zero and negative counts have no folio.
- */
+/** The status line's folio: the turn count as a front-matter page number. */
 export function romanFolio(count: number): string {
-  let n = Math.floor(count);
-  if (n <= 0) return '';
-  const steps: Array<[number, string]> = [
-    [1000, 'm'],
-    [900, 'cm'],
-    [500, 'd'],
-    [400, 'cd'],
-    [100, 'c'],
-    [90, 'xc'],
-    [50, 'l'],
-    [40, 'xl'],
-    [10, 'x'],
-    [9, 'ix'],
-    [5, 'v'],
-    [4, 'iv'],
-    [1, 'i'],
-  ];
-  let out = '';
-  for (const [value, numeral] of steps) {
-    while (n >= value) {
-      out += numeral;
-      n -= value;
-    }
-  }
-  return out;
+  return romanNumeral(count);
 }
 
 /** Columns kept clear between the last segment and the folio. */

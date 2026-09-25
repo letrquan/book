@@ -4,6 +4,7 @@ import { useKeyState } from '../hooks/useKeyState.js';
 import type { RewindAction, RewindTarget } from '../../types/sessions.js';
 import { useDensityMetrics } from '../density.js';
 import { useTheme } from '../theme.js';
+import { formatAge } from '../relative-age.js';
 
 interface RewindPickerProps {
   targets: RewindTarget[];
@@ -39,16 +40,6 @@ const ACTIONS: ActionChoice[] = [
   },
   { action: 'cancel', label: 'Cancel', description: 'Return without changing anything.' },
 ];
-
-function formatAge(timestamp: number): string {
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return 'just now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
 
 function promptPreview(prompt: string): string {
   const singleLine = prompt.replace(/\s+/g, ' ').trim();

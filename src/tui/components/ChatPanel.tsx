@@ -17,7 +17,7 @@ import {
   groupQuietInvocations,
   type QuietToolContext,
 } from '../quiet-tools.js';
-import { WelcomeScreen } from './WelcomeScreen.js';
+import { WelcomeScreen, type RecentChapter } from './WelcomeScreen.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount, useDebugRender } from '../debug.js';
 import { useDensity } from '../density.js';
@@ -159,6 +159,8 @@ interface ChatPanelProps {
   terminalWidth?: number;
   terminalHeight?: number;
   workspace?: string;
+  /** This workspace's recent sessions, for the title page's contents. */
+  recentSessions?: readonly RecentChapter[];
   model?: string;
   mode?: string;
   commandCount?: number;
@@ -188,6 +190,7 @@ export function ChatPanelInner({
   terminalWidth,
   terminalHeight,
   workspace,
+  recentSessions,
   model,
   mode,
   commandCount = 0,
@@ -324,6 +327,7 @@ export function ChatPanelInner({
         reducedMotion={reducedMotion}
         screenReader={screenReader}
         animate={false}
+        recentSessions={recentSessions}
       />
     );
   }
@@ -469,6 +473,7 @@ export const ChatPanel = React.memo(ChatPanelInner, (previous, next) => {
     previous.terminalWidth !== next.terminalWidth ||
     previous.terminalHeight !== next.terminalHeight ||
     previous.workspace !== next.workspace ||
+    previous.recentSessions !== next.recentSessions ||
     previous.model !== next.model ||
     previous.mode !== next.mode ||
     previous.commandCount !== next.commandCount ||

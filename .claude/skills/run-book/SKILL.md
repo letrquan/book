@@ -76,7 +76,7 @@ EOF
 | `status` | Print whether the TUI process has exited, its exit code and the time, without sending a key: how a script tells "that press exited" from "that press only armed". |
 | `quit` | Ctrl-C twice and wait for exit. |
 
-Options: `--mock` (start the mock provider), `--mock-script <json>`, `--mock-port` (8919),
+Options: `--mock` (start the mock provider), `--mock-script <json>`, `--mock-port` (8919), `--sessions` (keep session persistence on, so sessions pre-seeded in `<book-home>/.book/sessions/*.jsonl` show on the title page and in `/resume`; a seeded file needs a `session_meta` line whose `cwd` is the workspace normalized as the store does it, lowercase on Windows, plus at least one `user` record, because the store recounts messages from the records),
 `--workspace <dir>`, `--book-home <dir>` (default: a fresh temp dir), `--shots <dir>`
 (`/tmp/book-shots`), `--cols` (120), `--rows` (40), `--timeout` (20000), `--ready-settle` (2500),
 `--send-gap` (250), `--bin <exe>` (spawn another executable — the Go build's `bin/book.exe` — in

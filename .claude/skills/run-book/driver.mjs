@@ -161,13 +161,16 @@ const extraArgs = (() => {
 // --bin <path> drives a different executable (e.g. the Go build, bin/book.exe)
 // instead of node dist/index.js; the same flags are passed through.
 const BIN = opt('bin', null);
+// `--sessions` keeps session persistence on, so a pre-seeded
+// `<book-home>/.book/sessions/*.jsonl` shows up in /resume and on the title page.
+const PERSISTENCE = flag('sessions') ? [] : ['--no-session-persistence'];
 const pty = BIN
-  ? ptySpawn(BIN, ['--workspace', WORKSPACE, '--no-session-persistence', ...extraArgs], {
+  ? ptySpawn(BIN, ['--workspace', WORKSPACE, ...PERSISTENCE, ...extraArgs], {
       cwd: WORKSPACE, cols: COLS, rows: ROWS, env, name: 'xterm-256color',
     })
   : ptySpawn(
       process.execPath,
-      [DIST_INDEX, '--workspace', WORKSPACE, '--no-session-persistence', ...extraArgs],
+      [DIST_INDEX, '--workspace', WORKSPACE, ...PERSISTENCE, ...extraArgs],
       { cwd: WORKSPACE, cols: COLS, rows: ROWS, env, name: 'xterm-256color' },
     );
 pty.onData((d) => {

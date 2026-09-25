@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { useInput } from 'ink';
 import { useTheme } from '../theme.js';
 import { CommandMenu } from './CommandMenu.js';
@@ -50,6 +50,14 @@ const COMPOSER_EDIT_KEYS = new Set(['a', 'e', 'w', 'u', 'k', 'y']);
 
 interface InputBarProps {
   onSubmit: (value: string, attachments?: ImageAttachment[]) => void;
+  /**
+   * Called when the composer's height may have changed (a menu opened or
+   * closed, the draft gained or lost a line). The transcript above measures its
+   * viewport only on its own layout changes, and a menu is state the app never
+   * sees, so without this the viewport kept its old height and the menu covered
+   * the transcript's last rows.
+   */
+  onLayoutChange?: () => void;
   onPasteImage?: () => Promise<ImageAttachment | null>;
   submissionMode: 'submit' | 'queue' | 'blocked';
   mode: PermissionMode;
@@ -181,6 +189,7 @@ function extractCommandName(value: string): string | null {
  * Typing after "/" uses fuzzy search with exact > prefix > fuzzy ranking.
  */
 export function InputBar({
+  onLayoutChange,
   onSubmit,
   onPasteImage,
   submissionMode,
@@ -896,6 +905,21 @@ export function InputBar({
           ? 'Please wait...'
           : 'Input is temporarily unavailable'
         : suggestion;
+
+  // Everything that changes how many rows the composer takes.
+  const layoutShape = [
+    menuVisible ? Math.min(filteredCmds.length, maxMenuRows) : -1,
+    skillMenuVisible && !menuVisible ? Math.min(skillCandidates.length, maxMenuRows) : -1,
+    fileMenuVisible && !menuVisible && !skillMenuVisible
+      ? Math.min(fileCandidates.length, maxMenuRows)
+      : -1,
+    value.split('\n').length,
+    attachments.length,
+    Boolean(attachmentError),
+  ].join(':');
+  useLayoutEffect(() => {
+    onLayoutChange?.();
+  }, [layoutShape, onLayoutChange]);
 
   const selIdx = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
   const fileSelIdx = Math.max(0, Math.min(fileSelected, fileCandidates.length - 1));

@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **An empty session opens on a title page with a table of contents.** A five-row rubric drop cap
+  B sits beside "O O K", a running head (workspace · model), a rule and a tagline. Below it, the
+  contents list this workspace's five most recent sessions as chapters, with Roman numerals,
+  period dot leaders aligned down the page, and each session's age, followed by an index row
+  (`/resume open a chapter`, …). A first session gets a getting-started table of contents with the
+  key to press where the page number would be. When an open menu shrinks the transcript, the page
+  folds to its drop cap block.
+- **The permission prompt is headed by a rule instead of drawn as a box**: `─ ¶ Permission
+  required ───`, in amber for writes and rose for shell commands.
 - **The compact transcript folds the agent's reading into one row.** A run of read-only calls
   (`Read`, `Glob`, `Grep`, git read tools, `ToolSearch`, task lookups, `BashOutput`, session
   history) collapses into one grey summary row, such as `✓ Read config.ts, loader.ts   2 files · 3 searches`.
@@ -18,6 +27,11 @@ All notable changes to this project are documented in this file.
   put one ahead of every tool call. A tool-only turn with one counted as having content, so it
   stayed a separate transcript entry and drew two blank rows between consecutive tool rows. It now
   merges into the turn before it like any other blank tool-only turn.
+- **Opening a composer menu no longer covers the end of the transcript.** The transcript measured
+  its viewport only on its own layout changes, and a menu is composer state the app never sees. So
+  when a menu opened, the viewport kept its old height and the menu hid the transcript's last
+  rows. The composer now reports height changes (a menu opening or closing, the draft gaining or
+  losing a line), and the transcript measures again.
 - **A delegating turn no longer hides the narration before it.** A tool-only turn that spawned an
   agent merged into the previous turn, and a merged entry holding an `AgentSpawn` hides its
   narration, so the previous turn's sentence vanished. Such a turn now always keeps its own entry.

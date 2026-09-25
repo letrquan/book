@@ -1,11 +1,24 @@
 import { Box, Text } from 'ink';
 import { basename } from 'path';
+import { useLayoutEffect } from 'react';
 import type React from 'react';
 import { useStaggeredReveal } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
-import { useTranscriptViewport } from '../transcript-layout.js';
+import { useTranscriptLayoutChange, useTranscriptViewport } from '../transcript-layout.js';
+import { PILCROW } from '../marks.js';
+import { formatAge } from '../relative-age.js';
+import { romanNumeral } from '../roman.js';
+import { displaySessionName } from '../../session/name.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
+
+/** A past session of this workspace, listed on the title page as a chapter. */
+export interface RecentChapter {
+  id: string;
+  name?: string;
+  updatedAt: number;
+  messageCount: number;
+}
 
 interface WelcomeScreenProps {
   terminalWidth: number;
@@ -17,8 +30,12 @@ interface WelcomeScreenProps {
   skillCount?: number;
   reducedMotion?: boolean;
   screenReader?: boolean;
-  /** When false, the welcome bookplate renders directly in its settled state. */
+  /** When false, the welcome renders directly in its settled state. */
   animate?: boolean;
+  /** This workspace's recent sessions, newest first; the title page's contents. */
+  recentSessions?: readonly RecentChapter[];
+  /** The clock the chapter ages are measured against. Tests pin it. */
+  now?: number;
 }
 
 export interface WelcomeHint {
@@ -33,6 +50,15 @@ export const WELCOME_HINTS: readonly WelcomeHint[] = [
   { key: '/help', label: 'commands' },
   { key: '@file', label: 'context' },
   { key: '/skills', label: 'workflows' },
+  { key: '!cmd', label: 'shell' },
+  { key: 'Ctrl+/', label: 'shortcuts' },
+];
+
+/** The index row under a title page that lists past chapters. */
+const CHAPTER_HINTS: readonly WelcomeHint[] = [
+  { key: '/resume', label: 'open a chapter' },
+  { key: '/help', label: 'commands' },
+  { key: '@file', label: 'context' },
   { key: '!cmd', label: 'shell' },
   { key: 'Ctrl+/', label: 'shortcuts' },
 ];
@@ -79,7 +105,7 @@ function WelcomeLine({ visible, children }: { visible: boolean; children: React.
   return <Box>{visible ? children : <Text> </Text>}</Box>;
 }
 
-function HintRow({ hints }: { hints: WelcomeHint[] }) {
+function HintRow({ hints }: { hints: readonly WelcomeHint[] }) {
   const theme = useTheme();
   return (
     <Box>
@@ -95,29 +121,136 @@ function HintRow({ hints }: { hints: WelcomeHint[] }) {
 }
 
 /**
- * The drop cap an empty session opens on.
+ * The drop cap the title page opens on.
  *
- * A B four rows tall, drawn in half blocks (a 5×8 pixel glyph, two pixels per
+ * A B five rows tall, drawn in half blocks (an 8×10 pixel glyph, two pixels per
  * cell: `▀` top, `▄` bottom, `█` both) and set in rubric, the way an
- * illuminated manuscript opens its first chapter. Three rows were not enough:
- * with a 4×6 glyph the bowls shrank to single cells and the B read as an E. The
- * rest of the word and the session's details are set beside it, left-aligned on
- * the transcript grid: the page begins where the conversation will. Keep the
- * rows the same width, or the text beside the cap shears.
+ * illuminated manuscript opens its first chapter. The stem is two pixels wide
+ * and the lower bowl a column wider than the upper, as a printed B is; a
+ * narrower draft pinched the waist so deep it read as an E. The rest of the
+ * word, the rule and the contents are set beside and below it on the
+ * transcript grid. Keep the rows the same width, or the text beside the cap
+ * shears.
  */
-export const DROP_CAP = ['█▀▀▀▄', '█▄▄▄▀', '█   █', '█▄▄▄▀'] as const;
+export const DROP_CAP = ['██▀▀▀█▄ ', '██  ▄█▀ ', '██▀▀▀▄▄ ', '██    ██', '██▄▄▄█▀ '] as const;
 
 /** Columns between the drop cap and the text set beside it. */
-const DROP_CAP_GAP = 2;
+const DROP_CAP_GAP = 3;
 
-/** Rows the opening occupies: one row of top margin, then the drop cap. */
-const OPENING_ROWS = DROP_CAP.length + 1;
+/**
+ * Widest the title page is set, however wide the terminal. The transcript
+ * takes the whole width; a page of contents with dot leaders running across
+ * two hundred columns reads as a ruler, not a page.
+ */
+const PAGE_MEASURE = 96;
+
+/** Columns the chapter numeral takes: `iii.` and a space of air. */
+const NUMERAL_WIDTH = 6;
+
+/** Fewest leader columns an entry keeps between its title and its page. */
+const LEADER_MIN = 5;
+
+/** Most chapters the contents list. */
+export const CONTENTS_MAX = 5;
+
+/**
+ * What the contents list before a first session: the things a new reader
+ * needs, set as a table of contents with the key to press where the page
+ * number would be.
+ */
+const FIRST_RUN_CONTENTS: ReadonlyArray<{ title: string; page: string }> = [
+  { title: 'Ask for a change in your own words', page: PILCROW },
+  { title: 'Point at a file', page: '@path' },
+  { title: 'Run a shell command', page: '!cmd' },
+  { title: 'Use a skill', page: '/skills' },
+  { title: 'See every command', page: '/help' },
+  { title: 'Keyboard shortcuts', page: 'Ctrl+/' },
+];
 
 /**
  * Rows the composer and status line take below the transcript: the estimate
  * used until the transcript viewport has been measured.
  */
 export const WELCOME_FOOTER_ROWS = 5;
+
+/**
+ * A dot leader, as a printed table of contents sets one.
+ *
+ * Periods, not `·`: a leader repeats its glyph dozens of times, and `·` is
+ * ambiguous-width, so a terminal that draws it two cells wide would wrap the
+ * row. The dots sit on even absolute columns, so the leaders of every entry
+ * line up down the page, and a space of air is kept at each end.
+ */
+export function dotLeader(startColumn: number, width: number): string {
+  const size = Math.max(0, Math.floor(width));
+  if (size < 3) return ' '.repeat(size);
+  let leader = ' ';
+  for (let offset = 1; offset < size - 1; offset++) {
+    leader += (startColumn + offset) % 2 === 0 ? '.' : ' ';
+  }
+  return `${leader} `;
+}
+
+interface ContentsEntry {
+  numeral: string;
+  title: string;
+  page: string;
+  /** Keys read as ink; ages read as a quiet margin figure. */
+  pageTone: 'key' | 'age';
+}
+
+function contentsEntries(
+  recentSessions: readonly RecentChapter[],
+  now: number,
+): { entries: ContentsEntry[]; chapters: boolean } {
+  if (recentSessions.length > 0) {
+    return {
+      chapters: true,
+      entries: recentSessions.slice(0, CONTENTS_MAX).map((session, index) => ({
+        numeral: `${romanNumeral(index + 1)}.`,
+        title: displaySessionName(session.name),
+        page: formatAge(session.updatedAt, now),
+        pageTone: 'age',
+      })),
+    };
+  }
+  return {
+    chapters: false,
+    entries: FIRST_RUN_CONTENTS.map((entry, index) => ({
+      numeral: `${romanNumeral(index + 1)}.`,
+      title: entry.title,
+      page: entry.page,
+      pageTone: 'key',
+    })),
+  };
+}
+
+/**
+ * How much of the title page fits in `availableRows`: all of it, or the drop
+ * cap block alone. An open menu takes ten rows from the transcript; a page
+ * that shed entries one at a time left a CONTENTS heading over nothing, so it
+ * is the whole page or the cap. It never draws part of the cap. One row is kept
+ * as slack, since the measured viewport can run a row past what shows.
+ */
+export function fitTitlePage(
+  availableRows: number,
+  entryCount: number,
+  hasIndex: boolean,
+): { topPadding: number; entries: number; index: boolean; show: boolean } {
+  const rows = Math.floor(availableRows) - 1;
+  const capRows = DROP_CAP.length;
+  const full = capRows + entryCount + (hasIndex ? 2 : 0);
+  if (rows >= full) {
+    return {
+      topPadding: Math.floor((rows - full) * 0.35),
+      entries: entryCount,
+      index: hasIndex,
+      show: true,
+    };
+  }
+  if (rows >= capRows) return { topPadding: 0, entries: 0, index: false, show: true };
+  return { topPadding: 0, entries: 0, index: false, show: false };
+}
 
 export function WelcomeScreen({
   terminalWidth,
@@ -128,6 +261,8 @@ export function WelcomeScreen({
   reducedMotion = false,
   screenReader = false,
   animate = true,
+  recentSessions = [],
+  now = Date.now(),
 }: WelcomeScreenProps) {
   const theme = useTheme();
   const viewport = useTranscriptViewport();
@@ -136,7 +271,7 @@ export function WelcomeScreen({
   const height = Math.max(8, Math.floor(terminalHeight));
   // The rows the transcript can actually show. An open menu takes ten rows from
   // it, and a title page padded for the closed footer would overflow and be cut
-  // through the middle of the logotype. Until the viewport is measured (it
+  // through the middle of the drop cap. Until the viewport is measured (it
   // starts at one row), estimate from the terminal height.
   const availableRows =
     viewport && viewport.viewportRows > 1 ? viewport.viewportRows : height - WELCOME_FOOTER_ROWS;
@@ -150,6 +285,7 @@ export function WelcomeScreen({
   const hints = composeWelcomeHints(WELCOME_HINTS, contentWidth);
 
   if (screenReader) {
+    const recent = recentSessions.slice(0, CONTENTS_MAX);
     return (
       <Box flexDirection="column" paddingLeft={CONTENT_COLUMN} width={width}>
         <Text bold>Book</Text>
@@ -162,6 +298,16 @@ export function WelcomeScreen({
             contentWidth,
           )}
         </Text>
+        {recent.length > 0 ? (
+          <Text>
+            {`Recent sessions: ${recent
+              .map(
+                (session) =>
+                  `${displaySessionName(session.name)}, ${formatAge(session.updatedAt, now)}`,
+              )
+              .join('; ')}. Type /resume to open one.`}
+          </Text>
+        ) : null}
         <Text>
           {truncateDisplay(
             'Type /help for commands, Ctrl+/ for shortcuts, @file for context, !cmd for shell.',
@@ -223,39 +369,134 @@ export function WelcomeScreen({
     );
   }
 
-  // Too short for the drop cap (a menu is open): draw nothing rather than a cap
-  // cut through the middle.
-  if (availableRows < DROP_CAP.length) return <Box />;
+  return (
+    <TitlePage
+      width={width}
+      pageWidth={Math.min(contentWidth, PAGE_MEASURE)}
+      availableRows={availableRows}
+      workspace={workspace}
+      model={model}
+      recentSessions={recentSessions}
+      now={now}
+    />
+  );
+}
 
-  const besideWidth = Math.max(8, contentWidth - displayWidth(DROP_CAP[0]) - DROP_CAP_GAP);
-  const beside = [
-    <Text key="word" color={theme.text} bold>
-      ook
-    </Text>,
-    // Air between the word and the details, so the block beside the cap spans
-    // its full height and the hints sit on its last row.
-    null,
-    <WelcomeLine key="meta" visible={reveal >= 1}>
-      {/* The mode is left to the status line, which is where it changes. */}
-      <Text color={theme.subtle}>
-        {truncateDisplay(`${workspaceName(workspace)}  ·  ${model}`, besideWidth)}
+/**
+ * The title page an empty session opens on, set like the first page of a book.
+ *
+ *   ██▀▀▀█▄   O O K                                       book · space-bunny-alpha
+ *   ██  ▄█▀   ─────────────────────────────────────────────────────────────────────
+ *   ██▀▀█▄    Pick up a chapter with /resume, or begin a new one below.
+ *   ██   ██
+ *   ██▄▄▄█▀   C O N T E N T S
+ *             i.    Fix the timeout fallback in the config loader . . . . .  2h ago
+ *             ii.   Add retry backoff to the fetch client . . . . . . . .  1d ago
+ *
+ *             /resume open a chapter    /help commands    @file context   …
+ *
+ * The contents are this workspace's recent sessions, with their age where a
+ * book prints the page. Before a first session they list what a new reader
+ * needs, with the key to press as the page. Left-aligned on the transcript
+ * grid, so the page begins where the conversation will.
+ */
+function TitlePage({
+  width,
+  pageWidth,
+  availableRows,
+  workspace,
+  model,
+  recentSessions,
+  now,
+}: {
+  width: number;
+  pageWidth: number;
+  availableRows: number;
+  workspace?: string;
+  model: string;
+  recentSessions: readonly RecentChapter[];
+  now: number;
+}) {
+  const theme = useTheme();
+  const notifyLayoutChange = useTranscriptLayoutChange();
+  const { entries, chapters } = contentsEntries(recentSessions, now);
+  const fit = fitTitlePage(availableRows, entries.length, chapters);
+  // The page resizes itself to the viewport (a menu opening shrinks it to the
+  // cap), and the transcript only re-measures its content when told.
+  const fitKey = `${fit.show}:${fit.entries}:${fit.index}:${fit.topPadding}`;
+  useLayoutEffect(() => {
+    notifyLayoutChange?.();
+  }, [fitKey, notifyLayoutChange]);
+  if (!fit.show) return <Box />;
+
+  const capWidth = displayWidth(DROP_CAP[0]);
+  const textColumn = capWidth + DROP_CAP_GAP;
+  const textWidth = Math.max(12, pageWidth - textColumn);
+  const word = 'O O K';
+  const runningHead = truncateDisplay(
+    `${workspaceName(workspace)} · ${model}`,
+    Math.max(0, textWidth - displayWidth(word) - 4),
+  );
+  const tagline = chapters
+    ? 'Pick up a chapter with /resume, or begin a new one below.'
+    : 'Your first chapter begins below.';
+  const beside: React.ReactNode[] = [
+    <Box key="title" width={textWidth}>
+      <Text color={theme.text} bold>
+        {word}
       </Text>
-    </WelcomeLine>,
-    <WelcomeLine key="hints" visible={reveal >= 2}>
-      <HintRow hints={composeWelcomeHints(WELCOME_HINTS, besideWidth)} />
-    </WelcomeLine>,
+      <Text>
+        {' '.repeat(Math.max(1, textWidth - displayWidth(word) - displayWidth(runningHead)))}
+      </Text>
+      <Text color={theme.inactive}>{runningHead}</Text>
+    </Box>,
+    <Text key="rule" color={theme.border}>
+      {'─'.repeat(textWidth)}
+    </Text>,
+    <Text key="tagline" color={theme.subtle} italic>
+      {truncateDisplay(tagline, textWidth)}
+    </Text>,
+    null,
+    fit.entries > 0 ? (
+      <Text key="contents" color={theme.inactive}>
+        C O N T E N T S
+      </Text>
+    ) : null,
   ];
-  // No tagline: the composer's placeholder already says "Ask me anything".
+
   return (
     <Box flexDirection="column" width={width - 1} paddingLeft={CONTENT_COLUMN}>
-      {availableRows >= OPENING_ROWS ? <Text> </Text> : null}
+      {fit.topPadding > 0 ? <Box height={fit.topPadding} /> : null}
       {DROP_CAP.map((row, index) => (
-        <Box key={index}>
+        <Box key={`cap-${index}`}>
           <Text color={theme.brand}>{row}</Text>
           <Text>{' '.repeat(DROP_CAP_GAP)}</Text>
           {beside[index]}
         </Box>
       ))}
+      {entries.slice(0, fit.entries).map((entry) => {
+        const pageWidthUsed = displayWidth(entry.page);
+        const titleRoom = Math.max(4, textWidth - NUMERAL_WIDTH - pageWidthUsed - LEADER_MIN);
+        const title = truncateDisplay(entry.title, titleRoom);
+        const leaderStart = CONTENT_COLUMN + textColumn + NUMERAL_WIDTH + displayWidth(title);
+        const leaderWidth = textWidth - NUMERAL_WIDTH - displayWidth(title) - pageWidthUsed;
+        return (
+          <Box key={`${entry.numeral}-${entry.title}`} paddingLeft={textColumn}>
+            <Text color={theme.brand}>{entry.numeral.padEnd(NUMERAL_WIDTH)}</Text>
+            <Text color={theme.text}>{title}</Text>
+            <Text color={theme.border}>{dotLeader(leaderStart, leaderWidth)}</Text>
+            <Text color={entry.pageTone === 'key' ? theme.text : theme.inactive}>{entry.page}</Text>
+          </Box>
+        );
+      })}
+      {fit.index ? (
+        <>
+          <Text> </Text>
+          <Box paddingLeft={textColumn}>
+            <HintRow hints={composeWelcomeHints(CHAPTER_HINTS, textWidth)} />
+          </Box>
+        </>
+      ) : null}
     </Box>
   );
 }

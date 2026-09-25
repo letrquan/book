@@ -2,22 +2,13 @@ import { useMemo } from 'react';
 import { ListPicker } from './ListPicker.js';
 import type { SessionMeta } from '../../types/sessions.js';
 import { displaySessionName } from '../../session/name.js';
+import { formatAge } from '../relative-age.js';
 
 interface SessionPickerProps {
   sessions: SessionMeta[];
   currentSessionId: string;
   onPick: (session: SessionMeta) => void;
   onCancel: () => void;
-}
-
-function formatAge(timestamp: number): string {
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return 'just now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
 }
 
 export function SessionPicker({

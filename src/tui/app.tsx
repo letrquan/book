@@ -552,6 +552,20 @@ export function App({
   );
   const { tasks, addTask, updateTaskStatus, removeTask, clearTasks } = useTasks();
   const theme = currentTheme.tokens;
+  // The title page's contents: this workspace's recent sessions, newest first.
+  // Only read while the transcript is empty, which is the only time the title
+  // page shows; the listing comes from the store's in-memory index.
+  const transcriptEmpty = messages.length === 0;
+  const recentSessions = useMemo(
+    () =>
+      transcriptEmpty
+        ? listSessions()
+            .filter((meta) => meta.id !== sessionId && meta.messageCount > 0)
+            .sort((left, right) => right.updatedAt - left.updatedAt)
+            .slice(0, 5)
+        : [],
+    [listSessions, sessionId, transcriptEmpty],
+  );
   // The status line's folio: one page per turn you have written.
   const turnCount = useMemo(
     () => messages.filter((message) => message.role === 'user').length,
@@ -1549,9 +1563,15 @@ export function App({
   const selectedManagedAgentLiveRows = selectedManagedAgentLiveText
     ? wordWrap(selectedManagedAgentLiveText, Math.max(1, termWidth - 2)).split('\n').length
     : 0;
+  // Bumped by the composer when its height may have changed (a menu opened, the
+  // draft gained a line). The footer shares the screen with the transcript, so
+  // the transcript's viewport must be measured again.
+  const [footerLayoutRevision, setFooterLayoutRevision] = useState(0);
+  const bumpFooterLayout = useCallback(() => setFooterLayoutRevision((value) => value + 1), []);
   const transcriptLayoutRevision = useMemo(
     () =>
       JSON.stringify([
+        footerLayoutRevision,
         error ?? '',
         streamingMessageId ?? '',
         transcriptMode,
@@ -1580,6 +1600,7 @@ export function App({
         pendingPlanApproval?.plan ?? '',
       ]),
     [
+      footerLayoutRevision,
       error,
       streamingMessageId,
       transcriptMode,
@@ -2346,6 +2367,7 @@ export function App({
                   showThinking={liveConfig.settings.ui.showThinking}
                   terminalHeight={termHeight}
                   workspace={config.workspace}
+                  recentSessions={recentSessions}
                   model={liveConfig.modelSelection ?? liveConfig.model}
                   mode={mode}
                   commandCount={commands.length}
@@ -3157,6 +3179,7 @@ export function App({
             />
             <InputBar
               key={sessionId}
+              onLayoutChange={bumpFooterLayout}
               onSubmit={handleSubmit}
               onPasteImage={pasteClipboardImage}
               submissionMode={
