@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
+import { TranscriptViewportContext } from '../transcript-layout.js';
 import {
   composeWelcomeHints,
   LOGOTYPE,
   titlePageTopPadding,
+  WELCOME_FOOTER_ROWS,
   WELCOME_HINTS,
   WelcomeScreen,
 } from './WelcomeScreen.js';
@@ -69,10 +71,39 @@ describe('WelcomeScreen', () => {
     const all = stripAnsi(view.lastFrame()).split('\n');
     const first = all.findIndex((row) => row.trim() === LOGOTYPE[0].trim());
 
-    expect(first).toBe(titlePageTopPadding(32));
+    // No transcript viewport in this render, so the page pads for the
+    // estimated footer.
+    expect(first).toBe(titlePageTopPadding(32 - WELCOME_FOOTER_ROWS));
     const left = all[first]!.indexOf(LOGOTYPE[0][0]!);
     const right = 99 - (left + displayWidth(LOGOTYPE[0]));
     expect(Math.abs(left - right)).toBeLessThanOrEqual(1);
+  });
+
+  it('never cuts the logotype when an open menu shrinks the transcript', () => {
+    const viewport = (viewportRows: number) => ({
+      subscribe: () => () => {},
+      getRevision: () => viewportRows,
+      getSnapshot: () => ({ scrollTop: 0, viewportRows, followBottom: true }),
+    });
+    const shown = (viewportRows: number) => {
+      const view = render(
+        withTheme(
+          <TranscriptViewportContext.Provider value={viewport(viewportRows)}>
+            <WelcomeScreen terminalWidth={100} terminalHeight={20} reducedMotion />
+          </TranscriptViewportContext.Provider>,
+        ),
+      );
+      const rows = lines(stripAnsi(view.lastFrame()));
+      cleanup();
+      return rows.map((row) => row.trim());
+    };
+
+    // Room for the logotype but not the page: the logotype, whole.
+    expect(shown(4)).toEqual(LOGOTYPE.map((row) => row.trim()));
+    // Not even that: nothing, rather than a sliced glyph.
+    expect(shown(2)).toEqual([]);
+    // Room for the page: all of it, padded to the measured viewport.
+    expect(shown(14)).toHaveLength(LOGOTYPE.length + 2);
   });
 
   it('keeps every logotype row the same width', () => {

@@ -152,6 +152,11 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Esc now closes the command, `@file` and skill menus.** Ink reports a lone Esc with `meta`
+  set, and the composer's filter for Alt shortcuts returned before the menu handlers ran, so every
+  Esc was swallowed and the menu stayed open. Esc still belongs to the app whenever no menu is
+  open: it cancels a turn, drops a recalled queued input, or closes a panel.
+
 - **A whole-file `Read` of a large file now says where to continue (#248).** Every tool result
   over 50 KB is clipped, and the clip's notice names a file under `BOOK_HOME/tool-output` that
   `Read` cannot open. So a whole-file Read of `src/agents/manager.ts` (1894 lines, 75 KB) stopped

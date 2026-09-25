@@ -11,7 +11,7 @@ import type {
   PendingPlanApprovalRequest,
 } from '../../session/agent-interactions.js';
 import { AgentMessage, managedAgentTracesEqualForMessage } from './AgentMessage.js';
-import { UserMessage } from './UserMessage.js';
+import { UserMessage, userBandTextWidth } from './UserMessage.js';
 import { WelcomeScreen } from './WelcomeScreen.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount, useDebugRender } from '../debug.js';
@@ -50,11 +50,10 @@ export function getCompletedTimelineWindow(terminalHeight?: number): number {
   );
 }
 
-function estimateWrappedRows(content: string, width: number): number {
+function estimateWrappedRows(content: string, contentWidth: number): number {
   // Wrap against the measure the row is actually rendered at, not the raw
   // terminal width: the virtual transcript sizes its spacers from this count,
   // so estimating against the wrong measure undercounts the wrapped rows.
-  const contentWidth = transcriptGrid(width).content;
   if (!content) return 1;
   return (
     content
@@ -68,12 +67,16 @@ function estimateWrappedRows(content: string, width: number): number {
 function estimateTimelineRows(entry: Message | CompactBoundary, terminalWidth: number): number {
   if ('transcriptOrdinal' in entry) return 1;
 
-  const textRows = estimateWrappedRows(entry.content, terminalWidth);
+  // A user turn is its band and nothing else: the prompt wraps inside the band's
+  // own measure, and there is no separate rule row above it.
+  const measure =
+    entry.role === 'user'
+      ? userBandTextWidth(terminalWidth, Boolean(entry.timestamp))
+      : transcriptGrid(terminalWidth).content;
+  const textRows = estimateWrappedRows(entry.content, measure);
   const attachmentRows = entry.attachments?.length ? 1 : 0;
   const toolRows = (entry.toolCalls?.length ?? 0) * 2 + (entry.toolResults?.length ?? 0);
-  // A user turn opens with its rule, which is a row of its own.
-  const turnRuleRows = entry.role === 'user' ? 1 : 0;
-  return Math.max(1, textRows + attachmentRows + toolRows + turnRuleRows);
+  return Math.max(1, textRows + attachmentRows + toolRows);
 }
 
 function messageOwnsTool(message: Message, toolId: string | null | undefined): boolean {

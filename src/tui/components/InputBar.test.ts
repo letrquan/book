@@ -126,6 +126,25 @@ describe('InputBar editor box', () => {
     expectFrameWithinWidth(view.lastFrame(), 28);
   });
 
+  it('dismisses the command menu on Esc and keeps the draft', async () => {
+    // Ink sets `meta` on a lone Esc; the Alt-shortcut filter used to swallow it,
+    // so Esc never closed the menu.
+    const commands = [
+      { name: 'clear', description: 'Clear it', body: 'Clear', source: 'project' as const },
+    ];
+    const view = render(inputBar(() => {}, { terminalWidth: 80, commands }));
+    await tick();
+    view.stdin.write('/');
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).toContain('/clear');
+
+    view.stdin.write('\u001b');
+    await tick(100);
+    const frame = stripAnsi(view.lastFrame());
+    expect(frame).not.toContain('/clear');
+    expect(frame).toMatch(/^› \//m);
+  });
+
   it('keeps the command menu and editor as separate ruled sections after shrinking', async () => {
     const commands = [
       {

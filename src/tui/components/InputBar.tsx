@@ -439,7 +439,14 @@ export function InputBar({
     if (key.meta && (key.backspace || key.delete)) return;
     // Filter out Alt/Meta-modified keys — they're shortcuts, not text input.
     // Preserve the editor value while the parent handles Alt/Meta shortcuts.
-    if (key.meta) {
+    //
+    // Ink reports a lone Esc with `meta` set (`use-input.js`: `meta:
+    // keypress.meta || keypress.name === 'escape'`), so this filter used to eat
+    // every Esc before the menu handlers below could dismiss a menu with it.
+    // Only an open menu takes Esc here; every other Esc still belongs to the
+    // app (cancel the turn, drop a recalled queued input, close a panel).
+    const menuOpen = menuVisible || skillMenuVisible || fileMenuVisible;
+    if (key.meta && !(key.escape && menuOpen)) {
       const preservedValue = valueRef.current;
       queueMicrotask(() => setValue(preservedValue));
       return;

@@ -100,6 +100,23 @@ function parseMentionSegments(content: string): Array<{ text: string; isMention:
   return segments;
 }
 
+/**
+ * Columns the prompt text wraps at inside the band.
+ *
+ * The band stops one column short of the terminal, spends the gutter on the
+ * ribbon, and keeps ` 19:13 ` clear at the right edge when the turn has a time.
+ * The transcript's row estimate uses the same measure, so a wrapped prompt is
+ * sized before it mounts exactly as it renders.
+ */
+export function userBandTextWidth(terminalWidth: number, hasTime: boolean): number {
+  const bandWidth = transcriptGrid(terminalWidth).width - 1;
+  const timeColumn = hasTime ? TURN_TIME_WIDTH + 2 : 1;
+  return Math.max(8, bandWidth - CONTENT_COLUMN - timeColumn);
+}
+
+/** `HH:MM`, the width of every turn time. */
+const TURN_TIME_WIDTH = 5;
+
 /** The ribbon down the left edge of a user turn: a half block, so it reads as a bookmark. */
 const RIBBON = '▌';
 
@@ -140,9 +157,7 @@ function UserMessageInner({
   const time = formatTurnTime(timestamp);
   // The band leaves the terminal's last column empty, like every other row.
   const bandWidth = width - 1;
-  // Room for ` 19:13 ` at the right edge of the first row.
-  const timeColumn = time ? displayWidth(time) + 2 : 1;
-  const textWidth = Math.max(8, bandWidth - CONTENT_COLUMN - timeColumn);
+  const textWidth = userBandTextWidth(terminalWidth, Boolean(time));
   const lines = content ? wordWrap(content, textWidth).split('\n') : [];
   if (attachments.length > 0) {
     lines.push(attachments.map((_, index) => `[image ${index + 1}]`).join(' '));

@@ -4,6 +4,7 @@ import type React from 'react';
 import { useStaggeredReveal } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
+import { useTranscriptViewport } from '../transcript-layout.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 interface WelcomeScreenProps {
@@ -106,8 +107,11 @@ export const LOGOTYPE = [
   '█▄▄▀ ▀▄▄▀ ▀▄▄▀ █  █',
 ] as const;
 
-/** Rows the composer and status line take below the transcript. */
-const FOOTER_ROWS = 5;
+/**
+ * Rows the composer and status line take below the transcript: the estimate
+ * used until the transcript viewport has been measured.
+ */
+export const WELCOME_FOOTER_ROWS = 5;
 
 /** Rows the title page itself occupies: logotype, blank, meta, blank, hints. */
 const TITLE_PAGE_ROWS = LOGOTYPE.length + 4;
@@ -149,14 +153,14 @@ function Logotype() {
 }
 
 /**
- * Blank rows above the title page.
+ * Blank rows above the title page, given the rows the transcript can show.
  *
  * An empty session used to print a small block in the top-left corner above
  * thirty-odd empty rows. The title page sits a little above the optical middle
  * of the space left over, the way a title sits on the page of a book.
  */
-export function titlePageTopPadding(terminalHeight: number): number {
-  const free = Math.floor(terminalHeight) - FOOTER_ROWS - TITLE_PAGE_ROWS;
+export function titlePageTopPadding(availableRows: number): number {
+  const free = Math.floor(availableRows) - TITLE_PAGE_ROWS;
   return Math.max(0, Math.floor(free * 0.4));
 }
 
@@ -171,9 +175,16 @@ export function WelcomeScreen({
   animate = true,
 }: WelcomeScreenProps) {
   const theme = useTheme();
+  const viewport = useTranscriptViewport();
   const grid = transcriptGrid(terminalWidth);
   const width = grid.width;
   const height = Math.max(8, Math.floor(terminalHeight));
+  // The rows the transcript can actually show. An open menu takes ten rows from
+  // it, and a title page padded for the closed footer would overflow and be cut
+  // through the middle of the logotype. Until the viewport is measured (it
+  // starts at one row), estimate from the terminal height.
+  const availableRows =
+    viewport && viewport.viewportRows > 1 ? viewport.viewportRows : height - WELCOME_FOOTER_ROWS;
   const compact = width < 64 || height < 18;
   const tiny = width < 42 || height < 12;
   const motionDisabled = reducedMotion || screenReader || !animate;
@@ -249,11 +260,21 @@ export function WelcomeScreen({
     );
   }
 
+  // Too short for the whole page (a menu is open): keep the logotype if it fits
+  // whole, and never draw part of a glyph.
+  if (availableRows < TITLE_PAGE_ROWS) {
+    return (
+      <Box flexDirection="column" width={width - 1} alignItems="center">
+        {availableRows >= LOGOTYPE.length ? <Logotype /> : null}
+      </Box>
+    );
+  }
+
   // A title page: centred, with the composer below as the first line of text.
   // No tagline — the composer's placeholder already says "Ask me anything".
   return (
     <Box flexDirection="column" width={width - 1} alignItems="center">
-      <Box height={titlePageTopPadding(height)} />
+      <Box height={titlePageTopPadding(availableRows)} />
       <Logotype />
       <Text> </Text>
       <WelcomeLine visible={reveal >= 1}>
