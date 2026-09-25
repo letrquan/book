@@ -29,6 +29,14 @@ export interface CompactRequestHints {
    * this session's text, and the target shrinks by that ratio.
    */
   estimatedRequestTokens?: number;
+  /**
+   * An upper bound on the window the reducer's requests are planned against, for
+   * this compaction only. The loop sets it on an overflow recovery, below the size
+   * the provider just refused: an overflow inferred from size alone does not lower
+   * the learned window, and the reducer must not be sent a request nearly as large
+   * as the refused one. It is never written to the learned-window store.
+   */
+  planningWindowCap?: number;
 }
 
 /**

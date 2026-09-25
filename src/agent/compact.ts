@@ -32,7 +32,7 @@ import {
   toolResultModelContent,
   toolResultSucceeded,
 } from '../tools/result.js';
-import { mayReplaceObservation } from '../tools/file-provenance.js';
+import { supersedesObservation } from '../tools/file-provenance.js';
 import {
   CARRIED_LEDGER_NOTICE_MAX_TOKENS,
   buildCarriedLedger,
@@ -877,7 +877,13 @@ export async function runCompact(
     ? cloneCheckpoint(selection.priorCheckpoint)
     : undefined;
 
-  let effectiveContextWindow = budgets.contextWindow;
+  // An overflow recovery caps the window the reducer's requests are planned against
+  // below the size the provider just refused, for this compaction only: the cap is
+  // never written to the learned-window store.
+  let effectiveContextWindow =
+    options.planningWindowCap !== undefined && options.planningWindowCap > 0
+      ? Math.min(budgets.contextWindow, options.planningWindowCap)
+      : budgets.contextWindow;
   let modelCalls = 0;
   let repairUsed = false;
   let finalCheckpoint: ConversationCheckpointV2 | undefined;
@@ -1904,7 +1910,7 @@ async function generateCheckpoint(
         const error = event.error ?? 'Checkpoint generation failed.';
         return {
           ok: false,
-          contextOverflow: isContextOverflowError(error),
+          contextOverflow: event.errorCode === 'context_overflow' || isContextOverflowError(error),
           result: { status: 'failed', reason: 'provider-error', error },
         };
       }
@@ -2099,13 +2105,7 @@ function hydrateCheckpointFileObservations(
   for (const message of history) {
     for (const observation of message.fileObservations ?? []) {
       const key = normalizeObservedPath(observation.path);
-      const current = newest.get(key);
-      if (
-        mayReplaceObservation(current, observation) &&
-        (!current || current.timestamp <= observation.timestamp)
-      ) {
-        newest.set(key, observation);
-      }
+      if (supersedesObservation(newest.get(key), observation)) newest.set(key, observation);
     }
   }
   for (const file of checkpoint.files) {

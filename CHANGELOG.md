@@ -127,6 +127,67 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A whole-file `Read` of a large file now says where to continue (#248).** Every tool result
+  over 50 KB is clipped, and the clip's notice names a file under `BOOK_HOME/tool-output` that
+  `Read` cannot open. So a whole-file Read of `src/agents/manager.ts` (1894 lines, 75 KB) stopped
+  mid-line near line 1169 with no way on, and a Read cut at its 2000-line default said nothing at
+  all.
+  - **The stop:** `Read` now stops at a line boundary before the clip and ends with a notice, for
+    example `[Lines 1-1163 of 1894 shown, the most one Read returns (50 KB). Continue with offset:
+    1164.]`. A Read that its line limit stops gets the same notice.
+  - **Long lines:** a line that fits under the clip on its own is returned whole, as before. A line
+    too long for that is shown cut to fill the clip, and the notice gives its size in bytes and
+    points past it: `… Continue with offset: 2. Line 1 (60000 bytes) was cut to fit.]`.
+  - **Outlines:** an outline also stops under the clip, keeping its own note on where the rest start.
+  - **Descriptions:** the `Read` description and its `offset`/`limit` descriptions now say the
+    default is 2000 lines or 50 KB. These strings are part of the cached tool schema, so the prompt
+    changes, and the first request after upgrading misses the prompt cache once.
+  - **Pagination:** a Read that stops early also reports `pagination: { truncated: true,
+    nextCursor }`, with the offset to continue from, as the shared clip's truncation did.
+  - **TUI:** the Read row still counts the notice as one more line (`5 lines` for 4 shown). The
+    row's line count comes from the shared result presentation, which counts the notice; only the
+    fallback path for results without a presentation strips it.
+- **`Read { outline: true }` lists Java, Kotlin, C# and Dart methods, and fewer lines that are not
+  declarations (#247).**
+  - **Methods that were missing:** a method written return-type-first (`public int getN() {`) or
+    declared with Kotlin's `fun`. `Foo.java` outlined to its package, class and constructor only.
+  - **Shapes now listed:** those methods, C# Allman braces and block-scoped namespaces, Java and C#
+    interface methods without a body, `async *entries()` generator methods (a plain `*values()`
+    generator method is still not listed), `#private` methods, nested type arguments, and a
+    destructured parameter that wraps.
+  - **Lines that no longer leak in:** statements (`if (`, `else if (`, `foreach (`, `assert x;`,
+    `go func() {`; in Java and C#, also `foreach(`, `using(`, `lock(`, `synchronized(` with no
+    space, which elsewhere may be method names such as `using(plugin) {`); a call that closes into a callback (`useEffect(() => {`, `).then(() => {`);
+    object keys and import-list members named like keywords (`enum: [...]`, `describe,`);
+    template text at column 0 in `.ts`, `.mts`, `.cts`, `.mjs` and `.cjs` files; an Allman-style
+    `{` line; and `#` comments in Makefiles, Dockerfiles, PowerShell files and extension-less
+    scripts that start with `#!`. A file named like a tool but with a code extension
+    (`makefile.c`, `dockerfile.rs`) keeps its `#` lines.
+  - **JSX-capable files** (`.tsx`, `.jsx`, `.js`) are not scanned for template text. JSX text is
+    not JavaScript, and a `/*` or a lone backtick in it (`<p>All requests to /api/* are
+    proxied</p>`) would open a comment or template that never closes, hiding every later
+    declaration. In the scanned files, a scan that ends inside a comment or template has lost its
+    place, and masks nothing.
+  - **Markdown:** a file that opens with a `---` rule keeps the headings after it. Front matter now
+    needs YAML up to its closing `---`: a `key:` line first, then `key:` lines (quoted keys, keys
+    with spaces and `$schema:` included), indented or `- ` lines, and `#` comments. A `#` line
+    after a blank line is a heading, so such a block is not front matter.
+  - **Header:** it no longer counts the empty line after a trailing newline.
+  - **The contract:** the supported shapes are a table in `src/tools/file.test.ts`, which the
+    README's scope statement follows.
+  - **Measured on this repository:** outlining the 606 tracked files of `src/` and `scripts/` added
+    9 lines (methods whose object return type holds a `;`, and wrapped signatures) and dropped 645.
+    Of those, 365 were `expect(…)` chains, 81 React hook calls, 49 test hooks (`beforeEach(() => {`
+    and the like, which a test file's outline no longer lists), and 41 anonymous `async (…) =>`
+    callbacks. The rest were template text, keyword-named keys and members, and other calls.
+  - **Speed:** the template scanner looks back a bounded distance from each `/`, so a 1 MB
+    minified line outlines in about 50 ms.
+- **After a resume, a file read in the same parallel batch as its outline still counts as read
+  (#247).** Suppose the model sent `Read{X, outline: true}` and `Read{X}` together, and the outline
+  finished last. The batch records results in call order, and the resume rebuild went by
+  timestamps, so it kept the outline, and an `Edit` after the resume was refused as "only
+  outlined". A rebuilt ledger now lets a real observation replace an outline, and never the
+  reverse, whatever the timestamps. A checkpoint's file observations follow the same rule.
 - **A failed print run exits 1 on Windows, not 127.** Print mode ended a failed run with
   `exit(1)` straight after its last provider request, while libuv was still closing the pooled
   sockets. On Windows that aborted with
@@ -304,11 +365,59 @@ All notable changes to this project are documented in this file.
   that 4xx, comes back after one fetch, and a `bad_request`/`not_found` is not re-issued at the
   stream level either, since re-sending it byte for byte reproduces it. Only the router's own
   `[<route>] [4xx]:` prefix or a 4xx `code` in a JSON `"error"` object counts as a quote, so an
-  outage body that mentions `HTTP 403`, `chunk [404]` or `"code": 4001` is still retried. A quoted
-  400 on a request of 200k tokens or more is read as a context overflow — the antigravity Gemini
-  route refuses at ~300k without saying why — and takes the compaction-and-ratchet recovery a
-  spoken overflow gets. The rule covers only that wrapped case: a plain 400 at any size is the
-  provider's verdict on the request, and neither compacts nor lowers the learned window.
+  outage body that mentions `HTTP 403`, `chunk [404]` or `"code": 4001` is still retried. A
+  `bad_request` on a request of 200k tokens or more is read as a context overflow — the
+  antigravity Gemini route refuses at ~300k without saying why — and compacted; the next entry
+  says when that also lowers the learned window.
+- **A plain 400 on a 200k-token request compacts, and only a stated overflow lowers the learned
+  window.** 9router 0.5.86 stopped wrapping the antigravity route's refusal in a 503: a
+  330k-token `INVALID_ARGUMENT` now arrives as a plain
+  `400 {"error":{"message":"[400]: …","code":"bad_request"}}`, so the overflow recovery above never
+  fired and the run ended after one request (#244). Any `bad_request` on a request of 200k
+  estimated tokens or more, plain or wrapped, is now compacted and the turn retried once. The
+  learned context window is lowered only when the error states an overflow: a 413 status, an
+  `error.code` or `error.type` of `context_length_exceeded`, `request_too_large` or llama.cpp's
+  `exceed_context_size_error`, or overflow wording in the error message ("maximum context length",
+  "prompt is too long", …), including the upstream body OpenRouter forwards in
+  `error.metadata.raw`. Gemini's `The input token count (N) exceeds the maximum …` now counts as
+  stated; its parenthesised count used to hide it. One inferred from size alone compacts without
+  lowering it, so a 400 that was really about the request cannot shrink a 1M model's window for
+  every later session. That includes the wrapped 503 case, which used to lower it. Since the window
+  stays at the published size, the recovery compaction plans the reducer's requests against 80% of
+  the refused request instead: a 330k refusal on a 1M model used to send a 308k reducer request,
+  which a route that had just refused 330k would likely refuse too. The whole raw body is no longer
+  scanned for that wording, and a 413 counts only where it is named as a status (`API Error: 413`,
+  `HTTP 413`): a 400 whose body held a `contents[413]` field path or a `req-413-x` request id was
+  classified `context_overflow`. The compacted request is retried only if it is below 200k tokens,
+  and another overflow right after compacting ends the run on the provider's error. A reducer
+  refused with a coded overflow (`context_overflow`) whose text names no length now halves its
+  window and replans, as a worded one did.
+- **A stalled error body no longer holds a retry attempt for the whole request timeout.** The
+  retry loop read a retryable response's body with `text()` before deciding, so a 503 that sent
+  its headers and then stalled made each attempt wait the full `requestTimeoutMs` — up to about
+  110 minutes with the defaults — and a large body was buffered whole before being cut to 64 KB
+  (#244). The body is now stream-read up to 64 KB for at most 5 s (`ERROR_BODY_READ_TIMEOUT_MS`),
+  the rest is cancelled, and the decision is made on what arrived.
+- **A 422 and a mid-stream `invalid_request_error` are not re-issued.** A 422, plain or quoted in
+  a 503, stopped the fetch retries but was still re-sent three times at the stream level, 14 s of
+  backoff for the same refusal; Anthropic's mid-stream `invalid_request_error` was re-sent the same
+  way (#244). Both now end the run on the first answer, and a 422 has its own code,
+  `unprocessable`. Every other 4xx the classifier has no name for (`unknown`: a 409, 423, 425, or
+  Google's 499) is still re-sent: 9router's antigravity route treats a 409 like a 429 with a strike
+  counter, passing the first two through and, on the third within 60 s, locking that account and
+  switching to the next one, so the third re-send is the one that can succeed. 5xx, 408, 429,
+  529, Anthropic's `overloaded_error` and `api_error`, and transport faults are re-issued as
+  before.
+- **A real answer that quotes an `[Error]` line is no longer taken for a router error.** The
+  envelope check accepted any answer that began with `[Error]` and mentioned a request id, and
+  with 0/0 usage any `[Error]` answer at all, so an explanation that opened with a quoted error
+  line was held back, re-issued, and reported as `provider_error` (#244). When a model may have
+  written the text, an envelope must now be the whole answer: one `[Error] …` line of at most 2,000
+  characters, the shape 9router's Responses translator writes. With 0/0 usage (what a router
+  reports for text it wrote itself, and what a provider that doesn't report usage sends), any
+  answer that opens with `[Error]` still counts, one line or many. The same rule gates
+  the `[Error] … context window` overflow answer. The supported shapes are the table in
+  `src/provider/reliability.test.ts`.
 - **An upstream error rendered as the answer no longer completes the run.** A router answered
   200 with `[Error] An error occurred while processing your request … request ID …` and zero
   tokens both ways, and Book accepted it as the model's final message: exit 0,
