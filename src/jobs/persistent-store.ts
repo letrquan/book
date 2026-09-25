@@ -10,6 +10,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { repositoryHash } from '../agents/git-isolation.js';
+import { systemClock, type Clock } from '../clock.js';
 import type {
   BackgroundShellNotify,
   BackgroundShellStatus,
@@ -107,11 +108,85 @@ export function ensurePersistentJobPaths(paths: PersistentJobPaths): void {
   }
 }
 
-export function writeJsonAtomic(path: string, value: unknown): void {
+/**
+ * Windows fails a rename over a file that another process has open, even only for reading, with
+ * EPERM, EACCES or EBUSY. Here that is routine rather than rare: the shell manager polls a job
+ * record while the detached runner rewrites it, and scanners open freshly written files. A POSIX
+ * rename never fails this way, so only win32 retries, and only for these codes.
+ */
+const RENAME_CONTENTION_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_RETRY_STEP_MS = 10;
+
+/**
+ * How long a contended rename may block before it rethrows, unless the caller asks for longer.
+ * The shell manager and memory extraction write from the TUI's own process, where a synchronous
+ * wait freezes rendering, so the default is small. The detached runner has no UI and asks for
+ * more.
+ */
+export const DEFAULT_RENAME_RETRY_BUDGET_MS = 100;
+
+export interface RenameRetryOptions {
+  budgetMs?: number;
+  platform?: NodeJS.Platform;
+  clock?: Clock;
+  rename?: (from: string, to: string) => void;
+  sleep?: (milliseconds: number) => void;
+}
+
+function sleepSync(milliseconds: number): void {
+  if (milliseconds <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+/** `renameSync`, retried while Windows reports the target as in use, for at most `budgetMs`. */
+export function renameWithContentionRetry(
+  from: string,
+  to: string,
+  options: RenameRetryOptions = {},
+): void {
+  const rename = options.rename ?? renameSync;
+  const platform = options.platform ?? process.platform;
+  const clock = options.clock ?? systemClock;
+  const sleep = options.sleep ?? sleepSync;
+  const deadline = clock.monotonicNowMs() + (options.budgetMs ?? DEFAULT_RENAME_RETRY_BUDGET_MS);
+  for (;;) {
+    try {
+      rename(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? '';
+      const remainingMs = deadline - clock.monotonicNowMs();
+      if (platform !== 'win32' || !RENAME_CONTENTION_CODES.has(code) || remainingMs <= 0) {
+        throw error;
+      }
+      sleep(Math.min(RENAME_RETRY_STEP_MS, remainingMs));
+    }
+  }
+}
+
+export interface WriteJsonAtomicOptions {
+  /** How long a contended rename may block; see `DEFAULT_RENAME_RETRY_BUDGET_MS`. */
+  renameRetryBudgetMs?: number;
+}
+
+export function writeJsonAtomic(
+  path: string,
+  value: unknown,
+  options: WriteJsonAtomicOptions = {},
+): void {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(temporary, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 });
-  renameSync(temporary, path);
+  try {
+    renameWithContentionRetry(temporary, path, { budgetMs: options.renameRetryBudgetMs });
+  } catch (error) {
+    try {
+      rmSync(temporary, { force: true });
+    } catch {
+      // The rename's error is the one to report; a stray temp file is harmless.
+    }
+    throw error;
+  }
 }
 
 export function readJsonFile<T>(path: string): T | undefined {
