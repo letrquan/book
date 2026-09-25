@@ -151,7 +151,14 @@ tool call (`[Read] src/cli/doctor.ts`, `[Bash] npm test`), cut to the argument's
 characters, so a person watching a terminal can see a long run is alive without tailing the session
 file. `--verbose` adds each call's result, naming its target, because a turn's call lines all print
 before its results: `  → success 12ms src/cli/doctor.ts`, or `  → error 4ms missing.txt: File not
-found: missing.txt`. `--quiet` turns the progress lines off, `retry:` lines included.
+found: missing.txt`. A managed child's calls (through `Task`, `AgentSpawn`, or `/review`) print as
+well, indented and named after the child's profile: `  [explorer] [Read] src/a.ts`, with
+`    → success 3ms src/a.ts` under `--verbose`. `--quiet` turns the progress lines off, `retry:`
+lines included.
+
+The answer on stdout is the final turn's text. A run whose final turn wrote no answer (a provider
+failure, a turn that was only reasoning, or `--max-turns` reached on a turn that called tools)
+prints nothing there rather than an earlier turn's narration, and exits non-zero.
 
 `json` and `stream-json` write no progress lines, but their stderr is not silent. `json` still
 writes `retry:` lines (unless `--quiet`) and `error:` lines there; `stream-json` carries retries and
@@ -987,6 +994,11 @@ JSON-over-stdio contract. Supported events:
 | `SessionEnd`       | Session left                  | yes¹    | no                      |
 
 ¹ Awaited by the TUI and other multi-turn hosts; fire-and-forget on the one-shot SDK path.
+
+`SessionEnd` receives `reason`: `exit`, `clear`, or `resume` from the TUI, `completion` when a
+print or SDK run ends, and `aborted` when that run was cancelled, including a `stream-json` run
+whose stdout reader went away. It runs once per session, and never under the cancelled run's own
+signal.
 
 **Awaited is the property that costs you latency**, and it is not the same as being able to veto.
 A slow `PostToolUse` hook cannot block anything, but it still delays _every tool call_ by up to its

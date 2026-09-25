@@ -98,6 +98,37 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A failed print run exits 1 on Windows, not 127.** Print mode ended a failed run with
+  `exit(1)` straight after its last provider request, while libuv was still closing the pooled
+  sockets. On Windows that aborted with
+  `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 94` and exit
+  code 127, which a supervisor reads as "command not found" (#243). A failed run now records exit
+  code 1 through the `cli/exit.ts` seam and returns, and Node exits once its handles have closed.
+  A configured SessionEnd hook delayed the exit enough to hide the abort, so not every setup saw
+  it.
+- **A failed final turn no longer prints an older turn's narration as the answer.** Text mode's
+  answer, `--json-schema` parsing, and a managed agent's result (which is also the `Task` tool's
+  output) took the most recent assistant message that had any text. When the final turn wrote no
+  answer (it was only a reasoning block, or the provider failed without recording one), that was
+  an earlier turn's narration, such as "Let me check the tests." from a turn that went on to call
+  `Read` (#248). The answer now comes from the final turn only: the history's last message, when
+  it is an assistant turn that called no tools. Any other ending gives an empty answer. That
+  includes a run stopped by `--max-turns` on a turn that called tools, which now prints nothing on
+  stdout; a managed child that hits its turn limit that way reports an empty result. A `Task`
+  child stopped at its time limit still quotes its latest text, labelled as a partial result.
+- **Print mode shows a delegated child's tool calls.** A lead that delegated printed
+  `[Task] explorer` on stderr and then nothing until the child finished (#248). Each call a managed
+  child makes (through `Task`, `AgentSpawn`, or `/review`) now prints as it starts, indented and
+  named after the child's profile: `  [explorer] [Read] src/a.ts`. Under `--verbose` its result
+  follows one level deeper: `    → success 3ms src/a.ts`. `--quiet` turns them off with the rest.
+  `stream-json` output is unchanged; it already carried these calls as `agent_activity` records.
+- **SessionEnd runs for an aborted print or SDK run, with reason `aborted`.** An abort that landed
+  inside a tool threw out of the run before SessionEnd, so a cancelled SDK query, or a
+  `stream-json` run whose reader went away mid-tool, ended without it (#248). SessionEnd now runs
+  once on that path too. An aborted run that ended on a cancelled outcome already ran SessionEnd,
+  but reported `completion`; it now reports `aborted`. The hooks run without the run's own
+  (aborted) signal, each under its usual 10 s timeout. Ctrl+C on `book -p` still ends the process
+  at once, since print mode installs no SIGINT handler.
 - **A long reply no longer jitters sideways while it streams.** Once a reply outgrew the live
   window (`width × 24` characters), the window's start moved forward with every streamed delta,
   sometimes cutting a word in half. Every wrapped line of the tail then reflowed on every frame,
