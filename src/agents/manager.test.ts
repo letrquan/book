@@ -997,6 +997,58 @@ describe('AgentManager lifecycle', () => {
     boundedManager.dispose();
   });
 
+  it('keeps an older turn out of the result when the final turn was only reasoning (#248)', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const failure =
+      'The provider returned an empty response after one retry. Please retry the request.';
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      worktreeRoot: tempRoot(),
+      findGitRoot: async () => root,
+      createSnapshot: async () => snapshot(root),
+      createWorktree: async (_snapshot, agentId) => ({ path: root, branch: `branch-${agentId}` }),
+      runLoop: async (_config, _registry, prompt, history, callbacks) => {
+        callbacks.onError(failure);
+        callbacks.onTerminal?.({
+          status: 'failed',
+          reason: 'protocol_error',
+          message: failure,
+          partialOutput: true,
+        });
+        return [
+          ...history,
+          { id: 'user-1', role: 'user', content: prompt, includeInContext: true, timestamp: 1 },
+          {
+            id: 'assistant-1',
+            role: 'assistant',
+            content: 'Let me check the tests.',
+            includeInContext: true,
+            timestamp: 2,
+            toolCalls: [{ id: 'call-1', name: 'Read', arguments: { file_path: 'a.txt' } }],
+          },
+          {
+            id: 'assistant-2',
+            role: 'assistant',
+            content: '',
+            reasoningContent: 'plan',
+            includeInContext: true,
+            timestamp: 3,
+          },
+        ];
+      },
+    });
+    try {
+      const record = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+      const finished = await manager.wait(record.id);
+      expect(finished.status).toBe('failed');
+      expect(finished.result).toBe('');
+    } finally {
+      manager.dispose();
+    }
+  });
+
   it('runs explorer without Git, snapshots, or worktrees', async () => {
     const root = tempRoot();
     const config = defaultConfig({ workspace: root });

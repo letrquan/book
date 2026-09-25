@@ -1,5 +1,6 @@
 import type { AgentConfig } from './types/runtime.js';
 import { planWasLost } from './agent/session-state.js';
+import { finalAnswerText } from './agent/final-answer.js';
 import { RunStatusWriter } from './run-status.js';
 import type { CompactResult, CompactBoundary } from './types/sessions.js';
 import type { ImageAttachment, Message, Usage } from './types/messages.js';
@@ -907,7 +908,7 @@ export async function runHeadless(
     };
 
     if (opts.jsonSchema) {
-      const text = lastAssistantText(contextHistory);
+      const text = finalAnswerText(contextHistory);
       try {
         result.structured = JSON.parse(text);
       } catch {
@@ -946,7 +947,7 @@ export async function runHeadless(
         // Only a reply that opened with a closed reasoning block is rewritten.
         // Any other answer is printed exactly as the model wrote it, so an
         // indented first line (YAML, code piped to a file) keeps its indent.
-        const last = lastAssistantText(contextHistory);
+        const last = finalAnswerText(contextHistory);
         const inline = separateInlineReasoning(last);
         const answer = inline.found ? inline.content.trimEnd() : last;
         if (answer) stdout.write(answer + '\n');
@@ -1021,14 +1022,6 @@ export async function runHeadless(
     disposeCrashHandlers?.();
     agentSession.dispose('headless_complete');
   }
-}
-
-function lastAssistantText(history: Message[]): string {
-  for (let i = history.length - 1; i >= 0; i--) {
-    const m = history[i];
-    if (m.role === 'assistant' && m.content) return m.content;
-  }
-  return '';
 }
 
 /** Wire status for the `plan_approval` stream-json event: approve | approve-fresh | reject | revise | stop. */

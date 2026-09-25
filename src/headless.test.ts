@@ -1703,3 +1703,77 @@ describe('runHeadless — SessionEnd on an aborted run (#248)', () => {
     expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['completion']);
   });
 });
+
+describe('runHeadless — the answer is the final turn only (#248)', () => {
+  const envelope = '[Error] An error occurred while processing your request. Please retry.';
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+  });
+
+  /** Turn 1 narrates and calls Read; every later turn is `finalTurn`, which fails the run. */
+  function narrationThen(finalTurn: string, narration = 'Let me check the tests.') {
+    let requestCount = 0;
+    return vi.fn(async () => {
+      requestCount++;
+      if (requestCount === 1) {
+        return sse([textDelta(narration), toolDelta('call-1', 'Read', { filePath: 'a.txt' })]);
+      }
+      return sse([textDelta(finalTurn)]);
+    });
+  }
+
+  async function runText(options: { jsonSchema?: Record<string, unknown> } = {}) {
+    const ws = makeWorkspace();
+    writeFileSync(join(ws, 'a.txt'), 'alpha');
+    const writes: string[] = [];
+    const result = await runHeadless(freshConfig({ workspace: ws }), createDefaultRegistry(), {
+      prompt: 'go',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      quiet: true,
+      jsonSchema: options.jsonSchema,
+      stdout: {
+        write: (s: string) => {
+          writes.push(s);
+          return true;
+        },
+      },
+    });
+    return { result, stdout: writes.join('') };
+  }
+
+  it('prints no answer when the final turn failed without one', async () => {
+    vi.stubGlobal('fetch', narrationThen(envelope));
+
+    const { result, stdout } = await runText();
+
+    expect(result.outcome.status).toBe('failed');
+    expect(stdout).toBe('');
+  });
+
+  it('prints no answer when the final turn was only a reasoning block', async () => {
+    vi.stubGlobal('fetch', narrationThen('<think>\nplan\n</think>\n'));
+
+    const { result, stdout } = await runText();
+
+    expect(result.outcome.status).toBe('failed');
+    expect(stdout).toBe('');
+  });
+
+  it('does not parse structured output from an older turn', async () => {
+    vi.stubGlobal('fetch', narrationThen(envelope, '{"ok":true}'));
+
+    const { result } = await runText({ jsonSchema: { type: 'object' } });
+
+    expect(result.structured).toBeUndefined();
+    expect(result.structuredError).toBe('Failed to parse JSON from assistant output');
+  });
+});
