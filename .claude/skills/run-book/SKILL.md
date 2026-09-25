@@ -120,6 +120,11 @@ request consumes the next turn, so a retry is scripted as the turn after it). A 
 "total_tokens": 0 }` to override the usage block — the tell of a router that rendered an upstream
 error as content. Count requests in the `.requests.jsonl` to tell "retried" from "not retried".
 
+A tool turn may carry `"rawArguments": "<text>"` in place of `arguments`. The string is then sent
+verbatim as the call's arguments, which is how a scenario reproduces the malformed JSON a real model
+sometimes emits, such as an unescaped backslash or newline inside a string. Write such a scenario
+with an editor, not a shell heredoc, since a heredoc eats backslashes.
+
 ### `smoke.sh` — the end-to-end check
 
 `bash .claude/skills/run-book/smoke.sh` boots the real TUI against the mock and drives one full

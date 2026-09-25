@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { enterInteractiveScreen, runMainAction, shouldBridgeWslTerminal } from './run.js';
-import { setExitFn } from './exit.js';
+import { setExitCodeFn, setExitFn } from './exit.js';
 import { createRepeatingScriptedProvider, sseResponse } from '../test/scripted-provider.js';
 
 function fakeStdout(isTTY: boolean) {
@@ -132,6 +132,9 @@ describe('runMainAction — slash commands in print mode', () => {
 
   afterEach(() => {
     setExitFn((code: number): never => process.exit(code));
+    setExitCodeFn((code: number) => {
+      process.exitCode = code;
+    });
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     for (const [name, value] of Object.entries(saved)) {
@@ -143,23 +146,29 @@ describe('runMainAction — slash commands in print mode', () => {
     tempDirs = [];
   });
 
-  it('exits non-zero through the exit abstraction for an interactive-only command', async () => {
+  it('fails an interactive-only command through the exit code, not exit() (#243)', async () => {
     const workspace = printWorkspace();
     const provider = createRepeatingScriptedProvider(() => sseResponse([]));
     vi.stubGlobal('fetch', provider.fetch);
-    const codes: number[] = [];
+    const exits: number[] = [];
+    const exitCodes: number[] = [];
     setExitFn(((code: number) => {
-      codes.push(code);
-      throw new Error('process.exit');
+      exits.push(code);
+      throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      exitCodes.push(code);
+    });
     const errors: string[] = [];
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
       errors.push(args.map(String).join(' '));
     });
 
-    await expect(runMainAction(printOptions(workspace, '/clear'))).rejects.toThrow('process.exit');
+    // A thrown print failure returns like a returned one: no exit() while handles close.
+    await runMainAction(printOptions(workspace, '/clear'));
 
-    expect(codes).toEqual([1]);
+    expect(exits).toEqual([]);
+    expect(exitCodes).toEqual([1]);
     expect(errors.join('\n')).toContain('/clear');
     expect(errors.join('\n')).toContain('Commands supported in print mode:');
     // The refusal happens before the model is ever asked.
@@ -186,12 +195,18 @@ describe('runMainAction — slash commands in print mode', () => {
     setExitFn(((code: number) => {
       throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    // Print failures set the exit code rather than exit(), so guard that seam too.
+    const exitCodes: number[] = [];
+    setExitCodeFn((code: number) => {
+      exitCodes.push(code);
+    });
 
     await runMainAction(printOptions(workspace, '/triage parser'));
 
     expect(provider.requests.length).toBe(1);
     expect(String(provider.requests[0].init?.body)).toContain('Triage parser please');
     expect(writes.join('')).toContain('ok');
+    expect(exitCodes).toEqual([]);
   });
 
   /** Dirty git worktree so `/review` has a real target to resolve. */
@@ -243,6 +258,11 @@ describe('runMainAction — slash commands in print mode', () => {
     setExitFn(((code: number) => {
       throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    // Print failures set the exit code rather than exit(), so guard that seam too.
+    const exitCodes: number[] = [];
+    setExitCodeFn((code: number) => {
+      exitCodes.push(code);
+    });
 
     await runMainAction(printOptions(workspace, '/review'));
 
@@ -250,27 +270,31 @@ describe('runMainAction — slash commands in print mode', () => {
     expect(writes.join('')).toContain('the exported constant changed meaning');
     // The reviewer agent was asked; the parent loop never was.
     expect(provider.requests.length).toBe(1);
+    expect(exitCodes).toEqual([]);
   }, 30000);
 
-  it('exits non-zero for /review --fix instead of patching unattended', async () => {
+  it('fails /review --fix through the exit code instead of patching unattended', async () => {
     const workspace = reviewWorkspace();
     const provider = createRepeatingScriptedProvider(() => sseResponse([]));
     vi.stubGlobal('fetch', provider.fetch);
-    const codes: number[] = [];
+    const exits: number[] = [];
+    const exitCodes: number[] = [];
     setExitFn(((code: number) => {
-      codes.push(code);
-      throw new Error('process.exit');
+      exits.push(code);
+      throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      exitCodes.push(code);
+    });
     const errors: string[] = [];
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
       errors.push(args.map(String).join(' '));
     });
 
-    await expect(runMainAction(printOptions(workspace, '/review --fix'))).rejects.toThrow(
-      'process.exit',
-    );
+    await runMainAction(printOptions(workspace, '/review --fix'));
 
-    expect(codes).toEqual([1]);
+    expect(exits).toEqual([]);
+    expect(exitCodes).toEqual([1]);
     expect(errors.join('\n')).toContain('/review --fix needs an interactive session');
     expect(provider.requests.length).toBe(0);
   }, 30000);
@@ -308,6 +332,9 @@ describe('runMainAction — print mode exit codes (#190)', () => {
 
   afterEach(() => {
     setExitFn((code: number): never => process.exit(code));
+    setExitCodeFn((code: number) => {
+      process.exitCode = code;
+    });
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     for (const [name, value] of Object.entries(saved)) {
@@ -319,7 +346,7 @@ describe('runMainAction — print mode exit codes (#190)', () => {
     tempDirs = [];
   });
 
-  it('exits non-zero when a print run stops due to max turns', async () => {
+  it('fails a print run that stops due to max turns through the exit code, not exit() (#243)', async () => {
     const workspace = printWorkspace();
     const provider = createRepeatingScriptedProvider(() =>
       sseResponse([
@@ -344,17 +371,21 @@ describe('runMainAction — print mode exit codes (#190)', () => {
       ]),
     );
     vi.stubGlobal('fetch', provider.fetch);
-    const codes: number[] = [];
+    const exits: number[] = [];
+    const exitCodes: number[] = [];
     setExitFn(((code: number) => {
-      codes.push(code);
-      throw new Error(`process.exit(${code})`);
+      exits.push(code);
+      throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      exitCodes.push(code);
+    });
 
-    await expect(runMainAction(printOptions(workspace, 'create task'))).rejects.toThrow(
-      'process.exit(1)',
-    );
+    // Returns normally: exiting on the spot is what aborted inside libuv on Windows.
+    await runMainAction(printOptions(workspace, 'create task'));
 
-    expect(codes).toEqual([1]);
+    expect(exits).toEqual([]);
+    expect(exitCodes).toEqual([1]);
   });
 
   it('exits 0 on normal completion in print mode', async () => {
@@ -368,6 +399,9 @@ describe('runMainAction — print mode exit codes (#190)', () => {
       codes.push(code);
       throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      codes.push(code);
+    });
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
     await runMainAction(printOptions(workspace, 'say hi'));
@@ -388,6 +422,9 @@ describe('runMainAction — print mode exit codes (#190)', () => {
       codes.push(code);
       throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      codes.push(code);
+    });
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
     await runMainAction({

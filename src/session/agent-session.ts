@@ -1164,6 +1164,9 @@ export class AgentSession {
               content: message.content,
               kind: message.kind ?? 'conversation',
               includeInContext: message.includeInContext ?? true,
+              // A host-appended prompt stays host-written across a reload: the ledger,
+              // Carried Turns and memory extraction all key on it.
+              derivedContent: message.derivedContent,
             },
           } satisfies SessionRecord);
         },

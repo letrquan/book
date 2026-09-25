@@ -402,9 +402,11 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     pushRestriction(rawRules);
   };
 
+  const isActive = (name: string): boolean => activeSnapshot.has(canonicalToolName(name));
+
   const canExecute = (call: ToolCall): boolean => {
     const name = canonicalToolName(call.name);
-    if (!activeSnapshot.has(name)) return false;
+    if (!isActive(name)) return false;
     if (![...ruleSets.values()].every((rules) => isToolCallAllowed(rules, call))) return false;
     if (state.loaded.has(name)) state.loaded.set(name, ++state.clock);
     return true;
@@ -444,6 +446,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     restrict,
     pushRestriction,
     previewRestriction,
+    isActive,
     canExecute,
     activeDefinitions,
     catalogSummary,

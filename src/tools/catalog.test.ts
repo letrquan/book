@@ -427,3 +427,55 @@ describe('tool schema quality', () => {
     expect(result.status).toBe('success');
   });
 });
+
+describe('discovery gate and invalid JSON arguments', () => {
+  it('refuses a malformed call to an inactive deferred tool as inactive', async () => {
+    const runtimeConfig = config();
+    runtimeConfig.settings.toolDiscovery.mode = 'deferred';
+    const definitions = [definition('Read'), definition('DeferredTool')];
+    const surface = createToolSurface({ config: runtimeConfig, context: context(), definitions });
+    expect(surface.activeDefinitions().map((tool) => tool.name)).not.toContain('DeferredTool');
+    const registry = createRegistry();
+    registry.registerAll(definitions);
+
+    const result = await registry.execute(
+      { id: 'raw-deferred', name: 'DeferredTool', arguments: { __raw: '{"q":' } },
+      { ...context(), toolDiscovery: surface },
+    );
+
+    expect(result.status).toBe('blocked');
+    expect(result.structuredError?.code).toBe('tool_not_active');
+  });
+
+  it('names invalid JSON for an active tool before its argument-scoped rule runs', async () => {
+    const bash: ToolDefinition = {
+      ...definition('Bash', 'Execute shell commands'),
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string', description: 'Command' } },
+        required: ['command'],
+      },
+    };
+    const surface = createToolSurface({
+      config: config(),
+      context: context(),
+      definitions: [bash],
+      capabilityRules: ['Bash(git *)'],
+    });
+    expect(surface.activeDefinitions().map((tool) => tool.name)).toContain('Bash');
+    const registry = createRegistry();
+    registry.register(bash);
+
+    const malformed = await registry.execute(
+      { id: 'raw-git', name: 'Bash', arguments: { __raw: '{"command":"git log\n"}' } },
+      { ...context(), toolDiscovery: surface },
+    );
+    const refused = await registry.execute(
+      { id: 'publish', name: 'Bash', arguments: { command: 'npm publish' } },
+      { ...context(), toolDiscovery: surface },
+    );
+
+    expect(malformed.structuredError?.code).toBe('invalid_json_arguments');
+    expect(refused.structuredError?.code).toBe('tool_not_active');
+  });
+});

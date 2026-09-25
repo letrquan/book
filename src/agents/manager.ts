@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
-import type { Message, Usage } from '../types/messages.js';
+import type { Usage } from '../types/messages.js';
 import { createAgentRunContext, type AgentRunContext } from '../types/runs.js';
 import {
   classifyRuntimeError,
@@ -9,6 +9,7 @@ import {
 } from '../types/terminal.js';
 import type { ToolCall, ToolDefinition, ToolResult, UserQuestionResponse } from '../types/tools.js';
 import { runAgentLoop } from '../agent/loop.js';
+import { finalAnswerText } from '../agent/final-answer.js';
 import { runCompact, usagePressureTokens } from '../agent/compact.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../config.js';
 import { runHooks } from '../hooks.js';
@@ -104,14 +105,6 @@ export class AgentManagerError extends Error {
     super(message);
     this.name = 'AgentManagerError';
   }
-}
-
-function lastAssistantText(history: Message[]): string {
-  for (let index = history.length - 1; index >= 0; index--) {
-    const message = history[index];
-    if (message.role === 'assistant' && message.content) return message.content;
-  }
-  return '';
 }
 
 function clone<T>(value: T): T {
@@ -1552,6 +1545,9 @@ export class AgentManager {
           parentSessionId: record.parentSessionId,
         });
       };
+      // This run's opening message, so its answer is read from this run and never
+      // from the task before it (every child prompt is host-written).
+      const openingMessageId = randomUUID();
       const updated = await (this.options.runLoop ?? runAgentLoop)(
         agentConfig,
         registry,
@@ -1683,6 +1679,7 @@ export class AgentManager {
           // `record.prompt` is the task the delegating model wrote, not a person's
           // words, even though it takes the `user` position in the child's history.
           userMessageDerived: true,
+          userMessageId: openingMessageId,
           agentPath: [record.name],
           systemPromptAppend,
           hideAgents: true,
@@ -1697,7 +1694,7 @@ export class AgentManager {
       finishRunningActivities(false);
       this.flushTextDelta(record.id);
       record.transcript = updated;
-      record.result = lastAssistantText(updated);
+      record.result = finalAnswerText(updated, openingMessageId);
       record.error = loopError;
 
       if (terminalOutcome && terminalOutcome.status !== 'completed') {

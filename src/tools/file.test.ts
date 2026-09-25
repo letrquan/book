@@ -530,13 +530,21 @@ describe('readOnlyRoots', () => {
     mkdirSync(join(memory, '.inbox'), { recursive: true });
     const candidate = join(memory, '.inbox', 'x.md');
     writeFileSync(candidate, 'quarantined candidate');
-    symlinkSync(join(memory, '.inbox'), join(memory, 'in'));
     ctx.readOnlyRoots = [{ root: memory, exclude: ['.inbox'] }];
 
-    for (const path of [candidate, join(memory, 'in', 'x.md')]) {
-      const r = await read.execute({ filePath: path }, ctx);
-      expect(r.status, path).toBe('error');
+    const direct = await read.execute({ filePath: candidate }, ctx);
+    expect(direct.status, candidate).toBe('error');
+
+    const throughLink = join(memory, 'in');
+    try {
+      symlinkSync(join(memory, '.inbox'), throughLink);
+    } catch {
+      // Symlink creation needs a privilege Windows withholds by default; the direct
+      // path above is still covered there.
+      return;
     }
+    const linked = await read.execute({ filePath: join(throughLink, 'x.md') }, ctx);
+    expect(linked.status, join(throughLink, 'x.md')).toBe('error');
   });
 
   it('refuses relative ../x.md path even when readOnlyRoots is configured', async () => {

@@ -151,7 +151,18 @@ tool call (`[Read] src/cli/doctor.ts`, `[Bash] npm test`), cut to the argument's
 characters, so a person watching a terminal can see a long run is alive without tailing the session
 file. `--verbose` adds each call's result, naming its target, because a turn's call lines all print
 before its results: `  → success 12ms src/cli/doctor.ts`, or `  → error 4ms missing.txt: File not
-found: missing.txt`. `--quiet` turns the progress lines off, `retry:` lines included.
+found: missing.txt`. A managed child's calls (through `Task`, `AgentSpawn`, or `/review`) print as
+well, indented and named after the child's profile: `  [explorer] [Read] src/a.ts`, with
+`    → success 3ms src/a.ts` under `--verbose`. `--quiet` turns the progress lines off, `retry:`
+lines included.
+
+The answer on stdout is the model's final answer: the text of the last turn that called no tools,
+read past the prompts Book appends mid-run (`[continuation]`, `[work-state]`, the output-cap
+resume). When the run stopped before the model answered again (a provider failure, a turn that was
+only reasoning, or `--max-turns` reached on a turn that called tools), stdout stays empty rather
+than repeating an earlier turn's narration. The exit status does not depend on the answer: a
+`failed` outcome exits 1, and a run that stalled, timed out, or lost its connection exits 0 like a
+completed one.
 
 `json` and `stream-json` write no progress lines, but their stderr is not silent. `json` still
 writes `retry:` lines (unless `--quiet`) and `error:` lines there; `stream-json` carries retries and
@@ -481,6 +492,9 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   `new_string`, `replace_all`, Grep `glob`/`-A`/`-B`/`-C`, ApplyPatch `input`) are normalized to
   Book's canonical arguments before validation, and `invalid_arguments` errors list the allowed
   argument names.
+- **Malformed-JSON arguments.** A call whose arguments are not valid JSON fails with
+  `invalid_json_arguments`. The error names the parse error and its position and asks for the whole
+  call to be resent, rather than reporting schema errors about arguments the model did send.
 - **Retry-loop braking.** Repeating a call that already failed with identical arguments returns
   escalated guidance instead of the same error; structured `Fix:` remediation lines are rendered
   into the model-facing error text.
@@ -660,7 +674,15 @@ policy decision, not work, and counting it would move the one signal meant to pr
 
 `blockedToolTurnLimit` is a second, independent brake, and it is enforced **even when `enabled` is
 false**. It stops a run whose every tool call was refused on that many consecutive turns, ending it
-as `all_tools_blocked` and naming the tools to unblock. It is separate because a refusal spin never
+as `all_tools_blocked` and naming every tool refused over the streak and what lifts the refusal. A permission
+refusal is lifted by a grant, an allow rule, or another permission mode, except one made by a
+`permissions.deny` rule: deny rules are checked before allow rules and every mode, so only removing
+or narrowing that rule lifts it. A refusal by the web
+network policy (a private or special-use destination) is lifted by none of those, bypassPermissions
+included. For a refused `WebFetch` the message names `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the
+host environment. For a refused `WebSearch`, whose built-in providers resolved to a private
+destination, it points at the host's DNS or proxy instead: the providers always validate strictly,
+so that variable does nothing for them. A streak holding several kinds names each remedy. It is separate because a refusal spin never
 produces a tool-free turn, so the turn-end gate — and therefore every brake behind it — never fires:
 a headless run in the default permission mode answers each prompt `deny` and would otherwise
 re-issue refused calls until the budget ran out. Set it to `0` to disable. `planRefreshTurns` restates the open plan periodically, which also keeps compaction from
@@ -1016,6 +1038,18 @@ JSON-over-stdio contract. Supported events:
 
 ¹ Awaited by the TUI and other multi-turn hosts; fire-and-forget on the one-shot SDK path.
 
+`SessionEnd` receives `reason`: `exit`, `clear`, or `resume` from the TUI. A print or SDK run
+reports one of these:
+
+| `reason`     | When                                                                                                                 |
+| ------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `completion` | The run completed, or ended on a stall or a dropped connection without failing                                       |
+| `aborted`    | Its signal aborted before it completed: a cancel, an `AbortSignal.timeout`, or a `stream-json` reader that went away |
+| `error`      | The run ended `failed`, or threw after `SessionStart` (for example on a missing prompt)                              |
+
+It runs at most once per session, and never under the cancelled run's own signal. Ctrl+C on
+`book -p` still ends the process without it, since print mode installs no SIGINT handler.
+
 **Awaited is the property that costs you latency**, and it is not the same as being able to veto.
 A slow `PostToolUse` hook cannot block anything, but it still delays _every tool call_ by up to its
 runtime — hooks are capped at 10 s each and run sequentially in declaration order. Only
@@ -1263,7 +1297,12 @@ Project themes can override any token in `.book/themes/<name>.json`:
 
 `WebFetch` requires HTTPS by default, validates DNS results and the address used by the network
 connection, blocks private/special-use destinations, and stops on cross-origin redirects so the
-new origin receives its own permission decision. It returns Markdown by default; `format` can be
+new origin receives its own permission decision. An IPv6 address in one of these IPv4-embedding
+ranges is judged by the IPv4 address it carries: IPv4-mapped `::ffff:0:0/96`, IPv4-compatible `::/96`, NAT64
+`64:ff9b::/96`, 6to4 `2002::/16`, and Teredo `2001::/32`, where either the server or the client
+address being private blocks it. In the local-use NAT64 prefix `64:ff9b:1::/48`, an address laid
+out like the /96 (bits 48-95 zero) is judged by its last 32 bits, and any other shape is blocked,
+because where its IPv4 bits sit depends on a prefix length only the local network knows. It returns Markdown by default; `format` can be
 `markdown`, `text`, or sanitized `html`. `WebSearch` works without configuration through the
 built-in Exa MCP provider and accepts optional `limit`, `domains`, `recencyDays`, and `country`
 hints. Its provider endpoint is built in and cannot be overridden through settings or environment
