@@ -191,6 +191,13 @@ describe('managed-agent render invalidation', () => {
 
     expect(managedAgentTracesEqualForMessage(message, before, after)).toBe(false);
   });
+
+  it('rerenders when the child loses its Background-panel row, so the Tab hint goes (#245)', () => {
+    const before = new Map([['spawn-1', { ...trace('agent-1'), openable: true }]]);
+    const after = new Map([['spawn-1', { ...trace('agent-1'), openable: false }]]);
+
+    expect(managedAgentTracesEqualForMessage(message, before, after)).toBe(false);
+  });
 });
 
 describe('splitThinkBlocks reasoning tags', () => {
