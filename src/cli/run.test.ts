@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { enterInteractiveScreen, runMainAction, shouldBridgeWslTerminal } from './run.js';
-import { setExitFn } from './exit.js';
+import { setExitCodeFn, setExitFn } from './exit.js';
 import { createRepeatingScriptedProvider, sseResponse } from '../test/scripted-provider.js';
 
 function fakeStdout(isTTY: boolean) {
@@ -132,6 +132,9 @@ describe('runMainAction — slash commands in print mode', () => {
 
   afterEach(() => {
     setExitFn((code: number): never => process.exit(code));
+    setExitCodeFn((code: number) => {
+      process.exitCode = code;
+    });
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     for (const [name, value] of Object.entries(saved)) {
@@ -308,6 +311,9 @@ describe('runMainAction — print mode exit codes (#190)', () => {
 
   afterEach(() => {
     setExitFn((code: number): never => process.exit(code));
+    setExitCodeFn((code: number) => {
+      process.exitCode = code;
+    });
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     for (const [name, value] of Object.entries(saved)) {
@@ -319,7 +325,7 @@ describe('runMainAction — print mode exit codes (#190)', () => {
     tempDirs = [];
   });
 
-  it('exits non-zero when a print run stops due to max turns', async () => {
+  it('fails a print run that stops due to max turns through the exit code, not exit() (#243)', async () => {
     const workspace = printWorkspace();
     const provider = createRepeatingScriptedProvider(() =>
       sseResponse([
@@ -344,17 +350,21 @@ describe('runMainAction — print mode exit codes (#190)', () => {
       ]),
     );
     vi.stubGlobal('fetch', provider.fetch);
-    const codes: number[] = [];
+    const exits: number[] = [];
+    const exitCodes: number[] = [];
     setExitFn(((code: number) => {
-      codes.push(code);
-      throw new Error(`process.exit(${code})`);
+      exits.push(code);
+      throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      exitCodes.push(code);
+    });
 
-    await expect(runMainAction(printOptions(workspace, 'create task'))).rejects.toThrow(
-      'process.exit(1)',
-    );
+    // Returns normally: exiting on the spot is what aborted inside libuv on Windows.
+    await runMainAction(printOptions(workspace, 'create task'));
 
-    expect(codes).toEqual([1]);
+    expect(exits).toEqual([]);
+    expect(exitCodes).toEqual([1]);
   });
 
   it('exits 0 on normal completion in print mode', async () => {
@@ -368,6 +378,9 @@ describe('runMainAction — print mode exit codes (#190)', () => {
       codes.push(code);
       throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      codes.push(code);
+    });
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
     await runMainAction(printOptions(workspace, 'say hi'));
@@ -388,6 +401,9 @@ describe('runMainAction — print mode exit codes (#190)', () => {
       codes.push(code);
       throw new Error(`unexpected exit(${code})`);
     }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      codes.push(code);
+    });
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
     await runMainAction({

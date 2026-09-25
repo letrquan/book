@@ -9,7 +9,7 @@ import { McpSessionHost } from '../mcp-host.js';
 import { mcpServersToRecord, partitionMcpServersByApproval } from '../mcp-approvals.js';
 import { resolveMcpServerList } from '../mcp-config.js';
 import { collectWithheldProjectNotices } from '../project-approval-notices.js';
-import { exit, isExiting } from './exit.js';
+import { exit, isExiting, setExitCode } from './exit.js';
 import { parseNumericFlag } from './utils.js';
 import { parseEffortLevel } from '../commands/effort.js';
 import { join } from 'path';
@@ -235,7 +235,8 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         // are best-effort: `book -p … 2>&1 | head` must not crash the run with an unhandled EPIPE,
         // which also skipped its SessionEnd hooks. `stream-json` writes stdout for the whole run,
         // so a closed stdout there means the host has gone: abort the run rather than keep
-        // editing files for no one. Like any cancelled print run, it then ends without SessionEnd.
+        // editing files for no one. Like any cancelled print run, it still runs SessionEnd, with
+        // reason `aborted`.
         const printFormat = options.outputFormat as 'text' | 'json' | 'stream-json';
         const readerGone = new AbortController();
         const callerSignal = options.signal as AbortSignal | undefined;
@@ -278,8 +279,11 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       } finally {
         await disconnectMcpServers(mcp.connections);
       }
+      // Not `exit(1)`: a failed run returns like a successful one and only marks the exit
+      // code, so Node exits once the provider's pooled sockets have closed. Exiting while
+      // they are still closing aborts inside libuv on Windows, with exit code 127 (#243).
       if (result?.outcome.status === 'failed') {
-        exit(1);
+        setExitCode(1);
       }
       return;
     }

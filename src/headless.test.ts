@@ -1608,3 +1608,98 @@ describe('runHeadless — resumed file observations', () => {
     expect(bodies[1]).toContain('only been outlined');
   });
 });
+
+describe('runHeadless — SessionEnd on an aborted run (#248)', () => {
+  /** The SessionEnd `hook_event` records a stream-json run wrote. */
+  function sessionEndRecords(writes: string[]): Array<{ reason?: string }> {
+    return writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { type?: string; event?: string; reason?: string })
+      .filter((record) => record.type === 'hook_event' && record.event === 'SessionEnd');
+  }
+
+  function sessionEndConfig(): AgentConfig {
+    const config = freshConfig({ workspace: makeWorkspace() });
+    config.settings.hooks.SessionEnd = [{ command: 'exit 0', env: {} }];
+    return config;
+  }
+
+  function streamOptions(signal: AbortSignal | undefined, writes: string[]) {
+    return {
+      prompt: 'go',
+      inputFormat: 'text' as const,
+      outputFormat: 'stream-json' as const,
+      includeHookEvents: true,
+      history: [],
+      mode: 'bypassPermissions' as const,
+      sessionId: 'session-under-test',
+      signal,
+      stdout: {
+        write: (s: string) => {
+          writes.push(s);
+          return true;
+        },
+      },
+    };
+  }
+
+  it('runs SessionEnd once, with reason aborted, when the abort lands inside a tool', async () => {
+    const controller = new AbortController();
+    const registry = createRegistry();
+    registry.register({
+      name: 'AbortRun',
+      description: 'Abort the run while this tool executes.',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        controller.abort();
+        return toolSuccess('aborted');
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sse([toolDelta('call-1', 'AbortRun', {})])),
+    );
+    const writes: string[] = [];
+
+    await expect(
+      runHeadless(sessionEndConfig(), registry, streamOptions(controller.signal, writes)),
+    ).rejects.toThrow();
+
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['aborted']);
+  });
+
+  it('reports reason aborted when an aborted run ends with a cancelled outcome', async () => {
+    const controller = new AbortController();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        controller.abort();
+        return sse([]);
+      }),
+    );
+    const writes: string[] = [];
+
+    const result = await runHeadless(
+      sessionEndConfig(),
+      createDefaultRegistry(),
+      streamOptions(controller.signal, writes),
+    );
+
+    expect(result.outcome.status).toBe('cancelled');
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['aborted']);
+  });
+
+  it('keeps reason completion for a run nothing aborted', async () => {
+    const writes: string[] = [];
+
+    await runHeadless(
+      sessionEndConfig(),
+      createDefaultRegistry(),
+      streamOptions(new AbortController().signal, writes),
+    );
+
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['completion']);
+  });
+});

@@ -98,6 +98,8 @@ export async function runHeadless(
   };
   /** Set once the run's liveness file exists; released in the outer `finally`. */
   let disposeCrashHandlers: (() => void) | undefined;
+  /** The session SessionStart ran for, so a run that throws on abort still ends it. */
+  let startedSessionId: string | undefined;
   const agentSession = new AgentSession({
     // The transcript is the rendered conversation and still carries the tool
     // records compaction summarized out of the context history, so prefer it
@@ -168,6 +170,7 @@ export async function runHeadless(
           onHookEvent: createHookEventHandler(opts, emit),
         },
       );
+      startedSessionId = sessionId;
     }
     const runtimeSessionId = sessionId ?? crypto.randomUUID();
 
@@ -985,12 +988,35 @@ export async function runHeadless(
     }
 
     if (sessionId) {
-      await agentSession.endLifecycle(config, sessionId, 'completion', {
-        onHookEvent: createHookEventHandler(opts, emit),
-      });
+      // An abort the loop absorbed still reaches this point, as a cancelled outcome.
+      await agentSession.endLifecycle(
+        config,
+        sessionId,
+        opts.signal?.aborted ? 'aborted' : 'completion',
+        { onHookEvent: createHookEventHandler(opts, emit) },
+      );
     }
 
     return result;
+  } catch (error) {
+    // An abort that lands inside a tool throws out of the loop instead (a hook call
+    // rethrows the aborted signal), and used to skip SessionEnd entirely: a cancelled
+    // print run, or a stream-json run whose reader went away, ended without it (#248).
+    // End the session SessionStart opened, then rethrow. `endLifecycle` fires at most
+    // once per session. It gets no signal, as in the TUI: the run's signal is the one
+    // that aborted, and every hook already runs under its own fresh 10 s timeout.
+    if (startedSessionId && opts.signal?.aborted) {
+      await agentSession
+        .endLifecycle(config, startedSessionId, 'aborted', {
+          onHookEvent: createHookEventHandler(opts, emit),
+        })
+        .catch((hookError: unknown) => {
+          console.warn(
+            `SessionEnd hook failed: ${hookError instanceof Error ? hookError.message : String(hookError)}`,
+          );
+        });
+    }
+    throw error;
   } finally {
     disposeCrashHandlers?.();
     agentSession.dispose('headless_complete');
