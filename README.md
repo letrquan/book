@@ -787,21 +787,28 @@ open `/config` and choose **Compact model** (shortcut `C`), or run
 `/config compact-model 9router/ag/gemini-3.6-flash-high` (or `/config compactModel=...`). Both
 reach the same place — the typed form is the menu row, not a separate write.
 
-`compactEffort` sets the reducer's reasoning effort. Left unset, the reducer runs at the session's
-effort capped at `medium`: a checkpoint does not need minutes of reasoning, and at `--effort max`
-on a slow route the reducer's request produced no byte for long enough that the proxy dropped it,
-ten times over. When the reducer model's catalog lists effort levels and that level is not one of
-them, it is clamped down to the highest listed level below it, never back up to the session's
-effort; a catalog with no level at or below it gets no effort at all, and on the Anthropic path
-its request then carries neither `thinking` nor `output_config`, so the model runs at its own
-default. On an OpenAI-compatible route the reducer sends `reasoning_effort` only when a level was
-chosen (`compactEffort`, or `--effort`, `BOOK_EFFORT` or `settings.effort`) or its catalog lists
-levels. With neither, as on the default `gpt-4o`, its request carries none, like the main agent's.
-The reducer's request is also retried at most twice before compaction falls back to the
-deterministic checkpoint, instead of the full `retry.maxAttempts`, and `retry.watchdog` does not
-lift that cap. These caps are the reducer's alone, because only compaction has a deterministic
-checkpoint to fall back to: memory extraction and the deferred-compaction judge also run on
-`compactModel`, and keep the session's effort and retry policy.
+`compactEffort` sets the reasoning effort of the requests made on the compact model: the reducer,
+memory extraction, and the deferred-compaction judge when its catalog refuses the `low` it asks
+for. Left unset, they run at the session's effort capped at `medium`. A checkpoint does not need
+minutes of reasoning, and at `--effort max` on a slow route the reducer's request produced no byte
+for long enough that the proxy dropped it, ten times over. Extraction answers inside a
+4,000-token limit that a reply at `max` could spend on reasoning alone. When the compact model's
+catalog lists effort levels and that level is not one of them, it is clamped down to the highest
+listed level below it, never back up to the session's effort. A catalog with no level at or below
+it, or one with `effort: false`, gets no effort at all. On the Anthropic path such a request
+carries neither `thinking` nor `output_config`, so the model runs at its own default: no thinking
+at all on Opus 4.6–4.8 and Sonnet 4.6, and adaptive thinking at the model's default effort on
+Opus 5 and 5.5, Fable 5 and Sonnet 5. On an OpenAI-compatible route the request sends
+`reasoning_effort` only when a level was chosen (`compactEffort`, or `--effort`, `BOOK_EFFORT` or
+`settings.effort`) or its catalog lists levels. With neither, as on the default `gpt-4o`, it
+carries none, like the main agent's.
+
+The reducer's and the judge's requests are also retried at most twice, instead of the full
+`retry.maxAttempts`, and `retry.watchdog` does not lift that cap. Both have a fallback: the
+reducer falls back to the deterministic checkpoint, and a failed judge leaves the verdict
+inconclusive, so the checkpoint is committed anyway. Memory extraction keeps the session's retry
+policy, because it gives up on a session after three failed starts. An empty reply, or one cut
+off at the output limit, counts as a failed start rather than as the session read.
 
 `toolDiscovery.mode` accepts `auto`, `eager`, or `deferred`. Auto mode sends all authorized definitions only when there are at most ten and their schemas fit the configured budget; otherwise the provider receives the practical core plus `ToolSearch`. Search never returns tools outside the current command, skill, agent-role, permission-mode, or runtime-state capability intersection.
 
@@ -1189,7 +1196,7 @@ Running children and background shells appear in one flat job panel directly bel
 
 `/agents` explains where subagent definitions are configured rather than opening a second runtime dashboard. Import third-party Claude-style definitions with `/agents import <path>` to preview normalized tools and warnings, then `/agents import --confirm <path>` to install under `.book/agents/`. The lower-level `/agent <id>`, `/agent send <id> <message>`, `/agent stop <id>`, and `/agent apply <id> [evidence-id]` commands remain available for direct scripting and recovery.
 
-Profile model precedence is invocation override, `agents.profiles.<name>.model`, definition frontmatter, then the parent model. `inherit` falls through rather than becoming a literal provider model. Profile effort precedence is `agents.profiles.<name>.effort`, definition frontmatter, then the session's effort. On an OpenAI-compatible route a child sends it as `reasoning_effort` only when one of those chose a level (for the session: `--effort`, `BOOK_EFFORT` or `settings.effort`) or its model's catalog lists that level, so with nothing configured a child on a model with no catalog entry sends none, like the main agent. Stream-json and SDK hosts receive status, activity, question, permission, completion, and evidence events by default; high-volume child text deltas require `forwardSubagentText`.
+Profile model precedence is invocation override, `agents.profiles.<name>.model`, definition frontmatter, then the parent model. `inherit` falls through rather than becoming a literal provider model. Profile effort precedence is `agents.profiles.<name>.effort`, definition frontmatter, then the session's effort, clamped down to the highest level the child model's catalog lists at or below it. On an OpenAI-compatible route a child sends it as `reasoning_effort` only when one of those chose a level (for the session: `--effort`, `BOOK_EFFORT` or `settings.effort`) or its model's catalog lists that level, so with nothing configured a child on a model with no catalog entry sends none, like the main agent. Stream-json and SDK hosts receive status, activity, question, permission, completion, and evidence events by default; high-volume child text deltas require `forwardSubagentText`.
 
 > Snapshot privacy: non-ignored untracked files are written into the local Git object database so managed worktrees can reproduce the parent state. Ignore secrets and other sensitive local files before enabling agents. Dismissing or aging out an agent removes its managed worktree, branch, and orphaned snapshot ref. Agent telemetry stores metrics and hashes only, never prompts or file contents.
 

@@ -22,7 +22,7 @@ import type {
 } from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
 import { createProvider, type Provider } from '../provider/index.js';
-import { resolveCompactModelConfig, resolveReducerModelConfig } from '../config.js';
+import { resolveReducerModelConfig } from '../config.js';
 import { isContextOverflowError } from '../provider/reliability.js';
 import { runHooks } from '../hooks.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
@@ -2853,7 +2853,9 @@ export async function judgeCompaction(
     ...(suspectDelta ? { suspectDelta } : {}),
   });
   if (steps.length === 0) return inconclusive('no-delta', 0);
-  const judgeConfig = resolveCompactModelConfig(config);
+  // The reducer's caps: a judge that fails leaves the verdict inconclusive and the
+  // checkpoint is committed anyway, so ten attempts would only hold up the next turn.
+  const judgeConfig = resolveReducerModelConfig(config);
   const provider = options.provider ?? createProvider(judgeConfig);
   // Everything ahead of the steps is the context the agent will read after
   // the replacement: the carried turns, the checkpoint, and the retained tail,

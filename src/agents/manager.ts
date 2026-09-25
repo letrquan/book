@@ -12,6 +12,7 @@ import { runAgentLoop } from '../agent/loop.js';
 import { runCompact, usagePressureTokens } from '../agent/compact.js';
 import {
   applyModelDefaults,
+  clampEffortToCatalog,
   resolveEffortExplicit,
   resolveModelProviderConfig,
 } from '../config.js';
@@ -1025,6 +1026,8 @@ export class AgentManager {
     // A follow-up run is the parent's, not the spawner's: a Task child's first run is handed
     // back by Task itself (notifyParentOnCompletion: false), but nothing is waiting on this one.
     record.notifyParentOnCompletion = undefined;
+    // Nor does it die with the spawner: `/review`'s no-resume mark covered only its own run.
+    record.resumeAfterRestart = undefined;
     record.pendingMessages = [];
     record.error = undefined;
     record.result = undefined;
@@ -1476,15 +1479,19 @@ export class AgentManager {
           resolveModelProviderConfig(agentConfig, record.resolvedModel),
         );
       }
-      // The effort value is kept; whether the request sends it follows the reducer's
-      // rule: a level chosen for this child, by its profile or for the session, or one
-      // its model's catalog lists. The session's default `high` is neither, and a strict
-      // endpoint answers it on a model that does not reason with a 400 (#245).
+      // The effort is clamped to the child model's catalog, as the reducer's is: `--effort
+      // max` must not reach a model that lists nothing above `high`. Whether the request
+      // sends it follows the reducer's rule: a level chosen for this child, by its profile
+      // or for the session, or one its model's catalog lists. The session's default `high`
+      // is neither, and a strict endpoint answers it on a model that does not reason with a
+      // 400 (#245).
+      const childEffort = clampEffortToCatalog(agentConfig, agentConfig.effort);
       agentConfig = {
         ...agentConfig,
+        effort: childEffort,
         effortExplicit: resolveEffortExplicit(
           agentConfig,
-          agentConfig.effort,
+          childEffort,
           resolvedProfile.effortExplicit,
         ),
       };
@@ -1790,6 +1797,8 @@ export class AgentManager {
           record.prompt = record.pendingMessages.shift()!;
           record.status = 'queued';
           record.finishedAt = undefined;
+          // A follow-up queued during the run is the parent's, not the review's.
+          record.resumeAfterRestart = undefined;
           this.queue.push(record.id);
           this.persist(record);
         } else {
@@ -1858,6 +1867,7 @@ export class AgentManager {
         record.finishedAt = undefined;
         // The run that just ended was the spawner's to hand back; this follow-up is the parent's.
         record.notifyParentOnCompletion = undefined;
+        record.resumeAfterRestart = undefined;
         this.queue.push(record.id);
         this.persist(record);
       }

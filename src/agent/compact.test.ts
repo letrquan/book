@@ -2538,7 +2538,7 @@ describe('judgeCompaction', () => {
     expect(judgeConfig.effortExplicit).toBeFalsy();
   });
 
-  it("keeps the session's retry policy, which only the reducer caps (#245)", async () => {
+  it("gives the judge the reducer's retry caps, since a failed judge only leaves the verdict inconclusive (#245)", async () => {
     const { applied: result, delta } = await applied();
     judgeReply('{"sufficient": true}');
     const base = makeConfig();
@@ -2548,7 +2548,20 @@ describe('judgeCompaction', () => {
       delta,
     );
     const [judgeConfig] = mockedStream.mock.calls.at(-1)!;
-    expect(judgeConfig.retry).toMatchObject({ maxAttempts: 10, watchdog: true });
+    expect(judgeConfig.retry).toMatchObject({ maxAttempts: 2, watchdog: false });
+  });
+
+  it('keeps the judge below medium effort when its catalog refuses low (#245)', async () => {
+    const { applied: result, delta } = await applied();
+    judgeReply('{"sufficient": true}');
+    const config = makeConfig({
+      modelInfo: { contextWindow: 200_000, effort: { levels: ['medium', 'high', 'max'] } },
+      effort: 'max',
+      effortExplicit: true,
+    });
+    await judgeCompaction(config, result, delta);
+    const [judgeConfig] = mockedStream.mock.calls.at(-1)!;
+    expect(judgeConfig.effort).toBe('medium');
   });
 
   it('leaves the reasoning out of the steps it shows the judge, and refuses a prompt that would not fit', async () => {

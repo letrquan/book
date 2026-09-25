@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   applyModelDefaults,
+  clampEffortToCatalog,
   freezeAgentConfig,
   loadConfig,
   resolveCompactModelConfig,
@@ -749,7 +750,7 @@ describe('loadConfig provider registry', () => {
     expect(reducer.retry.watchdog).toBe(false);
   });
 
-  it('leaves the compact model uncapped for callers other than the reducer (#245)', () => {
+  it("caps the compact model's effort for every caller, but only the reducer's and the judge's retries (#245)", () => {
     const config = defaultConfig({
       effort: 'max',
       effortExplicit: true,
@@ -766,6 +767,7 @@ describe('loadConfig provider registry', () => {
                 maxOutputTokens: 4096,
                 effort: { default: 'medium', levels: ['low', 'medium', 'high', 'max'] },
               },
+              plain: { maxOutputTokens: 4096, effort: false },
             },
           },
         },
@@ -773,15 +775,34 @@ describe('loadConfig provider registry', () => {
     });
     const withRetry = { ...config, retry: { ...config.retry, maxAttempts: 10, watchdog: true } };
 
-    // Memory extraction and the judge: routing and model defaults only.
+    // Memory extraction: the effort is capped at medium, the retry policy is the session's.
     const compact = resolveCompactModelConfig(withRetry);
-    expect(compact).toMatchObject({ model: 'flash', effort: 'max', effortExplicit: true });
+    expect(compact).toMatchObject({ model: 'flash', effort: 'medium', effortExplicit: true });
     expect(compact.retry).toMatchObject({ maxAttempts: 10, watchdog: true });
 
-    // The reducer alone is capped.
+    // A compact model whose catalog takes no effort gets none, whatever the session asked for.
+    const plain = resolveCompactModelConfig({ ...withRetry, compactModel: 'reducer/plain' });
+    expect(plain.model).toBe('plain');
+    expect(plain.effort).toBeUndefined();
+    expect(plain.effortExplicit).toBe(false);
+
+    // The reducer and the judge also retry at most twice, without the watchdog.
     const reducer = resolveReducerModelConfig(withRetry);
     expect(reducer).toMatchObject({ model: 'flash', effort: 'medium', effortExplicit: true });
     expect(reducer.retry).toMatchObject({ maxAttempts: 2, watchdog: false });
+  });
+
+  it('clamps an effort down to the catalog and leaves an uncatalogued model alone', () => {
+    const listed = defaultConfig({ modelInfo: { effort: { levels: ['low', 'medium', 'high'] } } });
+    expect(clampEffortToCatalog(listed, 'max')).toBe('high');
+    expect(clampEffortToCatalog(listed, 'medium')).toBe('medium');
+    expect(clampEffortToCatalog(listed, undefined)).toBeUndefined();
+    const highOnly = defaultConfig({ modelInfo: { effort: { levels: ['high'] } } });
+    expect(clampEffortToCatalog(highOnly, 'low')).toBeUndefined();
+    const none = defaultConfig({ modelInfo: { effort: false } });
+    expect(clampEffortToCatalog(none, 'high')).toBeUndefined();
+    const bare = defaultConfig({ modelInfo: undefined });
+    expect(clampEffortToCatalog(bare, 'max')).toBe('max');
   });
 
   it('sends an effort only when a level was chosen or the catalog lists it', () => {

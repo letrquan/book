@@ -1393,6 +1393,83 @@ describe('AgentManager lifecycle', () => {
     manager.dispose();
   });
 
+  it("clamps a child's chosen effort to its model's catalog (#245)", async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root, effort: 'max', effortExplicit: true });
+    config.settings.agents.persist = false;
+    config.settings.provider = {
+      gateway: {
+        type: 'openai',
+        baseURL: 'https://gateway.example/v1',
+        apiKey: 'gateway-key',
+        models: { capped: { effort: { levels: ['low', 'medium', 'high'] } } },
+      },
+    };
+    config.settings.agents.profiles.explorer = { model: 'gateway/capped' };
+    const childConfigs: AgentConfig[] = [];
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (nextConfig, _registry, _prompt, history) => {
+        childConfigs.push(nextConfig);
+        return history;
+      },
+    });
+
+    const record = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+    await manager.wait(record.id, 1000);
+    // `--effort max` is chosen, but the child model lists nothing above `high`.
+    expect(childConfigs[0]).toMatchObject({
+      model: 'capped',
+      effort: 'high',
+      effortExplicit: true,
+    });
+    manager.dispose();
+  });
+
+  it('lets a follow-up to a /review agent resume after a restart again (#245)', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, prompt, history) => {
+        if (prompt === 'review this') await gate;
+        return history;
+      },
+    });
+    const runner = reviewRunnerFor(manager);
+
+    // A follow-up sent while the review's own run is going is queued behind it.
+    const queued = await runner.spawn('explorer', 'review this');
+    await vi.waitFor(async () => expect((await manager.get(queued.id))?.status).toBe('running'));
+    expect((await manager.get(queued.id))?.resumeAfterRestart).toBe(false);
+    await manager.send(queued.id, 'queued follow-up');
+    release();
+    // The review's run completes before the SubagentStop hook, and only then is the
+    // follow-up re-queued, so wait for the follow-up's own run to complete.
+    await vi.waitFor(async () =>
+      expect(await manager.get(queued.id)).toMatchObject({
+        prompt: 'queued follow-up',
+        status: 'completed',
+      }),
+    );
+    expect((await manager.get(queued.id))?.resumeAfterRestart).toBeUndefined();
+
+    // A follow-up sent after the review's run finished starts a run of its own.
+    const finished = await runner.spawn('explorer', 'quick look');
+    await manager.wait(finished.id, 1000);
+    expect((await manager.get(finished.id))?.resumeAfterRestart).toBe(false);
+    await manager.send(finished.id, 'please continue');
+    expect((await manager.get(finished.id))?.resumeAfterRestart).toBeUndefined();
+    manager.dispose();
+  });
+
   it('refreshes and normalizes its permission mode when config or host mode changes', async () => {
     const root = tempRoot();
     const config = defaultConfig({ workspace: root });
