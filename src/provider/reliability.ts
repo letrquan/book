@@ -79,14 +79,18 @@ export function wrappedUpstreamStatus(status: number, body: string): number | un
 const CONTEXT_OVERFLOW_ERROR_NAMES: ReadonlySet<string> = new Set([
   'context_length_exceeded',
   'request_too_large',
+  // llama.cpp's server.
+  'exceed_context_size_error',
 ]);
 
 /**
  * The message and the `code` / `type` names of a provider's error body. The
  * message is `error.message` (or `error` itself when it is a string), else a
  * top-level `message` or `detail`; a body that is not JSON is its own message.
+ * `raw` is the upstream's own error body that OpenRouter forwards in
+ * `error.metadata.raw`.
  */
-function errorBodyParts(body: string): { message: string; names: string[] } {
+function errorBodyParts(body: string): { message: string; names: string[]; raw?: string } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -108,9 +112,11 @@ function errorBodyParts(body: string): { message: string; names: string[] } {
       : typeof fallback === 'string'
         ? fallback
         : '';
+  const metadata = source.metadata as { raw?: unknown } | null | undefined;
   return {
     message,
     names: [source.code, source.type].filter((name): name is string => typeof name === 'string'),
+    raw: typeof metadata?.raw === 'string' ? metadata.raw : undefined,
   };
 }
 
@@ -120,13 +126,16 @@ function errorBodyParts(body: string): { message: string; names: string[] } {
  * (`isContextOverflowError`). Only the message is read for wording, never the
  * rest of the body: a field path such as `contents[413]` or an id such as
  * `req-413-x` elsewhere in a 400 says nothing about the context window, and a
- * stated overflow permanently lowers the model's learned window.
+ * stated overflow permanently lowers the model's learned window. OpenRouter's
+ * own message is generic (`Provider returned error`), so the upstream body it
+ * forwards is read the same way; each level is shorter than the last.
  */
 function statesContextOverflow(body: string): boolean {
-  const { message, names } = errorBodyParts(body);
+  const { message, names, raw } = errorBodyParts(body);
   return (
     names.some((name) => CONTEXT_OVERFLOW_ERROR_NAMES.has(name.toLowerCase())) ||
-    isContextOverflowError(message)
+    isContextOverflowError(message) ||
+    (raw !== undefined && statesContextOverflow(raw))
   );
 }
 
@@ -187,7 +196,10 @@ export function isContextOverflowError(error: unknown): boolean {
     /prompt\s+is\s+too\s+long/.test(normalized) ||
     /input\s+(?:is\s+)?too\s+long/.test(normalized) ||
     normalized.includes('too many tokens') ||
-    /input\s+(?:token\s+count\s+)?exceeds?.*(?:context|limit|maximum)/.test(normalized) ||
+    // Gemini names the count: `The input token count (1196266) exceeds the maximum …`.
+    /input\s+(?:token\s+count\s+)?(?:\(\d+\)\s+)?exceeds?.*(?:context|limit|maximum)/.test(
+      normalized,
+    ) ||
     /input\s+exceeds?.*(?:context\s+window|context\s+length|token\s+limit)/.test(normalized) ||
     /maximum\s+context|context\s+(?:length|window|size).*(?:exceed|overflow|too\s+(?:long|large)|maximum)/.test(
       normalized,
@@ -205,7 +217,10 @@ const ERROR_ENVELOPE_MAX_CHARS = 2_000;
 
 type EnvelopeUsage = { promptTokens: number; completionTokens: number } | null;
 
-/** Zero tokens both ways: the router wrote the text, no model did. */
+/**
+ * Zero tokens both ways: what a router reports for text it wrote itself, and what
+ * a provider that does not report usage sends.
+ */
 function isZeroUsage(usage?: EnvelopeUsage): boolean {
   return usage != null && usage.promptTokens === 0 && usage.completionTokens === 0;
 }
@@ -217,8 +232,8 @@ function isZeroUsage(usage?: EnvelopeUsage): boolean {
  * when it has no message) and ends the stream there. When a model may have
  * written the text, the envelope must be the whole answer: one `[Error] …` line.
  * An answer that quotes such a line and goes on to explain it is an answer. With
- * 0/0 usage no model wrote a word, so any answer that opens with `[Error]` is the
- * router's, however many lines it runs to.
+ * 0/0 usage any answer that opens with `[Error]` is read as the router's, however
+ * many lines it runs to.
  */
 export function isErrorEnvelopeShape(text: string, usage?: EnvelopeUsage): boolean {
   if (isZeroUsage(usage)) return /^\s*\[Error\]/i.test(text);

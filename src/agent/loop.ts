@@ -1477,6 +1477,10 @@ export async function runAgentLoop(
               const result = await callbacks.onCompact(newHistory, estimatedUsage, {
                 recovery: true,
                 requestOverheadTokens: lastRequestEstimate?.overheadTokens,
+                // Planned below the size just refused. A size-inferred overflow leaves
+                // the learned window alone, so without this the reducer's first request
+                // would be nearly as large as the refused one.
+                planningWindowCap: Math.floor(requestTokens * LEARNED_WINDOW_SAFETY_MARGIN),
               });
               if (result.status === 'compacted') {
                 newHistory.length = 0;

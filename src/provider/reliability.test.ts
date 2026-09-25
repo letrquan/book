@@ -579,6 +579,66 @@ describe('stated context overflow (#244)', () => {
     expect(classifyApiError(413, 'anything')).toBe('context_overflow');
   });
 
+  // Overflow bodies as the providers send them. Each row is part of the contract.
+  const geminiOverflow = {
+    error: {
+      code: 400,
+      message:
+        'The input token count (1196266) exceeds the maximum number of tokens allowed (1048576).',
+      status: 'INVALID_ARGUMENT',
+    },
+  };
+  const providerOverflows: Array<[string, number, string]> = [
+    ['Gemini', 400, JSON.stringify(geminiOverflow)],
+    ['Gemini through its OpenAI-compatible endpoint', 400, JSON.stringify([geminiOverflow])],
+    [
+      '9router wrapping Gemini in a 503',
+      503,
+      JSON.stringify({
+        error: {
+          message: `[antigravity/gemini-3.8-flash-high] [400]: ${JSON.stringify(geminiOverflow)} (reset after 29s)`,
+        },
+      }),
+    ],
+    [
+      'llama.cpp',
+      400,
+      JSON.stringify({
+        error: {
+          code: 400,
+          message: 'the request exceeds the available context size, try increasing it',
+          type: 'exceed_context_size_error',
+          n_prompt_tokens: 40000,
+          n_ctx: 32768,
+        },
+      }),
+    ],
+    [
+      'OpenRouter forwarding Anthropic in metadata.raw',
+      400,
+      JSON.stringify({
+        error: {
+          message: 'Provider returned error',
+          code: 400,
+          metadata: {
+            raw: JSON.stringify({
+              type: 'error',
+              error: {
+                type: 'invalid_request_error',
+                message: 'prompt is too long: 250000 tokens > 200000 maximum',
+              },
+            }),
+            provider_name: 'Anthropic',
+          },
+        },
+      }),
+    ],
+  ];
+
+  it.each(providerOverflows)('reads the overflow %s sends', (_name, status, body) => {
+    expect(classifyApiError(status, body)).toBe('context_overflow');
+  });
+
   it('reads 413 only where it is named as a status', () => {
     for (const text of [
       'API Error: 413 request entity too large',

@@ -3,7 +3,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { requiresToolPermission, runAgentLoop } from './loop.js';
-import { applyCompactResult, estimateHistoryTokens, resolveCompactBudgets } from './compact.js';
+import {
+  applyCompactResult,
+  estimateHistoryTokens,
+  estimateProviderRequestTokens,
+  resolveCompactBudgets,
+  runCompact,
+} from './compact.js';
 import { createDefaultRegistry, createRegistry } from '../tools/registry.js';
 import { defaultConfig, userMsg } from '../test/fixtures.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
@@ -5891,6 +5897,79 @@ describe('content filter and upstream error recoveries', () => {
     expect(result.at(-1)?.content).toBe('recovered');
   });
 
+  it('plans the recovery compaction below the refused size without lowering the learned window', async () => {
+    const plainBadRequest = JSON.stringify({
+      error: {
+        message:
+          '[400]: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}',
+        code: 'bad_request',
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(plainBadRequest, { status: 400 })),
+    );
+    // ~330k estimated tokens on a 1M-window model whose route refuses at ~300k.
+    const model = 'ag/gemini-3.8-flash-high';
+    const store = new MemoryModelWindowStore();
+    const config = defaultConfig({ maxTurns: 1, model, modelWindowStore: store });
+    const history: Message[] = [];
+    for (let i = 0; i < 40; i++) {
+      history.push({
+        id: `u${i}`,
+        role: 'user',
+        content: `step ${i}: continue`,
+        includeInContext: true,
+        timestamp: i,
+      });
+      history.push({
+        id: `a${i}`,
+        role: 'assistant',
+        content: `analysis ${i} `.repeat(2_750),
+        includeInContext: true,
+        timestamp: i,
+      });
+    }
+    const refusedTokens: number[] = [];
+    const reducerRequestTokens: number[] = [];
+    const reducer: Provider = {
+      id: 'reducer',
+      stream: async function* (_config, messages, tools) {
+        reducerRequestTokens.push(estimateProviderRequestTokens(messages, tools));
+        yield {
+          type: 'error',
+          error: 'API Error: 400 [400]: INVALID_ARGUMENT',
+          errorCode: 'bad_request',
+        };
+      },
+    };
+
+    await runAgentLoop(
+      config,
+      createRegistry(),
+      'next step',
+      history,
+      noopCallbacks({
+        onCompact: async (compactHistory, usage, hints) => {
+          refusedTokens.push(usage?.promptTokens ?? 0);
+          return runCompact(config, compactHistory, {
+            trigger: 'auto',
+            ...hints,
+            provider: reducer,
+          });
+        },
+      }),
+      'default',
+      { isNewSession: false, modelWindowStore: store },
+    );
+
+    expect(refusedTokens[0]).toBeGreaterThan(300_000);
+    expect(reducerRequestTokens.length).toBeGreaterThan(0);
+    // Planned against at most 80% of the refused size, not the 1M the model publishes.
+    expect(reducerRequestTokens[0]).toBeLessThanOrEqual(Math.floor(refusedTokens[0] * 0.8));
+    expect(store.get(model)).toBeUndefined();
+  });
+
   it('compacts a 503-wrapped quoted 400 on a large request without lowering the learned window', async () => {
     const nineRouterBody =
       'API Error: 503 [antigravity/...] [400]: {"error":{"code":400,"status":"INVALID_ARGUMENT",...}} (reset after 29s)';
@@ -5977,7 +6056,9 @@ describe('content filter and upstream error recoveries', () => {
     expect(errors[0]).toContain('INVALID_ARGUMENT');
   });
 
-  it('ends on the provider error when the same 400 repeats right after compacting', async () => {
+  it('recovers once per turn: an overflow right after compacting ends the run', async () => {
+    // The retry comes back as a stated overflow, which would compact again; only
+    // the once-per-turn guard (`forcedCompactTurn`) stops a second compaction.
     const plainBadRequest = JSON.stringify({
       error: {
         message:
@@ -5985,12 +6066,22 @@ describe('content filter and upstream error recoveries', () => {
         code: 'bad_request',
       },
     });
+    const statedOverflow = JSON.stringify({
+      error: {
+        message:
+          "This model's maximum context length is 128000 tokens. However, your messages resulted in 131072 tokens.",
+        type: 'invalid_request_error',
+        code: 'context_length_exceeded',
+      },
+    });
     let fetchCalls = 0;
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
         fetchCalls++;
-        return new Response(plainBadRequest, { status: 400 });
+        if (fetchCalls === 1) return new Response(plainBadRequest, { status: 400 });
+        if (fetchCalls === 2) return new Response(statedOverflow, { status: 400 });
+        return new Response(textStream('recovered'), { status: 200 });
       }),
     );
     const compact = vi.fn(async () => compactedForRetry());
@@ -6018,12 +6109,8 @@ describe('content filter and upstream error recoveries', () => {
     expect(compact).toHaveBeenCalledOnce();
     expect(fetchCalls).toBe(2);
     expect(outcomes).toHaveLength(1);
-    expect(outcomes[0]).toMatchObject({
-      status: 'failed',
-      reason: 'provider_error',
-      providerCode: 'bad_request',
-    });
-    expect(errors[0]).toContain('INVALID_ARGUMENT');
+    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'context_overflow' });
+    expect(errors[0]).toContain('maximum context length');
   });
 
   it('keeps a real answer that opens with a quoted router context error', async () => {
