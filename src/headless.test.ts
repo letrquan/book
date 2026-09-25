@@ -1738,12 +1738,13 @@ describe('runHeadless — SessionEnd on an aborted run (#248)', () => {
   });
 
   it('reports reason aborted when a signal timeout ends the run as timed out', async () => {
-    const signal = AbortSignal.timeout(50);
+    // The abort `AbortSignal.timeout` delivers, fired from inside the request so it
+    // always lands mid-run: a wall-clock timer could fire before the loop starts.
+    const controller = new AbortController();
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
-        // Still thinking when the timeout fires.
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        controller.abort(new DOMException('The operation timed out.', 'TimeoutError'));
         return sse([]);
       }),
     );
@@ -1752,7 +1753,7 @@ describe('runHeadless — SessionEnd on an aborted run (#248)', () => {
     const result = await runHeadless(
       sessionEndConfig(),
       createDefaultRegistry(),
-      streamOptions(signal, writes),
+      streamOptions(controller.signal, writes),
     );
 
     expect(result.outcome.status).toBe('timed_out');
