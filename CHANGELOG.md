@@ -43,6 +43,11 @@ All notable changes to this project are documented in this file.
     from before the first of them, so the Up still saw the typed text and walked the input
     history instead. The arrow keys now read the composer's value and history as the key ahead
     of them left them.
+  - **Ctrl+C right after typing clears the draft** (#250). The composer reported its draft to
+    the app only from an effect after each render, so a press between the render and that effect
+    saw an empty composer, armed the exit instead of clearing the draft, and the composer then
+    wrote its stale empty value back over it. The draft now reaches the app as it changes, and
+    the write-back after Alt shortcuts and Ctrl+E keeps the current text.
 
 - **undici 6 -> 8, with the DNS-rebinding guard re-proven rather than re-asserted.** The major had
   been pinned since dependabot #84 because `web-policy.test.ts` failed on it, and the failure looked

@@ -216,17 +216,40 @@ export function InputBar({
   const valueRef = useRef('');
   const historyRef = useRef<string[]>([]);
   const historyIndexRef = useRef(-1);
-  const setValue = useCallback((next: string) => {
-    valueRef.current = next;
-    setValueState(next);
+  const [attachments, setAttachmentsState] = useState<ImageAttachment[]>([]);
+  const attachmentsRef = useRef<ImageAttachment[]>([]);
+  // The draft reaches the app as each update is made, not only from the effect after the
+  // render: the app decides what Ctrl+C does from it, and a press between the render and that
+  // effect saw an empty composer and armed the exit instead of clearing the draft.
+  const onDraftChangeRef = useRef(onDraftChange);
+  onDraftChangeRef.current = onDraftChange;
+  const reportDraft = useCallback(() => {
+    const current = attachmentsRef.current;
+    onDraftChangeRef.current?.(valueRef.current, current.length > 0 ? current : undefined);
   }, []);
+  const setValue = useCallback(
+    (next: string) => {
+      valueRef.current = next;
+      setValueState(next);
+      reportDraft();
+    },
+    [reportDraft],
+  );
   const setHistory = useCallback((update: (current: string[]) => string[]) => {
     historyRef.current = update(historyRef.current);
   }, []);
   const setHistoryIndex = useCallback((next: number) => {
     historyIndexRef.current = next;
   }, []);
-  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  const setAttachments = useCallback(
+    (update: ImageAttachment[] | ((current: ImageAttachment[]) => ImageAttachment[])) => {
+      attachmentsRef.current =
+        typeof update === 'function' ? update(attachmentsRef.current) : update;
+      setAttachmentsState(attachmentsRef.current);
+      reportDraft();
+    },
+    [reportDraft],
+  );
   const [attachmentError, setAttachmentError] = useState<string | undefined>();
   const suggestion = compact ? 'Ask...' : 'Ask me anything...';
 
@@ -417,7 +440,7 @@ export function InputBar({
     // Filter out Alt/Meta-modified keys — they're shortcuts, not text input.
     // Preserve the editor value while the parent handles Alt/Meta shortcuts.
     if (key.meta) {
-      const preservedValue = value;
+      const preservedValue = valueRef.current;
       queueMicrotask(() => setValue(preservedValue));
       return;
     }
@@ -589,7 +612,7 @@ export function InputBar({
     // `isShortcutsToggleKey`), so gating on `key.ctrl` alone would swallow it here.
     if ((key.ctrl || isShortcutsToggleKey(_input, key)) && onGlobalShortcut) {
       if (onGlobalShortcut(_input, key)) {
-        const preservedValue = value;
+        const preservedValue = valueRef.current;
         queueMicrotask(() => setValue(preservedValue));
         return;
       }

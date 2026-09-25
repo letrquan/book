@@ -673,4 +673,48 @@ describe('idle Ctrl+C exit confirmation', () => {
     await waitForFrame(view, 'Editing queued input');
     expect(frameOf(view)).toContain('> second queued');
   });
+
+  /**
+   * Type a draft and step the event loop one check-phase task at a time until it renders, so the
+   * next key lands after the commit and before the effects that follow it, as on a slow runner.
+   */
+  async function typeDraftUntilRendered(view: ReturnType<typeof render>, text: string) {
+    view.stdin.write(text);
+    for (let turn = 0; turn < 100 && !frameOf(view).includes(`> ${text}`); turn++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(frameOf(view)).toContain(`> ${text}`);
+  }
+
+  // The second CI flake (#257): the app decided what Ctrl+C does from a draft the composer only
+  // reported from an effect, so a press between the render and that effect saw an empty
+  // composer, armed the exit, and the composer wrote its stale empty value back over the draft.
+  it('Ctrl+C right after a draft renders clears it instead of arming the exit window', async () => {
+    const { view, state, rerenderWith } = await startIdleApp();
+    await typeDraftUntilRendered(view, 'unsent draft');
+
+    view.stdin.write('\x03');
+    await waitForFrameWithout(view, '> unsent draft');
+    rerenderWith({});
+
+    expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
+    expect(state.endCurrentSession).not.toHaveBeenCalled();
+  });
+
+  // The same stale write-back after the shortcuts the composer forwards to the app.
+  it.each([
+    ['Alt+M', '\x1bm'],
+    ['Ctrl+E', '\x05'],
+  ])('%s right after a draft renders keeps the draft', async (_name, sequence) => {
+    const { view, rerenderWith } = await startIdleApp();
+    await typeDraftUntilRendered(view, 'kept draft');
+
+    view.stdin.write(sequence);
+    for (let turn = 0; turn < 20; turn++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    rerenderWith({});
+
+    expect(frameOf(view)).toContain('> kept draft');
+  });
 });
