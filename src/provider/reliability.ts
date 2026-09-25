@@ -16,6 +16,7 @@ export type ProviderErrorCode =
   | 'auth'
   | 'bad_request'
   | 'not_found'
+  | 'unprocessable'
   | 'quota'
   | 'unknown';
 
@@ -32,6 +33,7 @@ export function classifyHttpStatus(status: number): {
   if (status === 402) return { code: 'quota', retryable: false };
   if (status === 400) return { code: 'bad_request', retryable: false };
   if (status === 404) return { code: 'not_found', retryable: false };
+  if (status === 422) return { code: 'unprocessable', retryable: false };
   return { code: 'unknown', retryable: false };
 }
 
@@ -73,9 +75,64 @@ export function wrappedUpstreamStatus(status: number, body: string): number | un
   return classifyHttpStatus(status).retryable ? quotedUpstreamStatus(body) : undefined;
 }
 
+/** `error.code` or `error.type` values that name a context overflow outright. */
+const CONTEXT_OVERFLOW_ERROR_NAMES: ReadonlySet<string> = new Set([
+  'context_length_exceeded',
+  'request_too_large',
+]);
+
+/**
+ * The message and the `code` / `type` names of a provider's error body. The
+ * message is `error.message` (or `error` itself when it is a string), else a
+ * top-level `message` or `detail`; a body that is not JSON is its own message.
+ */
+function errorBodyParts(body: string): { message: string; names: string[] } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return { message: body, names: [] };
+  }
+  const root: unknown = Array.isArray(parsed) ? parsed[0] : parsed;
+  if (typeof root !== 'object' || root === null) return { message: body, names: [] };
+  const error: unknown = (root as { error?: unknown }).error;
+  if (typeof error === 'string') return { message: error, names: [] };
+  const source = (typeof error === 'object' && error !== null ? error : root) as Record<
+    string,
+    unknown
+  >;
+  const fallback = (root as { detail?: unknown }).detail;
+  const message =
+    typeof source.message === 'string'
+      ? source.message
+      : typeof fallback === 'string'
+        ? fallback
+        : '';
+  return {
+    message,
+    names: [source.code, source.type].filter((name): name is string => typeof name === 'string'),
+  };
+}
+
+/**
+ * True when an error body states that the input is too large: its `error.code`
+ * or `error.type` names an overflow, or its message says so
+ * (`isContextOverflowError`). Only the message is read for wording, never the
+ * rest of the body: a field path such as `contents[413]` or an id such as
+ * `req-413-x` elsewhere in a 400 says nothing about the context window, and a
+ * stated overflow permanently lowers the model's learned window.
+ */
+function statesContextOverflow(body: string): boolean {
+  const { message, names } = errorBodyParts(body);
+  return (
+    names.some((name) => CONTEXT_OVERFLOW_ERROR_NAMES.has(name.toLowerCase())) ||
+    isContextOverflowError(message)
+  );
+}
+
 export function classifyApiError(status: number, body: string): ProviderErrorCode {
   const code = classifyHttpStatus(wrappedUpstreamStatus(status, body) ?? status).code;
-  return code === 'bad_request' && isContextOverflowError(body) ? 'context_overflow' : code;
+  return code === 'bad_request' && statesContextOverflow(body) ? 'context_overflow' : code;
 }
 
 export function classifyProviderError(error: unknown): ProviderErrorCode {
@@ -110,11 +167,16 @@ export function formatApiError(status: number, body: string): string {
   }
 }
 
-/** Detect provider/router responses that mean the input, rather than transport, is too large. */
+/**
+ * Detect provider/router responses that mean the input, rather than transport, is
+ * too large. A 413 counts only where it is named as a status (`API Error: 413`,
+ * `HTTP 413`, `status 413`, `Error code: 413`), never as a bare number: a field
+ * path such as `contents[413]` or an id such as `req-413-x` is not one.
+ */
 export function isContextOverflowError(error: unknown): boolean {
   const normalized = (error instanceof Error ? error.message : String(error)).toLowerCase();
   return (
-    /\b(?:api error:\s*)?413\b/.test(normalized) ||
+    /\b(?:api\s+error|http|(?:error|status)(?:\s+code)?)\s*:?\s*413\b/.test(normalized) ||
     normalized.includes('request entity too large') ||
     normalized.includes('payload too large') ||
     normalized.includes('request too large') ||
@@ -135,21 +197,31 @@ export function isContextOverflowError(error: unknown): boolean {
 }
 
 /**
- * The longest text still read as an error envelope rather than an answer.
- * OpenAI's server-error sentence is about 260 characters, and a JSON-rendered
- * upstream error rarely passes 1,000.
+ * The longest text still read as an error envelope rather than an answer when a
+ * model may have written it. OpenAI's server-error sentence is about 260
+ * characters, and a JSON-rendered upstream error rarely passes 1,000.
  */
 const ERROR_ENVELOPE_MAX_CHARS = 2_000;
 
+type EnvelopeUsage = { promptTokens: number; completionTokens: number } | null;
+
+/** Zero tokens both ways: the router wrote the text, no model did. */
+function isZeroUsage(usage?: EnvelopeUsage): boolean {
+  return usage != null && usage.promptTokens === 0 && usage.completionTokens === 0;
+}
+
 /**
  * True when `text` has the shape a router gives an upstream error it renders as
- * the answer: the whole answer is one `[Error] …` line. 9router's Responses
- * translator writes an upstream `error` or `response.failed` event as
- * `[Error] <message>` (or the error object as JSON when it has no message) and
- * ends the stream there, so an envelope is never one line of a longer reply. An
- * answer that quotes an `[Error]` line and goes on to explain it is an answer.
+ * the answer. 9router's Responses translator writes an upstream `error` or
+ * `response.failed` event as `[Error] <message>` (or the error object as JSON
+ * when it has no message) and ends the stream there. When a model may have
+ * written the text, the envelope must be the whole answer: one `[Error] …` line.
+ * An answer that quotes such a line and goes on to explain it is an answer. With
+ * 0/0 usage no model wrote a word, so any answer that opens with `[Error]` is the
+ * router's, however many lines it runs to.
  */
-export function isErrorEnvelopeShape(text: string): boolean {
+export function isErrorEnvelopeShape(text: string, usage?: EnvelopeUsage): boolean {
+  if (isZeroUsage(usage)) return /^\s*\[Error\]/i.test(text);
   const trimmed = text.trim();
   return (
     trimmed.length <= ERROR_ENVELOPE_MAX_CHARS &&
@@ -161,23 +233,19 @@ export function isErrorEnvelopeShape(text: string): boolean {
 /**
  * A router that answers 200 with the upstream's error as the assistant text has
  * not answered. The envelope shape (`isErrorEnvelopeShape`) is required; then
- * either a usage block reporting zero tokens both ways (the router wrote the
- * text, no model did) or the upstream's own server-error wording confirms it.
- * The supported shapes are the table in `reliability.test.ts`:
+ * either a usage block reporting zero tokens both ways or the upstream's own
+ * server-error wording confirms it. The supported shapes are the table in
+ * `reliability.test.ts`:
  *   - OpenAI's `[Error] An error occurred while processing your request. …
  *     help.openai.com … Please include the request ID <id> in your message.`,
  *     whatever the usage says;
  *   - any other one-line server error that names its request ID;
- *   - any one-line `[Error] …` with 0/0 usage.
+ *   - with 0/0 usage, any answer that opens with `[Error]`, one line or many.
  */
-export function isUpstreamErrorEnvelope(
-  text: string,
-  usage?: { promptTokens: number; completionTokens: number } | null,
-): boolean {
-  if (!isErrorEnvelopeShape(text)) return false;
-  const zeroUsage = usage != null && usage.promptTokens === 0 && usage.completionTokens === 0;
+export function isUpstreamErrorEnvelope(text: string, usage?: EnvelopeUsage): boolean {
+  if (!isErrorEnvelopeShape(text, usage)) return false;
   return (
-    zeroUsage ||
+    isZeroUsage(usage) ||
     /\brequest id\b/i.test(text) ||
     /help\.openai\.com/i.test(text) ||
     /error occurred while processing/i.test(text)

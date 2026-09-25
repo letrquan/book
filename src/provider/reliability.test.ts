@@ -418,10 +418,10 @@ describe('upstream error envelope shapes (the contract, #244)', () => {
     },
     { name: 'answer that quotes the envelope as its first line', text: explained, envelope: false },
     {
-      name: 'the same answer with 0/0 usage',
+      name: 'the same answer with 0/0 usage, which no model wrote',
       text: explained,
       usage: zero,
-      envelope: false,
+      envelope: true,
     },
     {
       name: 'answer that opens with an [Error] log line naming a request id',
@@ -445,6 +445,29 @@ describe('upstream error envelope shapes (the contract, #244)', () => {
       text: `[Error] ${'x'.repeat(3_000)} request id 1`,
       envelope: false,
     },
+    {
+      name: 'multi-line [Error] with a request id, 0/0 usage',
+      text: '[Error] Upstream failed\nrequest id abc',
+      usage: zero,
+      envelope: true,
+    },
+    {
+      name: 'multi-line [Error] with a request id, no usage block',
+      text: '[Error] Upstream failed\nrequest id abc',
+      envelope: false,
+    },
+    {
+      name: 'multi-line [Error] with a request id, usage billed',
+      text: '[Error] Upstream failed\nrequest id abc',
+      usage: billed,
+      envelope: false,
+    },
+    {
+      name: 'JSON-rendered upstream error longer than 2,000 characters, 0/0 usage',
+      text: `[Error] ${JSON.stringify({ code: 'server_error', message: 'x'.repeat(2_100) })}`,
+      usage: zero,
+      envelope: true,
+    },
   ];
 
   it.each(rows)('$name', ({ text, usage, envelope }) => {
@@ -453,18 +476,127 @@ describe('upstream error envelope shapes (the contract, #244)', () => {
 });
 
 describe('stream-level recovery of provider errors (#244)', () => {
-  it('never re-issues a 4xx that the fetch layer would not retry', () => {
-    // The loop ends auth and quota as credentials_rejected and a 413 as
-    // context_overflow; every other non-retryable 4xx reaches terminalRecovery as
-    // provider_error carrying the classifier's code.
-    for (let status = 400; status < 500; status++) {
-      const { code, retryable } = classifyHttpStatus(status);
-      if (retryable || code === 'auth' || code === 'quota' || code === 'context_overflow') continue;
-      const outcome = createTerminalOutcome('failed', 'provider_error', {
-        partialOutput: false,
-        providerCode: code,
-      });
-      expect(terminalRecovery(outcome), `${status} ${code}`).toBe('none');
+  // Which non-retryable 4xx a turn may be re-sent after. A 400, 404 or 422 is a
+  // verdict on the request; every other 4xx stays re-sendable. 9router's
+  // antigravity route turns the third 409 within 60 s into an account switch, and
+  // a 423, 425 or 499 is transient by definition.
+  const rows: Array<[number, 'none' | 'reissue']> = [
+    [400, 'none'],
+    [404, 'none'],
+    [422, 'none'],
+    [409, 'reissue'],
+    [423, 'reissue'],
+    [425, 'reissue'],
+    [499, 'reissue'],
+  ];
+
+  it.each(rows)('after a %i the recovery is %s', (status, recovery) => {
+    const { code } = classifyHttpStatus(status);
+    const outcome = createTerminalOutcome('failed', 'provider_error', {
+      partialOutput: false,
+      providerCode: code,
+    });
+    expect(terminalRecovery(outcome)).toBe(recovery);
+  });
+
+  it('names a 422 on its own', () => {
+    expect(classifyHttpStatus(422)).toEqual({ code: 'unprocessable', retryable: false });
+    expect(classifyHttpStatus(409)).toEqual({ code: 'unknown', retryable: false });
+  });
+});
+
+describe('stated context overflow (#244)', () => {
+  // A 400 whose body mentions 413 somewhere other than a status. Reading either as
+  // a stated overflow compacted the run and lowered the learned window for good.
+  const fieldPathBody = JSON.stringify({
+    error: {
+      message: 'Request contains an invalid argument.',
+      code: 400,
+      status: 'INVALID_ARGUMENT',
+      details: [{ fieldViolations: [{ field: 'contents[413].parts[0]', description: 'bad' }] }],
+    },
+  });
+  const requestIdBody = JSON.stringify({
+    error: {
+      message: 'Invalid value',
+      type: 'invalid_request_error',
+      param: 'messages',
+      request_id: 'req-413-x',
+    },
+  });
+  const pathInMessageBody = JSON.stringify({
+    error: {
+      code: 400,
+      message: "Invalid value at 'contents[413].parts[0].text'",
+      status: 'INVALID_ARGUMENT',
+    },
+  });
+
+  it('never reads a number elsewhere in a 400 as a stated overflow', () => {
+    for (const body of [fieldPathBody, requestIdBody, pathInMessageBody]) {
+      expect(classifyApiError(400, body), body).toBe('bad_request');
+      expect(isContextOverflowError(formatApiError(400, body)), body).toBe(false);
     }
+  });
+
+  it('reads a stated overflow from a 413, the error code or type, or the message', () => {
+    const statedBodies = [
+      JSON.stringify({
+        error: {
+          message: "This model's maximum context length is 128000 tokens.",
+          type: 'invalid_request_error',
+          code: 'context_length_exceeded',
+        },
+      }),
+      '{"error":{"code":"context_length_exceeded"}}',
+      JSON.stringify({
+        type: 'error',
+        error: { type: 'request_too_large', message: 'Request exceeds the maximum size' },
+      }),
+      JSON.stringify({
+        error: {
+          message: 'prompt is too long: 250000 tokens > 200000 maximum',
+          type: 'invalid_request_error',
+        },
+      }),
+      JSON.stringify({
+        object: 'error',
+        message: "This model's maximum context length is 4096 tokens.",
+        type: 'BadRequestError',
+        code: 400,
+      }),
+      'maximum context length exceeded',
+    ];
+    for (const body of statedBodies) {
+      expect(classifyApiError(400, body), body).toBe('context_overflow');
+    }
+    expect(
+      classifyApiError(
+        503,
+        'API Error: 503 [antigravity/...] [400]: maximum context length exceeded',
+      ),
+    ).toBe('context_overflow');
+    expect(classifyApiError(413, 'anything')).toBe('context_overflow');
+  });
+
+  it('reads 413 only where it is named as a status', () => {
+    for (const text of [
+      'API Error: 413 request entity too large',
+      'HTTP 413',
+      'Error code: 413 - {}',
+      'upstream returned status 413',
+    ]) {
+      expect(isContextOverflowError(text), text).toBe(true);
+    }
+    for (const text of ['contents[413].parts[0]', 'req-413-x', 'chunk 413 of 900']) {
+      expect(isContextOverflowError(text), text).toBe(false);
+    }
+    // Kept from before: OpenAI's per-minute cap on a single request that can never
+    // fit under it reads as an overflow, and compaction is what lets it through.
+    expect(
+      isContextOverflowError(
+        'API Error: 429 Request too large for gpt-4o in organization org-x on tokens per min (TPM): Limit 30000, Requested 45000.',
+      ),
+    ).toBe(true);
   });
 });

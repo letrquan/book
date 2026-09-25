@@ -111,11 +111,11 @@ const SKILL_INFRASTRUCTURE_TOOLS = new Set(['InvokeSkill', 'ReadSkillResource', 
  * wrap the refusal as `503 … [400]:`; 0.5.86 answers a plain
  * `400 {"error":{"message":"[400]: …","code":"bad_request"}}`, so both count
  * (#244). The recovery is the compaction a stated overflow gets, and no more:
- *   - the learned window is ratcheted only when the error states an overflow
- *     (`isContextOverflowError`, or the `context_overflow` code the provider
- *     derived from it). An overflow inferred from size alone never lowers it: a
- *     400 that was really about the request would shrink a 1M model's window for
- *     every later session;
+ *   - the learned window is ratcheted only when the error states an overflow: a
+ *     413, an overflow `error.code` or `error.type`, or the overflow wording in
+ *     the error message (`classifyApiError`, `isContextOverflowError`). An
+ *     overflow inferred from size alone never lowers it: a 400 that was really
+ *     about the request would shrink a 1M model's window for every later session;
  *   - the compacted request is retried only if it is below this floor. At or
  *     above it the same request would be refused the same way, so the run ends
  *     on the real error.
@@ -1357,7 +1357,7 @@ export async function runAgentLoop(
         !streamError &&
         streamDone &&
         toolCalls.length === 0 &&
-        isErrorEnvelopeShape(assistantContent) &&
+        isErrorEnvelopeShape(assistantContent, turnUsage) &&
         isContextOverflowError(assistantContent);
       if (routerOverflowResponse) {
         streamError = assistantContent.trim();

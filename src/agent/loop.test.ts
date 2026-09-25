@@ -6090,7 +6090,9 @@ describe('content filter and upstream error recoveries', () => {
     expect(history.at(-1)?.content).toBe(answer);
   });
 
-  it('does not re-issue a 409 quota lock, plain or wrapped in a 503', async () => {
+  it('re-sends a 409 quota lock, plain or wrapped in a 503, so 9router can switch accounts', async () => {
+    // 9router's antigravity route passes the first two 409s through and, on the
+    // third within 60 s, locks that account and moves to the next one.
     const shapes: Array<[number, string]> = [
       [
         409,
@@ -6139,14 +6141,61 @@ describe('content filter and upstream error recoveries', () => {
         { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
       );
 
-      expect(fetchCalls, String(status)).toBe(1);
-      expect(retries, String(status)).toEqual([]);
+      expect(DEFAULT_SETTINGS.retry.streamReissueAttempts).toBe(3);
+      expect(fetchCalls, String(status)).toBe(4);
+      expect(retries, String(status)).toEqual(['transport', 'transport', 'transport']);
       expect(outcomes[0], String(status)).toMatchObject({
         status: 'failed',
         reason: 'provider_error',
         providerCode: 'unknown',
       });
     }
+  });
+
+  it('does not re-issue a 422', async () => {
+    const body = JSON.stringify({
+      error: {
+        message: '[422]: tool schema is not valid JSON Schema',
+        code: 'unprocessable_entity',
+      },
+    });
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        return new Response(body, { status: 422 });
+      }),
+    );
+    const retries: string[] = [];
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        retry: {
+          ...defaultConfig().retry,
+          streamReissueAttempts: DEFAULT_SETTINGS.retry.streamReissueAttempts,
+        },
+      }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onRetry: (phase) => retries.push(phase),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(fetchCalls).toBe(1);
+    expect(retries).toEqual([]);
+    expect(outcomes[0]).toMatchObject({
+      status: 'failed',
+      reason: 'provider_error',
+      providerCode: 'unprocessable',
+    });
   });
 
   it('does not re-issue a mid-stream invalid_request_error, and still re-issues an overloaded one', async () => {
@@ -6194,6 +6243,98 @@ describe('content filter and upstream error recoveries', () => {
     const overloaded = await runWith('overloaded_error', 'Overloaded');
     expect(overloaded.calls).toBe(2);
     expect(overloaded.outcome).toMatchObject({ status: 'completed' });
+  });
+
+  it('neither compacts nor lowers the learned window on a 400 whose body only mentions 413', async () => {
+    const bodies = [
+      JSON.stringify({
+        error: {
+          message: 'Request contains an invalid argument.',
+          code: 400,
+          status: 'INVALID_ARGUMENT',
+          details: [{ fieldViolations: [{ field: 'contents[413].parts[0]', description: 'bad' }] }],
+        },
+      }),
+      JSON.stringify({
+        error: {
+          message: 'Invalid value',
+          type: 'invalid_request_error',
+          param: 'messages',
+          request_id: 'req-413-x',
+        },
+      }),
+    ];
+    for (const body of bodies) {
+      let fetchCalls = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          fetchCalls++;
+          return new Response(body, { status: 400 });
+        }),
+      );
+      const compact = vi.fn(async () => compactedForRetry());
+      const store = new MemoryModelWindowStore();
+      const outcomes: AgentTerminalOutcome[] = [];
+
+      await runAgentLoop(
+        defaultConfig({ maxTurns: 1, model: 'router/false-overflow-model' }),
+        createRegistry(),
+        'hello',
+        [userMsg('x'.repeat(100_000))],
+        noopCallbacks({
+          onCompact: compact,
+          onTerminal: (outcome) => outcomes.push(outcome),
+        }),
+        'default',
+        { isNewSession: false, modelWindowStore: store },
+      );
+
+      expect(compact, body).not.toHaveBeenCalled();
+      expect(store.get('router/false-overflow-model'), body).toBeUndefined();
+      expect(fetchCalls, body).toBe(1);
+      expect(outcomes[0], body).toMatchObject({
+        status: 'failed',
+        reason: 'provider_error',
+        providerCode: 'bad_request',
+      });
+    }
+  });
+
+  it('re-issues a multi-line error envelope that came with 0/0 usage, and ends on its repeat', async () => {
+    const envelope = '[Error] Upstream failed\nrequest id abc';
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'text', content: envelope };
+        yield {
+          type: 'done',
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          finishReasons: ['stop'],
+        };
+      },
+    };
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(calls).toBe(2);
+    expect(outcomes[0]).toMatchObject({
+      status: 'failed',
+      reason: 'provider_error',
+      providerCode: 'error_envelope',
+    });
+    expect(history.some((m) => m.role === 'assistant' && m.content === envelope)).toBe(false);
   });
 });
 
