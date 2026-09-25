@@ -56,6 +56,13 @@
  * estimate of the request instead of a fixed 100, so Book's usage-triggered
  * compaction -- which reads the provider's count -- can fire against the mock.
  *
+ * `--chunk-delay-ms <n>` waits n ms before every streamed delta after the role chunk (each
+ * 12-character content piece, and the tool call), so a reply arrives as a paced stream the
+ * TUI renders frame by frame rather than in one read. The default, 0, sends them back to back.
+ * It applies to every turn, matched ones included, so it also slows the reducer's checkpoint.
+ * A turn's own `"chunkDelayMs"` overrides it for that turn: a long history can arrive at once
+ * while only the turn under test is paced.
+ *
  * `--overflow-above <tokens>` makes the mock behave like a model whose real
  * window is smaller than the one Book assumes: any unmatched chat request
  * estimated (chars/4) above the number is refused with a 400 whose body Book
@@ -90,6 +97,7 @@ const replyText = arg('reply', 'MOCK-OK: Book reached the provider and streamed 
 const scriptPath = arg('script', null);
 const overflowAbove = Number(arg('overflow-above', '0'));
 const usageFromEstimate = argv.includes('--usage-from-estimate');
+const chunkDelayMs = Math.max(0, Number(arg('chunk-delay-ms', '0')) || 0);
 // os.tmpdir(), not /tmp: on Windows node resolves /tmp to C:\tmp, which usually does not
 // exist, and the best-effort writes below then lose every request without a word.
 const requestLog = arg('request-log', join(tmpdir(), `book-mock-${port}.requests.jsonl`));
@@ -113,6 +121,11 @@ try {
 
 function sse(res, obj) {
   res.write(`data: ${JSON.stringify(obj)}\n\n`);
+}
+
+/** The pause before a paced delta (`--chunk-delay-ms`, or the turn's own `chunkDelayMs`). */
+function paceDelta(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** The text of the request's last message when it is a user turn; '' for any other role. */
@@ -160,16 +173,19 @@ function substituteEvents(text, prompt) {
 
 async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 100) {
   const base = { id, object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: {} }] };
+  const delayMs = typeof turn.chunkDelayMs === 'number' ? turn.chunkDelayMs : chunkDelayMs;
 
   sse(res, { ...base, choices: [{ index: 0, delta: { role: 'assistant' } }] });
 
   if (turn.tool) {
     if (turn.text) {
       for (const piece of turn.text.match(/.{1,12}/gs) ?? [turn.text]) {
+        if (delayMs > 0) await paceDelta(delayMs);
         sse(res, { ...base, choices: [{ index: 0, delta: { content: piece } }] });
       }
     }
     if (turn.holdMs) await new Promise((resolve) => setTimeout(resolve, turn.holdMs));
+    if (delayMs > 0) await paceDelta(delayMs);
     // Tool arguments are streamed as a JSON string, exactly like OpenAI does.
     sse(res, {
       ...base,
@@ -197,6 +213,7 @@ async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 1
     // Chunk the text so the TUI exercises its streaming render path.
     const text = substituteEvents(turn.text ?? replyText, prompt);
     for (const piece of text.match(/.{1,12}/gs) ?? [text]) {
+      if (delayMs > 0) await paceDelta(delayMs);
       sse(res, { ...base, choices: [{ index: 0, delta: { content: piece } }] });
     }
     if (turn.holdMs) await new Promise((resolve) => setTimeout(resolve, turn.holdMs));

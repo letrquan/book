@@ -500,11 +500,13 @@ export function App({
     return armedAt !== undefined && Date.now() - armedAt <= CTRL_C_EXIT_HINT_MS;
   }, []);
   const [sendInFlight, setSendInFlight] = useState(false);
-  // A turn that starts inside the exit window ends it, so a later idle press arms again
-  // rather than exiting at once.
+  // Work that starts inside the exit window ends it, so a later idle press arms again rather
+  // than exiting at once: a turn, and equally a compaction, a rewind or a command resolution.
   useEffect(() => {
-    if (isThinking || sendInFlight) disarmCtrlCExit();
-  }, [isThinking, sendInFlight, disarmCtrlCExit]);
+    if (isThinking || sendInFlight || isCompacting || isRewinding || isResolvingCommand) {
+      disarmCtrlCExit();
+    }
+  }, [isThinking, sendInFlight, isCompacting, isRewinding, isResolvingCommand, disarmCtrlCExit]);
   const [, setQueueDrainTick] = useState(0);
   const [shellCompletionRetryTick, setShellCompletionRetryTick] = useState(0);
   const [followRequestKey, setFollowRequestKey] = useState(0);
@@ -538,6 +540,31 @@ export function App({
   const { tasks, addTask, updateTaskStatus, removeTask, clearTasks } = useTasks();
   const theme = currentTheme.tokens;
   const { exit: exitApp } = useApp();
+  // Set once an exit starts. SessionEnd can take seconds, and a press meanwhile must neither
+  // arm the window again nor start a second exit: the session-end guard returns at once for a
+  // session that is already ending, so a second exit would unmount Ink before the first
+  // SessionEnd finished.
+  const exitStartedRef = useRef(false);
+  const exitOnce = useCallback(() => {
+    if (exitStartedRef.current) return;
+    exitStartedRef.current = true;
+    disarmCtrlCExit();
+    void endCurrentSession('exit').finally(exitApp);
+  }, [disarmCtrlCExit, endCurrentSession, exitApp]);
+  /** The idle Ctrl+C decision: exit when the window is armed, otherwise arm it. True on exit. */
+  const exitOrArmOnCtrlC = useCallback(
+    (context: string): boolean => {
+      if (isCtrlCExitArmed()) {
+        uiLog.event('input:Ctrl+C', { action: 'exit', context });
+        exitOnce();
+        return true;
+      }
+      uiLog.event('input:Ctrl+C', { action: 'exit-armed', context });
+      armCtrlCExit();
+      return false;
+    },
+    [armCtrlCExit, exitOnce, isCtrlCExitArmed],
+  );
   const replaceQueuedInputs = useCallback((next: QueuedInput[]) => {
     queuedInputsRef.current = next;
     setQueuedInputs(next);
@@ -1198,18 +1225,16 @@ export function App({
   useDebugValueChange(uiLog, 'showAgentProfilePicker', showAgentProfilePicker, (v) => String(v));
 
   useInput((input, key) => {
+    // Once an exit has started, Ctrl+C has nothing left to do: SessionEnd is running and the
+    // app unmounts when it finishes.
+    if (key.ctrl && input === 'c' && exitStartedRef.current) {
+      uiLog.event('input:Ctrl+C', { action: 'noop-exiting' });
+      return;
+    }
     if (startupFireActive) {
       if (key.ctrl && input === 'c') {
-        // Match idle Ctrl+C: dismiss the splash and show the exit hint first.
-        if (isCtrlCExitArmed()) {
-          uiLog.event('input:Ctrl+C', { action: 'exit-startup-fire' });
-          disarmCtrlCExit();
-          void endCurrentSession('exit').finally(exitApp);
-          return;
-        }
-        uiLog.event('input:Ctrl+C', { action: 'exit-armed', context: 'startup-fire' });
-        armCtrlCExit();
-        setStartupFireActive(false);
+        // The idle decision. Arming dismisses the splash so the hint shows; an exit leaves it up.
+        if (!exitOrArmOnCtrlC('startup-fire')) setStartupFireActive(false);
         return;
       }
       if (key.escape) {
@@ -1260,8 +1285,7 @@ export function App({
           // The visible "press again to exit" hint is a promise, including over a modal
           // that took the keyboard after the first press (e.g. behind the startup splash).
           uiLog.event('input:Ctrl+C', { action: 'exit', context: 'modal' });
-          disarmCtrlCExit();
-          void endCurrentSession('exit').finally(exitApp);
+          exitOnce();
         } else if (pendingUserQuestion || pendingElicitation) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
           interrupt();
@@ -1364,14 +1388,7 @@ export function App({
         }));
         return;
       }
-      if (isCtrlCExitArmed()) {
-        uiLog.event('input:Ctrl+C', { action: 'exit' });
-        disarmCtrlCExit();
-        void endCurrentSession('exit').finally(exitApp);
-        return;
-      }
-      uiLog.event('input:Ctrl+C', { action: 'exit-armed' });
-      armCtrlCExit();
+      exitOrArmOnCtrlC('idle');
       return;
     }
     // Ctrl+T — toggle task list
@@ -1563,6 +1580,15 @@ export function App({
         }));
         return;
       }
+      // A submission replaces a recalled queued input, whatever it is (the recalled text, an
+      // edit of it, or a slash command): the edit is over, so its marker, its notice and the
+      // queue pause it holds go with it. A stale marker made the next idle Ctrl+C remove an
+      // edit that no longer existed instead of arming the exit window.
+      if (editingQueuedInputRef.current) {
+        replaceEditingQueuedInput(undefined);
+        queueDrainPausedRef.current = false;
+        setQueueNotice(undefined);
+      }
       setFollowRequestKey((key) => key + 1);
       const selectedChild = managedAgents.selectedAgentId
         ? managedAgents.records.get(managedAgents.selectedAgentId)
@@ -1719,7 +1745,7 @@ export function App({
           return;
         }
         if (effect?.type === 'exit') {
-          void endCurrentSession('exit').finally(exitApp);
+          exitOnce();
           return;
         }
         if (effect?.type === 'show-modal') {
@@ -1964,7 +1990,6 @@ export function App({
           void dispatchAgentSend(value);
         }
       } else {
-        replaceEditingQueuedInput(undefined);
         void dispatchAgentSend(value, undefined, attachments);
       }
     },
@@ -1978,8 +2003,7 @@ export function App({
       compact,
       addTask,
       commands,
-      exitApp,
-      endCurrentSession,
+      exitOnce,
       usage,
       liveConfig,
       addLocalMessage,

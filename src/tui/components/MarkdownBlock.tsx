@@ -368,6 +368,22 @@ function standaloneBlockStart(content: string, offset: number): number | undefin
 /** A prose word that would open a Markdown block (heading, list item, quote) at a tail's start. */
 const BLOCK_MARKER_WORD = /^(?:#{1,6}|[-+*>]|\d{1,9}[.)])(?:\s|$)/;
 
+/**
+ * The rest of a line that is a dash thematic break (`---`, `-- -`, `- - -`, `-----`), trailing
+ * spaces allowed. Only dashes: the prose fallback already drops a tail holding `*` or `_`.
+ */
+const DASH_THEMATIC_BREAK_REST = /^(?:-[ \t]*){3,}\r?$/;
+
+/** Whether a prose tail starting at `start` would open a block instead of a paragraph. */
+function opensBlockAt(content: string, start: number): boolean {
+  if (BLOCK_MARKER_WORD.test(content.slice(start, start + 12))) return true;
+  if (content[start] !== '-') return false;
+  const lineEnd = content.indexOf('\n', start);
+  return DASH_THEMATIC_BREAK_REST.test(
+    content.slice(start, lineEnd === -1 ? content.length : lineEnd),
+  );
+}
+
 /** The first word start at or after `offset` and before `limit`, if there is one. */
 function wordStartAfter(content: string, offset: number, limit: number): number | undefined {
   const match = content.slice(offset - 1, limit).search(/\s\S/);
@@ -378,22 +394,50 @@ function wordStartAfter(content: string, offset: number, limit: number): number 
  * Where the prose fallback tail starts. The cutoff rounds up to a multiple of `step`, so the
  * start stays fixed while the response grows and the tail only gains text at its end between
  * jumps. It then moves to the first word that does not read as a heading, list item or quote
- * marker, which would turn the whole tail into that block. With no such word within one step,
- * the rounded cutoff is used as is.
+ * marker, or as a dash thematic break that ends its line, any of which would turn the tail
+ * into that block. With no such word within one step, the rounded cutoff is used as is.
  */
 function proseTailStart(content: string, cutoff: number, step: number): number {
   const rounded = Math.ceil(cutoff / step) * step;
   const limit = rounded + step;
   let start = wordStartAfter(content, rounded, limit);
-  while (start !== undefined && BLOCK_MARKER_WORD.test(content.slice(start, start + 12))) {
+  while (start !== undefined && opensBlockAt(content, start)) {
     start = wordStartAfter(content, start + 1, limit);
   }
   return start ?? rounded;
 }
 
+/**
+ * The fence delimiter line the cutoff falls on, from its first character through its newline,
+ * and whether it opens a fence (it closes one otherwise). The fence check reads only whole lines
+ * before the cutoff, so it misses a delimiter line the cutoff splits: an opening line split there
+ * starts the tail inside the code as prose, and a closing one leaves the fence open over the
+ * prose after it.
+ */
+function fenceLineAt(
+  content: string,
+  offset: number,
+): { start: number; end: number; opens: boolean } | undefined {
+  const start = content.lastIndexOf('\n', offset - 1) + 1;
+  const end = content.indexOf('\n', offset);
+  if (end === -1 || !/^ {0,3}(?:`{3,}|~{3,})/.test(content.slice(start, end))) return undefined;
+  const openBefore = fenceContextAt(content, start) !== undefined;
+  const openAfter = fenceContextAt(content, end) !== undefined;
+  // A delimiter-shaped line that changes nothing, such as a backtick line inside a tilde
+  // fence, is only code.
+  if (openBefore === openAfter) return undefined;
+  return { start, end, opens: openAfter };
+}
+
 function contextualStreamingTail(content: string, maxCharacters: number, step: number): string {
-  const desiredStart = content.length - maxCharacters;
+  let desiredStart = content.length - maxCharacters;
   if (desiredStart <= 0) return content;
+
+  // A cutoff inside a fence delimiter line moves to that line's outer edge: the start of an
+  // opening line, which then opens the tail, or the newline that ends a closing one.
+  const fenceLine = fenceLineAt(content, desiredStart);
+  if (fenceLine?.opens) return content.slice(fenceLine.start);
+  if (fenceLine) desiredStart = fenceLine.end;
 
   const context = fenceContextAt(content, desiredStart);
   if (context) {

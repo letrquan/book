@@ -10,30 +10,34 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
-WS="${BOOK_SMOKE_WS:-/tmp/book-smoke-ws}"
+PORT="${BOOK_SMOKE_PORT:-8919}"
+# Per-port defaults, so two smoke runs on different ports share no files either.
+WS="${BOOK_SMOKE_WS:-/tmp/book-smoke-ws-$PORT}"
 SHOTS="${BOOK_SMOKE_SHOTS:-/tmp/book-shots}"
+SCENARIO="/tmp/book-smoke-scenario-$PORT.json"
 
 if [ ! -f "$ROOT/dist/index.js" ]; then
   echo "smoke: dist/index.js missing — run 'npm run build' first" >&2
   exit 1
 fi
 
-# A stale mock from a previous run holds the port.
-pkill -f 'mock[-]provider' 2>/dev/null || true
-sleep 0.3
+# The driver starts the mock and kills that one PID on every exit path, signals
+# included. Nothing here kills a mock by name: on a shared machine the other
+# mocks belong to other runs. A port someone else holds fails the driver with
+# EADDRINUSE; pick another with BOOK_SMOKE_PORT.
 
 rm -rf "$WS"
 mkdir -p "$WS"
 git -C "$WS" init -q .
 
-cat > /tmp/book-smoke-scenario.json <<'JSON'
+cat > "$SCENARIO" <<'JSON'
 [
   { "tool": { "name": "Write", "arguments": { "file_path": "smoke.txt", "content": "written by the smoke test\n" } } },
   { "text": "Wrote the file. SMOKE-DONE" }
 ]
 JSON
 
-node "$HERE/driver.mjs" --mock --mock-script /tmp/book-smoke-scenario.json \
+node "$HERE/driver.mjs" --mock --mock-port "$PORT" --mock-script "$SCENARIO" \
   --workspace "$WS" --shots "$SHOTS" <<'EOF'
 ready 30000
 shot smoke-01-boot

@@ -72,6 +72,7 @@ EOF
 | `sleep [ms]`, `resize <cols> <rows>` | Timing and layout. |
 | `screen`, `raw`, `shot <name>` | Dump the screen to stdout, dump the raw tail, or write the screen to `<shots>/<name>.txt`. |
 | `rawbytes [n]` | Print the last `n` (default 3000) bytes of the PTY stream JSON-encoded, escapes kept — the only faithful record of what the renderer emitted when the xterm replay looks wrong. |
+| `status` | Print whether the TUI process has exited, its exit code and the time, without sending a key: how a script tells "that press exited" from "that press only armed". |
 | `quit` | Ctrl-C twice and wait for exit. |
 
 Options: `--mock` (start the mock provider), `--mock-script <json>`, `--mock-port` (8919),
@@ -82,6 +83,18 @@ place of `node dist/index.js`, with the same flags; under `--mock` the `BOOKGO_*
 beside the `BOOK_*` ones). The driver sets `USERPROFILE` as well as `HOME` to the throwaway home:
 on Windows `os.homedir()` and Go's `os.UserHomeDir()` read `USERPROFILE`, and with `HOME` alone the
 driven binary found the developer's real `~/.claude/skills`.
+
+`--chunk-delay-ms <n>` is forwarded to the mock, which then waits `n` ms before each streamed delta
+(every 12-character content piece, and the tool call), so a reply arrives as a paced stream and the
+TUI renders it frame by frame; the default, 0, sends everything back to back as before. It applies
+to every turn, the reducer's matched checkpoint included, which is how a `/compact` is made to last
+long enough to press keys during it. A scenario turn's own `"chunkDelayMs"` overrides it for that
+turn, so a long history can arrive at once while only the turn under test is paced. To freeze one
+frame of a stream, such as the live tail at an exact cutoff, end the turn's `text` there and add
+`holdMs`. `--startup-animation` skips the `.book/settings.json` the driver otherwise writes into the
+workspace to turn the startup splash off, so the splash can be driven without an extra `--settings`
+layer. The splash replaces the input bar that `ready` waits for, so such a script starts with
+`sleep` (the splash plays for about three seconds) and a key that dismisses it.
 
 ### `mock-provider.mjs` — a provider without an API key
 
@@ -124,7 +137,13 @@ error as content. Count requests in the `.requests.jsonl` to tell "retried" from
 
 `bash .claude/skills/run-book/smoke.sh` boots the real TUI against the mock and drives one full
 flow — prompt, tool call, permission dialog, approval, file written on disk — and exits non-zero on
-any failure. Run it after changing anything on that path.
+any failure. Run it after changing anything on that path. It listens on `BOOK_SMOKE_PORT` (8919)
+and keeps its workspace and scenario in per-port paths, so two runs on different ports share
+nothing. It kills no process itself: the driver kills the one mock it started whenever it exits,
+Ctrl-C and SIGTERM included, and a port another process holds fails the run with `EADDRINUSE`. Only a
+hard kill of the driver orphans its mock; stop that one by its PID. Never clear a port with
+`pkill -f mock-provider` or a `taskkill` by image name: on a shared machine the other mocks belong to
+other runs.
 
 ## Traps the scripts do not cover
 

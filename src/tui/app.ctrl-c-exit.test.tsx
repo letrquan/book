@@ -194,8 +194,46 @@ function frameOf(view: ReturnType<typeof render>): string {
   return stripAnsi(view.lastFrame());
 }
 
-async function settle(ms = 90): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
+// Every wait below polls for the state it needs; a fixed settle is a guess about how long a
+// render takes, and a loaded runner loses that guess (the ByokWizard flake). The poller keeps
+// the real timer captured here, so a test that fakes the clock never advances it by polling.
+const realSetTimeout = globalThis.setTimeout;
+
+async function waitUntil(check: () => void, timeoutMs = 3_000): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  for (;;) {
+    try {
+      check();
+      return;
+    } catch (error) {
+      if (performance.now() > deadline) throw error;
+    }
+    await new Promise((resolve) => realSetTimeout(resolve, 10));
+  }
+}
+
+async function waitForFrame(view: ReturnType<typeof render>, text: string): Promise<void> {
+  await waitUntil(() => expect(frameOf(view)).toContain(text));
+}
+
+async function waitForFrameWithout(view: ReturnType<typeof render>, text: string): Promise<void> {
+  await waitUntil(() => expect(frameOf(view)).not.toContain(text));
+}
+
+/**
+ * Ink attaches its stdin listener from an effect, after the first frame is on screen, so a key
+ * written before that is dropped. Wait for the listener rather than for a frame.
+ */
+async function inputReady(view: ReturnType<typeof render>): Promise<void> {
+  await waitUntil(() => expect(view.stdin.listenerCount('readable')).toBeGreaterThan(0));
+}
+
+/**
+ * Fakes the exit window's clock (its hint timer and Date.now), so the window cannot run out on
+ * its own while a test waits for something else to end it. Call it before the arming press.
+ */
+function freezeExitWindow(): void {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
 }
 
 function installAgentState(state: ReturnType<typeof agentState>): void {
@@ -209,16 +247,46 @@ function installAgentState(state: ReturnType<typeof agentState>): void {
   });
 }
 
-async function startIdleApp(overrides: Record<string, unknown> = {}) {
+async function startIdleApp(overrides: Record<string, unknown> = {}, appConfig = config()) {
   const state = agentState(overrides);
   installAgentState(state);
-  const view = render(<App config={config()} session={testSession} />);
-  await settle(150);
-  return { view, state };
+  const view = render(<App config={appConfig} session={testSession} />);
+  await inputReady(view);
+  /** Re-render with a changed agent state; the render commits before this returns. */
+  const rerenderWith = (changes: Record<string, unknown>) => {
+    installAgentState({ ...state, ...changes });
+    view.rerender(<App config={appConfig} session={testSession} />);
+  };
+  return { view, state, rerenderWith };
+}
+
+function startupFireConfig(): AgentConfig {
+  const fireConfig = config();
+  fireConfig.accessibility = { screenReader: false, reducedMotion: false };
+  return fireConfig;
+}
+
+/** Press Ctrl+C and wait for the exit hint it arms. */
+async function armExit(view: ReturnType<typeof render>): Promise<void> {
+  view.stdin.write('\x03');
+  await waitForFrame(view, CTRL_C_EXIT_HINT_TEXT);
+}
+
+/** Queue each text as a follow-up while a turn runs, then recall the newest with Up. */
+async function queueAndRecallNewest(view: ReturnType<typeof render>, texts: string[]) {
+  for (const [index, text] of texts.entries()) {
+    view.stdin.write(text);
+    await waitForFrame(view, `> ${text}`);
+    view.stdin.write('\r');
+    await waitForFrame(view, `Queued follow-up inputs (${index + 1})`);
+  }
+  view.stdin.write('\x1b[A');
+  await waitForFrame(view, 'Editing queued input');
 }
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
@@ -226,185 +294,243 @@ describe('idle Ctrl+C exit confirmation', () => {
   it('first press shows the "press again to exit" hint and keeps the app running', async () => {
     const { view, state } = await startIdleApp();
 
-    view.stdin.write('\x03');
-    await settle();
+    await armExit(view);
 
-    expect(frameOf(view)).toContain(CTRL_C_EXIT_HINT_TEXT);
     expect(state.endCurrentSession).not.toHaveBeenCalled();
   });
 
   it('a second press within the window exits', async () => {
     const { view, state } = await startIdleApp();
 
+    await armExit(view);
     view.stdin.write('\x03');
-    await settle(200);
-    expect(frameOf(view)).toContain(CTRL_C_EXIT_HINT_TEXT);
 
-    view.stdin.write('\x03');
-    await settle(200);
-
-    expect(state.endCurrentSession).toHaveBeenCalledWith('exit');
+    await waitUntil(() => expect(state.endCurrentSession).toHaveBeenCalledWith('exit'));
   });
 
   it('a press after the window has expired shows the hint again instead of exiting', async () => {
     const { view, state } = await startIdleApp();
+    freezeExitWindow();
 
-    view.stdin.write('\x03');
-    await settle(200);
-    expect(frameOf(view)).toContain(CTRL_C_EXIT_HINT_TEXT);
-
-    await settle(CTRL_C_EXIT_HINT_MS + 300);
-    expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
+    await armExit(view);
+    vi.advanceTimersByTime(CTRL_C_EXIT_HINT_MS + 1);
+    await waitForFrameWithout(view, CTRL_C_EXIT_HINT_TEXT);
     expect(state.endCurrentSession).not.toHaveBeenCalled();
 
-    view.stdin.write('\x03');
-    await settle(200);
+    await armExit(view);
 
-    expect(frameOf(view)).toContain(CTRL_C_EXIT_HINT_TEXT);
     expect(state.endCurrentSession).not.toHaveBeenCalled();
-  }, 10_000);
+  });
 
   it('a non-empty composer is cleared instead of arming the exit window', async () => {
     const { view, state } = await startIdleApp();
 
     view.stdin.write('unsent draft');
-    await settle(150);
-    expect(frameOf(view)).toContain('unsent draft');
+    await waitForFrame(view, 'unsent draft');
 
     view.stdin.write('\x03');
-    await settle(200);
+    await waitForFrameWithout(view, 'unsent draft');
 
-    const frame = frameOf(view);
-    expect(frame).not.toContain('unsent draft');
-    expect(frame).not.toContain(CTRL_C_EXIT_HINT_TEXT);
+    expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
     expect(state.endCurrentSession).not.toHaveBeenCalled();
   });
 
   it('mid-turn Ctrl+C still cancels the turn instead of arming the exit window', async () => {
-    const { view, state } = await startIdleApp({ isThinking: true });
+    const { view, state, rerenderWith } = await startIdleApp({ isThinking: true });
 
     view.stdin.write('\x03');
-    await settle(200);
+    await waitUntil(() => expect(state.cancel).toHaveBeenCalledTimes(1));
+    rerenderWith({ isThinking: true });
 
-    expect(state.cancel).toHaveBeenCalledTimes(1);
     expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
     expect(state.endCurrentSession).not.toHaveBeenCalled();
   });
 
   it('requires two presses from the startup-fire splash', async () => {
-    const fireConfig = config();
-    fireConfig.accessibility = { screenReader: false, reducedMotion: false };
-    const state = agentState({ liveConfig: fireConfig });
-    installAgentState(state);
-    const view = render(<App config={fireConfig} session={testSession} />);
-    await settle(150);
+    const fireConfig = startupFireConfig();
+    const { view, state } = await startIdleApp({ liveConfig: fireConfig }, fireConfig);
 
-    view.stdin.write('\x03');
-    await settle(200);
-    expect(frameOf(view)).toContain(CTRL_C_EXIT_HINT_TEXT);
+    await armExit(view);
     expect(state.endCurrentSession).not.toHaveBeenCalled();
 
     view.stdin.write('\x03');
-    await settle(200);
 
-    expect(state.endCurrentSession).toHaveBeenCalledWith('exit');
+    await waitUntil(() => expect(state.endCurrentSession).toHaveBeenCalledWith('exit'));
   });
 
   it('exits on the second press when a modal is waiting behind the startup-fire splash', async () => {
-    const fireConfig = config();
-    fireConfig.accessibility = { screenReader: false, reducedMotion: false };
-    const state = agentState({
-      liveConfig: fireConfig,
-      pendingPermission: { toolCall: { id: 'call-1', name: 'Bash', arguments: { command: 'ls' } } },
-    });
-    installAgentState(state);
-    const view = render(<App config={fireConfig} session={testSession} />);
-    await settle(150);
+    const fireConfig = startupFireConfig();
+    const { view, state } = await startIdleApp(
+      {
+        liveConfig: fireConfig,
+        pendingPermission: {
+          toolCall: { id: 'call-1', name: 'Bash', arguments: { command: 'ls' } },
+        },
+      },
+      fireConfig,
+    );
 
-    view.stdin.write('\x03');
-    await settle(200);
-    expect(frameOf(view)).toContain(CTRL_C_EXIT_HINT_TEXT);
+    await armExit(view);
     expect(state.endCurrentSession).not.toHaveBeenCalled();
 
     view.stdin.write('\x03');
-    await settle(200);
 
-    expect(state.endCurrentSession).toHaveBeenCalledWith('exit');
+    await waitUntil(() => expect(state.endCurrentSession).toHaveBeenCalledWith('exit'));
   });
 
   it('keeps Ctrl+C a no-op in a modal once the exit window is not armed', async () => {
-    const state = agentState({
-      pendingPermission: { toolCall: { id: 'call-1', name: 'Bash', arguments: { command: 'ls' } } },
-    });
-    installAgentState(state);
-    const view = render(<App config={config()} session={testSession} />);
-    await settle(150);
+    const pendingPermission = {
+      toolCall: { id: 'call-1', name: 'Bash', arguments: { command: 'ls' } },
+    };
+    const { view, state, rerenderWith } = await startIdleApp({ pendingPermission });
 
     view.stdin.write('\x03');
-    await settle(200);
     view.stdin.write('\x03');
-    await settle(200);
+    // Useful as a barrier: a legacy-root re-render commits every update already queued.
+    rerenderWith({ pendingPermission });
 
     expect(state.endCurrentSession).not.toHaveBeenCalled();
     expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
   });
 
   it('Ctrl+C on a recalled queued input removes it and lets the queue drain', async () => {
-    const appConfig = config();
-    const state = agentState({ isThinking: true });
-    installAgentState(state);
-    const view = render(<App config={appConfig} session={testSession} />);
-    await settle(150);
+    const { view, state, rerenderWith } = await startIdleApp({ isThinking: true });
+    await queueAndRecallNewest(view, ['first queued', 'second queued']);
 
-    view.stdin.write('first queued');
-    await settle(150);
-    view.stdin.write('\r');
-    await settle(150);
-    view.stdin.write('second queued');
-    await settle(150);
-    view.stdin.write('\r');
-    await settle(150);
-    view.stdin.write('\x1b[A');
-    await settle(150);
-    expect(frameOf(view)).toContain('Editing queued input');
-
-    installAgentState({ ...state, isThinking: false });
-    view.rerender(<App config={appConfig} session={testSession} />);
-    await settle(150);
+    rerenderWith({ isThinking: false });
     expect(state.send).not.toHaveBeenCalled();
 
     view.stdin.write('\x03');
-    await settle(300);
+    await waitForFrameWithout(view, 'Editing queued input');
 
-    expect(frameOf(view)).not.toContain('Editing queued input');
-    expect(state.send).toHaveBeenCalledWith('first queued');
+    await waitUntil(() => expect(state.send).toHaveBeenCalledWith('first queued'));
     expect(state.endCurrentSession).not.toHaveBeenCalled();
   });
 
   it('a turn that starts inside the exit window disarms it', async () => {
-    const appConfig = config();
-    const state = agentState();
-    installAgentState(state);
-    const view = render(<App config={appConfig} session={testSession} />);
-    await settle(150);
+    const { view, state, rerenderWith } = await startIdleApp();
+    freezeExitWindow();
 
-    view.stdin.write('\x03');
-    await settle(200);
-    expect(frameOf(view)).toContain(CTRL_C_EXIT_HINT_TEXT);
+    await armExit(view);
+    rerenderWith({ isThinking: true });
+    await waitForFrameWithout(view, CTRL_C_EXIT_HINT_TEXT);
+    rerenderWith({ isThinking: false });
 
-    installAgentState({ ...state, isThinking: true });
-    view.rerender(<App config={appConfig} session={testSession} />);
-    await settle(150);
-    expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
-
-    installAgentState({ ...state, isThinking: false });
-    view.rerender(<App config={appConfig} session={testSession} />);
-    await settle(150);
-
-    view.stdin.write('\x03');
-    await settle(200);
-
+    await armExit(view);
     expect(state.endCurrentSession).not.toHaveBeenCalled();
-    expect(frameOf(view)).toContain(CTRL_C_EXIT_HINT_TEXT);
+  });
+
+  it.each(['isCompacting', 'isRewinding'])(
+    'the exit window is disarmed when %s starts, and one press while it runs only arms it',
+    async (flag) => {
+      const { view, state, rerenderWith } = await startIdleApp();
+      freezeExitWindow();
+
+      await armExit(view);
+      rerenderWith({ [flag]: true });
+      await waitForFrameWithout(view, CTRL_C_EXIT_HINT_TEXT);
+
+      await armExit(view);
+      expect(state.endCurrentSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it('the exit window is disarmed when command resolution starts', async () => {
+    discoverCommandsMock.mockReturnValueOnce([
+      { name: 'slow', description: 'Slow command', body: '!`slow command`', source: 'project' },
+    ]);
+    let failResolution: (error: Error) => void = () => {};
+    resolveCommandBodyMock.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          failResolution = reject;
+        }),
+    );
+    const { view, state } = await startIdleApp();
+    freezeExitWindow();
+
+    await armExit(view);
+    view.stdin.write('/slow');
+    await waitForFrame(view, '> /slow');
+    view.stdin.write('\r');
+    await waitForFrame(view, 'Resolving command shell expansions...');
+    await waitForFrameWithout(view, CTRL_C_EXIT_HINT_TEXT);
+
+    failResolution(new Error('shell expansion failed'));
+    await waitForFrameWithout(view, 'Resolving command shell expansions...');
+
+    await armExit(view);
+    expect(state.endCurrentSession).not.toHaveBeenCalled();
+  });
+
+  it('ignores presses once the exit has started, and exits when SessionEnd finishes', async () => {
+    let finishSessionEnd: () => void = () => {};
+    // The first call is a slow SessionEnd hook. Book's session-end guard returns at once for a
+    // session that is already ending, which is what any later call would get.
+    const endCurrentSession = vi
+      .fn<(reason: string) => Promise<void>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishSessionEnd = resolve;
+          }),
+      )
+      .mockResolvedValue(undefined);
+    const { view, rerenderWith } = await startIdleApp({ endCurrentSession });
+    managedAgentManagerMock.setInteractivePermissions.mockClear();
+
+    await armExit(view);
+    view.stdin.write('\x03');
+    await waitUntil(() => expect(endCurrentSession).toHaveBeenCalledTimes(1));
+    await waitForFrameWithout(view, CTRL_C_EXIT_HINT_TEXT);
+
+    // Presses 3 and 4 land while SessionEnd is still running.
+    view.stdin.write('\x03');
+    rerenderWith({ endCurrentSession });
+    expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
+    view.stdin.write('\x03');
+    expect(endCurrentSession).toHaveBeenCalledTimes(1);
+    expect(managedAgentManagerMock.setInteractivePermissions).not.toHaveBeenCalledWith(false);
+
+    finishSessionEnd();
+
+    // Unmounting drops the managed-agent subscription, which turns its prompts off.
+    await waitUntil(() =>
+      expect(managedAgentManagerMock.setInteractivePermissions).toHaveBeenCalledWith(false),
+    );
+    expect(endCurrentSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('a recalled queued input replaced by a slash command no longer claims Ctrl+C', async () => {
+    const { view, state, rerenderWith } = await startIdleApp({ isThinking: true });
+    await queueAndRecallNewest(view, ['queued follow-up']);
+    rerenderWith({ isThinking: false });
+
+    view.stdin.write('\x15');
+    await waitForFrameWithout(view, '> queued follow-up');
+    view.stdin.write('/status');
+    await waitForFrame(view, '> /status');
+    view.stdin.write('\r');
+    await waitForFrame(view, 'Session Status');
+
+    expect(frameOf(view)).not.toContain('Editing queued input');
+    await armExit(view);
+    expect(state.endCurrentSession).not.toHaveBeenCalled();
+  });
+
+  it('the rest of the queue drains once a slash command replaces the recalled input', async () => {
+    const { view, state, rerenderWith } = await startIdleApp({ isThinking: true });
+    await queueAndRecallNewest(view, ['first queued', 'second queued']);
+    rerenderWith({ isThinking: false });
+
+    view.stdin.write('\x15');
+    await waitForFrameWithout(view, '> second queued');
+    view.stdin.write('/status');
+    await waitForFrame(view, '> /status');
+    view.stdin.write('\r');
+    await waitForFrame(view, 'Session Status');
+
+    await waitUntil(() => expect(state.send).toHaveBeenCalledWith('first queued'));
+    expect(state.send).not.toHaveBeenCalledWith('second queued');
   });
 });
