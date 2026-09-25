@@ -2,6 +2,8 @@ import { Box, Text } from 'ink';
 import type { ReactNode } from 'react';
 import { useTheme } from '../theme.js';
 import { panelGrid } from '../layout.js';
+import { PILCROW } from '../marks.js';
+import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 export type PanelTone = 'neutral' | 'brand' | 'permission' | 'plan' | 'error';
 
@@ -117,4 +119,40 @@ export function SelectionRow({
  */
 export function floatingFrameMetrics(terminalWidth: number): { width: number; marginX: number } {
   return panelGrid(terminalWidth);
+}
+
+/**
+ * The head of a surface that is waiting on you: a hairline across its width in
+ * the surface's tone, opened by a rubricated pilcrow and a label.
+ *
+ *   `─ ¶ Permission required ──────────────────────────────`
+ *
+ * The pilcrow is the composer's mark, and here it means the same thing: the
+ * next move is yours. A box around the whole prompt made it the heaviest
+ * object on screen; the rule keeps the tone at the head, where the eye lands.
+ */
+export function DecisionRule({
+  label,
+  tone,
+  width,
+}: {
+  label: string;
+  tone: string;
+  width: number;
+}) {
+  const theme = useTheme();
+  const lead = '─ ';
+  const mark = `${PILCROW} `;
+  const text = truncateDisplay(label, Math.max(1, width - displayWidth(lead + mark) - 3));
+  const fill = Math.max(0, width - displayWidth(lead + mark + text) - 1);
+  return (
+    <Box>
+      <Text color={tone}>{lead}</Text>
+      <Text color={theme.brand}>{mark}</Text>
+      <Text color={tone} bold>
+        {text}
+      </Text>
+      <Text color={tone}>{` ${'─'.repeat(fill)}`}</Text>
+    </Box>
+  );
 }

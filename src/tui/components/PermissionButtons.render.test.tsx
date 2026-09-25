@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import stripAnsi from 'strip-ansi';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
+import { displayWidth } from './word-wrap.js';
 import { PermissionButtons, toolRiskLevel, wrapPayload } from './PermissionButtons.js';
 
 function withTheme(children: React.ReactElement): React.ReactElement {
@@ -238,7 +239,7 @@ describe('PermissionButtons payload', () => {
     // Every character of the command is on screen, across rows.
     const joined = frame
       .split('\n')
-      .map((line) => line.replace(/^│ ?/, '').replace(/ ?│$/, ''))
+      .map((line) => line.replace(/^ {2}/, ''))
       .join('');
     expect(joined).toContain('echo cleaned up every old log file in this tree');
     expect(frame).not.toContain('more rows');
@@ -256,7 +257,26 @@ describe('PermissionButtons payload', () => {
         />,
       ),
     );
-    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Permission required · Read README.md');
+    const lines = stripAnsi(view.lastFrame() ?? '').split('\n');
+    // The rule heads the prompt; the tool and its argument share the first row.
+    expect(lines[0]).toMatch(/^─ ¶ Permission required ─+$/);
+    expect(lines[1]).toBe('  Read README.md');
+  });
+
+  it('heads the prompt with a rule instead of boxing it', () => {
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'read-2', name: 'Read', arguments: { file_path: 'README.md' } }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+        />,
+      ),
+    );
+    const frame = stripAnsi(view.lastFrame() ?? '');
+    expect(frame).not.toMatch(/[╭╮╰╯│]/);
+    const rule = frame.split('\n')[0]!;
+    expect(displayWidth(rule)).toBe(79);
   });
 
   it('marks a cut it has to make and opens it on D', async () => {

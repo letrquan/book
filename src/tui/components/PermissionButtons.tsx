@@ -18,6 +18,7 @@ import type { PermissionDecision, PermissionResult, ToolCall } from '../../types
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 import { DiffBlock, expandTabs } from './Diff.js';
+import { DecisionRule } from './chrome.js';
 import { displayWidth, hardWrapLine, truncateDisplay } from './word-wrap.js';
 
 const uiLog = createUiDebugLogger('tui:permbtn');
@@ -232,7 +233,8 @@ export function PermissionButtons({
   // that row; otherwise the payload takes rows of its own under it, wrapped
   // to the card. A fixed 72-character slice used to hide the tail of every
   // longer command with nothing to mark the cut.
-  const header = `Permission required · ${canonical}`;
+  // The rule above says "Permission required"; the first row is the tool.
+  const header = canonical;
   const inlineRoom = contentWidth - displayWidth(header) - 1;
   const payloadInline =
     payload.length > 0 && !payload.includes('\n') && displayWidth(payload) <= inlineRoom;
@@ -479,150 +481,146 @@ export function PermissionButtons({
     'Esc deny',
   ].filter((entry): entry is string => entry !== null);
 
+  const tone = risk === 'shell' ? theme.error : risk === 'write' ? theme.warning : theme.permission;
+  // A rule at the head instead of a box around the whole prompt. Two columns of
+  // padding stand in for each wall, so the interior keeps the boxed geometry
+  // (`contentWidth` is still `frame.width - PANEL_CHROME`).
   return (
-    <Box
-      marginLeft={frame.marginX}
-      width={frame.width}
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={
-        risk === 'shell' ? theme.error : risk === 'write' ? theme.warning : theme.permission
-      }
-      paddingX={1}
-    >
-      <Box>
-        <Text bold color={theme.permission}>
-          Permission required ·{' '}
-        </Text>
-        <Text bold color={theme.brand}>
-          {canonical}
-        </Text>
-        {payloadInline ? <Text color={theme.text}> {payload}</Text> : null}
-      </Box>
-      {wrappedPayload.rows.map((row, index) => (
-        <Box key={index}>
-          <Text color={theme.text}>{row}</Text>
-        </Box>
-      ))}
-      {wrappedPayload.hiddenRows > 0 ? (
+    <Box marginLeft={frame.marginX} width={frame.width} flexDirection="column">
+      <DecisionRule label="Permission required" tone={tone} width={frame.width} />
+      <Box flexDirection="column" paddingX={2}>
         <Box>
-          <Text color={theme.subtle} dimColor>
-            {truncateDisplay(
-              `… ${wrappedPayload.hiddenRows} more ${wrappedPayload.hiddenRows === 1 ? 'row' : 'rows'}${expanded ? '' : ' · D shows all'}`,
-              contentWidth,
-            )}
+          <Text bold color={theme.brand}>
+            {canonical}
           </Text>
+          {payloadInline ? <Text color={theme.text}> {payload}</Text> : null}
         </Box>
-      ) : null}
-      {hint ? (
-        <Box>
-          <Text color={risk === 'shell' ? theme.error : theme.warning}>{hint}</Text>
-        </Box>
-      ) : null}
-      {previewLoading ? (
-        <Box>
-          <Text color={theme.subtle} dimColor>
-            Computing diff…
-          </Text>
-        </Box>
-      ) : null}
-      {preview?.error ? (
-        <Box>
-          <Text color={theme.warning}>
-            {truncateDisplay(`Cannot preview: ${preview.error}`, contentWidth)}
-          </Text>
-        </Box>
-      ) : null}
-      {files.length > 0 ? (
-        <Box flexDirection="column">
-          {shownFiles.map((file) => {
-            const noChange = file.diff.length === 0 ? ' no textual change' : '';
-            const counts = ` +${file.stats.addedLines} −${file.stats.removedLines}`;
-            // The path takes what the row's other segments leave it.
-            const pathRoom =
-              contentWidth - displayWidth(`${file.kind} `) - displayWidth(counts + noChange);
-            return (
-              <Box key={file.filePath} flexDirection="column">
-                <Box>
-                  <Text color={theme.subtle} dimColor>
-                    {file.kind}{' '}
-                  </Text>
-                  <Text color={theme.text}>
-                    {truncateDisplay(file.filePath, Math.max(8, pathRoom))}
-                  </Text>
-                  <Text> </Text>
-                  <Text color={theme.success}>+{file.stats.addedLines}</Text>
-                  <Text> </Text>
-                  <Text color={theme.error}>−{file.stats.removedLines}</Text>
-                  {noChange ? (
+        {wrappedPayload.rows.map((row, index) => (
+          <Box key={index}>
+            <Text color={theme.text}>{row}</Text>
+          </Box>
+        ))}
+        {wrappedPayload.hiddenRows > 0 ? (
+          <Box>
+            <Text color={theme.subtle} dimColor>
+              {truncateDisplay(
+                `… ${wrappedPayload.hiddenRows} more ${wrappedPayload.hiddenRows === 1 ? 'row' : 'rows'}${expanded ? '' : ' · D shows all'}`,
+                contentWidth,
+              )}
+            </Text>
+          </Box>
+        ) : null}
+        {hint ? (
+          <Box>
+            <Text color={risk === 'shell' ? theme.error : theme.warning}>{hint}</Text>
+          </Box>
+        ) : null}
+        {previewLoading ? (
+          <Box>
+            <Text color={theme.subtle} dimColor>
+              Computing diff…
+            </Text>
+          </Box>
+        ) : null}
+        {preview?.error ? (
+          <Box>
+            <Text color={theme.warning}>
+              {truncateDisplay(`Cannot preview: ${preview.error}`, contentWidth)}
+            </Text>
+          </Box>
+        ) : null}
+        {files.length > 0 ? (
+          <Box flexDirection="column">
+            {shownFiles.map((file) => {
+              const noChange = file.diff.length === 0 ? ' no textual change' : '';
+              const counts = ` +${file.stats.addedLines} −${file.stats.removedLines}`;
+              // The path takes what the row's other segments leave it.
+              const pathRoom =
+                contentWidth - displayWidth(`${file.kind} `) - displayWidth(counts + noChange);
+              return (
+                <Box key={file.filePath} flexDirection="column">
+                  <Box>
                     <Text color={theme.subtle} dimColor>
-                      {noChange}
+                      {file.kind}{' '}
                     </Text>
+                    <Text color={theme.text}>
+                      {truncateDisplay(file.filePath, Math.max(8, pathRoom))}
+                    </Text>
+                    <Text> </Text>
+                    <Text color={theme.success}>+{file.stats.addedLines}</Text>
+                    <Text> </Text>
+                    <Text color={theme.error}>−{file.stats.removedLines}</Text>
+                    {noChange ? (
+                      <Text color={theme.subtle} dimColor>
+                        {noChange}
+                      </Text>
+                    ) : null}
+                  </Box>
+                  {file.diff.length > 0 ? (
+                    <DiffBlock
+                      output={file.diff}
+                      filePath={file.filePath}
+                      collapsed
+                      maxRows={diffRowsPerFile}
+                      expandHint={canExpand && !expanded ? 'D shows more' : ''}
+                      terminalWidth={contentWidth}
+                    />
                   ) : null}
                 </Box>
-                {file.diff.length > 0 ? (
-                  <DiffBlock
-                    output={file.diff}
-                    filePath={file.filePath}
-                    collapsed
-                    maxRows={diffRowsPerFile}
-                    expandHint={canExpand && !expanded ? 'D shows more' : ''}
-                    terminalWidth={contentWidth}
-                  />
-                ) : null}
+              );
+            })}
+            {hiddenFiles.length > 0 ? (
+              <Box>
+                <Text color={theme.subtle} dimColor>
+                  {truncateDisplay(
+                    `… ${hiddenFiles.length} more ${hiddenFiles.length === 1 ? 'file' : 'files'} · ${previewSummary(hiddenFiles)}${canExpand && !expanded ? ' · D shows more' : ''}`,
+                    contentWidth,
+                  )}
+                </Text>
+              </Box>
+            ) : null}
+            {files.length > 1 ? (
+              <Box>
+                <Text color={theme.subtle} dimColor>
+                  {files.length} files · {previewSummary(files)}
+                </Text>
+              </Box>
+            ) : null}
+          </Box>
+        ) : null}
+        {scopeHint ? (
+          <Box>
+            <Text color={theme.warning}>{scopeHint}</Text>
+          </Box>
+        ) : null}
+        <Box>
+          {BUTTONS.map((btn, i) => {
+            const isSelected = i === selected;
+            const btnColor = theme[btn.colorKey];
+            const label =
+              btn.value === 'always' ? `${btn.label} ${alwaysPatternDisplay}` : btn.label;
+            return (
+              <Box key={btn.label} marginRight={2}>
+                <Text
+                  backgroundColor={isSelected ? theme.surfaceActive : undefined}
+                  color={isSelected ? theme.selectionText : btnColor}
+                  bold={isSelected}
+                >
+                  {isSelected ? `${SELECTION_MARKER} ` : '  '}
+                  {label}
+                </Text>
               </Box>
             );
           })}
-          {hiddenFiles.length > 0 ? (
-            <Box>
-              <Text color={theme.subtle} dimColor>
-                {truncateDisplay(
-                  `… ${hiddenFiles.length} more ${hiddenFiles.length === 1 ? 'file' : 'files'} · ${previewSummary(hiddenFiles)}${canExpand && !expanded ? ' · D shows more' : ''}`,
-                  contentWidth,
-                )}
-              </Text>
-            </Box>
-          ) : null}
-          {files.length > 1 ? (
-            <Box>
-              <Text color={theme.subtle} dimColor>
-                {files.length} files · {previewSummary(files)}
-              </Text>
-            </Box>
-          ) : null}
         </Box>
-      ) : null}
-      {scopeHint ? (
-        <Box>
-          <Text color={theme.warning}>{scopeHint}</Text>
-        </Box>
-      ) : null}
-      <Box>
-        {BUTTONS.map((btn, i) => {
-          const isSelected = i === selected;
-          const btnColor = theme[btn.colorKey];
-          const label = btn.value === 'always' ? `${btn.label} ${alwaysPatternDisplay}` : btn.label;
-          return (
-            <Box key={btn.label} marginRight={2}>
-              <Text
-                backgroundColor={isSelected ? theme.surfaceActive : undefined}
-                color={isSelected ? theme.selectionText : btnColor}
-                bold={isSelected}
-              >
-                {isSelected ? `${SELECTION_MARKER} ` : '  '}
-                {label}
-              </Text>
-            </Box>
-          );
-        })}
+        {density.showOptionalHelp ? (
+          <Box>
+            <Text color={theme.subtle} dimColor>
+              {helpKeys.join(' · ')}
+            </Text>
+          </Box>
+        ) : null}
       </Box>
-      {density.showOptionalHelp ? (
-        <Box>
-          <Text color={theme.subtle} dimColor>
-            {helpKeys.join(' · ')}
-          </Text>
-        </Box>
-      ) : null}
     </Box>
   );
 }
