@@ -1,9 +1,11 @@
+import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BackgroundShellStore } from '../types/runtime.js';
 import { persistentJobPaths } from './persistent-store.js';
+import { isProcessAlive } from './process-tree.js';
 import { ShellJobManager } from './shell-manager.js';
 
 let directory: string;
@@ -190,6 +192,64 @@ describe('ShellJobManager persistent jobs', () => {
     expect(manager.get(started.id)?.status).toBe('killed');
     await waitForWorkerToDisappear(workerPid);
   }, 60_000);
+
+  // On Windows a rename over a file that another process has open fails with EPERM, and the
+  // manager polls a job record while the runner rewrites it every second. The runner used to die
+  // from the first such heartbeat, leaving the job recorded as running until the manager called it
+  // lost. The reader below holds the record open far more than any manager does, which turns a
+  // rare CI crash into a certain one.
+  it.skipIf(process.platform !== 'win32')(
+    'keeps the runner alive while another process keeps reading its record',
+    async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
+      const persistentRoot = join(directory, 'jobs');
+      const script = join(directory, 'idle.cjs');
+      // Exits on its own after 30s, so a runner that dies cannot leak it past the test.
+      writeFileSync(
+        script,
+        'setInterval(() => {}, 1000);\nsetTimeout(() => process.exit(0), 30_000);\n',
+      );
+      const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+      const manager = new ShellJobManager(
+        { nextId: 1, shells: new Map() },
+        { persistentRoot, ...ciBudgets },
+      );
+      managers.push(manager);
+      manager.configureWorkspace(directory);
+      const started = await manager.start({
+        command,
+        effectiveCommand: command,
+        workdir: directory,
+        env: process.env,
+        envOverrides: {},
+        sandboxed: false,
+        lifetime: 'persistent',
+        workspace: directory,
+      });
+      const recordPath = join(
+        persistentJobPaths(directory, persistentRoot).records,
+        `${started.id}.json`,
+      );
+
+      // Four seconds of reads span at least three heartbeats.
+      const reader = spawn(
+        process.execPath,
+        [
+          '-e',
+          `const fs = require('fs'); const end = Date.now() + 4000; while (Date.now() < end) { try { fs.readFileSync(${JSON.stringify(recordPath)}); } catch {} }`,
+        ],
+        { stdio: 'ignore' },
+      );
+      await new Promise((resolve) => reader.once('exit', resolve));
+
+      const runnerPid = manager.get(started.id)?.runnerPid;
+      expect(runnerPid).toBeDefined();
+      expect(isProcessAlive(runnerPid)).toBe(true);
+      expect(await manager.stop(started.id)).toBe(true);
+      expect(manager.get(started.id)?.status).toBe('killed');
+    },
+    60_000,
+  );
 });
 
 describe('ShellJobManager session jobs', () => {

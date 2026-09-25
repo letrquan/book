@@ -98,6 +98,23 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **On Windows, a persistent background shell job no longer loses its runner while Book polls its
+  record (#249).** Windows fails a rename over a file that another process has open, even just to
+  read it, with EPERM. The detached runner rewrites the job record every second while the shell
+  manager keeps reading it, and nothing in the runner caught that EPERM, so the runner died on it.
+  The job was left recorded as `running`, and its command kept running with nothing left to stop
+  it. Ten seconds later Book reported the job `lost`.
+  - **Retry:** `writeJsonAtomic` now retries a contended rename on win32 only, and only for
+    EPERM/EACCES/EBUSY. The runner waits up to 1 s. Writers in the TUI's own process (the shell
+    manager, memory extraction) wait up to 100 ms, so rendering never stalls for long.
+  - **Non-terminal writes:** a heartbeat, child-pid or `stopping` write that still fails no longer
+    ends the runner. It leaves a note in the job's log, and the next heartbeat writes the same
+    state.
+  - **Terminal record:** it is retried on a timer until written (20 attempts) rather than lost.
+  - **Temp files:** a failed write no longer leaves its `.tmp` file beside the record.
+  - **Before and after:** with a second process reading the record in a tight loop, the runner
+    died with EPERM within a second in 3/3 runs. It now survives in 12/12, and a stop request ends
+    it with exit code 0 and a `killed` record.
 - **The Windows-flaky tests no longer depend on how fast the runner is, and the local gate passes
   on Windows (#249).** Each test waited on the clock where it should have waited for the result.
   - **`ByokWizard`** sent Enter 20 ms after the typed text and assumed React had rendered by then.
