@@ -26,14 +26,39 @@ export function SoftPanel({
   width,
   marginX = 0,
   paddingX = 1,
+  attached = false,
 }: {
   children: ReactNode;
   tone?: PanelTone;
   width?: number;
   marginX?: number;
   paddingX?: number;
+  /**
+   * Draw the panel as part of the composer below it: a hairline across the top
+   * and no walls, the same way the composer itself is drawn. The interior keeps
+   * the boxed geometry (one extra column of padding stands in for each wall), so
+   * callers that size rows as `width - 4` need no change.
+   */
+  attached?: boolean;
 }) {
   const theme = useTheme();
+  if (attached) {
+    return (
+      <Box
+        flexDirection="column"
+        borderStyle="single"
+        borderLeft={false}
+        borderRight={false}
+        borderBottom={false}
+        borderColor={toneColor(tone, theme)}
+        paddingX={paddingX + 1}
+        width={width}
+        marginX={marginX}
+      >
+        {children}
+      </Box>
+    );
+  }
   return (
     <Box
       flexDirection="column"

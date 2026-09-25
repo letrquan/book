@@ -194,9 +194,7 @@ export function TargetText({
   }
   return (
     <Text>
-      <Text color={theme.inactive} dimColor>
-        {target.slice(0, split + 1)}
-      </Text>
+      <Text color={theme.inactive}>{target.slice(0, split + 1)}</Text>
       <Text color={theme.subtle}>{target.slice(split + 1)}</Text>
     </Text>
   );
@@ -215,19 +213,15 @@ export function MetaText({ meta, failed }: { meta: string; failed: boolean }) {
   const theme = useTheme();
   if (failed) return <Text color={theme.error}>{meta}</Text>;
   if (!CHURN_TOKEN.test(meta.split(' ')[0] ?? '')) {
-    return (
-      <Text color={theme.subtle} dimColor>
-        {meta}
-      </Text>
-    );
+    return <Text color={theme.inactive}>{meta}</Text>;
   }
   return (
     <Text>
       {meta.split(' ').map((token, index) => {
         const churn = CHURN_TOKEN.exec(token);
-        const color = !churn ? theme.subtle : churn[1] === '+' ? theme.success : theme.error;
+        const color = !churn ? theme.inactive : churn[1] === '+' ? theme.success : theme.error;
         return (
-          <Text key={index} color={color} dimColor={!churn}>
+          <Text key={index} color={color}>
             {index > 0 ? ' ' : ''}
             {token}
           </Text>
@@ -346,8 +340,10 @@ function ToolCallBlockInner({
             {statusSymbol(presentation.status)}{' '}
           </Text>
         )}
+        {/* Recessive, but never faint: SGR 2 on an already-muted grey left the
+            verb nearly invisible on a dark background. */}
         {row.label ? (
-          <Text color={theme.inactive} dimColor>
+          <Text color={theme.inactive}>
             {row.label}{' '}
           </Text>
         ) : null}

@@ -10,7 +10,7 @@ import type { ImageAttachment } from '../../types/messages.js';
 import type { SlashCommand } from '../../types/commands.js';
 import type { Skill } from '../../skills.js';
 import { isShortcutsToggleKey } from '../tool-presentation.js';
-import { frameGrid } from '../layout.js';
+import { CONTENT_COLUMN, frameGrid } from '../layout.js';
 import {
   findActiveFileMention,
   getFileMentionCandidates,
@@ -861,9 +861,10 @@ export function InputBar({
   // The composer spans the transcript rather than floating over it, so it takes
   // the full terminal like the rows above it -- not the bounded panel measure.
   const frame = frameGrid(outerWidth);
-  const editorWidth = Math.max(8, frame.width - 4);
-  const inputWidth = Math.max(1, editorWidth - 2);
-  const promptColor = inputSuppressed ? theme.subtle : theme.promptBorder;
+  // The prompt glyph sits in the gutter, so what you type starts on the same
+  // column as every transcript row above it.
+  const inputWidth = Math.max(1, frame.width - CONTENT_COLUMN);
+  const promptColor = inputSuppressed ? theme.subtle : theme.userAccent;
   // A modal owns the keyboard, so the composer accepts nothing — saying
   // "Type a follow-up" here invited the user to type into a locked field while
   // the prompt above was reading their keystrokes as answers. Which of the two
@@ -944,10 +945,13 @@ export function InputBar({
         </Text>
       ) : null}
 
+      {/* Hairlines above and below, no side walls: the composer reads as the
+          foot of the page rather than a box pinned to it. */}
       <Box
-        borderStyle="round"
+        borderStyle="single"
+        borderLeft={false}
+        borderRight={false}
         borderColor={baseBorderColor}
-        paddingX={1}
         width={frame.width}
         marginX={frame.marginX}
       >

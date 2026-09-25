@@ -6,6 +6,7 @@ import type { FileMentionCandidate } from '../../input/file-mentions.js';
 import { truncateDisplay } from './word-wrap.js';
 import { getCommandMenuWindow } from './CommandMenu.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
+import { frameGrid } from '../layout.js';
 
 interface FileMentionMenuProps {
   items: FileMentionCandidate[];
@@ -75,8 +76,9 @@ export function FileMentionMenu({
     ? truncateDisplay(`Files matching “${filterText}”`, contentWidth)
     : 'Files';
 
+  // The hairline spans the terminal like the composer's; rows keep the panel measure.
   return (
-    <SoftPanel width={frame.width} marginX={frame.marginX}>
+    <SoftPanel width={frameGrid(width).width} marginX={frame.marginX} attached>
       <PanelTitle>{title}</PanelTitle>
 
       {items.length === 0 ? (

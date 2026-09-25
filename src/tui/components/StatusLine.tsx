@@ -20,13 +20,13 @@ const MODE_CHIP = '◆';
 const CLEAN_TREE = '✓';
 
 /**
- * Segments are separated by space, not `·`.
+ * Segments are separated by a faint middle dot.
  *
- * With every segment the same grey, the dots were the only thing separating
- * them. Now that mode, context pressure and a dirty tree each carry their own
- * colour, the dots are noise the colour already handles.
+ * The dot is drawn a step dimmer than the segments, so it separates them
+ * without adding a colour of its own. Colour is kept for a state that needs a
+ * decision, not for telling one grey fact from the next.
  */
-const SEGMENT_SEPARATOR = '   ';
+const SEGMENT_SEPARATOR = '  ·  ';
 
 interface StatusLineProps {
   model: string;
@@ -57,6 +57,7 @@ export function buildColoredSegments(
   segments: Array<{ text: string; color?: string }>,
   maxWidth: number,
   separatorText = ' · ',
+  separatorColor?: string,
 ): Array<{ text: string; color: string }> {
   const result: Array<{ text: string; color: string }> = [];
   let totalWidth = 0;
@@ -67,7 +68,7 @@ export function buildColoredSegments(
     if (candidateWidth > maxWidth) continue;
 
     const color = segment.color ?? 'text';
-    if (separator) result.push({ text: separator, color });
+    if (separator) result.push({ text: separator, color: separatorColor ?? color });
     result.push({ text: segment.text, color });
     totalWidth = candidateWidth;
   }
@@ -147,9 +148,11 @@ export function StatusLine({
 
     if (gitBranch && gitBranch !== '?') {
       const dirty = Boolean(gitStatus && gitStatus !== CLEAN_TREE);
+      // A dirty tree is not a warning. It is how a working tree normally looks,
+      // so the `*` says it and the colour stays quiet.
       segments.push({
         text: `${truncateDisplay(gitBranch, branchBudget)}${dirty ? '*' : ''}`,
-        color: dirty ? theme.warning : theme.subtle,
+        color: theme.subtle,
       });
     }
 
@@ -172,7 +175,7 @@ export function StatusLine({
       });
     }
 
-    return buildColoredSegments(segments, contentWidth, SEGMENT_SEPARATOR);
+    return buildColoredSegments(segments, contentWidth, SEGMENT_SEPARATOR, theme.inactive);
   }, [
     gitBranch,
     gitStatus,
@@ -185,6 +188,7 @@ export function StatusLine({
     model,
     taskCount,
     needsInputAgentCount,
+    theme.inactive,
     theme.subtle,
     theme.warning,
     width,

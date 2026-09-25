@@ -2,7 +2,7 @@ import { Box, Text } from 'ink';
 import React from 'react';
 import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
-import { TurnRule } from './TurnRule.js';
+import { displayWidth, wordWrap } from './word-wrap.js';
 import type { ImageAttachment } from '../../types/messages.js';
 
 interface UserMessageProps {
@@ -100,12 +100,18 @@ function parseMentionSegments(content: string): Array<{ text: string; isMention:
   return segments;
 }
 
+/** The ribbon down the left edge of a user turn: a half block, so it reads as a bookmark. */
+const RIBBON = '▌';
+
 /**
- * A user turn: a labelled rule, then the prompt on the content column.
+ * A user turn: the prompt set on a tinted band, with a gilt ribbon in the gutter.
  *
- * The rule is what makes a long transcript scannable — it is the only element
- * that marks where one exchange ended and the next began. The prompt itself
- * needs no tint or rail; @mentions stay accented for quick scanning.
+ * The band has the job the full-width `── you ──` rule used to do: it is how a
+ * long transcript shows where one exchange ended and the next began. It does
+ * that with a change of surface instead of a line through the whole screen, so
+ * the boundary stays easy to find without being the loudest thing in the turn.
+ * The ribbon runs the full height of the prompt, and the time sits at the right
+ * edge of the first row. @mentions stay accented for quick scanning.
  */
 function UserMessageInner({
   content,
@@ -117,7 +123,6 @@ function UserMessageInner({
   const theme = useTheme();
   const grid = transcriptGrid(terminalWidth);
   const width = grid.width;
-  const segments = parseMentionSegments(content);
 
   if (screenReader) {
     return (
@@ -132,36 +137,47 @@ function UserMessageInner({
     );
   }
 
+  const time = formatTurnTime(timestamp);
+  // The band leaves the terminal's last column empty, like every other row.
+  const bandWidth = width - 1;
+  // Room for ` 19:13 ` at the right edge of the first row.
+  const timeColumn = time ? displayWidth(time) + 2 : 1;
+  const textWidth = Math.max(8, bandWidth - CONTENT_COLUMN - timeColumn);
+  const lines = content ? wordWrap(content, textWidth).split('\n') : [];
+  if (attachments.length > 0) {
+    lines.push(attachments.map((_, index) => `[image ${index + 1}]`).join(' '));
+  }
+  if (lines.length === 0) lines.push('');
+
   return (
-    <Box flexDirection="column" width={width}>
-      <TurnRule
-        label="you"
-        trailing={formatTurnTime(timestamp)}
-        width={width - 1}
-        accent={theme.userAccent}
-      />
-      <Box marginLeft={CONTENT_COLUMN} width={grid.content} flexDirection="column">
-        {content ? (
-          <Text wrap="wrap">
-            {segments.map((seg, i) =>
-              seg.isMention ? (
-                <Text key={i} color={theme.userAccent}>
-                  {seg.text}
-                </Text>
-              ) : (
-                <Text key={i} color={theme.text}>
-                  {seg.text}
-                </Text>
-              ),
+    <Box flexDirection="column" width={bandWidth} backgroundColor={theme.userBg}>
+      {lines.map((line, index) => {
+        const isAttachmentRow = attachments.length > 0 && index === lines.length - 1;
+        const gap = Math.max(0, textWidth - displayWidth(line));
+        return (
+          <Box key={index} width={bandWidth}>
+            <Text color={theme.userAccent}>{RIBBON} </Text>
+            {isAttachmentRow ? (
+              <Text color={theme.userAccent}>{line}</Text>
+            ) : (
+              <Text>
+                {parseMentionSegments(line).map((seg, i) => (
+                  <Text key={i} color={seg.isMention ? theme.userAccent : theme.text}>
+                    {seg.text}
+                  </Text>
+                ))}
+              </Text>
             )}
-          </Text>
-        ) : null}
-        {attachments.length > 0 ? (
-          <Text color={theme.userAccent}>
-            {attachments.map((_, index) => `[image ${index + 1}]`).join(' ')}
-          </Text>
-        ) : null}
-      </Box>
+            <Text>{' '.repeat(gap)}</Text>
+            {index === 0 && time ? (
+              <Text color={theme.inactive}>
+                {' '}
+                {time}{' '}
+              </Text>
+            ) : null}
+          </Box>
+        );
+      })}
     </Box>
   );
 }

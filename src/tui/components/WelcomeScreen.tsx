@@ -4,7 +4,6 @@ import type React from 'react';
 import { useStaggeredReveal } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
-import { Bookplate } from './Bookplate.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 interface WelcomeScreenProps {
@@ -86,12 +85,77 @@ function HintRow({ hints }: { hints: WelcomeHint[] }) {
       {hints.map((hint, index) => (
         <Text key={hint.key}>
           {index > 0 ? ' '.repeat(HINT_GAP) : ''}
-          <Text color={theme.brand}>{hint.key}</Text>
-          <Text color={theme.subtle}> {hint.label}</Text>
+          <Text color={theme.text}>{hint.key}</Text>
+          <Text color={theme.inactive}> {hint.label}</Text>
         </Text>
       ))}
     </Box>
   );
+}
+
+/**
+ * The title-page logotype: BOOK drawn in half blocks, three rows tall.
+ *
+ * Each letter is a 4×6 pixel glyph packed two pixels per cell (`▀` top, `▄`
+ * bottom, `█` both). Keep the rows the same display width, or the centred
+ * block shears.
+ */
+export const LOGOTYPE = [
+  '█▀▀▄ ▄▀▀▄ ▄▀▀▄ █ ▄▀',
+  '█▀▀▄ █  █ █  █ █▀▄ ',
+  '█▄▄▀ ▀▄▄▀ ▀▄▄▀ █  █',
+] as const;
+
+/** Rows the composer and status line take below the transcript. */
+const FOOTER_ROWS = 5;
+
+/** Rows the title page itself occupies: logotype, blank, meta, blank, hints. */
+const TITLE_PAGE_ROWS = LOGOTYPE.length + 4;
+
+/** Blend two `#rrggbb` colours; `t = 0` is `from`. Undefined for any other form. */
+function mixHex(from: string, to: string, t: number): string | undefined {
+  const parse = (hex: string) =>
+    /^#[0-9a-f]{6}$/i.test(hex) ? [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) : null;
+  const a = parse(from);
+  const b = parse(to);
+  if (!a || !b) return undefined;
+  return `#${a
+    .map((v, i) => Math.round(v + (b[i]! - v) * t))
+    .map((v) => v.toString(16).padStart(2, '0'))
+    .join('')}`;
+}
+
+/**
+ * The logotype in gold foil: each row steps from the light gilt down to the
+ * deep one, the way stamped foil catches the light along its top edge.
+ */
+function Logotype() {
+  const theme = useTheme();
+  const last = LOGOTYPE.length - 1;
+  return (
+    <Box flexDirection="column">
+      {LOGOTYPE.map((row, index) => (
+        <Text
+          key={index}
+          color={mixHex(theme.brandShimmer, theme.brand, last === 0 ? 1 : index / last) ?? theme.brand}
+        >
+          {row}
+        </Text>
+      ))}
+    </Box>
+  );
+}
+
+/**
+ * Blank rows above the title page.
+ *
+ * An empty session used to print a small block in the top-left corner above
+ * thirty-odd empty rows. The title page sits a little above the optical middle
+ * of the space left over, the way a title sits on the page of a book.
+ */
+export function titlePageTopPadding(terminalHeight: number): number {
+  const free = Math.floor(terminalHeight) - FOOTER_ROWS - TITLE_PAGE_ROWS;
+  return Math.max(0, Math.floor(free * 0.4));
 }
 
 export function WelcomeScreen({
@@ -114,7 +178,7 @@ export function WelcomeScreen({
   const reveal = useStaggeredReveal(tiny ? 2 : compact ? 3 : 4, animate, 110, motionDisabled);
   const tagline = tiny ? TAGLINE_TINY : TAGLINE;
   const contentWidth = grid.content;
-  const meta = `${workspaceName(workspace)} · ${model} · ${mode}`;
+  const meta = `${workspaceName(workspace)}  ·  ${model}  ·  ${mode}`;
   const hints = composeWelcomeHints(WELCOME_HINTS, contentWidth);
 
   if (screenReader) {
@@ -144,7 +208,7 @@ export function WelcomeScreen({
     return (
       <Box flexDirection="column" width={width}>
         <Box paddingLeft={CONTENT_COLUMN}>
-          <Text color={theme.assistantAccent} bold>
+          <Text color={theme.brand} bold>
             BOOK{' '}
           </Text>
           <Text color={theme.text}>{truncateDisplay(tagline, contentWidth - 5)}</Text>
@@ -162,7 +226,7 @@ export function WelcomeScreen({
     return (
       <Box flexDirection="column" width={width}>
         <Box paddingLeft={CONTENT_COLUMN}>
-          <Text color={theme.assistantAccent} bold>
+          <Text color={theme.brand} bold>
             BOOK{' '}
           </Text>
           <Text color={theme.text}>{truncateDisplay(tagline, contentWidth - 5)}</Text>
@@ -183,22 +247,22 @@ export function WelcomeScreen({
     );
   }
 
+  // A title page: centred, with the composer below as the first line of text.
+  // No tagline — the composer's placeholder already says "Ask me anything".
   return (
-    <Box flexDirection="column" width={width}>
-      {/* The plate's ╭ / ╰ glyphs are the gutter, so the mark and the tagline
-          already land on the transcript's content column. */}
-      <Bookplate tagline={tagline} width={contentWidth} />
+    <Box flexDirection="column" width={width - 1} alignItems="center">
+      <Box height={titlePageTopPadding(height)} />
+      <Logotype />
+      <Text> </Text>
       <WelcomeLine visible={reveal >= 1}>
-        <Box paddingLeft={CONTENT_COLUMN}>
-          <Text color={theme.subtle} dimColor>
-            {truncateDisplay(meta, contentWidth)}
-          </Text>
-        </Box>
+        {/* The mode is left to the status line, which is where it changes. */}
+        <Text color={theme.subtle}>
+          {truncateDisplay(`${workspaceName(workspace)}  ·  ${model}`, contentWidth)}
+        </Text>
       </WelcomeLine>
+      <Text> </Text>
       <WelcomeLine visible={reveal >= 2}>
-        <Box paddingLeft={CONTENT_COLUMN}>
-          <HintRow hints={hints} />
-        </Box>
+        <HintRow hints={hints} />
       </WelcomeLine>
     </Box>
   );

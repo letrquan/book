@@ -22,7 +22,7 @@
  */
 import { spawn as ptySpawn } from 'node-pty';
 import { spawn as procSpawn } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -193,6 +193,133 @@ async function screen() {
   } finally {
     term.dispose();
   }
+}
+
+// xterm's 256-colour palette: 16 ANSI colours, a 6x6x6 cube, then 24 greys.
+const ANSI16 = [
+  '#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5',
+  '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff',
+];
+function paletteColor(i) {
+  if (i < 16) return ANSI16[i];
+  if (i < 232) {
+    const n = i - 16;
+    const level = (v) => (v === 0 ? 0 : 55 + v * 40);
+    return `rgb(${level(Math.floor(n / 36))},${level(Math.floor(n / 6) % 6)},${level(n % 6)})`;
+  }
+  const g = 8 + (i - 232) * 10;
+  return `rgb(${g},${g},${g})`;
+}
+function cellColor(cell, fg) {
+  if (fg ? cell.isFgDefault() : cell.isBgDefault()) return null;
+  const v = fg ? cell.getFgColor() : cell.getBgColor();
+  if (fg ? cell.isFgRGB() : cell.isBgRGB()) return `#${v.toString(16).padStart(6, '0')}`;
+  return paletteColor(v);
+}
+const escapeHtml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+function blockElementBackground(ch, fg, bg) {
+  // Start the line on the cell's midpoint rather than straddling it: a 1px line
+  // centred on a half pixel can round away to nothing.
+  const line = (dir, px) =>
+    `linear-gradient(${dir},${bg} 50%,${fg} 50%,${fg} calc(50% + ${px}px),${bg} calc(50% + ${px}px))`;
+  switch (ch) {
+    case '█': return fg;
+    case '▀': return `linear-gradient(${fg} 50%,${bg} 50%)`;
+    case '▄': return `linear-gradient(${bg} 50%,${fg} 50%)`;
+    case '▌': return `linear-gradient(to right,${fg} 50%,${bg} 50%)`;
+    case '▐': return `linear-gradient(to right,${bg} 50%,${fg} 50%)`;
+    case '│': return line('to right', 1);
+    case '─': return line('to bottom', 1);
+    case '━': return line('to bottom', 2);
+    default: return null;
+  }
+}
+
+// The screen as HTML with colours and attributes kept: a text shot cannot show
+// whether a design reads well, and PTY bytes cannot be looked at.
+async function screenHtml() {
+  const term = new Terminal({ cols, rows, allowProposedApi: true, convertEol: !BIN });
+  const DEFAULT_FG = '#d4d4d4';
+  const DEFAULT_BG = '#0c0c0c';
+  try {
+    await new Promise((res) => term.write(raw, res));
+    const out = [];
+    const cell = term.buffer.active.getNullCell();
+    for (let y = 0; y < rows; y++) {
+      const line = term.buffer.active.getLine(term.buffer.active.viewportY + y);
+      let html = '';
+      for (let x = 0; x < cols; x++) {
+        if (!line) break;
+        line.getCell(x, cell);
+        if (cell.getWidth() === 0) continue;
+        let fg = cellColor(cell, true) ?? DEFAULT_FG;
+        let bg = cellColor(cell, false);
+        if (cell.isInverse()) [fg, bg] = [bg ?? DEFAULT_BG, fg];
+        const style = [`color:${fg}`];
+        if (bg) style.push(`background:${bg}`);
+        if (cell.isBold()) style.push('font-weight:700');
+        if (cell.isDim()) style.push('opacity:.55');
+        if (cell.isItalic()) style.push('font-style:italic');
+        if (cell.isUnderline()) style.push('text-decoration:underline');
+        const chars = cell.getChars() || ' ';
+        const block = blockElementBackground(chars, fg, bg ?? 'transparent');
+        if (block) {
+          // Terminals draw block elements and rules edge to edge; a font glyph
+          // leaves seams between rows that are not there on a real screen.
+          html += `<span class="b" style="background:${block}"></span>`;
+          continue;
+        }
+        const wide = cell.getWidth() === 2 ? ' class="w"' : '';
+        html += `<span${wide} style="${style.join(';')}">${escapeHtml(chars)}</span>`;
+      }
+      out.push(`<div class="r">${html || ' '}</div>`);
+    }
+    return `<!doctype html><meta charset="utf-8"><style>
+body{margin:0;background:${DEFAULT_BG};padding:14px}
+.t{font:15px/18px "Cascadia Mono","Cascadia Code",Consolas,monospace;white-space:pre}
+.r{height:18px;overflow:hidden}.w{display:inline-block;width:2ch}
+.b{display:inline-block;width:1ch;height:18px;vertical-align:top}
+</style><div class="t">${out.join('')}</div>`;
+  } finally {
+    term.dispose();
+  }
+}
+
+// Headless Edge (always present on Windows 11) turns the HTML shot into a PNG.
+function htmlToPng(htmlPath, pngPath) {
+  const candidates = [
+    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+    '/usr/bin/chromium',
+    '/usr/bin/google-chrome',
+  ];
+  const exe = candidates.find((p) => existsSync(p));
+  if (!exe) return Promise.resolve(false);
+  const width = Math.ceil(cols * 9.05 + 28);
+  const height = rows * 18 + 28;
+  const profile = mkdtempSync(join(tmpdir(), 'book-shot-profile-'));
+  return new Promise((res) => {
+    const child = procSpawn(
+      exe,
+      [
+        '--headless=new',
+        '--disable-gpu',
+        '--hide-scrollbars',
+        '--disable-lcd-text',
+        `--user-data-dir=${profile}`,
+        `--screenshot=${resolve(pngPath)}`,
+        `--window-size=${width},${height}`,
+        `file:///${resolve(htmlPath).replace(/\\/g, '/')}`,
+      ],
+      { stdio: 'ignore' },
+    );
+    child.on('exit', () => {
+      rmSync(profile, { recursive: true, force: true });
+      res(true);
+    });
+    child.on('error', () => res(false));
+  });
 }
 
 function stripAnsi(s) {
@@ -370,7 +497,9 @@ async function run() {
         // The "Ask me anything" placeholder renders BEFORE Ink's stdin handler
         // is live — keystrokes sent in the first ~half second are swallowed.
         // Wait for the placeholder, then settle.
-        const ok = await waitFor('Ask me anything', Number(rest || DEFAULT_TIMEOUT), 'screen');
+        // A narrow composer shortens the placeholder to `Ask...`, so match the
+        // prompt glyph in front of it too.
+        const ok = await waitFor('Ask me anything|[›>] Ask', Number(rest || DEFAULT_TIMEOUT), 'screen');
         if (!ok) await fail('TUI never rendered the input bar');
         await sleep(READY_SETTLE_MS);
         console.log('[driver] ready');
@@ -416,6 +545,17 @@ async function run() {
         const path = join(SHOT_DIR, `${name}.txt`);
         writeFileSync(path, (await screen()).join('\n') + '\n');
         console.log(`[driver] shot -> ${path}`);
+        break;
+      }
+      case 'shotpng': {
+        // A colour screenshot: `<name>.html` always, `<name>.png` when a
+        // Chromium-family browser is installed to render it headlessly.
+        const name = rest || `shot-${Date.now()}`;
+        const htmlPath = join(SHOT_DIR, `${name}.html`);
+        const pngPath = join(SHOT_DIR, `${name}.png`);
+        writeFileSync(htmlPath, await screenHtml());
+        const ok = await htmlToPng(htmlPath, pngPath);
+        console.log(`[driver] shotpng -> ${ok ? pngPath : htmlPath}`);
         break;
       }
       case 'raw':

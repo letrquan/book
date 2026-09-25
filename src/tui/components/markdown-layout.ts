@@ -207,8 +207,28 @@ function wrapCellLines(text: string, width: number): string[] {
   return out.length > 0 ? out : [''];
 }
 
-function buildBorder(colWidths: number[], left: string, join: string, right: string): string {
-  return `${left}${colWidths.map((w) => '─'.repeat(w + 2)).join(join)}${right}`;
+/** Spaces between two table columns. Columns are divided by space, not by rules. */
+export const TABLE_COLUMN_GAP = '   ';
+
+/**
+ * One table row as text: cells separated by {@link TABLE_COLUMN_GAP}, with one
+ * column of air at each end so the text sits inside the rules above and below.
+ */
+export function tableRowText(cells: readonly string[]): string {
+  return ` ${cells.join(TABLE_COLUMN_GAP)} `;
+}
+
+/**
+ * A full-width table rule.
+ *
+ * Tables are ruled the way a book sets them (booktabs): a heavy rule above and
+ * below, a light one under the header, and no vertical lines at all. The old
+ * grid drew a box around every cell, which made a three-row comparison the
+ * heaviest object in the answer.
+ */
+function buildRule(colWidths: number[], char: '━' | '─'): string {
+  const width = colWidths.reduce((sum, w) => sum + w, 0) + (colWidths.length - 1) * 3 + 2;
+  return char.repeat(Math.max(0, width));
 }
 
 /**
@@ -277,14 +297,14 @@ export function layoutTable(input: TableLayoutInput): TableLayout {
     }
   }
 
-  const totalWidth = tableChromeWidth(colWidths);
+  const top = buildRule(colWidths, '━');
   return {
     mode: 'grid',
     colWidths,
-    totalWidth,
-    top: buildBorder(colWidths, '┌', '┬', '┐'),
-    middle: buildBorder(colWidths, '├', '┼', '┤'),
-    bottom: buildBorder(colWidths, '└', '┴', '┘'),
+    totalWidth: displayWidth(top),
+    top,
+    middle: buildRule(colWidths, '─'),
+    bottom: buildRule(colWidths, '━'),
     // First visual header row kept as headerCells for simple consumers;
     // full multi-line header is in headerRows.
     headerCells: headerRows[0] ?? Array(colCount).fill(''.padEnd(0)),

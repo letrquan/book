@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import type { ThemeTokens } from '../types/theme.js';
-import { DEFAULT_THEME } from '../types/theme.js';
+import { DEFAULT_THEME, FOLIO_THEME } from '../types/theme.js';
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 
@@ -11,6 +11,12 @@ import { join } from 'path';
  * with the work.
  */
 export const APPLE_THEME: ThemeTokens = { ...DEFAULT_THEME };
+
+/** Warm ink on dark paper with one gilt accent. See {@link FOLIO_THEME}. */
+export { FOLIO_THEME };
+
+/** The theme a session gets when settings name none. */
+export const DEFAULT_THEME_NAME = 'folio';
 
 export interface ResolvedTheme {
   preference: string;
@@ -71,6 +77,9 @@ export function resolveTheme(workspace: string, preference: string): ResolvedThe
   const builtin = requested.toLowerCase();
   if (builtin === 'apple' || builtin === 'apple-dark') {
     return { preference: 'apple', resolvedName: 'apple', tokens: APPLE_THEME };
+  }
+  if (builtin === 'folio') {
+    return { preference: 'folio', resolvedName: 'folio', tokens: FOLIO_THEME };
   }
   if (!requested) return null;
   const custom = loadCustomTheme(workspace, requested);

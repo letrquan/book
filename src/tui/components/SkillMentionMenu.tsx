@@ -6,6 +6,7 @@ import type { SkillMentionCandidate } from '../../input/skill-mentions.js';
 import { truncateDisplay } from './word-wrap.js';
 import { getCommandMenuWindow } from './CommandMenu.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
+import { frameGrid } from '../layout.js';
 
 interface SkillMentionMenuProps {
   items: SkillMentionCandidate[];
@@ -68,8 +69,9 @@ export function SkillMentionMenu({
 
   if (!visible) return null;
 
+  // The hairline spans the terminal like the composer's; rows keep the panel measure.
   return (
-    <SoftPanel width={frame.width} marginX={frame.marginX}>
+    <SoftPanel width={frameGrid(width).width} marginX={frame.marginX} attached>
       <PanelTitle>
         {filterText ? truncateDisplay(`Skills matching “${filterText}”`, contentWidth) : 'Skills'}
       </PanelTitle>

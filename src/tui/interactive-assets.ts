@@ -2,7 +2,12 @@ import { discoverCommands } from '../commands/loader.js';
 import { discoverSkills, type Skill } from '../skills.js';
 import type { SlashCommand } from '../types/commands.js';
 import type { AgentConfig } from '../types/runtime.js';
-import { listCustomThemes, resolveTheme, type ResolvedTheme } from './theme.js';
+import {
+  DEFAULT_THEME_NAME,
+  listCustomThemes,
+  resolveTheme,
+  type ResolvedTheme,
+} from './theme.js';
 
 export interface InteractiveAssets {
   commands: SlashCommand[];
@@ -22,6 +27,6 @@ export function loadInteractiveAssets(
       enabled: config.settings.skills.enabled,
     }),
     customThemes: listCustomThemes(config.workspace),
-    initialTheme: resolveTheme(config.workspace, config.settings.theme ?? 'apple'),
+    initialTheme: resolveTheme(config.workspace, config.settings.theme ?? DEFAULT_THEME_NAME),
   };
 }

@@ -360,9 +360,11 @@ function MutationGroupRow({
   }
   return (
     <Box height={1} marginLeft={CONTENT_COLUMN}>
-      <Text color={theme.success}>{'• '}</Text>
+      {/* The same mark as every other finished tool row: a mutation group is
+          work that completed, not a list item. */}
+      <Text color={theme.success}>{'✓ '}</Text>
       {row.label ? (
-        <Text color={theme.inactive} dimColor>
+        <Text color={theme.inactive}>
           {row.label}{' '}
         </Text>
       ) : null}

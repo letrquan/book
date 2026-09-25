@@ -47,7 +47,8 @@ import { inlineCode } from './markdown-inline.js';
 import {
   ThemeContext,
   resolveTheme,
-  APPLE_THEME,
+  DEFAULT_THEME_NAME,
+  FOLIO_THEME,
   type ThemeTokens,
   type ResolvedTheme,
 } from './theme.js';
@@ -543,10 +544,10 @@ export function App({
   const [currentTheme] = useState<ResolvedTheme>(
     () =>
       interactiveAssets?.initialTheme ??
-      resolveTheme(config.workspace, config.settings.theme ?? 'apple') ?? {
-        preference: 'apple',
-        resolvedName: 'apple',
-        tokens: APPLE_THEME,
+      resolveTheme(config.workspace, config.settings.theme ?? DEFAULT_THEME_NAME) ?? {
+        preference: DEFAULT_THEME_NAME,
+        resolvedName: DEFAULT_THEME_NAME,
+        tokens: FOLIO_THEME,
       },
   );
   const { tasks, addTask, updateTaskStatus, removeTask, clearTasks } = useTasks();

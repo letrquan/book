@@ -6,6 +6,7 @@ import type { CommandItem } from '../../commands/filter.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
+import { frameGrid } from '../layout.js';
 import { useDebugRender } from '../debug.js';
 
 const renderLog = createRenderDebugLogger('tui:cmdmenu');
@@ -186,8 +187,9 @@ export function CommandMenu({
     ? truncateDisplay(`Commands matching “${filterText}”`, contentWidth)
     : 'Commands';
 
+  // The hairline spans the terminal like the composer's; rows keep the panel measure.
   return (
-    <SoftPanel width={frame.width} marginX={frame.marginX}>
+    <SoftPanel width={frameGrid(width).width} marginX={frame.marginX} attached>
       <PanelTitle>{title}</PanelTitle>
 
       {items.length === 0 ? (
@@ -220,7 +222,7 @@ export function CommandMenu({
               ) : (
                 <>
                   <Text>{row.marker}</Text>
-                  <Text color={theme.brand}>{row.name}</Text>
+                  <Text color={theme.text}>{row.name}</Text>
                   <Text color={theme.subtle}>{row.hint}</Text>
                   <Text color={theme.subtle} dimColor>
                     {row.badge}
