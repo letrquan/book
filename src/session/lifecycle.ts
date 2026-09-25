@@ -24,7 +24,7 @@ export async function runSessionStart(
 export async function runSessionEnd(
   config: AgentConfig,
   sessionId: string,
-  reason: 'clear' | 'resume' | 'exit' | 'completion',
+  reason: 'clear' | 'resume' | 'exit' | 'completion' | 'aborted' | 'error',
   options?: SessionLifecycleOptions,
 ): Promise<void> {
   await runHooks(

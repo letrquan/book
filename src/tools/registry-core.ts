@@ -83,13 +83,60 @@ function stableStringify(value: unknown): string {
 }
 
 /**
+ * The key both provider clients wrap tool-call arguments in when they are not
+ * valid JSON: `{ __raw: "<text>" }` (`parseToolArguments` in
+ * provider/openai-compatible.ts and provider/anthropic.ts).
+ */
+const RAW_ARGUMENTS_KEY = '__raw';
+
+/**
+ * Why a call's arguments were not valid JSON, or undefined when they were.
+ *
+ * The providers keep only the raw text, so it is parsed again here to recover
+ * V8's error. The shapes of that error, and what the detail becomes:
+ *
+ * - `… in JSON at position N (line L column C)`: a bad escape, a raw control
+ *   character, a missing comma or brace, a trailing comma. Kept as is.
+ * - `Unexpected end of JSON input`: the text stops mid-value. Its length,
+ *   which is where it stopped, is appended as the position.
+ * - `Unexpected token 'X', "…" is not valid JSON`: a bare word where a value
+ *   belongs. Kept as is; V8 quotes the text around the token instead of
+ *   giving a position.
+ *
+ * Every run of whitespace or control characters (tab, CR, LF, ESC, C1, …) is
+ * folded to one space: the quoted text is the model's own and may hold any of
+ * them, and the message is shown on a one-line tool row.
+ */
+function invalidJsonArgumentsDetail(args: Record<string, unknown>): string | undefined {
+  const raw = args[RAW_ARGUMENTS_KEY];
+  // Exactly the shape the providers emit; anything else is the schema's to judge.
+  if (typeof raw !== 'string' || Object.keys(args).length !== 1) return undefined;
+  try {
+    JSON.parse(raw);
+    // Valid JSON under the key is a literal `__raw` argument, not a parse failure.
+    return undefined;
+  } catch (error) {
+    const detail = (error instanceof Error ? error.message : String(error)).replace(
+      /[\s\u0000-\u001f\u007f-\u009f]+/g,
+      ' ',
+    );
+    return detail.startsWith('Unexpected end of JSON input')
+      ? `${detail} at position ${raw.length}`
+      : detail;
+  }
+}
+
+/**
  * Advisory circuit breaker: when the model repeats a call that already failed
  * with the same arguments and error, escalate the remediation instead of
  * letting an identical-retry loop run. Never blocks the call itself.
  */
 function noteRepeatedFailure(context: ToolContext, call: ToolCall, result: ToolResult): ToolResult {
   const memory = context.runtime?.recentToolFailures;
-  if (!memory || result.status !== 'error' || !result.structuredError) return result;
+  // A refusal the tool itself returns (`blocked`, such as the web network policy's) is never
+  // retried, but a model re-issuing it unchanged is spinning just the same.
+  const escalates = result.status === 'error' || result.status === 'blocked';
+  if (!memory || !escalates || !result.structuredError) return result;
   const significantArgs = { ...call.arguments };
   delete significantArgs.timeout;
   const signature = `${call.name}:${result.structuredError.code}:${createHash('sha256')
@@ -307,17 +354,46 @@ export function createRegistry() {
         name: tool.name,
         arguments: normalizeToolArguments(tool, call.arguments),
       };
-      if (context.toolDiscovery && !context.toolDiscovery.canExecute(normalizedCall)) {
+      const discovery = context.toolDiscovery;
+      const inactive = (): PrepareToolCallResult => ({
+        status: 'rejected',
+        result: toolFailure(`Tool "${call.name}" is not active for this turn.`, {
+          toolCallId: call.id,
+          code: 'tool_not_active',
+          status: 'blocked',
+          remediation: 'Call ToolSearch to discover it or use an authorized active tool.',
+        }),
+      });
+      // A tool that is not active is refused as such, whatever its arguments.
+      // A discovery object without the name-only `isActive` gets its whole
+      // `canExecute` check here instead, before the JSON check, which is where
+      // it ran before `isActive` existed: every call it refused is refused alike.
+      if (discovery) {
+        const active = discovery.isActive
+          ? discovery.isActive(normalizedCall.name)
+          : discovery.canExecute(normalizedCall);
+        if (!active) return inactive();
+      }
+      // Invalid JSON is named before the argument-scoped rules run: a rule such
+      // as `Bash(git *)` cannot match text that never parsed, so the gate would
+      // report a malformed call to an active tool as an inactive one.
+      const jsonError = invalidJsonArgumentsDetail(normalizedCall.arguments);
+      if (jsonError !== undefined) {
         return {
           status: 'rejected',
-          result: toolFailure(`Tool "${call.name}" is not active for this turn.`, {
-            toolCallId: call.id,
-            code: 'tool_not_active',
-            status: 'blocked',
-            remediation: 'Call ToolSearch to discover it or use an authorized active tool.',
-          }),
+          result: noteRepeatedFailure(
+            context,
+            normalizedCall,
+            toolFailure(`Invalid JSON arguments for ${tool.name}: ${jsonError}.`, {
+              toolCallId: call.id,
+              code: 'invalid_json_arguments',
+              remediation:
+                'None of its arguments were read. Resend the whole call with valid JSON; escape backslashes and newlines inside strings. Correct only this failed call; do not repeat successful siblings.',
+            }),
+          ),
         };
       }
+      if (discovery?.isActive && !discovery.canExecute(normalizedCall)) return inactive();
 
       const providerArguments = { ...normalizedCall.arguments };
       // Hide the host control from validation only while the tool keeps it
@@ -402,7 +478,8 @@ export function createRegistry() {
             if (attempt > 0) result.metrics = { ...result.metrics, retryAttempt: attempt + 1 };
             return result;
           }
-          if (result.status === 'blocked') return result;
+          if (result.status === 'blocked')
+            return noteRepeatedFailure(context, normalizedCall, result);
           lastResult = result;
         } catch (error) {
           lastResult = toolFailure(error instanceof Error ? error.message : String(error), {

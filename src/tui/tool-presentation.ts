@@ -158,6 +158,17 @@ export function parseMcpToolName(name: string): { server: string; tool: string }
   return { server: match[1], tool: match[2].replace(/_/g, ' ') };
 }
 
+/**
+ * Fold a display target onto one line: every run of control characters (C0
+ * such as tab, CR and LF, DEL, and C1) becomes one space. Ordinary spaces are
+ * kept as they are, because the row shows what the call acted on: a Grep
+ * pattern `^    def ` or a commit message's double space is part of it. One
+ * linear pass, so a long raw argument costs its length.
+ */
+function foldControlCharacters(value: string | undefined): string | undefined {
+  return value?.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ');
+}
+
 function stringArg(args: Record<string, unknown>, ...names: string[]): string | undefined {
   for (const name of names) {
     const value = args[name];
@@ -313,6 +324,7 @@ export function deriveToolPresentation(
     if (duration) metadata.push(duration);
     const retryAttempt = result.metrics?.retryAttempt;
     if (retryAttempt && retryAttempt > 1) metadata.push(`attempt ${retryAttempt}`);
+    target = foldControlCharacters(target);
     const hasDetails = Boolean(structured.details);
     return {
       canonicalName,
@@ -403,6 +415,9 @@ export function deriveToolPresentation(
   if (result?.metrics?.retryAttempt && result.metrics.retryAttempt > 1)
     metadata.push(`attempt ${result.metrics.retryAttempt}`);
 
+  // A target is shown on one line, in the row and in the summary. A call whose
+  // arguments were not valid JSON shows its raw text here, newlines and all.
+  target = foldControlCharacters(target);
   const targetText = target ? `(${target})` : '';
   const metadataText = metadata.length > 0 ? ` · ${metadata.join(' ')}` : '';
   const summary = `${title}${targetText}${metadataText}`;

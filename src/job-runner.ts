@@ -46,6 +46,15 @@ if (loadedSpec.sandboxed && !loadedSpec.exec) {
 }
 const spec: PersistentShellSpec = loadedSpec;
 const TERMINATE_GRACE_MS = 1_500;
+/**
+ * The runner has no UI to freeze, so a contended record write may block this long waiting for
+ * Windows to release the file before it counts as failed. The shell manager, which writes from
+ * the TUI's process, keeps the small default.
+ */
+const RECORD_RENAME_RETRY_BUDGET_MS = 1_000;
+/** A terminal record that still failed to write is retried on a timer this often, this many times. */
+const TERMINAL_RECORD_RETRY_MS = 250;
+const TERMINAL_RECORD_ATTEMPTS = 20;
 
 let child: ChildProcess | undefined;
 let terminal = false;
@@ -88,7 +97,27 @@ let state: PersistentShellState = {
 
 function persist(): void {
   state = { ...state, revision: state.revision + 1, heartbeatAt: Date.now() };
-  writeJsonAtomic(spec.recordPath, state);
+  writeJsonAtomic(spec.recordPath, state, { renameRetryBudgetMs: RECORD_RENAME_RETRY_BUDGET_MS });
+}
+
+/**
+ * A non-terminal write: the child's pid, the heartbeat, the switch to `stopping`. One that fails
+ * even after the retry budget must not end the runner. An uncaught throw here used to kill it
+ * while its job kept running, and the manager then called the job lost. The next heartbeat
+ * writes the same state again, and the note in the job's log says why the record lagged.
+ */
+function persistBestEffort(what: string): void {
+  try {
+    persist();
+  } catch (error) {
+    if (terminal) return;
+    const code = (error as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
+    try {
+      appendBounded(`[runner: ${what} write failed (${code}); retrying on the next heartbeat]\n`);
+    } catch {
+      // The log is best effort too; the next heartbeat is what matters.
+    }
+  }
 }
 
 function appendBounded(data: unknown): void {
@@ -209,10 +238,30 @@ function finish(
     // lost-job reconciliation or dismissal, whereas skipping the terminal
     // persist below would strand the job as "stopping" forever.
   }
-  persist();
   if (heartbeat) clearInterval(heartbeat);
   if (controlPoll) clearInterval(controlPoll);
   if (deadline) clearTimeout(deadline);
+  publishTerminalRecord(1);
+}
+
+/**
+ * Write the terminal record, then exit. It is the one write the manager waits on to call a stop
+ * complete, so a write that fails even after the retry budget is tried again on a timer rather
+ * than ending the runner with its job still recorded as running. If every attempt fails, the
+ * runner exits nonzero and the manager's heartbeat-staleness check reports the job lost.
+ */
+function publishTerminalRecord(attempt: number): void {
+  try {
+    persist();
+  } catch {
+    if (attempt < TERMINAL_RECORD_ATTEMPTS) {
+      setTimeout(() => publishTerminalRecord(attempt + 1), TERMINAL_RECORD_RETRY_MS);
+    } else {
+      process.exitCode = 1;
+      setTimeout(() => process.exit(1), 10).unref();
+    }
+    return;
+  }
   setTimeout(() => process.exit(0), 10).unref();
 }
 
@@ -229,7 +278,7 @@ try {
     ? spawn(spec.exec.file, spec.exec.args, { ...spawnBase, shell: false })
     : spawn(spec.effectiveCommand, { ...spawnBase, shell: true });
   state = { ...state, childPid: child.pid };
-  persist();
+  persistBestEffort('child pid');
 } catch (error) {
   appendBounded(error instanceof Error ? `${error.message}\n` : `${String(error)}\n`);
   finish('failed');
@@ -247,12 +296,12 @@ child?.on('close', (code, signal) => {
   finish(code === 0 ? 'exited' : 'failed', code, signal);
 });
 
-heartbeat = setInterval(persist, 1_000);
+heartbeat = setInterval(() => persistBestEffort('heartbeat'), 1_000);
 async function requestTermination(status: 'killed' | 'timed_out', reason: string): Promise<void> {
   if (terminal || terminationInFlight) return;
   terminationInFlight = true;
   state = { ...state, status: 'stopping', stopReason: reason };
-  persist();
+  persistBestEffort('stopping state');
   try {
     if (await terminateTree()) {
       finish(status, child?.exitCode, child?.signalCode, reason);
@@ -280,4 +329,4 @@ deadline = spec.timeoutMs
     }, spec.timeoutMs)
   : undefined;
 
-persist();
+persistBestEffort('startup');

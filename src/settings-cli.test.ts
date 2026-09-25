@@ -33,8 +33,26 @@ function cliArgs(args: string[]): string[] {
   return ['--import', TSX_LOADER, CLI_ENTRY, ...args];
 }
 
+/**
+ * The ceiling each CLI spawn gets. A spawn takes about 2s on the Windows runners, but a
+ * contended runner once stalled one past the old 15s limit (`spawnSync ... ETIMEDOUT`). Like
+ * the base config's testTimeout, this is a latency ceiling, not a wait: a green run finishes
+ * exactly as fast as before, and only a stalled machine gets near it.
+ *
+ * Each test's own budget is its spawn count times this, plus 10s: 70_000 for one spawn,
+ * 130_000 for two, 190_000 for three. The spawns are synchronous, so vitest can only compare
+ * the elapsed time once they return, and a smaller budget would turn a slow but successful run
+ * into a timeout anyway. The budgets are literals so the test calls keep their shape.
+ */
+const CLI_SPAWN_TIMEOUT_MS = 60_000;
+
 function childOptions() {
-  return { env: isolatedEnv(), cwd: scratch, encoding: 'utf8' as const, timeout: 15_000 };
+  return {
+    env: isolatedEnv(),
+    cwd: scratch,
+    encoding: 'utf8' as const,
+    timeout: CLI_SPAWN_TIMEOUT_MS,
+  };
 }
 
 function runCli(args: string[]): string {
@@ -63,7 +81,7 @@ describe('CLI --settings flag', () => {
 
     expect(stdout).toContain('Supported top-level settings:');
     for (const key of SETTINGS_TOP_LEVEL_KEYS) expect(stdout).toContain(`  ${key}`);
-  }, 20000);
+  }, 70_000);
 
   it('reports the ad-hoc model over the project model', () => {
     newTempDirs();
@@ -88,7 +106,7 @@ describe('CLI --settings flag', () => {
     ]);
 
     expect(stdout.trim()).toBe('"override-model"');
-  }, 20000);
+  }, 70_000);
 
   it('--no-settings reports defaults instead of the project model', () => {
     newTempDirs();
@@ -102,7 +120,7 @@ describe('CLI --settings flag', () => {
     const stdout = runCli(['--no-settings', 'config', '--workspace', dir, 'get', 'model']);
 
     expect(stdout.trim()).toBe('Key model is not set (no value).');
-  }, 20000);
+  }, 70_000);
 
   it('rejects an invalid value without creating project storage', () => {
     newTempDirs();
@@ -116,7 +134,7 @@ describe('CLI --settings flag', () => {
     // Refused before anything is written: a rejected write must not leave the
     // directory it would have written into behind.
     expect(existsSync(join(dir, '.book'))).toBe(false);
-  }, 20000);
+  }, 70_000);
 
   it('refuses a key no settings layer reads', () => {
     newTempDirs();
@@ -128,7 +146,7 @@ describe('CLI --settings flag', () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('Unknown top-level key');
-  }, 20000);
+  }, 70_000);
 });
 
 describe('subcommand --workspace targeting', () => {
@@ -166,7 +184,7 @@ describe('subcommand --workspace targeting', () => {
     expect(runCli(['--workspace', ws, 'config', 'get', 'model'])).toContain(
       'flagged-workspace-model',
     );
-  }, 40000);
+  }, 190_000);
 
   it('does not reach the workspace model without the flag', () => {
     // The discriminator for the three assertions above: without it they would
@@ -175,7 +193,7 @@ describe('subcommand --workspace targeting', () => {
     workspaceWith({ model: 'flagged-workspace-model' });
 
     expect(runCli(['config', 'get', 'model'])).not.toContain('flagged-workspace-model');
-  }, 20000);
+  }, 70_000);
 
   // `--local` is explicit because this test is about *where the flag lands*, and
   // only a workspace-scoped write can observe that: `config set` now defaults to
@@ -201,7 +219,7 @@ describe('subcommand --workspace targeting', () => {
     // skipped itself whenever a developer had the local settings file that
     // scope exists for - inert on exactly the machines that needed it.
     expect(existsSync(join(scratch, '.book'))).toBe(false);
-  }, 40000);
+  }, 130_000);
 
   // `book trust` is the other subcommand that writes state for a named
   // directory, and it keys each decision by workspace path. A dropped flag files
@@ -237,7 +255,7 @@ describe('subcommand --workspace targeting', () => {
       expect(Object.values(entry.hookEntries)).toEqual(['approved']);
     }
     expect(existsSync(join(scratch, '.book'))).toBe(false);
-  }, 40000);
+  }, 130_000);
 });
 
 describe('root options after a subcommand name', () => {
@@ -259,7 +277,7 @@ describe('root options after a subcommand name', () => {
     expect(
       runCli(['config', '--workspace', ws, 'get', 'model', '--settings', overridePath]).trim(),
     ).toBe('"override-model"');
-  }, 40000);
+  }, 130_000);
 
   it('accepts --no-settings on either side of the config subcommand', () => {
     newTempDirs();
@@ -277,5 +295,5 @@ describe('root options after a subcommand name', () => {
     expect(runCli(['config', '--workspace', ws, 'get', 'model', '--no-settings']).trim()).toBe(
       expected,
     );
-  }, 40000);
+  }, 130_000);
 });
