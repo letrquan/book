@@ -144,12 +144,38 @@ it('keeps foreground delegation overhead small relative to the delegated work', 
   expect(best).toBeLessThan(overheadCeilingMs(childRunMs));
 }, 60_000);
 
+/**
+ * The harness's own cost for one child duration: the best of several cycles, for
+ * the same reason the ceiling above is judged on the best sample -- a stall can
+ * only add to a cycle, so the minimum is the measurement. The child's own timer
+ * lateness is taken out as well: that is the machine, not the handoff.
+ */
+async function bestHarnessOverheadMs(childRunMs: number, cycles = 3): Promise<number> {
+  const samples: number[] = [];
+  for (let cycle = 0; cycle < cycles; cycle += 1) {
+    const { overheadMs, stallMs } = await measureRoundTrip(childRunMs);
+    samples.push(Math.max(0, overheadMs - stallMs));
+  }
+  return Math.min(...samples);
+}
+
 it('reports overhead that does not scale with the delegated work', async () => {
   // If handoff cost tracked the child's run length, the pattern would be unusable
   // for long tasks — the case delegation is actually for. Two child durations an
   // order of magnitude apart should cost about the same to hand off.
-  const short = (await measureRoundTrip(50)).overheadMs;
-  const long = (await measureRoundTrip(1_000)).overheadMs;
-  console.log(`[delegation] overhead short(50ms child)=${short}ms long(1000ms child)=${long}ms`);
-  expect(Math.abs(long - short)).toBeLessThan(1_000);
+  //
+  // One-sided on purpose: "scales with the work" means the long child costs more
+  // to hand off, so only that direction can fail. A Windows runner once stalled
+  // the single short sample for a whole second (short=1179ms, long=62ms) and the
+  // old two-sided check called that scaling. The bound is the extra work itself
+  // (950ms): overhead that grew as fast as the work would reach it, and the
+  // harness's real cost is ~20x below it.
+  const shortChildMs = 50;
+  const longChildMs = 1_000;
+  const short = await bestHarnessOverheadMs(shortChildMs);
+  const long = await bestHarnessOverheadMs(longChildMs);
+  console.log(
+    `[delegation] best overhead short(${shortChildMs}ms child)=${short}ms long(${longChildMs}ms child)=${long}ms`,
+  );
+  expect(long - short).toBeLessThan(longChildMs - shortChildMs);
 }, 60_000);

@@ -133,7 +133,10 @@ function invalidJsonArgumentsDetail(args: Record<string, unknown>): string | und
  */
 function noteRepeatedFailure(context: ToolContext, call: ToolCall, result: ToolResult): ToolResult {
   const memory = context.runtime?.recentToolFailures;
-  if (!memory || result.status !== 'error' || !result.structuredError) return result;
+  // A refusal the tool itself returns (`blocked`, such as the web network policy's) is never
+  // retried, but a model re-issuing it unchanged is spinning just the same.
+  const escalates = result.status === 'error' || result.status === 'blocked';
+  if (!memory || !escalates || !result.structuredError) return result;
   const significantArgs = { ...call.arguments };
   delete significantArgs.timeout;
   const signature = `${call.name}:${result.structuredError.code}:${createHash('sha256')
@@ -475,7 +478,8 @@ export function createRegistry() {
             if (attempt > 0) result.metrics = { ...result.metrics, retryAttempt: attempt + 1 };
             return result;
           }
-          if (result.status === 'blocked') return result;
+          if (result.status === 'blocked')
+            return noteRepeatedFailure(context, normalizedCall, result);
           lastResult = result;
         } catch (error) {
           lastResult = toolFailure(error instanceof Error ? error.message : String(error), {
