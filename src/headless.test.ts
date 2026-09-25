@@ -1777,3 +1777,146 @@ describe('runHeadless — the answer is the final turn only (#248)', () => {
     expect(result.structuredError).toBe('Failed to parse JSON from assistant output');
   });
 });
+
+describe('runHeadless — managed child progress on stderr (#248)', () => {
+  let stderrWrites: string[] = [];
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stderrWrites = [];
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderrWrites.push(
+        typeof chunk === 'string' ? chunk : Buffer.from(chunk as Uint8Array).toString('utf8'),
+      );
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+  });
+
+  /**
+   * A tool that reports a managed child the way the agent manager does: an
+   * `agent_start`, then `agent_activity` for one child tool call (running, then
+   * completed with its result), and a `thinking` activity that prints nothing.
+   */
+  function delegatingRegistry() {
+    const registry = createRegistry();
+    registry.register({
+      name: 'FakeDelegate',
+      description: 'Report a managed child that runs one tool.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, context) => {
+        const agentId = 'child-1';
+        context.onAgentEvent?.({
+          type: 'agent_start',
+          agent: {
+            id: agentId,
+            profile: 'explorer',
+            name: 'explorer',
+            role: 'explorer',
+            description: 'Inspect the task',
+            status: 'running',
+            applicationStatus: 'not_applied',
+            prompt: 'inspect',
+            referencedEvidenceIds: [],
+            transcript: [],
+            pendingMessages: [],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+        });
+        const call = { id: 'child-call-1', name: 'Read', arguments: { file_path: 'src/a.ts' } };
+        const started = {
+          id: call.id,
+          kind: 'tool' as const,
+          label: 'Using Read',
+          toolName: 'Read',
+          toolCall: call,
+          startedAt: Date.now(),
+          status: 'running' as const,
+        };
+        context.onAgentEvent?.({ type: 'agent_activity', agentId, activity: started });
+        context.onAgentEvent?.({
+          type: 'agent_activity',
+          agentId,
+          activity: {
+            ...started,
+            status: 'completed',
+            finishedAt: Date.now(),
+            result: {
+              ...toolSuccess('contents', {
+                toolCallId: call.id,
+                presentation: { kind: 'file', summary: 'Read src/a.ts', target: 'src/a.ts' },
+              }),
+              metrics: { durationMs: 3 },
+            },
+          },
+        });
+        context.onAgentEvent?.({
+          type: 'agent_activity',
+          agentId,
+          activity: {
+            id: 'thinking-1',
+            kind: 'thinking',
+            label: 'Thinking (turn 1)',
+            startedAt: Date.now(),
+            status: 'running',
+          },
+        });
+        return toolSuccess('delegated');
+      },
+    });
+    return registry;
+  }
+
+  async function runDelegation(options: {
+    outputFormat?: 'text' | 'stream-json';
+    verbose?: boolean;
+    quiet?: boolean;
+  }) {
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount++;
+        if (requestCount === 1) return sse([toolDelta('call-1', 'FakeDelegate', {})]);
+        return sse([textDelta('done')]);
+      }),
+    );
+    await runHeadless(freshConfig({ workspace: makeWorkspace() }), delegatingRegistry(), {
+      prompt: 'delegate',
+      inputFormat: 'text',
+      outputFormat: options.outputFormat ?? 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      verbose: options.verbose,
+      quiet: options.quiet,
+      stdout: { write: () => true },
+    });
+  }
+
+  it("prints a child's tool calls indented under its name", async () => {
+    await runDelegation({});
+
+    expect(stderrWrites).toContain('[FakeDelegate]\n');
+    expect(stderrWrites).toContain('  [explorer] [Read] src/a.ts\n');
+    expect(stderrWrites.some((line) => line.startsWith('    → '))).toBe(false);
+    expect(stderrWrites.some((line) => line.includes('Thinking'))).toBe(false);
+  });
+
+  it("adds a child's tool results under --verbose", async () => {
+    await runDelegation({ verbose: true });
+
+    expect(stderrWrites).toContain('  [explorer] [Read] src/a.ts\n');
+    expect(stderrWrites).toContain('    → success 3ms src/a.ts\n');
+  });
+
+  it('prints no child lines when quiet, or in stream-json mode', async () => {
+    await runDelegation({ quiet: true });
+    await runDelegation({ outputFormat: 'stream-json' });
+
+    expect(stderrWrites.some((line) => line.includes('[explorer]'))).toBe(false);
+  });
+});
