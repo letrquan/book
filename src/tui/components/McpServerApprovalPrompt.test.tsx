@@ -44,6 +44,13 @@ function mount() {
 afterEach(cleanup);
 
 describe('McpServerApprovalPrompt', () => {
+  it('heads the prompt with a rule naming the server, not a box', () => {
+    const { view } = mount();
+    const lines = stripAnsi(view.lastFrame()).split('\n');
+    expect(lines[1]).toMatch(/^─ ¶ MCP server ─+ .+ ─$/);
+    expect(lines.join('\n')).not.toMatch(/[╭╮╰╯│]/);
+  });
+
   it('shows the connection target it is asking the user to trust', () => {
     const { view } = mount();
     const frame = stripAnsi(view.lastFrame());

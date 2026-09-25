@@ -471,3 +471,23 @@ describe('tool row targets', () => {
     expect(presentation.target).toBe(`{"command":"a${spaces}b"}`);
   });
 });
+
+describe('decision tool rows', () => {
+  it('names a plan by its title and counts its steps', () => {
+    const presentation = deriveToolPresentation('ExitPlanMode', {
+      plan: '## Fix the timeout fallback\n\n1. Add a parser.\n2. Route both settings.\n3. Test it.',
+    });
+    expect(presentation.title).toBe('Plan');
+    expect(presentation.target).toBe('Fix the timeout fallback');
+    expect(presentation.metadata).toEqual(['3 steps']);
+  });
+
+  it('names the questions an ask carries', () => {
+    const presentation = deriveToolPresentation('AskUserQuestion', {
+      questions: [{ header: 'Fallback' }, { header: 'Scope' }],
+    });
+    expect(presentation.title).toBe('Ask');
+    expect(presentation.target).toBe('Fallback, Scope');
+    expect(presentation.metadata).toEqual(['2 questions']);
+  });
+});

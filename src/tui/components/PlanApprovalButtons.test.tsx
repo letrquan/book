@@ -61,7 +61,8 @@ describe('PlanApprovalButtons', () => {
 
     const output = stripAnsi(view.lastFrame());
     expect(output).toContain('Approve, fresh context');
-    expect(output).toContain('(F)');
+    // The shortcut key is set beside what the choice does.
+    expect(output).toMatch(/Approve, fresh context\s+F\s+implement it clean/);
   });
 
   it('collects feedback when the user requests plan adjustments', async () => {
@@ -72,7 +73,7 @@ describe('PlanApprovalButtons', () => {
 
     view.stdin.write('e');
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(stripAnsi(view.lastFrame())).toContain('Request plan adjustments');
+    expect(stripAnsi(view.lastFrame())).toContain('Adjust the plan');
 
     view.stdin.write('Keep the migration backward compatible.');
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -116,7 +117,7 @@ describe('PlanApprovalButtons', () => {
     const output = stripAnsi(view.lastFrame());
     expect(output).toContain('  Details');
     expect(output).not.toContain('### Details');
-    expect(output).toContain('· 2 steps');
+    expect(output).toContain('2 steps · awaiting approval');
     expect(output).toContain('1. Nested');
   });
 

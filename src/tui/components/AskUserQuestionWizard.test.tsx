@@ -60,8 +60,10 @@ describe('AskUserQuestionWizard', () => {
     );
     const lines = stripAnsi(view.lastFrame()).split('\n');
 
-    // Who asks, which question, and how far along, in the rule itself.
-    expect(lines[0]).toMatch(/^─ ¶ reviewer asks · Format · 1 of 2 ─+$/);
+    // A row of air, then the rule: who asks on the left, which question and
+    // how far along at the right end.
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toMatch(/^─ ¶ reviewer asks ─+ Format · 1 of 2 ─$/);
     expect(lines.join('\n')).not.toMatch(/[╭╮╰╯│]/);
     const summary = lines.find((line) => line.includes('Summary'))!;
     const detailed = lines.find((line) => line.includes('Detailed'))!;
@@ -78,7 +80,9 @@ describe('AskUserQuestionWizard', () => {
         />
       </ThemeContext.Provider>,
     );
-    expect(stripAnsi(view.lastFrame()).split('\n')[0]).toMatch(/^─ ¶ Format · 1 of 2 ─+$/);
+    expect(stripAnsi(view.lastFrame()).split('\n')[1]).toMatch(
+      /^─ ¶ Question ─+ Format · 1 of 2 ─$/,
+    );
   });
 
   it('walks through single and multi-select questions with a custom answer', async () => {
@@ -93,7 +97,7 @@ describe('AskUserQuestionWizard', () => {
     await press(view, '\r');
     await waitForText(view, 'Which sections?');
     await press(view, ' ');
-    await waitForText(view, '■ 1. Intro');
+    await waitForText(view, '✓ 1  Intro');
     await press(view, 'o');
     await waitForText(view, 'Enter use answer');
     await press(view, 'Custom appendix');
@@ -169,7 +173,7 @@ describe('AskUserQuestionWizard', () => {
       </ThemeContext.Provider>,
     );
     const output = stripAnsi(view.lastFrame());
-    expect(output).toContain('+ Other…');
+    expect(output).toContain('+  Other…');
     expect(output).toContain('1 of 2');
     expect(Math.max(...output.split('\n').map((line) => line.length))).toBeLessThanOrEqual(42);
   });
@@ -184,7 +188,7 @@ describe('AskUserQuestionWizard', () => {
     expect(stripAnsi(view.lastFrame())).toContain('Enter use answer');
     await press(view, '\u001b');
     expect(stripAnsi(view.lastFrame())).not.toContain('Enter use answer');
-    expect(stripAnsi(view.lastFrame())).toContain('+ Other…');
+    expect(stripAnsi(view.lastFrame())).toContain('+  Other…');
   });
 
   it('answers with the option the arrow moved to, batched in one write', async () => {
@@ -253,7 +257,7 @@ describe('AskUserQuestionWizard', () => {
     // The frame shows Question 2 both before and after that chunk, so look at
     // Question 1 to see which option the batched Enter recorded.
     await press(view, '\u001b[D');
-    await waitForText(view, '● 1. Q1-A');
+    await waitForText(view, '✓ 1  Q1-A');
     await press(view, '\r');
     await waitForText(view, 'Question 2?');
 
@@ -431,7 +435,7 @@ describe('AskUserQuestionWizard', () => {
     );
 
     await press(view, ' ');
-    await waitForText(view, '■ 1. Intro');
+    await waitForText(view, '✓ 1  Intro');
     await press(view, 'o');
     await waitForText(view, 'Enter use answer');
     await press(view, 'intro');

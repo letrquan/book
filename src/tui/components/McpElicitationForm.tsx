@@ -15,7 +15,8 @@ import type {
 } from '../../types/tools.js';
 import { useTheme } from '../theme.js';
 import { truncateDisplay } from './word-wrap.js';
-import { floatingFrameMetrics } from './chrome.js';
+import { ChoiceList, DecisionSheet, floatingFrameMetrics, type Choice } from './chrome.js';
+import { PILCROW } from '../marks.js';
 
 interface McpElicitationFormProps {
   request: ElicitationRequest;
@@ -238,87 +239,56 @@ export function McpElicitationForm({
   const windowStart = optionWindowStart(optionCursor, options.length);
   const windowed = options.slice(windowStart, windowStart + OPTION_WINDOW);
 
+  const choices: Choice[] = [
+    ...request.fields.map((entry) => ({
+      label: `${entry.title}${entry.required ? '*' : ''}`,
+      detail: displayValue(entry, values[entry.name]),
+    })),
+    { label: `Send to ${request.server}`, detail: 'when every * field is filled' },
+  ];
+
+  // The same sheet as every other decision: a rule naming who asks, the
+  // message in bold, then the fields as rows you move between.
   return (
-    <Box
+    <DecisionSheet
+      label={`${truncateDisplay(request.server, Math.max(8, contentWidth - 30))} asks`}
+      tone={theme.text}
+      meta={`MCP request${queueText}`}
       width={frame.width}
       marginX={frame.marginX}
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={theme.border}
-      paddingX={1}
     >
-      <Box justifyContent="space-between">
-        <Text bold color={theme.brand}>
-          ? {truncateDisplay(request.server, Math.max(8, contentWidth - 18))}
-        </Text>
-        <Text color={theme.subtle}>MCP request{queueText}</Text>
-      </Box>
-
-      <Box marginTop={1}>
-        <Text bold color={theme.text}>
-          {request.message}
-        </Text>
-      </Box>
+      <Text bold color={theme.text} wrap="wrap">
+        {request.message}
+      </Text>
 
       <Box flexDirection="column" marginTop={1}>
-        {request.fields.map((entry, index) => {
-          const active = index === cursor;
-          const value = displayValue(entry, values[entry.name]);
-          const label = `${entry.title}${entry.required ? '*' : ''}`;
-          return (
-            <Box
-              key={entry.name}
-              paddingLeft={1}
-              flexDirection={compact ? 'column' : 'row'}
-              backgroundColor={active && !editing ? theme.surfaceActive : undefined}
-            >
-              <Text bold={active} color={active ? theme.selectionText : theme.text}>
-                {active ? '›' : ' '} {label}
-              </Text>
-              <Text color={active ? theme.selectionText : theme.subtle}>
-                {compact
-                  ? `    ${value}`
-                  : ` — ${truncateDisplay(value, Math.max(8, contentWidth - label.length - 6))}`}
-              </Text>
-            </Box>
-          );
-        })}
-
-        <Box
-          paddingLeft={1}
-          backgroundColor={cursor === submitRow ? theme.surfaceActive : undefined}
-        >
-          <Text
-            bold={cursor === submitRow}
-            color={cursor === submitRow ? theme.selectionText : theme.text}
-          >
-            {cursor === submitRow ? '›' : ' '} ✓ Send to {request.server}
-          </Text>
-        </Box>
+        <ChoiceList
+          choices={choices}
+          selected={cursor}
+          width={contentWidth}
+          numbered={false}
+          active={!editing}
+        />
       </Box>
 
       {editing && field ? (
-        <Box
-          flexDirection="column"
-          marginTop={1}
-          borderStyle="round"
-          borderColor={theme.border}
-          paddingX={1}
-        >
-          <Text bold color={theme.brand}>
+        // A field is edited the way everything you write is: after a pilcrow,
+        // under a hairline, like the composer.
+        <Box flexDirection="column" marginTop={1}>
+          <Text color={theme.border}>{'─'.repeat(Math.max(8, contentWidth))}</Text>
+          <Text bold color={theme.text}>
             {field.title}
           </Text>
           {field.description ? (
-            <Text color={theme.subtle} dimColor>
-              {truncateDisplay(field.description, contentWidth - 2)}
-            </Text>
+            <Text color={theme.inactive}>{truncateDisplay(field.description, contentWidth)}</Text>
           ) : null}
           {field.kind === 'enum' ? (
             <Box flexDirection="column">
               <Box>
-                <Text color={theme.brand}>filter › </Text>
+                <Text color={theme.brand}>{`${PILCROW} `}</Text>
                 <TextInput
                   value={draft}
+                  placeholder="type to filter"
                   onChange={(value) => {
                     setDraft(value);
                     setOptionCursor(0);
@@ -329,18 +299,16 @@ export function McpElicitationForm({
               {windowed.map((option, index) => {
                 const active = windowStart + index === optionCursor;
                 return (
-                  <Text
-                    key={option.value}
-                    bold={active}
-                    color={active ? theme.selectionText : theme.text}
-                    backgroundColor={active ? theme.surfaceActive : undefined}
-                  >
-                    {active ? '›' : ' '} {truncateDisplay(option.label, contentWidth - 4)}
+                  <Text key={option.value}>
+                    <Text color={theme.brand}>{active ? '› ' : '  '}</Text>
+                    <Text bold={active} color={active ? theme.selectionText : theme.text}>
+                      {truncateDisplay(option.label, contentWidth - 4)}
+                    </Text>
                   </Text>
                 );
               })}
               {options.length > windowed.length ? (
-                <Text color={theme.subtle} dimColor>
+                <Text color={theme.inactive}>
                   {options.length} choices · showing {windowStart + 1}-
                   {windowStart + windowed.length}
                 </Text>
@@ -348,7 +316,7 @@ export function McpElicitationForm({
             </Box>
           ) : (
             <Box>
-              <Text color={theme.brand}>› </Text>
+              <Text color={theme.brand}>{`${PILCROW} `}</Text>
               <TextInput
                 value={draft}
                 onChange={(value) => setDraft(value.slice(0, 2000))}
@@ -356,7 +324,7 @@ export function McpElicitationForm({
               />
             </Box>
           )}
-          <Text color={theme.subtle} dimColor>
+          <Text color={theme.inactive}>
             {field.kind === 'enum'
               ? '↑↓ move · type to filter · Enter choose · Esc back'
               : 'Enter save · Esc back'}
@@ -368,19 +336,19 @@ export function McpElicitationForm({
 
       {!editing ? (
         <Box flexDirection="column" marginTop={1}>
-          <Text color={theme.subtle} dimColor>
+          <Text color={theme.inactive}>
             {screenReader
               ? 'Use Up and Down to move between fields. Enter edits a field or sends the form. D declines. Escape cancels.'
               : compact
                 ? '↑↓ move · Enter edit/send'
                 : '↑↓ move · Enter edit field or send · * required'}
           </Text>
-          <Text color={theme.subtle} dimColor>
+          <Text color={theme.inactive}>
             D decline · Esc cancel
             {!compact ? ' · Keep secrets private' : ''}
           </Text>
         </Box>
       ) : null}
-    </Box>
+    </DecisionSheet>
   );
 }

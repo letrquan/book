@@ -13,13 +13,28 @@ All notable changes to this project are documented in this file.
   (`/resume open a chapter`, …). A first session gets a getting-started table of contents with the
   key to press where the page number would be. When an open menu shrinks the transcript, the page
   folds to its drop cap block.
-- **The permission prompt is headed by a rule instead of drawn as a box**: `─ ¶ Permission
-  required ───`, in amber for writes and rose for shell commands.
-- **AskUserQuestion prompts get the same treatment.** A rule names the question, who is asking
-  (only when it is not Book itself), and the progress: `─ ¶ reviewer asks · Format · 1 of 2 ───`.
-  Option numbers and chosen marks are rubric, and descriptions line up in one column. Writing your
-  own answer happens after a pilcrow under a hairline, like the composer, instead of in a nested
-  box. The transcript row reads `Ask  Fallback, Scope   2 questions` instead of the bare tool name.
+- **Every decision surface shares one anatomy: a rule, a body, and a list of choices.** This
+  covers the permission prompt, AskUserQuestion, plan approval (the plan, its choices, and the
+  adjustment note), the MCP server trust prompt and MCP elicitation forms. Each drops its box and
+  opens with a row of air and a rule, `─ ¶ Permission required ─────── shell command ─`. The
+  surface's one tone sits on the label (amber for a write, rose for a shell command, lavender for a
+  plan), and a short note sits at the right end. The pilcrow is the composer's mark: the next move
+  is yours.
+  - **Choices stack vertically.** The current one is marked by a rubric `›` and a bold label, with
+    no highlight bar, and details share one column. Number keys pick question answers, so those
+    rows are numbered. Permission rows are not, since a single key must never write a rule.
+    `✓` marks ticked or already-given answers. ↑↓ now move through permission and plan choices as
+    well as ←→.
+  - **Permission prompts state the action.** The first row reads `Create notes.md +3 −0`,
+    `Edit 5 files +5 −5` or `Run` with the command in a code block. The risk sentence became the
+    rule's note, and "Always allow" shows its rule pattern as plain detail instead of lavender.
+  - **Writing your own answer** (a question's Other, a plan adjustment, an MCP field) happens after
+    a pilcrow under a hairline, like the composer, instead of in a nested box.
+  - **One announcement per wait.** While a sheet is up, the "Waiting for permission" activity row
+    is hidden, because the sheet already says it. Screen readers keep the row.
+  - **Transcript rows** for AskUserQuestion and ExitPlanMode read `Ask  Fallback, Scope   2
+    questions` and `Plan  Fix the timeout fallback   3 steps` instead of a bare tool name and raw
+    markdown.
 - **The compact transcript folds the agent's reading into one row.** A run of read-only calls
   (`Read`, `Glob`, `Grep`, git read tools, `ToolSearch`, task lookups, `BashOutput`, session
   history) collapses into one grey summary row, such as `✓ Read config.ts, loader.ts   2 files · 3 searches`.

@@ -57,6 +57,13 @@ async function press(view: ReturnType<typeof render>, input: string) {
 afterEach(cleanup);
 
 describe('McpElicitationForm', () => {
+  it('heads the form with a rule naming the server, not a box', () => {
+    const { view } = mount();
+    const lines = stripAnsi(view.lastFrame()).split('\n');
+    expect(lines[1]).toMatch(/^─ ¶ .+ asks ─+ MCP request ─$/);
+    expect(lines.join('\n')).not.toMatch(/[╭╮╰╯│]/);
+  });
+
   it('shows which server is asking, its message, and the required marker', () => {
     const { view } = mount();
     const frame = stripAnsi(view.lastFrame());

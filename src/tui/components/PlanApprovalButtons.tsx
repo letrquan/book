@@ -7,6 +7,9 @@ import type { PlanApprovalResult } from '../../types/tools.js';
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
+import { ChoiceList, DecisionSheet, type Choice } from './chrome.js';
+import { PANEL_CHROME, frameGrid } from '../layout.js';
+import { PILCROW } from '../marks.js';
 
 const uiLog = createUiDebugLogger('tui:planapproval');
 
@@ -21,21 +24,21 @@ interface PlanApprovalActionsProps extends PlanApprovalProps {
 }
 
 const BUTTONS = [
-  { label: 'Approve plan', value: 'approve' as const, key: 'a', colorKey: 'success' as const },
+  {
+    label: 'Approve plan',
+    value: 'approve' as const,
+    key: 'a',
+    detail: 'implement it in this conversation',
+  },
   {
     label: 'Approve, fresh context',
     value: 'approve-fresh' as const,
     key: 'f',
-    colorKey: 'success' as const,
+    detail: 'implement it clean, without the planning talk',
   },
-  { label: 'Adjust plan', value: 'revise' as const, key: 'e', colorKey: 'warning' as const },
-  { label: 'Reject plan', value: 'reject' as const, key: 'r', colorKey: 'error' as const },
+  { label: 'Adjust plan', value: 'revise' as const, key: 'e', detail: 'say what should change' },
+  { label: 'Reject plan', value: 'reject' as const, key: 'r', detail: 'stay in plan mode' },
 ];
-
-// Minimum terminal width to lay the buttons out in a row; below this they stack.
-// Derived from the labels (each renders as "<prefix><label> (<Key>)" with a margin)
-// so it scales automatically when buttons are added or renamed.
-const ROW_LAYOUT_MIN_WIDTH = BUTTONS.reduce((sum, button) => sum + button.label.length + 8, 0) + 4;
 
 function countSteps(lines: string[]): number {
   return lines.filter((line) => /^\d+[\.\)]\s/.test(line)).length;
@@ -62,35 +65,22 @@ export function PlanApprovalDetails({
 
   if (screenReader) return <Text>{plan}</Text>;
 
+  // The plan is set under a rule like every decision surface, in plan mode's
+  // own tone, with its step count as the rule's note.
+  const width = frameGrid(Math.max(20, Math.floor(terminalWidth ?? 80))).width;
   return (
-    <Box
-      marginLeft={2}
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={theme.planMode}
-      paddingX={1}
+    <DecisionSheet
+      label="Plan"
+      tone={theme.planMode}
+      meta={
+        stepCount > 0
+          ? `${stepCount} step${stepCount === 1 ? '' : 's'} · awaiting approval`
+          : 'awaiting approval'
+      }
+      width={width}
     >
-      <Box>
-        <Text bold color={theme.planMode}>
-          Plan
-        </Text>
-        <Text color={theme.subtle}> · approval</Text>
-        {stepCount > 0 ? (
-          <Text color={theme.subtle}>
-            {' '}
-            · {stepCount} step{stepCount === 1 ? '' : 's'}
-          </Text>
-        ) : null}
-      </Box>
-      <Box flexDirection="column" paddingLeft={1}>
-        <MarkdownBlock
-          content={normalizedPlan}
-          terminalWidth={
-            terminalWidth === undefined ? undefined : Math.max(12, Math.floor(terminalWidth) - 8)
-          }
-        />
-      </Box>
-    </Box>
+      <MarkdownBlock content={normalizedPlan} terminalWidth={Math.max(12, width - PANEL_CHROME)} />
+    </DecisionSheet>
   );
 }
 
@@ -136,9 +126,9 @@ export function PlanApprovalActions({
       return;
     }
 
-    if (key.leftArrow || (key.shift && key.tab)) {
+    if (key.leftArrow || key.upArrow || (key.shift && key.tab)) {
       setSelected((currentSelected() - 1 + BUTTONS.length) % BUTTONS.length);
-    } else if (key.rightArrow || key.tab) {
+    } else if (key.rightArrow || key.downArrow || key.tab) {
       setSelected((currentSelected() + 1) % BUTTONS.length);
     } else if (key.return || input === ' ') {
       const value = BUTTONS[currentSelected()].value;
@@ -172,76 +162,57 @@ export function PlanApprovalActions({
     );
   }
 
+  const width = frameGrid(Math.max(20, Math.floor(terminalWidth ?? 80))).width;
+  const contentWidth = Math.max(12, width - PANEL_CHROME);
+
   if (feedbackMode) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.warning} paddingX={1}>
-        <Text bold color={theme.warning}>
-          Request plan adjustments
-        </Text>
+      <DecisionSheet label="Adjust the plan" tone={theme.warning} width={width}>
         <Text color={theme.subtle}>Tell Book what should change before implementation starts.</Text>
-        <Box marginTop={1}>
-          <Text color={theme.warning}>› </Text>
-          <TextInput
-            value={feedback}
-            placeholder="Add feedback for the revised plan"
-            onChange={(value) => {
-              setFeedback(value.slice(0, 2000));
-              if (feedbackError) setFeedbackError(null);
-            }}
-            onSubmit={(value) => {
-              const normalized = value.trim();
-              if (!normalized) {
-                setFeedbackError('Add feedback before requesting changes.');
-                return;
-              }
-              resolveOnce({ decision: 'revise', feedback: normalized });
-            }}
-          />
+        <Box flexDirection="column" marginTop={1}>
+          <Text color={theme.border}>{'─'.repeat(contentWidth)}</Text>
+          <Box>
+            <Text color={theme.brand}>{`${PILCROW} `}</Text>
+            <TextInput
+              value={feedback}
+              placeholder="Add feedback for the revised plan"
+              onChange={(value) => {
+                setFeedback(value.slice(0, 2000));
+                if (feedbackError) setFeedbackError(null);
+              }}
+              onSubmit={(value) => {
+                const normalized = value.trim();
+                if (!normalized) {
+                  setFeedbackError('Add feedback before requesting changes.');
+                  return;
+                }
+                resolveOnce({ decision: 'revise', feedback: normalized });
+              }}
+            />
+          </Box>
         </Box>
         {feedbackError ? <Text color={theme.error}>{feedbackError}</Text> : null}
-        <Text color={theme.subtle} dimColor>
-          Enter send feedback · Esc return to choices
-        </Text>
-      </Box>
+        <Box marginTop={1}>
+          <Text color={theme.inactive}>Enter send feedback · Esc return to choices</Text>
+        </Box>
+      </DecisionSheet>
     );
   }
 
+  const choices: Choice[] = BUTTONS.map((button) => ({
+    label: button.label,
+    // The key first, so a narrow row truncates the explanation, never the key.
+    detail: `${button.key.toUpperCase()}  ${button.detail}`,
+  }));
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.planMode} paddingX={1}>
-      <Box
-        flexDirection={
-          terminalWidth !== undefined && terminalWidth < ROW_LAYOUT_MIN_WIDTH ? 'column' : 'row'
-        }
-      >
-        {BUTTONS.map((button, index) => {
-          const active = index === selected;
-          const color = theme[button.colorKey];
-          return (
-            <Box
-              key={button.value}
-              marginRight={
-                terminalWidth !== undefined && terminalWidth < ROW_LAYOUT_MIN_WIDTH ? 0 : 2
-              }
-            >
-              <Text
-                backgroundColor={active ? theme.surfaceActive : undefined}
-                color={active ? theme.selectionText : color}
-                bold={active}
-              >
-                {active ? '▸ ' : '  '}
-                {button.label} ({button.key.toUpperCase()})
-              </Text>
-            </Box>
-          );
-        })}
+    <DecisionSheet label="Plan approval" tone={theme.planMode} width={width}>
+      <ChoiceList choices={choices} selected={selected} width={contentWidth} numbered={false} />
+      <Box marginTop={1}>
+        <Text color={theme.inactive}>
+          ↑↓ select · Enter confirm · A/F/E/R shortcuts · Esc reject
+        </Text>
       </Box>
-      <Text color={theme.subtle} dimColor>
-        ← → to select · Enter to confirm · A/F/E/R shortcuts · Esc to reject
-      </Text>
-      <Text color={theme.subtle} dimColor>
-        Fresh context (F) discards the planning conversation and implements the plan clean.
-      </Text>
-    </Box>
+    </DecisionSheet>
   );
 }
 

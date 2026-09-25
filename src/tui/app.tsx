@@ -3110,6 +3110,7 @@ export function App({
                 onApprove={() => mcp.approve(pendingMcpApproval.name)}
                 onReject={() => mcp.reject(pendingMcpApproval.name)}
                 onDefer={() => mcp.defer(pendingMcpApproval.name)}
+                terminalWidth={termWidth}
               />
             ) : null}
           </Box>
@@ -3145,24 +3146,35 @@ export function App({
             </Text>
           ) : null}
 
-          <WorkingIndicator
-            isThinking={isThinking}
-            isCompacting={isCompacting}
-            compactTrigger={compactUi?.trigger}
-            messages={messages}
-            streamingMessageId={streamingMessageId}
-            pendingPermission={pendingPermission}
-            pendingPlanApproval={pendingPlanApproval}
-            pendingUserQuestion={pendingUserQuestion}
-            pendingElicitation={pendingElicitation}
-            retryPhase={retryPhase}
-            retryAttempt={retryAttempt}
-            retryMax={retryMax}
-            retryCountdownMs={retryCountdownMs}
-            terminalWidth={termWidth}
-            reducedMotion={motionDisabled}
-            screenReader={screenReader}
-          />
+          {/* While a decision sheet is up, it is the status: a "Waiting for
+              permission" row under it only said the same thing a second time.
+              Screen readers keep the row, which is how the wait is announced. */}
+          {screenReader ||
+          !(
+            pendingPermission ||
+            pendingUserQuestion ||
+            pendingPlanApproval ||
+            pendingElicitation
+          ) ? (
+            <WorkingIndicator
+              isThinking={isThinking}
+              isCompacting={isCompacting}
+              compactTrigger={compactUi?.trigger}
+              messages={messages}
+              streamingMessageId={streamingMessageId}
+              pendingPermission={pendingPermission}
+              pendingPlanApproval={pendingPlanApproval}
+              pendingUserQuestion={pendingUserQuestion}
+              pendingElicitation={pendingElicitation}
+              retryPhase={retryPhase}
+              retryAttempt={retryAttempt}
+              retryMax={retryMax}
+              retryCountdownMs={retryCountdownMs}
+              terminalWidth={termWidth}
+              reducedMotion={motionDisabled}
+              screenReader={screenReader}
+            />
+          ) : null}
 
           {/* Input bar — above the status line. Command menu is built into InputBar. */}
           <Box
