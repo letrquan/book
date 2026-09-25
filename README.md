@@ -1000,10 +1000,16 @@ JSON-over-stdio contract. Supported events:
 ¹ Awaited by the TUI and other multi-turn hosts; fire-and-forget on the one-shot SDK path.
 
 `SessionEnd` receives `reason`: `exit`, `clear`, or `resume` from the TUI. A print or SDK run
-reports `completion`, `aborted` when the run was cancelled (including a `stream-json` run whose
-stdout reader went away), or `error` when it threw after `SessionStart`, for example on a missing
-prompt. It runs at most once per session, and never under the cancelled run's own signal. Ctrl+C
-on `book -p` still ends the process without it, since print mode installs no SIGINT handler.
+reports one of these:
+
+| `reason`     | When                                                                                                                 |
+| ------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `completion` | The run completed, or ended on a stall or a dropped connection without failing                                       |
+| `aborted`    | Its signal aborted before it completed: a cancel, an `AbortSignal.timeout`, or a `stream-json` reader that went away |
+| `error`      | The run ended `failed`, or threw after `SessionStart` (for example on a missing prompt)                              |
+
+It runs at most once per session, and never under the cancelled run's own signal. Ctrl+C on
+`book -p` still ends the process without it, since print mode installs no SIGINT handler.
 
 **Awaited is the property that costs you latency**, and it is not the same as being able to veto.
 A slow `PostToolUse` hook cannot block anything, but it still delays _every tool call_ by up to its

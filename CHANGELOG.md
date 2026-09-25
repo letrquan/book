@@ -117,9 +117,12 @@ All notable changes to this project are documented in this file.
   turn that called tools, or a message the user wrote, ends the walk with an empty answer. So a
   run stopped by `--max-turns` on a turn that called tools now prints nothing on stdout, and a
   managed child that hits its turn limit that way reports an empty result. A `Task` child stopped
-  at its time limit still quotes its latest text, labelled as a partial result. The `[work-state]`
-  refresh is now marked host-written like the other appended prompts, so the carried ledger,
-  Carried Turns, and memory extraction no longer read it as the user's own words.
+  at its time limit still quotes its latest text, labelled as a partial result. The walk stops at
+  the run's own opening message, so a managed child's follow-up task that fails before recording
+  anything reports an empty result, not the previous task's answer. The `[work-state]` refresh is
+  now marked host-written like the other appended prompts, and the session file keeps that flag
+  for every appended prompt, so the carried ledger, Carried Turns, and memory extraction no longer
+  read them as the user's own words, before or after a reload.
 - **Print mode shows a delegated child's tool calls.** A lead that delegated printed
   `[Task] explorer` on stderr and then nothing until the child finished (#248). Each call a managed
   child makes (through `Task`, `AgentSpawn`, or `/review`) now prints as it starts, indented and
@@ -130,9 +133,10 @@ All notable changes to this project are documented in this file.
   SessionStart skipped SessionEnd: an abort that landed inside a tool (a cancelled SDK query, or a
   `stream-json` run whose reader went away mid-tool), or a missing prompt (#248). SessionEnd now
   runs once on that path too, with reason `aborted` for an abort and the new reason `error`
-  otherwise. On the normal path the reason follows the outcome: a cancelled outcome reports
-  `aborted` (it used to say `completion`), and a run that completed before its reader went away
-  still reports `completion`. The hooks run without the run's own signal, each under its usual
+  otherwise. On the normal path a completed run reports `completion`, even when its reader went
+  away afterwards; otherwise an aborted signal reports `aborted` (a cancel, or an
+  `AbortSignal.timeout` that ended the run as timed out), and a `failed` run reports `error`.
+  Both used to say `completion`. The hooks run without the run's own signal, each under its usual
   10 s timeout. Ctrl+C on `book -p` still ends the process at once, since print mode installs no
   SIGINT handler.
 - **A long reply no longer jitters sideways while it streams.** Once a reply outgrew the live
