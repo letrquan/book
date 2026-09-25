@@ -125,6 +125,12 @@ All notable changes to this project are documented in this file.
   raising the real floor above the declared one went unnoticed until now. `package-lock.json`'s
   own engines entry now matches it.
 
+- **CI adds a Linux leg on the newest Node 22** (#246). `NODE_USE_ENV_PROXY` exists only on later
+  22.x releases, so the 22.19 floor leg cannot exercise the path the #146 proxy regression broke,
+  which was reproduced on 22.23.3. The new `Check (ubuntu-latest, Node 22.x)` job runs beside the
+  floor and 24.x legs. There is no Windows counterpart, because the dispatcher behaviour is not
+  platform-specific.
+
 ### Fixed
 
 - **A whole-file `Read` of a large file now says where to continue (#248).** Every tool result
