@@ -16,7 +16,7 @@ import {
   requireFreshObservation,
   requireObservationForMutation,
 } from './file-provenance.js';
-import { toolFailure, toolSuccess } from './result.js';
+import { TOOL_RESULT_MAX_BYTES, toolFailure, toolSuccess, utf8Prefix } from './result.js';
 import {
   readTextSnapshot,
   restoreTextEncoding,
@@ -27,6 +27,11 @@ import {
 const GLOB_OUTPUT_LIMIT = 1000;
 const PATH_YIELD_INTERVAL = 128;
 const LINE_YIELD_INTERVAL = 2_048;
+// Every tool result over TOOL_RESULT_MAX_BYTES is clipped, with a notice that
+// points at a file Read cannot open. A Read stops short of that clip instead,
+// leaving room for its header and for the notice that names where to continue.
+const READ_NOTICE_RESERVE_BYTES = 512;
+const READ_OUTPUT_MAX_BYTES = TOOL_RESULT_MAX_BYTES - READ_NOTICE_RESERVE_BYTES;
 const GREP_MATCH_LIMIT = 100;
 const GREP_LINE_MAX_CHARS = 2_000;
 const GREP_OUTPUT_MAX_BYTES = 50 * 1024;
@@ -602,14 +607,23 @@ async function outlineFile(
     );
   }
   const entries = outlineLines(lines, filePath);
-  const shown = entries.slice(0, OUTLINE_MAX_ENTRIES);
+  // An outline stops at 2000 entries, or earlier where the tool-result clip
+  // would cut it, so its own note on where the rest start survives.
+  const shown: typeof entries = [];
+  let bytes = 0;
+  for (const entry of entries) {
+    const size = Buffer.byteLength(`${entry.line}: ${entry.text}`) + 1;
+    if (shown.length === OUTLINE_MAX_ENTRIES || bytes + size > READ_OUTPUT_MAX_BYTES) break;
+    shown.push(entry);
+    bytes += size;
+  }
   const output = [
     `Outline of ${args.filePath}: ${lineCount} lines, ${shown.length} shown. An outline is not the file's content: Read the file (whole, or with offset/limit) before editing it.`,
     ...shown.map((entry) => `${entry.line}: ${entry.text}`),
   ];
   if (entries.length > shown.length) {
     output.push(
-      `[Outline truncated at ${OUTLINE_MAX_ENTRIES} of ${entries.length} entries; the rest start at line ${entries[shown.length].line}. Read from there without outline, with offset/limit.]`,
+      `[Outline truncated at ${shown.length} of ${entries.length} entries; the rest start at line ${entries[shown.length].line}. Read from there without outline, with offset/limit.]`,
     );
   }
   const observation = await observeFile(ctx, filePath, 'outline');
@@ -649,13 +663,39 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   }
   const end = Math.min(lines.length, offset - 1 + limit);
   const output: string[] = [];
+  let bytes = 0;
+  let last = offset - 1;
+  let cutLine = false;
   for (let index = offset - 1; index < end; index++) {
-    output.push(`${index + 1}: ${lines[index]}`);
+    let text = `${index + 1}: ${lines[index]}`;
+    const size = Buffer.byteLength(text) + 1;
+    if (bytes + size > READ_OUTPUT_MAX_BYTES) {
+      if (output.length > 0) break;
+      // One line over the whole budget is shown cut, so the next Read moves past it.
+      text = utf8Prefix(text, READ_OUTPUT_MAX_BYTES);
+      cutLine = true;
+    }
+    output.push(text);
+    bytes += size;
+    last = index + 1;
     if ((index - offset + 2) % LINE_YIELD_INTERVAL === 0) await yieldToEventLoop(ctx.signal);
+  }
+  // A Read that stops before the end of the file, at the byte budget or at its
+  // line limit, says so and names the offset to continue from.
+  if (cutLine) {
+    const next = last < lineCount ? ` Continue with offset: ${last + 1}.` : '';
+    output.push(
+      `[Line ${last} is longer than ${READ_OUTPUT_MAX_BYTES} bytes and was cut there.${next}]`,
+    );
+  } else if (last < lineCount) {
+    const reason = last < end ? ', the most one Read returns (50 KB)' : '';
+    output.push(
+      `[Lines ${offset}-${last} of ${lineCount} shown${reason}. Continue with offset: ${last + 1}.]`,
+    );
   }
   const observation = await observeFile(ctx, filePath, 'read', {
     lineStart: offset,
-    lineEnd: end,
+    lineEnd: last,
   });
   return toolSuccess(output.join('\n'), {
     artifacts: { fileObservations: [observation] },
@@ -1320,7 +1360,7 @@ export const fileTools: ToolDefinition[] = [
     policy: { concurrency: 'parallel' },
     argumentAliases: { file_path: 'filePath', path: 'filePath' },
     description:
-      'Read a file from the workspace. Returns lines with line numbers. The default reads the whole file (up to 2000 lines) in one call — read files whole; use offset/limit only for files longer than that, and never to read a file in small chunks. The "N: " line-number prefixes are display-only and are never part of the file content. Pass outline: true, without offset or limit, to survey a file\'s declarations (a Markdown file\'s headings) before deciding what to read; an outline is not a read, so Read the file before editing it.',
+      'Read a file from the workspace. Returns lines with line numbers. The default reads the whole file in one call, up to 2000 lines or 50 KB, whichever comes first — read files whole; use offset/limit only for a file larger than that, and never to read a file in small chunks. A Read that stops before the end of the file ends with a notice naming the offset to continue from. The "N: " line-number prefixes are display-only and are never part of the file content. Pass outline: true, without offset or limit, to survey a file\'s declarations (a Markdown file\'s headings) before deciding what to read; an outline is not a read, so Read the file before editing it.',
     parameters: {
       type: 'object',
       properties: {
@@ -1332,13 +1372,13 @@ export const fileTools: ToolDefinition[] = [
         offset: {
           type: 'number',
           description:
-            'Line number to start reading from (1-indexed). Leave unset unless the file is longer than 2000 lines.',
+            'Line number to start reading from (1-indexed). Leave unset unless the file is larger than one Read returns (2000 lines or 50 KB); a Read that stops early names the offset to continue from.',
           default: 1,
         },
         limit: {
           type: 'number',
           description:
-            'Maximum number of lines to read. Leave unset to read the whole file; only set it for files longer than 2000 lines.',
+            'Maximum number of lines to read. Leave unset to read the whole file; only set it for a file larger than 2000 lines or 50 KB.',
           default: 2000,
         },
         outline: {

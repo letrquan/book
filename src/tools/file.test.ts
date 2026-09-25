@@ -10,6 +10,7 @@ vi.mock('../async.js', async (importOriginal) => {
   return { ...actual, yieldToEventLoop: vi.fn(actual.yieldToEventLoop) };
 });
 import { fileTools } from './file.js';
+import { boundToolResultOutput, TOOL_RESULT_MAX_BYTES } from './result.js';
 import type { ToolContext } from '../types/tools.js';
 import {
   existsSync,
@@ -101,10 +102,8 @@ describe('read_file', () => {
    */
   it('yields while formatting large reads', async () => {
     const lines = 5_000;
-    writeFileSync(
-      join(dir, 'large.txt'),
-      Array.from({ length: lines }, (_, index) => `line ${index}`).join('\n'),
-    );
+    // One-character lines keep all 5 000 under Read's 50 KB stop.
+    writeFileSync(join(dir, 'large.txt'), Array.from({ length: lines }, () => 'x').join('\n'));
     const { yieldToEventLoop } = await import('../async.js');
     vi.mocked(yieldToEventLoop).mockClear();
 
@@ -393,15 +392,13 @@ describe('read_file', () => {
   });
 
   it('caps an outline at 2000 entries and says where the rest start', async () => {
-    const declarations = Array.from(
-      { length: 2005 },
-      (_, index) => `export const v${index} = ${index};`,
-    );
+    // Short lines, so the 2000-entry cap binds before the 50 KB one.
+    const declarations = Array.from({ length: 2005 }, (_, index) => `let v${index};`);
     writeFileSync(join(dir, 'many.ts'), declarations.join('\n'));
     const outlined = await read.execute({ filePath: 'many.ts', outline: true }, ctx);
     const lines = outlined.content.split('\n');
     expect(lines).toHaveLength(2002);
-    expect(lines[2000]).toBe('2000: export const v1999 = 1999;');
+    expect(lines[2000]).toBe('2000: let v1999;');
     expect(lines[2001]).toMatch(/truncated at 2000 of 2005 entries.*line 2001/);
   });
 
@@ -1618,5 +1615,87 @@ describe('Read outline contract', () => {
     writeFileSync(join(dir, 'counted.ts'), 'export const a = 1;\nexport const b = 2;\n');
     const outlined = await read.execute({ filePath: 'counted.ts', outline: true }, ctx);
     expect(outlined.content.split('\n')[0]).toMatch(/^Outline of counted\.ts: 2 lines, 2 shown\./);
+  });
+});
+
+describe('Read output budget', () => {
+  it('stops under the tool-result clip and names the offset a second Read continues from', async () => {
+    // 1885 lines and about 74 KB, the shape of src/agents/manager.ts (#248).
+    const lines = Array.from(
+      { length: 1885 },
+      (_, index) => `export const value${index} = '${'x'.repeat(6)}';`,
+    );
+    writeFileSync(join(dir, 'big.ts'), `${lines.join('\n')}\n`);
+
+    const first = await read.execute({ filePath: 'big.ts' }, ctx);
+    expect(Buffer.byteLength(first.content)).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
+    // The shared clip, whose notice names a file Read cannot open, never fires.
+    const bounded = await boundToolResultOutput(first, dir, undefined, join(dir, 'tool-output'));
+    expect(bounded.pagination?.truncated).toBeUndefined();
+    expect(bounded.content).toBe(first.content);
+
+    const shown = first.content.split('\n');
+    const notice = shown.at(-1)!;
+    const next = Number(/Continue with offset: (\d+)\.\]$/.exec(notice)?.[1]);
+    expect(notice).toBe(
+      `[Lines 1-${next - 1} of 1885 shown, the most one Read returns (50 KB). Continue with offset: ${next}.]`,
+    );
+    expect(shown.at(-2)).toBe(`${next - 1}: ${lines[next - 2]}`);
+    expect(first.artifacts?.fileObservations?.[0]?.lineEnd).toBe(next - 1);
+
+    const rest = await read.execute({ filePath: 'big.ts', offset: next }, ctx);
+    expect(rest.content).not.toContain('Continue with offset');
+    const numbered = [...shown.slice(0, -1), ...rest.content.split('\n')];
+    expect(numbered.slice(0, 1885)).toEqual(lines.map((line, index) => `${index + 1}: ${line}`));
+  });
+
+  it('says where a Read stopped by its line limit continues', async () => {
+    writeFileSync(
+      join(dir, 'long.txt'),
+      Array.from({ length: 2500 }, (_, index) => `l${index + 1}`).join('\n'),
+    );
+    const whole = await read.execute({ filePath: 'long.txt' }, ctx);
+    const wholeLines = whole.content.split('\n');
+    expect(wholeLines).toHaveLength(2001);
+    expect(wholeLines[1999]).toBe('2000: l2000');
+    expect(wholeLines[2000]).toBe('[Lines 1-2000 of 2500 shown. Continue with offset: 2001.]');
+
+    const window = await read.execute({ filePath: 'long.txt', offset: 10, limit: 5 }, ctx);
+    expect(window.content.split('\n').at(-1)).toBe(
+      '[Lines 10-14 of 2500 shown. Continue with offset: 15.]',
+    );
+
+    const tail = await read.execute({ filePath: 'long.txt', offset: 2001 }, ctx);
+    expect(tail.content).not.toContain('Continue with offset');
+    expect(tail.content.split('\n').at(-1)).toBe('2500: l2500');
+  });
+
+  it('shows a line longer than the budget cut, and continues after it', async () => {
+    writeFileSync(join(dir, 'minified.js'), `${'x'.repeat(60_000)}\nlast`);
+    const first = await read.execute({ filePath: 'minified.js' }, ctx);
+    expect(Buffer.byteLength(first.content)).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
+    const shown = first.content.split('\n');
+    expect(shown).toHaveLength(2);
+    expect(shown[0].startsWith('1: xxx')).toBe(true);
+    expect(shown[1]).toMatch(
+      /^\[Line 1 is longer than \d+ bytes and was cut there\. Continue with offset: 2\.\]$/,
+    );
+
+    const rest = await read.execute({ filePath: 'minified.js', offset: 2 }, ctx);
+    expect(rest.content).toBe('2: last');
+  });
+
+  it('stops an outline under the clip too, and says where the rest start', async () => {
+    const declarations = Array.from(
+      { length: 1500 },
+      (_, index) => `export const value${index} = '${'x'.repeat(40)}';`,
+    );
+    writeFileSync(join(dir, 'wide.ts'), declarations.join('\n'));
+    const outlined = await read.execute({ filePath: 'wide.ts', outline: true }, ctx);
+    expect(Buffer.byteLength(outlined.content)).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
+    const note = outlined.content.split('\n').at(-1)!;
+    const shownCount = Number(/^\[Outline truncated at (\d+) of 1500 entries;/.exec(note)?.[1]);
+    expect(shownCount).toBeGreaterThan(0);
+    expect(note).toContain(`the rest start at line ${shownCount + 1}.`);
   });
 });
