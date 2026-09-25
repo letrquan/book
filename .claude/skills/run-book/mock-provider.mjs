@@ -275,7 +275,8 @@ const server = createServer((req, res) => {
     if (overflow) {
       turn = undefined;
     } else if (matched) {
-      turn = matched.checkpoint ? { text: checkpointText() } : matched;
+      // A checkpoint turn keeps its own fields (`chunkDelayMs`, `holdMs`); only the text is made.
+      turn = matched.checkpoint ? { ...matched, text: checkpointText() } : matched;
     } else if (sequenceTurns.length === 0) {
       // A script made only of `match` turns still has to answer ordinary requests.
       turn = { text: replyText };

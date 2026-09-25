@@ -545,9 +545,13 @@ export function App({
   // session that is already ending, so a second exit would unmount Ink before the first
   // SessionEnd finished.
   const exitStartedRef = useRef(false);
+  // The same fact as state, for what renders and effects gate on: nothing new is dispatched
+  // while SessionEnd runs.
+  const [exitStarted, setExitStarted] = useState(false);
   const exitOnce = useCallback(() => {
     if (exitStartedRef.current) return;
     exitStartedRef.current = true;
+    setExitStarted(true);
     disarmCtrlCExit();
     void endCurrentSession('exit').finally(exitApp);
   }, [disarmCtrlCExit, endCurrentSession, exitApp]);
@@ -573,6 +577,17 @@ export function App({
     editingQueuedInputRef.current = next;
     setEditingQueuedInput(next);
   }, []);
+  /**
+   * Ends a recalled queued edit: drops its marker and resumes the queue, unless `keepPaused`
+   * leaves the inputs queued before it waiting.
+   */
+  const endQueuedEdit = useCallback(
+    (keepPaused = false) => {
+      replaceEditingQueuedInput(undefined);
+      queueDrainPausedRef.current = keepPaused;
+    },
+    [replaceEditingQueuedInput],
+  );
   const dispatchAgentSend = useCallback(
     async (value: string, commandContext?: CommandContext, attachments?: ImageAttachment[]) => {
       setSendInFlight(true);
@@ -597,12 +612,11 @@ export function App({
         return false;
       }
       replaceQueuedInputs(result.queue);
-      replaceEditingQueuedInput(undefined);
-      queueDrainPausedRef.current = false;
+      endQueuedEdit();
       setQueueNotice(undefined);
       return true;
     },
-    [replaceEditingQueuedInput, replaceQueuedInputs, sessionId],
+    [endQueuedEdit, replaceQueuedInputs, sessionId],
   );
   const recallQueuedInput = useCallback(():
     { value: string; attachments?: ImageAttachment[] } | undefined => {
@@ -615,14 +629,13 @@ export function App({
     return { value: result.recalled.value, attachments: result.recalled.attachments };
   }, [replaceEditingQueuedInput, replaceQueuedInputs]);
   const cancelQueuedEdit = useCallback(() => {
-    replaceEditingQueuedInput(undefined);
-    queueDrainPausedRef.current = false;
+    endQueuedEdit();
     setQueueNotice('Queued input removed.');
     setDraftRestore((current) => ({
       key: (current?.key ?? 0) + 1,
       value: '',
     }));
-  }, [replaceEditingQueuedInput]);
+  }, [endQueuedEdit]);
   const pasteClipboardImage = useCallback(async (): Promise<ImageAttachment> => {
     if (liveConfig.modelInfo?.vision === false) {
       throw new Error(`${liveConfig.model} does not support image input.`);
@@ -776,6 +789,7 @@ export function App({
     pending: managedAgents.pendingCompletions,
     parentSessionId: sessionId,
     blocked: Boolean(
+      exitStarted ||
       isThinking ||
       isCompacting ||
       isRewinding ||
@@ -971,6 +985,7 @@ export function App({
     }
   }, [mcpSnapshot, isThinking, sendInFlight, addLocalMessage]);
   const queueDrainBlocked = Boolean(
+    exitStarted ||
     isThinking ||
     sendInFlight ||
     isCompacting ||
@@ -1571,6 +1586,8 @@ export function App({
 
   const handleSubmit = useCallback(
     async (value: string, attachments: ImageAttachment[] = []) => {
+      // Nothing is submitted once an exit has started: SessionEnd is running.
+      if (exitStartedRef.current) return;
       if (attachments.length > 0 && liveConfig.modelInfo?.vision === false) {
         addLocalMessage(`${liveConfig.model} does not support image input.`);
         setDraftRestore((current) => ({
@@ -1580,14 +1597,25 @@ export function App({
         }));
         return;
       }
-      // A submission replaces a recalled queued input, whatever it is (the recalled text, an
-      // edit of it, or a slash command): the edit is over, so its marker, its notice and the
-      // queue pause it holds go with it. A stale marker made the next idle Ctrl+C remove an
-      // edit that no longer existed instead of arming the exit window.
+      // A submission ends a recalled queued edit; a stale marker made the next idle Ctrl+C
+      // remove an edit that no longer existed. What happens to the inputs queued before it
+      // depends on what replaced it.
       if (editingQueuedInputRef.current) {
-        replaceEditingQueuedInput(undefined);
-        queueDrainPausedRef.current = false;
-        setQueueNotice(undefined);
+        const othersQueued = queuedInputsRef.current.length > 0;
+        if (othersQueued && !value.startsWith('/') && managedAgents.surface === 'main') {
+          // The edited text goes back to the end of the queue, where it was recalled from, so
+          // the inputs queued before it are still sent first.
+          enqueueFollowUp(value, attachments);
+          return;
+        }
+        // Anything else, a slash command such as /exit included, leaves them waiting instead
+        // of sending them behind it.
+        endQueuedEdit(othersQueued);
+        setQueueNotice(
+          othersQueued
+            ? 'Queue paused. Up then Enter resumes it; /queue clear drops it.'
+            : undefined,
+        );
       }
       setFollowRequestKey((key) => key + 1);
       const selectedChild = managedAgents.selectedAgentId
@@ -1626,8 +1654,7 @@ export function App({
         const operation = parsedSlash.rawArguments.trim().toLowerCase();
         if (operation === 'clear') {
           replaceQueuedInputs([]);
-          replaceEditingQueuedInput(undefined);
-          queueDrainPausedRef.current = false;
+          endQueuedEdit();
           setQueueNotice('Queued follow-up inputs cleared.');
         } else {
           const count = queuedInputsRef.current.length;
@@ -2022,7 +2049,8 @@ export function App({
       builtinCommandRegistry,
       managedAgentManager,
       managedAgents,
-      replaceEditingQueuedInput,
+      endQueuedEdit,
+      enqueueFollowUp,
       replaceQueuedInputs,
     ],
   );
@@ -2175,10 +2203,8 @@ export function App({
   // mounted with whatever state it held when the render blew up, so it swallows
   // Ctrl+C behind `ownsModalInput` if a picker was open and spends it on
   // `interrupt()` if a turn was streaming. It gets the same exit path either
-  // way, so the session still ends cleanly.
-  const exitFromCrash = () => {
-    void endCurrentSession('exit').finally(exitApp);
-  };
+  // way, latch included, so the session still ends cleanly and only once.
+  const exitFromCrash = exitOnce;
 
   if (startupFireActive) {
     return (

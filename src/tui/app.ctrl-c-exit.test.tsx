@@ -57,6 +57,22 @@ vi.mock('../agents/manager.js', () => ({
   getOrCreateAgentManager: () => managedAgentManagerMock,
 }));
 
+// Set by the crash-screen test: the transcript throws on render, so the error boundary's
+// screen takes over the way a real render crash does.
+const crashTranscript = vi.hoisted(() => ({ current: false }));
+
+vi.mock('./components/TranscriptView.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./components/TranscriptView.js')>();
+  const { createElement } = await import('react');
+  return {
+    ...actual,
+    TranscriptView: (props: Parameters<typeof actual.TranscriptView>[0]) => {
+      if (crashTranscript.current) throw new Error('render blew up');
+      return createElement(actual.TranscriptView, props);
+    },
+  };
+});
+
 function config(): AgentConfig {
   return {
     apiKey: 'test-key',
@@ -518,7 +534,7 @@ describe('idle Ctrl+C exit confirmation', () => {
     expect(state.endCurrentSession).not.toHaveBeenCalled();
   });
 
-  it('the rest of the queue drains once a slash command replaces the recalled input', async () => {
+  it('a slash command that replaces the recalled input leaves the rest of the queue paused', async () => {
     const { view, state, rerenderWith } = await startIdleApp({ isThinking: true });
     await queueAndRecallNewest(view, ['first queued', 'second queued']);
     rerenderWith({ isThinking: false });
@@ -529,8 +545,89 @@ describe('idle Ctrl+C exit confirmation', () => {
     await waitForFrame(view, '> /status');
     view.stdin.write('\r');
     await waitForFrame(view, 'Session Status');
+    await waitForFrame(view, 'Queue paused');
+    rerenderWith({ isThinking: false });
 
+    expect(frameOf(view)).not.toContain('Editing queued input');
+    expect(state.send).not.toHaveBeenCalled();
+
+    // What the notice says resumes it: Up recalls the input, Enter sends it.
+    view.stdin.write('\x1b[A');
+    await waitForFrame(view, '> first queued');
+    view.stdin.write('\r');
     await waitUntil(() => expect(state.send).toHaveBeenCalledWith('first queued'));
-    expect(state.send).not.toHaveBeenCalledWith('second queued');
+  });
+
+  it('a recalled input resubmitted as plain text goes back behind the inputs queued before it', async () => {
+    const { view, state, rerenderWith } = await startIdleApp({ isThinking: true });
+    await queueAndRecallNewest(view, ['first queued', 'second queued']);
+    view.stdin.write(' edited');
+    await waitForFrame(view, '> second queued edited');
+    rerenderWith({ isThinking: false });
+
+    view.stdin.write('\r');
+
+    await waitUntil(() => expect(state.send).toHaveBeenCalledTimes(2));
+    expect(state.send.mock.calls.map((call: unknown[]) => call[0])).toEqual([
+      'first queued',
+      'second queued edited',
+    ]);
+  });
+
+  it('dispatches nothing once /exit has started, from the queue or the composer', async () => {
+    const endCurrentSession = vi
+      .fn<(reason: string) => Promise<void>>()
+      .mockImplementationOnce(() => new Promise<void>(() => {}))
+      .mockResolvedValue(undefined);
+    const { view, state, rerenderWith } = await startIdleApp({
+      isThinking: true,
+      endCurrentSession,
+    });
+    await queueAndRecallNewest(view, ['first queued', 'second queued', 'third queued']);
+    rerenderWith({ isThinking: false, endCurrentSession });
+
+    view.stdin.write('\x15');
+    await waitForFrameWithout(view, '> third queued');
+    view.stdin.write('/exit');
+    await waitForFrame(view, '> /exit');
+    view.stdin.write('\r');
+    await waitUntil(() => expect(endCurrentSession).toHaveBeenCalledWith('exit'));
+    rerenderWith({ isThinking: false, endCurrentSession });
+    expect(state.send).not.toHaveBeenCalled();
+
+    // While SessionEnd runs: a recalled input resubmitted, then another removed with Esc,
+    // which would otherwise resume the queue.
+    view.stdin.write('\x1b[A');
+    await waitForFrame(view, '> second queued');
+    view.stdin.write('\r');
+    view.stdin.write('\x1b');
+    await waitForFrame(view, 'Queued input removed.');
+    rerenderWith({ isThinking: false, endCurrentSession });
+
+    expect(state.send).not.toHaveBeenCalled();
+    expect(endCurrentSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('the crash screen exits through the same latch', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    crashTranscript.current = true;
+    try {
+      const endCurrentSession = vi
+        .fn<(reason: string) => Promise<void>>()
+        .mockImplementationOnce(() => new Promise<void>(() => {}))
+        .mockResolvedValue(undefined);
+      const { view } = await startIdleApp({ endCurrentSession });
+      await waitForFrame(view, 'Something went wrong');
+
+      view.stdin.write('\x03');
+      await waitUntil(() => expect(endCurrentSession).toHaveBeenCalledTimes(1));
+      view.stdin.write('\x03');
+      view.stdin.write('\x03');
+
+      expect(endCurrentSession).toHaveBeenCalledTimes(1);
+    } finally {
+      crashTranscript.current = false;
+      consoleError.mockRestore();
+    }
   });
 });

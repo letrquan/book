@@ -30,11 +30,14 @@ All notable changes to this project are documented in this file.
   - **Exit in progress:** once the second press starts the exit, further presses do nothing while
     SessionEnd runs (#250). With a slow SessionEnd hook, a third press showed the hint again and a
     fourth started a second exit, which returned at once and tore the UI down seconds before the
-    first SessionEnd finished. `/exit` goes through the same latch.
+    first SessionEnd finished. `/exit` and the crash screen's Ctrl+C go through the same latch,
+    and once an exit has started nothing more is submitted or sent from the queue.
   - **A recalled queued input ends when anything is submitted** (#250). Replacing it with a slash
-    command left its marker, its "Editing queued input" notice and its queue pause behind, so the
-    next idle press removed an edit that no longer existed instead of arming the window, and the
-    rest of the queue stayed paused. Any submission now clears all three.
+    command left its marker and its "Editing queued input" notice behind, so the next idle press
+    removed an edit that no longer existed instead of arming the window. Any submission now ends
+    the edit. Resubmitted text goes back to the end of the queue, so the inputs queued before it
+    are still sent first. Anything else, a slash command included, leaves those inputs paused and
+    says so: Up then Enter resumes them, `/queue clear` drops them.
 
 - **undici 6 -> 8, with the DNS-rebinding guard re-proven rather than re-asserted.** The major had
   been pinned since dependabot #84 because `web-policy.test.ts` failed on it, and the failure looked
@@ -122,13 +125,15 @@ All notable changes to this project are documented in this file.
   code block, are still cut from the raw cutoff as before. The full-frame renderer that Windows
   uses by default still repaints every row, so its output is unchanged. On Windows, the fix removes
   the jitter but does not reduce the bytes written.
-- **The live tail no longer shows code as prose, or opens on a rule.** When the streaming window's
-  cutoff landed inside a fence's opening line (such as ` ```ts `), the fence check, which reads only
-  whole lines, missed it, and the tail started inside the code as a prose paragraph; inside a
-  closing line, the fence stayed open over the prose after it (#250). A cutoff inside a delimiter
-  line now moves to that line's outer edge, so an opening line opens the tail and a closing one is
-  left behind. The prose fallback also skips a dash thematic break (`---`, `-- -`, `-----`) that
-  ends its line, which used to put a rule at the top of the tail.
+- **The live tail no longer shows code as prose, or turns a trailing `---` into a rule.** When the
+  streaming window's cutoff landed inside a fence's opening line (such as ` ```ts `), the fence
+  check, which reads only whole lines, missed it, and the tail started inside the code as a prose
+  paragraph; inside a closing line, the fence stayed open over the prose after it (#250). A cutoff
+  inside a delimiter line now moves to that line's outer edge, so an opening line opens the tail
+  and a closing one is left behind. When the prose fallback's first word was a dash thematic break
+  that ends its line (`---`, `-- -`, `-----` after other words on that line), the tail opened with a
+  rule; that word is now skipped. A tail that starts on a line that is only `---` still opens with a
+  rule, including one that underlines a heading in the full reply (a setext heading).
 - **Windows paths in `/memory` commands no longer lose backslashes to markdown parsing.** `/memory`
   reports and effects rendered paths unescaped through `marked`, which treated backslashes as
   markdown escape sequences. Paths are now wrapped in inline code spans.

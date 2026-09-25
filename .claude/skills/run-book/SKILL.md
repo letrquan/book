@@ -138,8 +138,8 @@ error as content. Count requests in the `.requests.jsonl` to tell "retried" from
 `bash .claude/skills/run-book/smoke.sh` boots the real TUI against the mock and drives one full
 flow — prompt, tool call, permission dialog, approval, file written on disk — and exits non-zero on
 any failure. Run it after changing anything on that path. It listens on `BOOK_SMOKE_PORT` (8919)
-and keeps its workspace and scenario in per-port paths, so two runs on different ports share
-nothing. It kills no process itself: the driver kills the one mock it started whenever it exits,
+and keeps its workspace, scenario and shots in per-port paths, so two runs on different ports
+share nothing. It kills no process itself: the driver kills the one mock it started whenever it exits,
 a console Ctrl-C included (and SIGTERM or SIGHUP on POSIX), and a port another process holds fails
 the run with `EADDRINUSE`. A hard kill of the driver (on Windows, `kill` and `process.kill` are
 one) skips its handlers and orphans the mock; stop that one by its PID. Never clear a port with

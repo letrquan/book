@@ -13,7 +13,7 @@ ROOT="$(cd "$HERE/../../.." && pwd)"
 PORT="${BOOK_SMOKE_PORT:-8919}"
 # Per-port defaults, so two smoke runs on different ports share no files either.
 WS="${BOOK_SMOKE_WS:-/tmp/book-smoke-ws-$PORT}"
-SHOTS="${BOOK_SMOKE_SHOTS:-/tmp/book-shots}"
+SHOTS="${BOOK_SMOKE_SHOTS:-/tmp/book-shots-$PORT}"
 SCENARIO="/tmp/book-smoke-scenario-$PORT.json"
 
 if [ ! -f "$ROOT/dist/index.js" ]; then
