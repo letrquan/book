@@ -137,7 +137,9 @@ function Logotype() {
       {LOGOTYPE.map((row, index) => (
         <Text
           key={index}
-          color={mixHex(theme.brandShimmer, theme.brand, last === 0 ? 1 : index / last) ?? theme.brand}
+          color={
+            mixHex(theme.brandShimmer, theme.brand, last === 0 ? 1 : index / last) ?? theme.brand
+          }
         >
           {row}
         </Text>

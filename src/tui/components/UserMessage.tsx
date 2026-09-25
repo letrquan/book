@@ -169,12 +169,7 @@ function UserMessageInner({
               </Text>
             )}
             <Text>{' '.repeat(gap)}</Text>
-            {index === 0 && time ? (
-              <Text color={theme.inactive}>
-                {' '}
-                {time}{' '}
-              </Text>
-            ) : null}
+            {index === 0 && time ? <Text color={theme.inactive}> {time} </Text> : null}
           </Box>
         );
       })}

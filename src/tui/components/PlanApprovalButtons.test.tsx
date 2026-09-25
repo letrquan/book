@@ -98,7 +98,7 @@ describe('PlanApprovalButtons', () => {
     );
 
     const output = stripAnsi(view.lastFrame());
-    expect(output).toContain('┌');
+    expect(output).toContain('━');
     expect(output).toContain('Book');
     expect(output).not.toContain('**Book**');
   });

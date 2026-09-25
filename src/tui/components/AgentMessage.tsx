@@ -363,11 +363,7 @@ function MutationGroupRow({
       {/* The same mark as every other finished tool row: a mutation group is
           work that completed, not a list item. */}
       <Text color={theme.success}>{'✓ '}</Text>
-      {row.label ? (
-        <Text color={theme.inactive}>
-          {row.label}{' '}
-        </Text>
-      ) : null}
+      {row.label ? <Text color={theme.inactive}>{row.label} </Text> : null}
       <TargetText target={row.target} failed={false} />
       <Text>{row.gap}</Text>
       <MetaText meta={row.meta} failed={false} />

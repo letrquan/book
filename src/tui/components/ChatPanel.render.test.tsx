@@ -4,6 +4,7 @@ import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { DensityContext, type TuiDensity } from '../density.js';
 import { ChatPanel, getCompletedTimelineWindow, getStreamingTimelineWindow } from './ChatPanel.js';
 import { AgentMessage } from './AgentMessage.js';
+import { LOGOTYPE } from './WelcomeScreen.js';
 import type { FileMutationSummary, ToolCall, ToolResult } from '../../types/tools.js';
 import type { Message } from '../../types/messages.js';
 
@@ -141,8 +142,8 @@ describe('ChatPanel Ink rendering', () => {
     );
 
     const output = frame(view.lastFrame);
-    expect(output).toContain('╭ BOOK');
-    expect(output).toContain('Ask anything, or type / for a command.');
+    expect(output).toContain(LOGOTYPE[0].trim());
+    expect(output).toContain('book  ·  model-x');
     expect(output).toContain('/help');
   });
 
@@ -331,12 +332,12 @@ describe('ChatPanel Ink rendering', () => {
     );
 
     const output = frame(view.lastFrame);
-    expect(output).not.toContain('╭ BOOK');
+    expect(output).not.toContain(LOGOTYPE[0].trim());
     expect(output).not.toContain('You');
     expect(output).not.toContain('Book');
-    // The user turn opens with a labelled rule instead of a tinted card.
-    expect(output).toContain('── you ');
-    expect(output).toContain('compact request');
+    // The user turn is a banded row behind a ribbon, with no role label.
+    expect(output).toContain('▌ compact request');
+    expect(output).not.toContain('── you ');
     expect(output).toContain('compact reply');
   });
 
@@ -379,10 +380,10 @@ describe('ChatPanel Ink rendering', () => {
     const answerLine = lines.findIndex((line) => line.includes('FIRST_ANSWER_MARKER'));
     const nextQuestionLine = lines.findIndex((line) => line.includes('SECOND_QUESTION_MARKER'));
 
-    // Blank row, then the turn rule, then the prompt: the next turn is three
-    // rows below the answer, one of which is the boundary itself.
-    expect(nextQuestionLine - answerLine).toBe(3);
-    expect(lines[nextQuestionLine - 1]).toContain('── you ');
+    // Blank row, then the banded prompt: the band is the boundary itself, so
+    // the next turn needs no separate rule row.
+    expect(nextQuestionLine - answerLine).toBe(2);
+    expect(lines[nextQuestionLine]).toContain('▌ SECOND_QUESTION_MARKER');
   });
 
   it('keeps wrapped content mounted exactly once when streaming completes', () => {

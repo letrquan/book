@@ -1302,11 +1302,13 @@ Book clears sessions and rotated debug-log backups after 30 days. Startup resolv
 
 ### Themes
 
-Book uses the `apple` theme by default: near-black neutral surfaces, bright grey text, and one blue accent for the composer and your own turns. Every other hue is a status colour that appears only when a state needs attention.
+Book uses the `folio` theme by default: warm ivory text on the terminal's own background, with one gilt accent. The accent marks the places you act or look first: the prompt glyph, the ribbon on your own turns, headings, list markers and the spinner. Hierarchy otherwise comes from value and weight, not hue. The status colours (sage, brick, burnt orange) are muted, so a result still reads at a glance without shouting over the prose around it.
 
-Roles are kept visually distinct on purpose: blue is the user and composer, cyan is the agent speaking, indigo is product chrome, teal carries references, and distinct status hues carry results.
+The layout follows the same idea. Your turns are set on a tinted band. The composer and the menus that open above it are drawn as hairlines rather than boxes. Tables are ruled the way a book sets them, with no vertical lines, and an empty session opens on a centred title page.
 
-Project themes can override any token in `.book/themes/<name>.json`:
+The previous palette is still available as `apple`: near-black neutral surfaces, bright grey text, a blue composer and user accent, cyan for the agent, and a distinct hue per role. Select it with `"theme": "apple"` in `settings.json`.
+
+Project themes can override any token in `.book/themes/<name>.json`, starting from `folio`:
 
 ```json
 {

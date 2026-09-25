@@ -71,6 +71,7 @@ EOF
 | `key <name>...` | `enter esc tab shift-tab up down left right backspace space ctrl-c ctrl-d ctrl-e ctrl-j ctrl-l ctrl-o ctrl-r ctrl-t ctrl-u home end pageup pagedown` |
 | `sleep [ms]`, `resize <cols> <rows>` | Timing and layout. |
 | `screen`, `raw`, `shot <name>` | Dump the screen to stdout, dump the raw tail, or write the screen to `<shots>/<name>.txt`. |
+| `shotpng <name>` | Write the screen with colours and attributes kept, as `<shots>/<name>.html` and, via headless Edge or Chromium, `<name>.png` — which the Read tool can look at. The only way to judge a visual change (palette, weight, spacing): a text `shot` shows none of it. Block elements and rules are drawn edge to edge the way a terminal draws them, so a seam in the PNG is a real seam. |
 | `rawbytes [n]` | Print the last `n` (default 3000) bytes of the PTY stream JSON-encoded, escapes kept — the only faithful record of what the renderer emitted when the xterm replay looks wrong. |
 | `status` | Print whether the TUI process has exited, its exit code and the time, without sending a key: how a script tells "that press exited" from "that press only armed". |
 | `quit` | Ctrl-C twice and wait for exit. |

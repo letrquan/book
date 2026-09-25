@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
-import { composeWelcomeHints, WELCOME_HINTS, WelcomeScreen } from './WelcomeScreen.js';
+import {
+  composeWelcomeHints,
+  LOGOTYPE,
+  titlePageTopPadding,
+  WELCOME_HINTS,
+  WelcomeScreen,
+} from './WelcomeScreen.js';
 import { displayWidth } from './word-wrap.js';
 
 function stripAnsi(value: string | undefined): string {
@@ -36,12 +42,41 @@ describe('WelcomeScreen', () => {
     );
 
     const output = stripAnsi(view.lastFrame());
-    expect(output).toContain('╭ BOOK');
-    expect(output).toContain('Ask anything, or type / for a command.');
+    const rows = lines(output);
+    // The logotype, the workspace and model, then the hints — and no tagline,
+    // which only repeated the composer's placeholder.
+    expect(rows).toHaveLength(LOGOTYPE.length + 2);
+    for (const [index, row] of LOGOTYPE.entries()) {
+      expect(rows[index]!.trim()).toBe(row.trim());
+    }
+    expect(output).toContain('book  ·  claude-sonnet-5');
+    expect(output).not.toContain('Ask anything');
     expect(output).toContain('/help');
-    expect(output).toContain('/skills');
     expect(output).toContain('Ctrl+/ shortcuts');
-    expect(lines(output)).toHaveLength(4);
+  });
+
+  it('centres the title page and sets it a little above the middle', () => {
+    const view = render(
+      withTheme(
+        <WelcomeScreen
+          terminalWidth={100}
+          terminalHeight={32}
+          workspace="/tmp/book"
+          reducedMotion
+        />,
+      ),
+    );
+    const all = stripAnsi(view.lastFrame()).split('\n');
+    const first = all.findIndex((row) => row.trim() === LOGOTYPE[0].trim());
+
+    expect(first).toBe(titlePageTopPadding(32));
+    const left = all[first]!.indexOf(LOGOTYPE[0][0]!);
+    const right = 99 - (left + displayWidth(LOGOTYPE[0]));
+    expect(Math.abs(left - right)).toBeLessThanOrEqual(1);
+  });
+
+  it('keeps every logotype row the same width', () => {
+    expect(new Set(LOGOTYPE.map(displayWidth)).size).toBe(1);
   });
 
   it('keeps the compact welcome to three rows', () => {

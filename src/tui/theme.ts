@@ -65,7 +65,8 @@ export function loadCustomTheme(workspace: string, name: string): ThemeTokens | 
   try {
     const raw = readFileSync(themePath, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<ThemeTokens>;
-    return { ...DEFAULT_THEME, ...parsed };
+    // A custom theme overrides the default look, so it starts from Folio.
+    return { ...FOLIO_THEME, ...parsed };
   } catch {
     return null;
   }

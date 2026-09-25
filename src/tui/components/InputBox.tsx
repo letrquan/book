@@ -229,7 +229,9 @@ export function InputBox({
 
   const currentValue = valueRef.current;
   if (!focus) {
-    return <Text>{currentValue || placeholder}</Text>;
+    // A placeholder is a hint, focused or not: in full-strength text it read as
+    // something the user had typed.
+    return currentValue ? <Text>{currentValue}</Text> : <Text color="gray">{placeholder}</Text>;
   }
 
   if (!currentValue) {

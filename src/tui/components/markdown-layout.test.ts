@@ -9,6 +9,7 @@ import {
   markdownBlockGap,
   nestedContentWidth,
   sliceStyledLine,
+  tableRowText,
 } from './markdown-layout.js';
 
 describe('markdownBlockGap', () => {
@@ -60,7 +61,7 @@ describe('layoutTable', () => {
     align: ['left', 'right'] as Array<'left' | 'right'>,
   };
 
-  it('produces borders matching body width', () => {
+  it('produces rules matching body width', () => {
     const layout = layoutTable({ ...sample, terminalWidth: 40 });
     expect(layout.mode).toBe('grid');
     if (layout.mode !== 'grid') return;
@@ -69,7 +70,7 @@ describe('layoutTable', () => {
     expect(displayWidth(layout.bottom)).toBe(layout.totalWidth);
     // Body row reconstructed width matches borders.
     for (const row of [layout.headerCells, ...layout.bodyRows]) {
-      const body = `│ ${row.join(' │ ')} │`;
+      const body = tableRowText(row);
       expect(displayWidth(body)).toBe(layout.totalWidth);
     }
   });
@@ -132,7 +133,7 @@ describe('layoutTable', () => {
         expect(displayWidth(layout.top)).toBe(layout.totalWidth);
         expect(displayWidth(layout.bottom)).toBe(layout.totalWidth);
         for (const row of [...layout.headerRows, ...layout.bodyRows]) {
-          const body = `│ ${row.join(' │ ')} │`;
+          const body = tableRowText(row);
           expect(displayWidth(body)).toBe(layout.totalWidth);
         }
       } else {

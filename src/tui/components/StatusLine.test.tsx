@@ -406,9 +406,11 @@ describe('StatusLine colour budget', () => {
     expect(runFor('plan', frame)).toBe(sgrFor(APPLE_THEME.modePlan));
   });
 
-  it('marks a dirty tree in the warning colour', () => {
+  it('marks a dirty tree with an asterisk, not the warning colour', () => {
+    // A dirty tree is the normal state of a working copy, not an alarm; the
+    // warning hue beside a non-default mode read as two alerts at once.
     const frame = colouredFrame({ gitBranch: 'main', gitStatus: '+2 ~1' });
-    expect(runFor('main*', frame)).toBe(sgrFor(APPLE_THEME.warning));
+    expect(runFor('main*', frame)).toBe(sgrFor(APPLE_THEME.subtle));
   });
 });
 

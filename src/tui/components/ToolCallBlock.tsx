@@ -342,11 +342,7 @@ function ToolCallBlockInner({
         )}
         {/* Recessive, but never faint: SGR 2 on an already-muted grey left the
             verb nearly invisible on a dark background. */}
-        {row.label ? (
-          <Text color={theme.inactive}>
-            {row.label}{' '}
-          </Text>
-        ) : null}
+        {row.label ? <Text color={theme.inactive}>{row.label} </Text> : null}
         <TargetText
           target={row.target}
           failed={presentation.status === 'failure'}

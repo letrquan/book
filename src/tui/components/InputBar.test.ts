@@ -93,16 +93,18 @@ function mentionSkill(overrides: Partial<Skill> = {}): Skill {
 }
 
 describe('InputBar editor box', () => {
-  it('renders a complete box around the prompt', () => {
+  it('rules the prompt above and below, with the glyph in the gutter', () => {
     const width = 36;
     const view = render(inputBar(() => {}, { terminalWidth: width, compact: true }));
     const lines = stripAnsi(view.lastFrame()).split('\n');
 
     expect(lines).toHaveLength(3);
-    expect(lines[0]).toMatch(/^\s?╭─+╮\s?$/);
-    expect(lines[1]).toMatch(/^\s?│ › /);
-    expect(lines[1]).toMatch(/│\s?$/);
-    expect(lines[2]).toMatch(/^\s?╰─+╯\s?$/);
+    expect(lines[0]).toMatch(/^─+$/);
+    // `›` sits in the two-column gutter, so typed text starts on the content
+    // column like every transcript row above it.
+    expect(lines[1]).toMatch(/^› \S/);
+    expect(lines[2]).toMatch(/^─+$/);
+    expect(lines[0]).toBe(lines[2]);
     expectFrameWithinWidth(view.lastFrame(), width);
   });
 
@@ -118,14 +120,13 @@ describe('InputBar editor box', () => {
     view.rerender(inputBar(() => {}, { terminalWidth: 28, compact: true }));
 
     const lines = stripAnsi(view.lastFrame()).split('\n');
-    expect(lines[0]).toMatch(/^╭─+╮$/);
-    expect(lines[1]).toMatch(/^│ › /);
-    expect(lines[1]).toMatch(/│$/);
-    expect(lines[2]).toMatch(/^╰─+╯$/);
+    expect(lines[0]).toBe('─'.repeat(28));
+    expect(lines[1]).toMatch(/^› /);
+    expect(lines[2]).toBe('─'.repeat(28));
     expectFrameWithinWidth(view.lastFrame(), 28);
   });
 
-  it('keeps the command menu and editor as separate boxes after shrinking', async () => {
+  it('keeps the command menu and editor as separate ruled sections after shrinking', async () => {
     const commands = [
       {
         name: 'clear',
@@ -142,8 +143,9 @@ describe('InputBar editor box', () => {
     view.rerender(inputBar(() => {}, { terminalWidth: 28, commands, compact: true }));
 
     const lines = stripAnsi(view.lastFrame()).split('\n').filter(Boolean);
-    expect(lines.filter((line) => /^╭─+╮$/.test(line))).toHaveLength(2);
-    expect(lines.filter((line) => /^╰─+╯$/.test(line))).toHaveLength(2);
+    // The menu's hairline, then the composer's two.
+    expect(lines.filter((line) => /^─+$/.test(line))).toHaveLength(3);
+    expect(lines.some((line) => line.includes('/clear'))).toBe(true);
     expectFrameWithinWidth(view.lastFrame(), 28);
   });
 });
@@ -692,7 +694,9 @@ describe('InputBar skill mention menu', () => {
 
     view.stdin.write('\t');
     await tick(20);
-    expect(stripAnsi(view.lastFrame())).toContain('$wayfinder ');
+    // The trailing space is proven by the submission below: an open composer
+    // row has no right wall to pin it against.
+    expect(stripAnsi(view.lastFrame())).toMatch(/^› \$wayfinder/m);
 
     view.stdin.write('fix it');
     await tick(20);

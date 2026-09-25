@@ -2,8 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { APPLE_THEME, listCustomThemes, loadCustomTheme, resolveTheme } from '../theme.js';
-import { DEFAULT_THEME } from '../../types/theme.js';
+import {
+  APPLE_THEME,
+  FOLIO_THEME,
+  listCustomThemes,
+  loadCustomTheme,
+  resolveTheme,
+} from '../theme.js';
 
 let dir: string;
 
@@ -29,9 +34,9 @@ describe('loadCustomTheme', () => {
     expect(theme).not.toBeNull();
     expect(theme!.brand).toBe('#ff0000');
     expect(theme!.text).toBe('#ffffff');
-    // Unspecified keys retain defaults.
-    expect(theme!.error).toBe(DEFAULT_THEME.error);
-    expect(theme!.surface).toBe(DEFAULT_THEME.surface);
+    // Unspecified keys come from the default look, Folio.
+    expect(theme!.error).toBe(FOLIO_THEME.error);
+    expect(theme!.surface).toBe(FOLIO_THEME.surface);
   });
 
   it('returns null on malformed JSON', () => {
@@ -49,6 +54,8 @@ describe('loadCustomTheme', () => {
 
 describe('theme resolution', () => {
   it('resolves apple and reports other or unknown themes as null', () => {
+    expect(resolveTheme(dir, 'folio')?.tokens).toBe(FOLIO_THEME);
+    expect(resolveTheme(dir, 'Folio')?.tokens).toBe(FOLIO_THEME);
     expect(resolveTheme(dir, 'apple')?.tokens).toBe(APPLE_THEME);
     expect(resolveTheme(dir, 'apple-dark')?.tokens).toBe(APPLE_THEME);
     expect(resolveTheme(dir, 'dark')).toBeNull();
@@ -121,6 +128,48 @@ describe('apple default theme', () => {
     for (const role of ['border', 'toolRail', 'inactive', 'subtle', 'suggestion'] as const) {
       const [r, g, b] = [1, 3, 5].map((i) => parseInt(APPLE_THEME[role].slice(i, i + 2), 16));
       expect(Math.max(r, g, b) - Math.min(r, g, b), `${role} is not neutral`).toBeLessThan(8);
+    }
+  });
+});
+
+describe('folio default theme', () => {
+  const hex = (value: string) => [1, 3, 5].map((i) => parseInt(value.slice(i, i + 2), 16));
+  const chroma = (value: string) => {
+    const [r, g, b] = hex(value);
+    return Math.max(r!, g!, b!) - Math.min(r!, g!, b!);
+  };
+
+  it('spends one accent on every place you act or look first', () => {
+    expect(FOLIO_THEME.userAccent).toBe(FOLIO_THEME.brand);
+    expect(FOLIO_THEME.assistantAccent).toBe(FOLIO_THEME.brand);
+    expect(FOLIO_THEME.mdListMarker).toBe(FOLIO_THEME.brand);
+    expect(FOLIO_THEME.shimmerPair[0]).toBe(FOLIO_THEME.brand);
+  });
+
+  it('draws the composer border as a hairline, not in the accent', () => {
+    expect(FOLIO_THEME.promptBorder).not.toBe(FOLIO_THEME.userAccent);
+    // Warm greys carry a little chroma; the accent carries a lot.
+    for (const role of ['promptBorder', 'border', 'toolRail', 'inactive', 'subtle'] as const) {
+      expect(chroma(FOLIO_THEME[role]), `${role} is not a grey`).toBeLessThan(24);
+    }
+    expect(chroma(FOLIO_THEME.brand)).toBeGreaterThan(80);
+  });
+
+  it('keeps every status hue distinct from the others and from the accent', () => {
+    const roles = ['brand', 'success', 'error', 'warning', 'planMode', 'mdLink'] as const;
+    expect(new Set(roles.map((role) => FOLIO_THEME[role])).size).toBe(roles.length);
+  });
+
+  it('ranks heading depth by three distinct steps', () => {
+    const ramp = [FOLIO_THEME.mdHeadingH1, FOLIO_THEME.mdHeadingH2, FOLIO_THEME.mdHeading];
+    expect(new Set(ramp).size).toBe(3);
+    for (const step of ramp) expect(step).not.toBe(FOLIO_THEME.text);
+  });
+
+  it('writes every colour token as #rrggbb', () => {
+    for (const [role, value] of Object.entries(FOLIO_THEME)) {
+      const values = Array.isArray(value) ? value : [value];
+      for (const color of values) expect(color, role).toMatch(/^#[0-9A-F]{6}$/i);
     }
   });
 });

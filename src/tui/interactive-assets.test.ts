@@ -4,7 +4,7 @@ import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from '../settings.js';
 import { loadInteractiveAssets } from './interactive-assets.js';
-import { APPLE_THEME } from './theme.js';
+import { APPLE_THEME, FOLIO_THEME } from './theme.js';
 
 let workspace: string | undefined;
 
@@ -21,11 +21,11 @@ function assetsFor(theme?: string) {
 }
 
 describe('loadInteractiveAssets initial theme', () => {
-  it('opens a fresh install on the apple palette', () => {
+  it('opens a fresh install on the folio palette', () => {
     const { initialTheme } = assetsFor();
 
-    expect(initialTheme?.resolvedName).toBe('apple');
-    expect(initialTheme?.tokens).toBe(APPLE_THEME);
+    expect(initialTheme?.resolvedName).toBe('folio');
+    expect(initialTheme?.tokens).toBe(FOLIO_THEME);
   });
 
   it('honours an explicit theme setting for apple', () => {

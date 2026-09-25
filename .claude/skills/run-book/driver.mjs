@@ -218,20 +218,20 @@ function cellColor(cell, fg) {
 }
 const escapeHtml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-function blockElementBackground(ch, fg, bg) {
-  // Start the line on the cell's midpoint rather than straddling it: a 1px line
-  // centred on a half pixel can round away to nothing.
-  const line = (dir, px) =>
-    `linear-gradient(${dir},${bg} 50%,${fg} 50%,${fg} calc(50% + ${px}px),${bg} calc(50% + ${px}px))`;
+function blockElementStyle(ch, fg, bg) {
+  // A rule is a solid strip sized in pixels, not a gradient with 1px stops:
+  // at a fractional device scale those stops round away and the rule vanishes.
+  const strip = (w, h, x, y) =>
+    `background:${bg} linear-gradient(${fg},${fg}) no-repeat ${x} ${y}/${w} ${h}`;
   switch (ch) {
-    case '█': return fg;
-    case '▀': return `linear-gradient(${fg} 50%,${bg} 50%)`;
-    case '▄': return `linear-gradient(${bg} 50%,${fg} 50%)`;
-    case '▌': return `linear-gradient(to right,${fg} 50%,${bg} 50%)`;
-    case '▐': return `linear-gradient(to right,${bg} 50%,${fg} 50%)`;
-    case '│': return line('to right', 1);
-    case '─': return line('to bottom', 1);
-    case '━': return line('to bottom', 2);
+    case '█': return `background:${fg}`;
+    case '▀': return `background:linear-gradient(${fg} 50%,${bg} 50%)`;
+    case '▄': return `background:linear-gradient(${bg} 50%,${fg} 50%)`;
+    case '▌': return `background:linear-gradient(to right,${fg} 50%,${bg} 50%)`;
+    case '▐': return `background:linear-gradient(to right,${bg} 50%,${fg} 50%)`;
+    case '│': return strip('1px', '100%', '50%', '0');
+    case '─': return strip('100%', '1px', '0', '50%');
+    case '━': return strip('100%', '2px', '0', '50%');
     default: return null;
   }
 }
@@ -263,11 +263,11 @@ async function screenHtml() {
         if (cell.isItalic()) style.push('font-style:italic');
         if (cell.isUnderline()) style.push('text-decoration:underline');
         const chars = cell.getChars() || ' ';
-        const block = blockElementBackground(chars, fg, bg ?? 'transparent');
+        const block = blockElementStyle(chars, fg, bg ?? 'transparent');
         if (block) {
           // Terminals draw block elements and rules edge to edge; a font glyph
           // leaves seams between rows that are not there on a real screen.
-          html += `<span class="b" style="background:${block}"></span>`;
+          html += `<span class="b" style="${block}"></span>`;
           continue;
         }
         const wide = cell.getWidth() === 2 ? ' class="w"' : '';
