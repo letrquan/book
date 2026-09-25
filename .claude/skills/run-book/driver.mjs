@@ -328,7 +328,8 @@ async function cleanup() {
 }
 
 // A signal skips cleanup(), and the mock would outlive the driver holding its port. Kill
-// that one child — the only mock this driver may kill; others belong to other runs.
+// that one child — the only mock this driver may kill; others belong to other runs. (On
+// Windows only a console Ctrl-C arrives as SIGINT; a kill there is TerminateProcess.)
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => {
     releasePty();

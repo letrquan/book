@@ -140,8 +140,9 @@ flow â€” prompt, tool call, permission dialog, approval, file written on disk â€
 any failure. Run it after changing anything on that path. It listens on `BOOK_SMOKE_PORT` (8919)
 and keeps its workspace and scenario in per-port paths, so two runs on different ports share
 nothing. It kills no process itself: the driver kills the one mock it started whenever it exits,
-Ctrl-C and SIGTERM included, and a port another process holds fails the run with `EADDRINUSE`. Only a
-hard kill of the driver orphans its mock; stop that one by its PID. Never clear a port with
+a console Ctrl-C included (and SIGTERM or SIGHUP on POSIX), and a port another process holds fails
+the run with `EADDRINUSE`. A hard kill of the driver (on Windows, `kill` and `process.kill` are
+one) skips its handlers and orphans the mock; stop that one by its PID. Never clear a port with
 `pkill -f mock-provider` or a `taskkill` by image name: on a shared machine the other mocks belong to
 other runs.
 
