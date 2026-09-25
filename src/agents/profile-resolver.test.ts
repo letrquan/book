@@ -47,4 +47,19 @@ describe('resolveAgentProfile', () => {
     config.settings.agents.profiles.explorer = {};
     expect(resolveAgentProfile({ ...explorer, effort: 'unsupported' }, config).effort).toBe('high');
   });
+
+  it('says whether a level was chosen for the agent rather than defaulted (#245)', () => {
+    const config = defaultConfig({ effort: 'high', effortExplicit: false });
+    const explorer = BUILTIN_AGENTS[0];
+    expect(resolveAgentProfile(explorer, config).effortExplicit).toBe(false);
+    expect(resolveAgentProfile({ ...explorer, effort: 'low' }, config).effortExplicit).toBe(true);
+
+    config.settings.agents.profiles.explorer = { effort: 'medium' };
+    expect(resolveAgentProfile(explorer, config).effortExplicit).toBe(true);
+
+    config.settings.agents.profiles.explorer = {};
+    expect(resolveAgentProfile(explorer, { ...config, effortExplicit: true }).effortExplicit).toBe(
+      true,
+    );
+  });
 });

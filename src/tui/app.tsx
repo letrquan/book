@@ -1006,9 +1006,23 @@ export function App({
     sendBackgroundShellCompletion,
     shellCompletionRetryTick,
   ]);
+  // Tab (`cycleAgentFocus`) reaches only agents with a Background-panel row.
+  const openableAgentIds = useMemo(
+    () =>
+      new Set(
+        managedAgentUiEnabled ? managedAgents.summaries.map((summary) => summary.agentId) : [],
+      ),
+    [managedAgentUiEnabled, managedAgents.summaries],
+  );
   const managedAgentTraces = useMemo(
-    () => projectManagedAgentTraces(messages, managedAgents.records, managedAgents.activities),
-    [managedAgents.activities, managedAgents.records, messages],
+    () =>
+      projectManagedAgentTraces(
+        messages,
+        managedAgents.records,
+        managedAgents.activities,
+        openableAgentIds,
+      ),
+    [managedAgents.activities, managedAgents.records, messages, openableAgentIds],
   );
   const returnToMain = useCallback(() => {
     setDetailTaskPickerOpen(false);

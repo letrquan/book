@@ -113,6 +113,8 @@ export interface AgentRecord {
   parentToolCallId?: string;
   /** See {@link AgentSpawnRequest.notifyParentOnCompletion}. Defaults to true. */
   notifyParentOnCompletion?: boolean;
+  /** See {@link AgentSpawnRequest.resumeAfterRestart}. Defaults to true. */
+  resumeAfterRestart?: boolean;
   runId?: string;
   planId?: string;
   status: AgentStatus;
@@ -310,6 +312,15 @@ export interface AgentSpawnRequest {
    * agent surface while it runs.
    */
   notifyParentOnCompletion?: boolean;
+  /**
+   * Whether `agents.resumeInterrupted` may re-run this agent after the process
+   * died mid-run. Defaults to true.
+   *
+   * Set false by a host whose receiver dies with the process: `/review` renders
+   * its agents' output into its own report, so a re-run on the next start would
+   * bill a result nobody receives.
+   */
+  resumeAfterRestart?: boolean;
 }
 
 export interface AgentPermissionRequest {

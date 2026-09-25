@@ -7,6 +7,7 @@ import { SessionRuntime } from '../session/runtime.js';
 import { defaultConfig } from '../test/fixtures.js';
 import type { ToolContext } from '../types/tools.js';
 import { taskTool } from './task-tool.js';
+import { createRegistry } from './registry-core.js';
 
 describe('Task tool', () => {
   let root: string;
@@ -342,6 +343,77 @@ describe('Task child continued with AgentSend', () => {
       expect(completions).toHaveLength(1);
     } finally {
       manager.dispose();
+      runtime.dispose();
+    }
+  });
+});
+
+describe('Task ceiling against the registry backstop', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('hands back its partial result when a slow spawn ate into the ceiling (#245)', async () => {
+    vi.useFakeTimers();
+    const running = {
+      id: 'child-1',
+      name: 'explorer',
+      displayName: 'Survey',
+      status: 'running',
+      transcript: [],
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const stopped = {
+      ...running,
+      status: 'stopped',
+      transcript: [
+        {
+          id: 'a1',
+          role: 'assistant',
+          content: 'partial findings',
+          includeInContext: true,
+          timestamp: 0,
+        },
+      ],
+    };
+    const manager = {
+      updateConfig: () => undefined,
+      setPermissionMode: () => undefined,
+      setEventSink: () => undefined,
+      dispose: () => undefined,
+      // Longer than SELF_TIMEOUT_GRACE_MS, as a worktree snapshot can be.
+      spawn: () => new Promise((resolve) => setTimeout(() => resolve(running), 15_000)),
+      wait: (_id: string, timeoutMs: number) =>
+        new Promise((resolve) => setTimeout(() => resolve(running), timeoutMs)),
+      stop: async () => stopped,
+    };
+    const runtime = new SessionRuntime();
+    runtime.agentManager = manager as unknown as AgentManager;
+    const registry = createRegistry();
+    registry.registerAll(taskTool);
+    const context: ToolContext = {
+      workspaceRoot: '.',
+      env: { BOOK_TOOL_TIMEOUT_MS: '60000' },
+      agentConfig: defaultConfig(),
+      availableTools: [],
+      currentMode: 'bypassPermissions',
+      runtime,
+    };
+
+    try {
+      // The registry's backstop fires at 70 s from here. Task's own ceiling must come
+      // first, at 60 s from here, not 60 s after the 15 s spawn.
+      const pending = registry.execute(
+        { id: 'task-1', name: 'Task', arguments: { agent: 'explorer', prompt: 'survey' } },
+        context,
+      );
+      await vi.advanceTimersByTimeAsync(80_000);
+      const result = await pending;
+
+      expect(result.structuredError?.code).toBe('subagent_timeout');
+      expect(result.content).toContain('partial findings');
+    } finally {
       runtime.dispose();
     }
   });

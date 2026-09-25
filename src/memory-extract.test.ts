@@ -17,6 +17,7 @@ import {
 import { defaultConfig } from './test/fixtures.js';
 import type { Provider } from './provider/index.js';
 import type { Message } from './types/messages.js';
+import type { AgentConfig } from './types/runtime.js';
 import type { SessionMeta } from './types/sessions.js';
 
 const HOUR = 3_600_000;
@@ -409,5 +410,32 @@ describe('runMemoryExtraction', () => {
     });
     expect(disabled.reason).toBe('disabled');
     expect(sessions.loads).toEqual([]);
+  });
+
+  it("keeps the session's effort and retry policy, which only the reducer caps (#245)", async () => {
+    const seen: AgentConfig[] = [];
+    const base = config();
+    const result = await runMemoryExtraction({
+      config: {
+        ...base,
+        effort: 'max',
+        effortExplicit: true,
+        retry: { ...base.retry, maxAttempts: 10, watchdog: true },
+      },
+      sessions: source({ s1: { meta: meta('s1'), transcript: talk } }),
+      bookRoot,
+      nowMs: NOW,
+      provider: {
+        id: 'scripted',
+        stream: async function* (streamConfig) {
+          seen.push(streamConfig);
+          yield { type: 'text', content: SAVE };
+          yield { type: 'done' };
+        },
+      },
+    });
+    expect(result.processed).toEqual([{ id: 's1', written: 1 }]);
+    expect(seen[0]).toMatchObject({ effort: 'max', effortExplicit: true });
+    expect(seen[0]?.retry).toMatchObject({ maxAttempts: 10, watchdog: true });
   });
 });

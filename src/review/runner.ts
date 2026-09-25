@@ -54,6 +54,9 @@ export function reviewRunnerFor(
         parentRunId: attribution.parentRunId,
         parentSessionId: attribution.parentSessionId,
         notifyParentOnCompletion: false,
+        // The report dies with the process, so a restart must not re-run a reviewer
+        // whose result nobody would receive.
+        resumeAfterRestart: false,
       });
       return {
         id: record.id,

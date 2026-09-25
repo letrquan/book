@@ -10,7 +10,11 @@ import {
 import type { ToolCall, ToolDefinition, ToolResult, UserQuestionResponse } from '../types/tools.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { runCompact, usagePressureTokens } from '../agent/compact.js';
-import { applyModelDefaults, resolveModelProviderConfig } from '../config.js';
+import {
+  applyModelDefaults,
+  resolveEffortExplicit,
+  resolveModelProviderConfig,
+} from '../config.js';
 import { runHooks } from '../hooks.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { createRegistry } from '../tools/registry-core.js';
@@ -429,12 +433,21 @@ export class AgentManager {
           if (record.stopReason !== 'process_exit') continue;
           if (!['queued', 'starting', 'running'].includes(record.resumedFromStatus ?? '')) continue;
           record.resumable = false;
+          // A host whose receiver died with the process (`/review` renders its agents'
+          // output into its own report) gets no re-run: it would bill a result nobody
+          // receives. The agent stays interrupted and says why.
+          if (record.resumeAfterRestart === false) {
+            record.error =
+              'Not resumed after the restart: the host that spawned it handles its result and exited with the process.';
+            this.persist(record);
+            continue;
+          }
           record.status = 'queued';
           record.stopReason = undefined;
           record.finishedAt = undefined;
           // A Task child's first run is handed back by Task itself, which died with the process;
-          // nothing waits on this re-run, so it reports to the parent. Other hosts that suppress
-          // delivery (`/review` renders its own report) still own their agents' output.
+          // nothing waits on this re-run, so it reports to the parent. Any other host that
+          // suppresses delivery still owns its agents' output.
           if (record.parentToolCallId) record.notifyParentOnCompletion = undefined;
           this.persist(record);
           this.queue.push(record.id);
@@ -835,6 +848,7 @@ export class AgentManager {
       parentRunId: request.parentRunId ?? plan.parentRunId,
       parentToolCallId: request.parentToolCallId,
       notifyParentOnCompletion: request.notifyParentOnCompletion,
+      resumeAfterRestart: request.resumeAfterRestart,
       runId,
       planId: plan.id,
       status: 'queued',
@@ -1462,6 +1476,18 @@ export class AgentManager {
           resolveModelProviderConfig(agentConfig, record.resolvedModel),
         );
       }
+      // The effort value is kept; whether the request sends it follows the reducer's
+      // rule: a level chosen for this child, by its profile or for the session, or one
+      // its model's catalog lists. The session's default `high` is neither, and a strict
+      // endpoint answers it on a model that does not reason with a 400 (#245).
+      agentConfig = {
+        ...agentConfig,
+        effortExplicit: resolveEffortExplicit(
+          agentConfig,
+          agentConfig.effort,
+          resolvedProfile.effortExplicit,
+        ),
+      };
       let loopError: string | undefined;
       let terminalOutcome: AgentTerminalOutcome | undefined;
       const startActivity = (

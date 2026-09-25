@@ -66,6 +66,11 @@ function delegationTiming(
 }
 
 async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  // The registry arms its backstop as this call starts, so the ceiling starts here
+  // too. Counted from the end of `spawn`, a spawn slower than SELF_TIMEOUT_GRACE_MS
+  // (a worktree snapshot) let the backstop fire first and replace the child's
+  // partial result with an empty `tool_timeout`.
+  const startedAt = Date.now();
   const agentName = args.agent as string;
   const prompt = args.prompt as string;
 
@@ -130,7 +135,8 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
     else ctx.signal?.addEventListener('abort', onParentAbort, { once: true });
     let completed: AgentRecord;
     try {
-      completed = await manager.wait(spawned.id, timeoutMs);
+      // At least 1 ms: `wait` reads 0 as "no timeout".
+      completed = await manager.wait(spawned.id, Math.max(1, startedAt + timeoutMs - Date.now()));
     } finally {
       ctx.signal?.removeEventListener('abort', onParentAbort);
     }

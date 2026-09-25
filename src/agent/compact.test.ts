@@ -2538,6 +2538,19 @@ describe('judgeCompaction', () => {
     expect(judgeConfig.effortExplicit).toBeFalsy();
   });
 
+  it("keeps the session's retry policy, which only the reducer caps (#245)", async () => {
+    const { applied: result, delta } = await applied();
+    judgeReply('{"sufficient": true}');
+    const base = makeConfig();
+    await judgeCompaction(
+      { ...base, retry: { ...base.retry, maxAttempts: 10, watchdog: true } },
+      result,
+      delta,
+    );
+    const [judgeConfig] = mockedStream.mock.calls.at(-1)!;
+    expect(judgeConfig.retry).toMatchObject({ maxAttempts: 10, watchdog: true });
+  });
+
   it('leaves the reasoning out of the steps it shows the judge, and refuses a prompt that would not fit', async () => {
     const { applied: result } = await applied();
     judgeReply('{"sufficient": true}');

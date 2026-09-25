@@ -1360,6 +1360,39 @@ describe('AgentManager lifecycle', () => {
     manager.dispose();
   });
 
+  it('sends no effort for a child when nothing chose one and its model has no catalog entry (#245)', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({
+      workspace: root,
+      model: 'uncatalogued-model',
+      effort: 'high',
+      defaultEffort: 'high',
+      effortExplicit: false,
+    });
+    config.settings.agents.persist = false;
+    const childConfigs: AgentConfig[] = [];
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (nextConfig, _registry, _prompt, history) => {
+        childConfigs.push(nextConfig);
+        return history;
+      },
+    });
+
+    const defaulted = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+    await manager.wait(defaulted.id, 1000);
+    // The value is kept, since the Anthropic path sends it, but nothing chose it, so
+    // the OpenAI-compatible request carries no `reasoning_effort`.
+    expect(childConfigs[0]).toMatchObject({ effort: 'high', effortExplicit: false });
+
+    manager.updateConfig({ ...config, effortExplicit: true });
+    const chosen = await manager.spawn({ agent: 'explorer', prompt: 'inspect again' });
+    await manager.wait(chosen.id, 1000);
+    expect(childConfigs[1]).toMatchObject({ effort: 'high', effortExplicit: true });
+    manager.dispose();
+  });
+
   it('refreshes and normalizes its permission mode when config or host mode changes', async () => {
     const root = tempRoot();
     const config = defaultConfig({ workspace: root });
@@ -1667,7 +1700,10 @@ describe('children re-driven after a restart', () => {
   }
 
   /** Spawns a child, kills the process while it runs, restarts, and collects completions. */
-  async function restartAndCollect(parentToolCallId: string | undefined) {
+  async function restartAndCollect(
+    parentToolCallId: string | undefined,
+    spawnWith?: (manager: AgentManager) => Promise<{ id: string }>,
+  ) {
     root = mkdtempSync(join(tmpdir(), 'resume-child-'));
     process.env.BOOK_HOME = join(root, 'book-home');
     const config = defaultConfig({ workspace: root });
@@ -1682,13 +1718,15 @@ describe('children re-driven after a restart', () => {
       storeRoot: root,
       findGitRoot: async () => undefined,
     });
-    const spawned = await first.spawn({
-      agent: 'explorer',
-      prompt: 'survey',
-      parentSessionId: 'parent-1',
-      notifyParentOnCompletion: false,
-      ...(parentToolCallId ? { parentToolCallId } : {}),
-    });
+    const spawned = spawnWith
+      ? await spawnWith(first)
+      : await first.spawn({
+          agent: 'explorer',
+          prompt: 'survey',
+          parentSessionId: 'parent-1',
+          notifyParentOnCompletion: false,
+          ...(parentToolCallId ? { parentToolCallId } : {}),
+        });
     await new Promise((resolve) => setTimeout(resolve, 200));
     // The process exits (Ctrl-C, quit) while the spawner is still waiting on the child.
     const internals = first as unknown as {
@@ -1699,10 +1737,8 @@ describe('children re-driven after a restart', () => {
     process.off('exit', internals.exitHandler);
     internals.store?.dispose?.();
 
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => answered('resumed answer')),
-    );
+    const resumedFetch = vi.fn(async () => answered('resumed answer'));
+    vi.stubGlobal('fetch', resumedFetch);
     const second = new AgentManager(config, [], {
       storeRoot: root,
       findGitRoot: async () => undefined,
@@ -1716,7 +1752,13 @@ describe('children re-driven after a restart', () => {
       await new Promise((resolve) => setTimeout(resolve, 300));
       await second.waitForIdle();
       await new Promise((resolve) => setTimeout(resolve, 100));
-      return { result: (await second.get(spawned.id))?.result, completions };
+      const record = await second.get(spawned.id);
+      return {
+        result: record?.result,
+        completions,
+        record,
+        requests: resumedFetch.mock.calls.length,
+      };
     } finally {
       second.dispose();
       try {
@@ -1733,9 +1775,19 @@ describe('children re-driven after a restart', () => {
     expect(completions).toHaveLength(1);
   });
 
-  it('keeps a /review-style child silent after a restart', async () => {
+  it('keeps a delivery-suppressed child silent after a restart', async () => {
     const { result, completions } = await restartAndCollect(undefined);
     expect(result).toBe('resumed answer');
+    expect(completions).toHaveLength(0);
+  });
+
+  it('does not re-run a /review agent, whose report died with the process (#245)', async () => {
+    const { record, completions, requests } = await restartAndCollect(undefined, (manager) =>
+      reviewRunnerFor(manager, { parentSessionId: 'parent-1' }).spawn('explorer', 'survey'),
+    );
+    expect(requests).toBe(0);
+    expect(record).toMatchObject({ status: 'interrupted', resumable: false });
+    expect(record?.error).toMatch(/not resumed/i);
     expect(completions).toHaveLength(0);
   });
 });

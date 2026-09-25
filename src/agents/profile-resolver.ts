@@ -7,6 +7,12 @@ export interface ResolvedAgentProfile {
   resolvedModel: string;
   provider?: string;
   effort?: AgentConfig['effort'];
+  /**
+   * A level was chosen for this agent -- by its profile override or definition,
+   * or for the session -- rather than defaulted. The session's default `high`
+   * is not a choice.
+   */
+  effortExplicit: boolean;
   maxTurns?: number;
   color?: string;
 }
@@ -45,13 +51,14 @@ export function resolveAgentProfile(
     config.modelSelection ??
     config.model;
   const slash = resolvedModel.indexOf('/');
+  const chosenEffort = usableAgentEffort(override?.effort) ?? usableAgentEffort(definition.effort);
   return {
     definition,
     requestedModel,
     resolvedModel,
     provider: slash > 0 ? resolvedModel.slice(0, slash) : config.provider,
-    effort:
-      usableAgentEffort(override?.effort) ?? usableAgentEffort(definition.effort) ?? config.effort,
+    effort: chosenEffort ?? config.effort,
+    effortExplicit: chosenEffort !== undefined || config.effortExplicit === true,
     maxTurns: override?.maxTurns ?? definition.maxTurns ?? config.maxTurns,
     color: override?.color ?? definition.color,
   };

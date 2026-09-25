@@ -22,7 +22,7 @@ import type {
 } from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
 import { createProvider, type Provider } from '../provider/index.js';
-import { resolveCompactModelConfig } from '../config.js';
+import { resolveCompactModelConfig, resolveReducerModelConfig } from '../config.js';
 import { isContextOverflowError } from '../provider/reliability.js';
 import { runHooks } from '../hooks.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
@@ -832,7 +832,7 @@ export async function runCompact(
     return { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' };
   }
 
-  const reducerConfig = resolveCompactModelConfig(config);
+  const reducerConfig = resolveReducerModelConfig(config);
   const reducerProvider = options.provider ?? createProvider(reducerConfig);
   const checkpointBudget = budgets.checkpointBudget;
   // An explicit `checkpointMaxTokens` is an evaluation knob and stays the literal

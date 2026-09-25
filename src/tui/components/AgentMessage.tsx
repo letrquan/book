@@ -757,6 +757,7 @@ function managedAgentTraceEqual(
     left.status !== right.status ||
     left.startedAt !== right.startedAt ||
     left.finishedAt !== right.finishedAt ||
+    left.openable !== right.openable ||
     left.toolUses.length !== right.toolUses.length
   ) {
     return false;
