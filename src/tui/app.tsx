@@ -1,4 +1,4 @@
-import { Box, Text, useInput, useStdout, useApp } from 'ink';
+import { Box, Text, useInput, useStdout, useApp, type Key } from 'ink';
 import {
   useState,
   useCallback,
@@ -448,7 +448,13 @@ export function App({
   const [selectingCompactModel, setSelectingCompactModel] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [showRewindPicker, setShowRewindPicker] = useState(false);
-  const [isResolvingCommand, setIsResolvingCommand] = useState(false);
+  const [isResolvingCommand, setIsResolvingCommandState] = useState(false);
+  // Written with the state for the key handler, which a key can reach before the next render.
+  const isResolvingCommandRef = useRef(false);
+  const setIsResolvingCommand = useCallback((next: boolean) => {
+    isResolvingCommandRef.current = next;
+    setIsResolvingCommandState(next);
+  }, []);
   /** Set for the lifetime of a `/review`; drives its status line and Esc. */
   const [reviewStatus, setReviewStatus] = useState<string | undefined>(undefined);
   const reviewAbortRef = useRef<AbortController | null>(null);
@@ -499,7 +505,13 @@ export function App({
     const armedAt = ctrlCExitArmedAtRef.current;
     return armedAt !== undefined && Date.now() - armedAt <= CTRL_C_EXIT_HINT_MS;
   }, []);
-  const [sendInFlight, setSendInFlight] = useState(false);
+  const [sendInFlight, setSendInFlightState] = useState(false);
+  // Written with the state for the key handler, as `isResolvingCommandRef` is.
+  const sendInFlightRef = useRef(false);
+  const setSendInFlight = useCallback((next: boolean) => {
+    sendInFlightRef.current = next;
+    setSendInFlightState(next);
+  }, []);
   // Work that starts inside the exit window ends it, so a later idle press arms again rather
   // than exiting at once: a turn, and equally a compaction, a rewind or a command resolution.
   useEffect(() => {
@@ -1239,7 +1251,19 @@ export function App({
   useDebugValueChange(uiLog, 'showConfigPicker', showConfigPicker, (v) => String(v));
   useDebugValueChange(uiLog, 'showAgentProfilePicker', showAgentProfilePicker, (v) => String(v));
 
-  useInput((input, key) => {
+  // Ink hands a key to the handler its hook subscribed at the last passive-effect flush, which
+  // can be a render behind the frame on screen, so a press could act on state the user no longer
+  // sees: Ctrl+C just after a command resolution ended still cancelled it instead of arming the
+  // exit window. The subscription forwards to the latest render's handler instead, and the state
+  // this app sets itself before a key in the same read can follow (a send in flight, a command
+  // resolving, a recalled queued edit) is read from refs written with it.
+  const handleInputRef = useRef<(input: string, key: Key) => void>(() => {});
+  const forwardInput = useCallback(
+    (input: string, key: Key) => handleInputRef.current(input, key),
+    [],
+  );
+  useInput(forwardInput);
+  handleInputRef.current = (input: string, key: Key) => {
     // Once an exit has started, Ctrl+C has nothing left to do: SessionEnd is running and the
     // app unmounts when it finishes.
     if (key.ctrl && input === 'c' && exitStartedRef.current) {
@@ -1342,7 +1366,7 @@ export function App({
       return;
     }
 
-    if (key.escape && editingQueuedInput) {
+    if (key.escape && editingQueuedInputRef.current) {
       uiLog.event('input:Escape', { action: 'cancel-queued-edit' });
       cancelQueuedEdit();
       return;
@@ -1352,7 +1376,7 @@ export function App({
     // A streaming turn outranks a background review: cancelling the thing the
     // user is watching is the established meaning of Esc.
     if (key.escape) {
-      if (isThinking || sendInFlight || isResolvingCommand) {
+      if (isThinking || sendInFlightRef.current || isResolvingCommandRef.current) {
         uiLog.event('input:Escape', { action: 'cancel-stream' });
         interrupt();
         return;
@@ -1374,7 +1398,7 @@ export function App({
     // Ctrl+C cancels active work, drops a recalled queued input, clears a non-empty
     // composer, or confirms idle exit.
     if (key.ctrl && input === 'c') {
-      if (isThinking || sendInFlight || isResolvingCommand) {
+      if (isThinking || sendInFlightRef.current || isResolvingCommandRef.current) {
         uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
         disarmCtrlCExit();
         interrupt();
@@ -1430,7 +1454,7 @@ export function App({
       redrawViewport?.();
       return;
     }
-  });
+  };
 
   // Log slash-command dispatches at a coarse level (command name + arg).
   // The detailed branching in handleSubmit stays unchanged; this only emits

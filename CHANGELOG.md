@@ -48,6 +48,11 @@ All notable changes to this project are documented in this file.
     saw an empty composer, armed the exit instead of clearing the draft, and the composer then
     wrote its stale empty value back over it. The draft now reaches the app as it changes, and
     the write-back after Alt shortcuts and Ctrl+E keeps the current text.
+  - **Keys act on what is on screen** (#250). Ink hands a key to the handler subscribed at the
+    last effect flush, which can be a render behind the frame, so Ctrl+C just after a command
+    resolution ended still cancelled it instead of arming the window. The app's key handler is
+    now the latest render's, and the state it sets itself (a send in flight, a command
+    resolving, a recalled queued edit) is read from refs written with it.
 
 - **undici 6 -> 8, with the DNS-rebinding guard re-proven rather than re-asserted.** The major had
   been pinned since dependabot #84 because `web-policy.test.ts` failed on it, and the failure looked
