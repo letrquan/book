@@ -135,10 +135,13 @@ export function DecisionRule({
   label,
   tone,
   width,
+  lineTone = tone,
 }: {
   label: string;
   tone: string;
   width: number;
+  /** The rule's own colour, when it should sit quieter than its label. */
+  lineTone?: string;
 }) {
   const theme = useTheme();
   const lead = '─ ';
@@ -147,12 +150,12 @@ export function DecisionRule({
   const fill = Math.max(0, width - displayWidth(lead + mark + text) - 1);
   return (
     <Box>
-      <Text color={tone}>{lead}</Text>
+      <Text color={lineTone}>{lead}</Text>
       <Text color={theme.brand}>{mark}</Text>
       <Text color={tone} bold>
         {text}
       </Text>
-      <Text color={tone}>{` ${'─'.repeat(fill)}`}</Text>
+      <Text color={lineTone}>{` ${'─'.repeat(fill)}`}</Text>
     </Box>
   );
 }

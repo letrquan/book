@@ -4,8 +4,9 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
 import type { UserQuestion, UserQuestionRequest, UserQuestionResponse } from '../../types/tools.js';
 import { useTheme } from '../theme.js';
-import { truncateDisplay } from './word-wrap.js';
-import { floatingFrameMetrics } from './chrome.js';
+import { displayWidth, padDisplay, truncateDisplay } from './word-wrap.js';
+import { DecisionRule, floatingFrameMetrics } from './chrome.js';
+import { PILCROW } from '../marks.js';
 
 interface AskUserQuestionWizardProps {
   request: UserQuestionRequest;
@@ -290,139 +291,134 @@ export function AskUserQuestionWizard({
   });
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
-  const source = truncateDisplay(
-    sourceLabel(request),
-    compact ? contentWidth - 9 : contentWidth - 18,
-  );
-  const progress = `${questionIndex + 1} of ${request.questions.length}`;
+  const fromAgent = request.source.kind !== 'root';
+  const progress =
+    request.questions.length > 1 ? ` · ${questionIndex + 1} of ${request.questions.length}` : '';
   const queueText = queueLength > 1 ? ` · ${queueLength - 1} waiting` : '';
+  // The rule names who is asking only when it is not Book itself.
+  const ruleLabel = `${fromAgent ? `${sourceLabel(request)} asks · ` : ''}${question.header}${progress}${queueText}`;
+  // Labels share one column, so every description starts on the same column.
+  const labelColumn = compact
+    ? 0
+    : Math.min(
+        Math.max(...question.options.map((option) => displayWidth(option.label)), 5),
+        Math.floor(contentWidth * 0.4),
+      );
+  const otherRow = question.options.length;
 
+  // A rule at the head instead of a box, the same as the permission prompt: the
+  // pilcrow says the next move is yours. Two columns of padding stand in for
+  // each wall, so the interior keeps the boxed geometry.
   return (
-    <Box
-      width={frame.width}
-      marginX={frame.marginX}
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={theme.border}
-      paddingX={1}
-    >
-      <Box justifyContent="space-between">
-        <Text bold color={theme.brand}>
-          ? {source}
-        </Text>
-        <Text color={theme.subtle}>
-          {progress}
-          {queueText}
-        </Text>
-      </Box>
-
-      <Box flexDirection="column" marginTop={1}>
-        <Text bold color={theme.brand}>
-          {question.header.toUpperCase()}
-        </Text>
-        <Text bold color={theme.text}>
+    <Box width={frame.width} marginX={frame.marginX} flexDirection="column">
+      <DecisionRule
+        label={truncateDisplay(ruleLabel, Math.max(8, frame.width - 8))}
+        tone={theme.text}
+        lineTone={theme.border}
+        width={frame.width}
+      />
+      <Box flexDirection="column" paddingX={2}>
+        <Text bold color={theme.text} wrap="wrap">
           {question.question}
         </Text>
-      </Box>
 
-      <Box flexDirection="column" marginTop={1}>
-        {question.options.map((option, index) => {
-          const active = index === cursor && !otherMode;
-          const checked = selectedSet.has(option.label);
-          const marker = question.multiSelect ? (checked ? '■' : '□') : checked ? '●' : '○';
-          const description = truncateDisplay(
-            option.description,
-            compact ? contentWidth - 5 : Math.max(16, contentWidth - option.label.length - 9),
-          );
-          return (
-            <Box
-              key={option.label}
-              paddingLeft={1}
-              flexDirection={compact ? 'column' : 'row'}
-              backgroundColor={active ? theme.surfaceActive : undefined}
-            >
-              <Text
-                bold={active || checked}
-                color={active ? theme.selectionText : checked ? theme.success : theme.text}
-              >
-                {active ? '›' : ' '} {marker} {index + 1}. {option.label}
-              </Text>
-              <Text color={active ? theme.selectionText : theme.subtle}>
-                {compact ? `     ${description}` : ` — ${description}`}
-              </Text>
-            </Box>
-          );
-        })}
-
-        <Box
-          paddingLeft={1}
-          backgroundColor={cursor === question.options.length ? theme.surfaceActive : undefined}
-        >
-          <Text
-            bold={cursor === question.options.length || Boolean(customAnswer)}
-            color={
-              cursor === question.options.length
-                ? theme.selectionText
-                : customAnswer
-                  ? theme.success
-                  : theme.text
-            }
-          >
-            {cursor === question.options.length ? '›' : ' '} {customAnswer ? '■' : '+'} Other
-            {customAnswer
-              ? `: ${truncateDisplay(customAnswer, Math.max(8, contentWidth - 14))}`
-              : '…'}
-          </Text>
-        </Box>
-      </Box>
-
-      {otherMode ? (
-        <Box
-          flexDirection="column"
-          marginTop={1}
-          borderStyle="round"
-          borderColor={theme.border}
-          paddingX={1}
-        >
-          <Text bold color={theme.brand}>
-            Your answer
-          </Text>
-          <Box>
-            <Text color={theme.brand}>› </Text>
-            <TextInput
-              value={otherValue}
-              onChange={(value) => setOtherValue(value.slice(0, 2000))}
-            />
-          </Box>
-          <Text color={theme.subtle} dimColor>
-            Enter use answer · Esc return to choices
-          </Text>
-        </Box>
-      ) : null}
-
-      {notice ? <Text color={theme.warning}>! {notice}</Text> : null}
-
-      {!otherMode ? (
         <Box flexDirection="column" marginTop={1}>
-          <Text color={theme.subtle} dimColor>
-            {screenReader
-              ? question.multiSelect
-                ? 'Use Up and Down to move. Space or number keys toggle choices. Enter confirms. O writes another answer. Escape cancels.'
-                : 'Use Up and Down to move. Number keys choose. Enter confirms. O writes another answer. Escape cancels.'
-              : compact
-                ? question.multiSelect
-                  ? '↑↓ move · Space toggle · Enter next'
-                  : '↑↓ move · Enter choose · O custom'
-                : question.multiSelect
-                  ? '↑↓ move · Space toggle · Enter continue · 1-4 quick toggle'
-                  : '↑↓ move · Enter choose · 1-4 quick choose · O custom'}
-          </Text>
-          <Text color={theme.subtle} dimColor>
-            {questionIndex > 0 ? '←/B back · ' : ''}D decline · Esc cancel
-            {!compact ? ' · Keep secrets private' : ''}
-          </Text>
+          {question.options.map((option, index) => {
+            const active = index === cursor && !otherMode;
+            const checked = selectedSet.has(option.label);
+            const marker = question.multiSelect ? (checked ? '■' : '□') : checked ? '●' : '○';
+            const label = compact
+              ? option.label
+              : padDisplay(truncateDisplay(option.label, labelColumn), labelColumn);
+            const description = truncateDisplay(
+              option.description,
+              compact ? contentWidth - 7 : Math.max(12, contentWidth - labelColumn - 11),
+            );
+            return (
+              <Box
+                key={option.label}
+                flexDirection={compact ? 'column' : 'row'}
+                backgroundColor={active ? theme.surfaceActive : undefined}
+              >
+                <Text>
+                  <Text color={active ? theme.brand : theme.text}>{active ? '›' : ' '} </Text>
+                  <Text color={checked ? theme.brand : theme.inactive}>{marker} </Text>
+                  <Text color={theme.brand}>{index + 1}. </Text>
+                  <Text bold={active || checked} color={active ? theme.selectionText : theme.text}>
+                    {label}
+                  </Text>
+                </Text>
+                <Text color={active ? theme.text : theme.subtle}>
+                  {compact ? `       ${description}` : `   ${description}`}
+                </Text>
+              </Box>
+            );
+          })}
+
+          <Box backgroundColor={cursor === otherRow ? theme.surfaceActive : undefined}>
+            <Text>
+              <Text color={cursor === otherRow ? theme.brand : theme.text}>
+                {cursor === otherRow ? '›' : ' '}{' '}
+              </Text>
+              <Text color={customAnswer ? theme.brand : theme.inactive}>
+                {customAnswer ? '■' : '+'}{' '}
+              </Text>
+              <Text
+                bold={cursor === otherRow || Boolean(customAnswer)}
+                color={cursor === otherRow ? theme.selectionText : theme.text}
+              >
+                Other
+                {customAnswer
+                  ? `: ${truncateDisplay(customAnswer, Math.max(8, contentWidth - 14))}`
+                  : '…'}
+              </Text>
+            </Text>
+          </Box>
         </Box>
-      ) : null}
+
+        {otherMode ? (
+          // Your own answer is written the way everything else you write is:
+          // after a pilcrow, under a hairline, like the composer.
+          <Box flexDirection="column" marginTop={1}>
+            <Text color={theme.border}>{'─'.repeat(Math.max(8, contentWidth))}</Text>
+            <Box>
+              <Text color={theme.brand}>{`${PILCROW} `}</Text>
+              <TextInput
+                value={otherValue}
+                placeholder="Write your own answer"
+                onChange={(value) => setOtherValue(value.slice(0, 2000))}
+              />
+            </Box>
+            <Text color={theme.subtle} dimColor>
+              Enter use answer · Esc return to choices
+            </Text>
+          </Box>
+        ) : null}
+
+        {notice ? <Text color={theme.warning}>! {notice}</Text> : null}
+
+        {!otherMode ? (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color={theme.subtle} dimColor>
+              {screenReader
+                ? question.multiSelect
+                  ? 'Use Up and Down to move. Space or number keys toggle choices. Enter confirms. O writes another answer. Escape cancels.'
+                  : 'Use Up and Down to move. Number keys choose. Enter confirms. O writes another answer. Escape cancels.'
+                : compact
+                  ? question.multiSelect
+                    ? '↑↓ move · Space toggle · Enter next'
+                    : '↑↓ move · Enter choose · O custom'
+                  : question.multiSelect
+                    ? '↑↓ move · Space toggle · Enter continue · 1-4 quick toggle'
+                    : '↑↓ move · Enter choose · 1-4 quick choose · O custom'}
+            </Text>
+            <Text color={theme.subtle} dimColor>
+              {questionIndex > 0 ? '←/B back · ' : ''}D decline · Esc cancel
+              {!compact ? ' · Keep secrets private' : ''}
+            </Text>
+          </Box>
+        ) : null}
+      </Box>
     </Box>
   );
 }

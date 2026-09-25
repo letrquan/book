@@ -15,6 +15,11 @@ All notable changes to this project are documented in this file.
   folds to its drop cap block.
 - **The permission prompt is headed by a rule instead of drawn as a box**: `─ ¶ Permission
   required ───`, in amber for writes and rose for shell commands.
+- **AskUserQuestion prompts get the same treatment.** A rule names the question, who is asking
+  (only when it is not Book itself), and the progress: `─ ¶ reviewer asks · Format · 1 of 2 ───`.
+  Option numbers and chosen marks are rubric, and descriptions line up in one column. Writing your
+  own answer happens after a pilcrow under a hairline, like the composer, instead of in a nested
+  box. The transcript row reads `Ask  Fallback, Scope   2 questions` instead of the bare tool name.
 - **The compact transcript folds the agent's reading into one row.** A run of read-only calls
   (`Read`, `Glob`, `Grep`, git read tools, `ToolSearch`, task lookups, `BashOutput`, session
   history) collapses into one grey summary row, such as `✓ Read config.ts, loader.ts   2 files · 3 searches`.

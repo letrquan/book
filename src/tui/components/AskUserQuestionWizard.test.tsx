@@ -52,6 +52,35 @@ async function waitForText(view: ReturnType<typeof render>, text: string) {
 afterEach(cleanup);
 
 describe('AskUserQuestionWizard', () => {
+  it('heads the question with a rule, not a box, and aligns the descriptions', () => {
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <AskUserQuestionWizard request={request} onResolve={vi.fn()} terminalWidth={80} />
+      </ThemeContext.Provider>,
+    );
+    const lines = stripAnsi(view.lastFrame()).split('\n');
+
+    // Who asks, which question, and how far along, in the rule itself.
+    expect(lines[0]).toMatch(/^─ ¶ reviewer asks · Format · 1 of 2 ─+$/);
+    expect(lines.join('\n')).not.toMatch(/[╭╮╰╯│]/);
+    const summary = lines.find((line) => line.includes('Summary'))!;
+    const detailed = lines.find((line) => line.includes('Detailed'))!;
+    expect(summary.indexOf('Brief response')).toBe(detailed.indexOf('Long response'));
+  });
+
+  it('names no asker in the rule when Book itself asks', () => {
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <AskUserQuestionWizard
+          request={{ ...request, source: { kind: 'root' } }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+        />
+      </ThemeContext.Provider>,
+    );
+    expect(stripAnsi(view.lastFrame()).split('\n')[0]).toMatch(/^─ ¶ Format · 1 of 2 ─+$/);
+  });
+
   it('walks through single and multi-select questions with a custom answer', async () => {
     const onResolve = vi.fn();
     const view = render(
@@ -60,13 +89,13 @@ describe('AskUserQuestionWizard', () => {
       </ThemeContext.Provider>,
     );
 
-    expect(stripAnsi(view.lastFrame())).toContain('? reviewer');
+    expect(stripAnsi(view.lastFrame())).toContain('reviewer asks');
     await press(view, '\r');
     await waitForText(view, 'Which sections?');
     await press(view, ' ');
     await waitForText(view, '■ 1. Intro');
     await press(view, 'o');
-    await waitForText(view, 'Your answer');
+    await waitForText(view, 'Enter use answer');
     await press(view, 'Custom appendix');
     await waitForText(view, 'Custom appendix');
     await press(view, '\r');
@@ -152,9 +181,9 @@ describe('AskUserQuestionWizard', () => {
       </ThemeContext.Provider>,
     );
     await press(view, 'o');
-    expect(stripAnsi(view.lastFrame())).toContain('Your answer');
+    expect(stripAnsi(view.lastFrame())).toContain('Enter use answer');
     await press(view, '\u001b');
-    expect(stripAnsi(view.lastFrame())).not.toContain('Your answer');
+    expect(stripAnsi(view.lastFrame())).not.toContain('Enter use answer');
     expect(stripAnsi(view.lastFrame())).toContain('+ Other…');
   });
 
@@ -332,7 +361,7 @@ describe('AskUserQuestionWizard', () => {
     );
 
     await press(view, 'o');
-    await waitForText(view, 'Your answer');
+    await waitForText(view, 'Enter use answer');
     await press(view, 'foo');
     // Left then a character re-orders Ink's input listeners so the text input
     // sees Enter before the wizard does. With two owners of Enter, the wizard
@@ -370,7 +399,7 @@ describe('AskUserQuestionWizard', () => {
     );
 
     await press(view, 'o');
-    await waitForText(view, 'Your answer');
+    await waitForText(view, 'Enter use answer');
     await press(view, 'foo');
     // Enter, Down, Enter in one chunk: use the custom answer, then choose
     // Q2-B. The still-mounted text input used to re-submit "foo" against
@@ -404,7 +433,7 @@ describe('AskUserQuestionWizard', () => {
     await press(view, ' ');
     await waitForText(view, '■ 1. Intro');
     await press(view, 'o');
-    await waitForText(view, 'Your answer');
+    await waitForText(view, 'Enter use answer');
     await press(view, 'intro');
     await press(view, '\r');
 

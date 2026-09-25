@@ -141,6 +141,7 @@ const LABELS: Record<string, string> = {
   TodoWrite: 'Update todos',
   Task: 'Task',
   InvokeSkill: 'Skill',
+  AskUserQuestion: 'Ask',
 };
 
 export function formatDuration(durationMs: number | undefined): string | undefined {
@@ -385,6 +386,22 @@ export function deriveToolPresentation(
   } else if (canonicalName === 'WebSearch') {
     target = stringArg(args, 'query') ?? target;
     previewType = result?.content ? 'markdown' : 'none';
+  } else if (canonicalName === 'AskUserQuestion') {
+    // `Ask  Fallback, Scope   2 questions`, not the tool's name and nothing else.
+    const questions = Array.isArray(args.questions) ? (args.questions as unknown[]) : [];
+    const headers = questions
+      .map((question) =>
+        question &&
+        typeof question === 'object' &&
+        typeof (question as { header?: unknown }).header === 'string'
+          ? (question as { header: string }).header.trim()
+          : '',
+      )
+      .filter(Boolean);
+    target = headers.join(', ') || undefined;
+    if (questions.length > 0) {
+      metadata = [`${questions.length} ${questions.length === 1 ? 'question' : 'questions'}`];
+    }
   } else if (canonicalName === 'Task') {
     target = stringArg(args, 'agent', 'subject', 'description', 'prompt') ?? target;
     if ((options.nestedActivityCount ?? 0) > 0) {
