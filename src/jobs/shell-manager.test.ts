@@ -204,10 +204,11 @@ describe('ShellJobManager persistent jobs', () => {
       directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
       const persistentRoot = join(directory, 'jobs');
       const script = join(directory, 'idle.cjs');
-      // Exits on its own after 30s, so a runner that dies cannot leak it past the test.
+      // Exits on its own once the test's own 60s budget is spent: a runner that dies cannot leak
+      // it past the test, and a slow run cannot see it exit before the stop.
       writeFileSync(
         script,
-        'setInterval(() => {}, 1000);\nsetTimeout(() => process.exit(0), 30_000);\n',
+        'setInterval(() => {}, 1000);\nsetTimeout(() => process.exit(0), 60_000);\n',
       );
       const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
       const manager = new ShellJobManager(
