@@ -308,16 +308,22 @@ describe('global scope (~/.book/settings.json)', () => {
   // The global helpers resolve their path via os.homedir(), which reads HOME on
   // POSIX and USERPROFILE on Windows. Point both at a temp dir so writes land in
   // an isolated fake home instead of the developer's real ~/.book.
+  // An explicit BOOK_HOME outranks the home directory, so it is cleared for the block: these
+  // tests exercise the homedir() fallback, and a suite run with BOOK_HOME set must not send
+  // their writes to that directory instead of the fake home.
   let home: string;
   let savedHome: string | undefined;
   let savedUserProfile: string | undefined;
+  let savedBookHome: string | undefined;
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'book-home-'));
     savedHome = process.env.HOME;
     savedUserProfile = process.env.USERPROFILE;
+    savedBookHome = process.env.BOOK_HOME;
     process.env.HOME = home;
     process.env.USERPROFILE = home;
+    delete process.env.BOOK_HOME;
   });
 
   afterEach(() => {
@@ -325,6 +331,8 @@ describe('global scope (~/.book/settings.json)', () => {
     else process.env.HOME = savedHome;
     if (savedUserProfile === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = savedUserProfile;
+    if (savedBookHome === undefined) delete process.env.BOOK_HOME;
+    else process.env.BOOK_HOME = savedBookHome;
     rmSync(home, { recursive: true, force: true });
   });
 
