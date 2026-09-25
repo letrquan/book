@@ -3,7 +3,7 @@ import type { RetryPhase } from '../types/runtime.js';
 import type { ToolCall } from '../types/tools.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
-import { parseMcpToolName } from './tool-presentation.js';
+import { cleanTarget, parseMcpToolName } from './tool-presentation.js';
 
 export type ActivityTone = 'normal' | 'waiting' | 'warning';
 
@@ -167,15 +167,6 @@ function stringArg(args: Record<string, unknown>, ...names: string[]): string | 
     if (typeof value === 'string' && value.trim()) return value;
   }
   return undefined;
-}
-
-function cleanTarget(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const clean = value
-    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return clean || undefined;
 }
 
 function withTarget(action: string, target: string | undefined): string {

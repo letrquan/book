@@ -350,9 +350,21 @@ export function createRegistry() {
         name: tool.name,
         arguments: normalizeToolArguments(tool, call.arguments),
       };
-      // Checked ahead of the discovery gate as well as the schema: an
-      // argument-scoped rule (`Bash(git *)`) cannot match text that never
-      // parsed, so the gate would report a malformed call as an inactive tool.
+      const discovery = context.toolDiscovery;
+      const inactive = (): PrepareToolCallResult => ({
+        status: 'rejected',
+        result: toolFailure(`Tool "${call.name}" is not active for this turn.`, {
+          toolCallId: call.id,
+          code: 'tool_not_active',
+          status: 'blocked',
+          remediation: 'Call ToolSearch to discover it or use an authorized active tool.',
+        }),
+      });
+      // A tool that is not active is refused as such, whatever its arguments.
+      if (discovery && !discovery.isActive(normalizedCall.name)) return inactive();
+      // Invalid JSON is named before the argument-scoped rules run: a rule such
+      // as `Bash(git *)` cannot match text that never parsed, so the gate would
+      // report a malformed call to an active tool as an inactive one.
       const jsonError = invalidJsonArgumentsDetail(normalizedCall.arguments);
       if (jsonError !== undefined) {
         return {
@@ -369,17 +381,7 @@ export function createRegistry() {
           ),
         };
       }
-      if (context.toolDiscovery && !context.toolDiscovery.canExecute(normalizedCall)) {
-        return {
-          status: 'rejected',
-          result: toolFailure(`Tool "${call.name}" is not active for this turn.`, {
-            toolCallId: call.id,
-            code: 'tool_not_active',
-            status: 'blocked',
-            remediation: 'Call ToolSearch to discover it or use an authorized active tool.',
-          }),
-        };
-      }
+      if (discovery && !discovery.canExecute(normalizedCall)) return inactive();
 
       const providerArguments = { ...normalizedCall.arguments };
       // Hide the host control from validation only while the tool keeps it

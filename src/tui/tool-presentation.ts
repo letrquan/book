@@ -158,6 +158,18 @@ export function parseMcpToolName(name: string): { server: string; tool: string }
   return { server: match[1], tool: match[2].replace(/_/g, ' ') };
 }
 
+/**
+ * Fold a display target onto one line. Every run of whitespace or control
+ * characters (tab, CR, LF, ESC, DEL, …) becomes one space and the ends are
+ * trimmed, in one linear pass: a raw argument can be long, and a pattern that
+ * backtracks over a run of spaces costs the square of its length. Undefined
+ * when nothing printable is left.
+ */
+export function cleanTarget(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  return value.replace(/[\s\u0000-\u001f\u007f]+/g, ' ').trim() || undefined;
+}
+
 function stringArg(args: Record<string, unknown>, ...names: string[]): string | undefined {
   for (const name of names) {
     const value = args[name];
@@ -311,6 +323,7 @@ export function deriveToolPresentation(
     if (duration) metadata.push(duration);
     const retryAttempt = result.metrics?.retryAttempt;
     if (retryAttempt && retryAttempt > 1) metadata.push(`attempt ${retryAttempt}`);
+    target = cleanTarget(target);
     const hasDetails = Boolean(structured.details);
     return {
       canonicalName,
@@ -401,6 +414,9 @@ export function deriveToolPresentation(
   if (result?.metrics?.retryAttempt && result.metrics.retryAttempt > 1)
     metadata.push(`attempt ${result.metrics.retryAttempt}`);
 
+  // A target is shown on one line, in the row and in the summary. A call whose
+  // arguments were not valid JSON shows its raw text here, newlines and all.
+  target = cleanTarget(target);
   const targetText = target ? `(${target})` : '';
   const metadataText = metadata.length > 0 ? ` · ${metadata.join(' ')}` : '';
   const summary = `${title}${targetText}${metadataText}`;
@@ -595,11 +611,7 @@ export function composeToolRow(
   // the prefix here as well clipped an inline-label row by exactly the width of
   // its own verb, and `gap` then padded those columns back with spaces.
   const targetBudget = Math.max(4, measure - labelWidth - metaWidth - (metaWidth > 0 ? 1 : 0));
-  // A row is one line. A target is normally one already (a path, a command's
-  // first line), but a call whose arguments were not valid JSON shows its raw
-  // text, and a newline in that text broke the row in two.
-  const targetText = (presentation.target ?? '').replace(/\s*[\r\n]+\s*/g, ' ');
-  const target = truncateDisplay(`${inlinePrefix}${targetText}`, targetBudget);
+  const target = truncateDisplay(`${inlinePrefix}${presentation.target ?? ''}`, targetBudget);
 
   const used = labelWidth + displayWidth(target) + metaWidth;
   const gap = ' '.repeat(Math.max(metaWidth > 0 ? 1 : 0, measure - used));

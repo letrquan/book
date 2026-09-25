@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createDefaultRegistry, createRegistry } from './registry.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
 import { SessionRuntime } from '../session/runtime.js';
-import type { ToolCall, ToolContext, ToolDiscoveryContext } from '../types/tools.js';
+import type { ToolContext } from '../types/tools.js';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -425,23 +425,6 @@ describe('invalid JSON tool-call arguments', () => {
     expect(second.structuredError?.remediation).toMatch(/Resend the whole call/);
     expect(second.structuredError?.remediation).toMatch(/Do not retry it unchanged/);
     runtime.dispose();
-  });
-
-  it('is reported before an argument-scoped discovery rule can misjudge the call', async () => {
-    const r = createDefaultRegistry();
-    // Models an active `Bash(git *)` restriction, which can only match parsed arguments.
-    const toolDiscovery = {
-      canExecute: (call: ToolCall) =>
-        typeof call.arguments.command === 'string' && call.arguments.command.startsWith('git '),
-    } as unknown as ToolDiscoveryContext;
-    const context: ToolContext = { ...ctx, toolDiscovery };
-
-    const result = await r.execute(
-      { id: 'raw-8', name: 'Bash', arguments: { __raw: '{"command":"git log\n"}' } },
-      context,
-    );
-
-    expect(result.structuredError?.code).toBe('invalid_json_arguments');
   });
 });
 

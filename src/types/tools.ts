@@ -409,6 +409,11 @@ export interface ToolDiscoveryContext {
   pushRestriction(rules: string[]): () => void;
   /** Preview the authorized definitions after an additional scoped intersection. */
   previewRestriction(rules: string[]): ToolDefinition[];
+  /**
+   * Whether a tool is visible for this turn by name alone, before any
+   * argument-scoped rule (`Bash(git *)`) is applied to a call's arguments.
+   */
+  isActive(name: string): boolean;
   /** Whether a tool is currently visible and executable for this turn. */
   canExecute(call: ToolCall): boolean;
   /** Definitions to send to the provider for the current request. */

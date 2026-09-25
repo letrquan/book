@@ -417,16 +417,31 @@ describe('composeToolRow inline-label budget', () => {
   });
 });
 
-describe('composeToolRow multi-line target', () => {
-  it('keeps a target that spans lines on one row', () => {
-    // A call whose arguments were not valid JSON shows its raw text as the
-    // target, and that text can hold literal newlines.
-    const row = composeToolRow(
-      { title: 'Bash', target: '{"command":"echo one\n  echo two"}', metadata: [] },
-      transcriptGrid(100),
-      { error: 'Invalid JSON' },
+describe('raw-argument targets', () => {
+  // A call whose arguments were not valid JSON shows its raw text as the target.
+  const tab = String.fromCharCode(9);
+  const controlCharacter = /[\u0000-\u001f\u007f]/;
+
+  it('folds control characters out of the target and the summary', () => {
+    const presentation = deriveToolPresentation(
+      'Bash',
+      { __raw: `{"command":"echo one\n${tab}echo two"}` },
+      result({ success: false, error: 'Invalid JSON arguments for Bash' }),
     );
-    expect(row.target).not.toMatch(/[\r\n]/);
-    expect(row.target).toContain('echo one echo two');
+
+    expect(presentation.target).toBe('{"command":"echo one echo two"}');
+    expect(presentation.summary).not.toMatch(controlCharacter);
+    expect(
+      composeToolRow(presentation, transcriptGrid(100), { error: 'Invalid JSON' }).target,
+    ).not.toMatch(controlCharacter);
+  });
+
+  it('folds a long run of spaces in one linear pass', () => {
+    const presentation = deriveToolPresentation('Bash', {
+      __raw: `{"command":"a${' '.repeat(30_000)}b"}`,
+    });
+
+    expect(presentation.target).toBe('{"command":"a b"}');
+    expect(presentation.summary).toContain('{"command":"a b"}');
   });
 });

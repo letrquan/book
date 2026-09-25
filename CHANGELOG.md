@@ -232,12 +232,15 @@ All notable changes to this project are documented in this file.
     49 …`). Its fix line says to resend the whole call with valid JSON and to escape backslashes
     and newlines inside strings. The status, the retry behaviour and the escalation of identical
     resends are the same as for `invalid_arguments`.
-  - **Order:** the check runs ahead of the tool-discovery gate as well as the schema, because an
-    argument-scoped rule such as `Bash(git *)` cannot match text that never parsed.
+  - **Order:** a tool that is not active is still refused as `tool_not_active`, whatever its
+    arguments. The JSON check comes after that, and before argument-scoped rules such as
+    `Bash(git *)`, which cannot match text that never parsed.
   - **History:** like a schema rejection, such a call never counts as run when a session's
     history is reloaded.
-  - **TUI:** the tool row shows the raw text as its target, and a newline in it no longer breaks
-    the row in two.
+  - **TUI:** the tool row shows the raw text as its target. Control characters in any target,
+    including tab, CR and LF, are now folded to single spaces in the row and in its summary, so a
+    newline no longer breaks a row in two. The fold is one linear pass, shared with the working
+    indicator.
 - **`Read` says its default is the whole file.** The description offered `offset`/`limit` "for
   large files" and models took the hint too far, reading a 430-line file in four 100-line calls
   and one 20-line span three times over (#224). It now says the default reads the file whole, and
