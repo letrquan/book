@@ -98,6 +98,67 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A whole-file `Read` of a large file now says where to continue (#248).** Every tool result
+  over 50 KB is clipped, and the clip's notice names a file under `BOOK_HOME/tool-output` that
+  `Read` cannot open. So a whole-file Read of `src/agents/manager.ts` (1894 lines, 75 KB) stopped
+  mid-line near line 1169 with no way on, and a Read cut at its 2000-line default said nothing at
+  all.
+  - **The stop:** `Read` now stops at a line boundary before the clip and ends with a notice, for
+    example `[Lines 1-1163 of 1894 shown, the most one Read returns (50 KB). Continue with offset:
+    1164.]`. A Read that its line limit stops gets the same notice.
+  - **Long lines:** a line that fits under the clip on its own is returned whole, as before. A line
+    too long for that is shown cut to fill the clip, and the notice gives its size in bytes and
+    points past it: `… Continue with offset: 2. Line 1 (60000 bytes) was cut to fit.]`.
+  - **Outlines:** an outline also stops under the clip, keeping its own note on where the rest start.
+  - **Descriptions:** the `Read` description and its `offset`/`limit` descriptions now say the
+    default is 2000 lines or 50 KB. These strings are part of the cached tool schema, so the prompt
+    changes, and the first request after upgrading misses the prompt cache once.
+  - **Pagination:** a Read that stops early also reports `pagination: { truncated: true,
+    nextCursor }`, with the offset to continue from, as the shared clip's truncation did.
+  - **TUI:** the Read row still counts the notice as one more line (`5 lines` for 4 shown). The
+    row's line count comes from the shared result presentation, which counts the notice; only the
+    fallback path for results without a presentation strips it.
+- **`Read { outline: true }` lists Java, Kotlin, C# and Dart methods, and fewer lines that are not
+  declarations (#247).**
+  - **Methods that were missing:** a method written return-type-first (`public int getN() {`) or
+    declared with Kotlin's `fun`. `Foo.java` outlined to its package, class and constructor only.
+  - **Shapes now listed:** those methods, C# Allman braces and block-scoped namespaces, Java and C#
+    interface methods without a body, `async *entries()` generator methods (a plain `*values()`
+    generator method is still not listed), `#private` methods, nested type arguments, and a
+    destructured parameter that wraps.
+  - **Lines that no longer leak in:** statements (`if (`, `else if (`, `foreach (`, `assert x;`,
+    `go func() {`; in Java and C#, also `foreach(`, `using(`, `lock(`, `synchronized(` with no
+    space, which elsewhere may be method names such as `using(plugin) {`); a call that closes into a callback (`useEffect(() => {`, `).then(() => {`);
+    object keys and import-list members named like keywords (`enum: [...]`, `describe,`);
+    template text at column 0 in `.ts`, `.mts`, `.cts`, `.mjs` and `.cjs` files; an Allman-style
+    `{` line; and `#` comments in Makefiles, Dockerfiles, PowerShell files and extension-less
+    scripts that start with `#!`. A file named like a tool but with a code extension
+    (`makefile.c`, `dockerfile.rs`) keeps its `#` lines.
+  - **JSX-capable files** (`.tsx`, `.jsx`, `.js`) are not scanned for template text. JSX text is
+    not JavaScript, and a `/*` or a lone backtick in it (`<p>All requests to /api/* are
+    proxied</p>`) would open a comment or template that never closes, hiding every later
+    declaration. In the scanned files, a scan that ends inside a comment or template has lost its
+    place, and masks nothing.
+  - **Markdown:** a file that opens with a `---` rule keeps the headings after it. Front matter now
+    needs YAML up to its closing `---`: a `key:` line first, then `key:` lines (quoted keys, keys
+    with spaces and `$schema:` included), indented or `- ` lines, and `#` comments. A `#` line
+    after a blank line is a heading, so such a block is not front matter.
+  - **Header:** it no longer counts the empty line after a trailing newline.
+  - **The contract:** the supported shapes are a table in `src/tools/file.test.ts`, which the
+    README's scope statement follows.
+  - **Measured on this repository:** outlining the 606 tracked files of `src/` and `scripts/` added
+    9 lines (methods whose object return type holds a `;`, and wrapped signatures) and dropped 645.
+    Of those, 365 were `expect(…)` chains, 81 React hook calls, 49 test hooks (`beforeEach(() => {`
+    and the like, which a test file's outline no longer lists), and 41 anonymous `async (…) =>`
+    callbacks. The rest were template text, keyword-named keys and members, and other calls.
+  - **Speed:** the template scanner looks back a bounded distance from each `/`, so a 1 MB
+    minified line outlines in about 50 ms.
+- **After a resume, a file read in the same parallel batch as its outline still counts as read
+  (#247).** Suppose the model sent `Read{X, outline: true}` and `Read{X}` together, and the outline
+  finished last. The batch records results in call order, and the resume rebuild went by
+  timestamps, so it kept the outline, and an `Edit` after the resume was refused as "only
+  outlined". A rebuilt ledger now lets a real observation replace an outline, and never the
+  reverse, whatever the timestamps. A checkpoint's file observations follow the same rule.
 - **A failed print run exits 1 on Windows, not 127.** Print mode ended a failed run with
   `exit(1)` straight after its last provider request, while libuv was still closing the pooled
   sockets. On Windows that aborted with

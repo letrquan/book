@@ -417,32 +417,68 @@ effect everywhere.
 
 ### Reading files
 
-`Read` returns a whole file by default (up to 2000 lines); `offset`/`limit` are for files longer
-than that. `Read { filePath, outline: true }` is the survey call: it returns only the lines that
-say what a file contains, each with its line number, so the model can decide what to read in full.
+`Read` returns a whole file by default, up to 2000 lines or 50 KB of output, whichever comes
+first; `offset`/`limit` are for files larger than that. A Read that stops before the end of the
+file ends with a notice naming where to continue, such as `[Lines 1-1163 of 1894 shown, the most
+one Read returns (50 KB). Continue with offset: 1164.]`, so the shared 50 KB clip on tool results,
+whose notice names a file `Read` cannot open, never cuts a Read. A line that fits under the clip on
+its own is returned whole; a longer one is shown cut to fill it, and the notice gives the line's size
+and points past it. `Read { filePath, outline: true }` is the survey call:
+it returns only the lines that say what a file contains, each with its line number, so the model
+can decide what to read in full.
 
 - **Markdown** (`.md`, `.markdown`, `.mdx`): the `#`…`######` and setext headings, and nothing
-  else. Front matter and fenced code blocks are skipped, so a `# comment` in a shell example is
-  not taken for a heading.
-- **Everything else**: every line at indentation zero except blank lines, comments, and lines of
-  closing punctuation alone (`}`, `});`, `]);`), plus lines indented by up to four spaces that
-  declare something: a `function`/`class`/`def`/`fn`-style keyword line, a method whose parameter
-  list closes into a body on the same line or a later one (`async send(` … `): Promise<void> {`),
-  or an arrow-function member (`handle = (event) => {`). A `#` line is a comment only in Python,
-  shell, YAML, TOML and Ruby files, so C preprocessor lines and Rust attributes stay in.
-- **What it covers:** these shapes fit TypeScript/JavaScript, Python, Go and Rust. A method
-  written return-type-first (Java, C#, C++, Dart), or a Kotlin `fun`, is not listed yet; read
-  such files in full.
+  else. Fenced code blocks are skipped, so a `# comment` in a shell example is not taken for a
+  heading. A leading `---` opens front matter, which is skipped, only when YAML runs up to a
+  closing `---`: a `key:` line first, then `key:` lines (any text up to a colon), indented or `- `
+  lines, and `#` comments. A `#` line after a blank line is a heading, so such a block is not
+  front matter. Otherwise it is a horizontal rule, and the headings after it count.
+- **Everything else**: every line at indentation zero except blank lines, comments, lines of
+  closing punctuation alone (`}`, `});`, `]);`) and an Allman-style `{` line, plus lines indented
+  by up to four spaces that declare something:
+  - a `function`/`class`/`def`/`fn`/`fun`-style keyword line, unless the keyword is an object key
+    or an import-list member (`enum: [...]`, `describe,`);
+  - a method named first whose parameter list closes into a body, on the same line or a later one
+    (`async *entries() {`, `#secret(): string {`, `async send(` … `): Promise<void> {`, or
+    `}: Args): Promise<void> {` after a destructured parameter);
+  - a method written return-type-first (`public int getN() {`, `Future<void> load() async {`),
+    with its `{` at the end of the line or alone on the next, or with an expression body
+    (`int Twice(int x) => x * 2;`); in Java and C#, also an interface or abstract method with no
+    body (`double area();`);
+  - an arrow-function member (`handle = (event) => {`).
+
+  Lines shaped like these that are not declarations stay out: control flow (`if (`, `else if (`,
+  `for (`, `foreach (`, `using (`, `lock (`, `switch (`, `catch (`; in Java and C# also with no
+  space, as in `foreach(` and `lock(`, which elsewhere may be method names), `assert x;`,
+  `return foo(`, `new Foo(`, `go func() {`, `defer func() {`, a call that closes into a callback
+  (`useEffect(() => {`, `).then(() => {`), and a chained call (`foo(x).then(`). In `.ts`, `.mts`,
+  `.cts`, `.mjs` and `.cjs` files, the text of a multi-line template literal is skipped at any
+  indentation. `.tsx`, `.jsx` and `.js` files are not scanned for it, because JSX text may hold a
+  `/*` or a lone backtick that would open a comment or template that never closes, and a scan
+  that still ends inside one masks nothing. A `#` line is a
+  comment in Python, shell, YAML, TOML, Ruby and PowerShell files, Makefiles, Dockerfiles (unless
+  the name ends in a code extension, as `makefile.c` does), and extension-less scripts that start
+  with `#!`; elsewhere C preprocessor lines and Rust attributes stay in.
+- **What it covers:** these shapes fit TypeScript/JavaScript, Python, Go, Rust, Java, Kotlin
+  (declarations with `fun`; a `name(args) {` line there is a call taking a trailing lambda), C#
+  (members at indentation 8 under a block-scoped `namespace X {`) and Dart. The supported shapes
+  are the `Read outline contract` table in `src/tools/file.test.ts`. Not covered: C++ in-class
+  members (`const std::string& name() const {`), Java inner-class members (indentation 8), a Dart
+  constructor with no body, a plain `*values()` generator method (only `async *` is listed), a
+  signature whose closing `)` shares a line with its last parameter, and PowerShell `<# … #>`
+  block comments.
 
 What an outline saves depends on the file: `src/agent/loop.ts` goes from 2876 lines to 51, and
 this README goes to its 33 headings. A test file keeps its `describe`/`it` lines, and a JSON file
-outlines to its opening brace. The outline is capped at 2000 entries, with a note naming
+outlines to its opening brace. The outline is capped at 2000 entries or 50 KB, with a note naming
 the line where the rest start. It takes no `offset` or `limit`, and passing either is an error.
 
 An outline is not a read. It is recorded as its own `outline` observation, which satisfies
 neither the observed-file check nor the freshness check. `Edit`, `MultiEdit` and a `Write` over an
 existing file still need a `Read` first. An outline never replaces an earlier `Read` of the file
-or its hash, and that still holds after a resume. `ApplyPatch` checks its hunks against the file
+or its hash, and that still holds after a resume: a rebuilt ledger lets a real observation replace
+an outline and never the reverse, whatever their timestamps, so a `Read` that finished before an
+outline in the same parallel batch still counts. `ApplyPatch` checks its hunks against the file
 itself, so after only an outline it proceeds as it would for any file not yet read. If the file
 changed after an earlier `Read`, the patch is refused as stale even if the file was outlined since.
 

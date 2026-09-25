@@ -32,7 +32,7 @@ import {
   toolResultModelContent,
   toolResultSucceeded,
 } from '../tools/result.js';
-import { mayReplaceObservation } from '../tools/file-provenance.js';
+import { supersedesObservation } from '../tools/file-provenance.js';
 import {
   CARRIED_LEDGER_NOTICE_MAX_TOKENS,
   buildCarriedLedger,
@@ -2105,13 +2105,7 @@ function hydrateCheckpointFileObservations(
   for (const message of history) {
     for (const observation of message.fileObservations ?? []) {
       const key = normalizeObservedPath(observation.path);
-      const current = newest.get(key);
-      if (
-        mayReplaceObservation(current, observation) &&
-        (!current || current.timestamp <= observation.timestamp)
-      ) {
-        newest.set(key, observation);
-      }
+      if (supersedesObservation(newest.get(key), observation)) newest.set(key, observation);
     }
   }
   for (const file of checkpoint.files) {

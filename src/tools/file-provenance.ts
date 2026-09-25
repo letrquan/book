@@ -44,9 +44,26 @@ export function mayReplaceObservation(
 }
 
 /**
- * Rebuild a resumed session's ledger from its transcript: the newest
- * observation of each file wins, under the same rule a live observation
- * follows, so an outline is still only an outline after a resume.
+ * Whether `next` takes `current`'s place when a ledger is rebuilt from recorded
+ * observations (a resumed transcript, a checkpoint). A real observation always
+ * replaces an outline, and an outline never replaces one, whatever the
+ * timestamps: a parallel batch records its results in call order, so an
+ * outline that finished after a Read of the same file can come first with the
+ * later time. Between two of the same kind, the newer wins.
+ */
+export function supersedesObservation(
+  current: FileObservation | undefined,
+  next: FileObservation,
+): boolean {
+  if (!current) return true;
+  if (isOutline(current) !== isOutline(next)) return isOutline(current);
+  return current.timestamp <= next.timestamp;
+}
+
+/**
+ * Rebuild a resumed session's ledger from its transcript under
+ * `supersedesObservation`, so it ends where the live ledger did: an outline is
+ * still only an outline after a resume, and a Read is still a Read.
  */
 export function seedObservationLedger(
   ledger: Map<string, FileObservation>,
@@ -55,13 +72,7 @@ export function seedObservationLedger(
   for (const message of messages) {
     for (const observation of message.fileObservations ?? []) {
       const key = observationKey(observation.workspaceId, observation.path);
-      const current = ledger.get(key);
-      if (
-        mayReplaceObservation(current, observation) &&
-        (!current || current.timestamp <= observation.timestamp)
-      ) {
-        ledger.set(key, observation);
-      }
+      if (supersedesObservation(ledger.get(key), observation)) ledger.set(key, observation);
     }
   }
   return ledger;

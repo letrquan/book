@@ -149,7 +149,7 @@ export function toolResultModelContent(result: ToolResult): string {
   return clippedOutputPreview(raw, result.artifacts?.outputPath, TOOL_RESULT_MAX_BYTES);
 }
 
-function utf8Prefix(text: string, maxBytes: number): string {
+export function utf8Prefix(text: string, maxBytes: number): string {
   if (maxBytes <= 0) return '';
   const bytes = Buffer.from(text);
   if (bytes.byteLength <= maxBytes) return text;
