@@ -83,6 +83,49 @@ function stableStringify(value: unknown): string {
 }
 
 /**
+ * The key both provider clients wrap tool-call arguments in when they are not
+ * valid JSON: `{ __raw: "<text>" }` (`parseToolArguments` in
+ * provider/openai-compatible.ts and provider/anthropic.ts).
+ */
+const RAW_ARGUMENTS_KEY = '__raw';
+
+/**
+ * Why a call's arguments were not valid JSON, or undefined when they were.
+ *
+ * The providers keep only the raw text, so it is parsed again here to recover
+ * V8's error. The shapes of that error, and what the detail becomes:
+ *
+ * - `… in JSON at position N (line L column C)`: a bad escape, a raw control
+ *   character, a missing comma or brace, a trailing comma. Kept as is.
+ * - `Unexpected end of JSON input`: the text stops mid-value. Its length,
+ *   which is where it stopped, is appended as the position.
+ * - `Unexpected token 'X', "…" is not valid JSON`: a bare word where a value
+ *   belongs. Kept as is; V8 quotes the text around the token instead of
+ *   giving a position.
+ *
+ * Newlines are folded to spaces: the quoted text is the model's own and may
+ * span lines, and the message is shown on a one-line tool row.
+ */
+function invalidJsonArgumentsDetail(args: Record<string, unknown>): string | undefined {
+  const raw = args[RAW_ARGUMENTS_KEY];
+  // Exactly the shape the providers emit; anything else is the schema's to judge.
+  if (typeof raw !== 'string' || Object.keys(args).length !== 1) return undefined;
+  try {
+    JSON.parse(raw);
+    // Valid JSON under the key is a literal `__raw` argument, not a parse failure.
+    return undefined;
+  } catch (error) {
+    const detail = (error instanceof Error ? error.message : String(error)).replace(
+      /\s*[\r\n]+\s*/g,
+      ' ',
+    );
+    return detail.startsWith('Unexpected end of JSON input')
+      ? `${detail} at position ${raw.length}`
+      : detail;
+  }
+}
+
+/**
  * Advisory circuit breaker: when the model repeats a call that already failed
  * with the same arguments and error, escalate the remediation instead of
  * letting an identical-retry loop run. Never blocks the call itself.
@@ -307,6 +350,25 @@ export function createRegistry() {
         name: tool.name,
         arguments: normalizeToolArguments(tool, call.arguments),
       };
+      // Checked ahead of the discovery gate as well as the schema: an
+      // argument-scoped rule (`Bash(git *)`) cannot match text that never
+      // parsed, so the gate would report a malformed call as an inactive tool.
+      const jsonError = invalidJsonArgumentsDetail(normalizedCall.arguments);
+      if (jsonError !== undefined) {
+        return {
+          status: 'rejected',
+          result: noteRepeatedFailure(
+            context,
+            normalizedCall,
+            toolFailure(`Invalid JSON arguments for ${tool.name}: ${jsonError}.`, {
+              toolCallId: call.id,
+              code: 'invalid_json_arguments',
+              remediation:
+                'None of its arguments were read. Resend the whole call with valid JSON; escape backslashes and newlines inside strings. Correct only this failed call; do not repeat successful siblings.',
+            }),
+          ),
+        };
+      }
       if (context.toolDiscovery && !context.toolDiscovery.canExecute(normalizedCall)) {
         return {
           status: 'rejected',

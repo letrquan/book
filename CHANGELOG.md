@@ -221,6 +221,23 @@ All notable changes to this project are documented in this file.
   list (`TaskList({ reason: "verify all tasks are complete" })`) and got a hard
   `invalid_arguments` for it, then repeated the call bare — two wasted turns each time (#216). The
   field is declared and ignored; the schema stays closed like every other built-in tool's.
+- **Tool-call arguments that are not valid JSON get their own error.** The provider clients keep
+  such arguments as `{ __raw: "<text>" }`, and schema validation then answered
+  `arguments.filePath is required; … arguments.__raw is not allowed` with the allowed-arguments
+  list, although the model had sent every one of those arguments. Models usually resent the same
+  payload: about 25 rejected calls across 16 dogfood runs, mostly large `Edit`, `ApplyPatch` and
+  `Bash` arguments with an unescaped backslash or newline (#242).
+  - **The error:** the call now fails with `invalid_json_arguments`, which names the parse error
+    and its position (`Invalid JSON arguments for Edit: Bad escaped character in JSON at position
+    49 …`). Its fix line says to resend the whole call with valid JSON and to escape backslashes
+    and newlines inside strings. The status, the retry behaviour and the escalation of identical
+    resends are the same as for `invalid_arguments`.
+  - **Order:** the check runs ahead of the tool-discovery gate as well as the schema, because an
+    argument-scoped rule such as `Bash(git *)` cannot match text that never parsed.
+  - **History:** like a schema rejection, such a call never counts as run when a session's
+    history is reloaded.
+  - **TUI:** the tool row shows the raw text as its target, and a newline in it no longer breaks
+    the row in two.
 - **`Read` says its default is the whole file.** The description offered `offset`/`limit` "for
   large files" and models took the hint too far, reading a 430-line file in four 100-line calls
   and one 20-line span three times over (#224). It now says the default reads the file whole, and

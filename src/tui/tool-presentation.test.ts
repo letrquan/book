@@ -416,3 +416,17 @@ describe('composeToolRow inline-label budget', () => {
     expect(row.gap).toBe(' ');
   });
 });
+
+describe('composeToolRow multi-line target', () => {
+  it('keeps a target that spans lines on one row', () => {
+    // A call whose arguments were not valid JSON shows its raw text as the
+    // target, and that text can hold literal newlines.
+    const row = composeToolRow(
+      { title: 'Bash', target: '{"command":"echo one\n  echo two"}', metadata: [] },
+      transcriptGrid(100),
+      { error: 'Invalid JSON' },
+    );
+    expect(row.target).not.toMatch(/[\r\n]/);
+    expect(row.target).toContain('echo one echo two');
+  });
+});

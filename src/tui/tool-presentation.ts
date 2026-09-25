@@ -595,7 +595,11 @@ export function composeToolRow(
   // the prefix here as well clipped an inline-label row by exactly the width of
   // its own verb, and `gap` then padded those columns back with spaces.
   const targetBudget = Math.max(4, measure - labelWidth - metaWidth - (metaWidth > 0 ? 1 : 0));
-  const target = truncateDisplay(`${inlinePrefix}${presentation.target ?? ''}`, targetBudget);
+  // A row is one line. A target is normally one already (a path, a command's
+  // first line), but a call whose arguments were not valid JSON shows its raw
+  // text, and a newline in that text broke the row in two.
+  const targetText = (presentation.target ?? '').replace(/\s*[\r\n]+\s*/g, ' ');
+  const target = truncateDisplay(`${inlinePrefix}${targetText}`, targetBudget);
 
   const used = labelWidth + displayWidth(target) + metaWidth;
   const gap = ' '.repeat(Math.max(metaWidth > 0 ? 1 : 0, measure - used));
