@@ -249,7 +249,9 @@ function fileMutationPresentation(
 
 function readMetadata(args: Record<string, unknown>, result: ToolResult | undefined): string[] {
   if (result?.status !== 'success') return [];
-  const lineCount = countOutputLines(result.content);
+  // A Read that stops early ends with a notice (`[Lines 3-6 of 20 shown. …]`,
+  // `[Line 1 (60000 bytes) was cut …]`), which is not a line of the file.
+  const lineCount = countOutputLines(result.content.replace(/\n\[Lines? \d[^\n]*\]$/, ''));
   const offset = Number(args.offset ?? 0);
   const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 1;
   const end = Math.max(start, start + Math.max(0, lineCount - 1));

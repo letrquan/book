@@ -263,12 +263,17 @@ const OUTLINE_MAX_ENTRIES = 2000;
 const OUTLINE_SIGNATURE_LOOKAHEAD = 40;
 const OUTLINE_MODIFIERS =
   '(?:(?:export|public|private|protected|internal|static|async|abstract|override|virtual|sealed|partial|readonly|final|pub|open|suspend|inline|operator|infix|data|inner|synchronized|native|default|extern|unsafe)\\s+)*';
-// Statements shaped like a method line: `if (x) {`, `return (a) => {`,
-// `foreach(var x in xs)`, `synchronized(this) {`, and, with a space before the
-// parenthesis, `lock (gate)`, `when (x) {`, `match (a, b) {`, `with (o) {`. A
-// method may still be called `lock()`, `match(pattern)`, `with()` or `when()`.
-const OUTLINE_STATEMENT =
-  '(?:(?:if|for|foreach|while|switch|catch|using|fixed|checked|unchecked|synchronized|else|do|try|return|await|async)\\b|(?:lock|when|match|with)\\s)';
+// Statements shaped like a method line in every language: `if (x) {`,
+// `return (a) => {`. With a space before the parenthesis, also `lock (gate)`,
+// `using (var s = open())`, `when (x) {`, `match (a, b) {`, `with (o) {`: a
+// JavaScript method may be called `using()`, `lock()` or `match(pattern)`.
+const OUTLINE_STATEMENT_KEYWORD = '(?:if|for|while|switch|catch|else|do|try|return|await|async)\\b';
+const OUTLINE_STATEMENT_SPACED =
+  '(?:foreach|using|fixed|checked|unchecked|synchronized|lock|when|match|with)\\s';
+// In Java and C#, where a method written name-first is a constructor, these are
+// statements with or without the space: `foreach(var x in xs)`, `lock(_gate)`,
+// `synchronized(this) {`.
+const OUTLINE_STATEMENT_RESERVED = '(?:foreach|using|fixed|checked|unchecked|synchronized|lock)\\b';
 // Words that start a statement where a return type would stand: `else if (`,
 // `return new Foo(`, `go func() {`, `defer func() {`, Rust's `match parse(x) {`,
 // Java's `assert isValid(x);`.
@@ -283,8 +288,16 @@ const OUTLINE_KEYWORD = new RegExp(
   `^\\s+${OUTLINE_MODIFIERS}(?:function|class|interface|enum|namespace|def|func|fn|fun|struct|impl|trait|describe|it|test|constructor|get|set)\\b(?!\\s*[:,;=?)]|\\s*$)`,
 );
 // A method named first: `name(`, `async *entries(`, `#secret(`, `map<K extends Record<string, V>>(`.
-const OUTLINE_NAME_FIRST = new RegExp(
-  `^\\s+${OUTLINE_MODIFIERS}(?!${OUTLINE_STATEMENT})(?:\\*\\s*)?#?[A-Za-z_$][\\w$]*\\s*(?:${OUTLINE_GENERIC})?\\s*\\(`,
+function outlineNameFirst(statement: string): RegExp {
+  return new RegExp(
+    `^\\s+${OUTLINE_MODIFIERS}(?!${statement})(?:\\*\\s*)?#?[A-Za-z_$][\\w$]*\\s*(?:${OUTLINE_GENERIC})?\\s*\\(`,
+  );
+}
+const OUTLINE_NAME_FIRST = outlineNameFirst(
+  `(?:${OUTLINE_STATEMENT_KEYWORD}|${OUTLINE_STATEMENT_SPACED})`,
+);
+const OUTLINE_NAME_FIRST_JAVA_CSHARP = outlineNameFirst(
+  `(?:${OUTLINE_STATEMENT_KEYWORD}|${OUTLINE_STATEMENT_RESERVED}|${OUTLINE_STATEMENT_SPACED})`,
 );
 // A method whose return type comes first (Java, C#, Dart): `int getN(`,
 // `public static <T> List<T> wrap(`, `Future<void> load(`.
@@ -358,8 +371,9 @@ const TEMPLATE_EXTENSIONS = new Set(['.ts', '.mts', '.cts', '.mjs', '.cjs']);
 // Kotlin declares every function with `fun`, so a `name(args) {` line there is a
 // call taking a trailing lambda (`repeat(3) {`), not a method.
 const KEYWORD_ONLY_EXTENSIONS = new Set(['.kt', '.kts']);
-// Java and C# declare interface and abstract methods without a body: `int size();`.
-const BODILESS_METHOD_EXTENSIONS = new Set(['.java', '.cs']);
+// Java and C#: interface and abstract methods are declared without a body
+// (`int size();`), and their statement words are never a method's name.
+const JAVA_CSHARP_EXTENSIONS = new Set(['.java', '.cs']);
 // A front-matter key is anything up to a colon: `title:`, `"quoted key":`,
 // `my key:`, `$schema:`, `título:`.
 const FRONT_MATTER_KEY = /^[^\s#:-][^:]*:(?:\s|$)/;
@@ -369,6 +383,7 @@ interface OutlineProfile {
   templates: boolean;
   keywordsOnly: boolean;
   bodilessMethods: boolean;
+  reservedStatements: boolean;
   maxIndent: number;
 }
 
@@ -382,7 +397,8 @@ function outlineProfile(filePath: string, lines: readonly string[]): OutlineProf
       (extension === '' && lines[0]?.startsWith('#!') === true),
     templates: TEMPLATE_EXTENSIONS.has(extension),
     keywordsOnly: KEYWORD_ONLY_EXTENSIONS.has(extension),
-    bodilessMethods: BODILESS_METHOD_EXTENSIONS.has(extension),
+    bodilessMethods: JAVA_CSHARP_EXTENSIONS.has(extension),
+    reservedStatements: JAVA_CSHARP_EXTENSIONS.has(extension),
     maxIndent:
       extension === '.cs' && lines.some((line) => /^namespace\s+[\w.]+\s*\{?\s*$/.test(line))
         ? OUTLINE_MAX_INDENT_CSHARP_BLOCK_NAMESPACE
@@ -411,10 +427,10 @@ const REGEX_MAX_LENGTH = 512;
 
 /** Whether the `/` at `index` of a line indented by `indent` can open a regex literal. */
 function regexMayStart(line: string, index: number, indent: number): boolean {
-  return (
-    index === indent ||
-    REGEX_MAY_FOLLOW.test(line.slice(Math.max(0, index - REGEX_LOOKBACK), index))
-  );
+  if (index === indent) return true;
+  const before = line.slice(Math.max(0, index - REGEX_LOOKBACK), index);
+  // `i++ / 2` and `n-- / 2` divide: the `++` or `--` ends an operand.
+  return !/(?:\+\+|--)\s*$/.test(before) && REGEX_MAY_FOLLOW.test(before);
 }
 
 /** The index of the `/` that closes a regex literal opening at `start`, or `start` when none does soon. */
@@ -478,7 +494,10 @@ function textLines(lines: readonly string[]): boolean[] {
       }
     }
   }
-  return text;
+  // A scan that ends inside a comment or a template has lost its place (a
+  // string continued with a backslash, say). Masking nothing then keeps the
+  // outline no worse than it is without the scanner.
+  return comment || stack.length > 0 ? text.map(() => false) : text;
 }
 
 /** Whether every parenthesis opened on the line is closed on it. */
@@ -534,7 +553,10 @@ function isShallowDeclaration(
   if (profile.keywordsOnly) return false;
   if (OUTLINE_ARROW_MEMBER.test(line)) return true;
   const typeFirst = OUTLINE_TYPE_FIRST.exec(line);
-  const method = typeFirst ?? OUTLINE_NAME_FIRST.exec(line);
+  const nameFirst = profile.reservedStatements
+    ? OUTLINE_NAME_FIRST_JAVA_CSHARP
+    : OUTLINE_NAME_FIRST;
+  const method = typeFirst ?? nameFirst.exec(line);
   const head = method ?? OUTLINE_WRAPPED_ARROW.exec(line);
   if (!head) return false;
   const open = head[0].length - 1;
@@ -586,24 +608,31 @@ function codeOutlineIndexes(lines: readonly string[], profile: OutlineProfile): 
  * Where Markdown content starts. A leading `---` opens front matter only when a
  * closing `---` (or `...`) follows and every line between reads as YAML: a
  * `key:` line first, then `key:` lines, indented or `- ` lines, and `#`
- * comments. Otherwise it is a horizontal rule and the headings after it count.
+ * comments. A comment sits among the keys, so a `#` line after a blank line is
+ * a heading, and the block is not front matter. Otherwise the `---` is a
+ * horizontal rule and the headings after it count.
  */
 function markdownContentStart(lines: readonly string[]): number {
   if (lines[0]?.trim() !== '---') return 0;
   const close = lines.findIndex((line, index) => index > 0 && /^(?:---|\.\.\.)\s*$/.test(line));
   if (close < 0) return 0;
-  const body = lines.slice(1, close).filter((line) => line.trim().length > 0);
-  const yaml =
-    body.length > 0 &&
-    FRONT_MATTER_KEY.test(body[0]) &&
-    body.every(
-      (line) =>
-        FRONT_MATTER_KEY.test(line) ||
-        /^\s+\S/.test(line) ||
-        /^-(?:\s|$)/.test(line) ||
-        line.startsWith('#'),
-    );
-  return yaml ? close + 1 : 0;
+  const block = lines.slice(1, close);
+  const first = block.find((line) => line.trim().length > 0);
+  if (first === undefined || !FRONT_MATTER_KEY.test(first)) return 0;
+  let blank = false;
+  for (const line of block) {
+    if (line.trim().length === 0) {
+      blank = true;
+      continue;
+    }
+    const yaml =
+      FRONT_MATTER_KEY.test(line) ||
+      /^\s+\S/.test(line) ||
+      /^-(?:\s|$)/.test(line) ||
+      (!blank && line.startsWith('#'));
+    if (!yaml) return 0;
+  }
+  return close + 1;
 }
 
 function markdownOutlineIndexes(lines: readonly string[]): number[] {
@@ -733,9 +762,11 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   // A Read that stops before the end of the file, at the byte budget or at its
   // line limit, says so and names the offset to continue from.
   let notice: string | undefined;
+  let pagination: ToolResult['pagination'];
   if (last < lineCount) {
     const reason = last < end ? ', the most one Read returns (50 KB)' : '';
     notice = `[Lines ${offset}-${last} of ${lineCount} shown${reason}. Continue with offset: ${last + 1}.]`;
+    pagination = { truncated: true, nextCursor: String(last + 1) };
   }
   let page = notice === undefined ? output.join('\n') : `${output.join('\n')}\n${notice}`;
   // Only a page of one line can pass the clip. A line that does not fit even on
@@ -748,6 +779,7 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
         : `${notice.slice(0, -1)} ${cutNote}.]`;
     const room = TOOL_RESULT_MAX_BYTES - Buffer.byteLength(cut) - 1;
     page = `${utf8Prefix(output[0], room)}\n${cut}`;
+    pagination ??= { truncated: true };
   }
   const observation = await observeFile(ctx, filePath, 'read', {
     lineStart: offset,
@@ -755,6 +787,7 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   });
   return toolSuccess(page, {
     artifacts: { fileObservations: [observation] },
+    pagination,
   });
 }
 

@@ -1746,6 +1746,72 @@ const OUTLINE_CONTRACT: Array<{ shape: string; file: string; lines: string[]; ou
       lines: ['#[derive(Debug)]', 'struct S;'],
       outline: ['1: #[derive(Debug)]', '2: struct S;'],
     },
+    {
+      shape: 'TypeScript: methods named using, checked and fixed are declarations',
+      file: 'plugins.ts',
+      lines: [
+        'export class Plugins {',
+        '  using(plugin: Plugin): this {',
+        '    return this;',
+        '  }',
+        '  checked(): boolean {',
+        '    return true;',
+        '  }',
+        '  fixed(n: number): string {',
+        '    return n.toFixed(2);',
+        '  }',
+        '}',
+      ],
+      outline: [
+        '1: export class Plugins {',
+        '2:   using(plugin: Plugin): this {',
+        '5:   checked(): boolean {',
+        '8:   fixed(n: number): string {',
+      ],
+    },
+    {
+      shape: 'C#: a lock statement with no space before the parenthesis is not a declaration',
+      file: 'Gate.cs',
+      lines: [
+        'class Gate {',
+        '  void Run()',
+        '  {',
+        '    lock(_gate)',
+        '    {',
+        '    }',
+        '  }',
+        '}',
+      ],
+      outline: ['1: class Gate {', '2:   void Run()'],
+    },
+    {
+      shape: 'TypeScript: a slash after i++ divides, so the template after it closes',
+      file: 'count.ts',
+      lines: [
+        'let i = 0;',
+        'const half = i++ / 2 + `a/b`;',
+        'export function later() {',
+        '  return half;',
+        '}',
+      ],
+      outline: [
+        '1: let i = 0;',
+        '2: const half = i++ / 2 + `a/b`;',
+        '3: export function later() {',
+      ],
+    },
+    {
+      shape: 'TypeScript: a scan that ends inside a template masks nothing',
+      file: 'continued.ts',
+      lines: ["const s = 'a \\", "`';", 'export function later() {', '  return s;', '}'],
+      outline: ["1: const s = 'a \\", "2: `';", '3: export function later() {'],
+    },
+    {
+      shape: 'Markdown: a heading after a blank line inside a --- block is a heading',
+      file: 'intro.md',
+      lines: ['---', 'Title: something', '', '# Intro', '', '---', '', 'Body text.', '', '## Next'],
+      outline: ['4: # Intro', '10: ## Next'],
+    },
   ];
 
 describe('Read outline contract', () => {
@@ -1777,7 +1843,7 @@ describe('Read output budget', () => {
     expect(Buffer.byteLength(first.content)).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
     // The shared clip, whose notice names a file Read cannot open, never fires.
     const bounded = await boundToolResultOutput(first, dir, undefined, join(dir, 'tool-output'));
-    expect(bounded.pagination?.truncated).toBeUndefined();
+    expect(bounded.pagination?.omittedBytes).toBeUndefined();
     expect(bounded.content).toBe(first.content);
 
     const shown = first.content.split('\n');
@@ -1788,6 +1854,9 @@ describe('Read output budget', () => {
     );
     expect(shown.at(-2)).toBe(`${next - 1}: ${lines[next - 2]}`);
     expect(first.artifacts?.fileObservations?.[0]?.lineEnd).toBe(next - 1);
+    // The result says it was truncated, as the shared clip's did, and where it continues.
+    expect(first.pagination).toEqual({ truncated: true, nextCursor: String(next) });
+    expect(bounded.pagination).toEqual({ truncated: true, nextCursor: String(next) });
 
     const rest = await read.execute({ filePath: 'big.ts', offset: next }, ctx);
     expect(rest.content).not.toContain('Continue with offset');
@@ -1805,6 +1874,7 @@ describe('Read output budget', () => {
     expect(wholeLines).toHaveLength(2001);
     expect(wholeLines[1999]).toBe('2000: l2000');
     expect(wholeLines[2000]).toBe('[Lines 1-2000 of 2500 shown. Continue with offset: 2001.]');
+    expect(whole.pagination).toEqual({ truncated: true, nextCursor: '2001' });
 
     const window = await read.execute({ filePath: 'long.txt', offset: 10, limit: 5 }, ctx);
     expect(window.content.split('\n').at(-1)).toBe(
@@ -1814,6 +1884,7 @@ describe('Read output budget', () => {
     const tail = await read.execute({ filePath: 'long.txt', offset: 2001 }, ctx);
     expect(tail.content).not.toContain('Continue with offset');
     expect(tail.content.split('\n').at(-1)).toBe('2500: l2500');
+    expect(tail.pagination).toBeUndefined();
   });
 
   it('shows a line longer than the budget cut, and continues after it', async () => {
@@ -1838,6 +1909,7 @@ describe('Read output budget', () => {
       '[Line 1 (60000 bytes) was cut to fit one Read (50 KB).]',
     );
     expect(Buffer.byteLength(only.content)).toBe(TOOL_RESULT_MAX_BYTES);
+    expect(only.pagination).toEqual({ truncated: true });
   });
 
   it('returns a line that fits under the clip on its own whole, with no cut notice', async () => {

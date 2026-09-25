@@ -416,3 +416,20 @@ describe('composeToolRow inline-label budget', () => {
     expect(row.gap).toBe(' ');
   });
 });
+
+describe('Read row line count', () => {
+  it('does not count the continuation notice as a line of the file', () => {
+    const page = '3: c\n4: d\n5: e\n6: f\n[Lines 3-6 of 20 shown. Continue with offset: 7.]';
+    expect(
+      deriveToolPresentation(
+        'Read',
+        { filePath: 'src/a.ts', offset: 3, limit: 4 },
+        result({ output: page }),
+      ).summary,
+    ).toBe('Read(src/a.ts) · 4 lines 3-6');
+    const cut = '1: xxx\n[Line 1 (60000 bytes) was cut to fit one Read (50 KB).]';
+    expect(
+      deriveToolPresentation('Read', { filePath: 'min.js' }, result({ output: cut })).summary,
+    ).toBe('Read(min.js) · 1 line');
+  });
+});
