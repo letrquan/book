@@ -66,11 +66,13 @@ export function ManagedAgentActivityBlock({
   // A blocked lead is a different situation from a background spawn and reads
   // wrong under the same words: "Running in background" next to a stopped parent
   // tells the user work is proceeding alongside their turn when nothing is.
+  // Tab opens a child only while it still has a Background-panel row.
+  const tabHint = trace.openable === false ? '' : ' · Tab to open';
   const footer = terminal
-    ? 'Transcript retained · Tab to open'
+    ? `Transcript retained${tabHint}`
     : trace.blocking
-      ? 'Lead paused · sidekick working · Tab to open'
-      : 'Running in background · Tab to open';
+      ? `Lead paused · sidekick working${tabHint}`
+      : `Running in background${tabHint}`;
   const grid = transcriptGrid(terminalWidth);
   // A managed-agent block fills the same transcript slot as a tool row — it is
   // the other branch of the same ternary — so it sits on the same indented
@@ -100,7 +102,9 @@ export function ManagedAgentActivityBlock({
         })}
         {hiddenCount > 0 ? <Text>{hiddenCount} earlier tool uses hidden.</Text> : null}
         <Text>{footer}.</Text>
-        <Text>Press Tab to open the complete subagent transcript.</Text>
+        {trace.openable === false ? null : (
+          <Text>Press Tab to open the complete subagent transcript.</Text>
+        )}
       </Box>
     );
   }

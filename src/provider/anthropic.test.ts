@@ -164,6 +164,7 @@ describe('Anthropic thinking configuration', () => {
         model: 'claude-opus-5-20260101',
         provider: 'anthropic',
         baseUrl: 'https://api.anthropic.com',
+        effort: 'high',
       }),
       [{ role: 'user', content: 'hi' }],
       [],
@@ -173,6 +174,35 @@ describe('Anthropic thinking configuration', () => {
 
     expect(requestBody?.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
     expect(requestBody?.output_config).toEqual({ effort: 'high' });
+  });
+
+  it('sends neither thinking nor effort when the effort resolved to none (#245)', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        requestBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return new Response('{}', { status: 400 });
+      }),
+    );
+
+    for await (const event of chatCompletionStream(
+      defaultConfig({
+        model: 'claude-opus-5-20260101',
+        provider: 'anthropic',
+        baseUrl: 'https://api.anthropic.com',
+        effort: undefined,
+      }),
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      void event;
+    }
+
+    // `{type: 'disabled'}` is not sent either: Fable 5 and Opus 5.5 reject it.
+    expect(requestBody).toBeDefined();
+    expect(requestBody).not.toHaveProperty('thinking');
+    expect(requestBody).not.toHaveProperty('output_config');
   });
 });
 

@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   applyModelDefaults,
+  clampEffortToCatalog,
   freezeAgentConfig,
   loadConfig,
   resolveCompactModelConfig,
+  resolveEffortExplicit,
   resolveModelProviderConfig,
+  resolveReducerModelConfig,
 } from './config.js';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -594,7 +597,7 @@ describe('loadConfig provider registry', () => {
       },
     });
 
-    const reducer = resolveCompactModelConfig(config);
+    const reducer = resolveReducerModelConfig(config);
     expect(reducer.effort).toBe('medium');
     expect(reducer.effortExplicit).toBe(true);
     expect(reducer.retry.maxAttempts).toBe(2);
@@ -625,7 +628,7 @@ describe('loadConfig provider registry', () => {
       },
     });
 
-    const reducer = resolveCompactModelConfig(config);
+    const reducer = resolveReducerModelConfig(config);
     expect(reducer.effort).toBe('high');
     expect(reducer.effortExplicit).toBe(true);
     expect(config.compactEffort).toBe('high');
@@ -655,7 +658,7 @@ describe('loadConfig provider registry', () => {
       },
     });
 
-    const reducer = resolveCompactModelConfig(config);
+    const reducer = resolveReducerModelConfig(config);
     expect(reducer.effort).toBe('low');
     expect(reducer.effortExplicit).toBe(true);
     expect(config.effort).toBe('low');
@@ -684,7 +687,7 @@ describe('loadConfig provider registry', () => {
       },
     });
 
-    const reducer = resolveCompactModelConfig(config);
+    const reducer = resolveReducerModelConfig(config);
     expect(reducer.effort).toBeUndefined();
     expect(config.effort).toBe('max');
   });
@@ -692,17 +695,17 @@ describe('loadConfig provider registry', () => {
   it('sends no reducer effort when nothing chose a level and the catalog lists none', () => {
     const config = defaultConfig({ model: 'gpt-4o', effort: 'high', effortExplicit: false });
 
-    const reducer = resolveCompactModelConfig(config);
+    const reducer = resolveReducerModelConfig(config);
     // The value is still capped (the Anthropic path sends it regardless), but
     // nothing chose it, so the OpenAI-compatible request carries no effort.
     expect(reducer.effort).toBe('medium');
     expect(reducer.effortExplicit).toBe(false);
 
-    const chosen = resolveCompactModelConfig({ ...config, compactEffort: 'low' });
+    const chosen = resolveReducerModelConfig({ ...config, compactEffort: 'low' });
     expect(chosen.effort).toBe('low');
     expect(chosen.effortExplicit).toBe(true);
 
-    const session = resolveCompactModelConfig({ ...config, effort: 'max', effortExplicit: true });
+    const session = resolveReducerModelConfig({ ...config, effort: 'max', effortExplicit: true });
     expect(session.effort).toBe('medium');
     expect(session.effortExplicit).toBe(true);
   });
@@ -728,23 +731,90 @@ describe('loadConfig provider registry', () => {
       },
     });
 
-    const reducer = resolveCompactModelConfig(config);
+    const reducer = resolveReducerModelConfig(config);
     expect(reducer.effort).toBe('low');
     expect(reducer.effortExplicit).toBe(true);
 
-    const none = resolveCompactModelConfig({ ...config, compactModel: 'reducer/strict' });
+    const none = resolveReducerModelConfig({ ...config, compactModel: 'reducer/strict' });
     expect(none.effort).toBeUndefined();
     expect(none.effortExplicit).toBe(false);
   });
 
   it('keeps the reducer retry cap under the watchdog', () => {
     const config = defaultConfig();
-    const reducer = resolveCompactModelConfig({
+    const reducer = resolveReducerModelConfig({
       ...config,
       retry: { ...config.retry, maxAttempts: 10, watchdog: true },
     });
     expect(reducer.retry.maxAttempts).toBe(2);
     expect(reducer.retry.watchdog).toBe(false);
+  });
+
+  it("caps the compact model's effort for every caller, but only the reducer's and the judge's retries (#245)", () => {
+    const config = defaultConfig({
+      effort: 'max',
+      effortExplicit: true,
+      compactModel: 'reducer/flash',
+      settings: {
+        ...defaultConfig().settings,
+        provider: {
+          reducer: {
+            type: 'openai',
+            baseURL: 'https://reducer.example/v1',
+            apiKey: 'reducer-key',
+            models: {
+              flash: {
+                maxOutputTokens: 4096,
+                effort: { default: 'medium', levels: ['low', 'medium', 'high', 'max'] },
+              },
+              plain: { maxOutputTokens: 4096, effort: false },
+            },
+          },
+        },
+      },
+    });
+    const withRetry = { ...config, retry: { ...config.retry, maxAttempts: 10, watchdog: true } };
+
+    // Memory extraction: the effort is capped at medium, the retry policy is the session's.
+    const compact = resolveCompactModelConfig(withRetry);
+    expect(compact).toMatchObject({ model: 'flash', effort: 'medium', effortExplicit: true });
+    expect(compact.retry).toMatchObject({ maxAttempts: 10, watchdog: true });
+
+    // A compact model whose catalog takes no effort gets none, whatever the session asked for.
+    const plain = resolveCompactModelConfig({ ...withRetry, compactModel: 'reducer/plain' });
+    expect(plain.model).toBe('plain');
+    expect(plain.effort).toBeUndefined();
+    expect(plain.effortExplicit).toBe(false);
+
+    // The reducer and the judge also retry at most twice, without the watchdog.
+    const reducer = resolveReducerModelConfig(withRetry);
+    expect(reducer).toMatchObject({ model: 'flash', effort: 'medium', effortExplicit: true });
+    expect(reducer.retry).toMatchObject({ maxAttempts: 2, watchdog: false });
+  });
+
+  it('clamps an effort down to the catalog and leaves an uncatalogued model alone', () => {
+    const listed = defaultConfig({ modelInfo: { effort: { levels: ['low', 'medium', 'high'] } } });
+    expect(clampEffortToCatalog(listed, 'max')).toBe('high');
+    expect(clampEffortToCatalog(listed, 'medium')).toBe('medium');
+    expect(clampEffortToCatalog(listed, undefined)).toBeUndefined();
+    const highOnly = defaultConfig({ modelInfo: { effort: { levels: ['high'] } } });
+    expect(clampEffortToCatalog(highOnly, 'low')).toBeUndefined();
+    const none = defaultConfig({ modelInfo: { effort: false } });
+    expect(clampEffortToCatalog(none, 'high')).toBeUndefined();
+    const bare = defaultConfig({ modelInfo: undefined });
+    expect(clampEffortToCatalog(bare, 'max')).toBe('max');
+  });
+
+  it('sends an effort only when a level was chosen or the catalog lists it', () => {
+    const bare = defaultConfig({ modelInfo: undefined });
+    expect(resolveEffortExplicit(bare, 'high', false)).toBe(false);
+    expect(resolveEffortExplicit(bare, 'high', true)).toBe(true);
+    expect(resolveEffortExplicit(bare, undefined, true)).toBe(false);
+
+    const listed = defaultConfig({ modelInfo: { effort: { levels: ['low', 'medium'] } } });
+    expect(resolveEffortExplicit(listed, 'medium', false)).toBe(true);
+    expect(resolveEffortExplicit(listed, 'high', false)).toBe(false);
+    expect(resolveEffortExplicit(listed, 'high', true)).toBe(true);
   });
 
   it('uses the 64k output budget for models without metadata', () => {

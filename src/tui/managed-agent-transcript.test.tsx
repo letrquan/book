@@ -250,6 +250,40 @@ describe('foreground delegation', () => {
     expect(traces.get('task-1')).toMatchObject({ blocking: false });
   });
 
+  it('drops the Tab hint once a finished child has no row for Tab to open (#245)', () => {
+    const settled: Message = {
+      ...blockingCall,
+      toolResults: [
+        { version: 2, toolCallId: 'task-1', status: 'success', content: 'subagent result' },
+      ],
+    };
+    const records = new Map([['agent-1', foregroundRecord('completed')]]);
+    const frame = (openable: ReadonlySet<string>, screenReader = false): string => {
+      const view = render(
+        <ThemeContext.Provider value={DEFAULT_THEME}>
+          <ChatPanel
+            messages={[settled]}
+            managedAgentTraces={projectManagedAgentTraces([settled], records, new Map(), openable)}
+            reducedMotion
+            screenReader={screenReader}
+            terminalWidth={100}
+          />
+        </ThemeContext.Provider>,
+      );
+      const output = view.lastFrame() ?? '';
+      view.unmount();
+      return output;
+    };
+
+    // While the Background panel still lists the child, Tab reaches it.
+    expect(frame(new Set(['agent-1']))).toContain('Transcript retained · Tab to open');
+    // Once its row is cleared, Tab has nothing to open.
+    const cleared = frame(new Set());
+    expect(cleared).toContain('Transcript retained');
+    expect(cleared).not.toContain('Tab to open');
+    expect(frame(new Set(), true)).not.toContain('Press Tab to open');
+  });
+
   it('leaves a background spawn unblocking so the lead is not described as paused', () => {
     const traces = projectManagedAgentTraces(
       [rootMessage],

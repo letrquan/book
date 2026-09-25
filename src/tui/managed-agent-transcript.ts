@@ -27,6 +27,13 @@ export interface ManagedAgentTrace {
    * keeps working.
    */
   blocking?: boolean;
+  /**
+   * Whether Tab can open this child. Tab cycles through the Background panel's
+   * rows, and a finished child's row is cleared once its completion is
+   * acknowledged, or for a `Task` child once its result arrives. Undefined when
+   * the caller did not say, which keeps the hint.
+   */
+  openable?: boolean;
 }
 
 function spawnAgentId(result: ToolResult | undefined): string | undefined {
@@ -130,6 +137,7 @@ export function projectManagedAgentTraces(
   messages: Message[],
   records: ReadonlyMap<string, AgentRecord>,
   activities: ReadonlyMap<string, AgentActivity[]>,
+  openableAgentIds?: ReadonlySet<string>,
 ): ReadonlyMap<string, ManagedAgentTrace> {
   // Traces require a live agent record; skip the transcript scan entirely (and
   // keep a stable identity) while no managed agents exist.
@@ -150,6 +158,7 @@ export function projectManagedAgentTraces(
       finishedAt: record.finishedAt,
       toolUses: projectChildToolUses(record, activities.get(record.id) ?? []),
       blocking,
+      openable: openableAgentIds?.has(record.id),
     });
   };
   for (const message of messages) {

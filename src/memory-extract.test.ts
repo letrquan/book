@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -17,6 +17,7 @@ import {
 import { defaultConfig } from './test/fixtures.js';
 import type { Provider } from './provider/index.js';
 import type { Message } from './types/messages.js';
+import type { AgentConfig } from './types/runtime.js';
 import type { SessionMeta } from './types/sessions.js';
 
 const HOUR = 3_600_000;
@@ -409,5 +410,96 @@ describe('runMemoryExtraction', () => {
     });
     expect(disabled.reason).toBe('disabled');
     expect(sessions.loads).toEqual([]);
+  });
+
+  it("caps extraction's effort at medium but keeps the session's retry policy (#245)", async () => {
+    const seen: AgentConfig[] = [];
+    const base = config();
+    const result = await runMemoryExtraction({
+      config: {
+        ...base,
+        effort: 'max',
+        effortExplicit: true,
+        retry: { ...base.retry, maxAttempts: 10, watchdog: true },
+      },
+      sessions: source({ s1: { meta: meta('s1'), transcript: talk } }),
+      bookRoot,
+      nowMs: NOW,
+      provider: {
+        id: 'scripted',
+        stream: async function* (streamConfig) {
+          seen.push(streamConfig);
+          yield { type: 'text', content: SAVE };
+          yield { type: 'done' };
+        },
+      },
+    });
+    expect(result.processed).toEqual([{ id: 's1', written: 1 }]);
+    // At max, a reply inside the 4,000-token limit can be all reasoning and no answer.
+    expect(seen[0]).toMatchObject({ effort: 'medium', effortExplicit: true });
+    expect(seen[0]?.retry).toMatchObject({ maxAttempts: 10, watchdog: true });
+  });
+
+  it('sends no effort to a compact model whose catalog takes none (#245)', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        const chunk = JSON.stringify({ choices: [{ delta: { content: SAVE } }] });
+        return new Response(`data: ${chunk}\n\ndata: [DONE]\n\n`, { status: 200 });
+      }),
+    );
+    const base = config();
+    try {
+      const result = await runMemoryExtraction({
+        config: {
+          ...base,
+          effort: 'max',
+          effortExplicit: true,
+          compactModel: 'reducer/plain',
+          settings: {
+            ...base.settings,
+            provider: {
+              reducer: {
+                type: 'openai',
+                baseURL: 'https://reducer.example/v1',
+                apiKey: 'reducer-key',
+                models: { plain: { effort: false } },
+              },
+            },
+          },
+        },
+        sessions: source({ s1: { meta: meta('s1'), transcript: talk } }),
+        bookRoot,
+        nowMs: NOW,
+      });
+      expect(result.processed).toEqual([{ id: 's1', written: 1 }]);
+      expect(bodies[0]).toMatchObject({ model: 'plain' });
+      expect(bodies[0]).not.toHaveProperty('reasoning_effort');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('retries a reply that was empty or cut off at its output limit instead of marking it read (#245)', async () => {
+    const sessions = source({ s1: { meta: meta('s1'), transcript: talk } });
+    const cutOff = (content: string): Provider =>
+      ({
+        id: 'scripted',
+        stream: async function* () {
+          if (content) yield { type: 'text', content };
+          yield { type: 'done', finishReasons: ['length'] };
+        },
+      }) as Provider;
+    const attempt = (provider: Provider) =>
+      runMemoryExtraction({ config: config(), sessions, bookRoot, nowMs: NOW, provider });
+
+    // All reasoning, no answer: the reply is empty and ended at the limit.
+    expect((await attempt(cutOff(''))).processed).toEqual([]);
+    // An answer cut off halfway.
+    expect((await attempt(cutOff('{"memories": [{"action": "create"'))).processed).toEqual([]);
+    // Still eligible, so the next start reads it.
+    expect((await attempt(provider(SAVE))).processed).toEqual([{ id: 's1', written: 1 }]);
   });
 });

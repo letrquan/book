@@ -357,6 +357,47 @@ All notable changes to this project are documented in this file.
   levels, so on a model with no catalog entry, such as the default `gpt-4o`, the request carries
   none, as the main agent's does. Its request is retried at most twice before compaction falls back
   to the deterministic checkpoint, `retry.watchdog` included.
+- **Memory extraction keeps its retries, and retries a reply that ran out of room.** The
+  reducer's retry caps (two attempts, no watchdog) applied to memory extraction too (#245).
+  Extraction gives up on a session after three failed starts, so on a flaky route the cap made
+  that happen sooner. It now keeps the session's retry policy. It keeps the effort cap and the
+  catalog clamp that every request on the compact model has, because a reply at `max` inside
+  its 4,000-token limit could be all reasoning. An empty reply, or one cut off at the output limit,
+  now counts as a failed start: before, it marked the session read as `unparseable` until the
+  session grew. The judge keeps the reducer's retry caps, because a failed judge leaves the
+  verdict inconclusive and the checkpoint is committed anyway.
+- **The Anthropic path sends no effort when a compact-model request's resolved to none.** A compact
+  model whose catalog lists no level at or below the cap still got adaptive thinking at `high` on
+  the Anthropic path, although the docs say it gets no effort (#245). That request now carries
+  neither `thinking` nor `output_config`, so the model runs at its own default. That means no
+  thinking on Opus 4.6–4.8 and Sonnet 4.6, and adaptive thinking at the model's default effort on
+  Opus 5 and 5.5, Fable 5 and Sonnet 5. `thinking: {type: "disabled"}` is not sent instead:
+  Fable 5 and Opus 5.5 reject it.
+- **Managed children no longer send `reasoning_effort: high` that nothing chose.** With no effort
+  configured, every child request carried the session's default `high`, and a strict
+  OpenAI-compatible endpoint answers an effort on a model that does not reason with a 400 that is
+  not retried, so every child request failed (#245). A child now follows the reducer's rule: it
+  sends its effort only when a level was chosen for it (`agents.profiles.<name>.effort`, its
+  definition's `effort`, or `--effort`, `BOOK_EFFORT` or `settings.effort`) or its model's catalog
+  lists that level. A chosen level is clamped to the child model's catalog first, so `--effort
+  max` reaches a child model that lists levels up to `high` as `high`.
+- **`Task`'s ceiling and the registry's backstop start together.** `Task` counted its ceiling from
+  the end of `spawn` and the backstop from the start of the call, so a spawn slower than the
+  backstop's 10 s grace (a worktree snapshot) let the backstop fire first, and the parent got an
+  empty `tool_timeout` instead of the child's partial result (#245). The ceiling now counts from
+  the start of the call, spawn included.
+- **A `/review` agent is not re-run after a restart.** With `agents.resumeInterrupted` on, a
+  reviewer interrupted by a crash was re-run on the next start and billed a run whose report
+  nobody received, since the review had died with the process (#245). `/review` now spawns its
+  agents with `resumeAfterRestart: false`, and a restart leaves them `interrupted`, with an error
+  that says why they were not resumed. A follow-up that starts after the review's run finished
+  clears the mark, since that run belongs to the parent. A follow-up queued while the review's run
+  is going keeps it, because the review is still waiting and receives that result.
+- **A finished child no longer offers a Tab that opens nothing.** Once a finished child's
+  Background-panel row is cleared (a `Task` child's as soon as its result arrives), Tab cannot
+  reach it, yet its transcript block still said "Transcript retained · Tab to open" (#245). That
+  hint, and the screen-reader line "Press Tab to open the complete subagent transcript", now show
+  only while the child has a row.
 - **A 4xx quoted inside a router's 503 is no longer retried to exhaustion.** 9router wraps an
   upstream `400 INVALID_ARGUMENT` as a `503` plus a cooldown, and the retry policy decided on the
   status alone, so a request the provider had refused outright was re-sent ten times at 30 s, then

@@ -368,51 +368,100 @@ export function resolveModelProviderConfig(
 }
 
 /**
- * The reducer's effort. A checkpoint does not need minutes of reasoning, and
- * at `--effort max` on a slow route the reducer's request produced no byte for
- * long enough that the proxy dropped it, ten times over (#214). The target is
- * `compactEffort`, or else the session's effort capped at `medium`. A catalog
- * that lists levels clamps the target down to the highest listed level at or
- * below it, and one that lists none at or below it gets no effort at all: the
- * reducer never falls back to the uncapped session effort.
+ * Clamp an effort down to the highest level the model's catalog lists at or
+ * below it. A catalog that disables effort, or lists no level at or below it,
+ * gets none: an unlisted level is a 400 on a strict endpoint, and the clamp
+ * never goes back up. A model without a catalog entry, or one whose entry lists
+ * no levels, keeps the effort as asked.
  */
-function reducerEffort(config: AgentConfig): AgentConfig['effort'] {
+export function clampEffortToCatalog(
+  config: Pick<AgentConfig, 'model' | 'modelSelection' | 'modelInfo'>,
+  effort: AgentConfig['effort'],
+): AgentConfig['effort'] {
   const levels = getAvailableEffortLevels(config);
-  if (levels === null) return undefined;
+  if (levels === null || effort === undefined) return undefined;
+  const ceiling = EFFORT_LEVELS.indexOf(effort);
+  return levels.filter((level) => EFFORT_LEVELS.indexOf(level) <= ceiling).at(-1);
+}
+
+/**
+ * The effort of a request on the compact model. A checkpoint does not need
+ * minutes of reasoning, and at `--effort max` on a slow route the reducer's
+ * request produced no byte for long enough that the proxy dropped it, ten times
+ * over (#214). Memory extraction answers inside a 4,000-token output limit,
+ * which a reply at `max` can spend on reasoning alone. The target is
+ * `compactEffort`, or else the session's effort capped at `medium`, clamped to
+ * the compact model's catalog: it never falls back to the uncapped session effort.
+ */
+function compactModelEffort(config: AgentConfig): AgentConfig['effort'] {
   const cap = EFFORT_LEVELS.indexOf('medium');
   const target =
     config.compactEffort ??
     (config.effort && EFFORT_LEVELS.indexOf(config.effort) > cap ? 'medium' : config.effort);
-  if (!target) return undefined;
-  const ceiling = EFFORT_LEVELS.indexOf(target);
-  return levels.filter((level) => EFFORT_LEVELS.indexOf(level) <= ceiling).at(-1);
+  return clampEffortToCatalog(config, target);
 }
 
-/** Resolve the optional reducer model without changing the active agent model. */
+/**
+ * Whether a request sends its effort: the `effortExplicit` flag, which is what
+ * makes the OpenAI-compatible path send `reasoning_effort`. A strict endpoint
+ * answers an effort for a model that does not reason with a 400 that is not
+ * retried, so a request sends one only when a level was chosen for it, or when
+ * its model's catalog lists that level. With neither -- the default `gpt-4o`, or
+ * any model without a catalog entry -- it carries none, like the main agent's.
+ * Every request on the compact model, and every managed child, decides by this
+ * one rule.
+ */
+export function resolveEffortExplicit(
+  config: Pick<AgentConfig, 'modelInfo'>,
+  effort: AgentConfig['effort'],
+  chosen: boolean,
+): boolean {
+  if (effort === undefined) return false;
+  if (chosen) return true;
+  const catalog = config.modelInfo?.effort;
+  return typeof catalog === 'object' && (catalog.levels?.includes(effort) ?? false);
+}
+
+/**
+ * The compact model's config, for every request made on it: the compaction
+ * reducer, the deferred-compaction judge and memory extraction. It is routed to
+ * `compactModel` when one is set, without changing the active agent model, and
+ * carries the capped, catalog-clamped effort of `compactModelEffort`. It keeps
+ * the session's retry policy; the reducer and the judge add their retry caps
+ * through `resolveReducerModelConfig`.
+ */
 export function resolveCompactModelConfig(config: AgentConfig): AgentConfig {
   const compactModel = config.compactModel?.trim() || config.settings.compactModel?.trim();
   const resolved =
     !compactModel || compactModel === config.modelSelection || compactModel === config.model
       ? config
       : applyModelDefaults(resolveModelProviderConfig(config, compactModel));
-
-  const effort = reducerEffort(resolved);
-  const catalog = resolved.modelInfo?.effort;
-  // `effortExplicit` is what makes the OpenAI-compatible path send
-  // `reasoning_effort`. The reducer sends one only when a level was chosen --
-  // `compactEffort`, or an explicit session effort -- or when its catalog lists
-  // the levels it accepts. With neither (the default `gpt-4o`) its request
-  // carries none, exactly like the main agent's.
-  const effortExplicit =
-    effort !== undefined &&
-    (resolved.compactEffort !== undefined ||
-      resolved.effortExplicit === true ||
-      (typeof catalog === 'object' && (catalog.levels?.length ?? 0) > 0));
-
+  const effort = compactModelEffort(resolved);
   return {
     ...resolved,
     effort,
-    effortExplicit,
+    // A level was chosen by `compactEffort` or an explicit session effort; with
+    // neither, the request sends one only when its catalog lists it.
+    effortExplicit: resolveEffortExplicit(
+      resolved,
+      effort,
+      resolved.compactEffort !== undefined || resolved.effortExplicit === true,
+    ),
+  };
+}
+
+/**
+ * The reducer's and the judge's config: the compact model's, retried at most
+ * twice with the watchdog off. Both fall back when the model path fails -- the
+ * reducer to the deterministic checkpoint, the judge to an inconclusive verdict
+ * that commits the checkpoint anyway -- so more attempts only delay that. Memory
+ * extraction keeps the session's retry policy: it gives up on a session after
+ * three failed starts, and the cap made that happen sooner on a flaky route.
+ */
+export function resolveReducerModelConfig(config: AgentConfig): AgentConfig {
+  const resolved = resolveCompactModelConfig(config);
+  return {
+    ...resolved,
     // A reducer request that dies before its first byte twice is not going to succeed
     // at that size, and runCompaction already falls back to the deterministic
     // checkpoint when the model path fails — ten attempts at five minutes each only

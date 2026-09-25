@@ -444,13 +444,19 @@ export async function* chatCompletionStream(
     messages: anthropicMessages,
   });
 
-  // Thinking / effort — only for models that support adaptive thinking.
-  let thinkingEnabled = false;
-  if (config.modelInfo?.effort !== false && supportsAdaptiveThinking(config.model)) {
-    thinkingEnabled = true;
-    const effort = config.effort ?? 'high';
+  // Thinking / effort — only for models that support adaptive thinking, and only
+  // when an effort was resolved. An effort that resolved to none (a compact-model
+  // request on a catalog with no level at or below its cap) sends neither field,
+  // so the model runs at its own default: no thinking at all on Opus 4.6–4.8 and
+  // Sonnet 4.6, adaptive thinking at the model's default effort on Opus 5 and
+  // 5.5, Fable 5 and Sonnet 5. `{ type: 'disabled' }` is not sent instead: Fable 5
+  // and Opus 5.5 reject it with a 400. The stall ceiling stays the thinking one
+  // either way, since the later models think when the field is omitted.
+  const thinkingEnabled =
+    config.modelInfo?.effort !== false && supportsAdaptiveThinking(config.model);
+  if (thinkingEnabled && config.effort) {
     body.thinking = { type: 'adaptive', display: 'summarized' };
-    body.output_config = { effort };
+    body.output_config = { effort: config.effort };
   }
 
   log.debug('chatCompletionStream request', {
@@ -458,7 +464,7 @@ export async function* chatCompletionStream(
     messageCount: anthropicMessages.length,
     toolCount: anthropicTools.length,
     maxTokens: config.maxTokens,
-    effort: config.effort ?? 'high',
+    effort: config.effort,
   });
 
   let response: Response;

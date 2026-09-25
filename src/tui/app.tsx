@@ -1060,9 +1060,25 @@ export function App({
     sendBackgroundShellCompletion,
     shellCompletionRetryTick,
   ]);
+  // Tab (`cycleAgentFocus`) reaches only agents with a Background-panel row. Keyed on
+  // the joined ids, not the summaries array: a child's status event replaces the array
+  // without changing which rows exist, and must not re-project every trace.
+  const openableAgentKey = managedAgentUiEnabled
+    ? managedAgents.summaries.map((summary) => summary.agentId).join(' ')
+    : '';
+  const openableAgentIds = useMemo(
+    () => new Set(openableAgentKey ? openableAgentKey.split(' ') : []),
+    [openableAgentKey],
+  );
   const managedAgentTraces = useMemo(
-    () => projectManagedAgentTraces(messages, managedAgents.records, managedAgents.activities),
-    [managedAgents.activities, managedAgents.records, messages],
+    () =>
+      projectManagedAgentTraces(
+        messages,
+        managedAgents.records,
+        managedAgents.activities,
+        openableAgentIds,
+      ),
+    [managedAgents.activities, managedAgents.records, messages, openableAgentIds],
   );
   const returnToMain = useCallback(() => {
     setDetailTaskPickerOpen(false);

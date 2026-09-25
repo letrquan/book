@@ -12,7 +12,8 @@
  *   `disable_on_external_context`).
  * - Only user and assistant text is shown to the model; tool output never is.
  * - Every session is attempted once: the watermark records it whatever the outcome, except when the
- *   provider call itself failed, which is retried at the next start.
+ *   provider call itself failed, or its reply was empty or cut off at the output limit, which is
+ *   retried at the next start.
  * - Runs are serialized by a lock file; a stale lock (older than the lock TTL) is taken over.
  * - Nothing here throws to the caller.
  */
@@ -61,6 +62,8 @@ const MAX_MESSAGE_CHARS = 4_000;
 const MAX_ATTEMPTS = 3;
 /** Older sessions are not mined: their facts are the likeliest to have been reversed since. */
 const MAX_AGE_MS = 14 * 24 * 3_600_000;
+/** Finish reasons that mean a reply stopped at its output limit (OpenAI and Anthropic spellings). */
+const TRUNCATION_FINISH_REASONS = new Set(['length', 'max_tokens']);
 
 export interface ExtractionSessionSource {
   list(): SessionMeta[];
@@ -254,6 +257,7 @@ async function complete(
   signal?: AbortSignal,
 ): Promise<string> {
   let text = '';
+  let truncated = false;
   for await (const event of provider.stream(
     config,
     [
@@ -265,7 +269,15 @@ async function complete(
   )) {
     if (event.type === 'text' && event.content) text += event.content;
     if (event.type === 'error') throw new Error(event.error ?? 'provider error');
+    if (event.finishReasons?.some((reason) => TRUNCATION_FINISH_REASONS.has(reason))) {
+      truncated = true;
+    }
   }
+  // A reply that spent its output limit on reasoning comes back empty, or cut off
+  // mid-answer. Neither is the session's answer, so it counts as a failed attempt
+  // and is retried at the next start instead of marking the session read.
+  if (truncated) throw new Error('extraction reply was cut off at its output limit');
+  if (!text.trim()) throw new Error('extraction reply was empty');
   return text;
 }
 

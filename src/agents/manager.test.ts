@@ -1478,6 +1478,114 @@ describe('AgentManager lifecycle', () => {
     manager.dispose();
   });
 
+  it('sends no effort for a child when nothing chose one and its model has no catalog entry (#245)', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({
+      workspace: root,
+      model: 'uncatalogued-model',
+      effort: 'high',
+      defaultEffort: 'high',
+      effortExplicit: false,
+    });
+    config.settings.agents.persist = false;
+    const childConfigs: AgentConfig[] = [];
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (nextConfig, _registry, _prompt, history) => {
+        childConfigs.push(nextConfig);
+        return history;
+      },
+    });
+
+    const defaulted = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+    await manager.wait(defaulted.id, 1000);
+    // The value is kept, since the Anthropic path sends it, but nothing chose it, so
+    // the OpenAI-compatible request carries no `reasoning_effort`.
+    expect(childConfigs[0]).toMatchObject({ effort: 'high', effortExplicit: false });
+
+    manager.updateConfig({ ...config, effortExplicit: true });
+    const chosen = await manager.spawn({ agent: 'explorer', prompt: 'inspect again' });
+    await manager.wait(chosen.id, 1000);
+    expect(childConfigs[1]).toMatchObject({ effort: 'high', effortExplicit: true });
+    manager.dispose();
+  });
+
+  it("clamps a child's chosen effort to its model's catalog (#245)", async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root, effort: 'max', effortExplicit: true });
+    config.settings.agents.persist = false;
+    config.settings.provider = {
+      gateway: {
+        type: 'openai',
+        baseURL: 'https://gateway.example/v1',
+        apiKey: 'gateway-key',
+        models: { capped: { effort: { levels: ['low', 'medium', 'high'] } } },
+      },
+    };
+    config.settings.agents.profiles.explorer = { model: 'gateway/capped' };
+    const childConfigs: AgentConfig[] = [];
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (nextConfig, _registry, _prompt, history) => {
+        childConfigs.push(nextConfig);
+        return history;
+      },
+    });
+
+    const record = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+    await manager.wait(record.id, 1000);
+    // `--effort max` is chosen, but the child model lists nothing above `high`.
+    expect(childConfigs[0]).toMatchObject({
+      model: 'capped',
+      effort: 'high',
+      effortExplicit: true,
+    });
+    manager.dispose();
+  });
+
+  it('keeps the no-resume mark on a follow-up the review still waits on, and drops it on one it does not (#245)', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, prompt, history) => {
+        if (prompt === 'review this') await gate;
+        return history;
+      },
+    });
+    const runner = reviewRunnerFor(manager);
+
+    // A follow-up sent while the review's own run is going is queued behind it. That run
+    // never reaches a finished status, so the review's `wait` receives the follow-up's
+    // result: the follow-up is still the review's, and a restart must not re-run it.
+    const queued = await runner.spawn('explorer', 'review this');
+    await vi.waitFor(async () => expect((await manager.get(queued.id))?.status).toBe('running'));
+    expect((await manager.get(queued.id))?.resumeAfterRestart).toBe(false);
+    await manager.send(queued.id, 'queued follow-up');
+    const reviewWait = runner.wait(queued.id, 5000);
+    release();
+    const received = await reviewWait;
+    expect(received.status).toBe('completed');
+    expect((await manager.get(queued.id))?.prompt).toBe('queued follow-up');
+    expect((await manager.get(queued.id))?.resumeAfterRestart).toBe(false);
+
+    // A follow-up sent after the review's run finished starts a run of its own.
+    const finished = await runner.spawn('explorer', 'quick look');
+    await manager.wait(finished.id, 1000);
+    expect((await manager.get(finished.id))?.resumeAfterRestart).toBe(false);
+    await manager.send(finished.id, 'please continue');
+    expect((await manager.get(finished.id))?.resumeAfterRestart).toBeUndefined();
+    manager.dispose();
+  });
+
   it('refreshes and normalizes its permission mode when config or host mode changes', async () => {
     const root = tempRoot();
     const config = defaultConfig({ workspace: root });
@@ -1785,7 +1893,10 @@ describe('children re-driven after a restart', () => {
   }
 
   /** Spawns a child, kills the process while it runs, restarts, and collects completions. */
-  async function restartAndCollect(parentToolCallId: string | undefined) {
+  async function restartAndCollect(
+    parentToolCallId: string | undefined,
+    spawnWith?: (manager: AgentManager) => Promise<{ id: string }>,
+  ) {
     root = mkdtempSync(join(tmpdir(), 'resume-child-'));
     process.env.BOOK_HOME = join(root, 'book-home');
     const config = defaultConfig({ workspace: root });
@@ -1800,13 +1911,15 @@ describe('children re-driven after a restart', () => {
       storeRoot: root,
       findGitRoot: async () => undefined,
     });
-    const spawned = await first.spawn({
-      agent: 'explorer',
-      prompt: 'survey',
-      parentSessionId: 'parent-1',
-      notifyParentOnCompletion: false,
-      ...(parentToolCallId ? { parentToolCallId } : {}),
-    });
+    const spawned = spawnWith
+      ? await spawnWith(first)
+      : await first.spawn({
+          agent: 'explorer',
+          prompt: 'survey',
+          parentSessionId: 'parent-1',
+          notifyParentOnCompletion: false,
+          ...(parentToolCallId ? { parentToolCallId } : {}),
+        });
     await new Promise((resolve) => setTimeout(resolve, 200));
     // The process exits (Ctrl-C, quit) while the spawner is still waiting on the child.
     const internals = first as unknown as {
@@ -1817,10 +1930,8 @@ describe('children re-driven after a restart', () => {
     process.off('exit', internals.exitHandler);
     internals.store?.dispose?.();
 
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => answered('resumed answer')),
-    );
+    const resumedFetch = vi.fn(async () => answered('resumed answer'));
+    vi.stubGlobal('fetch', resumedFetch);
     const second = new AgentManager(config, [], {
       storeRoot: root,
       findGitRoot: async () => undefined,
@@ -1834,7 +1945,13 @@ describe('children re-driven after a restart', () => {
       await new Promise((resolve) => setTimeout(resolve, 300));
       await second.waitForIdle();
       await new Promise((resolve) => setTimeout(resolve, 100));
-      return { result: (await second.get(spawned.id))?.result, completions };
+      const record = await second.get(spawned.id);
+      return {
+        result: record?.result,
+        completions,
+        record,
+        requests: resumedFetch.mock.calls.length,
+      };
     } finally {
       second.dispose();
       try {
@@ -1851,9 +1968,19 @@ describe('children re-driven after a restart', () => {
     expect(completions).toHaveLength(1);
   });
 
-  it('keeps a /review-style child silent after a restart', async () => {
+  it('keeps a delivery-suppressed child silent after a restart', async () => {
     const { result, completions } = await restartAndCollect(undefined);
     expect(result).toBe('resumed answer');
+    expect(completions).toHaveLength(0);
+  });
+
+  it('does not re-run a /review agent, whose report died with the process (#245)', async () => {
+    const { record, completions, requests } = await restartAndCollect(undefined, (manager) =>
+      reviewRunnerFor(manager, { parentSessionId: 'parent-1' }).spawn('explorer', 'survey'),
+    );
+    expect(requests).toBe(0);
+    expect(record).toMatchObject({ status: 'interrupted', resumable: false });
+    expect(record?.error).toMatch(/not resumed/i);
     expect(completions).toHaveLength(0);
   });
 });
