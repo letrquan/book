@@ -182,7 +182,10 @@ async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 1
 
   sse(res, { ...base, choices: [{ index: 0, delta: { role: 'assistant' } }] });
 
-  if (turn.tool) {
+  // `tools: [...]` sends several calls in one turn, the way a model that
+  // batches parallel reads does; `tool` is the one-call shorthand.
+  const turnTools = Array.isArray(turn.tools) ? turn.tools : turn.tool ? [turn.tool] : [];
+  if (turnTools.length > 0) {
     if (turn.text) {
       for (const piece of turn.text.match(/.{1,12}/gs) ?? [turn.text]) {
         if (delayMs > 0) await paceDelta(delayMs);
@@ -190,32 +193,34 @@ async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 1
       }
     }
     if (turn.holdMs) await new Promise((resolve) => setTimeout(resolve, turn.holdMs));
-    if (delayMs > 0) await paceDelta(delayMs);
-    // Tool arguments are streamed as a JSON string, exactly like OpenAI does.
-    sse(res, {
-      ...base,
-      choices: [
-        {
-          index: 0,
-          delta: {
-            tool_calls: [
-              {
-                index: 0,
-                id: `call_mock_${id}`,
-                type: 'function',
-                function: {
-                  name: turn.tool.name,
-                  arguments:
-                    typeof turn.tool.rawArguments === 'string'
-                      ? turn.tool.rawArguments
-                      : JSON.stringify(turn.tool.arguments ?? {}),
+    for (const [index, tool] of turnTools.entries()) {
+      if (delayMs > 0) await paceDelta(delayMs);
+      // Tool arguments are streamed as a JSON string, exactly like OpenAI does.
+      sse(res, {
+        ...base,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index,
+                  id: `call_mock_${id}_${index}`,
+                  type: 'function',
+                  function: {
+                    name: tool.name,
+                    arguments:
+                      typeof tool.rawArguments === 'string'
+                        ? tool.rawArguments
+                        : JSON.stringify(tool.arguments ?? {}),
+                  },
                 },
-              },
-            ],
+              ],
+            },
           },
-        },
-      ],
-    });
+        ],
+      });
+    }
     sse(res, { ...base, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
   } else {
     // Chunk the text so the TUI exercises its streaming render path.

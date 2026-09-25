@@ -1,7 +1,18 @@
 import type { Message } from '../../types/messages.js';
+import { splitReasoningParts } from '../../reasoning-tags.js';
 
+/**
+ * Whether assistant content draws nothing.
+ *
+ * An empty reasoning block counts as blank. Routers that inline thinking emit
+ * `<think></think>` ahead of every tool call, and treating that as content kept
+ * each of those turns as a separate transcript entry with its own spacing: two
+ * blank rows between every tool row of a run. A block with reasoning in it is
+ * not blank, since it renders as a thought row.
+ */
 export function isBlankAssistantContent(content: string | undefined | null): boolean {
-  return !content || content.trim().length === 0;
+  if (!content || content.trim().length === 0) return true;
+  return splitReasoningParts(content).every((part) => part.text.trim().length === 0);
 }
 
 /** Merge completed tool-only assistant messages into the preceding assistant turn for display. */

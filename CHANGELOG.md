@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **The compact transcript folds the agent's reading into one row.** A run of read-only calls
+  (`Read`, `Glob`, `Grep`, git read tools, `ToolSearch`, task lookups, `BashOutput`, session
+  history) collapses into one grey summary row, such as `✓ Read config.ts, loader.ts   2 files · 3 searches`.
+  This holds both within one parallel batch and across consecutive turns with no text of their own.
+  Edits, `Bash`, web and MCP calls, delegation, failures and anything awaiting permission keep their
+  own rows, and so does any row you expanded. Ctrl+O and screen readers still show every call. A
+  running read joins the summary, which carries the spinner.
+- **Empty `<think></think>` blocks no longer split a turn apart.** Routers that inline reasoning
+  put one ahead of every tool call. A tool-only turn with one counted as having content, so it
+  stayed a separate transcript entry and drew two blank rows between consecutive tool rows. It now
+  merges into the turn before it like any other blank tool-only turn.
 - **New default look: the `rubric` theme**, set like a rubricated manuscript. Two other palettes
   share its layout: `folio` (one gilt accent) and `apple` (the old palette). Select one with
   `"theme"`. A palette changes colours only.

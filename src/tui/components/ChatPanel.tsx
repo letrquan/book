@@ -12,6 +12,11 @@ import type {
 } from '../../session/agent-interactions.js';
 import { AgentMessage, managedAgentTracesEqualForMessage } from './AgentMessage.js';
 import { UserMessage, userTurnTextWidth } from './UserMessage.js';
+import {
+  createQuietCollapser,
+  groupQuietInvocations,
+  type QuietToolContext,
+} from '../quiet-tools.js';
 import { WelcomeScreen } from './WelcomeScreen.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount, useDebugRender } from '../debug.js';
@@ -27,6 +32,7 @@ import { useVirtualTranscript, VirtualTranscriptRow } from './virtual-transcript
 const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
 const EMPTY_BOUNDARIES: CompactBoundary[] = [];
+const NO_SOURCE_IDS: ReadonlyMap<string, readonly string[]> = new Map();
 const STREAMING_TIMELINE_MIN_WINDOW = 16;
 const STREAMING_TIMELINE_MAX_WINDOW = 64;
 const COMPLETED_TIMELINE_MIN_WINDOW = 80;
@@ -64,7 +70,25 @@ function estimateWrappedRows(content: string, contentWidth: number): number {
   );
 }
 
-function estimateTimelineRows(entry: Message | CompactBoundary, terminalWidth: number): number {
+function estimateToolRows(message: Message, quietTools: QuietToolContext | undefined): number {
+  const calls = message.toolCalls ?? [];
+  if (!quietTools) return calls.length * 2 + (message.toolResults?.length ?? 0);
+  const invocations = calls.map((call) => ({
+    call,
+    result: message.toolResults?.find((result) => result.toolCallId === call.id),
+  }));
+  // A folded run of quiet calls draws one summary row.
+  return groupQuietInvocations(invocations, message, quietTools).reduce(
+    (rows, row) => rows + (row.kind === 'quiet' ? 1 : 2 + (invocations[row.index]!.result ? 1 : 0)),
+    0,
+  );
+}
+
+function estimateTimelineRows(
+  entry: Message | CompactBoundary,
+  terminalWidth: number,
+  quietTools?: QuietToolContext,
+): number {
   if ('transcriptOrdinal' in entry) return 1;
 
   // A user turn is its prompt and nothing else: it wraps at its own measure, and
@@ -75,7 +99,7 @@ function estimateTimelineRows(entry: Message | CompactBoundary, terminalWidth: n
       : transcriptGrid(terminalWidth).content;
   const textRows = estimateWrappedRows(entry.content, measure);
   const attachmentRows = entry.attachments?.length ? 1 : 0;
-  const toolRows = (entry.toolCalls?.length ?? 0) * 2 + (entry.toolResults?.length ?? 0);
+  const toolRows = estimateToolRows(entry, quietTools);
   return Math.max(1, textRows + attachmentRows + toolRows);
 }
 
@@ -199,18 +223,44 @@ export function ChatPanelInner({
     ? getStreamingTimelineWindow(terminalHeight)
     : historyWindowSize;
   const hiddenTimelineEntries = Math.max(0, timeline.length - activeWindowSize);
-  const visibleTimeline = useMemo(
+  const windowedTimeline = useMemo(
     () => (hiddenTimelineEntries > 0 ? timeline.slice(hiddenTimelineEntries) : timeline),
     [hiddenTimelineEntries, timeline],
   );
+  // The compact transcript folds runs of quiet tool calls (reads, searches,
+  // lookups) into one summary row, across consecutive messages as well as
+  // within one. The fold happens here, on the data, so the virtual transcript
+  // sizes one entry per drawn row instead of hiding merged entries (each would
+  // still count as a row). Ctrl+O's detailed transcript and screen readers see
+  // every call.
+  const quietCollapserRef = useRef<ReturnType<typeof createQuietCollapser> | null>(null);
+  quietCollapserRef.current ??= createQuietCollapser();
+  const pendingToolId = pendingPermission?.toolCall.id;
+  const quietTools = useMemo<QuietToolContext | undefined>(() => {
+    if (transcriptMode !== 'compact' || screenReader) return undefined;
+    // What the user singled out keeps its own row.
+    const pinned = new Set<string>();
+    for (const [id, expanded] of toolExpansionOverrides ?? []) if (expanded) pinned.add(id);
+    if (expandedToolCallId) pinned.add(expandedToolCallId);
+    return { pinned, pendingToolId };
+  }, [expandedToolCallId, pendingToolId, screenReader, toolExpansionOverrides, transcriptMode]);
+  const displayTimeline = useMemo(
+    () =>
+      quietTools
+        ? quietCollapserRef.current!(windowedTimeline, quietTools, showThinking)
+        : { entries: windowedTimeline, sourceIds: NO_SOURCE_IDS },
+    [quietTools, showThinking, windowedTimeline],
+  );
+  const visibleTimeline = displayTimeline.entries;
   const getTimelineKey = useCallback(
     (entry: Message | CompactBoundary) =>
       'transcriptOrdinal' in entry ? `boundary-${entry.id}` : entry.id,
     [],
   );
   const estimateRows = useCallback(
-    (entry: Message | CompactBoundary) => estimateTimelineRows(entry, terminalWidth ?? 80),
-    [terminalWidth],
+    (entry: Message | CompactBoundary) =>
+      estimateTimelineRows(entry, terminalWidth ?? 80, quietTools),
+    [quietTools, terminalWidth],
   );
   const hiddenHistoryRows = hiddenTimelineEntries > 0 ? (density === 'tight' ? 1 : 2) : 0;
   const virtualTimeline = useVirtualTranscript({
@@ -307,7 +357,14 @@ export function ChatPanelInner({
               </Box>
             );
           } else {
-            const isStreaming = message.id === streamingMessageId;
+            // A merged entry keeps its first message's id; it is live while any
+            // message folded into it is.
+            const isStreaming =
+              message.id === streamingMessageId ||
+              Boolean(
+                streamingMessageId &&
+                displayTimeline.sourceIds.get(message.id)?.includes(streamingMessageId),
+              );
             const rowExpandedToolCallId = messageOwnsTool(message, selectedToolCallId)
               ? selectedToolCallId
               : undefined;
@@ -363,6 +420,7 @@ export function ChatPanelInner({
                   showAllToolOutputIds={showAllToolOutputIds}
                   showThinking={showThinking}
                   trimTrailingSpacing={nextEntryIsUser}
+                  quietTools={quietTools}
                 />
               </Box>
             );

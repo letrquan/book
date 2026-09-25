@@ -1519,3 +1519,74 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).not.toContain('Session usage plain fallback');
   });
 });
+
+describe('ChatPanel quiet tool runs', () => {
+  const readTurn = (id: string, file: string, content = '<think></think>'): Message => ({
+    ...msg(id, 'assistant', content),
+    toolCalls: [{ id: `${id}-read`, name: 'Read', arguments: { file_path: file } }],
+    toolResults: [successResult(`${id}-read`, 'contents')],
+  });
+  const session: Message[] = [
+    msg('u1', 'user', 'look around'),
+    readTurn('a1', 'src/a.ts', 'Reading the three modules.'),
+    readTurn('a2', 'src/b.ts'),
+    readTurn('a3', 'src/c.ts'),
+    {
+      ...msg('a4', 'assistant', ''),
+      toolCalls: [{ id: 'edit', name: 'Edit', arguments: { file_path: 'src/c.ts' } }],
+      toolResults: [failureResult('edit', 'old_string not found')],
+    },
+  ];
+
+  it('folds one-read turns into a single summary row in the compact transcript', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel messages={session} terminalWidth={100} transcriptMode="compact" reducedMotion />,
+      ),
+    );
+    const lines = frame(view.lastFrame).split('\n');
+
+    const summary = lines.filter((line) => /Read\s+a\.ts, b\.ts, c\.ts/.test(line));
+    expect(summary).toHaveLength(1);
+    expect(summary[0]).toContain('3 files');
+    expect(lines.some((line) => /Read\s+src\/b\.ts/.test(line))).toBe(false);
+    // The narration that started the run still shows, and the failed edit keeps its row.
+    expect(lines.some((line) => line.includes('Reading the three modules.'))).toBe(true);
+    expect(lines.some((line) => line.includes('old_string not found'))).toBe(true);
+  });
+
+  it('shows every call again in the detailed transcript', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={session}
+          terminalWidth={100}
+          transcriptMode="detailed"
+          reducedMotion
+        />,
+      ),
+    );
+    const output = frame(view.lastFrame);
+    for (const file of ['a', 'b', 'c']) {
+      expect(output).toMatch(new RegExp(`Read\\s+src/${file}\\.ts`));
+    }
+    expect(output).not.toMatch(/Read\s+a\.ts, b\.ts/);
+  });
+
+  it('gives a pinned read back its own row', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={session}
+          terminalWidth={100}
+          transcriptMode="compact"
+          toolExpansionOverrides={new Map([['a2-read', true]])}
+          reducedMotion
+        />,
+      ),
+    );
+    const output = frame(view.lastFrame);
+    expect(output).toMatch(/Read\s+src\/b\.ts/);
+    expect(output).not.toMatch(/a\.ts, b\.ts, c\.ts/);
+  });
+});
