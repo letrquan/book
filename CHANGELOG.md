@@ -106,8 +106,9 @@ All notable changes to this project are documented in this file.
   - **The stop:** `Read` now stops at a line boundary before the clip and ends with a notice, for
     example `[Lines 1-1163 of 1894 shown, the most one Read returns (50 KB). Continue with offset:
     1164.]`. A Read that its line limit stops gets the same notice.
-  - **Long lines:** a single line longer than the whole budget is shown cut, and the notice points
-    past it.
+  - **Long lines:** a line that fits under the clip on its own is returned whole, as before. A line
+    too long for that is shown cut to fill the clip, and the notice gives its size in bytes and
+    points past it: `… Continue with offset: 2. Line 1 (60000 bytes) was cut to fit.]`.
   - **Outlines:** an outline also stops under the clip, keeping its own note on where the rest start.
   - **Descriptions:** the `Read` description and its `offset`/`limit` descriptions now say the
     default is 2000 lines or 50 KB. These strings are part of the cached tool schema, so the prompt
@@ -118,15 +119,23 @@ All notable changes to this project are documented in this file.
   - **Methods that were missing:** a method written return-type-first (`public int getN() {`) or
     declared with Kotlin's `fun`. `Foo.java` outlined to its package, class and constructor only.
   - **Shapes now listed:** those methods, C# Allman braces and block-scoped namespaces, Java and C#
-    interface methods without a body, `async *` generators, `#private` methods, nested type
-    arguments, and a destructured parameter that wraps.
-  - **Lines that no longer leak in:** statements (`if (`, `else if (`, `go func() {`); a call that
-    closes into a callback (`useEffect(() => {`, `).then(() => {`); object keys and import-list
-    members named like keywords (`enum: [...]`, `describe,`); JavaScript/TypeScript template text
-    at column 0; an Allman-style `{` line; and `#` comments in Makefiles, Dockerfiles, PowerShell
-    files and extension-less scripts that start with `#!`.
+    interface methods without a body, `async *entries()` generator methods (a plain `*values()`
+    generator method is still not listed), `#private` methods, nested type arguments, and a
+    destructured parameter that wraps.
+  - **Lines that no longer leak in:** statements (`if (`, `else if (`, `foreach(`, `assert x;`,
+    `go func() {`); a call that closes into a callback (`useEffect(() => {`, `).then(() => {`);
+    object keys and import-list members named like keywords (`enum: [...]`, `describe,`);
+    template text at column 0 in `.ts`, `.mts`, `.cts`, `.mjs` and `.cjs` files; an Allman-style
+    `{` line; and `#` comments in Makefiles, Dockerfiles, PowerShell files and extension-less
+    scripts that start with `#!`. A file named like a tool but with a code extension
+    (`makefile.c`, `dockerfile.rs`) keeps its `#` lines.
+  - **JSX-capable files** (`.tsx`, `.jsx`, `.js`) are not scanned for template text. JSX text is
+    not JavaScript, and a `/*` or a lone backtick in it (`<p>All requests to /api/* are
+    proxied</p>`) would open a comment or template that never closes, hiding every later
+    declaration.
   - **Markdown:** a file that opens with a `---` rule keeps the headings after it. Front matter now
-    needs YAML `key:` lines up to its closing `---`.
+    needs YAML up to its closing `---`: a `key:` line first, then `key:` lines (quoted keys, keys
+    with spaces and `$schema:` included), indented or `- ` lines, and `#` comments.
   - **Header:** it no longer counts the empty line after a trailing newline.
   - **The contract:** the supported shapes are a table in `src/tools/file.test.ts`, which the
     README's scope statement follows.

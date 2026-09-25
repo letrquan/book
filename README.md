@@ -410,15 +410,17 @@ effect everywhere.
 first; `offset`/`limit` are for files larger than that. A Read that stops before the end of the
 file ends with a notice naming where to continue, such as `[Lines 1-1163 of 1894 shown, the most
 one Read returns (50 KB). Continue with offset: 1164.]`, so the shared 50 KB clip on tool results,
-whose notice names a file `Read` cannot open, never cuts a Read. A line longer than the whole budget
-is shown cut, and the notice points past it. `Read { filePath, outline: true }` is the survey call:
+whose notice names a file `Read` cannot open, never cuts a Read. A line that fits under the clip on
+its own is returned whole; a longer one is shown cut to fill it, and the notice gives the line's size
+and points past it. `Read { filePath, outline: true }` is the survey call:
 it returns only the lines that say what a file contains, each with its line number, so the model
 can decide what to read in full.
 
 - **Markdown** (`.md`, `.markdown`, `.mdx`): the `#`…`######` and setext headings, and nothing
   else. Fenced code blocks are skipped, so a `# comment` in a shell example is not taken for a
-  heading. A leading `---` opens front matter, which is skipped, only when YAML `key:` lines run
-  up to a closing `---`; otherwise it is a horizontal rule, and the headings after it count.
+  heading. A leading `---` opens front matter, which is skipped, only when YAML runs up to a
+  closing `---`: a `key:` line first, then `key:` lines (any text up to a colon), indented or `- `
+  lines, and `#` comments. Otherwise it is a horizontal rule, and the headings after it count.
 - **Everything else**: every line at indentation zero except blank lines, comments, lines of
   closing punctuation alone (`}`, `});`, `]);`) and an Allman-style `{` line, plus lines indented
   by up to four spaces that declare something:
@@ -434,19 +436,23 @@ can decide what to read in full.
   - an arrow-function member (`handle = (event) => {`).
 
   Lines shaped like these that are not declarations stay out: control flow (`if (`, `else if (`,
-  `for (`, `foreach (`, `switch (`, `catch (`), `return foo(`, `new Foo(`, `go func() {`,
-  `defer func() {`, a call that closes into a callback (`useEffect(() => {`, `).then(() => {`),
-  and a chained call (`foo(x).then(`). In JavaScript and TypeScript, the text of a multi-line
-  template literal is skipped at any indentation. A `#` line is a comment in Python, shell, YAML,
-  TOML, Ruby and PowerShell files, Makefiles, Dockerfiles, and extension-less scripts that start
+  `for (`, `foreach(`, `using(`, `switch (`, `catch (`, `synchronized(`), `assert x;`,
+  `return foo(`, `new Foo(`, `go func() {`, `defer func() {`, a call that closes into a callback
+  (`useEffect(() => {`, `).then(() => {`), and a chained call (`foo(x).then(`). In `.ts`, `.mts`,
+  `.cts`, `.mjs` and `.cjs` files, the text of a multi-line template literal is skipped at any
+  indentation. `.tsx`, `.jsx` and `.js` files are not scanned for it, because JSX text may hold a
+  `/*` or a lone backtick that would open a comment or template that never closes. A `#` line is a
+  comment in Python, shell, YAML, TOML, Ruby and PowerShell files, Makefiles, Dockerfiles (unless
+  the name ends in a code extension, as `makefile.c` does), and extension-less scripts that start
   with `#!`; elsewhere C preprocessor lines and Rust attributes stay in.
 - **What it covers:** these shapes fit TypeScript/JavaScript, Python, Go, Rust, Java, Kotlin
   (declarations with `fun`; a `name(args) {` line there is a call taking a trailing lambda), C#
   (members at indentation 8 under a block-scoped `namespace X {`) and Dart. The supported shapes
   are the `Read outline contract` table in `src/tools/file.test.ts`. Not covered: C++ in-class
   members (`const std::string& name() const {`), Java inner-class members (indentation 8), a Dart
-  constructor with no body, a signature whose closing `)` shares a line with its last parameter,
-  and PowerShell `<# … #>` block comments.
+  constructor with no body, a plain `*values()` generator method (only `async *` is listed), a
+  signature whose closing `)` shares a line with its last parameter, and PowerShell `<# … #>`
+  block comments.
 
 What an outline saves depends on the file: `src/agent/loop.ts` goes from 2876 lines to 51, and
 this README goes to its 33 headings. A test file keeps its `describe`/`it` lines, and a JSON file
