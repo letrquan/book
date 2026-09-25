@@ -139,6 +139,72 @@ All notable changes to this project are documented in this file.
   Both used to say `completion`. The hooks run without the run's own signal, each under its usual
   10 s timeout. Ctrl+C on `book -p` still ends the process at once, since print mode installs no
   SIGINT handler.
+- **IPv6 addresses that carry an IPv4 destination are judged by that IPv4 address** (#246). On a
+  host with a NAT64 gateway or a 6to4/Teredo relay, `https://[64:ff9b::a00:1]/` reaches 10.0.0.1,
+  and it passed both the pre-flight check and the connect-time check. `isBlockedIpv6` now decodes
+  the embedded address and applies the IPv4 policy to it, as it already did for `::ffff:` mapped
+  addresses, so both check sites are covered:
+  - NAT64 `64:ff9b::/96`: the last 32 bits.
+  - 6to4 `2002::/16`: bits 16-47.
+  - Teredo `2001::/32`: the server (bits 32-63) and the XOR-obfuscated client (the last 32 bits).
+    Either one being private blocks the address.
+  - Local-use NAT64 `64:ff9b:1::/48`, laid out like the /96 above (bits 48-95 zero): the last 32
+    bits. Any other shape in that range is blocked, because RFC 8215 lets the operator pick the
+    prefix length, so where the IPv4 bits sit cannot be known.
+- **A run stopped by network-policy refusals now says what lifts them** (#246). Three turns of
+  refused `WebFetch` calls to a private address stopped an unattended run as `all_tools_blocked`
+  with "grant the permission, add an allow rule, or change the permission mode", even under
+  `bypassPermissions`, where none of that applies. The message now names the remedy for each kind
+  of refusal in the streak:
+  - a refused `WebFetch`: `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment;
+  - a refused `WebSearch` (every built-in provider resolved to a private destination): the host's
+    DNS or proxy, such as a fake-IP DNS in 198.18.0.0/15. The variable does nothing for it, because
+    the search providers always validate strictly, so the message does not suggest it;
+  - a permission refusal: the old text.
+
+  The message also lists every tool refused over the streak rather than only its last turn's,
+  because in a mixed streak the call a remedy is for may be turns back.
+- **A repeated identical refusal from a tool gets the "Do not retry it unchanged" escalation**
+  (#246). The registry returned every `blocked` tool result before its repeated-failure note, so a
+  model re-issuing the same refused `WebFetch` never heard it. Refusals the loop issues itself, such
+  as a denied permission, are unchanged.
+- **On Windows, a persistent background shell job no longer loses its runner while Book polls its
+  record (#249).** Windows fails a rename over a file that another process has open, even just to
+  read it, with EPERM. The detached runner rewrites the job record every second while the shell
+  manager keeps reading it, and nothing in the runner caught that EPERM, so the runner died on it.
+  The job was left recorded as `running`, and its command kept running with nothing left to stop
+  it. Ten seconds later Book reported the job `lost`.
+  - **Retry:** `writeJsonAtomic` now retries a contended rename on win32 only, and only for
+    EPERM/EACCES/EBUSY. The runner waits up to 1 s. Writers in the TUI's own process (the shell
+    manager, memory extraction) wait up to 100 ms, so rendering never stalls for long.
+  - **Non-terminal writes:** a heartbeat, child-pid or `stopping` write that still fails no longer
+    ends the runner. It leaves a note in the job's log, and the next heartbeat writes the same
+    state.
+  - **Terminal record:** it is retried on a timer until written (20 attempts) rather than lost.
+  - **Temp files:** a failed write no longer leaves its `.tmp` file beside the record.
+  - **Before and after:** with a second process reading the record in a tight loop, the runner
+    died with EPERM within a second in 3/3 runs. It now survives in 12/12, and a stop request ends
+    it with exit code 0 and a `killed` record.
+- **The Windows-flaky tests no longer depend on how fast the runner is, and the local gate passes
+  on Windows (#249).** Each test waited on the clock where it should have waited for the result.
+  - **`ByokWizard`** sent Enter 20 ms after the typed text and assumed React had rendered by then.
+    A stalled runner once rendered the key's bullets beside "API key is required". Each keypress
+    now goes through `act`, and the helpers wait for the typed text to render.
+  - **`delegation-latency`** compared one sample per child duration and failed in both directions.
+    A one-second stall of the short sample failed it as `1117 < 1000`. It now takes the best of
+    three samples, removes the child timer's own lateness, and fails only when the long delegation
+    costs more.
+  - **`settings-cli`** gave each tsx spawn a 15 s ceiling, and a spawn that normally takes 2 s once
+    ran past it. The ceiling is now 60 s: a latency limit, not a wait.
+  - **`shell-manager`** gave the persistent SIGTERM test the interactive stop budget (5 s), not the
+    30 s budget the other persistent test already used. Its cleanup trusted `rmSync`'s
+    `maxRetries`, which Node 24's native `rm` ignores for EPERM. The cleanup now polls until
+    Windows releases the directory.
+  - **`file.test`:** the inbox test no longer dies creating a symlink on a Windows account without
+    that privilege. It skips only the symlinked half, the way `snapshot-store.test.ts` already does.
+  - **`run-ambient` and `persist`** failed when the suite ran with `BOOK_HOME` set, which is the safe
+    way to run it. They now clear it themselves. The `persist` global-scope tests had also written
+    their settings into that `BOOK_HOME` rather than the fake home.
 - **A long reply no longer jitters sideways while it streams.** Once a reply outgrew the live
   window (`width × 24` characters), the window's start moved forward with every streamed delta,
   sometimes cutting a word in half. Every wrapped line of the tail then reflowed on every frame,
@@ -262,6 +328,31 @@ All notable changes to this project are documented in this file.
   list (`TaskList({ reason: "verify all tasks are complete" })`) and got a hard
   `invalid_arguments` for it, then repeated the call bare — two wasted turns each time (#216). The
   field is declared and ignored; the schema stays closed like every other built-in tool's.
+- **Tool-call arguments that are not valid JSON get their own error.** The provider clients keep
+  such arguments as `{ __raw: "<text>" }`, and schema validation then answered
+  `arguments.filePath is required; … arguments.__raw is not allowed` with the allowed-arguments
+  list, although the model had sent every one of those arguments. Models usually resent the same
+  payload: about 25 rejected calls across 16 dogfood runs, mostly large `Edit`, `ApplyPatch` and
+  `Bash` arguments with an unescaped backslash or newline (#242).
+  - **The error:** the call now fails with `invalid_json_arguments`, which names the parse error
+    and its position (`Invalid JSON arguments for Edit: Bad escaped character in JSON at position
+    49 …`). Its fix line says to resend the whole call with valid JSON and to escape backslashes
+    and newlines inside strings. The status, the retry behaviour and the escalation of identical
+    resends are the same as for `invalid_arguments`.
+  - **Order:** a tool that is not active is still refused as `tool_not_active`, whatever its
+    arguments. The JSON check comes after that, and before argument-scoped rules such as
+    `Bash(git *)`, which cannot match text that never parsed.
+  - **SDK:** `ToolDiscoveryContext` gains an optional `isActive(name)`, the name-only half of
+    `canExecute`. A discovery object an SDK caller builds without it keeps working. Its
+    `canExecute` then runs before the JSON check, where it always ran, so it refuses the same
+    calls as before.
+  - **History:** like a schema rejection, such a call never counts as run when a session's
+    history is reloaded.
+  - **TUI:** the tool row shows the raw text as its target. A row's target now has every run of
+    control characters (tab, CR, LF and the other C0 characters, DEL, C1) folded to one space, so
+    a newline no longer breaks a row in two. The summary Book builds from that target is folded
+    too; a summary that a tool supplies itself is shown as the tool wrote it. Ordinary spaces are
+    kept verbatim, so a Grep pattern `^    def ` still shows its four spaces.
 - **`Read` says its default is the whole file.** The description offered `offset`/`limit` "for
   large files" and models took the hint too far, reading a 430-line file in four 100-line calls
   and one 20-line span three times over (#224). It now says the default reads the file whole, and
