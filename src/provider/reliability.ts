@@ -16,6 +16,7 @@ export type ProviderErrorCode =
   | 'auth'
   | 'bad_request'
   | 'not_found'
+  | 'unprocessable'
   | 'quota'
   | 'unknown';
 
@@ -32,6 +33,7 @@ export function classifyHttpStatus(status: number): {
   if (status === 402) return { code: 'quota', retryable: false };
   if (status === 400) return { code: 'bad_request', retryable: false };
   if (status === 404) return { code: 'not_found', retryable: false };
+  if (status === 422) return { code: 'unprocessable', retryable: false };
   return { code: 'unknown', retryable: false };
 }
 
@@ -73,9 +75,73 @@ export function wrappedUpstreamStatus(status: number, body: string): number | un
   return classifyHttpStatus(status).retryable ? quotedUpstreamStatus(body) : undefined;
 }
 
+/** `error.code` or `error.type` values that name a context overflow outright. */
+const CONTEXT_OVERFLOW_ERROR_NAMES: ReadonlySet<string> = new Set([
+  'context_length_exceeded',
+  'request_too_large',
+  // llama.cpp's server.
+  'exceed_context_size_error',
+]);
+
+/**
+ * The message and the `code` / `type` names of a provider's error body. The
+ * message is `error.message` (or `error` itself when it is a string), else a
+ * top-level `message` or `detail`; a body that is not JSON is its own message.
+ * `raw` is the upstream's own error body that OpenRouter forwards in
+ * `error.metadata.raw`.
+ */
+function errorBodyParts(body: string): { message: string; names: string[]; raw?: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return { message: body, names: [] };
+  }
+  const root: unknown = Array.isArray(parsed) ? parsed[0] : parsed;
+  if (typeof root !== 'object' || root === null) return { message: body, names: [] };
+  const error: unknown = (root as { error?: unknown }).error;
+  if (typeof error === 'string') return { message: error, names: [] };
+  const source = (typeof error === 'object' && error !== null ? error : root) as Record<
+    string,
+    unknown
+  >;
+  const fallback = (root as { detail?: unknown }).detail;
+  const message =
+    typeof source.message === 'string'
+      ? source.message
+      : typeof fallback === 'string'
+        ? fallback
+        : '';
+  const metadata = source.metadata as { raw?: unknown } | null | undefined;
+  return {
+    message,
+    names: [source.code, source.type].filter((name): name is string => typeof name === 'string'),
+    raw: typeof metadata?.raw === 'string' ? metadata.raw : undefined,
+  };
+}
+
+/**
+ * True when an error body states that the input is too large: its `error.code`
+ * or `error.type` names an overflow, or its message says so
+ * (`isContextOverflowError`). Only the message is read for wording, never the
+ * rest of the body: a field path such as `contents[413]` or an id such as
+ * `req-413-x` elsewhere in a 400 says nothing about the context window, and a
+ * stated overflow permanently lowers the model's learned window. OpenRouter's
+ * own message is generic (`Provider returned error`), so the upstream body it
+ * forwards is read the same way; each level is shorter than the last.
+ */
+function statesContextOverflow(body: string): boolean {
+  const { message, names, raw } = errorBodyParts(body);
+  return (
+    names.some((name) => CONTEXT_OVERFLOW_ERROR_NAMES.has(name.toLowerCase())) ||
+    isContextOverflowError(message) ||
+    (raw !== undefined && statesContextOverflow(raw))
+  );
+}
+
 export function classifyApiError(status: number, body: string): ProviderErrorCode {
   const code = classifyHttpStatus(wrappedUpstreamStatus(status, body) ?? status).code;
-  return code === 'bad_request' && isContextOverflowError(body) ? 'context_overflow' : code;
+  return code === 'bad_request' && statesContextOverflow(body) ? 'context_overflow' : code;
 }
 
 export function classifyProviderError(error: unknown): ProviderErrorCode {
@@ -110,11 +176,16 @@ export function formatApiError(status: number, body: string): string {
   }
 }
 
-/** Detect provider/router responses that mean the input, rather than transport, is too large. */
+/**
+ * Detect provider/router responses that mean the input, rather than transport, is
+ * too large. A 413 counts only where it is named as a status (`API Error: 413`,
+ * `HTTP 413`, `status 413`, `Error code: 413`), never as a bare number: a field
+ * path such as `contents[413]` or an id such as `req-413-x` is not one.
+ */
 export function isContextOverflowError(error: unknown): boolean {
   const normalized = (error instanceof Error ? error.message : String(error)).toLowerCase();
   return (
-    /\b(?:api error:\s*)?413\b/.test(normalized) ||
+    /\b(?:api\s+error|http|(?:error|status)(?:\s+code)?)\s*:?\s*413\b/.test(normalized) ||
     normalized.includes('request entity too large') ||
     normalized.includes('payload too large') ||
     normalized.includes('request too large') ||
@@ -125,7 +196,10 @@ export function isContextOverflowError(error: unknown): boolean {
     /prompt\s+is\s+too\s+long/.test(normalized) ||
     /input\s+(?:is\s+)?too\s+long/.test(normalized) ||
     normalized.includes('too many tokens') ||
-    /input\s+(?:token\s+count\s+)?exceeds?.*(?:context|limit|maximum)/.test(normalized) ||
+    // Gemini names the count: `The input token count (1196266) exceeds the maximum …`.
+    /input\s+(?:token\s+count\s+)?(?:\(\d+\)\s+)?exceeds?.*(?:context|limit|maximum)/.test(
+      normalized,
+    ) ||
     /input\s+exceeds?.*(?:context\s+window|context\s+length|token\s+limit)/.test(normalized) ||
     /maximum\s+context|context\s+(?:length|window|size).*(?:exceed|overflow|too\s+(?:long|large)|maximum)/.test(
       normalized,
@@ -135,34 +209,124 @@ export function isContextOverflowError(error: unknown): boolean {
 }
 
 /**
- * A router that answers 200 with the upstream's error as the assistant text —
- * `[Error] An error occurred while processing your request. ... Please include
- * the request ID ... in your message.` — has not answered. The leading `[Error]`
- * is required; the rest of the sentence, or a usage block reporting zero tokens
- * both ways, confirms it.
+ * The longest text still read as an error envelope rather than an answer when a
+ * model may have written it. OpenAI's server-error sentence is about 260
+ * characters, and a JSON-rendered upstream error rarely passes 1,000.
  */
-export function isUpstreamErrorEnvelope(
-  text: string,
-  usage?: { promptTokens: number; completionTokens: number } | null,
-): boolean {
-  if (!/^\s*\[Error\]/i.test(text)) return false;
-  const zeroUsage = usage != null && usage.promptTokens === 0 && usage.completionTokens === 0;
+const ERROR_ENVELOPE_MAX_CHARS = 2_000;
+
+type EnvelopeUsage = { promptTokens: number; completionTokens: number } | null;
+
+/**
+ * Zero tokens both ways: what a router reports for text it wrote itself, and what
+ * a provider that does not report usage sends.
+ */
+function isZeroUsage(usage?: EnvelopeUsage): boolean {
+  return usage != null && usage.promptTokens === 0 && usage.completionTokens === 0;
+}
+
+/**
+ * True when `text` has the shape a router gives an upstream error it renders as
+ * the answer. 9router's Responses translator writes an upstream `error` or
+ * `response.failed` event as `[Error] <message>` (or the error object as JSON
+ * when it has no message) and ends the stream there. When a model may have
+ * written the text, the envelope must be the whole answer: one `[Error] …` line.
+ * An answer that quotes such a line and goes on to explain it is an answer. With
+ * 0/0 usage any answer that opens with `[Error]` is read as the router's, however
+ * many lines it runs to.
+ */
+export function isErrorEnvelopeShape(text: string, usage?: EnvelopeUsage): boolean {
+  if (isZeroUsage(usage)) return /^\s*\[Error\]/i.test(text);
+  const trimmed = text.trim();
   return (
-    zeroUsage ||
+    trimmed.length <= ERROR_ENVELOPE_MAX_CHARS &&
+    /^\[Error\]/i.test(trimmed) &&
+    !/[\r\n]/.test(trimmed)
+  );
+}
+
+/**
+ * A router that answers 200 with the upstream's error as the assistant text has
+ * not answered. The envelope shape (`isErrorEnvelopeShape`) is required; then
+ * either a usage block reporting zero tokens both ways or the upstream's own
+ * server-error wording confirms it. The supported shapes are the table in
+ * `reliability.test.ts`:
+ *   - OpenAI's `[Error] An error occurred while processing your request. …
+ *     help.openai.com … Please include the request ID <id> in your message.`,
+ *     whatever the usage says;
+ *   - any other one-line server error that names its request ID;
+ *   - with 0/0 usage, any answer that opens with `[Error]`, one line or many.
+ */
+export function isUpstreamErrorEnvelope(text: string, usage?: EnvelopeUsage): boolean {
+  if (!isErrorEnvelopeShape(text, usage)) return false;
+  return (
+    isZeroUsage(usage) ||
     /\brequest id\b/i.test(text) ||
     /help\.openai\.com/i.test(text) ||
     /error occurred while processing/i.test(text)
   );
 }
 
+/**
+ * How long a retryable response's error body may take to arrive. The body only
+ * informs the retry decision (a quoted upstream 4xx stops the retries), so a
+ * router that sends its headers and then stalls must not hold every attempt for
+ * the full `requestTimeoutMs`: ten attempts at 600 s each by default. After this
+ * long the decision is made on what arrived.
+ */
+export const ERROR_BODY_READ_TIMEOUT_MS = 5_000;
+
+/** The most of an error body that is ever read; the rest is cancelled unread. */
+const ERROR_BODY_MAX_BYTES = 65_536;
+
+/**
+ * Read at most ERROR_BODY_MAX_BYTES of an error body, for at most
+ * ERROR_BODY_READ_TIMEOUT_MS. What arrived before the cap, the deadline, an
+ * abort or a stream error is kept, and the rest of the body is cancelled.
+ */
 async function readErrorBody(response: Response, signal?: AbortSignal): Promise<string> {
-  if (signal?.aborted) return '';
+  if (signal?.aborted || !response.body) return '';
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
   try {
-    const text = await response.text();
-    return text.length > 65536 ? text.slice(0, 65536) : text;
+    reader = response.body.getReader();
   } catch {
+    // A body something else already locked has nothing left to read here.
     return '';
   }
+  const decoder = new TextDecoder();
+  let text = '';
+  let received = 0;
+  let finished = false;
+  // Cancelling resolves the pending read as done, which ends the loop below.
+  const stop = (): void => {
+    reader.cancel().catch(() => {});
+  };
+  const timer = setTimeout(stop, ERROR_BODY_READ_TIMEOUT_MS);
+  signal?.addEventListener('abort', stop, { once: true });
+  try {
+    while (received < ERROR_BODY_MAX_BYTES) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        finished = true;
+        break;
+      }
+      const bytes = chunk.value.subarray(0, ERROR_BODY_MAX_BYTES - received);
+      received += bytes.byteLength;
+      text += decoder.decode(bytes, { stream: true });
+    }
+  } catch {
+    // A body that fails part-way still leaves what arrived before it.
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', stop);
+    if (!finished) stop();
+    try {
+      reader.releaseLock();
+    } catch {
+      // Nothing is pending once the loop has ended.
+    }
+  }
+  return text + decoder.decode();
 }
 
 export async function fetchWithRetry(

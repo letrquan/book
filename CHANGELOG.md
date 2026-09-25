@@ -266,11 +266,59 @@ All notable changes to this project are documented in this file.
   that 4xx, comes back after one fetch, and a `bad_request`/`not_found` is not re-issued at the
   stream level either, since re-sending it byte for byte reproduces it. Only the router's own
   `[<route>] [4xx]:` prefix or a 4xx `code` in a JSON `"error"` object counts as a quote, so an
-  outage body that mentions `HTTP 403`, `chunk [404]` or `"code": 4001` is still retried. A quoted
-  400 on a request of 200k tokens or more is read as a context overflow — the antigravity Gemini
-  route refuses at ~300k without saying why — and takes the compaction-and-ratchet recovery a
-  spoken overflow gets. The rule covers only that wrapped case: a plain 400 at any size is the
-  provider's verdict on the request, and neither compacts nor lowers the learned window.
+  outage body that mentions `HTTP 403`, `chunk [404]` or `"code": 4001` is still retried. A
+  `bad_request` on a request of 200k tokens or more is read as a context overflow — the
+  antigravity Gemini route refuses at ~300k without saying why — and compacted; the next entry
+  says when that also lowers the learned window.
+- **A plain 400 on a 200k-token request compacts, and only a stated overflow lowers the learned
+  window.** 9router 0.5.86 stopped wrapping the antigravity route's refusal in a 503: a
+  330k-token `INVALID_ARGUMENT` now arrives as a plain
+  `400 {"error":{"message":"[400]: …","code":"bad_request"}}`, so the overflow recovery above never
+  fired and the run ended after one request (#244). Any `bad_request` on a request of 200k
+  estimated tokens or more, plain or wrapped, is now compacted and the turn retried once. The
+  learned context window is lowered only when the error states an overflow: a 413 status, an
+  `error.code` or `error.type` of `context_length_exceeded`, `request_too_large` or llama.cpp's
+  `exceed_context_size_error`, or overflow wording in the error message ("maximum context length",
+  "prompt is too long", …), including the upstream body OpenRouter forwards in
+  `error.metadata.raw`. Gemini's `The input token count (N) exceeds the maximum …` now counts as
+  stated; its parenthesised count used to hide it. One inferred from size alone compacts without
+  lowering it, so a 400 that was really about the request cannot shrink a 1M model's window for
+  every later session. That includes the wrapped 503 case, which used to lower it. Since the window
+  stays at the published size, the recovery compaction plans the reducer's requests against 80% of
+  the refused request instead: a 330k refusal on a 1M model used to send a 308k reducer request,
+  which a route that had just refused 330k would likely refuse too. The whole raw body is no longer
+  scanned for that wording, and a 413 counts only where it is named as a status (`API Error: 413`,
+  `HTTP 413`): a 400 whose body held a `contents[413]` field path or a `req-413-x` request id was
+  classified `context_overflow`. The compacted request is retried only if it is below 200k tokens,
+  and another overflow right after compacting ends the run on the provider's error. A reducer
+  refused with a coded overflow (`context_overflow`) whose text names no length now halves its
+  window and replans, as a worded one did.
+- **A stalled error body no longer holds a retry attempt for the whole request timeout.** The
+  retry loop read a retryable response's body with `text()` before deciding, so a 503 that sent
+  its headers and then stalled made each attempt wait the full `requestTimeoutMs` — up to about
+  110 minutes with the defaults — and a large body was buffered whole before being cut to 64 KB
+  (#244). The body is now stream-read up to 64 KB for at most 5 s (`ERROR_BODY_READ_TIMEOUT_MS`),
+  the rest is cancelled, and the decision is made on what arrived.
+- **A 422 and a mid-stream `invalid_request_error` are not re-issued.** A 422, plain or quoted in
+  a 503, stopped the fetch retries but was still re-sent three times at the stream level, 14 s of
+  backoff for the same refusal; Anthropic's mid-stream `invalid_request_error` was re-sent the same
+  way (#244). Both now end the run on the first answer, and a 422 has its own code,
+  `unprocessable`. Every other 4xx the classifier has no name for (`unknown`: a 409, 423, 425, or
+  Google's 499) is still re-sent: 9router's antigravity route treats a 409 like a 429 with a strike
+  counter, passing the first two through and, on the third within 60 s, locking that account and
+  switching to the next one, so the third re-send is the one that can succeed. 5xx, 408, 429,
+  529, Anthropic's `overloaded_error` and `api_error`, and transport faults are re-issued as
+  before.
+- **A real answer that quotes an `[Error]` line is no longer taken for a router error.** The
+  envelope check accepted any answer that began with `[Error]` and mentioned a request id, and
+  with 0/0 usage any `[Error]` answer at all, so an explanation that opened with a quoted error
+  line was held back, re-issued, and reported as `provider_error` (#244). When a model may have
+  written the text, an envelope must now be the whole answer: one `[Error] …` line of at most 2,000
+  characters, the shape 9router's Responses translator writes. With 0/0 usage (what a router
+  reports for text it wrote itself, and what a provider that doesn't report usage sends), any
+  answer that opens with `[Error]` still counts, one line or many. The same rule gates
+  the `[Error] … context window` overflow answer. The supported shapes are the table in
+  `src/provider/reliability.test.ts`.
 - **An upstream error rendered as the answer no longer completes the run.** A router answered
   200 with `[Error] An error occurred while processing your request … request ID …` and zero
   tokens both ways, and Book accepted it as the model's final message: exit 0,

@@ -720,12 +720,40 @@ wraps an upstream 4xx as a 503 with a cooldown
 ends on that 400; it is not retried ten times and not re-issued, since the request itself is what
 was refused. Only the router's `[<route>] [4xx]:` prefix or a 4xx `code` in a JSON `"error"` object
 counts as a quote: a 503 whose body merely mentions `HTTP 403` or `"code": 4001` is retried like
-any other outage. A quoted 400 on a request of 200k tokens or more is read as a context overflow
-even when the body does not say so, and goes through compaction and the learned-window ratchet like
-a spoken overflow. A plain 400 is never read that way, at any size: it ends the run without
-compacting or lowering the learned window. Two answers that are not answers get one re-issue each:
-a `content_filter` stop on a turn with no tool calls, and a 200 whose text is the upstream's error
-envelope (`[Error] … request ID …`, zero tokens both ways). If either repeats, the run ends
+any other outage. The body behind a retryable status is read for at most 5 s and 64 KB, and the
+decision is made on what arrived, so a router that sends its headers and then stalls cannot hold an
+attempt for the whole request timeout.
+
+A 408 or a 429 is retried like an outage. A 400, 404 or 422, plain or quoted, and Anthropic's
+mid-stream `invalid_request_error` end the run on the first answer, since re-sending the same
+request reproduces them. A 401, 402 or 403 parks the run as `credentials_rejected`, and a 413 goes
+through the overflow recovery below. Any other 4xx (a 409, 423, 425, or Google's 499) is re-sent at
+the stream level, up to `retry.streamReissueAttempts` times. 9router's antigravity route treats a
+409 like a 429 with a strike counter: it passes the first two through and, on the third within
+60 s, locks that account and switches to the next one, so the third re-send is the one that can
+succeed.
+
+A `bad_request` on a request of 200k estimated tokens or more, plain
+(`400 {"error":{"message":"[400]: …","code":"bad_request"}}`) or quoted inside a 503, is read as a
+context overflow even when the body does not say so: the antigravity Gemini route refuses at ~300k
+without naming the length. The history is compacted and the turn retried once, provided the
+compacted request is below 200k tokens. Only an error that states an overflow also lowers the
+learned context window: a 413 status, an `error.code` or `error.type` of `context_length_exceeded`
+or `request_too_large` (or llama.cpp's `exceed_context_size_error`), or overflow wording in the
+error message ("maximum context length", "prompt is too long", Gemini's "input token count (N)
+exceeds the maximum", …), including the upstream body OpenRouter forwards in `error.metadata.raw`.
+A number elsewhere in the body, such as a `contents[413]` field path or a `req-413-x` request id, is
+not a statement about the window. An overflow inferred from size alone never lowers it, so the
+recovery compaction plans the reducer's requests against 80% of the refused request's size instead
+of the published window. A 400 on a smaller request, or another overflow right after compacting,
+ends the run on the provider's error: the recovery runs once per turn.
+
+Two answers that are not answers get one re-issue each: a `content_filter` stop on a turn with no
+tool calls, and a 200 whose text is the upstream's error envelope. When a model may have written
+the text, the envelope must be the whole answer, one `[Error] … request ID …` line, and an answer
+that quotes such a line and goes on to explain it is an answer. With zero tokens both ways (what a
+router reports for text it wrote itself, and what a provider that doesn't report usage sends), any
+answer that opens with `[Error]` counts, however many lines follow. If either repeats, the run ends
 `failed/provider_error` on that second request, never `completed`; the repeat is not re-issued
 again, and no `[continuation]` message is written. Every retry is visible to a print-mode host: a
 `{"type":"retry","phase","attempt","max","delay_ms"}` record in `stream-json`, a `retry: …` line on
