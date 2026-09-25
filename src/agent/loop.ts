@@ -60,6 +60,11 @@ import {
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import {
+  NETWORK_POLICY_REMEDIES,
+  networkPolicyRefusal,
+  type NetworkPolicyRefusal,
+} from '../tools/web-policy.js';
+import {
   formatUserQuestionAnswers,
   validateUserQuestionResponse,
 } from '../tools/ask-user-question.js';
@@ -716,8 +721,17 @@ export async function runAgentLoop(
     let executedToolCalls = 0;
     /** Consecutive turns whose every tool call was refused. */
     let blockedTurnStreak = 0;
-    /** The tools refused on the streak's most recent turn, for the terminal message. */
-    let blockedTurnTools: string[] = [];
+    /**
+     * Every tool refused over the streak, for the terminal message. The whole streak, not its
+     * last turn: in a mixed streak the call a remedy is for may be turns back.
+     */
+    const blockedTurnTools = new Set<string>();
+    /**
+     * What refused the streak's calls: a kind of network-policy refusal, or `other` for a
+     * permission or any other refusal. Kept over every turn of the streak, not only the last,
+     * because each kind names a different remedy in the terminal message.
+     */
+    const blockedStreakCauses = new Set<NetworkPolicyRefusal | 'other'>();
     // Monotonic, and never leaves this function as a stamp. Over a run measured
     // in days a wall-clock correction would silently rewrite how long the model
     // is told it has been working, in either direction.
@@ -873,6 +887,9 @@ export async function runAgentLoop(
             content: workState,
             includeInContext: true,
             kind: 'conversation',
+            // Host-authored, like the continuation prompts: neither the ledger nor
+            // Carried Turns may treat it as the user's own words, and it ends no answer.
+            derivedContent: true,
             timestamp: Date.now(),
           };
           newHistory.push(message);
@@ -2481,10 +2498,14 @@ export async function runAgentLoop(
       }
       if (toolCalls.length > 0 && refusedThisTurn === toolCalls.length) {
         blockedTurnStreak++;
-        blockedTurnTools = toolCalls.map((call) => canonicalToolName(call.name));
+        for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
+        for (const result of orderedToolResults) {
+          blockedStreakCauses.add(networkPolicyRefusal(result) ?? 'other');
+        }
       } else {
         blockedTurnStreak = 0;
-        blockedTurnTools = [];
+        blockedTurnTools.clear();
+        blockedStreakCauses.clear();
       }
 
       const toolStats = toolContext.runtime?.toolCallStats;
@@ -2585,8 +2606,9 @@ export async function runAgentLoop(
       // whole point: a refusal spin never has an empty turn, so the gate never
       // fires and the continuation brake never gets to look at it. The run simply
       // bills forever with a plan that cannot move. Nothing else catches it either
-      // — `noteRepeatedFailure` returns early unless the status is `error`, and
-      // `toolCallStats.failures` excludes `blocked` by construction.
+      // — `noteRepeatedFailure` only annotates a repeated call and never sees the
+      // loop's own permission refusals, and `toolCallStats.failures` excludes
+      // `blocked` by construction.
       //
       // Not gated on `continuation.enabled`: this spin predates continuation and
       // happens today in headless, which answers every unresolved prompt `deny`.
@@ -2604,15 +2626,26 @@ export async function runAgentLoop(
         effectiveMode !== 'plan' &&
         blockedTurnStreak >= blockedTurnLimit
       ) {
-        const refused = [...new Set(blockedTurnTools)].sort().join(', ');
+        const refused = [...blockedTurnTools].sort().join(', ');
         log.warn('every tool call refused on consecutive turns; stopping', {
           turn,
           turns: blockedTurnStreak,
           tools: refused,
         });
+        // Each kind of refusal has its own remedy, and a streak that mixes kinds names
+        // each one, because every refused call needs its own fix before anything can
+        // proceed. A permission refusal is lifted by a rule or a mode. A network-policy
+        // refusal is lifted by neither, bypassPermissions included: a refused WebFetch
+        // by the host's opt-in, a refused WebSearch only by fixing the host's DNS.
+        const remedies: string[] = [];
+        if (blockedStreakCauses.has('other') || blockedStreakCauses.size === 0) {
+          remedies.push('grant the permission, add an allow rule, or change the permission mode');
+        }
+        if (blockedStreakCauses.has('fetch')) remedies.push(NETWORK_POLICY_REMEDIES.fetch);
+        if (blockedStreakCauses.has('search')) remedies.push(NETWORK_POLICY_REMEDIES.search);
         const detail =
           `Every tool call was refused on ${blockedTurnStreak} consecutive turns (${refused}). ` +
-          'Nothing can proceed: grant the permission, add an allow rule, or change the permission mode.';
+          `Nothing can proceed: ${remedies.join('. Separately, ')}.`;
         callbacks.onError(detail);
         finishTerminal(
           createTerminalOutcome('failed', 'all_tools_blocked', {

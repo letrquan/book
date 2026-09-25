@@ -1608,3 +1608,480 @@ describe('runHeadless — resumed file observations', () => {
     expect(bodies[1]).toContain('only been outlined');
   });
 });
+
+describe('runHeadless — SessionEnd on an aborted run (#248)', () => {
+  /** The SessionEnd `hook_event` records a stream-json run wrote. */
+  function sessionEndRecords(writes: string[]): Array<{ reason?: string }> {
+    return writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { type?: string; event?: string; reason?: string })
+      .filter((record) => record.type === 'hook_event' && record.event === 'SessionEnd');
+  }
+
+  function sessionEndConfig(): AgentConfig {
+    const config = freshConfig({ workspace: makeWorkspace() });
+    config.settings.hooks.SessionEnd = [{ command: 'exit 0', env: {} }];
+    return config;
+  }
+
+  function streamOptions(signal: AbortSignal | undefined, writes: string[]) {
+    return {
+      prompt: 'go',
+      inputFormat: 'text' as const,
+      outputFormat: 'stream-json' as const,
+      includeHookEvents: true,
+      history: [],
+      mode: 'bypassPermissions' as const,
+      sessionId: 'session-under-test',
+      signal,
+      stdout: {
+        write: (s: string) => {
+          writes.push(s);
+          return true;
+        },
+      },
+    };
+  }
+
+  it('runs SessionEnd once, with reason aborted, when the abort lands inside a tool', async () => {
+    const controller = new AbortController();
+    const registry = createRegistry();
+    registry.register({
+      name: 'AbortRun',
+      description: 'Abort the run while this tool executes.',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        controller.abort();
+        return toolSuccess('aborted');
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sse([toolDelta('call-1', 'AbortRun', {})])),
+    );
+    const writes: string[] = [];
+
+    await expect(
+      runHeadless(sessionEndConfig(), registry, streamOptions(controller.signal, writes)),
+    ).rejects.toThrow();
+
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['aborted']);
+  });
+
+  it('reports reason aborted when an aborted run ends with a cancelled outcome', async () => {
+    const controller = new AbortController();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        controller.abort();
+        return sse([]);
+      }),
+    );
+    const writes: string[] = [];
+
+    const result = await runHeadless(
+      sessionEndConfig(),
+      createDefaultRegistry(),
+      streamOptions(controller.signal, writes),
+    );
+
+    expect(result.outcome.status).toBe('cancelled');
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['aborted']);
+  });
+
+  it('keeps reason completion for a run nothing aborted', async () => {
+    const writes: string[] = [];
+
+    await runHeadless(
+      sessionEndConfig(),
+      createDefaultRegistry(),
+      streamOptions(new AbortController().signal, writes),
+    );
+
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['completion']);
+  });
+
+  it('reports reason completion for a run that completed before its signal aborted', async () => {
+    const controller = new AbortController();
+    const writes: string[] = [];
+
+    await runHeadless(sessionEndConfig(), createDefaultRegistry(), {
+      ...streamOptions(controller.signal, writes),
+      stdout: {
+        write: (s: string) => {
+          writes.push(s);
+          // The reader goes away right after the result record: the run itself completed.
+          if (s.includes('"type":"result"')) controller.abort();
+          return true;
+        },
+      },
+    });
+
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['completion']);
+  });
+
+  it('ends the session with reason error when the run throws after SessionStart', async () => {
+    const { Readable } = await import('stream');
+    const writes: string[] = [];
+
+    await expect(
+      runHeadless(sessionEndConfig(), createDefaultRegistry(), {
+        ...streamOptions(undefined, writes),
+        prompt: undefined,
+        stdin: Readable.from([]),
+      }),
+    ).rejects.toThrow('print mode requires a prompt');
+
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['error']);
+  });
+
+  it('reports reason aborted when a signal timeout ends the run as timed out', async () => {
+    // The abort `AbortSignal.timeout` delivers, fired from inside the request so it
+    // always lands mid-run: a wall-clock timer could fire before the loop starts.
+    const controller = new AbortController();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        controller.abort(new DOMException('The operation timed out.', 'TimeoutError'));
+        return sse([]);
+      }),
+    );
+    const writes: string[] = [];
+
+    const result = await runHeadless(
+      sessionEndConfig(),
+      createDefaultRegistry(),
+      streamOptions(controller.signal, writes),
+    );
+
+    expect(result.outcome.status).toBe('timed_out');
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['aborted']);
+  });
+
+  it('reports reason error for a run that returns a failed outcome', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ error: { message: 'bad request', type: 'invalid_request_error' } }),
+            { status: 400, headers: { 'content-type': 'application/json' } },
+          ),
+      ),
+    );
+    const writes: string[] = [];
+
+    const result = await runHeadless(
+      sessionEndConfig(),
+      createDefaultRegistry(),
+      streamOptions(undefined, writes),
+    );
+
+    expect(result.outcome.status).toBe('failed');
+    expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['error']);
+  });
+});
+
+describe('runHeadless — the answer is the final turn only (#248)', () => {
+  const envelope = '[Error] An error occurred while processing your request. Please retry.';
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+  });
+
+  /** Turn 1 narrates and calls Read; every later turn is `finalTurn`, which fails the run. */
+  function narrationThen(finalTurn: string, narration = 'Let me check the tests.') {
+    let requestCount = 0;
+    return vi.fn(async () => {
+      requestCount++;
+      if (requestCount === 1) {
+        return sse([textDelta(narration), toolDelta('call-1', 'Read', { filePath: 'a.txt' })]);
+      }
+      return sse([textDelta(finalTurn)]);
+    });
+  }
+
+  async function runText(options: { jsonSchema?: Record<string, unknown> } = {}) {
+    const ws = makeWorkspace();
+    writeFileSync(join(ws, 'a.txt'), 'alpha');
+    const writes: string[] = [];
+    const result = await runHeadless(freshConfig({ workspace: ws }), createDefaultRegistry(), {
+      prompt: 'go',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      quiet: true,
+      jsonSchema: options.jsonSchema,
+      stdout: {
+        write: (s: string) => {
+          writes.push(s);
+          return true;
+        },
+      },
+    });
+    return { result, stdout: writes.join('') };
+  }
+
+  it('prints no answer when the final turn failed without one', async () => {
+    vi.stubGlobal('fetch', narrationThen(envelope));
+
+    const { result, stdout } = await runText();
+
+    expect(result.outcome.status).toBe('failed');
+    expect(stdout).toBe('');
+  });
+
+  it('prints no answer when the final turn was only a reasoning block', async () => {
+    vi.stubGlobal('fetch', narrationThen('<think>\nplan\n</think>\n'));
+
+    const { result, stdout } = await runText();
+
+    expect(result.outcome.status).toBe('failed');
+    expect(stdout).toBe('');
+  });
+
+  it('does not parse structured output from an older turn', async () => {
+    vi.stubGlobal('fetch', narrationThen(envelope, '{"ok":true}'));
+
+    const { result } = await runText({ jsonSchema: { type: 'object' } });
+
+    expect(result.structured).toBeUndefined();
+    expect(result.structuredError).toBe('Failed to parse JSON from assistant output');
+  });
+
+  it('keeps the answer when the host appended a continuation after it', async () => {
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount++;
+        if (requestCount === 1) {
+          return sse([
+            toolDelta('call-1', 'TodoWrite', {
+              todos: [{ content: 'second step', status: 'pending' }],
+            }),
+          ]);
+        }
+        return sse([textDelta('FINAL-ANSWER')]);
+      }),
+    );
+    const config = freshConfig({ workspace: makeWorkspace() });
+    config.settings.continuation.enabled = true;
+    const writes: string[] = [];
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'go',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      quiet: true,
+      maxTurns: 2,
+      stdout: {
+        write: (s: string) => {
+          writes.push(s);
+          return true;
+        },
+      },
+    });
+
+    // The shape under test: the open todo made the host append a continuation after the answer.
+    expect(result.messages.at(-1)?.content).toMatch(/^\[continuation\]/);
+    expect(writes.join('')).toBe('FINAL-ANSWER\n');
+  });
+
+  it('keeps output-cap partial text when the resumed request fails', async () => {
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount++;
+        if (requestCount === 1) {
+          return sse([
+            textDelta('PART-ONE'),
+            `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\n`,
+          ]);
+        }
+        return new Response(
+          JSON.stringify({
+            error: { message: 'probe bad request', type: 'invalid_request_error' },
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        );
+      }),
+    );
+    const config = freshConfig({ workspace: makeWorkspace() });
+    config.retry = { ...config.retry, outputCapContinuations: 1 };
+    const writes: string[] = [];
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'go',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      quiet: true,
+      stdout: {
+        write: (s: string) => {
+          writes.push(s);
+          return true;
+        },
+      },
+    });
+
+    expect(result.outcome.status).toBe('failed');
+    expect(result.messages.at(-1)?.content).toMatch(/^\[continuation\]/);
+    expect(writes.join('')).toBe('PART-ONE\n');
+  });
+});
+
+describe('runHeadless — managed child progress on stderr (#248)', () => {
+  let stderrWrites: string[] = [];
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stderrWrites = [];
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderrWrites.push(
+        typeof chunk === 'string' ? chunk : Buffer.from(chunk as Uint8Array).toString('utf8'),
+      );
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+  });
+
+  /**
+   * A tool that reports a managed child the way the agent manager does: an
+   * `agent_start`, then `agent_activity` for one child tool call (running, then
+   * completed with its result), and a `thinking` activity that prints nothing.
+   */
+  function delegatingRegistry() {
+    const registry = createRegistry();
+    registry.register({
+      name: 'FakeDelegate',
+      description: 'Report a managed child that runs one tool.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, context) => {
+        const agentId = 'child-1';
+        context.onAgentEvent?.({
+          type: 'agent_start',
+          agent: {
+            id: agentId,
+            profile: 'explorer',
+            name: 'explorer',
+            role: 'explorer',
+            description: 'Inspect the task',
+            status: 'running',
+            applicationStatus: 'not_applied',
+            prompt: 'inspect',
+            referencedEvidenceIds: [],
+            transcript: [],
+            pendingMessages: [],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+        });
+        const call = { id: 'child-call-1', name: 'Read', arguments: { file_path: 'src/a.ts' } };
+        const started = {
+          id: call.id,
+          kind: 'tool' as const,
+          label: 'Using Read',
+          toolName: 'Read',
+          toolCall: call,
+          startedAt: Date.now(),
+          status: 'running' as const,
+        };
+        context.onAgentEvent?.({ type: 'agent_activity', agentId, activity: started });
+        context.onAgentEvent?.({
+          type: 'agent_activity',
+          agentId,
+          activity: {
+            ...started,
+            status: 'completed',
+            finishedAt: Date.now(),
+            result: {
+              ...toolSuccess('contents', {
+                toolCallId: call.id,
+                presentation: { kind: 'file', summary: 'Read src/a.ts', target: 'src/a.ts' },
+              }),
+              metrics: { durationMs: 3 },
+            },
+          },
+        });
+        context.onAgentEvent?.({
+          type: 'agent_activity',
+          agentId,
+          activity: {
+            id: 'thinking-1',
+            kind: 'thinking',
+            label: 'Thinking (turn 1)',
+            startedAt: Date.now(),
+            status: 'running',
+          },
+        });
+        return toolSuccess('delegated');
+      },
+    });
+    return registry;
+  }
+
+  async function runDelegation(options: {
+    outputFormat?: 'text' | 'stream-json';
+    verbose?: boolean;
+    quiet?: boolean;
+  }) {
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount++;
+        if (requestCount === 1) return sse([toolDelta('call-1', 'FakeDelegate', {})]);
+        return sse([textDelta('done')]);
+      }),
+    );
+    await runHeadless(freshConfig({ workspace: makeWorkspace() }), delegatingRegistry(), {
+      prompt: 'delegate',
+      inputFormat: 'text',
+      outputFormat: options.outputFormat ?? 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      verbose: options.verbose,
+      quiet: options.quiet,
+      stdout: { write: () => true },
+    });
+  }
+
+  it("prints a child's tool calls indented under its name", async () => {
+    await runDelegation({});
+
+    expect(stderrWrites).toContain('[FakeDelegate]\n');
+    expect(stderrWrites).toContain('  [explorer] [Read] src/a.ts\n');
+    expect(stderrWrites.some((line) => line.startsWith('    → '))).toBe(false);
+    expect(stderrWrites.some((line) => line.includes('Thinking'))).toBe(false);
+  });
+
+  it("adds a child's tool results under --verbose", async () => {
+    await runDelegation({ verbose: true });
+
+    expect(stderrWrites).toContain('  [explorer] [Read] src/a.ts\n');
+    expect(stderrWrites).toContain('    → success 3ms src/a.ts\n');
+  });
+
+  it('prints no child lines when quiet, or in stream-json mode', async () => {
+    await runDelegation({ quiet: true });
+    await runDelegation({ outputFormat: 'stream-json' });
+
+    expect(stderrWrites.some((line) => line.includes('[explorer]'))).toBe(false);
+  });
+});

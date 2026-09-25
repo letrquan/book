@@ -19,7 +19,7 @@ export interface HookContext {
   sessionId?: string;
   /** How a session began (startup, resume, or clear). */
   source?: string;
-  /** Why a session ended (clear, resume, exit, or completion). */
+  /** Why a session ended (clear, resume, exit, completion, aborted, or error). */
   reason?: string;
   /** For PreCompact/PostCompact: what triggered compaction. */
   trigger?: 'manual' | 'auto';

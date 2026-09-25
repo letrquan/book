@@ -75,6 +75,11 @@
  * override the usage block — the three provider failure shapes the agent loop
  * classifies.
  *
+ * A tool turn may carry `"rawArguments": "<text>"` in place of `arguments`: the
+ * string is sent as the call's arguments verbatim, not JSON-encoded, so a
+ * scenario can send the malformed JSON a real model sometimes emits (an
+ * unescaped backslash or newline inside a string).
+ *
  * With no --script the server always replies with a single text turn taken from
  * --reply (default: a fixed sentence). Every request is appended as JSON to
  * book-mock-<port>.requests.jsonl in the OS temp directory (--request-log overrides
@@ -200,7 +205,10 @@ async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 1
                 type: 'function',
                 function: {
                   name: turn.tool.name,
-                  arguments: JSON.stringify(turn.tool.arguments ?? {}),
+                  arguments:
+                    typeof turn.tool.rawArguments === 'string'
+                      ? turn.tool.rawArguments
+                      : JSON.stringify(turn.tool.arguments ?? {}),
                 },
               },
             ],
