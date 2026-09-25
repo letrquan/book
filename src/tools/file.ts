@@ -1,6 +1,6 @@
 import { open, readFile as readTextFile, stat } from 'fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { extname } from 'node:path';
+import { basename, extname } from 'node:path';
 import fg from 'fast-glob';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
@@ -245,31 +245,57 @@ export async function applySingleEdit(
  * (#217). Markdown is outlined by its headings. Anything else: a line at
  * indentation zero that is not blank, closing punctuation or a comment is a
  * declaration in most languages this tool sees, and a shallowly indented
- * `def`/`func`/method line is the next tier. Bodies stay out: nothing deeper
- * than `OUTLINE_MAX_INDENT` is shown.
+ * declaration line is the next tier. Bodies stay out: nothing deeper than
+ * `OUTLINE_MAX_INDENT` is shown. The shapes each language gets are the
+ * "outline contract" table in file.test.ts; a shape outside it is not promised.
  */
 const OUTLINE_MAX_INDENT = 4;
+/** A C# file with a block-scoped `namespace X {` indents every member one level deeper. */
+const OUTLINE_MAX_INDENT_CSHARP_BLOCK_NAMESPACE = 8;
 /** An outline is capped at the line count of a whole-file Read. */
 const OUTLINE_MAX_ENTRIES = 2000;
 /** How far below a wrapped signature its closing `)` line is looked for. */
 const OUTLINE_SIGNATURE_LOOKAHEAD = 40;
-// Either a keyword declaration, or a method-shaped line: an identifier, its
-// parameter list, and an opening brace at the end of the line. Control flow
-// has the same shape (`if (x) {`) and is a body, not a declaration; `type` is
-// left out of the shallow tier because there it is an import-list member.
-const OUTLINE_DECLARATION =
-  /^\s{1,4}(?:(?:export|public|private|protected|static|async|abstract|override|readonly|pub|final)\s+)*(?:(?:function|class|interface|enum|namespace|def|func|fn|struct|impl|trait|describe|it|test|constructor|get|set)\b|(?!(?:if|for|while|switch|catch|else|do|try|return|await)\b)[A-Za-z_$][\w$]*\s*(?:<[^>]*>)?\([^)]*\)[^;{]*\{\s*$)/;
-// A class member bound to an arrow function: `name = (...) => {`, `name = async (...) => {`.
+const OUTLINE_MODIFIERS =
+  '(?:(?:export|public|private|protected|internal|static|async|abstract|override|virtual|sealed|partial|readonly|final|pub|open|suspend|inline|operator|infix|data|inner|synchronized|native|default|extern|unsafe)\\s+)*';
+// Statements shaped like a method line: `if (x) {`, `return (a) => {`, and with
+// a space before the parenthesis, `foreach (var x in xs)`, `lock (gate)`, `when (x) {`.
+// A method may still be called `lock()` or `match(pattern)`.
+const OUTLINE_STATEMENT =
+  '(?:(?:if|for|while|switch|catch|else|do|try|return|await|async)\\b|(?:foreach|using|lock|fixed|when|match|with|synchronized)\\s)';
+// Words that start a statement where a return type would stand: `else if (`,
+// `return new Foo(`, `go func() {`, `defer func() {`, Rust's `match parse(x) {`.
+const OUTLINE_STATEMENT_WORD =
+  '(?:if|else|elif|for|foreach|while|do|switch|case|when|match|catch|try|finally|return|await|yield|throw|new|delete|typeof|using|lock|fixed|synchronized|with|go|defer)\\b';
+// Type arguments nested up to three deep: `Map<String, List<Set<Integer>>>`.
+const OUTLINE_GENERIC = '<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>';
+const OUTLINE_TYPE = `[A-Za-z_$][\\w$.]*(?:${OUTLINE_GENERIC})?(?:\\[\\])*\\??`;
+// A keyword declaration. A keyword followed by `:`, `,`, `;`, `=`, `?`, `)` or
+// the end of the line is an object key or an import-list member instead.
+const OUTLINE_KEYWORD = new RegExp(
+  `^\\s+${OUTLINE_MODIFIERS}(?:function|class|interface|enum|namespace|def|func|fn|fun|struct|impl|trait|describe|it|test|constructor|get|set)\\b(?!\\s*[:,;=?)]|\\s*$)`,
+);
+// A method named first: `name(`, `async *entries(`, `#secret(`, `map<K extends Record<string, V>>(`.
+const OUTLINE_NAME_FIRST = new RegExp(
+  `^\\s+${OUTLINE_MODIFIERS}(?!${OUTLINE_STATEMENT})(?:\\*\\s*)?#?[A-Za-z_$][\\w$]*\\s*(?:${OUTLINE_GENERIC})?\\s*\\(`,
+);
+// A method whose return type comes first (Java, C#, Dart): `int getN(`,
+// `public static <T> List<T> wrap(`, `Future<void> load(`.
+const OUTLINE_TYPE_FIRST = new RegExp(
+  `^\\s+${OUTLINE_MODIFIERS}(?:${OUTLINE_GENERIC}\\s+)?(?!${OUTLINE_STATEMENT_WORD})${OUTLINE_TYPE}\\s+(?!(?:if|for|while|switch|catch)\\b)[A-Za-z_$][\\w$]*\\s*(?:${OUTLINE_GENERIC})?\\s*\\(`,
+);
+// A class member bound to an arrow function: `name = (...) => {`, `#name = async (...) => {`.
 const OUTLINE_ARROW_MEMBER =
-  /^\s{1,4}(?:(?:public|private|protected|static|readonly|override)\s+)*[A-Za-z_$][\w$]*\s*(?::[^=]*)?=\s*(?:async\s*)?\(.*\)\s*(?::[^=]*)?=>\s*\{\s*$/;
-// A signature whose parameter list wraps onto the next lines: `async send(`.
-// It is kept only when the list closes into a body (`): T {`), so a call that
-// wraps its arguments the same way stays out.
-const OUTLINE_WRAPPED_SIGNATURE =
-  /^\s{1,4}(?:(?:export|public|private|protected|static|async|abstract|override|readonly|pub|final)\s+)*(?!(?:if|for|while|switch|catch|else|do|try|return|await)\b)[A-Za-z_$][\w$]*\s*(?:<.*>)?(?:\s*=\s*(?:async\s*)?)?\([^)]*$/;
+  /^\s+(?:(?:public|private|protected|static|readonly|override)\s+)*#?[A-Za-z_$][\w$]*\s*(?::[^=]*)?=\s*(?:async\s*)?\(.*\)\s*(?::[^=]*)?=>\s*\{\s*$/;
+// The head of an arrow member whose parameter list wraps: `handle = async (`.
+const OUTLINE_WRAPPED_ARROW =
+  /^\s+(?:(?:public|private|protected|static|readonly|override)\s+)*#?[A-Za-z_$][\w$]*\s*(?::[^=]*)?=\s*(?:async\s*)?\(/;
+// The line that closes a wrapped parameter list into a body: `): Promise<void> {`,
+// or `}: Args): T {` after a destructured parameter. `).then(() => {` is a call.
+const OUTLINE_WRAPPED_CLOSE = /^(?:\}[^()]*)?\)(?!\s*(?:\??\.|[,(])).*\{\s*$/;
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdx']);
-// `#` starts a comment only in these languages; elsewhere a `#` line is a
-// C preprocessor directive or a Rust attribute, and belongs in the outline.
+// `#` starts a comment only in these files; elsewhere a `#` line is a C
+// preprocessor directive or a Rust attribute, and belongs in the outline.
 const HASH_COMMENT_EXTENSIONS = new Set([
   '.py',
   '.pyi',
@@ -281,7 +307,154 @@ const HASH_COMMENT_EXTENSIONS = new Set([
   '.yml',
   '.toml',
   '.rb',
+  '.ps1',
+  '.psm1',
+  '.psd1',
+  '.mk',
+  '.dockerfile',
 ]);
+// Files named for their tool rather than given an extension: `Makefile`, `Dockerfile.dev`.
+const HASH_COMMENT_BASENAME = /^(?:(?:gnu)?makefile|dockerfile|containerfile)(?:\.[\w.-]+)?$/i;
+// Where a backtick opens a string that may run over several lines.
+const TEMPLATE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
+// Kotlin declares every function with `fun`, so a `name(args) {` line there is a
+// call taking a trailing lambda (`repeat(3) {`), not a method.
+const KEYWORD_ONLY_EXTENSIONS = new Set(['.kt', '.kts']);
+// Java and C# declare interface and abstract methods without a body: `int size();`.
+const BODILESS_METHOD_EXTENSIONS = new Set(['.java', '.cs']);
+const FRONT_MATTER_KEY = /^[A-Za-z_][\w.-]*\s*:(?:\s|$)/;
+
+interface OutlineProfile {
+  hashComments: boolean;
+  templates: boolean;
+  keywordsOnly: boolean;
+  bodilessMethods: boolean;
+  maxIndent: number;
+}
+
+function outlineProfile(filePath: string, lines: readonly string[]): OutlineProfile {
+  const name = basename(filePath);
+  const extension = extname(name).toLowerCase();
+  return {
+    hashComments:
+      HASH_COMMENT_EXTENSIONS.has(extension) ||
+      HASH_COMMENT_BASENAME.test(name) ||
+      (extension === '' && lines[0]?.startsWith('#!') === true),
+    templates: TEMPLATE_EXTENSIONS.has(extension),
+    keywordsOnly: KEYWORD_ONLY_EXTENSIONS.has(extension),
+    bodilessMethods: BODILESS_METHOD_EXTENSIONS.has(extension),
+    maxIndent:
+      extension === '.cs' && lines.some((line) => /^namespace\s+[\w.]+\s*\{?\s*$/.test(line))
+        ? OUTLINE_MAX_INDENT_CSHARP_BLOCK_NAMESPACE
+        : OUTLINE_MAX_INDENT,
+  };
+}
+
+/** The index of the character that closes the quote opening at `start`, or the line's last index. */
+function stringEnd(line: string, start: number): number {
+  for (let index = start + 1; index < line.length; index++) {
+    if (line[index] === '\\') index++;
+    else if (line[index] === line[start]) return index;
+  }
+  return line.length - 1;
+}
+
+// What a `/` must follow to open a regex literal rather than divide: an
+// operator, an opening bracket, a keyword such as `return`, or nothing.
+const REGEX_MAY_FOLLOW =
+  /(?:^|[(,=:[!&|?{};+\-*%<>~^]|\b(?:return|typeof|case|do|else|in|of|yield|await|void|throw|delete|instanceof))\s*$/;
+
+/** The index of the `/` that closes a regex literal opening at `start`, or `start` when none does on the line. */
+function regexEnd(line: string, start: number): number {
+  let inClass = false;
+  for (let index = start + 1; index < line.length; index++) {
+    const char = line[index];
+    if (char === '\\') index++;
+    else if (char === '[') inClass = true;
+    else if (char === ']') inClass = false;
+    else if (char === '/' && !inClass) return index;
+  }
+  return start;
+}
+
+/**
+ * For each line of a JavaScript or TypeScript file, whether it starts inside a
+ * template literal or a block comment, so is text rather than code. A small
+ * scanner, not a parser: a quoted string or a regex literal ends with its line.
+ */
+function textLines(lines: readonly string[]): boolean[] {
+  const text: boolean[] = [];
+  // A template, or the brace depth of a `${` expression inside one.
+  const stack: Array<'template' | number> = [];
+  let comment = false;
+  for (const line of lines) {
+    text.push(comment || stack.at(-1) === 'template');
+    for (let index = 0; index < line.length; index++) {
+      const char = line[index];
+      const top = stack.at(-1);
+      if (comment) {
+        if (char === '*' && line[index + 1] === '/') {
+          comment = false;
+          index++;
+        }
+      } else if (top === 'template') {
+        if (char === '\\') index++;
+        else if (char === '`') stack.pop();
+        else if (char === '$' && line[index + 1] === '{') {
+          stack.push(0);
+          index++;
+        }
+      } else if (char === '/' && line[index + 1] === '/') {
+        break;
+      } else if (char === '/' && line[index + 1] === '*') {
+        comment = true;
+        index++;
+      } else if (char === "'" || char === '"') {
+        index = stringEnd(line, index);
+      } else if (char === '`') {
+        stack.push('template');
+      } else if (char === '/' && REGEX_MAY_FOLLOW.test(line.slice(0, index))) {
+        index = regexEnd(line, index);
+      } else if (typeof top === 'number' && char === '{') {
+        stack[stack.length - 1] = top + 1;
+      } else if (typeof top === 'number' && char === '}') {
+        if (top === 0) stack.pop();
+        else stack[stack.length - 1] = top - 1;
+      }
+    }
+  }
+  return text;
+}
+
+/** Whether every parenthesis opened on the line is closed on it. */
+function balancedParentheses(line: string): boolean {
+  let depth = 0;
+  for (const char of line) {
+    if (char === '(') depth++;
+    else if (char === ')') depth--;
+  }
+  return depth === 0;
+}
+
+/** The text after the parameter list opening at `open`, or undefined when it does not close on the line. */
+function afterParameters(line: string, open: number): string | undefined {
+  let depth = 0;
+  for (let index = open; index < line.length; index++) {
+    if (line[index] === '(') depth++;
+    else if (line[index] === ')' && --depth === 0) return line.slice(index + 1);
+  }
+  return undefined;
+}
+
+/** The next non-blank line, when it is a lone `{` at `indent`: an Allman-style body. */
+function opensBodyBelow(lines: readonly string[], start: number, indent: number): boolean {
+  for (let index = start + 1; index < lines.length; index++) {
+    const trimmed = lines[index].trimStart();
+    if (trimmed.length === 0) continue;
+    return lines[index].length - trimmed.length === indent && /^\{\s*$/.test(trimmed);
+  }
+  return false;
+}
 
 function closesIntoBody(lines: readonly string[], start: number, indent: number): boolean {
   const end = Math.min(lines.length, start + 1 + OUTLINE_SIGNATURE_LOOKAHEAD);
@@ -290,48 +463,93 @@ function closesIntoBody(lines: readonly string[], start: number, indent: number)
     if (trimmed.length === 0) continue;
     const lineIndent = lines[index].length - trimmed.length;
     if (lineIndent < indent) return false;
-    if (lineIndent === indent) return /^\).*\{\s*$/.test(trimmed);
+    if (lineIndent === indent) return OUTLINE_WRAPPED_CLOSE.test(trimmed);
   }
   return false;
 }
 
-function codeOutlineIndexes(lines: readonly string[], hashComments: boolean): number[] {
+function isShallowDeclaration(
+  lines: readonly string[],
+  index: number,
+  indent: number,
+  profile: OutlineProfile,
+): boolean {
+  const line = lines[index];
+  if (OUTLINE_KEYWORD.test(line)) return true;
+  if (profile.keywordsOnly) return false;
+  if (OUTLINE_ARROW_MEMBER.test(line)) return true;
+  const typeFirst = OUTLINE_TYPE_FIRST.exec(line);
+  const method = typeFirst ?? OUTLINE_NAME_FIRST.exec(line);
+  const head = method ?? OUTLINE_WRAPPED_ARROW.exec(line);
+  if (!head) return false;
+  const open = head[0].length - 1;
+  // A parameter list that wraps onto the next lines counts once it closes into a body.
+  if (!line.slice(open).includes(')')) return closesIntoBody(lines, index, indent);
+  if (!method) return false;
+  const tail = afterParameters(line, open);
+  // Left open (`useEffect(() => {`) or chained (`foo(x).then(`): a call, not a signature.
+  if (tail === undefined || !balancedParentheses(line) || /^\s*(?:\??\.|[,(])/.test(tail)) {
+    return false;
+  }
+  if (/\{\s*$/.test(tail)) return true;
+  if (!/[;{}=]/.test(tail) && opensBodyBelow(lines, index, indent)) return true;
+  if (!typeFirst) return false;
+  // `int Twice(int x) => x * 2;` (C#, Dart), and `int size();` (Java, C#).
+  if (/^\s*=>/.test(tail)) return true;
+  return profile.bodilessMethods && /^(?:\s*throws\s[^;]*)?\s*;\s*$/.test(tail);
+}
+
+function codeOutlineIndexes(lines: readonly string[], profile: OutlineProfile): number[] {
   const output: number[] = [];
+  // Template text is content at any indentation, column 0 included.
+  const text = profile.templates ? textLines(lines) : undefined;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
+    if (text?.[index]) continue;
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
     if (/^[}\])]+[;,]?$/.test(trimmed)) continue;
     if (/^(?:\/\/|\/\*|\*|--|<!--)/.test(trimmed)) continue;
-    if (hashComments && /^#(?!!)/.test(trimmed)) continue;
+    if (profile.hashComments && /^#(?!!)/.test(trimmed)) continue;
     // The closing line of a multi-line import is punctuation, not a declaration.
     if (/^\} from\b/.test(trimmed)) continue;
+    // An Allman-style brace belongs to the line above it. Only a file that
+    // opens with one (JSON) lists it.
+    if (trimmed === '{' && output.length > 0) continue;
     const indent = line.length - line.trimStart().length;
     if (indent === 0) {
       output.push(index);
       continue;
     }
-    if (indent > OUTLINE_MAX_INDENT) continue;
-    if (
-      OUTLINE_DECLARATION.test(line) ||
-      OUTLINE_ARROW_MEMBER.test(line) ||
-      (OUTLINE_WRAPPED_SIGNATURE.test(line) && closesIntoBody(lines, index, indent))
-    ) {
-      output.push(index);
-    }
+    if (indent > profile.maxIndent) continue;
+    if (isShallowDeclaration(lines, index, indent, profile)) output.push(index);
   }
   return output;
 }
 
+/**
+ * Where Markdown content starts. A leading `---` opens front matter only when a
+ * closing `---` (or `...`) follows and every line between reads as YAML, a
+ * `key:` line first. Otherwise it is a horizontal rule and the headings after it count.
+ */
+function markdownContentStart(lines: readonly string[]): number {
+  if (lines[0]?.trim() !== '---') return 0;
+  const close = lines.findIndex((line, index) => index > 0 && /^(?:---|\.\.\.)\s*$/.test(line));
+  if (close < 0) return 0;
+  const body = lines.slice(1, close).filter((line) => line.trim().length > 0);
+  const yaml =
+    body.length > 0 &&
+    FRONT_MATTER_KEY.test(body[0]) &&
+    body.every(
+      (line) => FRONT_MATTER_KEY.test(line) || /^\s+\S/.test(line) || /^-(?:\s|$)/.test(line),
+    );
+  return yaml ? close + 1 : 0;
+}
+
 function markdownOutlineIndexes(lines: readonly string[]): number[] {
   const output: number[] = [];
-  let start = 0;
-  if (lines[0]?.trim() === '---') {
-    const close = lines.findIndex((line, index) => index > 0 && /^(?:---|\.\.\.)\s*$/.test(line));
-    if (close > 0) start = close + 1;
-  }
   let fence: string | undefined;
-  for (let index = start; index < lines.length; index++) {
+  for (let index = markdownContentStart(lines); index < lines.length; index++) {
     const line = lines[index];
     if (fence !== undefined) {
       const closing = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line)?.[1];
@@ -364,10 +582,9 @@ function outlineLines(
     lines.length > 0 && lines[0].charCodeAt(0) === 0xfeff
       ? [lines[0].slice(1), ...lines.slice(1)]
       : lines;
-  const extension = extname(filePath).toLowerCase();
-  const indexes = MARKDOWN_EXTENSIONS.has(extension)
+  const indexes = MARKDOWN_EXTENSIONS.has(extname(filePath).toLowerCase())
     ? markdownOutlineIndexes(source)
-    : codeOutlineIndexes(source, HASH_COMMENT_EXTENSIONS.has(extension));
+    : codeOutlineIndexes(source, outlineProfile(filePath, source));
   return indexes.map((index) => ({ line: index + 1, text: source[index].trimEnd() }));
 }
 
@@ -376,6 +593,7 @@ async function outlineFile(
   ctx: ToolContext,
   filePath: string,
   lines: readonly string[],
+  lineCount: number,
 ): Promise<ToolResult> {
   if (args.offset !== undefined || args.limit !== undefined) {
     return toolFailure(
@@ -386,7 +604,7 @@ async function outlineFile(
   const entries = outlineLines(lines, filePath);
   const shown = entries.slice(0, OUTLINE_MAX_ENTRIES);
   const output = [
-    `Outline of ${args.filePath}: ${lines.length} lines, ${shown.length} shown. An outline is not the file's content: Read the file (whole, or with offset/limit) before editing it.`,
+    `Outline of ${args.filePath}: ${lineCount} lines, ${shown.length} shown. An outline is not the file's content: Read the file (whole, or with offset/limit) before editing it.`,
     ...shown.map((entry) => `${entry.line}: ${entry.text}`),
   ];
   if (entries.length > shown.length) {
@@ -418,10 +636,10 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
 
   throwIfAborted(ctx.signal);
   const lines = content.split('\n');
-  if (args.outline === true) return outlineFile(args, ctx, filePath, lines);
   // A trailing newline ends the last line rather than starting another, and an
   // empty file has none; offset 1 still reads either.
   const lineCount = content.length === 0 ? 0 : lines.length - (content.endsWith('\n') ? 1 : 0);
+  if (args.outline === true) return outlineFile(args, ctx, filePath, lines, lineCount);
   const maxOffset = Math.max(1, lineCount);
   if (offset > maxOffset) {
     return toolFailure(
