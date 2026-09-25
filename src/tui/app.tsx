@@ -48,7 +48,7 @@ import {
   ThemeContext,
   resolveTheme,
   DEFAULT_THEME_NAME,
-  FOLIO_THEME,
+  RUBRIC_THEME,
   type ThemeTokens,
   type ResolvedTheme,
 } from './theme.js';
@@ -547,11 +547,16 @@ export function App({
       resolveTheme(config.workspace, config.settings.theme ?? DEFAULT_THEME_NAME) ?? {
         preference: DEFAULT_THEME_NAME,
         resolvedName: DEFAULT_THEME_NAME,
-        tokens: FOLIO_THEME,
+        tokens: RUBRIC_THEME,
       },
   );
   const { tasks, addTask, updateTaskStatus, removeTask, clearTasks } = useTasks();
   const theme = currentTheme.tokens;
+  // The status line's folio: one page per turn you have written.
+  const turnCount = useMemo(
+    () => messages.filter((message) => message.role === 'user').length,
+    [messages],
+  );
   const { exit: exitApp } = useApp();
   // Set once an exit starts. SessionEnd can take seconds, and a press meanwhile must neither
   // arm the window again nor start a second exit: the session-end guard returns at once for a
@@ -3304,6 +3309,7 @@ export function App({
                     ).length
                   : 0
               }
+              turnCount={turnCount}
               terminalWidth={termWidth}
               compact={compactStatus}
               reducedMotion={motionDisabled}

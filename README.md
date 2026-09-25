@@ -1302,13 +1302,13 @@ Book clears sessions and rotated debug-log backups after 30 days. Startup resolv
 
 ### Themes
 
-Book uses the `folio` theme by default: warm ivory text on the terminal's own background, with one gilt accent. The accent marks the places you act or look first: the prompt glyph, the ribbon on your own turns, headings, list markers and the spinner. Hierarchy otherwise comes from value and weight, not hue. The status colours (sage, brick, burnt orange) are muted, so a result still reads at a glance without shouting over the prose around it.
+Book uses the `rubric` theme by default. It is set like a rubricated manuscript: the body is in ink (warm ivory and greys), and one cinnabar red is kept for the marks you navigate by. Those marks are the pilcrow `¶` that opens each of your turns and prompts the composer, the section sign `§` before a heading, list markers, and the drop cap on an empty page. The agent writes in ink, spinner included, so red never reads as an alarm. Errors are rose and warnings amber, to stay distinct from the rubric.
 
-The layout follows the same idea. Your turns are set on a tinted band. The composer and the menus that open above it are drawn as hairlines rather than boxes. Tables are ruled the way a book sets them, with no vertical lines, and an empty session opens on a centred title page.
+The layout follows the same idea. Your turns hang a red `¶` in the margin and are set in italic, so your words read as a different voice from the agent's. The composer and the menus that open above it are drawn as hairlines rather than boxes. Tables are ruled the way a book sets them, with no vertical lines. The status line carries a folio, the turn count in lowercase Roman numerals, at its right edge. An empty session opens on a drop cap, like the first page of a chapter.
 
-The previous palette is still available as `apple`: near-black neutral surfaces, bright grey text, a blue composer and user accent, cyan for the agent, and a distinct hue per role. Select it with `"theme": "apple"` in `settings.json`.
+Two other built-in palettes use the same layout. `folio` swaps the red for a single gilt accent and uses it on the spinner as well. `apple` is the previous palette: near-black neutral surfaces, bright grey text, a blue composer and user accent, cyan for the agent, and a distinct hue per role. Select one with `"theme": "folio"` or `"theme": "apple"` in `settings.json`. A palette changes colours only: the layout above applies to every theme.
 
-Project themes can override any token in `.book/themes/<name>.json`, starting from `folio`:
+Project themes can override any token in `.book/themes/<name>.json`, starting from `rubric`:
 
 ```json
 {

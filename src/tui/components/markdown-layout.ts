@@ -13,6 +13,7 @@ import {
   wordWrap,
 } from './word-wrap.js';
 import type { TuiDensity } from '../density.js';
+import { SECTION_SIGN } from '../marks.js';
 
 export function markdownBlockGap(
   previous: string | undefined,
@@ -359,12 +360,17 @@ export function layoutHeadingChrome(
   depth: number,
   terminalWidth: number | undefined,
 ): { prefix: string; text: string; suffix: string } {
-  // Headings are bold and brightness-ranked by depth (see MarkdownBlock). They
-  // carry no `=== TEXT ===` side chrome: that competed with the turn rule for
-  // the eye and made an in-answer heading look like a transcript boundary.
-  const budget = terminalWidth && terminalWidth > 0 ? Math.max(1, Math.floor(terminalWidth)) : null;
+  // Headings are bold and brightness-ranked by depth (see MarkdownBlock). The
+  // two that structure an answer open with a rubricated section sign, the only
+  // chrome they carry: `=== TEXT ===` side rules competed with the transcript's
+  // own boundaries for the eye.
+  const prefix = depth <= 2 ? `${SECTION_SIGN} ` : '';
+  const budget =
+    terminalWidth && terminalWidth > 0
+      ? Math.max(1, Math.floor(terminalWidth) - displayWidth(prefix))
+      : null;
   return {
-    prefix: '',
+    prefix,
     text: budget === null || fitsIn(text, budget) ? text : truncateDisplay(text, budget),
     suffix: '',
   };

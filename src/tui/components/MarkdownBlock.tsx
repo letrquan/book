@@ -545,7 +545,7 @@ function renderBlockToken(
         return (
           <Box key={`h-${index}`} flexDirection="column">
             <Text bold color={theme.mdHeadingH1}>
-              {chrome.prefix}
+              <Text color={theme.brand}>{chrome.prefix}</Text>
               {chrome.text}
               {chrome.suffix}
             </Text>
@@ -556,7 +556,7 @@ function renderBlockToken(
         return (
           <Box key={`h-${index}`} flexDirection="column">
             <Text bold color={theme.mdHeadingH2}>
-              {chrome.prefix}
+              <Text color={theme.brand}>{chrome.prefix}</Text>
               {chrome.text}
               {chrome.suffix}
             </Text>

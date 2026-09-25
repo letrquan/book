@@ -5,6 +5,7 @@ import { join } from 'path';
 import {
   APPLE_THEME,
   FOLIO_THEME,
+  RUBRIC_THEME,
   listCustomThemes,
   loadCustomTheme,
   resolveTheme,
@@ -34,9 +35,9 @@ describe('loadCustomTheme', () => {
     expect(theme).not.toBeNull();
     expect(theme!.brand).toBe('#ff0000');
     expect(theme!.text).toBe('#ffffff');
-    // Unspecified keys come from the default look, Folio.
-    expect(theme!.error).toBe(FOLIO_THEME.error);
-    expect(theme!.surface).toBe(FOLIO_THEME.surface);
+    // Unspecified keys come from the default look, Rubric.
+    expect(theme!.error).toBe(RUBRIC_THEME.error);
+    expect(theme!.surface).toBe(RUBRIC_THEME.surface);
   });
 
   it('returns null on malformed JSON', () => {
@@ -54,6 +55,7 @@ describe('loadCustomTheme', () => {
 
 describe('theme resolution', () => {
   it('resolves apple and reports other or unknown themes as null', () => {
+    expect(resolveTheme(dir, 'rubric')?.tokens).toBe(RUBRIC_THEME);
     expect(resolveTheme(dir, 'folio')?.tokens).toBe(FOLIO_THEME);
     expect(resolveTheme(dir, 'Folio')?.tokens).toBe(FOLIO_THEME);
     expect(resolveTheme(dir, 'apple')?.tokens).toBe(APPLE_THEME);
@@ -171,5 +173,29 @@ describe('folio default theme', () => {
       const values = Array.isArray(value) ? value : [value];
       for (const color of values) expect(color, role).toMatch(/^#[0-9A-F]{6}$/i);
     }
+  });
+});
+
+describe('rubric default theme', () => {
+  const marks = ['brand', 'userAccent', 'mdListMarker'] as const;
+
+  it('spends the rubric on marks only', () => {
+    for (const role of marks) expect(RUBRIC_THEME[role]).toBe(RUBRIC_THEME.brand);
+    // The agent speaks in ink: its spinner and label are not the rubric.
+    expect(RUBRIC_THEME.assistantAccent).not.toBe(RUBRIC_THEME.brand);
+    expect(RUBRIC_THEME.shimmerPair).not.toContain(RUBRIC_THEME.brand);
+    // The composer border stays a neutral hairline.
+    expect(RUBRIC_THEME.promptBorder).toBe(FOLIO_THEME.promptBorder);
+  });
+
+  it('keeps errors and warnings off the rubric red', () => {
+    const roles = ['brand', 'error', 'warning', 'success', 'planMode', 'mdLink'] as const;
+    expect(new Set(roles.map((role) => RUBRIC_THEME[role])).size).toBe(roles.length);
+  });
+
+  it('ranks heading depth by three distinct steps', () => {
+    const ramp = [RUBRIC_THEME.mdHeadingH1, RUBRIC_THEME.mdHeadingH2, RUBRIC_THEME.mdHeading];
+    expect(new Set(ramp).size).toBe(3);
+    for (const step of ramp) expect(step).not.toBe(RUBRIC_THEME.text);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { displayWidth } from './word-wrap.js';
+import { SECTION_SIGN } from '../marks.js';
 import {
   allocateTableColumns,
   layoutCodeBlock,
@@ -232,15 +233,21 @@ describe('layoutHeadingChrome / hr / nested budgets', () => {
     expect(displayWidth(h3.prefix + h3.text)).toBeLessThanOrEqual(12);
   });
 
-  it('gives headings no side chrome at any depth', () => {
-    // Hierarchy is carried by weight and brightness. Side rules here read as
-    // turn boundaries, which is the transcript's job, not a heading's.
+  it('marks only the two structuring headings, and with a section sign alone', () => {
+    // Hierarchy is carried by weight and brightness. H1 and H2 open with a
+    // rubricated section sign; nothing gets side rules, which read as turn
+    // boundaries.
     for (const depth of [1, 2, 3, 4, 5, 6]) {
       const chrome = layoutHeadingChrome('Root cause', depth, 80);
-      expect(chrome.prefix).toBe('');
+      expect(chrome.prefix).toBe(depth <= 2 ? `${SECTION_SIGN} ` : '');
       expect(chrome.suffix).toBe('');
       expect(chrome.text).toBe('Root cause');
     }
+  });
+
+  it('fits the section sign and the heading inside the width together', () => {
+    const chrome = layoutHeadingChrome('A heading far too long for its row', 2, 12);
+    expect(displayWidth(chrome.prefix + chrome.text)).toBeLessThanOrEqual(12);
   });
 
   it('builds horizontal rules within bounds', () => {

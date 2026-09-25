@@ -452,7 +452,7 @@ export const bookSettingsSchema = z.object({
   maxTurns: z.number().int().min(1).optional(),
   maxTokens: z.number().int().min(1000).optional(),
   effort: effortLevelSchema.optional(),
-  /** TUI color theme: folio (default), apple, or a custom theme filename. */
+  /** TUI color theme: rubric (default), folio, apple, or a custom theme filename. */
   theme: z.string().min(1).optional(),
   /**
    * The shell the Bash tool spawns: `bash`, `pwsh`, `powershell`, `cmd`, `sh`,

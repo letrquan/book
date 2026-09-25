@@ -43,6 +43,8 @@ interface StatusLineProps {
   agentCount?: number;
   activeAgentCount?: number;
   needsInputAgentCount?: number;
+  /** Turns written so far; drawn at the right edge as the page's folio. */
+  turnCount?: number;
   terminalWidth?: number;
   compact?: boolean;
   reducedMotion?: boolean;
@@ -77,6 +79,41 @@ export function buildColoredSegments(
 }
 
 /**
+ * A page number the way a book prints it in its front matter: `i`, `iv`, `xii`.
+ * Zero and negative counts have no folio.
+ */
+export function romanFolio(count: number): string {
+  let n = Math.floor(count);
+  if (n <= 0) return '';
+  const steps: Array<[number, string]> = [
+    [1000, 'm'],
+    [900, 'cm'],
+    [500, 'd'],
+    [400, 'cd'],
+    [100, 'c'],
+    [90, 'xc'],
+    [50, 'l'],
+    [40, 'xl'],
+    [10, 'x'],
+    [9, 'ix'],
+    [5, 'v'],
+    [4, 'iv'],
+    [1, 'i'],
+  ];
+  let out = '';
+  for (const [value, numeral] of steps) {
+    while (n >= value) {
+      out += numeral;
+      n -= value;
+    }
+  }
+  return out;
+}
+
+/** Columns kept clear between the last segment and the folio. */
+const FOLIO_GAP = 3;
+
+/**
  * Single-row responsive status line.
  *
  * The row aggressively shortens low-priority details before Ink can wrap them,
@@ -95,6 +132,7 @@ export function StatusLine({
   agentCount = 0,
   activeAgentCount = 0,
   needsInputAgentCount = 0,
+  turnCount = 0,
   terminalWidth = 80,
   compact = false,
   reducedMotion = false,
@@ -105,7 +143,12 @@ export function StatusLine({
   // Footer rows share the transcript's content column so the status text, the
   // activity label and every tool row start on the same column.
   const horizontalInset = CONTENT_COLUMN;
-  const contentWidth = Math.max(8, width - horizontalInset - 1);
+  // The folio takes the right edge, like a page number in the outer margin. It
+  // is the first thing a narrow row gives up.
+  const rowWidth = Math.max(8, width - horizontalInset - 1);
+  const rawFolio = romanFolio(turnCount);
+  const folio = rawFolio && rowWidth >= 40 ? rawFolio : '';
+  const contentWidth = folio ? rowWidth - displayWidth(folio) - FOLIO_GAP : rowWidth;
 
   const motionDisabled = reducedMotion || screenReader;
   const modeFlash = useTimedFlash(mode, 260, motionDisabled);
@@ -194,6 +237,7 @@ export function StatusLine({
     width,
   ]);
 
+  const used = coloredRuns.reduce((total, run) => total + displayWidth(run.text), 0);
   return (
     <Box paddingLeft={horizontalInset} width={width} flexDirection="row" flexWrap="nowrap">
       {coloredRuns.map((run, i) => (
@@ -201,6 +245,14 @@ export function StatusLine({
           {run.text}
         </Text>
       ))}
+      {folio ? (
+        <>
+          <Text>{' '.repeat(Math.max(FOLIO_GAP, rowWidth - used - displayWidth(folio)))}</Text>
+          <Text color={theme.inactive} italic>
+            {folio}
+          </Text>
+        </>
+      ) : null}
     </Box>
   );
 }

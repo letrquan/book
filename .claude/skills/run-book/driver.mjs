@@ -499,7 +499,7 @@ async function run() {
         // Wait for the placeholder, then settle.
         // A narrow composer shortens the placeholder to `Ask...`, so match the
         // prompt glyph in front of it too.
-        const ok = await waitFor('Ask me anything|[›>] Ask', Number(rest || DEFAULT_TIMEOUT), 'screen');
+        const ok = await waitFor('Ask me anything|[›>¶] Ask', Number(rest || DEFAULT_TIMEOUT), 'screen');
         if (!ok) await fail('TUI never rendered the input bar');
         await sleep(READY_SETTLE_MS);
         console.log('[driver] ready');

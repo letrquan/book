@@ -2,14 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { TranscriptViewportContext } from '../transcript-layout.js';
-import {
-  composeWelcomeHints,
-  LOGOTYPE,
-  titlePageTopPadding,
-  WELCOME_FOOTER_ROWS,
-  WELCOME_HINTS,
-  WelcomeScreen,
-} from './WelcomeScreen.js';
+import { composeWelcomeHints, DROP_CAP, WELCOME_HINTS, WelcomeScreen } from './WelcomeScreen.js';
 import { displayWidth } from './word-wrap.js';
 
 function stripAnsi(value: string | undefined): string {
@@ -27,7 +20,7 @@ function lines(output: string): string[] {
 afterEach(() => cleanup());
 
 describe('WelcomeScreen', () => {
-  it('renders the wide animated welcome final state when reduced motion is enabled', () => {
+  it('opens on a drop cap with the word and the details set beside it', () => {
     const view = render(
       withTheme(
         <WelcomeScreen
@@ -43,43 +36,22 @@ describe('WelcomeScreen', () => {
       ),
     );
 
-    const output = stripAnsi(view.lastFrame());
-    const rows = lines(output);
-    // The logotype, the workspace and model, then the hints — and no tagline,
-    // which only repeated the composer's placeholder.
-    expect(rows).toHaveLength(LOGOTYPE.length + 2);
-    for (const [index, row] of LOGOTYPE.entries()) {
-      expect(rows[index]!.trim()).toBe(row.trim());
-    }
-    expect(output).toContain('book  ·  claude-sonnet-5');
-    expect(output).not.toContain('Ask anything');
-    expect(output).toContain('/help');
-    expect(output).toContain('Ctrl+/ shortcuts');
-  });
-
-  it('centres the title page and sets it a little above the middle', () => {
-    const view = render(
-      withTheme(
-        <WelcomeScreen
-          terminalWidth={100}
-          terminalHeight={32}
-          workspace="/tmp/book"
-          reducedMotion
-        />,
-      ),
-    );
     const all = stripAnsi(view.lastFrame()).split('\n');
-    const first = all.findIndex((row) => row.trim() === LOGOTYPE[0].trim());
-
-    // No transcript viewport in this render, so the page pads for the
-    // estimated footer.
-    expect(first).toBe(titlePageTopPadding(32 - WELCOME_FOOTER_ROWS));
-    const left = all[first]!.indexOf(LOGOTYPE[0][0]!);
-    const right = 99 - (left + displayWidth(LOGOTYPE[0]));
-    expect(Math.abs(left - right)).toBeLessThanOrEqual(1);
+    // One row of top margin, then the cap on the content column.
+    expect(all[0]!.trim()).toBe('');
+    DROP_CAP.forEach((row, index) => {
+      expect(all[index + 1]!.startsWith(`  ${row}`)).toBe(true);
+    });
+    const beside = (index: number) => all[index + 1]!.slice(2 + displayWidth(DROP_CAP[0])).trim();
+    // "B" + "ook": the cap starts the word.
+    expect(beside(0)).toBe('ook');
+    expect(beside(2)).toBe('book  ·  claude-sonnet-5');
+    expect(beside(3)).toContain('/help commands');
+    // No tagline: the composer's placeholder already says it.
+    expect(all.join('\n')).not.toContain('Ask anything');
   });
 
-  it('never cuts the logotype when an open menu shrinks the transcript', () => {
+  it('never cuts the drop cap when an open menu shrinks the transcript', () => {
     const viewport = (viewportRows: number) => ({
       subscribe: () => () => {},
       getRevision: () => viewportRows,
@@ -95,19 +67,19 @@ describe('WelcomeScreen', () => {
       );
       const rows = lines(stripAnsi(view.lastFrame()));
       cleanup();
-      return rows.map((row) => row.trim());
+      return rows;
     };
 
-    // Room for the logotype but not the page: the logotype, whole.
-    expect(shown(4)).toEqual(LOGOTYPE.map((row) => row.trim()));
+    // Room for the cap but not its top margin: the cap, whole, from the first row.
+    const tight = shown(DROP_CAP.length);
+    expect(tight).toHaveLength(DROP_CAP.length);
+    expect(tight[0]!.startsWith(`  ${DROP_CAP[0]}`)).toBe(true);
     // Not even that: nothing, rather than a sliced glyph.
-    expect(shown(2)).toEqual([]);
-    // Room for the page: all of it, padded to the measured viewport.
-    expect(shown(14)).toHaveLength(LOGOTYPE.length + 2);
+    expect(shown(DROP_CAP.length - 1)).toEqual([]);
   });
 
-  it('keeps every logotype row the same width', () => {
-    expect(new Set(LOGOTYPE.map(displayWidth)).size).toBe(1);
+  it('keeps every drop cap row the same width', () => {
+    expect(new Set(DROP_CAP.map(displayWidth)).size).toBe(1);
   });
 
   it('keeps the compact welcome to three rows', () => {
@@ -124,7 +96,7 @@ describe('WelcomeScreen', () => {
 
     const output = stripAnsi(view.lastFrame());
     expect(lines(output)).toHaveLength(3);
-    expect(output).toContain('BOOK');
+    expect(output).toContain('Book');
     expect(output).toContain('/skills');
   });
 
@@ -134,7 +106,7 @@ describe('WelcomeScreen', () => {
     );
 
     const output = stripAnsi(view.lastFrame());
-    expect(output).toContain('BOOK');
+    expect(output).toContain('Book');
     expect(output).toContain('Ask anything.');
     expect(lines(output)).toHaveLength(2);
     for (const line of lines(output)) {
@@ -156,7 +128,7 @@ describe('WelcomeScreen', () => {
     );
 
     const output = stripAnsi(view.lastFrame());
-    expect(output).toContain('BOOK');
+    expect(output).toContain('Book');
     expect(output).toContain('Type /help for commands');
     expect(output).toContain('Mode plan');
   });

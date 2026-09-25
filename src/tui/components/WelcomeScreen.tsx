@@ -95,74 +95,29 @@ function HintRow({ hints }: { hints: WelcomeHint[] }) {
 }
 
 /**
- * The title-page logotype: BOOK drawn in half blocks, three rows tall.
+ * The drop cap an empty session opens on.
  *
- * Each letter is a 4×6 pixel glyph packed two pixels per cell (`▀` top, `▄`
- * bottom, `█` both). Keep the rows the same display width, or the centred
- * block shears.
+ * A B four rows tall, drawn in half blocks (a 5×8 pixel glyph, two pixels per
+ * cell: `▀` top, `▄` bottom, `█` both) and set in rubric, the way an
+ * illuminated manuscript opens its first chapter. Three rows were not enough:
+ * with a 4×6 glyph the bowls shrank to single cells and the B read as an E. The
+ * rest of the word and the session's details are set beside it, left-aligned on
+ * the transcript grid: the page begins where the conversation will. Keep the
+ * rows the same width, or the text beside the cap shears.
  */
-export const LOGOTYPE = [
-  '█▀▀▄ ▄▀▀▄ ▄▀▀▄ █ ▄▀',
-  '█▀▀▄ █  █ █  █ █▀▄ ',
-  '█▄▄▀ ▀▄▄▀ ▀▄▄▀ █  █',
-] as const;
+export const DROP_CAP = ['█▀▀▀▄', '█▄▄▄▀', '█   █', '█▄▄▄▀'] as const;
+
+/** Columns between the drop cap and the text set beside it. */
+const DROP_CAP_GAP = 2;
+
+/** Rows the opening occupies: one row of top margin, then the drop cap. */
+const OPENING_ROWS = DROP_CAP.length + 1;
 
 /**
  * Rows the composer and status line take below the transcript: the estimate
  * used until the transcript viewport has been measured.
  */
 export const WELCOME_FOOTER_ROWS = 5;
-
-/** Rows the title page itself occupies: logotype, blank, meta, blank, hints. */
-const TITLE_PAGE_ROWS = LOGOTYPE.length + 4;
-
-/** Blend two `#rrggbb` colours; `t = 0` is `from`. Undefined for any other form. */
-function mixHex(from: string, to: string, t: number): string | undefined {
-  const parse = (hex: string) =>
-    /^#[0-9a-f]{6}$/i.test(hex) ? [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) : null;
-  const a = parse(from);
-  const b = parse(to);
-  if (!a || !b) return undefined;
-  return `#${a
-    .map((v, i) => Math.round(v + (b[i]! - v) * t))
-    .map((v) => v.toString(16).padStart(2, '0'))
-    .join('')}`;
-}
-
-/**
- * The logotype in gold foil: each row steps from the light gilt down to the
- * deep one, the way stamped foil catches the light along its top edge.
- */
-function Logotype() {
-  const theme = useTheme();
-  const last = LOGOTYPE.length - 1;
-  return (
-    <Box flexDirection="column">
-      {LOGOTYPE.map((row, index) => (
-        <Text
-          key={index}
-          color={
-            mixHex(theme.brandShimmer, theme.brand, last === 0 ? 1 : index / last) ?? theme.brand
-          }
-        >
-          {row}
-        </Text>
-      ))}
-    </Box>
-  );
-}
-
-/**
- * Blank rows above the title page, given the rows the transcript can show.
- *
- * An empty session used to print a small block in the top-left corner above
- * thirty-odd empty rows. The title page sits a little above the optical middle
- * of the space left over, the way a title sits on the page of a book.
- */
-export function titlePageTopPadding(availableRows: number): number {
-  const free = Math.floor(availableRows) - TITLE_PAGE_ROWS;
-  return Math.max(0, Math.floor(free * 0.4));
-}
 
 export function WelcomeScreen({
   terminalWidth,
@@ -197,7 +152,7 @@ export function WelcomeScreen({
   if (screenReader) {
     return (
       <Box flexDirection="column" paddingLeft={CONTENT_COLUMN} width={width}>
-        <Text bold>BOOK</Text>
+        <Text bold>Book</Text>
         <Text>{truncateDisplay(tagline, contentWidth)}</Text>
         {/* Prose, not the `·`-joined chip row: a screen reader reads a
             sentence far better than a list of separators. */}
@@ -221,8 +176,12 @@ export function WelcomeScreen({
     return (
       <Box flexDirection="column" width={width}>
         <Box paddingLeft={CONTENT_COLUMN}>
+          {/* The drop cap in miniature: a rubricated B, then the word in ink. */}
           <Text color={theme.brand} bold>
-            BOOK{' '}
+            B
+          </Text>
+          <Text color={theme.text} bold>
+            ook{' '}
           </Text>
           <Text color={theme.text}>{truncateDisplay(tagline, contentWidth - 5)}</Text>
         </Box>
@@ -239,8 +198,12 @@ export function WelcomeScreen({
     return (
       <Box flexDirection="column" width={width}>
         <Box paddingLeft={CONTENT_COLUMN}>
+          {/* The drop cap in miniature: a rubricated B, then the word in ink. */}
           <Text color={theme.brand} bold>
-            BOOK{' '}
+            B
+          </Text>
+          <Text color={theme.text} bold>
+            ook{' '}
           </Text>
           <Text color={theme.text}>{truncateDisplay(tagline, contentWidth - 5)}</Text>
         </Box>
@@ -260,33 +223,39 @@ export function WelcomeScreen({
     );
   }
 
-  // Too short for the whole page (a menu is open): keep the logotype if it fits
-  // whole, and never draw part of a glyph.
-  if (availableRows < TITLE_PAGE_ROWS) {
-    return (
-      <Box flexDirection="column" width={width - 1} alignItems="center">
-        {availableRows >= LOGOTYPE.length ? <Logotype /> : null}
-      </Box>
-    );
-  }
+  // Too short for the drop cap (a menu is open): draw nothing rather than a cap
+  // cut through the middle.
+  if (availableRows < DROP_CAP.length) return <Box />;
 
-  // A title page: centred, with the composer below as the first line of text.
-  // No tagline — the composer's placeholder already says "Ask me anything".
+  const besideWidth = Math.max(8, contentWidth - displayWidth(DROP_CAP[0]) - DROP_CAP_GAP);
+  const beside = [
+    <Text key="word" color={theme.text} bold>
+      ook
+    </Text>,
+    // Air between the word and the details, so the block beside the cap spans
+    // its full height and the hints sit on its last row.
+    null,
+    <WelcomeLine key="meta" visible={reveal >= 1}>
+      {/* The mode is left to the status line, which is where it changes. */}
+      <Text color={theme.subtle}>
+        {truncateDisplay(`${workspaceName(workspace)}  ·  ${model}`, besideWidth)}
+      </Text>
+    </WelcomeLine>,
+    <WelcomeLine key="hints" visible={reveal >= 2}>
+      <HintRow hints={composeWelcomeHints(WELCOME_HINTS, besideWidth)} />
+    </WelcomeLine>,
+  ];
+  // No tagline: the composer's placeholder already says "Ask me anything".
   return (
-    <Box flexDirection="column" width={width - 1} alignItems="center">
-      <Box height={titlePageTopPadding(availableRows)} />
-      <Logotype />
-      <Text> </Text>
-      <WelcomeLine visible={reveal >= 1}>
-        {/* The mode is left to the status line, which is where it changes. */}
-        <Text color={theme.subtle}>
-          {truncateDisplay(`${workspaceName(workspace)}  ·  ${model}`, contentWidth)}
-        </Text>
-      </WelcomeLine>
-      <Text> </Text>
-      <WelcomeLine visible={reveal >= 2}>
-        <HintRow hints={hints} />
-      </WelcomeLine>
+    <Box flexDirection="column" width={width - 1} paddingLeft={CONTENT_COLUMN}>
+      {availableRows >= OPENING_ROWS ? <Text> </Text> : null}
+      {DROP_CAP.map((row, index) => (
+        <Box key={index}>
+          <Text color={theme.brand}>{row}</Text>
+          <Text>{' '.repeat(DROP_CAP_GAP)}</Text>
+          {beside[index]}
+        </Box>
+      ))}
     </Box>
   );
 }

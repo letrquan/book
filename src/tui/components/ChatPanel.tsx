@@ -11,7 +11,7 @@ import type {
   PendingPlanApprovalRequest,
 } from '../../session/agent-interactions.js';
 import { AgentMessage, managedAgentTracesEqualForMessage } from './AgentMessage.js';
-import { UserMessage, userBandTextWidth } from './UserMessage.js';
+import { UserMessage, userTurnTextWidth } from './UserMessage.js';
 import { WelcomeScreen } from './WelcomeScreen.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount, useDebugRender } from '../debug.js';
@@ -67,11 +67,11 @@ function estimateWrappedRows(content: string, contentWidth: number): number {
 function estimateTimelineRows(entry: Message | CompactBoundary, terminalWidth: number): number {
   if ('transcriptOrdinal' in entry) return 1;
 
-  // A user turn is its band and nothing else: the prompt wraps inside the band's
-  // own measure, and there is no separate rule row above it.
+  // A user turn is its prompt and nothing else: it wraps at its own measure, and
+  // there is no separate rule row above it.
   const measure =
     entry.role === 'user'
-      ? userBandTextWidth(terminalWidth, Boolean(entry.timestamp))
+      ? userTurnTextWidth(terminalWidth, Boolean(entry.timestamp))
       : transcriptGrid(terminalWidth).content;
   const textRows = estimateWrappedRows(entry.content, measure);
   const attachmentRows = entry.attachments?.length ? 1 : 0;

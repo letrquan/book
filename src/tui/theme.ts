@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import type { ThemeTokens } from '../types/theme.js';
-import { DEFAULT_THEME, FOLIO_THEME } from '../types/theme.js';
+import { DEFAULT_THEME, FOLIO_THEME, RUBRIC_THEME } from '../types/theme.js';
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 
@@ -15,8 +15,11 @@ export const APPLE_THEME: ThemeTokens = { ...DEFAULT_THEME };
 /** Warm ink on dark paper with one gilt accent. See {@link FOLIO_THEME}. */
 export { FOLIO_THEME };
 
+/** Ink with cinnabar marks, like a rubricated manuscript. See {@link RUBRIC_THEME}. */
+export { RUBRIC_THEME };
+
 /** The theme a session gets when settings name none. */
-export const DEFAULT_THEME_NAME = 'folio';
+export const DEFAULT_THEME_NAME = 'rubric';
 
 export interface ResolvedTheme {
   preference: string;
@@ -65,8 +68,8 @@ export function loadCustomTheme(workspace: string, name: string): ThemeTokens | 
   try {
     const raw = readFileSync(themePath, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<ThemeTokens>;
-    // A custom theme overrides the default look, so it starts from Folio.
-    return { ...FOLIO_THEME, ...parsed };
+    // A custom theme overrides the default look, so it starts from Rubric.
+    return { ...RUBRIC_THEME, ...parsed };
   } catch {
     return null;
   }
@@ -81,6 +84,9 @@ export function resolveTheme(workspace: string, preference: string): ResolvedThe
   }
   if (builtin === 'folio') {
     return { preference: 'folio', resolvedName: 'folio', tokens: FOLIO_THEME };
+  }
+  if (builtin === 'rubric') {
+    return { preference: 'rubric', resolvedName: 'rubric', tokens: RUBRIC_THEME };
   }
   if (!requested) return null;
   const custom = loadCustomTheme(workspace, requested);

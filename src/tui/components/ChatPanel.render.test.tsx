@@ -4,7 +4,8 @@ import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { DensityContext, type TuiDensity } from '../density.js';
 import { ChatPanel, getCompletedTimelineWindow, getStreamingTimelineWindow } from './ChatPanel.js';
 import { AgentMessage } from './AgentMessage.js';
-import { LOGOTYPE } from './WelcomeScreen.js';
+import { DROP_CAP } from './WelcomeScreen.js';
+import { PILCROW } from '../marks.js';
 import type { FileMutationSummary, ToolCall, ToolResult } from '../../types/tools.js';
 import type { Message } from '../../types/messages.js';
 
@@ -142,7 +143,7 @@ describe('ChatPanel Ink rendering', () => {
     );
 
     const output = frame(view.lastFrame);
-    expect(output).toContain(LOGOTYPE[0].trim());
+    expect(output).toContain(`${DROP_CAP[0]}  ook`);
     expect(output).toContain('book  ·  model-x');
     expect(output).toContain('/help');
   });
@@ -332,11 +333,11 @@ describe('ChatPanel Ink rendering', () => {
     );
 
     const output = frame(view.lastFrame);
-    expect(output).not.toContain(LOGOTYPE[0].trim());
+    expect(output).not.toContain(DROP_CAP[0]);
     expect(output).not.toContain('You');
     expect(output).not.toContain('Book');
-    // The user turn is a banded row behind a ribbon, with no role label.
-    expect(output).toContain('▌ compact request');
+    // The user turn opens with a pilcrow, with no role label.
+    expect(output).toContain(`${PILCROW} compact request`);
     expect(output).not.toContain('── you ');
     expect(output).toContain('compact reply');
   });
@@ -380,10 +381,10 @@ describe('ChatPanel Ink rendering', () => {
     const answerLine = lines.findIndex((line) => line.includes('FIRST_ANSWER_MARKER'));
     const nextQuestionLine = lines.findIndex((line) => line.includes('SECOND_QUESTION_MARKER'));
 
-    // Blank row, then the banded prompt: the band is the boundary itself, so
-    // the next turn needs no separate rule row.
+    // Blank row, then the prompt: the pilcrow marks the boundary itself, so the
+    // next turn needs no separate rule row.
     expect(nextQuestionLine - answerLine).toBe(2);
-    expect(lines[nextQuestionLine]).toContain('▌ SECOND_QUESTION_MARKER');
+    expect(lines[nextQuestionLine]).toContain(`${PILCROW} SECOND_QUESTION_MARKER`);
   });
 
   it('keeps wrapped content mounted exactly once when streaming completes', () => {

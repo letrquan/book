@@ -6,21 +6,27 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
-- **New default look: the `folio` theme.** The old palette stays available as `"theme": "apple"`.
-  - **Palette:** warm ivory text and a single gilt accent. The accent covers the prompt glyph, your
-    turns, headings, list markers and the spinner. Status colours are muted (sage, brick, burnt
-    orange). Custom themes in `.book/themes/*.json` now start from `folio` instead of `apple`.
-  - **Your turns** are a tinted band with a ribbon in the gutter. This replaces the full-width
-    `── you ──` rule, and the time sits at the band's right edge.
-  - **Composer:** hairlines above and below replace the blue box. The `›` glyph moves into the
-    gutter, so typed text lines up with the transcript. The command, `@file` and skill menus attach
-    above it with a matching hairline.
+- **New default look: the `rubric` theme**, set like a rubricated manuscript. Two other palettes
+  share its layout: `folio` (one gilt accent) and `apple` (the old palette). Select one with
+  `"theme"`. A palette changes colours only.
+  - **Palette:** the body is in ink (warm ivory and greys). One cinnabar red is kept for navigation
+    marks, and the agent's spinner and label stay in ink. Errors move to rose and warnings to amber,
+    so neither reads as the accent. Custom themes in `.book/themes/*.json` now start from `rubric`
+    instead of `apple`.
+  - **Your turns** open with a red `¶` in the gutter and are set in italic, with the time at the
+    right edge. This replaces the full-width `── you ──` rule.
+  - **Composer:** hairlines above and below replace the blue box. Its prompt is the same `¶` that
+    will open the turn, placed in the gutter so typed text lines up with the transcript. The
+    command, `@file` and skill menus attach above it with a matching hairline.
   - **Status line:** segments are separated by a faint `·`. A dirty branch keeps its `*` but no
-    longer turns orange next to the mode.
-  - **Markdown tables** use booktabs-style rules: heavy above and below, light under the header, no
-    vertical lines. Code-block language labels are legible.
-  - **Welcome:** an empty session opens on a centred title page with a gold-foil logotype. The
-    tagline is gone, since it only repeated the composer's placeholder.
+    longer turns orange next to the mode. A folio (the turn count in lowercase Roman numerals) sits
+    at the right edge.
+  - **Markdown:** H1 and H2 headings open with a red `§`. Tables use booktabs-style rules: heavy
+    above and below, light under the header, no vertical lines. Code-block language labels are
+    legible.
+  - **Welcome:** an empty session opens on a four-row drop cap B, with "ook", the workspace and
+    model, and the hints set beside it. The tagline is gone, since it only repeated the composer's
+    placeholder.
   - **Smaller fixes:** tool verbs such as `Read` and `Bash` and their metadata are no longer drawn
     faint. The diff hunk header loses its doubled `@`. File-mutation groups use the `✓` of every
     other finished tool row. A locked composer's placeholder is grey instead of full-strength text.

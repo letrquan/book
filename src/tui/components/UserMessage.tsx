@@ -3,6 +3,7 @@ import React from 'react';
 import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
 import { displayWidth, wordWrap } from './word-wrap.js';
+import { PILCROW } from '../marks.js';
 import type { ImageAttachment } from '../../types/messages.js';
 
 interface UserMessageProps {
@@ -101,34 +102,32 @@ function parseMentionSegments(content: string): Array<{ text: string; isMention:
 }
 
 /**
- * Columns the prompt text wraps at inside the band.
+ * Columns the prompt text wraps at.
  *
- * The band stops one column short of the terminal, spends the gutter on the
- * ribbon, and keeps ` 19:13 ` clear at the right edge when the turn has a time.
+ * The row stops one column short of the terminal, spends the gutter on the
+ * pilcrow, and keeps ` 19:13` clear at the right edge when the turn has a time.
  * The transcript's row estimate uses the same measure, so a wrapped prompt is
  * sized before it mounts exactly as it renders.
  */
-export function userBandTextWidth(terminalWidth: number, hasTime: boolean): number {
-  const bandWidth = transcriptGrid(terminalWidth).width - 1;
+export function userTurnTextWidth(terminalWidth: number, hasTime: boolean): number {
+  const rowWidth = transcriptGrid(terminalWidth).width - 1;
   const timeColumn = hasTime ? TURN_TIME_WIDTH + 2 : 1;
-  return Math.max(8, bandWidth - CONTENT_COLUMN - timeColumn);
+  return Math.max(8, rowWidth - CONTENT_COLUMN - timeColumn);
 }
 
 /** `HH:MM`, the width of every turn time. */
 const TURN_TIME_WIDTH = 5;
 
-/** The ribbon down the left edge of a user turn: a half block, so it reads as a bookmark. */
-const RIBBON = '▌';
-
 /**
- * A user turn: the prompt set on a tinted band, with a gilt ribbon in the gutter.
+ * A user turn, set the way a rubricated manuscript opens a paragraph.
  *
- * The band has the job the full-width `── you ──` rule used to do: it is how a
- * long transcript shows where one exchange ended and the next began. It does
- * that with a change of surface instead of a line through the whole screen, so
- * the boundary stays easy to find without being the loudest thing in the turn.
- * The ribbon runs the full height of the prompt, and the time sits at the right
- * edge of the first row. @mentions stay accented for quick scanning.
+ * A red pilcrow hangs in the gutter and the prompt is set in italic, so your
+ * words read as a different voice from the agent's roman prose without a band,
+ * a box or a rule through the screen. The pilcrow is what a long transcript is
+ * scanned by: it is the only red mark at the margin, and it is the same mark as
+ * the composer's, so what you typed lands in the transcript under the glyph you
+ * typed it after. The time sits at the right edge of the first row. @mentions
+ * stay accented.
  */
 function UserMessageInner({
   content,
@@ -155,9 +154,9 @@ function UserMessageInner({
   }
 
   const time = formatTurnTime(timestamp);
-  // The band leaves the terminal's last column empty, like every other row.
-  const bandWidth = width - 1;
-  const textWidth = userBandTextWidth(terminalWidth, Boolean(time));
+  // The row leaves the terminal's last column empty, like every other row.
+  const rowWidth = width - 1;
+  const textWidth = userTurnTextWidth(terminalWidth, Boolean(time));
   const lines = content ? wordWrap(content, textWidth).split('\n') : [];
   if (attachments.length > 0) {
     lines.push(attachments.map((_, index) => `[image ${index + 1}]`).join(' '));
@@ -165,17 +164,17 @@ function UserMessageInner({
   if (lines.length === 0) lines.push('');
 
   return (
-    <Box flexDirection="column" width={bandWidth} backgroundColor={theme.userBg}>
+    <Box flexDirection="column" width={rowWidth}>
       {lines.map((line, index) => {
         const isAttachmentRow = attachments.length > 0 && index === lines.length - 1;
         const gap = Math.max(0, textWidth - displayWidth(line));
         return (
-          <Box key={index} width={bandWidth}>
-            <Text color={theme.userAccent}>{RIBBON} </Text>
+          <Box key={index} width={rowWidth}>
+            <Text color={theme.userAccent}>{index === 0 ? `${PILCROW} ` : '  '}</Text>
             {isAttachmentRow ? (
               <Text color={theme.userAccent}>{line}</Text>
             ) : (
-              <Text>
+              <Text italic>
                 {parseMentionSegments(line).map((seg, i) => (
                   <Text key={i} color={seg.isMention ? theme.userAccent : theme.text}>
                     {seg.text}
@@ -183,8 +182,12 @@ function UserMessageInner({
                 ))}
               </Text>
             )}
-            <Text>{' '.repeat(gap)}</Text>
-            {index === 0 && time ? <Text color={theme.inactive}> {time} </Text> : null}
+            {index === 0 && time ? (
+              <>
+                <Text>{' '.repeat(gap)}</Text>
+                <Text color={theme.inactive}> {time}</Text>
+              </>
+            ) : null}
           </Box>
         );
       })}

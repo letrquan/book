@@ -320,3 +320,48 @@ export const FOLIO_THEME: ThemeTokens = {
 
   userBg: '#24221E',
 };
+
+/**
+ * Rubric: two-colour printing, the way manuscripts were rubricated.
+ *
+ * The body is set in ink (Folio's warm ivory and greys). One cinnabar red is
+ * reserved for the marks a reader navigates by: the pilcrow that opens each of
+ * your turns and the composer, the section sign before a heading, list
+ * markers, and the drop cap on an empty page. The agent speaks in ink, spinner
+ * included, so red never reads as an alarm. Because red is the accent, errors
+ * move to a rose that stays distinct from it, and warnings to amber.
+ */
+export const RUBRIC_THEME: ThemeTokens = {
+  ...FOLIO_THEME,
+  brand: '#E4573D',
+  brandShimmer: '#F28A6E',
+  userAccent: '#E4573D',
+  // The agent's own voice is ink, not rubric.
+  assistantAccent: '#F0EBE1',
+  shimmerPair: ['#F0EBE1', '#A09A8F'],
+
+  error: '#EF6F95',
+  warning: '#E3A84E',
+  permission: '#E3A84E',
+  bashBorder: '#E3A84E',
+  modeBypass: '#E3A84E',
+  modeDontAsk: '#EF6F95',
+  usageMeterHigh: '#E3A84E',
+  usageMeterCritical: '#EF6F95',
+
+  mdHeadingH1: '#F6F1E7',
+  mdHeadingH2: '#EFE9DE',
+  mdHeading: '#BDB6AA',
+  mdListMarker: '#E4573D',
+
+  subagentColors: [
+    '#E4573D',
+    '#E3A84E',
+    '#D9B36C',
+    '#93B97F',
+    '#8EBBB5',
+    '#8FAFD6',
+    '#B8A1D9',
+    '#EF6F95',
+  ],
+};

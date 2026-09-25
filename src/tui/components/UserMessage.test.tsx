@@ -5,6 +5,7 @@ import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { displayWidth } from './word-wrap.js';
 import { UserMessage } from './UserMessage.js';
 import { CONTENT_COLUMN } from '../layout.js';
+import { PILCROW } from '../marks.js';
 
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
@@ -21,9 +22,9 @@ function frameLines(value: string | undefined): string[] {
 afterEach(() => cleanup());
 
 describe('UserMessage', () => {
-  it('sets the prompt on a banded row behind a ribbon', () => {
-    // Ink colours through chalk, which emits nothing off a TTY; force truecolor
-    // so the band's background is visible in the frame.
+  it('opens the turn with a pilcrow and sets the prompt in italic', () => {
+    // Ink styles through chalk, which emits nothing off a TTY; force truecolor
+    // so the italic is visible in the frame.
     const level = chalk.level;
     chalk.level = 3;
     let frame: string;
@@ -36,9 +37,10 @@ describe('UserMessage', () => {
     const lines = frameLines(frame);
 
     expect(lines).toHaveLength(1);
-    expect(lines[0].startsWith('▌ compact request')).toBe(true);
-    // The band is painted: the row carries the user background as a 24-bit SGR.
-    expect(frame).toContain('48;2;32;32;34');
+    expect(lines[0].startsWith(`${PILCROW} compact request`)).toBe(true);
+    expect(frame).toContain('\u001b[3m');
+    // No band: the row paints no background of its own.
+    expect(frame).not.toMatch(/\u001b\[48;/);
     for (const line of lines) {
       expect(displayWidth(line)).toBeLessThanOrEqual(40);
     }
@@ -51,7 +53,7 @@ describe('UserMessage', () => {
     expect(lines[0].indexOf('compact request')).toBe(CONTENT_COLUMN);
   });
 
-  it('runs the ribbon down every row of a wrapped prompt', () => {
+  it('hangs the pilcrow on the first row only of a wrapped prompt', () => {
     const view = render(
       withTheme(
         <UserMessage content="one two three four five six seven eight nine" terminalWidth={24} />,
@@ -60,10 +62,12 @@ describe('UserMessage', () => {
     const lines = frameLines(view.lastFrame());
 
     expect(lines.length).toBeGreaterThan(1);
-    for (const line of lines) {
-      expect(line.startsWith('▌ ')).toBe(true);
-      expect(displayWidth(line)).toBeLessThanOrEqual(24);
+    expect(lines[0].startsWith(`${PILCROW} `)).toBe(true);
+    for (const line of lines.slice(1)) {
+      expect(line.startsWith('  ')).toBe(true);
+      expect(line.trim().length).toBeGreaterThan(0);
     }
+    for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(24);
   });
 
   it('shows the turn time at the right edge of the first row', () => {
@@ -73,7 +77,7 @@ describe('UserMessage', () => {
     );
     const lines = frameLines(view.lastFrame());
 
-    // The band ends one column short of the terminal, with a space of air
+    // The row ends one column short of the terminal, with a column of air
     // after the time.
     expect(lines[0].trimEnd().endsWith('14:05')).toBe(true);
     expect(displayWidth(lines[0].trimEnd())).toBe(78);
@@ -83,7 +87,7 @@ describe('UserMessage', () => {
     const view = render(withTheme(<UserMessage content="hello" terminalWidth={80} />));
     const lines = frameLines(view.lastFrame());
 
-    expect(lines[0].trimEnd()).toBe('▌ hello');
+    expect(lines[0].trimEnd()).toBe(`${PILCROW} hello`);
   });
 
   it('keeps file mentions in the prompt', () => {
@@ -92,13 +96,13 @@ describe('UserMessage', () => {
     expect(stripAnsi(view.lastFrame())).toContain('@src/app.ts');
   });
 
-  it('renders flat text without the ribbon for screen readers', () => {
+  it('renders flat text without the pilcrow for screen readers', () => {
     const view = render(
       withTheme(<UserMessage content="compact request" terminalWidth={40} screenReader />),
     );
     const output = stripAnsi(view.lastFrame());
 
     expect(output).toContain('compact request');
-    expect(output).not.toContain('▌');
+    expect(output).not.toContain(PILCROW);
   });
 });
