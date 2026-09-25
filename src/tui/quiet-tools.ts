@@ -1,4 +1,4 @@
-import { basename } from 'path';
+import { basename, isAbsolute, relative, resolve } from 'path';
 import { splitReasoningParts } from '../reasoning-tags.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import type { Message } from '../types/messages.js';
@@ -47,6 +47,21 @@ export interface QuietToolContext {
   pinned: ReadonlySet<string>;
   /** The tool a permission prompt is waiting on, which is never quiet. */
   pendingToolId?: string;
+  /**
+   * The session's workspace. A read or search that reaches outside it is the
+   * kind of access a permission rule exists for, so it keeps its own row even
+   * when no prompt was shown (bypass mode, or an allow rule).
+   */
+  workspace?: string;
+}
+
+/** Whether a read or search reaches outside the workspace. */
+function reachesOutside(call: ToolCall, workspace: string | undefined): boolean {
+  if (!workspace) return false;
+  const target = argString(call.arguments, 'file_path', 'path', 'filePath');
+  if (!target) return false;
+  const rel = relative(resolve(workspace), resolve(workspace, target));
+  return rel.startsWith('..') || isAbsolute(rel);
 }
 
 function resultFor(message: Message, toolCallId: string): ToolResult | undefined {
@@ -68,6 +83,7 @@ export function isQuietInvocation(
 ): boolean {
   if (!QUIET_TOOLS.has(canonicalToolName(call.name))) return false;
   if (context.pinned.has(call.id) || context.pendingToolId === call.id) return false;
+  if (reachesOutside(call, context.workspace)) return false;
   if (message.nestedToolInvocations?.some((nested) => nested.parentTraceId === call.id)) {
     return false;
   }
@@ -110,6 +126,9 @@ export function continuesQuietRun(
   if (message.role !== 'assistant' || message.localCommand) return false;
   const first = message.toolCalls?.[0];
   if (!first) return false;
+  // Joining would put a spawn in the same entry as the narration before it,
+  // and AgentMessage hides a delegating entry's narration.
+  if (message.toolCalls!.some((call) => call.name === 'AgentSpawn')) return false;
   if (hasVisibleText(message, showThinking)) return false;
   return isQuietInvocation(first, resultFor(message, first.id), message, context);
 }

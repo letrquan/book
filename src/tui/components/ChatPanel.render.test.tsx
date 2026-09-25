@@ -1590,3 +1590,36 @@ describe('ChatPanel quiet tool runs', () => {
     expect(output).not.toMatch(/a\.ts, b\.ts, c\.ts/);
   });
 });
+
+describe('ChatPanel folding keeps delegation narration', () => {
+  it('keeps the sentence before a read when the next turn delegates', () => {
+    const messages: Message[] = [
+      msg('u1', 'user', 'check the loader'),
+      {
+        ...msg('a1', 'assistant', 'Let me check the loader.'),
+        toolCalls: [{ id: 'r1', name: 'Read', arguments: { file_path: 'src/config.ts' } }],
+        toolResults: [successResult('r1', 'contents')],
+      },
+      {
+        ...msg('a2', 'assistant', '<think></think>'),
+        toolCalls: [
+          { id: 'spawn', name: 'AgentSpawn', arguments: { profile: 'explorer', task: 'x' } },
+        ],
+      },
+    ];
+    for (const transcriptMode of ['compact', 'detailed'] as const) {
+      const view = render(
+        withTheme(
+          <ChatPanel
+            messages={messages}
+            terminalWidth={100}
+            transcriptMode={transcriptMode}
+            reducedMotion
+          />,
+        ),
+      );
+      expect(frame(view.lastFrame)).toContain('Let me check the loader.');
+      cleanup();
+    }
+  });
+});

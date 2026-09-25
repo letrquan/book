@@ -242,8 +242,15 @@ export function ChatPanelInner({
     const pinned = new Set<string>();
     for (const [id, expanded] of toolExpansionOverrides ?? []) if (expanded) pinned.add(id);
     if (expandedToolCallId) pinned.add(expandedToolCallId);
-    return { pinned, pendingToolId };
-  }, [expandedToolCallId, pendingToolId, screenReader, toolExpansionOverrides, transcriptMode]);
+    return { pinned, pendingToolId, workspace };
+  }, [
+    expandedToolCallId,
+    pendingToolId,
+    screenReader,
+    toolExpansionOverrides,
+    transcriptMode,
+    workspace,
+  ]);
   const displayTimeline = useMemo(
     () =>
       quietTools

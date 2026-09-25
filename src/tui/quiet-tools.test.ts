@@ -218,3 +218,26 @@ describe('summarizeQuietRun', () => {
     expect(summary.running).toBe(true);
   });
 });
+
+describe('continuesQuietRun and delegation', () => {
+  it('never joins a turn that spawns an agent', () => {
+    const turn = assistant('m', '', [call('a', 'Read'), call('s', 'AgentSpawn')]);
+    expect(continuesQuietRun(turn, NONE, true)).toBe(false);
+  });
+});
+
+describe('reads outside the workspace', () => {
+  const message = assistant('m', '', []);
+  const context: QuietToolContext = { pinned: new Set(), workspace: '/repo' };
+
+  it('keeps a read that leaves the workspace on its own row', () => {
+    const outside = call('a', 'Read', { file_path: '/etc/hosts' });
+    const parent = call('b', 'Read', { file_path: '../secrets.env' });
+    const inside = call('c', 'Read', { file_path: 'src/config.ts' });
+    const absoluteInside = call('d', 'Grep', { pattern: 'x', path: '/repo/src' });
+    expect(isQuietInvocation(outside, ok('a'), message, context)).toBe(false);
+    expect(isQuietInvocation(parent, ok('b'), message, context)).toBe(false);
+    expect(isQuietInvocation(inside, ok('c'), message, context)).toBe(true);
+    expect(isQuietInvocation(absoluteInside, ok('d'), message, context)).toBe(true);
+  });
+});

@@ -672,12 +672,17 @@ export function AgentMessageInner({
           into one summary in the compact transcript. Task subagent tools stay
           display-only and nest below it. */}
       {topLevelInvocations.map((invocation, index) => {
+        // The detailed transcript expands every call, so each row carries a block
+        // of output; a blank row between blocks keeps one call's output from
+        // running into the next call's header.
         const marginTop =
           index === 0
             ? showsContent || (showThinking && reasoningContent)
               ? toolBlockGap
               : 0
-            : toolRowGap;
+            : transcriptMode === 'detailed' && !screenReader
+              ? 1
+              : toolRowGap;
         const tc = invocation.call;
         const result = invocation.result;
         const mutation = invocation.mutation;

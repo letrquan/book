@@ -15,6 +15,15 @@ export function isBlankAssistantContent(content: string | undefined | null): boo
   return splitReasoningParts(content).every((part) => part.text.trim().length === 0);
 }
 
+/**
+ * Whether a message delegates. AgentMessage hides a delegating message's
+ * narration (the spawn has its own activity row), so a delegating turn must
+ * never merge into one that carries narration, or that narration vanishes.
+ */
+export function delegatesWork(message: Message): boolean {
+  return Boolean(message.toolCalls?.some((call) => call.name === 'AgentSpawn'));
+}
+
 /** Merge completed tool-only assistant messages into the preceding assistant turn for display. */
 export function mergeAssistantMessages(
   messages: Message[],
@@ -39,6 +48,7 @@ export function mergeAssistantMessages(
       if (next.role !== 'assistant') break;
       if (!isBlankAssistantContent(next.content)) break;
       if (next.id === streamingMessageId) break;
+      if (delegatesWork(next)) break;
       mergedMessage = {
         ...mergedMessage,
         reasoningContent:

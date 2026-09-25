@@ -114,7 +114,8 @@ can assert on what Book actually sent.
 
 A turn with both `text` and `tool` streams the text first and the tool call after it on the same
 turn — how a router that inlines reasoning delivers the `<think></think>` a thinking model emits
-before every tool call. `"holdMs": 9000` keeps a turn open after its text is on the wire, which is
+before every tool call. `"tools": [{...}, {...}]` in place of `tool` sends several calls in one
+turn, the way a model that batches parallel reads does. `"holdMs": 9000` keeps a turn open after its text is on the wire, which is
 the only way to see the live (unsettled) rendering of a streaming message or a child's detail view
 long enough to screenshot it. A reply's text may cite the events Book showed the reducer:
 `{{event:N}}` becomes the Nth `session://current/event/<id>` reference in the request's last user
