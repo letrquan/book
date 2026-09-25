@@ -287,6 +287,31 @@ All notable changes to this project are documented in this file.
   list (`TaskList({ reason: "verify all tasks are complete" })`) and got a hard
   `invalid_arguments` for it, then repeated the call bare — two wasted turns each time (#216). The
   field is declared and ignored; the schema stays closed like every other built-in tool's.
+- **Tool-call arguments that are not valid JSON get their own error.** The provider clients keep
+  such arguments as `{ __raw: "<text>" }`, and schema validation then answered
+  `arguments.filePath is required; … arguments.__raw is not allowed` with the allowed-arguments
+  list, although the model had sent every one of those arguments. Models usually resent the same
+  payload: about 25 rejected calls across 16 dogfood runs, mostly large `Edit`, `ApplyPatch` and
+  `Bash` arguments with an unescaped backslash or newline (#242).
+  - **The error:** the call now fails with `invalid_json_arguments`, which names the parse error
+    and its position (`Invalid JSON arguments for Edit: Bad escaped character in JSON at position
+    49 …`). Its fix line says to resend the whole call with valid JSON and to escape backslashes
+    and newlines inside strings. The status, the retry behaviour and the escalation of identical
+    resends are the same as for `invalid_arguments`.
+  - **Order:** a tool that is not active is still refused as `tool_not_active`, whatever its
+    arguments. The JSON check comes after that, and before argument-scoped rules such as
+    `Bash(git *)`, which cannot match text that never parsed.
+  - **SDK:** `ToolDiscoveryContext` gains an optional `isActive(name)`, the name-only half of
+    `canExecute`. A discovery object an SDK caller builds without it keeps working. Its
+    `canExecute` then runs before the JSON check, where it always ran, so it refuses the same
+    calls as before.
+  - **History:** like a schema rejection, such a call never counts as run when a session's
+    history is reloaded.
+  - **TUI:** the tool row shows the raw text as its target. A row's target now has every run of
+    control characters (tab, CR, LF and the other C0 characters, DEL, C1) folded to one space, so
+    a newline no longer breaks a row in two. The summary Book builds from that target is folded
+    too; a summary that a tool supplies itself is shown as the tool wrote it. Ordinary spaces are
+    kept verbatim, so a Grep pattern `^    def ` still shows its four spaces.
 - **`Read` says its default is the whole file.** The description offered `offset`/`limit` "for
   large files" and models took the hint too far, reading a 430-line file in four 100-line calls
   and one 20-line span three times over (#224). It now says the default reads the file whole, and

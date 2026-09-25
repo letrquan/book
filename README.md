@@ -481,6 +481,9 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   `new_string`, `replace_all`, Grep `glob`/`-A`/`-B`/`-C`, ApplyPatch `input`) are normalized to
   Book's canonical arguments before validation, and `invalid_arguments` errors list the allowed
   argument names.
+- **Malformed-JSON arguments.** A call whose arguments are not valid JSON fails with
+  `invalid_json_arguments`. The error names the parse error and its position and asks for the whole
+  call to be resent, rather than reporting schema errors about arguments the model did send.
 - **Retry-loop braking.** Repeating a call that already failed with identical arguments returns
   escalated guidance instead of the same error; structured `Fix:` remediation lines are rendered
   into the model-facing error text.
