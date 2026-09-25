@@ -59,7 +59,11 @@ import {
 } from '../reasoning-tags.js';
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
-import { isNetworkPolicyRefusal, NETWORK_POLICY_REMEDY } from '../tools/web-policy.js';
+import {
+  NETWORK_POLICY_REMEDIES,
+  networkPolicyRefusal,
+  type NetworkPolicyRefusal,
+} from '../tools/web-policy.js';
 import {
   formatUserQuestionAnswers,
   validateUserQuestionResponse,
@@ -723,12 +727,11 @@ export async function runAgentLoop(
      */
     const blockedTurnTools = new Set<string>();
     /**
-     * Whether the streak holds a network-policy refusal, and whether it holds any other. Kept
-     * over every turn of the streak, not only the last, because each kind names a different
-     * remedy in the terminal message.
+     * What refused the streak's calls: a kind of network-policy refusal, or `other` for a
+     * permission or any other refusal. Kept over every turn of the streak, not only the last,
+     * because each kind names a different remedy in the terminal message.
      */
-    let blockedStreakNetworkPolicy = false;
-    let blockedStreakOther = false;
+    const blockedStreakCauses = new Set<NetworkPolicyRefusal | 'other'>();
     // Monotonic, and never leaves this function as a stamp. Over a run measured
     // in days a wall-clock correction would silently rewrite how long the model
     // is told it has been working, in either direction.
@@ -2494,14 +2497,12 @@ export async function runAgentLoop(
         blockedTurnStreak++;
         for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
         for (const result of orderedToolResults) {
-          if (isNetworkPolicyRefusal(result)) blockedStreakNetworkPolicy = true;
-          else blockedStreakOther = true;
+          blockedStreakCauses.add(networkPolicyRefusal(result) ?? 'other');
         }
       } else {
         blockedTurnStreak = 0;
         blockedTurnTools.clear();
-        blockedStreakNetworkPolicy = false;
-        blockedStreakOther = false;
+        blockedStreakCauses.clear();
       }
 
       const toolStats = toolContext.runtime?.toolCallStats;
@@ -2628,21 +2629,20 @@ export async function runAgentLoop(
           turns: blockedTurnStreak,
           tools: refused,
         });
-        // Each kind of refusal has its own remedy. A permission refusal is lifted by a
-        // rule or a mode. A network-policy refusal (a private or special-use web
-        // destination) is lifted by neither, bypassPermissions included, only by the
-        // host's opt-in. A streak that mixes them names both, because every refused
-        // call needs its own fix before anything can proceed.
-        const permissionRemedy =
-          'grant the permission, add an allow rule, or change the permission mode';
-        const remedy = !blockedStreakNetworkPolicy
-          ? permissionRemedy
-          : blockedStreakOther
-            ? `${permissionRemedy}. Separately, ${NETWORK_POLICY_REMEDY}`
-            : NETWORK_POLICY_REMEDY;
+        // Each kind of refusal has its own remedy, and a streak that mixes kinds names
+        // each one, because every refused call needs its own fix before anything can
+        // proceed. A permission refusal is lifted by a rule or a mode. A network-policy
+        // refusal is lifted by neither, bypassPermissions included: a refused WebFetch
+        // by the host's opt-in, a refused WebSearch only by fixing the host's DNS.
+        const remedies: string[] = [];
+        if (blockedStreakCauses.has('other') || blockedStreakCauses.size === 0) {
+          remedies.push('grant the permission, add an allow rule, or change the permission mode');
+        }
+        if (blockedStreakCauses.has('fetch')) remedies.push(NETWORK_POLICY_REMEDIES.fetch);
+        if (blockedStreakCauses.has('search')) remedies.push(NETWORK_POLICY_REMEDIES.search);
         const detail =
           `Every tool call was refused on ${blockedTurnStreak} consecutive turns (${refused}). ` +
-          `Nothing can proceed: ${remedy}.`;
+          `Nothing can proceed: ${remedies.join('. Separately, ')}.`;
         callbacks.onError(detail);
         finishTerminal(
           createTerminalOutcome('failed', 'all_tools_blocked', {

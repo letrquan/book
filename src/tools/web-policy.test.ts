@@ -4,7 +4,8 @@ import { Agent, fetch as undiciFetch } from 'undici';
 import {
   connectionBlockedReason,
   isBlockedIpAddress,
-  isNetworkPolicyRefusal,
+  NETWORK_POLICY_REMEDIES,
+  networkPolicyRefusal,
   safeNetworkLookup,
   validateWebUrl,
   webUrlPolicyFromEnv,
@@ -227,12 +228,31 @@ describe('web URL policy', () => {
       expect(isBlockedIpAddress(address)).toBe(true);
     });
 
-    it.each(['64:ff9b:1::a00:1', '64:ff9b:1::808:808', '64:ff9b:1:ffff:ffff:ffff:ffff:ffff'])(
-      'blocks all of the local-use NAT64 prefix 64:ff9b:1::/48, including %s',
-      (address) => {
-        expect(isBlockedIpAddress(address)).toBe(true);
-      },
-    );
+    it.each([
+      ['64:ff9b:1::a00:1', '10.0.0.1'],
+      ['64:ff9b:1::10.0.0.1', '10.0.0.1'],
+      ['0064:ff9b:0001:0000:0000:0000:7f00:0001', '127.0.0.1'],
+    ])('blocks %s, a local-use NAT64 address in the /96 layout that reaches %s', (address) => {
+      expect(isBlockedIpAddress(address)).toBe(true);
+    });
+
+    it.each([
+      '64:ff9b:1::808:808',
+      '64:ff9b:1::8.8.8.8',
+      '0064:ff9b:0001:0000:0000:0000:0808:0808',
+    ])('allows %s, a local-use NAT64 address in the /96 layout that reaches 8.8.8.8', (address) => {
+      expect(isBlockedIpAddress(address)).toBe(false);
+    });
+
+    // Any other shape in 64:ff9b:1::/48 is a prefix length whose IPv4 bits cannot be located
+    // without knowing the local network (RFC 8215), so it is blocked whatever it holds.
+    it.each([
+      '64:ff9b:1:808:808::',
+      '64:ff9b:1:0:0:1:808:808',
+      '64:ff9b:1:ffff:ffff:ffff:ffff:ffff',
+    ])('blocks %s, a local-use NAT64 address in any other layout', (address) => {
+      expect(isBlockedIpAddress(address)).toBe(true);
+    });
 
     it.each([
       ['64:ff9b::808:808', '8.8.8.8'],
@@ -287,12 +307,23 @@ describe('network-policy refusals', () => {
     structuredError: { code, message: 'refused', retryable: false },
   });
 
-  it('recognises the network policy only in a blocked result', () => {
-    expect(isNetworkPolicyRefusal(refusal('blocked', 'private_network_forbidden'))).toBe(true);
+  it('tells a WebFetch refusal from a WebSearch one, and only in a blocked result', () => {
+    expect(networkPolicyRefusal(refusal('blocked', 'private_network_forbidden'))).toBe('fetch');
     // WebSearch reports every provider refused on policy grounds this way, and only then blocked.
-    expect(isNetworkPolicyRefusal(refusal('blocked', 'search_all_providers_failed'))).toBe(true);
-    expect(isNetworkPolicyRefusal(refusal('error', 'search_all_providers_failed'))).toBe(false);
-    expect(isNetworkPolicyRefusal(refusal('blocked', 'permission_denied'))).toBe(false);
-    expect(isNetworkPolicyRefusal(undefined)).toBe(false);
+    expect(networkPolicyRefusal(refusal('blocked', 'search_all_providers_failed'))).toBe('search');
+    expect(networkPolicyRefusal(refusal('error', 'search_all_providers_failed'))).toBeUndefined();
+    expect(networkPolicyRefusal(refusal('blocked', 'permission_denied'))).toBeUndefined();
+    expect(networkPolicyRefusal(undefined)).toBeUndefined();
+  });
+
+  it('offers the host opt-in only for a WebFetch refusal', () => {
+    // The built-in search providers validate with allowPrivateNetwork: false whatever the host
+    // sets, so the opt-in would lift WebFetch's protection and still leave WebSearch refused.
+    expect(NETWORK_POLICY_REMEDIES.fetch).toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK=true');
+    expect(NETWORK_POLICY_REMEDIES.search).not.toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
+    expect(NETWORK_POLICY_REMEDIES.search).toContain('DNS or proxy');
+    // `localhost` and `*.local` are refused by name, before there is any address to speak of.
+    expect(NETWORK_POLICY_REMEDIES.fetch).toContain('private or special-use destination');
+    expect(NETWORK_POLICY_REMEDIES.fetch).not.toContain('address');
   });
 });

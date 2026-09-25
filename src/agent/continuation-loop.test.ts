@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { runAgentLoop } from './loop.js';
 import { createRegistry, createDefaultRegistry } from '../tools/registry.js';
 import { todoTools } from '../tools/todo.js';
@@ -10,6 +10,7 @@ import type { Provider } from '../provider/index.js';
 import type { AgentTerminalOutcome } from '../types/terminal.js';
 import type { Message } from '../types/messages.js';
 import type { ToolResult } from '../types/tools.js';
+import { createWebTools } from '../tools/web.js';
 
 function configWith(continuation: Partial<{ enabled: boolean; noProgressLimit: number }>) {
   const config = defaultConfig();
@@ -576,11 +577,17 @@ function privateFetchProvider(alternateWrite = false): Provider {
   } as unknown as Provider;
 }
 
-/** An unattended run with the refusal brake at 3, recording the code of every refused call. */
+/**
+ * An unattended run with the refusal brake at 3, recording the code of every refused call. The
+ * host opt-in is pinned off: set in the developer's shell, it would turn the WebFetch refusals
+ * these tests count on into real requests.
+ */
 async function runRefusals(
   provider: Provider,
   mode: 'default' | 'bypassPermissions',
+  registry = createDefaultRegistry(),
 ): Promise<{ outcome?: AgentTerminalOutcome; codes: string[] }> {
+  vi.stubEnv('BOOK_WEB_ALLOW_PRIVATE_NETWORK', '');
   const config = configWith({ enabled: false });
   config.settings.continuation.blockedToolTurnLimit = 3;
   config.maxTurns = 25;
@@ -600,21 +607,58 @@ async function runRefusals(
       call.name === 'Write' ? ('deny' as const) : ('allow' as const),
   } as unknown as AgentLoopCallbacks;
 
-  await runAgentLoop(
-    config,
-    createDefaultRegistry(),
-    'check the local service',
-    [],
-    callbacks,
-    mode,
-    {
+  try {
+    await runAgentLoop(config, registry, 'check the local service', [], callbacks, mode, {
       provider,
       isNewSession: false,
       runtime: new SessionRuntime(),
       unattended: true,
-    },
-  );
+    });
+  } finally {
+    vi.unstubAllEnvs();
+  }
   return { outcome, codes };
+}
+
+/** A provider that activates the web tools, then issues the same web calls on every turn. */
+function refusedWebProvider(calls: Array<'WebFetch' | 'WebSearch'>): Provider {
+  let turn = 0;
+  return {
+    id: 'scripted',
+    stream: async function* () {
+      turn++;
+      if (turn === 1) {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'search-1', name: 'ToolSearch', arguments: { query: 'WebSearch' } },
+        };
+      } else {
+        for (const name of calls) {
+          yield {
+            type: 'tool_call',
+            toolCall: {
+              id: `${name}-${turn}`,
+              name,
+              arguments:
+                name === 'WebFetch' ? { url: 'https://127.0.0.1/' } : { query: 'book agent docs' },
+            },
+          };
+        }
+      }
+      yield { type: 'done' };
+    },
+  } as unknown as Provider;
+}
+
+/**
+ * The default tools, with the web tools rebuilt on a resolver that answers every hostname inside
+ * 198.18.0.0/15, as behind a fake-IP DNS proxy. Each built-in search provider is then refused
+ * before any request leaves the host.
+ */
+function fakeIpDnsWebRegistry() {
+  const registry = createDefaultRegistry();
+  registry.registerAll(createWebTools({ resolveHostname: async () => ['198.18.0.1'] }));
+  return registry;
 }
 
 describe('the refusal brake names the cause it stopped on', () => {
@@ -650,5 +694,43 @@ describe('the refusal brake names the cause it stopped on', () => {
     expect(outcome?.message).toContain('grant the permission');
     // The Write refused two turns back is the call the permission remedy is for, so it is named.
     expect(outcome?.message).toContain('Write');
+  });
+
+  it('does not offer the WebFetch opt-in for a streak of refused WebSearch calls', async () => {
+    // The built-in search providers validate with allowPrivateNetwork: false whatever the host
+    // sets, so BOOK_WEB_ALLOW_PRIVATE_NETWORK would strip WebFetch's protection and still leave
+    // WebSearch refused. What helps is fixing the DNS or proxy that sent the providers private.
+    const { outcome, codes } = await runRefusals(
+      refusedWebProvider(['WebSearch']),
+      'bypassPermissions',
+      fakeIpDnsWebRegistry(),
+    );
+
+    expect(codes).toEqual([
+      'search_all_providers_failed',
+      'search_all_providers_failed',
+      'search_all_providers_failed',
+    ]);
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('WebSearch');
+    expect(outcome?.message).toContain('DNS or proxy');
+    expect(outcome?.message).not.toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
+    expect(outcome?.message).not.toContain('grant the permission');
+  });
+
+  it('names each remedy that applies when WebFetch and WebSearch are both refused', async () => {
+    const { outcome, codes } = await runRefusals(
+      refusedWebProvider(['WebFetch', 'WebSearch']),
+      'bypassPermissions',
+      fakeIpDnsWebRegistry(),
+    );
+
+    expect(new Set(codes)).toEqual(
+      new Set(['private_network_forbidden', 'search_all_providers_failed']),
+    );
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
+    expect(outcome?.message).toContain('DNS or proxy');
+    expect(outcome?.message).not.toContain('grant the permission');
   });
 });

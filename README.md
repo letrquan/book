@@ -663,8 +663,10 @@ false**. It stops a run whose every tool call was refused on that many consecuti
 as `all_tools_blocked` and naming every tool refused over the streak and what lifts the refusal. A permission
 refusal is lifted by a grant, an allow rule, or another permission mode. A refusal by the web
 network policy (a private or special-use destination) is lifted by none of those, bypassPermissions
-included, so the message names `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment
-instead. A streak holding both kinds names both remedies. It is separate because a refusal spin never
+included. For a refused `WebFetch` the message names `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the
+host environment. For a refused `WebSearch`, whose built-in providers resolved to a private
+destination, it points at the host's DNS or proxy instead: the providers always validate strictly,
+so that variable does nothing for them. A streak holding several kinds names each remedy. It is separate because a refusal spin never
 produces a tool-free turn, so the turn-end gate — and therefore every brake behind it — never fires:
 a headless run in the default permission mode answers each prompt `deny` and would otherwise
 re-issue refused calls until the budget ran out. Set it to `0` to disable. `planRefreshTurns` restates the open plan periodically, which also keeps compaction from
@@ -1242,8 +1244,9 @@ connection, blocks private/special-use destinations, and stops on cross-origin r
 new origin receives its own permission decision. An IPv6 address in one of these IPv4-embedding
 ranges is judged by the IPv4 address it carries: IPv4-mapped `::ffff:0:0/96`, IPv4-compatible `::/96`, NAT64
 `64:ff9b::/96`, 6to4 `2002::/16`, and Teredo `2001::/32`, where either the server or the client
-address being private blocks it. The local-use NAT64 prefix `64:ff9b:1::/48` is blocked whole, because where its IPv4
-bits sit depends on a prefix length only the local network knows. It returns Markdown by default; `format` can be
+address being private blocks it. In the local-use NAT64 prefix `64:ff9b:1::/48`, an address laid
+out like the /96 (bits 48-95 zero) is judged by its last 32 bits, and any other shape is blocked,
+because where its IPv4 bits sit depends on a prefix length only the local network knows. It returns Markdown by default; `format` can be
 `markdown`, `text`, or sanitized `html`. `WebSearch` works without configuration through the
 built-in Exa MCP provider and accepts optional `limit`, `domains`, `recencyDays`, and `country`
 hints. Its provider endpoint is built in and cannot be overridden through settings or environment
