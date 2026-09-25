@@ -214,6 +214,8 @@ describe('periodic work-state refresh', () => {
     const workState = appended.filter((message) => message.content.startsWith('[work-state]'));
     expect(workState.length).toBeGreaterThan(0);
     expect(workState[0].kind).toBe('conversation');
+    // Host-authored, like the continuation prompts: not the user's words, and no answer.
+    expect(workState[0].derivedContent).toBe(true);
     expect(workState[0].content).toContain('long grind');
     // It has to be in history, where splitUserLedBundles will see it.
     expect(history.some((message) => message.content.startsWith('[work-state]'))).toBe(true);

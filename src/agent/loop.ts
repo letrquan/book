@@ -887,6 +887,9 @@ export async function runAgentLoop(
             content: workState,
             includeInContext: true,
             kind: 'conversation',
+            // Host-authored, like the continuation prompts: neither the ledger nor
+            // Carried Turns may treat it as the user's own words, and it ends no answer.
+            derivedContent: true,
             timestamp: Date.now(),
           };
           newHistory.push(message);

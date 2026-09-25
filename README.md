@@ -151,7 +151,18 @@ tool call (`[Read] src/cli/doctor.ts`, `[Bash] npm test`), cut to the argument's
 characters, so a person watching a terminal can see a long run is alive without tailing the session
 file. `--verbose` adds each call's result, naming its target, because a turn's call lines all print
 before its results: `  → success 12ms src/cli/doctor.ts`, or `  → error 4ms missing.txt: File not
-found: missing.txt`. `--quiet` turns the progress lines off, `retry:` lines included.
+found: missing.txt`. A managed child's calls (through `Task`, `AgentSpawn`, or `/review`) print as
+well, indented and named after the child's profile: `  [explorer] [Read] src/a.ts`, with
+`    → success 3ms src/a.ts` under `--verbose`. `--quiet` turns the progress lines off, `retry:`
+lines included.
+
+The answer on stdout is the model's final answer: the text of the last turn that called no tools,
+read past the prompts Book appends mid-run (`[continuation]`, `[work-state]`, the output-cap
+resume). When the run stopped before the model answered again (a provider failure, a turn that was
+only reasoning, or `--max-turns` reached on a turn that called tools), stdout stays empty rather
+than repeating an earlier turn's narration. The exit status does not depend on the answer: a
+`failed` outcome exits 1, and a run that stalled, timed out, or lost its connection exits 0 like a
+completed one.
 
 `json` and `stream-json` write no progress lines, but their stderr is not silent. `json` still
 writes `retry:` lines (unless `--quiet`) and `error:` lines there; `stream-json` carries retries and
@@ -998,6 +1009,18 @@ JSON-over-stdio contract. Supported events:
 | `SessionEnd`       | Session left                  | yes¹    | no                      |
 
 ¹ Awaited by the TUI and other multi-turn hosts; fire-and-forget on the one-shot SDK path.
+
+`SessionEnd` receives `reason`: `exit`, `clear`, or `resume` from the TUI. A print or SDK run
+reports one of these:
+
+| `reason`     | When                                                                                                                 |
+| ------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `completion` | The run completed, or ended on a stall or a dropped connection without failing                                       |
+| `aborted`    | Its signal aborted before it completed: a cancel, an `AbortSignal.timeout`, or a `stream-json` reader that went away |
+| `error`      | The run ended `failed`, or threw after `SessionStart` (for example on a missing prompt)                              |
+
+It runs at most once per session, and never under the cancelled run's own signal. Ctrl+C on
+`book -p` still ends the process without it, since print mode installs no SIGINT handler.
 
 **Awaited is the property that costs you latency**, and it is not the same as being able to veto.
 A slow `PostToolUse` hook cannot block anything, but it still delays _every tool call_ by up to its

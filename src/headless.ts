@@ -1,11 +1,14 @@
 import type { AgentConfig } from './types/runtime.js';
 import { planWasLost } from './agent/session-state.js';
+import { finalAnswerText } from './agent/final-answer.js';
 import { RunStatusWriter } from './run-status.js';
 import type { CompactResult, CompactBoundary } from './types/sessions.js';
 import type { ImageAttachment, Message, Usage } from './types/messages.js';
 import type { HeadlessOptions, HeadlessPlanOutcome, HeadlessResult } from './types/public-sdk.js';
 import type {
   PlanApprovalResult,
+  ToolCall,
+  ToolResult,
   UserQuestionRequest,
   UserQuestionResponse,
 } from './types/tools.js';
@@ -16,7 +19,7 @@ import {
 } from './tools/plan-mode.js';
 import { resolvePrintCommand, type PrintCommandDispatch } from './commands/print-dispatch.js';
 import type { CommandContext, HostCommandResult } from './types/commands.js';
-import type { AgentCompletionNotification } from './agents/types.js';
+import type { AgentActivity, AgentCompletionNotification } from './agents/types.js';
 import { createTerminalOutcome, type AgentTerminalOutcome } from './types/terminal.js';
 import { createAgentRunContext, type AgentRunContext, type AgentRunResult } from './types/runs.js';
 import { shouldCompact, usagePressureTokens } from './agent/compact.js';
@@ -96,8 +99,15 @@ export async function runHeadless(
     }
     stdout.write(JSON.stringify(obj) + '\n');
   };
+  /**
+   * Managed children by agent id, for text-mode progress lines: an `agent_activity`
+   * carries only the id, and the child's name arrives once, on `agent_start`.
+   */
+  const childAgentNames = new Map<string, string>();
   /** Set once the run's liveness file exists; released in the outer `finally`. */
   let disposeCrashHandlers: (() => void) | undefined;
+  /** The session SessionStart ran for, so a run that throws on abort still ends it. */
+  let startedSessionId: string | undefined;
   const agentSession = new AgentSession({
     // The transcript is the rendered conversation and still carries the tool
     // records compaction summarized out of the context history, so prefer it
@@ -168,6 +178,7 @@ export async function runHeadless(
           onHookEvent: createHookEventHandler(opts, emit),
         },
       );
+      startedSessionId = sessionId;
     }
     const runtimeSessionId = sessionId ?? crypto.randomUUID();
 
@@ -223,9 +234,19 @@ export async function runHeadless(
       if (mode === 'bypassPermissions') return 'approve';
       if (!opts.onUserQuestionRequired) return planStopDecision('approval_unavailable');
       const request = buildPlanApprovalQuestion(plan, crypto.randomUUID());
-      emitAgentEvent({ type: 'user_question', request, status: userQuestionStatus }, opts, emit);
+      emitAgentEvent(
+        { type: 'user_question', request, status: userQuestionStatus },
+        opts,
+        emit,
+        childAgentNames,
+      );
       const response = await askUser(request, { signal: opts.signal });
-      emitAgentEvent({ type: 'user_question_result', requestId: request.id, response }, opts, emit);
+      emitAgentEvent(
+        { type: 'user_question_result', requestId: request.id, response },
+        opts,
+        emit,
+        childAgentNames,
+      );
       return planApprovalFromUserQuestionResponse(request, response);
     };
     /**
@@ -237,6 +258,8 @@ export async function runHeadless(
 
     let lastUsage: Usage | null = null;
     let lastOutcome: AgentTerminalOutcome | null = null;
+    /** The opening message of the latest model run: the answer is read from that run only. */
+    let finalRunOpeningId: string | undefined;
     const runResults: AgentRunResult[] = [];
     const recordRunResult = (result: AgentRunResult): void => {
       const existing = runResults.findIndex(
@@ -334,7 +357,7 @@ export async function runHeadless(
           lastOutcome = event.outcome;
           onOutcome(event.outcome);
         }
-        emitAgentEvent(event, opts, emit);
+        emitAgentEvent(event, opts, emit, childAgentNames);
       },
       // No header rewrite at turn boundaries: load() derives updatedAt from
       // the last appended record, so the on-disk header is never authoritative.
@@ -464,6 +487,7 @@ export async function runHeadless(
       commandContext?: CommandContext,
     ): Promise<void> => {
       let runOutcome: AgentTerminalOutcome | undefined;
+      finalRunOpeningId = userMessage.id;
       lastUsage = null;
       let updated: Message[];
       try {
@@ -572,7 +596,7 @@ export async function runHeadless(
                   permissionMode: mode,
                   eventSink: (event) => {
                     if (event.type === 'agent_result') recordManagedRunResult(event.agent);
-                    emitAgentEvent(event, opts, emit);
+                    emitAgentEvent(event, opts, emit, childAgentNames);
                   },
                   hookEventSink: createHookEventHandler(opts, emit),
                 }),
@@ -904,7 +928,7 @@ export async function runHeadless(
     };
 
     if (opts.jsonSchema) {
-      const text = lastAssistantText(contextHistory);
+      const text = finalAnswerText(contextHistory, finalRunOpeningId);
       try {
         result.structured = JSON.parse(text);
       } catch {
@@ -943,7 +967,7 @@ export async function runHeadless(
         // Only a reply that opened with a closed reasoning block is rewritten.
         // Any other answer is printed exactly as the model wrote it, so an
         // indented first line (YAML, code piped to a file) keeps its indent.
-        const last = lastAssistantText(contextHistory);
+        const last = finalAnswerText(contextHistory, finalRunOpeningId);
         const inline = separateInlineReasoning(last);
         const answer = inline.found ? inline.content.trimEnd() : last;
         if (answer) stdout.write(answer + '\n');
@@ -985,24 +1009,48 @@ export async function runHeadless(
     }
 
     if (sessionId) {
-      await agentSession.endLifecycle(config, sessionId, 'completion', {
+      // A run that completed reports `completion`, even when its reader went away
+      // afterwards. Otherwise an aborted signal (a cancel, or an `AbortSignal.timeout`
+      // that ended the run as timed out) reports `aborted`, and a failed run `error`.
+      const sessionEndReason =
+        outcome.status === 'completed'
+          ? 'completion'
+          : opts.signal?.aborted || outcome.status === 'cancelled'
+            ? 'aborted'
+            : outcome.status === 'failed'
+              ? 'error'
+              : 'completion';
+      await agentSession.endLifecycle(config, sessionId, sessionEndReason, {
         onHookEvent: createHookEventHandler(opts, emit),
       });
     }
 
     return result;
+  } catch (error) {
+    // A run that throws after SessionStart used to skip SessionEnd entirely (#248).
+    // An abort that lands inside a tool is the common case (a hook call rethrows the
+    // aborted signal): a cancelled print run, or a stream-json run whose reader went
+    // away. A missing prompt is another. End the session SessionStart opened, then
+    // rethrow. There is no outcome here, so the signal decides between `aborted` and
+    // `error`. `endLifecycle` fires at most once per session. It gets no signal, as in
+    // the TUI: the run's signal may be the one that aborted, and every hook already
+    // runs under its own fresh 10 s timeout.
+    if (startedSessionId) {
+      await agentSession
+        .endLifecycle(config, startedSessionId, opts.signal?.aborted ? 'aborted' : 'error', {
+          onHookEvent: createHookEventHandler(opts, emit),
+        })
+        .catch((hookError: unknown) => {
+          console.warn(
+            `SessionEnd hook failed: ${hookError instanceof Error ? hookError.message : String(hookError)}`,
+          );
+        });
+    }
+    throw error;
   } finally {
     disposeCrashHandlers?.();
     agentSession.dispose('headless_complete');
   }
-}
-
-function lastAssistantText(history: Message[]): string {
-  for (let i = history.length - 1; i >= 0; i--) {
-    const m = history[i];
-    if (m.role === 'assistant' && m.content) return m.content;
-  }
-  return '';
 }
 
 /** Wire status for the `plan_approval` stream-json event: approve | approve-fresh | reject | revise | stop. */
@@ -1020,7 +1068,12 @@ function createHookEventHandler(
   return (event, payload) => emit({ type: 'hook_event', event, ...payload });
 }
 
-function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: HeadlessEmit): void {
+function emitAgentEvent(
+  event: AgentEvent,
+  opts: HeadlessOptions,
+  emit: HeadlessEmit,
+  childAgentNames: Map<string, string>,
+): void {
   if (event.type === 'terminal') return;
   if (event.type === 'agent_text_delta' && opts.forwardSubagentText !== true) return;
   opts.onAgentEvent?.(event);
@@ -1035,7 +1088,7 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
     return;
   }
   if (opts.outputFormat === 'text' && opts.quiet !== true) {
-    writeTextProgress(event, opts);
+    writeTextProgress(event, opts, childAgentNames);
   }
   if (opts.outputFormat !== 'stream-json') return;
 
@@ -1135,29 +1188,72 @@ function progressLine(text: string, max: number): string {
  * tool calls with nothing on the terminal (#225) — and the only way to see it was
  * alive was to tail the session file. `--verbose` adds the result of each call;
  * `--quiet` turns the lines off. stdout stays the final answer alone.
+ *
+ * A managed child's calls (`Task`, `AgentSpawn`, `/review`) print too, indented
+ * and named after the child's profile: `  [explorer] [Read] src/a.ts`, and under
+ * `--verbose` `    → success 3ms src/a.ts`. The manager reports each child call
+ * as an `agent_activity`; ignoring those left a run that delegated silent after
+ * `[Task] explorer` until the child finished (#248).
  */
-function writeTextProgress(event: AgentEvent, opts: HeadlessOptions): void {
+function writeTextProgress(
+  event: AgentEvent,
+  opts: HeadlessOptions,
+  childAgentNames: Map<string, string>,
+): void {
   if (event.type === 'tool_use') {
-    const arg = progressLine(getPrimaryArg(event.toolCall.arguments), PROGRESS_ARG_MAX);
-    process.stderr.write(
-      `[${progressLine(event.toolCall.name, PROGRESS_ARG_MAX)}]${arg ? ` ${arg}` : ''}\n`,
-    );
+    process.stderr.write(`${toolCallProgress(event.toolCall)}\n`);
     return;
   }
   if (event.type === 'tool_result' && opts.verbose === true) {
-    const result = event.toolResult;
-    const duration = result.metrics?.durationMs;
-    // A turn's call lines all print before its results, so each result names its target.
-    const target = progressLine(result.presentation?.target ?? '', PROGRESS_ARG_MAX);
-    const error =
-      result.status === 'success'
-        ? ''
-        : progressLine(toolResultErrorMessage(result) ?? '', PROGRESS_ERROR_MAX);
-    const detail = [target, error].filter(Boolean).join(': ');
-    process.stderr.write(
-      `  → ${result.status}${duration !== undefined ? ` ${Math.round(duration)}ms` : ''}${detail ? ` ${detail}` : ''}\n`,
-    );
+    process.stderr.write(`  ${toolResultProgress(event.toolResult)}\n`);
+    return;
   }
+  if (event.type === 'agent_start') {
+    childAgentNames.set(event.agent.id, event.agent.profile ?? event.agent.name);
+    return;
+  }
+  if (event.type === 'agent_activity') {
+    writeChildToolProgress(event.agentId, event.activity, opts, childAgentNames);
+  }
+}
+
+/** A managed child's tool call when it starts, and its result under `--verbose`. */
+function writeChildToolProgress(
+  agentId: string,
+  activity: AgentActivity,
+  opts: HeadlessOptions,
+  childAgentNames: Map<string, string>,
+): void {
+  if (activity.kind !== 'tool' || !activity.toolCall) return;
+  if (activity.status === 'running') {
+    const child = progressLine(childAgentNames.get(agentId) ?? 'agent', PROGRESS_ARG_MAX);
+    process.stderr.write(`  [${child}] ${toolCallProgress(activity.toolCall)}\n`);
+    return;
+  }
+  // A finished call carries its result. The manager's end-of-run sweep re-reports a
+  // call it never saw finish, with no result, and that prints nothing.
+  if (opts.verbose === true && activity.result) {
+    process.stderr.write(`    ${toolResultProgress(activity.result)}\n`);
+  }
+}
+
+/** `[Name] primary-arg` for one tool call. */
+function toolCallProgress(call: ToolCall): string {
+  const arg = progressLine(getPrimaryArg(call.arguments), PROGRESS_ARG_MAX);
+  return `[${progressLine(call.name, PROGRESS_ARG_MAX)}]${arg ? ` ${arg}` : ''}`;
+}
+
+/** `→ status 12ms target: error` for one tool result. */
+function toolResultProgress(result: ToolResult): string {
+  const duration = result.metrics?.durationMs;
+  // A turn's call lines all print before its results, so each result names its target.
+  const target = progressLine(result.presentation?.target ?? '', PROGRESS_ARG_MAX);
+  const error =
+    result.status === 'success'
+      ? ''
+      : progressLine(toolResultErrorMessage(result) ?? '', PROGRESS_ERROR_MAX);
+  const detail = [target, error].filter(Boolean).join(': ');
+  return `→ ${result.status}${duration !== undefined ? ` ${Math.round(duration)}ms` : ''}${detail ? ` ${detail}` : ''}`;
 }
 
 function emitCompactBoundary(
