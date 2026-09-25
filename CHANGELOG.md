@@ -38,6 +38,11 @@ All notable changes to this project are documented in this file.
     the edit. Resubmitted text goes back to the end of the queue, so the inputs queued before it
     are still sent first. Anything else, a slash command included, leaves those inputs paused and
     says so: Up then Enter resumes them, `/queue clear` drops them.
+  - **Up right after Enter recalls the input Enter just queued** (#250). Keys that arrive in one
+    read, as they do while a busy turn holds up the event loop, all reach the composer's handler
+    from before the first of them, so the Up still saw the typed text and walked the input
+    history instead. The arrow keys now read the composer's value and history as the key ahead
+    of them left them.
 
 - **undici 6 -> 8, with the DNS-rebinding guard re-proven rather than re-asserted.** The major had
   been pinned since dependabot #84 because `web-policy.test.ts` failed on it, and the failure looked

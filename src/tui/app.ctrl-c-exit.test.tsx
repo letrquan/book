@@ -630,4 +630,47 @@ describe('idle Ctrl+C exit confirmation', () => {
       consoleError.mockRestore();
     }
   });
+
+  // The CI flake (#257): on a slow runner the render after Enter outlasted the poll interval, so
+  // the poll saw the new frame before the effects that re-subscribe Ink's input handlers had
+  // run, and Up reached the previous render's handler, which still held the typed text.
+  it('Up recalls a queued input as soon as the Enter that queued it has rendered', async () => {
+    const { view } = await startIdleApp({ isThinking: true });
+    view.stdin.write('first queued');
+    await waitForFrame(view, '> first queued');
+    view.stdin.write('\r');
+    await waitForFrame(view, 'Queued follow-up inputs (1)');
+    view.stdin.write('second queued');
+    await waitForFrame(view, '> second queued');
+
+    view.stdin.write('\r');
+    // Step one check-phase task at a time: the render commits in one, and the effects it
+    // schedules run in a later one, so Up lands between them, as the slow runner's poll did.
+    for (let turn = 0; turn < 100 && !frameOf(view).includes('inputs (2)'); turn++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(frameOf(view)).toContain('Queued follow-up inputs (2)');
+    view.stdin.write('\x1b[A');
+
+    await waitForFrame(view, 'Editing queued input');
+    expect(frameOf(view)).toContain('> second queued');
+  });
+
+  // The same race with no render in between: keys typed while the event loop is busy (a
+  // streaming turn, when queueing happens) arrive in one read, and Ink hands every key in it
+  // to the same handler.
+  it('Up in the same read as the Enter that queued the input still recalls it', async () => {
+    const { view } = await startIdleApp({ isThinking: true });
+    view.stdin.write('first queued');
+    await waitForFrame(view, '> first queued');
+    view.stdin.write('\r');
+    await waitForFrame(view, 'Queued follow-up inputs (1)');
+    view.stdin.write('second queued');
+    await waitForFrame(view, '> second queued');
+
+    view.stdin.write('\r\x1b[A');
+
+    await waitForFrame(view, 'Editing queued input');
+    expect(frameOf(view)).toContain('> second queued');
+  });
 });
