@@ -98,6 +98,35 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **IPv6 addresses that carry an IPv4 destination are judged by that IPv4 address** (#246). On a
+  host with a NAT64 gateway or a 6to4/Teredo relay, `https://[64:ff9b::a00:1]/` reaches 10.0.0.1,
+  and it passed both the pre-flight check and the connect-time check. `isBlockedIpv6` now decodes
+  the embedded address and applies the IPv4 policy to it, as it already did for `::ffff:` mapped
+  addresses, so both check sites are covered:
+  - NAT64 `64:ff9b::/96`: the last 32 bits.
+  - 6to4 `2002::/16`: bits 16-47.
+  - Teredo `2001::/32`: the server (bits 32-63) and the XOR-obfuscated client (the last 32 bits).
+    Either one being private blocks the address.
+  - Local-use NAT64 `64:ff9b:1::/48`, laid out like the /96 above (bits 48-95 zero): the last 32
+    bits. Any other shape in that range is blocked, because RFC 8215 lets the operator pick the
+    prefix length, so where the IPv4 bits sit cannot be known.
+- **A run stopped by network-policy refusals now says what lifts them** (#246). Three turns of
+  refused `WebFetch` calls to a private address stopped an unattended run as `all_tools_blocked`
+  with "grant the permission, add an allow rule, or change the permission mode", even under
+  `bypassPermissions`, where none of that applies. The message now names the remedy for each kind
+  of refusal in the streak:
+  - a refused `WebFetch`: `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment;
+  - a refused `WebSearch` (every built-in provider resolved to a private destination): the host's
+    DNS or proxy, such as a fake-IP DNS in 198.18.0.0/15. The variable does nothing for it, because
+    the search providers always validate strictly, so the message does not suggest it;
+  - a permission refusal: the old text.
+
+  The message also lists every tool refused over the streak rather than only its last turn's,
+  because in a mixed streak the call a remedy is for may be turns back.
+- **A repeated identical refusal from a tool gets the "Do not retry it unchanged" escalation**
+  (#246). The registry returned every `blocked` tool result before its repeated-failure note, so a
+  model re-issuing the same refused `WebFetch` never heard it. Refusals the loop issues itself, such
+  as a denied permission, are unchanged.
 - **On Windows, a persistent background shell job no longer loses its runner while Book polls its
   record (#249).** Windows fails a rename over a file that another process has open, even just to
   read it, with EPERM. The detached runner rewrites the job record every second while the shell
