@@ -103,8 +103,9 @@ const RAW_ARGUMENTS_KEY = '__raw';
  *   belongs. Kept as is; V8 quotes the text around the token instead of
  *   giving a position.
  *
- * Newlines are folded to spaces: the quoted text is the model's own and may
- * span lines, and the message is shown on a one-line tool row.
+ * Every run of whitespace or control characters (tab, CR, LF, ESC, C1, …) is
+ * folded to one space: the quoted text is the model's own and may hold any of
+ * them, and the message is shown on a one-line tool row.
  */
 function invalidJsonArgumentsDetail(args: Record<string, unknown>): string | undefined {
   const raw = args[RAW_ARGUMENTS_KEY];
@@ -116,7 +117,7 @@ function invalidJsonArgumentsDetail(args: Record<string, unknown>): string | und
     return undefined;
   } catch (error) {
     const detail = (error instanceof Error ? error.message : String(error)).replace(
-      /\s*[\r\n]+\s*/g,
+      /[\s\u0000-\u001f\u007f-\u009f]+/g,
       ' ',
     );
     return detail.startsWith('Unexpected end of JSON input')
@@ -361,7 +362,15 @@ export function createRegistry() {
         }),
       });
       // A tool that is not active is refused as such, whatever its arguments.
-      if (discovery && !discovery.isActive(normalizedCall.name)) return inactive();
+      // A discovery object without the name-only `isActive` gets its whole
+      // `canExecute` check here instead, before the JSON check, which is where
+      // it ran before `isActive` existed: every call it refused is refused alike.
+      if (discovery) {
+        const active = discovery.isActive
+          ? discovery.isActive(normalizedCall.name)
+          : discovery.canExecute(normalizedCall);
+        if (!active) return inactive();
+      }
       // Invalid JSON is named before the argument-scoped rules run: a rule such
       // as `Bash(git *)` cannot match text that never parsed, so the gate would
       // report a malformed call to an active tool as an inactive one.
@@ -381,7 +390,7 @@ export function createRegistry() {
           ),
         };
       }
-      if (discovery && !discovery.canExecute(normalizedCall)) return inactive();
+      if (discovery?.isActive && !discovery.canExecute(normalizedCall)) return inactive();
 
       const providerArguments = { ...normalizedCall.arguments };
       // Hide the host control from validation only while the tool keeps it

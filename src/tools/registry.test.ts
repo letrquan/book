@@ -378,20 +378,21 @@ describe('invalid JSON tool-call arguments', () => {
     expect(result.structuredError?.message).toContain(`at position ${truncated.length}`);
   });
 
-  it('folds newlines from the quoted text onto one line', async () => {
+  it('folds control characters and whitespace in the quoted text to single spaces', async () => {
     const { registry } = editLikeRegistry();
+    const tab = String.fromCharCode(9);
 
     const result = await registry.execute(
       {
         id: 'raw-3',
         name: 'Edit',
-        arguments: { __raw: '{"filePath": src/a.ts,\n"oldString": 1}' },
+        arguments: { __raw: `{"filePath":${tab}src/a.ts,\n"oldString": 1}` },
       },
       ctx,
     );
 
     expect(result.structuredError?.code).toBe('invalid_json_arguments');
-    expect(result.structuredError?.message).not.toMatch(/[\r\n]/);
+    expect(result.structuredError?.message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
   });
 
   it('leaves a literal __raw argument to the schema', async () => {
@@ -425,6 +426,34 @@ describe('invalid JSON tool-call arguments', () => {
     expect(second.structuredError?.remediation).toMatch(/Resend the whole call/);
     expect(second.structuredError?.remediation).toMatch(/Do not retry it unchanged/);
     runtime.dispose();
+  });
+
+  it('works with a discovery object that has no isActive, keeping its refusals', async () => {
+    const { registry } = editLikeRegistry();
+    // An SDK caller's own discovery object, written before `isActive` existed.
+    const legacyDiscovery = (allowed: boolean): ToolContext['toolDiscovery'] => ({
+      search: () => [],
+      activate: () => [],
+      restrict: () => {},
+      pushRestriction: () => () => {},
+      previewRestriction: () => [],
+      canExecute: () => allowed,
+      activeDefinitions: () => [],
+      catalogSummary: () => '',
+    });
+
+    const allowed = await registry.execute(
+      { id: 'legacy-1', name: 'Edit', arguments: { __raw: badEscape } },
+      { ...ctx, toolDiscovery: legacyDiscovery(true) },
+    );
+    const refused = await registry.execute(
+      { id: 'legacy-2', name: 'Edit', arguments: { __raw: badEscape } },
+      { ...ctx, toolDiscovery: legacyDiscovery(false) },
+    );
+
+    expect(allowed.structuredError?.code).toBe('invalid_json_arguments');
+    expect(refused.status).toBe('blocked');
+    expect(refused.structuredError?.code).toBe('tool_not_active');
   });
 });
 

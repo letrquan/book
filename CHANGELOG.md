@@ -235,12 +235,17 @@ All notable changes to this project are documented in this file.
   - **Order:** a tool that is not active is still refused as `tool_not_active`, whatever its
     arguments. The JSON check comes after that, and before argument-scoped rules such as
     `Bash(git *)`, which cannot match text that never parsed.
+  - **SDK:** `ToolDiscoveryContext` gains an optional `isActive(name)`, the name-only half of
+    `canExecute`. A discovery object an SDK caller builds without it keeps working. Its
+    `canExecute` then runs before the JSON check, where it always ran, so it refuses the same
+    calls as before.
   - **History:** like a schema rejection, such a call never counts as run when a session's
     history is reloaded.
-  - **TUI:** the tool row shows the raw text as its target. Control characters in any target,
-    including tab, CR and LF, are now folded to single spaces in the row and in its summary, so a
-    newline no longer breaks a row in two. The fold is one linear pass, shared with the working
-    indicator.
+  - **TUI:** the tool row shows the raw text as its target. A row's target now has every run of
+    control characters (tab, CR, LF and the other C0 characters, DEL, C1) folded to one space, so
+    a newline no longer breaks a row in two. The summary Book builds from that target is folded
+    too; a summary that a tool supplies itself is shown as the tool wrote it. Ordinary spaces are
+    kept verbatim, so a Grep pattern `^    def ` still shows its four spaces.
 - **`Read` says its default is the whole file.** The description offered `offset`/`limit` "for
   large files" and models took the hint too far, reading a 430-line file in four 100-line calls
   and one 20-line span three times over (#224). It now says the default reads the file whole, and

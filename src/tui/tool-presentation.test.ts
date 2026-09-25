@@ -417,15 +417,16 @@ describe('composeToolRow inline-label budget', () => {
   });
 });
 
-describe('raw-argument targets', () => {
+describe('tool row targets', () => {
   // A call whose arguments were not valid JSON shows its raw text as the target.
   const tab = String.fromCharCode(9);
-  const controlCharacter = /[\u0000-\u001f\u007f]/;
+  const csi = String.fromCharCode(0x9b);
+  const controlCharacter = /[\u0000-\u001f\u007f-\u009f]/;
 
   it('folds control characters out of the target and the summary', () => {
     const presentation = deriveToolPresentation(
       'Bash',
-      { __raw: `{"command":"echo one\n${tab}echo two"}` },
+      { __raw: `{"command":"echo one\n${tab}echo${csi}two"}` },
       result({ success: false, error: 'Invalid JSON arguments for Bash' }),
     );
 
@@ -436,12 +437,20 @@ describe('raw-argument targets', () => {
     ).not.toMatch(controlCharacter);
   });
 
-  it('folds a long run of spaces in one linear pass', () => {
+  it('shows ordinary spaces in a target verbatim', () => {
+    expect(deriveToolPresentation('Grep', { pattern: '^    def ' }).target).toBe('^    def ');
+    const commit = deriveToolPresentation('Bash', { command: 'git commit -m "fix  typo"' });
+    expect(commit.target).toBe('git commit -m "fix  typo"');
+    expect(commit.summary).toContain('git commit -m "fix  typo"');
+    expect(deriveToolPresentation('Grep', { pattern: '   ' }).target).toBe('   ');
+  });
+
+  it('keeps a long run of spaces as it is, in one linear pass', () => {
+    const spaces = ' '.repeat(30_000);
     const presentation = deriveToolPresentation('Bash', {
-      __raw: `{"command":"a${' '.repeat(30_000)}b"}`,
+      __raw: `{"command":"a${spaces}b"}`,
     });
 
-    expect(presentation.target).toBe('{"command":"a b"}');
-    expect(presentation.summary).toContain('{"command":"a b"}');
+    expect(presentation.target).toBe(`{"command":"a${spaces}b"}`);
   });
 });
