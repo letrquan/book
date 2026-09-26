@@ -168,6 +168,125 @@ describe('WebFetch', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it('stops at a cross-origin redirect before judging, or even resolving, the target', async () => {
+    // The target is a host the model never asked for. Following it is a new WebFetch with its own
+    // permission and policy decision, so this call reports the origin change whatever the target
+    // is: refused as private_network_forbidden it would be named as the model's own destination,
+    // and the switch that lifts that would still leave this call stopped at the origin check.
+    const resolver = vi.fn(async () => ['93.184.216.34']);
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: 'https://internal.example/latest/meta-data/#frag' },
+        }),
+    );
+    const { fetchTool } = toolsFor(fetchImpl, resolver);
+
+    const result = await fetchTool.execute({ url: 'https://example.com/start' }, context());
+
+    expect(result.status).toBe('blocked');
+    expect(result.structuredError?.code).toBe('cross_origin_redirect');
+    expect(result.structuredError?.details).toMatchObject({
+      sourceUrl: 'https://example.com/start',
+      targetUrl: 'https://internal.example/latest/meta-data/',
+    });
+    // Only the requested host was looked up; an attacker-chosen target never reaches DNS.
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(resolver).toHaveBeenCalledWith('example.com');
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    // Nothing that needs no lookup refuses the target, so following it is offered.
+    expect(result.structuredError?.remediation).toContain(
+      'Call WebFetch again with url: https://internal.example/latest/meta-data/',
+    );
+    expect(result.structuredError?.details?.targetRefused).toBeUndefined();
+  });
+
+  it.each([
+    ['https://169.254.169.254/latest/meta-data/', 'private_network_forbidden'],
+    ['https://metadata.google.internal/', 'private_network_forbidden'],
+    ['https://localhost:8080/', 'private_network_forbidden'],
+    ['http://other.example/', 'insecure_http_url'],
+  ])(
+    'does not invite the model to follow a cross-origin redirect to %s, which the policy refuses',
+    async (location, refusedAs) => {
+      // The checks that need no lookup already refuse this target, so "call WebFetch again" would
+      // only feed a guaranteed refusal to the model, and the stop message would then name a host
+      // the page chose.
+      const resolver = vi.fn(async () => ['93.184.216.34']);
+      const fetchImpl = vi.fn(
+        async () => new Response(null, { status: 302, headers: { location } }),
+      );
+      const { fetchTool } = toolsFor(fetchImpl, resolver);
+
+      const result = await fetchTool.execute({ url: 'https://example.com/start' }, context());
+
+      expect(result.status).toBe('blocked');
+      expect(result.structuredError?.code).toBe('cross_origin_redirect');
+      expect(result.structuredError?.details?.targetRefused).toBe(refusedAs);
+      expect(result.structuredError?.remediation).not.toContain('Call WebFetch again');
+      expect(result.structuredError?.remediation).toContain('Do not follow');
+      expect(resolver).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('never echoes credentials or a non-web URL from a redirect target', async () => {
+    for (const [location, secret, refusedAs] of [
+      ['https://user:s3cr3t-token@other.example/x', 's3cr3t-token', 'url_credentials_forbidden'],
+      ['file:///etc/passwd', '/etc/passwd', 'invalid_url_scheme'],
+      ['data:text/html;base64,PHNjcmlwdD4=', 'PHNjcmlwdD4', 'invalid_url_scheme'],
+    ]) {
+      const fetchImpl = vi.fn(
+        async () => new Response(null, { status: 302, headers: { location } }),
+      );
+      const { fetchTool } = toolsFor(fetchImpl);
+
+      const result = await fetchTool.execute({ url: 'https://example.com/start' }, context());
+
+      expect(result.structuredError?.code, location).toBe('cross_origin_redirect');
+      expect(result.structuredError?.details?.targetRefused, location).toBe(refusedAs);
+      expect(JSON.stringify(result), location).not.toContain(secret);
+    }
+  });
+
+  it('reports what undici wrapped as the cause of a failed fetch', async () => {
+    // undici rejects with a bare `fetch failed`; the reason, such as an empty DNS answer at
+    // connect time, is only on its `cause`.
+    const fetchImpl = vi.fn(async () => {
+      throw Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('example.com resolved to no usable address.'), {
+          code: 'ENOTFOUND',
+        }),
+      });
+    });
+    const { fetchTool } = toolsFor(fetchImpl);
+
+    const result = await fetchTool.execute({ url: 'https://example.com/' }, context());
+
+    expect(result.structuredError?.code).toBe('fetch_failed');
+    expect(result.structuredError?.message).toContain('resolved to no usable address');
+  });
+
+  it('still refuses a same-origin redirect whose host now resolves privately', async () => {
+    const resolver = vi
+      .fn(async (): Promise<string[]> => [])
+      .mockResolvedValueOnce(['93.184.216.34'])
+      .mockResolvedValue(['10.0.0.9']);
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: '/next' },
+        }),
+    );
+    const { fetchTool } = toolsFor(fetchImpl, resolver);
+
+    const result = await fetchTool.execute({ url: 'https://example.com/start' }, context());
+
+    expect(result.structuredError?.code).toBe('private_network_forbidden');
+    expect(result.structuredError?.details?.destination).toBe('example.com (10.0.0.9)');
+  });
+
   it('follows bounded same-origin redirects and reports the final URL', async () => {
     const fetchImpl = vi
       .fn()
@@ -880,5 +999,53 @@ describe('policy refusals are final and visible', () => {
     // One attempt per provider on the first call, none on the second: no registry retry, and the
     // cooldown keeps the refusal.
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('names the refused destination in the result details', async () => {
+    // The stop message an unattended run ends with reads the destination from here, so the
+    // operator sees what was refused before reaching for a switch that lifts the policy for all.
+    const preflight = toolsFor(
+      vi.fn(async () => new Response('never')),
+      vi.fn(async () => ['10.0.0.1']),
+    );
+    const refusedEarly = await preflight.fetchTool.execute(
+      { url: 'https://internal.example/' },
+      context(),
+    );
+    expect(refusedEarly.structuredError?.details?.destination).toBe('internal.example (10.0.0.1)');
+
+    const refused = await new Promise<unknown>((resolve) => {
+      safeNetworkLookup('127.0.0.1', { all: true }, (error) => resolve(error));
+    });
+    const connectTime = toolsFor(
+      vi.fn(async () => {
+        throw Object.assign(new TypeError('fetch failed'), { cause: refused });
+      }),
+    );
+    const refusedLate = await connectTime.fetchTool.execute(
+      { url: 'https://example.com/' },
+      context(),
+    );
+    expect(refusedLate.structuredError?.details?.destination).toBe('127.0.0.1');
+  });
+
+  it("names each search provider's refused destination, through its cooldown too", async () => {
+    // A fake-IP DNS answers every provider hostname inside 198.18.0.0/15.
+    const { searchTool } = toolsFor(
+      vi.fn(async () => new Response('never')),
+      vi.fn(async () => ['198.18.0.1']),
+    );
+
+    const first = await searchTool.execute({ query: 'anything' }, context());
+    const second = await searchTool.execute({ query: 'anything' }, context());
+
+    for (const result of [first, second]) {
+      expect(result.status).toBe('blocked');
+      const attempts = result.structuredError?.details?.attempts as Array<{
+        destination?: string;
+      }>;
+      expect(attempts.length).toBeGreaterThan(0);
+      for (const attempt of attempts) expect(attempt.destination).toMatch(/ \(198\.18\.0\.1\)$/);
+    }
   });
 });
