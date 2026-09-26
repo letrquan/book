@@ -176,9 +176,15 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
       // following \r arrives in its own chunk and parses as Enter.
       const echoStart = output.length;
       pty.write(text);
-      const echo = '› ' + text;
+      // `¶ ` opens the composer's draft; `› ` marks the command menu's
+      // highlighted row, which is the whole row repainted even when the
+      // incremental renderer only redraws the changed cells of the composer.
+      const echoed = () => {
+        const fresh = stripAnsi(output.slice(echoStart));
+        return fresh.includes('¶ ' + text) || fresh.includes('› ' + text);
+      };
       const start = Date.now();
-      while (!stripAnsi(output.slice(echoStart)).includes(echo)) {
+      while (!echoed()) {
         if (Date.now() - start >= 10_000) {
           throw new Error(
             `Typed input was not echoed within 10000ms: ${JSON.stringify(text)}. Last output:\n${stripAnsi(output).slice(-4000)}`,
@@ -223,15 +229,42 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
     },
   };
 
-  // Wait for the TUI to fully render (input bar placeholder visible).
+  // Wait for the TUI to fully render (input bar placeholder visible), then for
+  // the composer to take keys. The placeholder is on screen before Ink attaches
+  // its stdin listener, and a key written in between is dropped; on a loaded
+  // runner that gap swallowed a whole typed command. Probe with a key until the
+  // replayed screen shows it in the composer, then clear it with Ctrl+U.
   try {
     await session.waitFor('Ask me anything', 10_000);
+    const deadline = Date.now() + 10_000;
+    const probeShown = async () =>
+      (await session.readScreen()).some((line) => line.startsWith('¶ q'));
+    let shown = false;
+    while (!shown && Date.now() < deadline) {
+      pty.write('q');
+      for (let tries = 0; tries < 5 && !shown; tries++) {
+        await sleep(100);
+        shown = await probeShown();
+      }
+    }
+    if (!shown) throw new Error('The composer never took a key.');
+    pty.write(CTRL_U);
+    // Read the replayed screen: the byte stream still holds the placeholder
+    // from before the probe, so a search of it would return at once.
+    const cleared = async () =>
+      (await session.readScreen()).some((line) => line.startsWith('¶ Ask me anything'));
+    while (!(await cleared())) {
+      if (Date.now() > deadline) throw new Error('The composer never cleared its probe key.');
+      await sleep(50);
+    }
     return session;
   } catch (error) {
     await session.close();
     throw error;
   }
 }
+
+const CTRL_U = String.fromCharCode(0x15);
 
 // ANSI escape sequences for common keys.
 const keys = {
@@ -278,8 +311,8 @@ describe('TUI slash commands', () => {
     await submitInteractive(session, '/help');
     await sleep(300);
     session.sendKey(keys.ctrlHome);
-    const output = await session.waitFor('Slash Commands');
-    expect(output).toContain('Slash Commands');
+    const output = await session.waitFor('§ Commands');
+    expect(output).toContain('§ Commands');
     expect(output).toContain('/help');
     expect(output).toContain('/clear');
     expect(output).toContain('/compact');
@@ -302,18 +335,20 @@ describe('TUI slash commands', () => {
 
   it('/help toggle hides the help panel', async () => {
     // Full-frame rendering makes the post-toggle terminal state directly assertable.
-    session = await startAndWait({ BOOK_TUI_RENDERER: 'safe' });
-    await submitInteractive(session, '/help');
-    await session.waitFor('Slash Commands');
-    const beforeToggle = session.readRaw().length;
-    await submitInteractive(session, '/help');
-    await sleep(500);
-    const output = stripAnsi(session.readRaw().slice(beforeToggle));
-    const latestFrame = output.slice(output.lastIndexOf('╭ BOOK'));
-    // Incremental rendering does not rewrite the now-stable input row when
-    // only the transcript changes.
-    expect(latestFrame).toContain('╭ BOOK');
-    expect(latestFrame).not.toContain('Slash Commands');
+    const live = (session = await startAndWait({ BOOK_TUI_RENDERER: 'safe' }));
+    await submitInteractive(live, '/help');
+    await live.waitFor('§ Commands');
+    await submitInteractive(live, '/help');
+    // Read the replayed screen, not the byte stream: the panel's rows are still
+    // in the stream's history after the redraw that removed them.
+    const deadline = Date.now() + 8000;
+    let screen = await live.readScreen();
+    while (screen.some((line) => line.includes('§ Commands')) && Date.now() < deadline) {
+      await sleep(100);
+      screen = await live.readScreen();
+    }
+    expect(screen.join('\n')).not.toContain('§ Commands');
+    expect(screen.some((line) => line.startsWith('¶ '))).toBe(true);
   }, 20_000);
 
   it('/clear clears the conversation', async () => {
@@ -355,28 +390,35 @@ describe('TUI keyboard input', () => {
     // Poll the screen rather than sleeping a fixed span: a redraw that takes
     // 200 ms on this machine can take many seconds on a loaded CI runner, and
     // a fixed wait turns that difference into a flake.
-    async function topBorders(predicate: (widths: number[]) => boolean): Promise<number[]> {
+    async function screenWhere(predicate: (lines: string[]) => boolean): Promise<string[]> {
       const deadline = Date.now() + 8000;
-      let widths: number[] = [];
+      let lines: string[] = [];
       while (Date.now() < deadline) {
-        widths = (await live.readScreen())
-          .filter((line) => line.startsWith('\u256d'))
-          .map((line) => line.length);
-        if (predicate(widths)) return widths;
+        lines = await live.readScreen();
+        if (predicate(lines)) return lines;
         await sleep(100);
       }
-      return widths;
+      return lines;
     }
+    const hairlines = (lines: string[]) =>
+      lines.filter((line) => /^─+$/.test(line)).map((line) => line.length);
 
     live.resize(200, 45);
-    expect(await topBorders((w) => w.includes(199))).toContain(199);
+    // The composer's hairlines span the terminal, one column short of its edge.
+    expect(hairlines(await screenWhere((lines) => hairlines(lines).includes(199)))).toContain(199);
 
     // Type the slash without submitting -- Enter would run a command instead.
     live.sendKey('/');
-    const withMenu = await topBorders((w) => w.includes(199) && w.includes(119));
-    // Two bordered surfaces now: the full-width composer and the bounded menu.
-    expect(withMenu).toContain(199);
-    expect(withMenu).toContain(119);
+    const withMenu = await screenWhere((lines) =>
+      lines.some((line) => line.startsWith('─ § Commands')),
+    );
+    // The menu's rule spans the terminal like the composer's; its rows keep the
+    // 120-column panel measure instead of stretching to 200.
+    const rule = withMenu.find((line) => line.startsWith('─ § Commands'));
+    expect(rule?.length).toBe(199);
+    const rows = withMenu.filter((line) => /^ {2}[› ] \/\w/.test(line));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.length).toBeLessThanOrEqual(120);
   }, 40_000);
 
   it('clears the visible viewport before redrawing after resize', async () => {
@@ -462,7 +504,7 @@ describe('TUI keyboard input', () => {
     async () => {
       session = await startAndWait();
       await submitInteractive(session, '/help');
-      await session.waitFor('Slash Commands');
+      await session.waitFor('§ Commands');
 
       const startedAt = performance.now();
       session.sendKey(keys.ctrlU);
@@ -483,7 +525,7 @@ describe('TUI keyboard input', () => {
     async () => {
       session = await startAndWait({ BOOK_TUI_RENDERER: 'safe' });
       await submitInteractive(session, '/help');
-      await session.waitFor('Slash Commands');
+      await session.waitFor('§ Commands');
 
       session.sendKey('INPUT_FOOTER_SENTINEL');
       await session.waitFor('INPUT_FOOTER_SENTINEL');
@@ -520,9 +562,9 @@ describe('TUI keyboard input', () => {
         if (hits.length !== 1) return false;
         const row = hits[0]!.index;
         return (
-          (rows[row - 1]?.includes('╭') ?? false) &&
-          hits[0]!.line.includes('│') &&
-          (rows[row + 1]?.includes('╰') ?? false)
+          /^─+$/.test(rows[row - 1] ?? '') &&
+          hits[0]!.line.startsWith('¶ ') &&
+          /^─+$/.test(rows[row + 1] ?? '')
         );
       };
       const deadline = Date.now() + 4000;
@@ -535,10 +577,11 @@ describe('TUI keyboard input', () => {
       const inputRows = sentinelRows(screen);
       expect(inputRows).toHaveLength(1);
 
+      // The composer: a hairline, the pilcrow and the draft, a hairline.
       const inputRow = inputRows[0]!.index;
-      expect(screen[inputRow - 1]).toContain('╭');
-      expect(screen[inputRow]).toContain('│');
-      expect(screen[inputRow + 1]).toContain('╰');
+      expect(screen[inputRow - 1]).toMatch(/^─+$/);
+      expect(screen[inputRow]).toMatch(/^¶ /);
+      expect(screen[inputRow + 1]).toMatch(/^─+$/);
     },
     20_000,
   );
@@ -587,7 +630,7 @@ describe('TUI keyboard input', () => {
       session.sendKey(keys.ctrlSlash);
       await sleep(500);
       const output = session.read();
-      expect(output).toContain('Keyboard Shortcuts');
+      expect(output).toContain('§ Keyboard shortcuts');
       expect(output).toContain('Ctrl+T');
       expect(output).toContain('Esc');
     },
