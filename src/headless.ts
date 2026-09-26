@@ -6,6 +6,7 @@ import type { CompactResult, CompactBoundary } from './types/sessions.js';
 import type { ImageAttachment, Message, Usage } from './types/messages.js';
 import type { HeadlessOptions, HeadlessPlanOutcome, HeadlessResult } from './types/public-sdk.js';
 import type {
+  PermissionDecision,
   PlanApprovalResult,
   ToolCall,
   ToolResult,
@@ -197,9 +198,13 @@ export async function runHeadless(
     disposeCrashHandlers = statusWriter.installCrashHandlers();
 
     // Headless permission policy: if a prompt would be shown and no rule resolves
-    // it, deny the tool — headless can't interactively prompt. Callers who want
-    // full autonomy should pass mode: 'bypassPermissions'.
-    const permissionRequired = async (): Promise<'deny'> => 'deny';
+    // it, deny the tool — headless can't interactively prompt — and say so, so the
+    // refusal names that cause rather than a policy (#264). Callers who want full
+    // autonomy should pass mode: 'auto' or 'bypassPermissions'.
+    const permissionRequired = async (): Promise<PermissionDecision> => ({
+      result: 'deny',
+      reason: 'no_approver',
+    });
 
     // The one interactive escape hatch this host has. Everything that needs a
     // human decision (AskUserQuestion, plan approval) goes through it, so

@@ -7,7 +7,9 @@ import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { findRelaxedMatch } from './fuzzy-match.js';
 import {
+  isBookLocalSettingsPath,
   pathOutsideWorkspaceResult,
+  realWorkspaceRoot,
   resolveReadablePath,
   resolveWorkspacePath,
 } from './path-utils.js';
@@ -46,6 +48,8 @@ const GREP_BINARY_SAMPLE_BYTES = 8 * 1024;
 const GREP_DEFAULT_IGNORES = [
   '**/.git/**',
   '**/.book/tool-output/**',
+  // Book's project-local settings can hold an API key; no search should return it (#264).
+  '**/.book/settings.local.json',
   '**/node_modules/**',
   '**/dist/**',
   '**/coverage/**',
@@ -1105,9 +1109,16 @@ async function grepSearchPortable(
 
   const inWorkspaceFiles: Array<{ file: string; filePath: string }> = [];
   const seenFiles = new Set<string>();
+  const realRoot = realWorkspaceRoot(ctx.workspaceRoot);
   for (let index = 0; index < files.length; index++) {
     const resolved = resolveWorkspacePath(ctx.workspaceRoot, files[index]);
-    if (resolved && !seenFiles.has(resolved.relativePath)) {
+    if (
+      resolved &&
+      !seenFiles.has(resolved.relativePath) &&
+      // Book's local settings can hold an API key: never search them, whatever path (a link,
+      // an explicit `path`) led here (#264).
+      !isBookLocalSettingsPath(resolved.canonicalPath, realRoot)
+    ) {
       seenFiles.add(resolved.relativePath);
       inWorkspaceFiles.push({ file: resolved.relativePath, filePath: resolved.filePath });
     }
@@ -1271,6 +1282,7 @@ async function grepSearchWithRipgrep(
   const scoped = await resolveGrepScope(args, ctx);
   if (!scoped.ok) return { kind: 'success', result: scoped.failure };
   const scope = scoped.scope;
+  const realRoot = realWorkspaceRoot(ctx.workspaceRoot);
 
   const rgArgs = ['--json', '--hidden', '--regexp', pattern, '--glob', includePattern];
   for (const ignored of GREP_DEFAULT_IGNORES) rgArgs.push('--glob', `!${ignored}`);
@@ -1346,6 +1358,7 @@ async function grepSearchWithRipgrep(
       if (!rawPath || !lineNumber || text === undefined) return;
       const resolved = resolveWorkspacePath(ctx.workspaceRoot, rawPath.replaceAll('\\', '/'));
       if (!resolved) return;
+      if (isBookLocalSettingsPath(resolved.canonicalPath, realRoot)) return;
       const file = resolved.relativePath;
 
       if (event.type === 'match') {
