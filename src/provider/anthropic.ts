@@ -12,11 +12,41 @@ import {
   classifyProviderError,
   fetchWithRetry,
   formatApiError,
+  readErrorBody,
   readStreamChunk,
   wrappedUpstreamStatus,
 } from './reliability.js';
 
 const log = createDebugLogger('provider:anthropic');
+
+/**
+ * The error code for an Anthropic mid-stream `error` event. Its `type` is Anthropic's error
+ * class; the classes that name a verdict the loop already handles are mapped onto the codes it
+ * reads, so a re-send never reproduces them: a rejected key parks the run, a missing model ends
+ * it, and an oversized request goes through the overflow recovery. A billing refusal parks the
+ * run like an HTTP 402, and a rate limit and a timeout are re-sent like their HTTP statuses.
+ * Other types (`invalid_request_error`, `overloaded_error`, `api_error`, …) pass through
+ * unchanged.
+ */
+function streamErrorCode(type: string | undefined): string {
+  switch (type) {
+    case 'authentication_error':
+    case 'permission_error':
+      return 'auth';
+    case 'not_found_error':
+      return 'not_found';
+    case 'request_too_large':
+      return 'context_overflow';
+    case 'rate_limit_error':
+      return 'rate_limited';
+    case 'billing_error':
+      return 'quota';
+    case 'timeout_error':
+      return 'timeout';
+    default:
+      return type ?? 'provider_error';
+  }
+}
 
 // ── Message format conversion (OpenAI → Anthropic) ──────────────────────────
 
@@ -504,7 +534,7 @@ export async function* chatCompletionStream(
   log.debug('response received', { status: response.status, ok: response.ok });
 
   if (!response.ok) {
-    const errorText = await response.text();
+    const errorText = await readErrorBody(response, signal);
     yield {
       type: 'error',
       error: formatApiError(response.status, errorText),
@@ -714,7 +744,7 @@ export async function* chatCompletionStream(
             yield {
               type: 'error',
               error: err?.message ?? 'Unknown Anthropic API error',
-              errorCode: err?.type ?? 'provider_error',
+              errorCode: streamErrorCode(err?.type),
             };
             return;
           }
