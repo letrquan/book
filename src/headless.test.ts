@@ -1308,6 +1308,46 @@ describe('runHeadless — reasoning tags in text mode', () => {
     });
     expect(writes.join('')).toBe('Answer\n');
   });
+
+  // #237: routers that inline reasoning start the reply with `<think></think>`. The stored
+  // answer, the complete `assistant` record and the `result` messages all carry it split.
+  it('keeps an empty think block out of the stream-json and json answer too (#237)', async () => {
+    for (const outputFormat of ['stream-json', 'json'] as const) {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => sse([textDelta('<think></think>Answer')])),
+      );
+      const writes: string[] = [];
+
+      const result = await runHeadless(config, createDefaultRegistry(), {
+        prompt: 'say hi',
+        inputFormat: 'text',
+        outputFormat,
+        history: [],
+        mode: 'bypassPermissions',
+        stdout: {
+          write: (s: string) => {
+            writes.push(s);
+            return true;
+          },
+        },
+      });
+
+      expect(result.answer, outputFormat).toBe('Answer');
+      const records = writes
+        .join('')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      if (outputFormat === 'stream-json') {
+        const complete = records.find((record) => record.type === 'assistant' && record.complete);
+        expect(complete?.text).toBe('Answer');
+      }
+      const final = records.find((record) => 'result' in record) as
+        { result: { messages: Array<{ role: string; content: string }> } } | undefined;
+      expect(final?.result.messages.at(-1)?.content, outputFormat).toBe('Answer');
+    }
+  });
 });
 
 describe('runHeadless — text progress on stderr', () => {

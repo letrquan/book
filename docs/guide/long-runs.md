@@ -125,7 +125,10 @@ answer that opens with `[Error]` counts, however many lines follow. If either re
 `failed/provider_error` on that second request, never `completed`; the repeat is not re-issued
 again, and no `[continuation]` message is written. Every retry is visible to a print-mode host: a
 `{"type":"retry","phase","attempt","max","delay_ms"}` record in `stream-json`, a `retry: …` line on
-stderr in `text` output.
+stderr in `text` output. `phase` is `transport` for an HTTP-level retry inside one request,
+`watchdog` for one with no limit (`max` is then `null`), and `reissue` for a turn sent again after
+its stream ended mid-turn; a `reissue` record also carries `reason`, the outcome that would otherwise
+have ended the run (`stream_stall`, `transport_interrupted`, `provider_error`, `output_cap`, …).
 
 For a supervised loop, use `--session-id` (resume-or-create) rather than `--continue`, which selects
 the most recently touched session in the directory and can be hijacked by an unrelated `book -p`

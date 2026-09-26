@@ -55,6 +55,10 @@ describe('getRetryLabel', () => {
     expect(label).toContain('Retrying (watchdog)');
     expect(label).toContain('attempt 47');
   });
+
+  it('says a re-sent turn is being re-sent, not retried inside one request (#244)', () => {
+    expect(getRetryLabel('reissue', 1, 3, 2000)).toBe('Re-sending the turn in 2s · attempt 1/3');
+  });
 });
 
 describe('AgentMessage retry layout contract', () => {

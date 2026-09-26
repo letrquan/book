@@ -362,7 +362,7 @@ export async function fetchWithRetry(
         delayMs: delay,
         error: lastError,
       });
-      onRetry?.(attempt + 1, maxAttempts > 100 ? -1 : maxAttempts, delay);
+      onRetry?.(attempt + 1, maxAttempts === Number.MAX_SAFE_INTEGER ? -1 : maxAttempts, delay);
       await sleep(delay, signal);
       continue;
     }
@@ -406,7 +406,7 @@ export async function fetchWithRetry(
       status: response.status,
       delayMs: delay,
     });
-    onRetry?.(attempt + 1, watchdogRetry ? -1 : maxAttempts, delay);
+    onRetry?.(attempt + 1, effectiveMax === Number.MAX_SAFE_INTEGER ? -1 : effectiveMax, delay);
     try {
       await sleep(delay, signal);
     } catch {

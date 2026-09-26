@@ -402,12 +402,21 @@ export async function runHeadless(
       },
       onUserQuestionRequired: askUser,
       userQuestionStatus,
-      onRetry: (phase, attempt, max, delayMs) => {
+      onRetry: (phase, attempt, max, delayMs, reason) => {
+        // `max` is -1 when retries are unbounded (the watchdog); the wire says null.
+        const limit = max < 0 ? null : max;
         if (opts.outputFormat === 'stream-json') {
-          emit({ type: 'retry', phase, attempt, max, delay_ms: delayMs });
+          emit({
+            type: 'retry',
+            phase,
+            attempt,
+            max: limit,
+            delay_ms: delayMs,
+            ...(reason ? { reason } : {}),
+          });
         } else if (opts.quiet !== true) {
           process.stderr.write(
-            `retry: ${phase} attempt ${attempt}${max > 0 ? `/${max}` : ''} in ${Math.round(delayMs / 1000)}s\n`,
+            `retry: ${phase} attempt ${attempt}${limit !== null ? `/${limit}` : ''} in ${Math.round(delayMs / 1000)}s${reason ? ` (${reason})` : ''}\n`,
           );
         }
       },

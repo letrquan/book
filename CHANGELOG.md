@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **The stream-json `retry` record tells a re-sent turn from an HTTP retry** (#244). A turn sent again
+  after its stream ended is now phase `reissue` with a `reason`, where it was `transport` like an HTTP
+  retry inside one request; an unbounded watchdog retry reports `max: null` instead of `-1` (or
+  `9007199254740991` for a 503); the TUI says "Re-sending the turn".
 - **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
   rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
   green, so every PR that touched them either reformatted unrelated lines or left them drifting.

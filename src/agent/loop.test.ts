@@ -6231,7 +6231,7 @@ describe('content filter and upstream error recoveries', () => {
 
       expect(DEFAULT_SETTINGS.retry.streamReissueAttempts).toBe(3);
       expect(fetchCalls, String(status)).toBe(4);
-      expect(retries, String(status)).toEqual(['transport', 'transport', 'transport']);
+      expect(retries, String(status)).toEqual(['reissue', 'reissue', 'reissue']);
       expect(outcomes[0], String(status)).toMatchObject({
         status: 'failed',
         reason: 'provider_error',

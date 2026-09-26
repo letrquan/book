@@ -1683,7 +1683,7 @@ export async function runAgentLoop(
             recovery === 'continue'
               ? 0
               : Math.min(config.retry.maxDelayMs, config.retry.baseDelayMs * 2 ** streamReissues);
-          callbacks.onRetry?.('transport', spent + 1, allowed, reissueDelayMs);
+          callbacks.onRetry?.('reissue', spent + 1, allowed, reissueDelayMs, streamOutcome.reason);
           await delay(reissueDelayMs, signal);
           if (!signal?.aborted) {
             // Never re-send a request that ENDS with an assistant message.
