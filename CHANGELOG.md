@@ -6,6 +6,34 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Settings validation runs on Zod 4** (#88). Book moves from Zod 3.25 to Zod 4.6. Defaults, and
+  which fields a rejected document names, are unchanged; `src/settings.test.ts` now pins them,
+  including a check that no object schema is defaulted in the way Zod 4 would leave bare. What
+  changes:
+  - **Validation messages** now come from Zod 4. `book config set retry.maxAttempts 99` reports
+    `Too big: expected number to be <=15` where it said `Number must be less than or equal to 15`,
+    a missing field reads `Invalid input: expected string, received undefined` instead of
+    `Required`, and an unknown enum value reads `Invalid option: expected one of "low"|"medium"|…`
+    without echoing the value. In the issue list printed for an invalid settings file,
+    `invalid_enum_value` and `invalid_literal` issues are now `invalid_value`, and an
+    `invalid_type` issue no longer carries a `received` field. A value that breaks two rules can
+    get one issue where it got two: `retry.baseDelayMs: 1.5` (an integer of at least 100) is
+    reported only as not an integer.
+  - **The model sees the new wording** in `AskUserQuestion` validation errors and in the one
+    repair prompt the compaction reducer gets for an invalid checkpoint.
+  - **Integer settings with no upper bound** (`maxTurns`, `maxTokens`,
+    `continuation.maxWallClockMs`, `agents.minFreeDiskBytes`, a model's `contextWindow`, …) still
+    accept integers beyond `Number.MAX_SAFE_INTEGER`, which Zod 4's `.int()` would reject, so a
+    file holding an "effectively unlimited" value keeps loading. A non-integer gets the same
+    `invalid_type` issue (`Invalid input: expected int, received number`) as the other integer
+    settings.
+  - **`memory.extraction.idleHours: 1e999`** (which JSON reads as `Infinity`) is now rejected; Zod
+    3 accepted it. Set `memory.extraction.enabled: false` to turn extraction off.
+  - **A `__proto__` key** anywhere in a settings file is ignored; see the matching Fixed entry.
+    Inside a record setting Zod 3 had judged its value (rejecting `"env": {"__proto__": 1}`,
+    accepting `"agents": {"checks": {"__proto__": ["npm test"]}}` as a check named `0`).
+  - **SDK types:** the schemas and settings types exported from `dist/sdk.d.ts` are Zod 4 types,
+    which need TypeScript 5.5 or later in a consuming project.
 - **Only the turn in progress replays its reasoning** (#248 item 6). Every earlier assistant turn's
   reasoning went back to the model as a `<reasoning_context>` block on every request. It now goes
   back only for the assistant steps after the newest message the user wrote. The loop's own mid-run
@@ -313,6 +341,14 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A repository's settings file can no longer set `shell` or bypass mode through `__proto__`**
+  (#88). Workspace layers may not set `shell` or `defaultMode: "bypassPermissions"`, and the
+  sanitizer deletes those keys. But JSON keeps `"__proto__"` as an ordinary key, and merging
+  layers assigned it through the prototype setter, so a committed `.book/settings.json` holding
+  `{"__proto__": {"shell": "…", "defaultMode": "bypassPermissions"}}` gave the resolved settings
+  those values as inherited ones, which the sanitizer never saw: every Bash command then ran the
+  repository's binary with permission prompts off. The merge now skips a `__proto__` key. The same
+  path let `"provider": {"__proto__": {…}}` add a provider.
 - **Cached prompt tokens are counted on OpenAI-compatible providers** (#235). The OpenAI-compatible
   client read only `prompt_tokens`, so a provider that caches the prompt (OpenAI's automatic cache,
   DeepSeek, OpenRouter, LiteLLM) was billed in `/cost`, `/usage` and the USD budget as if nothing
