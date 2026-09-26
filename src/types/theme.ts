@@ -215,3 +215,153 @@ export const DEFAULT_THEME: ThemeTokens = {
 
   userBg: '#202022',
 };
+
+/**
+ * Folio: ink on dark paper, with one gilt accent.
+ *
+ * Where the Apple palette gives every role its own system hue, Folio leans on
+ * value and weight. Text is a warm ivory, secondary text steps down through
+ * warm greys, and a single gold, like the gilt title on a spine, marks the few
+ * places you act or look first: the prompt glyph, your own turns, headings,
+ * list markers and the spinner. Status colours are muted versions of the usual
+ * trio (sage, brick, burnt orange). They still read at a glance, but they no
+ * longer shout over the prose around them.
+ */
+export const FOLIO_THEME: ThemeTokens = {
+  brand: '#D9B36C',
+  brandShimmer: '#F2D9A0',
+
+  text: '#E8E3D9',
+  inverseText: '#15140F',
+  inactive: '#6F6A61',
+  subtle: '#A09A8F',
+  suggestion: '#8F897E',
+  permission: '#E5894F',
+  remember: '#B8A1D9',
+
+  surface: '#1D1C1A',
+  surfaceActive: '#2B2926',
+  border: '#3B3834',
+  selectionText: '#F6F1E7',
+  userAccent: '#D9B36C',
+  assistantAccent: '#D9B36C',
+  toolRail: '#4D4943',
+
+  success: '#93B97F',
+  error: '#E0675C',
+  warning: '#E5894F',
+  merged: '#8EBBB5',
+
+  // The composer border is a hairline, not a signal. Its accent lives on the
+  // prompt glyph (`userAccent`).
+  promptBorder: '#4D4943',
+  planMode: '#B8A1D9',
+  autoAccept: '#93B97F',
+  bashBorder: '#E5894F',
+
+  modeDefault: '#A09A8F',
+  modePlan: '#B8A1D9',
+  modeAcceptEdits: '#93B97F',
+  modeAuto: '#8EBBB5',
+  modeDontAsk: '#E0675C',
+  modeBypass: '#E5894F',
+
+  diffAdded: '#1F2E20',
+  diffRemoved: '#3A2220',
+  diffAddedWord: '#2F4D2F',
+  diffRemovedWord: '#5E302B',
+  diffAddedDimmed: '#18231A',
+  diffRemovedDimmed: '#2A1A18',
+
+  usageMeter: '#8EBBB5',
+  usageMeterHigh: '#E5894F',
+  usageMeterCritical: '#E0675C',
+
+  shimmerPair: ['#D9B36C', '#F2D9A0'],
+
+  subagentColors: [
+    '#E0675C',
+    '#E5894F',
+    '#D9B36C',
+    '#93B97F',
+    '#8EBBB5',
+    '#8FAFD6',
+    '#B8A1D9',
+    '#D59AB4',
+  ],
+
+  mdCodeBackground: '#191816',
+  mdCodeBorder: '#3B3834',
+  mdCodeText: '#E8E3D9',
+  mdCodeKeyword: '#C4A3D6',
+  mdCodeString: '#A7C48B',
+  mdCodeComment: '#6F6A61',
+  mdCodeNumber: '#E3A774',
+  mdCodeFunction: '#8FB4D9',
+  mdCodeLineNumber: '#55514A',
+  mdInlineCodeBg: '#2B2926',
+  mdInlineCodeText: '#9FC3BE',
+  // Gilt for the two headings an answer actually uses, ivory-grey below them.
+  mdHeadingH1: '#F2D9A0',
+  mdHeadingH2: '#D9B36C',
+  mdHeading: '#BDB6AA',
+  mdBlockquoteBorder: '#5A554D',
+  mdBlockquoteText: '#A09A8F',
+  mdLink: '#9FC3BE',
+  mdListMarker: '#D9B36C',
+  mdHr: '#3B3834',
+  mdTableBorder: '#5A554D',
+  mdThinkBg: '#191816',
+  mdThinkBorder: '#3B3834',
+  mdThinkText: '#8F897E',
+  mdTurnSeparator: '#3B3834',
+  mdCheckboxChecked: '#93B97F',
+  mdCheckboxUnchecked: '#6F6A61',
+
+  userBg: '#24221E',
+};
+
+/**
+ * Rubric: two-colour printing, the way manuscripts were rubricated.
+ *
+ * The body is set in ink (Folio's warm ivory and greys). One cinnabar red is
+ * reserved for the marks a reader navigates by: the pilcrow that opens each of
+ * your turns and the composer, the section sign before a heading, list
+ * markers, and the drop cap on an empty page. The agent speaks in ink, spinner
+ * included, so red never reads as an alarm. Because red is the accent, errors
+ * move to a rose that stays distinct from it, and warnings to amber.
+ */
+export const RUBRIC_THEME: ThemeTokens = {
+  ...FOLIO_THEME,
+  brand: '#E4573D',
+  brandShimmer: '#F28A6E',
+  userAccent: '#E4573D',
+  // The agent's own voice is ink, not rubric.
+  assistantAccent: '#F0EBE1',
+  shimmerPair: ['#F0EBE1', '#A09A8F'],
+
+  error: '#EF6F95',
+  warning: '#E3A84E',
+  permission: '#E3A84E',
+  bashBorder: '#E3A84E',
+  modeBypass: '#E3A84E',
+  modeDontAsk: '#EF6F95',
+  usageMeterHigh: '#E3A84E',
+  usageMeterCritical: '#EF6F95',
+
+  mdHeadingH1: '#F6F1E7',
+  mdHeadingH2: '#EFE9DE',
+  mdHeading: '#BDB6AA',
+  mdListMarker: '#E4573D',
+
+  subagentColors: [
+    '#E4573D',
+    '#E3A84E',
+    '#D9B36C',
+    '#93B97F',
+    '#8EBBB5',
+    '#8FAFD6',
+    '#B8A1D9',
+    '#EF6F95',
+  ],
+};

@@ -6,9 +6,10 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import chalk from 'chalk';
 import { APPLE_THEME, DEFAULT_THEME, ThemeContext } from '../theme.js';
-import { InputBar } from './InputBar.js';
+import { InputBar, draftRows } from './InputBar.js';
 import { MODE_COLOR_TOKENS } from '../mode-style.js';
 import { displayWidth } from './word-wrap.js';
+import { PILCROW } from '../marks.js';
 import type { ImageAttachment } from '../../types/messages.js';
 import type { Skill } from '../../skills.js';
 
@@ -45,7 +46,6 @@ function inputBar(
       mode: 'default',
       onCycleMode: () => {},
       commands: [],
-      reducedMotion: true,
       ...props,
     }),
   );
@@ -93,16 +93,18 @@ function mentionSkill(overrides: Partial<Skill> = {}): Skill {
 }
 
 describe('InputBar editor box', () => {
-  it('renders a complete box around the prompt', () => {
+  it('rules the prompt above and below, with the glyph in the gutter', () => {
     const width = 36;
     const view = render(inputBar(() => {}, { terminalWidth: width, compact: true }));
     const lines = stripAnsi(view.lastFrame()).split('\n');
 
     expect(lines).toHaveLength(3);
-    expect(lines[0]).toMatch(/^\s?╭─+╮\s?$/);
-    expect(lines[1]).toMatch(/^\s?│ › /);
-    expect(lines[1]).toMatch(/│\s?$/);
-    expect(lines[2]).toMatch(/^\s?╰─+╯\s?$/);
+    expect(lines[0]).toMatch(/^─+$/);
+    // `¶` sits in the two-column gutter, so typed text starts on the content
+    // column like every transcript row above it.
+    expect(lines[1]).toMatch(/^¶ \S/);
+    expect(lines[2]).toMatch(/^─+$/);
+    expect(lines[0]).toBe(lines[2]);
     expectFrameWithinWidth(view.lastFrame(), width);
   });
 
@@ -118,14 +120,32 @@ describe('InputBar editor box', () => {
     view.rerender(inputBar(() => {}, { terminalWidth: 28, compact: true }));
 
     const lines = stripAnsi(view.lastFrame()).split('\n');
-    expect(lines[0]).toMatch(/^╭─+╮$/);
-    expect(lines[1]).toMatch(/^│ › /);
-    expect(lines[1]).toMatch(/│$/);
-    expect(lines[2]).toMatch(/^╰─+╯$/);
+    expect(lines[0]).toBe('─'.repeat(28));
+    expect(lines[1]).toMatch(/^¶ /);
+    expect(lines[2]).toBe('─'.repeat(28));
     expectFrameWithinWidth(view.lastFrame(), 28);
   });
 
-  it('keeps the command menu and editor as separate boxes after shrinking', async () => {
+  it('dismisses the command menu on Esc and keeps the draft', async () => {
+    // Ink sets `meta` on a lone Esc; the Alt-shortcut filter used to swallow it,
+    // so Esc never closed the menu.
+    const commands = [
+      { name: 'clear', description: 'Clear it', body: 'Clear', source: 'project' as const },
+    ];
+    const view = render(inputBar(() => {}, { terminalWidth: 80, commands }));
+    await tick();
+    view.stdin.write('/');
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).toContain('/clear');
+
+    view.stdin.write('\u001b');
+    await tick(100);
+    const frame = stripAnsi(view.lastFrame());
+    expect(frame).not.toContain('/clear');
+    expect(frame).toMatch(/^¶ \//m);
+  });
+
+  it('keeps the command menu and editor as separate ruled sections after shrinking', async () => {
     const commands = [
       {
         name: 'clear',
@@ -142,8 +162,10 @@ describe('InputBar editor box', () => {
     view.rerender(inputBar(() => {}, { terminalWidth: 28, commands, compact: true }));
 
     const lines = stripAnsi(view.lastFrame()).split('\n').filter(Boolean);
-    expect(lines.filter((line) => /^╭─+╮$/.test(line))).toHaveLength(2);
-    expect(lines.filter((line) => /^╰─+╯$/.test(line))).toHaveLength(2);
+    // The menu's titled rule, then the composer's two hairlines.
+    expect(lines.filter((line) => /^─ § /.test(line))).toHaveLength(1);
+    expect(lines.filter((line) => /^─+$/.test(line))).toHaveLength(2);
+    expect(lines.some((line) => line.includes('/clear'))).toBe(true);
     expectFrameWithinWidth(view.lastFrame(), 28);
   });
 });
@@ -155,7 +177,7 @@ describe('composer readline keys', () => {
   const prompt = (view: ReturnType<typeof render>) =>
     stripAnsi(view.lastFrame())
       .split('\n')
-      .find((line) => line.includes('\u203a'))!;
+      .find((line) => line.includes('\u00b6'))!;
 
   async function typed(text: string) {
     const view = render(inputBar(() => {}));
@@ -311,7 +333,6 @@ describe('InputBar mode border colors', () => {
             mode: 'default',
             onCycleMode: () => {},
             commands: [],
-            reducedMotion: true,
             terminalWidth: 40,
             ...props,
           }),
@@ -347,10 +368,12 @@ describe('InputBar mode border colors', () => {
     expect(row).not.toContain(sgrFor(APPLE_THEME.promptBorder));
   });
 
-  it('uses the softer visual prompt marker', () => {
-    const prompt = '› ';
-    expect(prompt).toBe('› ');
-    expect(prompt.length).toBe(2);
+  it('prompts with the pilcrow that will open the turn in the transcript', () => {
+    const view = render(inputBar(() => {}, { terminalWidth: 60 }));
+    const row = stripAnsi(view.lastFrame())
+      .split('\n')
+      .find((line) => !/^─+$/.test(line));
+    expect(row?.startsWith(`${PILCROW} `)).toBe(true);
   });
 });
 
@@ -692,7 +715,9 @@ describe('InputBar skill mention menu', () => {
 
     view.stdin.write('\t');
     await tick(20);
-    expect(stripAnsi(view.lastFrame())).toContain('$wayfinder ');
+    // The trailing space is proven by the submission below: an open composer
+    // row has no right wall to pin it against.
+    expect(stripAnsi(view.lastFrame())).toMatch(/^¶ \$wayfinder/m);
 
     view.stdin.write('fix it');
     await tick(20);
@@ -1160,5 +1185,32 @@ describe('keyboard shortcut filtering', () => {
     // \x1b (ESC) followed by something other than [< is not a mouse sequence
     // (this is how terminals send escape then a regular key)
     expect(simulateInputHandler('\x1b[A', { upArrow: true }, false)).toBe('passed-through');
+  });
+});
+
+describe('composer layout reporting', () => {
+  it('counts soft-wrapped rows, not just newlines', () => {
+    expect(draftRows('', 20)).toBe(1);
+    expect(draftRows('short', 20)).toBe(1);
+    expect(draftRows('one two three four five six seven', 10)).toBeGreaterThanOrEqual(4);
+    expect(draftRows('a\nb', 20)).toBe(2);
+    // The cursor takes the cell after a full last row.
+    expect(draftRows('x'.repeat(20), 20)).toBe(2);
+  });
+
+  it('reports a layout change when a long prompt wraps onto another row', async () => {
+    const onLayoutChange = vi.fn();
+    const view = render(inputBar(() => {}, { terminalWidth: 40, onLayoutChange }));
+    await tick();
+    const settled = onLayoutChange.mock.calls.length;
+
+    view.stdin.write('word '.repeat(4));
+    await tick(20);
+    expect(onLayoutChange.mock.calls.length).toBe(settled);
+
+    // No Enter: the draft only soft-wraps, and the composer grows all the same.
+    view.stdin.write('word '.repeat(12));
+    await tick(20);
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(settled);
   });
 });

@@ -1,3 +1,5 @@
+import { displayWidth } from './word-wrap.js';
+
 /**
  * What `/model` tells you it can do.
  *
@@ -32,6 +34,11 @@ export interface ModelPickerHintState {
   compact: boolean;
   /** The list can be typed at. */
   filterable: boolean;
+  /**
+   * Columns a footer line may take. A line longer than this breaks between two
+   * chords; left to the terminal it broke inside one (`Alt+M add` / `model`).
+   */
+  width?: number;
 }
 
 /** The footer, as one or two lines. Never empty; never missing a live chord. */
@@ -66,7 +73,24 @@ export function modelPickerHints(state: ModelPickerHintState): string[] {
       ].filter(Boolean) as string[])
     : [];
 
-  return managing.length > 0
-    ? [choosing.join(' · '), managing.join(' · ')]
-    : [choosing.join(' · ')];
+  const groups = managing.length > 0 ? [choosing, managing] : [choosing];
+  return groups.flatMap((chords) => packChords(chords, state.width));
+}
+
+/** Greedy ` · ` packing into lines of at most `width` columns; a chord is never split. */
+function packChords(chords: readonly string[], width?: number): string[] {
+  if (width === undefined) return [chords.join(' · ')];
+  const lines: string[] = [];
+  let line = '';
+  for (const chord of chords) {
+    const next = line ? `${line} · ${chord}` : chord;
+    if (line && displayWidth(next) > width) {
+      lines.push(line);
+      line = chord;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
 }

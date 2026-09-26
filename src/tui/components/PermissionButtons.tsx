@@ -18,6 +18,7 @@ import type { PermissionDecision, PermissionResult, ToolCall } from '../../types
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 import { DiffBlock, expandTabs } from './Diff.js';
+import { ChoiceList, DecisionSheet, type Choice } from './chrome.js';
 import { displayWidth, hardWrapLine, truncateDisplay } from './word-wrap.js';
 
 const uiLog = createUiDebugLogger('tui:permbtn');
@@ -31,25 +32,10 @@ const PERMISSION_PATTERN_DISPLAY_MAX_LENGTH = 40;
  */
 const COLLAPSED_COMMAND_ROWS = 6;
 const COLLAPSED_DIFF_ROWS = 8;
-/** Rows the card keeps free for its own chrome, the buttons, and the composer. */
-const RESERVED_ROWS = 12;
+/** Rows the sheet keeps free for its rule, title, stacked choices, hints and the composer. */
+const RESERVED_ROWS = 16;
 /** A file shown with fewer diff rows than this says nothing; hide it instead. */
 const MIN_DIFF_ROWS_PER_FILE = 4;
-
-/**
- * Marks the armed button, the same way {@link PlanApprovalActions} marks its own.
- *
- * The armed choice used to be carried by background colour and bold alone: the
- * only selection surface in the TUI without a glyph, while every menu, picker
- * and wizard has one. That was already an accessibility problem — a low-contrast
- * theme or a colour-blind reader has nothing left — and it got worse when `A`
- * became the way to *arm* "Always allow" and then step its scope rather than
- * fire it, because the whole interaction now depends on seeing which button is
- * armed. The brackets went with it: a marker and a pair of brackets are two
- * containers doing one job, and dropping them buys back columns the rule
- * pattern needs.
- */
-const SELECTION_MARKER = '▸';
 
 interface PermissionButtonsProps {
   toolCall: ToolCall;
@@ -76,13 +62,12 @@ interface ButtonDef {
   label: string;
   value: PermissionResult;
   key: string;
-  colorKey: 'permission' | 'remember' | 'subtle';
 }
 
 const BUTTONS: ButtonDef[] = [
-  { label: 'Run once', value: 'allow', key: 'r', colorKey: 'permission' },
-  { label: 'Skip', value: 'deny', key: 's', colorKey: 'subtle' },
-  { label: 'Always allow', value: 'always', key: 'a', colorKey: 'remember' },
+  { label: 'Run once', value: 'allow', key: 'r' },
+  { label: 'Skip', value: 'deny', key: 's' },
+  { label: 'Always allow', value: 'always', key: 'a' },
 ];
 
 export function toolRiskLevel(toolCall: ToolCall): 'safe' | 'network' | 'write' | 'shell' {
@@ -175,7 +160,7 @@ function diffRowCount(file: MutationPreviewFile): number {
  * Permission prompt card.
  *
  * Navigation:
- *   ←/→ or Tab/Shift+Tab — cycle between buttons
+ *   ↑/↓, ←/→ or Tab/Shift+Tab — move between the choices
  *   Enter, or R/S — activate; A selects "Always allow" without activating it
  *   D — open or close the rest of a cut payload (command rows, diff rows)
  *   Esc — deny
@@ -232,7 +217,8 @@ export function PermissionButtons({
   // that row; otherwise the payload takes rows of its own under it, wrapped
   // to the card. A fixed 72-character slice used to hide the tail of every
   // longer command with nothing to mark the cut.
-  const header = `Permission required · ${canonical}`;
+  // The rule above says "Permission required"; the first row is the tool.
+  const header = canonical;
   const inlineRoom = contentWidth - displayWidth(header) - 1;
   const payloadInline =
     payload.length > 0 && !payload.includes('\n') && displayWidth(payload) <= inlineRoom;
@@ -240,7 +226,8 @@ export function PermissionButtons({
     () =>
       payloadInline || payload.length === 0
         ? { rows: [], hiddenRows: 0 }
-        : wrapPayload(payload, contentWidth, expanded ? rowBudget : COLLAPSED_COMMAND_ROWS),
+        : // Two columns narrower: the rows sit in a code block padded one column each side.
+          wrapPayload(payload, contentWidth - 2, expanded ? rowBudget : COLLAPSED_COMMAND_ROWS),
     [contentWidth, expanded, payload, payloadInline, rowBudget],
   );
 
@@ -302,7 +289,7 @@ export function PermissionButtons({
     shownFiles.some((file) => (diffRows.get(file.filePath) ?? 0) > diffRowsPerFile);
   const canExpand =
     expanded ||
-    wrappedPayload.hiddenRows > 0 ||
+    (files.length === 0 && wrappedPayload.hiddenRows > 0) ||
     (diffHasMore && expandedDiffRows > collapsedDiffRows);
 
   // Track previous selection for old→new logging without stale closure issues.
@@ -342,13 +329,13 @@ export function PermissionButtons({
 
   useInput(
     (input, key) => {
-      if (key.leftArrow) {
+      if (key.leftArrow || key.upArrow) {
         const prev = selected;
         moveSelection((s) => (s - 1 + BUTTONS.length) % BUTTONS.length);
         uiLog.event('input:Left', { tool: canonical, selected: `${prev}->?` });
         return;
       }
-      if (key.rightArrow) {
+      if (key.rightArrow || key.downArrow) {
         const prev = selected;
         moveSelection((s) => (s + 1) % BUTTONS.length);
         uiLog.event('input:Right', { tool: canonical, selected: `${prev}->?` });
@@ -470,7 +457,7 @@ export function PermissionButtons({
   }
 
   const helpKeys = [
-    '← → select',
+    '↑↓ select',
     'Enter confirm',
     ladder.length > 1 ? 'A scope' : null,
     canExpand ? (expanded ? 'D less' : 'D more') : null,
@@ -479,87 +466,124 @@ export function PermissionButtons({
     'Esc deny',
   ].filter((entry): entry is string => entry !== null);
 
+  // One tone per sheet, carried by the rule's label and nothing else: rose for a
+  // shell command, amber for a write or a request that leaves the machine.
+  const tone =
+    risk === 'shell'
+      ? theme.error
+      : risk === 'write' || risk === 'network'
+        ? theme.warning
+        : theme.text;
+  const title = permissionTitle(canonical, risk, files);
+  const totals = files.reduce(
+    (sum, file) => ({
+      added: sum.added + file.stats.addedLines,
+      removed: sum.removed + file.stats.removedLines,
+    }),
+    { added: 0, removed: 0 },
+  );
+  const counts = files.length > 0 ? ` +${totals.added} −${totals.removed}` : '';
+  // A file's path is said once. It goes on the title row when it fits there;
+  // a longer one takes the rows below, whole, instead of showing cut short on
+  // the title row and again in full underneath.
+  const singlePath = files.length === 1 ? files[0]!.filePath : undefined;
+  const titleRoom = Math.max(8, contentWidth - displayWidth(title) - displayWidth(counts) - 1);
+  const pathOnTitle = singlePath !== undefined && displayWidth(singlePath) <= titleRoom;
+  const titleTarget =
+    singlePath !== undefined
+      ? pathOnTitle
+        ? singlePath
+        : ''
+      : files.length > 1
+        ? `${files.length} files`
+        : payloadInline
+          ? payload
+          : '';
+  // With a diff on the sheet the payload is the path again, or the patch the
+  // diff already draws, so only a path too long for the title row keeps rows.
+  const payloadRows =
+    files.length === 0
+      ? wrappedPayload.rows
+      : singlePath !== undefined && !pathOnTitle
+        ? wrapPayload(singlePath, contentWidth - 2, COLLAPSED_COMMAND_ROWS).rows
+        : [];
+  const choices: Choice[] = BUTTONS.map((button) =>
+    button.value === 'allow'
+      ? { label: risk === 'shell' ? 'Run once' : 'Allow once', detail: 'this call only' }
+      : button.value === 'deny'
+        ? { label: 'Skip', detail: 'the agent is told no' }
+        : { label: 'Always allow', detail: alwaysPatternDisplay },
+  );
+
   return (
-    <Box
-      marginLeft={frame.marginX}
+    <DecisionSheet
+      label="Permission required"
+      tone={tone}
+      meta={riskNote(risk)}
       width={frame.width}
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={
-        risk === 'shell' ? theme.error : risk === 'write' ? theme.warning : theme.permission
-      }
-      paddingX={1}
+      marginX={frame.marginX}
     >
       <Box>
-        <Text bold color={theme.permission}>
-          Permission required ·{' '}
+        <Text bold color={theme.text}>
+          {title}
         </Text>
-        <Text bold color={theme.brand}>
-          {canonical}
-        </Text>
-        {payloadInline ? <Text color={theme.text}> {payload}</Text> : null}
+        {titleTarget ? (
+          <Text color={theme.text}> {truncateDisplay(titleTarget, titleRoom)}</Text>
+        ) : null}
+        {counts ? (
+          <Text>
+            <Text color={theme.success}> +{totals.added}</Text>
+            <Text color={theme.error}> −{totals.removed}</Text>
+          </Text>
+        ) : null}
       </Box>
-      {wrappedPayload.rows.map((row, index) => (
-        <Box key={index}>
-          <Text color={theme.text}>{row}</Text>
-        </Box>
-      ))}
-      {wrappedPayload.hiddenRows > 0 ? (
-        <Box>
-          <Text color={theme.subtle} dimColor>
-            {truncateDisplay(
-              `… ${wrappedPayload.hiddenRows} more ${wrappedPayload.hiddenRows === 1 ? 'row' : 'rows'}${expanded ? '' : ' · D shows all'}`,
-              contentWidth,
-            )}
-          </Text>
+      {payloadRows.length > 0 ? (
+        // A command too long for the title row reads as code, not as prose.
+        <Box flexDirection="column" backgroundColor={theme.mdCodeBackground} paddingX={1}>
+          {payloadRows.map((row, index) => (
+            <Text key={index} color={theme.mdCodeText}>
+              {row}
+            </Text>
+          ))}
         </Box>
       ) : null}
-      {hint ? (
-        <Box>
-          <Text color={risk === 'shell' ? theme.error : theme.warning}>{hint}</Text>
-        </Box>
+      {files.length === 0 && wrappedPayload.hiddenRows > 0 ? (
+        <Text color={theme.inactive}>
+          {truncateDisplay(
+            `… ${wrappedPayload.hiddenRows} more ${wrappedPayload.hiddenRows === 1 ? 'row' : 'rows'}${expanded ? '' : ' · D shows all'}`,
+            contentWidth,
+          )}
+        </Text>
       ) : null}
-      {previewLoading ? (
-        <Box>
-          <Text color={theme.subtle} dimColor>
-            Computing diff…
-          </Text>
-        </Box>
-      ) : null}
+      {previewLoading ? <Text color={theme.inactive}>Computing diff…</Text> : null}
       {preview?.error ? (
-        <Box>
-          <Text color={theme.warning}>
-            {truncateDisplay(`Cannot preview: ${preview.error}`, contentWidth)}
-          </Text>
-        </Box>
+        <Text color={theme.warning}>
+          {truncateDisplay(`Cannot preview: ${preview.error}`, contentWidth)}
+        </Text>
       ) : null}
       {files.length > 0 ? (
         <Box flexDirection="column">
           {shownFiles.map((file) => {
             const noChange = file.diff.length === 0 ? ' no textual change' : '';
-            const counts = ` +${file.stats.addedLines} −${file.stats.removedLines}`;
-            // The path takes what the row's other segments leave it.
+            const fileCounts = ` +${file.stats.addedLines} −${file.stats.removedLines}`;
             const pathRoom =
-              contentWidth - displayWidth(`${file.kind} `) - displayWidth(counts + noChange);
+              contentWidth - displayWidth(`${file.kind} `) - displayWidth(fileCounts + noChange);
             return (
               <Box key={file.filePath} flexDirection="column">
-                <Box>
-                  <Text color={theme.subtle} dimColor>
-                    {file.kind}{' '}
-                  </Text>
-                  <Text color={theme.text}>
-                    {truncateDisplay(file.filePath, Math.max(8, pathRoom))}
-                  </Text>
-                  <Text> </Text>
-                  <Text color={theme.success}>+{file.stats.addedLines}</Text>
-                  <Text> </Text>
-                  <Text color={theme.error}>−{file.stats.removedLines}</Text>
-                  {noChange ? (
-                    <Text color={theme.subtle} dimColor>
-                      {noChange}
+                {/* One file is already named by the title; several are named here. */}
+                {files.length > 1 ? (
+                  <Box>
+                    <Text color={theme.inactive}>{file.kind} </Text>
+                    <Text color={theme.text}>
+                      {truncateDisplay(file.filePath, Math.max(8, pathRoom))}
                     </Text>
-                  ) : null}
-                </Box>
+                    <Text color={theme.success}> +{file.stats.addedLines}</Text>
+                    <Text color={theme.error}> −{file.stats.removedLines}</Text>
+                    {noChange ? <Text color={theme.inactive}>{noChange}</Text> : null}
+                  </Box>
+                ) : noChange ? (
+                  <Text color={theme.inactive}>{noChange.trim()}</Text>
+                ) : null}
                 {file.diff.length > 0 ? (
                   <DiffBlock
                     output={file.diff}
@@ -574,55 +598,49 @@ export function PermissionButtons({
             );
           })}
           {hiddenFiles.length > 0 ? (
-            <Box>
-              <Text color={theme.subtle} dimColor>
-                {truncateDisplay(
-                  `… ${hiddenFiles.length} more ${hiddenFiles.length === 1 ? 'file' : 'files'} · ${previewSummary(hiddenFiles)}${canExpand && !expanded ? ' · D shows more' : ''}`,
-                  contentWidth,
-                )}
-              </Text>
-            </Box>
-          ) : null}
-          {files.length > 1 ? (
-            <Box>
-              <Text color={theme.subtle} dimColor>
-                {files.length} files · {previewSummary(files)}
-              </Text>
-            </Box>
+            <Text color={theme.inactive}>
+              {truncateDisplay(
+                `… ${hiddenFiles.length} more ${hiddenFiles.length === 1 ? 'file' : 'files'} · ${previewSummary(hiddenFiles)}${canExpand && !expanded ? ' · D shows more' : ''}`,
+                contentWidth,
+              )}
+            </Text>
           ) : null}
         </Box>
       ) : null}
-      {scopeHint ? (
-        <Box>
-          <Text color={theme.warning}>{scopeHint}</Text>
-        </Box>
-      ) : null}
-      <Box>
-        {BUTTONS.map((btn, i) => {
-          const isSelected = i === selected;
-          const btnColor = theme[btn.colorKey];
-          const label = btn.value === 'always' ? `${btn.label} ${alwaysPatternDisplay}` : btn.label;
-          return (
-            <Box key={btn.label} marginRight={2}>
-              <Text
-                backgroundColor={isSelected ? theme.surfaceActive : undefined}
-                color={isSelected ? theme.selectionText : btnColor}
-                bold={isSelected}
-              >
-                {isSelected ? `${SELECTION_MARKER} ` : '  '}
-                {label}
-              </Text>
-            </Box>
-          );
-        })}
+      <Box flexDirection="column" marginTop={1}>
+        <ChoiceList choices={choices} selected={selected} width={contentWidth} numbered={false} />
       </Box>
+      {scopeHint ? <Text color={theme.warning}>{scopeHint}</Text> : null}
       {density.showOptionalHelp ? (
-        <Box>
-          <Text color={theme.subtle} dimColor>
-            {helpKeys.join(' · ')}
-          </Text>
+        <Box marginTop={1}>
+          <Text color={theme.inactive}>{helpKeys.join(' · ')}</Text>
         </Box>
       ) : null}
-    </Box>
+    </DecisionSheet>
   );
+}
+
+/** The action a permission asks for, as the verb that opens its title row. */
+function permissionTitle(
+  canonical: string,
+  risk: ReturnType<typeof toolRiskLevel>,
+  files: readonly MutationPreviewFile[],
+): string {
+  if (files.length === 1) {
+    const kind = files[0]!.kind;
+    return kind === 'create' ? 'Create' : kind === 'delete' ? 'Delete' : 'Edit';
+  }
+  if (files.length > 1) return 'Edit';
+  if (risk === 'shell') return 'Run';
+  if (canonical === 'WebFetch') return 'Fetch';
+  if (canonical === 'WebSearch') return 'Search';
+  return canonical;
+}
+
+/** The short note a permission's rule carries about what kind of access it is. */
+function riskNote(risk: ReturnType<typeof toolRiskLevel>): string {
+  if (risk === 'shell') return 'shell command';
+  if (risk === 'write') return 'file change';
+  if (risk === 'network') return 'network request';
+  return '';
 }

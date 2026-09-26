@@ -116,7 +116,7 @@ describe('RewindPicker', () => {
     view.rerender(
       <RewindPicker targets={targets} isRewinding onAction={vi.fn()} onCancel={onCancel} />,
     );
-    expect(view.lastFrame()).toContain('Restoring...');
+    expect(view.lastFrame()).toContain('Restoring…');
 
     view.rerender(
       <RewindPicker targets={[]} isRewinding={false} onAction={vi.fn()} onCancel={onCancel} />,

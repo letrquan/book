@@ -43,7 +43,6 @@ describe('CommandMenu', () => {
           visible
           terminalWidth={48}
           maxRows={3}
-          reducedMotion
         />,
       ),
     );
@@ -51,7 +50,9 @@ describe('CommandMenu', () => {
     const output = stripAnsi(view.lastFrame());
     expect(output).toContain('Commands');
     expect(output).toContain('cost');
-    expect(output).toContain('… 3 more, type to filter');
+    // The hidden rows are counted in the rule's note rather than a footer row.
+    expect(output).toContain('6 commands · type to filter');
+    expect(output).not.toContain('more');
   });
 
   it('keeps rendered lines within the requested width', () => {
@@ -66,7 +67,6 @@ describe('CommandMenu', () => {
           terminalWidth={width}
           maxRows={4}
           compact
-          reducedMotion
         />,
       ),
     );
@@ -88,7 +88,6 @@ describe('composeCommandRow', () => {
     selected: false,
     width: 76,
     compact: false,
-    shimmer: false,
     screenReader: false,
     showBadge: false,
   };
@@ -99,7 +98,7 @@ describe('composeCommandRow', () => {
     const row = composeCommandRow(item, base);
     expect(row.name).toBe('/agent');
     expect(row.hint).toBe('');
-    expect(row.desc).toBe(' — Inspect or steer a managed agent');
+    expect(row.desc).toBe('  Inspect or steer a managed agent');
   });
 
   it('shows the syntax only on the row the user has landed on', () => {
@@ -130,7 +129,59 @@ describe('composeCommandRow', () => {
 
   it('marks the selected row and indents the rest to the same column', () => {
     expect(composeCommandRow(item, { ...base, selected: true }).marker).toBe('› ');
-    expect(composeCommandRow(item, { ...base, selected: true, shimmer: true }).marker).toBe('▸ ');
     expect(composeCommandRow(item, base).marker).toBe('  ');
+  });
+});
+
+describe('command menu name column', () => {
+  const mixed: CommandItem[] = [
+    { name: 'clear', hint: '', desc: 'Clear conversation', category: 'builtin' },
+    { name: 'deploy-to-staging', hint: '', desc: 'Ship the branch', category: 'project' },
+    { name: 'cost', hint: '', desc: 'Show cost', category: 'builtin' },
+    { name: 'review', hint: '', desc: 'Review current git diff', category: 'builtin' },
+    { name: 'lint', hint: '', desc: 'Run the linter', category: 'project' },
+  ];
+  const descColumn = (frame: string, desc: string) =>
+    frame
+      .split('\n')
+      .find((line) => line.includes(desc))!
+      .indexOf(desc);
+
+  it('lines descriptions up when badges mark a mixed list', () => {
+    // The column measured names only, so with `[Built-in]` / `[Custom]` after
+    // every name each description started somewhere else.
+    const view = render(
+      withTheme(
+        <CommandMenu items={mixed} filterText="" selectedIndex={0} visible terminalWidth={100} />,
+      ),
+    );
+    const frame = stripAnsi(view.lastFrame());
+    const columns = [
+      'Show cost',
+      'Review current git diff',
+      'Run the linter',
+      'Ship the branch',
+    ].map((desc) => descColumn(frame, desc));
+    expect(new Set(columns).size).toBe(1);
+  });
+
+  it('holds the column still while the selection scrolls the window', () => {
+    const at = (selectedIndex: number) =>
+      stripAnsi(
+        render(
+          withTheme(
+            <CommandMenu
+              items={mixed}
+              filterText=""
+              selectedIndex={selectedIndex}
+              visible
+              terminalWidth={100}
+              maxRows={2}
+            />,
+          ),
+        ).lastFrame(),
+      );
+    // `cost` is on screen in both windows; the long custom name is in only one.
+    expect(descColumn(at(2), 'Show cost')).toBe(descColumn(at(3), 'Show cost'));
   });
 });

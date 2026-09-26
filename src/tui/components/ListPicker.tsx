@@ -4,7 +4,7 @@ import { useEffect, useMemo } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import { useDensityMetrics } from '../density.js';
-import { PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
+import { SoftPanel } from './chrome.js';
 
 /**
  * One row. The caller formats `label` — padding, columns, whatever the list
@@ -185,8 +185,12 @@ export function ListPicker({
   const hidden = visibleItems.length - window.length;
 
   return (
-    <SoftPanel tone="brand" width={width} marginX={marginX}>
-      <PanelTitle>{title}</PanelTitle>
+    <SoftPanel
+      title={title}
+      meta={visibleItems.length > maxVisible ? `${visibleItems.length} items` : undefined}
+      width={width}
+      marginX={marginX}
+    >
       {subtitle ? <Text color={theme.subtle}>{subtitle}</Text> : null}
       {filterable && filter ? <Text color={theme.subtle}>filter: {filter}</Text> : null}
       <Box flexDirection="column" marginTop={1}>
@@ -198,28 +202,27 @@ export function ListPicker({
             const isSelected = index === selected;
             return (
               <Box key={item.key} flexDirection="column">
-                <SelectionRow selected={isSelected} width={width ? width - 4 : undefined}>
+                {/* A rubric cursor, the label in ink, its note quieter: no bar. */}
+                <Box width={width ? width - 4 : undefined}>
+                  <Text color={theme.brand}>{isSelected ? '› ' : '  '}</Text>
                   <Text
                     color={
                       item.disabled
-                        ? theme.subtle
+                        ? theme.inactive
                         : isSelected
                           ? theme.selectionText
-                          : item.accent
-                            ? theme.brand
-                            : item.muted
-                              ? theme.subtle
-                              : theme.text
+                          : item.muted
+                            ? theme.subtle
+                            : theme.text
                     }
                     bold={(isSelected || item.accent) && !item.disabled}
-                    dimColor={item.disabled}
                   >
-                    {isSelected ? '›' : ' '} {item.label}
-                    {item.note ? `  ${item.note}` : ''}
+                    {item.label}
                   </Text>
-                </SelectionRow>
+                  {item.note ? <Text color={theme.inactive}>{`  ${item.note}`}</Text> : null}
+                </Box>
                 {isSelected && item.detail ? (
-                  <Text color={theme.subtle} dimColor>
+                  <Text color={theme.inactive}>
                     {'  '}
                     {item.detail}
                   </Text>
@@ -228,12 +231,12 @@ export function ListPicker({
             );
           })
         )}
-        {hidden > 0 ? <Text color={theme.subtle}>+{hidden} more</Text> : null}
+        {hidden > 0 ? <Text color={theme.inactive}>+{hidden} more</Text> : null}
       </Box>
-      {status ? <Text color={theme.brand}>{status}</Text> : null}
+      {status ? <Text color={theme.subtle}>{status}</Text> : null}
       {error ? <Text color={theme.error}>✕ {error}</Text> : null}
       {density.showOptionalHelp ? (
-        <Text color={theme.subtle} dimColor>
+        <Text color={theme.inactive}>
           {[
             '↑↓ select',
             visibleItems.length > maxVisible ? 'PgUp/PgDn page' : undefined,

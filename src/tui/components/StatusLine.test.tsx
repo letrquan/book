@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import chalk from 'chalk';
 import { APPLE_THEME, DEFAULT_THEME, ThemeContext } from '../theme.js';
-import { buildColoredSegments, StatusLine } from './StatusLine.js';
+import { buildColoredSegments, romanFolio, StatusLine } from './StatusLine.js';
 import { displayWidth } from './word-wrap.js';
 
 function stripAnsi(value: string | undefined): string {
@@ -406,9 +406,11 @@ describe('StatusLine colour budget', () => {
     expect(runFor('plan', frame)).toBe(sgrFor(APPLE_THEME.modePlan));
   });
 
-  it('marks a dirty tree in the warning colour', () => {
+  it('marks a dirty tree with an asterisk, not the warning colour', () => {
+    // A dirty tree is the normal state of a working copy, not an alarm; the
+    // warning hue beside a non-default mode read as two alerts at once.
     const frame = colouredFrame({ gitBranch: 'main', gitStatus: '+2 ~1' });
-    expect(runFor('main*', frame)).toBe(sgrFor(APPLE_THEME.warning));
+    expect(runFor('main*', frame)).toBe(sgrFor(APPLE_THEME.subtle));
   });
 });
 
@@ -432,5 +434,48 @@ describe('StatusLine narrow packing', () => {
     );
 
     expect(stripAnsi(view.lastFrame())).toContain('default');
+  });
+});
+
+describe('StatusLine folio', () => {
+  it('numbers pages the way front matter does', () => {
+    expect(romanFolio(0)).toBe('');
+    expect(romanFolio(1)).toBe('i');
+    expect(romanFolio(4)).toBe('iv');
+    expect(romanFolio(9)).toBe('ix');
+    expect(romanFolio(14)).toBe('xiv');
+    expect(romanFolio(49)).toBe('xlix');
+    expect(romanFolio(1994)).toBe('mcmxciv');
+  });
+
+  const folioRow = (turnCount: number, terminalWidth: number) => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="claude-opus-5"
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          gitBranch="main"
+          gitStatus="✓"
+          turnCount={turnCount}
+          terminalWidth={terminalWidth}
+          reducedMotion
+        />,
+      ),
+    );
+    return stripAnsi(view.lastFrame());
+  };
+
+  it('sets the folio at the right edge of the row', () => {
+    const row = folioRow(3, 80);
+    expect(row.trimEnd().endsWith(' iii')).toBe(true);
+    // The row keeps the terminal's last column empty, like every other row.
+    expect(displayWidth(row.trimEnd())).toBe(79);
+  });
+
+  it('leaves the folio out before the first turn and on a narrow row', () => {
+    expect(folioRow(0, 80)).not.toMatch(/ i+$/);
+    expect(folioRow(3, 36)).not.toContain('iii');
   });
 });

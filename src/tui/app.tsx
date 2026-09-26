@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
-import { panelGrid } from './layout.js';
+import { panelContentWidth, panelGrid } from './layout.js';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { QueuedInputPreview } from './components/QueuedInputPreview.js';
@@ -29,6 +29,8 @@ import { SessionPicker } from './components/SessionPicker.js';
 import { RewindPicker } from './components/RewindPicker.js';
 import { TranscriptView } from './components/TranscriptView.js';
 import { PermissionButtons } from './components/PermissionButtons.js';
+import { HelpPanel } from './components/HelpPanel.js';
+import { KeyValueList, SoftPanel } from './components/chrome.js';
 import { PlanApprovalActions, PlanApprovalDetails } from './components/PlanApprovalButtons.js';
 import { AskUserQuestionWizard } from './components/AskUserQuestionWizard.js';
 import { McpElicitationForm } from './components/McpElicitationForm.js';
@@ -47,7 +49,8 @@ import { inlineCode } from './markdown-inline.js';
 import {
   ThemeContext,
   resolveTheme,
-  APPLE_THEME,
+  DEFAULT_THEME_NAME,
+  RUBRIC_THEME,
   type ThemeTokens,
   type ResolvedTheme,
 } from './theme.js';
@@ -96,6 +99,7 @@ import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands
 import type { InteractiveAssets } from './interactive-assets.js';
 import { resolveContextWindow } from '../models.js';
 import { wordWrap } from './components/word-wrap.js';
+import { countWrittenTurns } from './components/transcript-messages.js';
 import {
   createQueuedInput,
   enqueueQueuedInput,
@@ -240,6 +244,11 @@ interface AppProps {
   };
   redrawViewport?: () => void;
 }
+
+const QUEUED_SEND_NOTICE = 'Sending queued follow-up...';
+
+/** One empty list, so a pending title page does not hand ChatPanel a new array each render. */
+const NO_RECENT_SESSIONS: readonly never[] = [];
 
 /**
  * Full-screen interactive TUI with an application-owned transcript viewport.
@@ -468,6 +477,10 @@ export function App({
   const [queuedInputs, setQueuedInputs] = useState<QueuedInput[]>([]);
   const [editingQueuedInput, setEditingQueuedInput] = useState<QueuedInput | undefined>(undefined);
   const [queueNotice, setQueueNotice] = useState<string | undefined>(undefined);
+  /** Drops the "Sending…" notice without wiping a notice something else set since. */
+  const clearQueuedSendNotice = useCallback(() => {
+    setQueueNotice((current) => (current === QUEUED_SEND_NOTICE ? undefined : current));
+  }, []);
   const [copyNotice, setCopyNotice] = useState<string | undefined>(undefined);
   const copyNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleCopiedNotice = useCallback((message: string) => {
@@ -543,14 +556,44 @@ export function App({
   const [currentTheme] = useState<ResolvedTheme>(
     () =>
       interactiveAssets?.initialTheme ??
-      resolveTheme(config.workspace, config.settings.theme ?? 'apple') ?? {
-        preference: 'apple',
-        resolvedName: 'apple',
-        tokens: APPLE_THEME,
+      resolveTheme(config.workspace, config.settings.theme ?? DEFAULT_THEME_NAME) ?? {
+        preference: DEFAULT_THEME_NAME,
+        resolvedName: DEFAULT_THEME_NAME,
+        tokens: RUBRIC_THEME,
       },
   );
   const { tasks, addTask, updateTaskStatus, removeTask, clearTasks } = useTasks();
   const theme = currentTheme.tokens;
+  // The title page's contents: this workspace's recent sessions, newest first.
+  // Only read while the transcript is empty, which is the only time the title
+  // page shows; the listing comes from the store's in-memory index.
+  const transcriptEmpty = messages.length === 0;
+  // The title page's contents. Listing reads the session index synchronously,
+  // and a stale index loads every session file, so it waits for the first
+  // paint: someone with hundreds of sessions sees the title page at once and
+  // its chapters a moment later, instead of a blank terminal until they load.
+  // `undefined` until listed: an empty list means a genuine first run, and the
+  // title page must not show the getting-started contents while it waits.
+  const [recentSessions, setRecentSessions] = useState<ReturnType<typeof listSessions> | undefined>(
+    undefined,
+  );
+  useEffect(() => {
+    if (!transcriptEmpty) {
+      setRecentSessions(undefined);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setRecentSessions(
+        listSessions()
+          .filter((meta) => meta.id !== sessionId && meta.messageCount > 0)
+          .sort((left, right) => right.updatedAt - left.updatedAt)
+          .slice(0, 5),
+      );
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [listSessions, sessionId, transcriptEmpty]);
+  // The status line's folio: one page per turn you have written.
+  const turnCount = useMemo(() => countWrittenTurns(messages), [messages]);
   const { exit: exitApp } = useApp();
   // Set once an exit starts. SessionEnd can take seconds, and a press meanwhile must neither
   // arm the window again nor start a second exit: the session-end guard returns at once for a
@@ -1196,7 +1239,7 @@ export function App({
     dispatchingQueuedIdRef.current = item.id;
     const interruptEpoch = queueInterruptEpochRef.current;
     replaceQueuedInputs(queuedInputsRef.current.slice(1));
-    setQueueNotice('Sending queued follow-up...');
+    setQueueNotice(QUEUED_SEND_NOTICE);
 
     void (async () => {
       try {
@@ -1223,7 +1266,7 @@ export function App({
           queueDrainPausedRef.current = true;
           setQueueNotice('Queued send failed. Automatic queue dispatch is paused.');
         } else {
-          setQueueNotice(undefined);
+          clearQueuedSendNotice();
         }
       } catch (sendError) {
         replaceQueuedInputs([item, ...queuedInputsRef.current]);
@@ -1239,7 +1282,22 @@ export function App({
         setQueueDrainTick((tick) => tick + 1);
       }
     })();
-  }, [dispatchAgentSend, queueDrainBlocked, queuedInputs.length, replaceQueuedInputs, sessionId]);
+  }, [
+    clearQueuedSendNotice,
+    dispatchAgentSend,
+    queueDrainBlocked,
+    queuedInputs.length,
+    replaceQueuedInputs,
+    sessionId,
+  ]);
+
+  // `send` resolves when the whole turn ends, so a notice cleared only there said
+  // "Sending…" under a reply that had been running for a minute. The follow-up
+  // has been sent once it is on screen, which is the moment the turn starts
+  // thinking; before that (a pre-turn compaction) the notice still holds.
+  useEffect(() => {
+    if (isThinking) clearQueuedSendNotice();
+  }, [clearQueuedSendNotice, isThinking]);
 
   useDebugMount(uiLog, {
     workspace: config.workspace,
@@ -1366,6 +1424,14 @@ export function App({
         setShowAllDetailedOutput(true);
         return;
       }
+    }
+
+    // An open composer menu owns Esc; InputBar closes it. Ink hands the same key
+    // to this handler too, and acting on it here as well cancelled the running
+    // turn, or dropped the queued input being edited, behind the menu.
+    if (key.escape && composerMenuOpenRef.current) {
+      uiLog.event('input:Escape', { action: 'close-composer-menu' });
+      return;
     }
 
     if (key.escape && detailTaskPickerOpen) {
@@ -1543,9 +1609,21 @@ export function App({
   const selectedManagedAgentLiveRows = selectedManagedAgentLiveText
     ? wordWrap(selectedManagedAgentLiveText, Math.max(1, termWidth - 2)).split('\n').length
     : 0;
+  // Bumped by the composer when its height may have changed (a menu opened, the
+  // draft gained a line). The footer shares the screen with the transcript, so
+  // the transcript's viewport must be measured again.
+  const [footerLayoutRevision, setFooterLayoutRevision] = useState(0);
+  const bumpFooterLayout = useCallback(() => setFooterLayoutRevision((value) => value + 1), []);
+  // Whether a composer menu is open, as of the last commit. Read by the Esc
+  // handler below, which must not also act on the Esc that closes a menu.
+  const composerMenuOpenRef = useRef(false);
+  const trackComposerMenu = useCallback((open: boolean) => {
+    composerMenuOpenRef.current = open;
+  }, []);
   const transcriptLayoutRevision = useMemo(
     () =>
       JSON.stringify([
+        footerLayoutRevision,
         error ?? '',
         streamingMessageId ?? '',
         transcriptMode,
@@ -1574,6 +1652,7 @@ export function App({
         pendingPlanApproval?.plan ?? '',
       ]),
     [
+      footerLayoutRevision,
       error,
       streamingMessageId,
       transcriptMode,
@@ -2340,6 +2419,8 @@ export function App({
                   showThinking={liveConfig.settings.ui.showThinking}
                   terminalHeight={termHeight}
                   workspace={config.workspace}
+                  recentSessions={recentSessions ?? NO_RECENT_SESSIONS}
+                  contentsPending={recentSessions === undefined}
                   model={liveConfig.modelSelection ?? liveConfig.model}
                   mode={mode}
                   commandCount={commands.length}
@@ -2354,192 +2435,50 @@ export function App({
               )}
               {showAgentPlan && <AgentTodoList todos={agentTodos} terminalWidth={termWidth} />}
               {showTasks && (
-                <TaskList tasks={tasks} onUpdateStatus={updateTaskStatus} onRemove={removeTask} />
+                <TaskList
+                  tasks={tasks}
+                  width={panelGrid(termWidth).width}
+                  onUpdateStatus={updateTaskStatus}
+                  onRemove={removeTask}
+                />
               )}
               {showHelp && (
-                <Box
-                  flexDirection="column"
-                  borderStyle="round"
-                  borderColor={theme.border}
-                  paddingX={1}
-                  width={panelGrid(termWidth).width}
-                >
-                  <PanelHeading title="Slash Commands" theme={theme} />
-                  <Box flexDirection="column">
-                    <HelpRow label="/help" description="Toggle this help" theme={theme} />
-                    <HelpRow label="/exit" description="Exit book" theme={theme} />
-                    <HelpRow
-                      label="/clear [name]"
-                      description="Start new; save previous (/new, /reset)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/resume [id|name]"
-                      description="Resume a saved conversation"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/compact [focus]"
-                      description="Summarize conversation (optional focus)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/rewind"
-                      description="Restore conversation, code, or both"
-                      theme={theme}
-                    />
-                    <HelpRow label="/task <subject>" description="Add a task" theme={theme} />
-                    <HelpRow
-                      label="/tasks"
-                      description="Manage background subagents"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/agents"
-                      description="Show subagent configuration guidance"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/model [name]"
-                      description="Switch models and manage BYOK providers"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/providers"
-                      description="Add providers; Alt+D removes selected local BYOK"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/effort [low|medium|high|xhigh|max]"
-                      description="Set thinking effort"
-                      theme={theme}
-                    />
-                    <HelpRow label="/config" description="Show configuration" theme={theme} />
-                    <HelpRow label="/diff" description="Show git diff" theme={theme} />
-                    <HelpRow label="/status" description="Session status" theme={theme} />
-                    <HelpRow label="/memory" description="Manage memory" theme={theme} />
-                    <HelpRow label="/permissions" description="Permission rules" theme={theme} />
-                    <HelpRow label="/cost" description="Token usage/cost" theme={theme} />
-                    <HelpRow label="/skills" description="Manage skills" theme={theme} />
-                    <HelpRow label="/init" description="Initialize CLAUDE.md" theme={theme} />
-                    <HelpRow
-                      label="/reload-skills"
-                      description="Reload commands and skills"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/export [file]"
-                      description="Export conversation"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/usage"
-                      description="Session cost & tokens (/stats)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/context"
-                      description="What fills the context window"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/review [scope]"
-                      description="Review current git diff"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/security-review [scope]"
-                      description="Security audit of the diff"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/release-notes"
-                      description="Version + changelog"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/feedback [note]"
-                      description="Save a bug-report snapshot"
-                      theme={theme}
-                    />
-                    {commands.length > 0 && (
-                      <>
-                        <Text color={theme.subtle} dimColor>
-                          ─── Custom (.book/commands/) ───
-                        </Text>
-                        {commands.map((cmd) => (
-                          <HelpRow
-                            key={cmd.name}
-                            label={`/${cmd.name}${cmd.argumentHint ? ` ${cmd.argumentHint}` : ''}`}
-                            description={cmd.description}
-                            theme={theme}
-                          />
-                        ))}
-                      </>
-                    )}
-                  </Box>
-                </Box>
+                <HelpPanel width={panelGrid(termWidth).width} customCommands={commands} />
               )}
               {showStatus && (
-                <Box
-                  flexDirection="column"
-                  borderStyle="round"
-                  borderColor={theme.border}
-                  paddingX={1}
-                  width={panelGrid(termWidth).width}
-                >
-                  <PanelHeading title="Session Status" theme={theme} />
-                  <Box flexDirection="column">
-                    <HelpRow
-                      label="Model"
-                      description={liveConfig.modelSelection ?? liveConfig.model}
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Auth"
-                      description={liveConfig.apiKey ? 'API key' : 'none'}
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Session"
-                      description={displaySessionName(sessionName)}
-                      theme={theme}
-                    />
-                    <HelpRow label="Workspace" description={config.workspace} theme={theme} />
-                    <HelpRow
-                      label="Max Tokens"
-                      description={String(config.maxTokens)}
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Max Turns"
-                      description={
-                        config.maxTurns == null || config.maxTurns <= 0
-                          ? 'unlimited'
-                          : String(config.maxTurns)
-                      }
-                      theme={theme}
-                    />
-                    <HelpRow label="Mode" description={mode} theme={theme} />
-                    <HelpRow label="Tokens Used" description={`${tokenCount}`} theme={theme} />
-                    <HelpRow label="Turn" description={`${currentTurn}`} theme={theme} />
-                    <HelpRow
-                      label="Tasks"
-                      description={`${tasks.length} (${tasks.filter((t) => t.status === 'in_progress').length} active)`}
-                      theme={theme}
-                    />
-                  </Box>
-                </Box>
+                <SoftPanel title="Session" meta="Esc to close" width={panelGrid(termWidth).width}>
+                  <KeyValueList
+                    width={panelContentWidth(termWidth)}
+                    rows={[
+                      { key: 'model', value: liveConfig.modelSelection ?? liveConfig.model },
+                      { key: 'auth', value: liveConfig.apiKey ? 'API key' : 'none' },
+                      { key: 'session', value: displaySessionName(sessionName) },
+                      { key: 'workspace', value: config.workspace },
+                      { key: 'mode', value: mode },
+                      { key: 'turn', value: `${currentTurn}` },
+                      { key: 'tokens used', value: `${tokenCount}` },
+                      { key: 'max tokens', value: String(config.maxTokens) },
+                      {
+                        key: 'max turns',
+                        value:
+                          config.maxTurns == null || config.maxTurns <= 0
+                            ? 'unlimited'
+                            : String(config.maxTurns),
+                      },
+                      {
+                        key: 'tasks',
+                        value: `${tasks.length} (${tasks.filter((t) => t.status === 'in_progress').length} active)`,
+                      },
+                    ]}
+                  />
+                </SoftPanel>
               )}
               {showPermissions && (
-                <Box
-                  flexDirection="column"
-                  borderStyle="round"
-                  borderColor={theme.border}
-                  paddingX={1}
+                <SoftPanel
+                  title="Permissions"
+                  meta="Esc to close"
                   width={panelGrid(termWidth).width}
                 >
-                  <PanelHeading title="Permission Mode" theme={theme} />
                   <PermissionsPanel
                     mode={mode}
                     permissions={liveConfig.settings.permissions}
@@ -2548,7 +2487,7 @@ export function App({
                     terminalWidth={termWidth}
                     screenReader={screenReader}
                   />
-                </Box>
+                </SoftPanel>
               )}
               {pendingPlanApproval ? (
                 <PlanApprovalDetails
@@ -2558,107 +2497,17 @@ export function App({
                 />
               ) : null}
               {showShortcuts && (
-                <Box
-                  flexDirection="column"
-                  borderStyle="round"
-                  borderColor={theme.border}
-                  paddingX={1}
+                <SoftPanel
+                  title="Keyboard shortcuts"
+                  meta="Esc to close"
                   width={panelGrid(termWidth).width}
                 >
-                  <PanelHeading title="Keyboard Shortcuts" theme={theme} />
-                  <Box flexDirection="column">
-                    <HelpRow
-                      label="Esc"
-                      description="Deny a prompt, cancel the turn, or close this panel"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+C"
-                      description="Cancel current turn, clear the composer, or press twice idle to exit"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+T"
-                      description="Toggle the main agent checklist (not background tasks)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/tasks"
-                      description="Focus background tasks; ↑↓ select, Enter open, x stop"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+O"
-                      description="Toggle detailed transcript"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+E"
-                      description="Expand current tool output (empty prompt)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Click"
-                      description="Expand or collapse a tool summary"
-                      theme={theme}
-                    />
-                    <HelpRow label="Ctrl+L" description="Redraw screen" theme={theme} />
-                    <HelpRow label="Alt+M" description="Cycle permission mode" theme={theme} />
-                    <HelpRow label="Alt+P" description="Open model picker" theme={theme} />
-                    <HelpRow label="Alt+V" description="Attach clipboard image" theme={theme} />
-                    <HelpRow label="Up/Down" description="Navigate input history" theme={theme} />
-                    <HelpRow label="Wheel" description="Scroll transcript" theme={theme} />
-                    <HelpRow
-                      label="Drag"
-                      description="Select visible text and copy on release"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Shift+drag"
-                      description="Use terminal-native text selection"
-                      theme={theme}
-                    />
-                    <HelpRow label="PgUp/PgDn" description="Scroll transcript" theme={theme} />
-                    <HelpRow
-                      label="Ctrl+U/Ctrl+D"
-                      description="Scroll transcript half a page (empty prompt)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+Home/End"
-                      description="Jump to transcript start/latest"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+J / Shift+Enter"
-                      description="Insert newline (multiline)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+A / Ctrl+E"
-                      description="Move to start / end of the prompt"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+W / Alt+Bksp"
-                      description="Delete the previous word"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+U / Ctrl+K"
-                      description="Delete to start / end of the prompt"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+Y"
-                      description="Put back the last deletion"
-                      theme={theme}
-                    />
-                    <HelpRow label="Ctrl+/" description="Toggle this reference" theme={theme} />
-                    <HelpRow label="@path" description="Expand file contents" theme={theme} />
-                    <HelpRow label="!cmd" description="Run shell command" theme={theme} />
-                  </Box>
-                </Box>
+                  <KeyValueList
+                    keys="ink"
+                    rows={SHORTCUT_ROWS}
+                    width={panelContentWidth(termWidth)}
+                  />
+                </SoftPanel>
               )}
             </Box>
           </TranscriptView>
@@ -2744,6 +2593,7 @@ export function App({
             ) : null}
             {showSessionPicker ? (
               <SessionPicker
+                width={panelGrid(termWidth).width}
                 sessions={listSessions()}
                 currentSessionId={sessionId}
                 onPick={(selected) => {
@@ -2758,6 +2608,7 @@ export function App({
             ) : null}
             {showRewindPicker ? (
               <RewindPicker
+                terminalWidth={termWidth}
                 targets={getRewindTargets()}
                 isRewinding={isRewinding}
                 onAction={async (target, action) => {
@@ -2938,6 +2789,7 @@ export function App({
             ) : null}
             {showModelPicker ? (
               <ModelPicker
+                terminalWidth={termWidth}
                 title={selectingCompactModel ? 'Choose compact model' : undefined}
                 options={modelOptions}
                 currentModel={modelPickerSelection}
@@ -3029,6 +2881,7 @@ export function App({
             ) : null}
             {showEffortPicker && effortLevels ? (
               <EffortPicker
+                width={panelGrid(termWidth).width}
                 current={liveConfig.effort}
                 availableLevels={effortLevels}
                 onSelect={(level) => {
@@ -3047,6 +2900,7 @@ export function App({
             ) : null}
             {showPermissionModePicker ? (
               <PermissionModePicker
+                width={panelGrid(termWidth).width}
                 current={resolvePermissionMode(liveConfig.settings)}
                 availableModes={
                   [
@@ -3082,6 +2936,7 @@ export function App({
                 onApprove={() => mcp.approve(pendingMcpApproval.name)}
                 onReject={() => mcp.reject(pendingMcpApproval.name)}
                 onDefer={() => mcp.defer(pendingMcpApproval.name)}
+                terminalWidth={termWidth}
               />
             ) : null}
           </Box>
@@ -3117,24 +2972,35 @@ export function App({
             </Text>
           ) : null}
 
-          <WorkingIndicator
-            isThinking={isThinking}
-            isCompacting={isCompacting}
-            compactTrigger={compactUi?.trigger}
-            messages={messages}
-            streamingMessageId={streamingMessageId}
-            pendingPermission={pendingPermission}
-            pendingPlanApproval={pendingPlanApproval}
-            pendingUserQuestion={pendingUserQuestion}
-            pendingElicitation={pendingElicitation}
-            retryPhase={retryPhase}
-            retryAttempt={retryAttempt}
-            retryMax={retryMax}
-            retryCountdownMs={retryCountdownMs}
-            terminalWidth={termWidth}
-            reducedMotion={motionDisabled}
-            screenReader={screenReader}
-          />
+          {/* While a decision sheet is up, it is the status: a "Waiting for
+              permission" row under it only said the same thing a second time.
+              Screen readers keep the row, which is how the wait is announced. */}
+          {screenReader ||
+          !(
+            pendingPermission ||
+            pendingUserQuestion ||
+            pendingPlanApproval ||
+            pendingElicitation
+          ) ? (
+            <WorkingIndicator
+              isThinking={isThinking}
+              isCompacting={isCompacting}
+              compactTrigger={compactUi?.trigger}
+              messages={messages}
+              streamingMessageId={streamingMessageId}
+              pendingPermission={pendingPermission}
+              pendingPlanApproval={pendingPlanApproval}
+              pendingUserQuestion={pendingUserQuestion}
+              pendingElicitation={pendingElicitation}
+              retryPhase={retryPhase}
+              retryAttempt={retryAttempt}
+              retryMax={retryMax}
+              retryCountdownMs={retryCountdownMs}
+              terminalWidth={termWidth}
+              reducedMotion={motionDisabled}
+              screenReader={screenReader}
+            />
+          ) : null}
 
           {/* Input bar — above the status line. Command menu is built into InputBar. */}
           <Box
@@ -3151,6 +3017,8 @@ export function App({
             />
             <InputBar
               key={sessionId}
+              onLayoutChange={bumpFooterLayout}
+              onMenuOpenChange={trackComposerMenu}
               onSubmit={handleSubmit}
               onPasteImage={pasteClipboardImage}
               submissionMode={
@@ -3206,7 +3074,6 @@ export function App({
               terminalWidth={termWidth}
               maxMenuRows={maxCommandMenuRows}
               compact={isNarrow || isTiny}
-              reducedMotion={motionDisabled}
               screenReader={screenReader}
               draftRestore={draftRestore}
             />
@@ -3303,6 +3170,7 @@ export function App({
                     ).length
                   : 0
               }
+              turnCount={turnCount}
               terminalWidth={termWidth}
               compact={compactStatus}
               reducedMotion={motionDisabled}
@@ -3331,48 +3199,35 @@ function AppProviders({
   );
 }
 
-/**
- * Title row for a reference sheet, carrying the way out.
- *
- * These panels are pinned above the composer until something dismisses them, so
- * the exit has to be written on the panel itself — a reader who does not
- * already know the toggle command has nothing else to go on. It rides the title
- * rather than a footer line because `/help` already runs taller than a short
- * terminal, and a panel that has to scroll to reveal how to close it is no
- * better than one that never says.
- */
-function PanelHeading({
-  title,
-  theme,
-}: {
-  title: string;
-  theme: { brand: string; subtle: string };
-}) {
-  return (
-    <Box>
-      <Text bold color={theme.brand}>
-        {title}
-      </Text>
-      <Text color={theme.subtle} dimColor>
-        {'  Esc to close'}
-      </Text>
-    </Box>
-  );
-}
-
-function HelpRow({
-  label,
-  description,
-  theme,
-}: {
-  label: string;
-  description: string;
-  theme: { brand: string; text: string; subtle: string };
-}) {
-  return (
-    <Box>
-      <Text color={theme.brand}>{label}</Text>
-      <Text color={theme.subtle}> — {description}</Text>
-    </Box>
-  );
-}
+/** The shortcuts reference (Ctrl+/): each key and what it does. */
+const SHORTCUT_ROWS: ReadonlyArray<{ key: string; value: string }> = [
+  { key: 'Esc', value: 'Deny a prompt, cancel the turn, or close this panel' },
+  {
+    key: 'Ctrl+C',
+    value: 'Cancel current turn, clear the composer, or press twice idle to exit',
+  },
+  { key: 'Ctrl+T', value: 'Toggle the main agent checklist (not background tasks)' },
+  { key: '/tasks', value: 'Focus background tasks; ↑↓ select, Enter open, x stop' },
+  { key: 'Ctrl+O', value: 'Toggle detailed transcript' },
+  { key: 'Ctrl+E', value: 'Expand current tool output (empty prompt)' },
+  { key: 'Click', value: 'Expand or collapse a tool summary' },
+  { key: 'Ctrl+L', value: 'Redraw screen' },
+  { key: 'Alt+M', value: 'Cycle permission mode' },
+  { key: 'Alt+P', value: 'Open model picker' },
+  { key: 'Alt+V', value: 'Attach clipboard image' },
+  { key: 'Up/Down', value: 'Navigate input history' },
+  { key: 'Wheel', value: 'Scroll transcript' },
+  { key: 'Drag', value: 'Select visible text and copy on release' },
+  { key: 'Shift+drag', value: 'Use terminal-native text selection' },
+  { key: 'PgUp/PgDn', value: 'Scroll transcript' },
+  { key: 'Ctrl+U/Ctrl+D', value: 'Scroll transcript half a page (empty prompt)' },
+  { key: 'Ctrl+Home/End', value: 'Jump to transcript start/latest' },
+  { key: 'Ctrl+J / Shift+Enter', value: 'Insert newline (multiline)' },
+  { key: 'Ctrl+A / Ctrl+E', value: 'Move to start / end of the prompt' },
+  { key: 'Ctrl+W / Alt+Bksp', value: 'Delete the previous word' },
+  { key: 'Ctrl+U / Ctrl+K', value: 'Delete to start / end of the prompt' },
+  { key: 'Ctrl+Y', value: 'Put back the last deletion' },
+  { key: 'Ctrl+/', value: 'Toggle this reference' },
+  { key: '@path', value: 'Expand file contents' },
+  { key: '!cmd', value: 'Run shell command' },
+];

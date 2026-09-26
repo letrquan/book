@@ -94,7 +94,7 @@ describe('SkillManager', () => {
     const { view } = renderManager();
     const frame = stripAnsi(view.lastFrame());
 
-    expect(frame).toContain('Manage skills');
+    expect(frame).toContain('§ Skills');
     expect(frame).toContain('code-review');
     expect(frame).toContain('auto');
     expect(frame).toContain('project');

@@ -2,8 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { APPLE_THEME, listCustomThemes, loadCustomTheme, resolveTheme } from '../theme.js';
-import { DEFAULT_THEME } from '../../types/theme.js';
+import {
+  APPLE_THEME,
+  FOLIO_THEME,
+  RUBRIC_THEME,
+  listCustomThemes,
+  loadCustomTheme,
+  resolveTheme,
+} from '../theme.js';
 
 let dir: string;
 
@@ -29,9 +35,9 @@ describe('loadCustomTheme', () => {
     expect(theme).not.toBeNull();
     expect(theme!.brand).toBe('#ff0000');
     expect(theme!.text).toBe('#ffffff');
-    // Unspecified keys retain defaults.
-    expect(theme!.error).toBe(DEFAULT_THEME.error);
-    expect(theme!.surface).toBe(DEFAULT_THEME.surface);
+    // Unspecified keys come from the default look, Rubric.
+    expect(theme!.error).toBe(RUBRIC_THEME.error);
+    expect(theme!.surface).toBe(RUBRIC_THEME.surface);
   });
 
   it('returns null on malformed JSON', () => {
@@ -49,6 +55,9 @@ describe('loadCustomTheme', () => {
 
 describe('theme resolution', () => {
   it('resolves apple and reports other or unknown themes as null', () => {
+    expect(resolveTheme(dir, 'rubric')?.tokens).toBe(RUBRIC_THEME);
+    expect(resolveTheme(dir, 'folio')?.tokens).toBe(FOLIO_THEME);
+    expect(resolveTheme(dir, 'Folio')?.tokens).toBe(FOLIO_THEME);
     expect(resolveTheme(dir, 'apple')?.tokens).toBe(APPLE_THEME);
     expect(resolveTheme(dir, 'apple-dark')?.tokens).toBe(APPLE_THEME);
     expect(resolveTheme(dir, 'dark')).toBeNull();
@@ -122,5 +131,71 @@ describe('apple default theme', () => {
       const [r, g, b] = [1, 3, 5].map((i) => parseInt(APPLE_THEME[role].slice(i, i + 2), 16));
       expect(Math.max(r, g, b) - Math.min(r, g, b), `${role} is not neutral`).toBeLessThan(8);
     }
+  });
+});
+
+describe('folio default theme', () => {
+  const hex = (value: string) => [1, 3, 5].map((i) => parseInt(value.slice(i, i + 2), 16));
+  const chroma = (value: string) => {
+    const [r, g, b] = hex(value);
+    return Math.max(r!, g!, b!) - Math.min(r!, g!, b!);
+  };
+
+  it('spends one accent on every place you act or look first', () => {
+    expect(FOLIO_THEME.userAccent).toBe(FOLIO_THEME.brand);
+    expect(FOLIO_THEME.assistantAccent).toBe(FOLIO_THEME.brand);
+    expect(FOLIO_THEME.mdListMarker).toBe(FOLIO_THEME.brand);
+    expect(FOLIO_THEME.shimmerPair[0]).toBe(FOLIO_THEME.brand);
+  });
+
+  it('draws the composer border as a hairline, not in the accent', () => {
+    expect(FOLIO_THEME.promptBorder).not.toBe(FOLIO_THEME.userAccent);
+    // Warm greys carry a little chroma; the accent carries a lot.
+    for (const role of ['promptBorder', 'border', 'toolRail', 'inactive', 'subtle'] as const) {
+      expect(chroma(FOLIO_THEME[role]), `${role} is not a grey`).toBeLessThan(24);
+    }
+    expect(chroma(FOLIO_THEME.brand)).toBeGreaterThan(80);
+  });
+
+  it('keeps every status hue distinct from the others and from the accent', () => {
+    const roles = ['brand', 'success', 'error', 'warning', 'planMode', 'mdLink'] as const;
+    expect(new Set(roles.map((role) => FOLIO_THEME[role])).size).toBe(roles.length);
+  });
+
+  it('ranks heading depth by three distinct steps', () => {
+    const ramp = [FOLIO_THEME.mdHeadingH1, FOLIO_THEME.mdHeadingH2, FOLIO_THEME.mdHeading];
+    expect(new Set(ramp).size).toBe(3);
+    for (const step of ramp) expect(step).not.toBe(FOLIO_THEME.text);
+  });
+
+  it('writes every colour token as #rrggbb', () => {
+    for (const [role, value] of Object.entries(FOLIO_THEME)) {
+      const values = Array.isArray(value) ? value : [value];
+      for (const color of values) expect(color, role).toMatch(/^#[0-9A-F]{6}$/i);
+    }
+  });
+});
+
+describe('rubric default theme', () => {
+  const marks = ['brand', 'userAccent', 'mdListMarker'] as const;
+
+  it('spends the rubric on marks only', () => {
+    for (const role of marks) expect(RUBRIC_THEME[role]).toBe(RUBRIC_THEME.brand);
+    // The agent speaks in ink: its spinner and label are not the rubric.
+    expect(RUBRIC_THEME.assistantAccent).not.toBe(RUBRIC_THEME.brand);
+    expect(RUBRIC_THEME.shimmerPair).not.toContain(RUBRIC_THEME.brand);
+    // The composer border stays a neutral hairline.
+    expect(RUBRIC_THEME.promptBorder).toBe(FOLIO_THEME.promptBorder);
+  });
+
+  it('keeps errors and warnings off the rubric red', () => {
+    const roles = ['brand', 'error', 'warning', 'success', 'planMode', 'mdLink'] as const;
+    expect(new Set(roles.map((role) => RUBRIC_THEME[role])).size).toBe(roles.length);
+  });
+
+  it('ranks heading depth by three distinct steps', () => {
+    const ramp = [RUBRIC_THEME.mdHeadingH1, RUBRIC_THEME.mdHeadingH2, RUBRIC_THEME.mdHeading];
+    expect(new Set(ramp).size).toBe(3);
+    for (const step of ramp) expect(step).not.toBe(RUBRIC_THEME.text);
   });
 });

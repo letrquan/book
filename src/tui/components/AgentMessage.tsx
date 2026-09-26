@@ -36,6 +36,13 @@ import {
 } from '../tool-presentation.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
 import { ManagedAgentActivityBlock } from './ManagedAgentActivityBlock.js';
+import { QuietToolRun } from './QuietToolRun.js';
+import {
+  groupQuietInvocations,
+  summarizeQuietRun,
+  type QuietRunSummary,
+  type QuietToolContext,
+} from '../quiet-tools.js';
 import { useDebugRender } from '../debug.js';
 
 const renderLog = createRenderDebugLogger('tui:agentmsg');
@@ -68,6 +75,12 @@ interface AgentMessageProps {
   showThinking?: boolean;
   /** Remove the final markdown block's margin before the next user turn. */
   trimTrailingSpacing?: boolean;
+  /**
+   * When set, runs of quiet tool calls (reads, searches, lookups) collapse into
+   * one summary row. ChatPanel sets it for the compact transcript only; the
+   * detailed transcript and screen readers get every row.
+   */
+  quietTools?: QuietToolContext;
 }
 
 const NO_EXPANSION_OVERRIDES = new Map<string, boolean>();
@@ -360,12 +373,10 @@ function MutationGroupRow({
   }
   return (
     <Box height={1} marginLeft={CONTENT_COLUMN}>
-      <Text color={theme.success}>{'• '}</Text>
-      {row.label ? (
-        <Text color={theme.inactive} dimColor>
-          {row.label}{' '}
-        </Text>
-      ) : null}
+      {/* The same mark as every other finished tool row: a mutation group is
+          work that completed, not a list item. */}
+      <Text color={theme.success}>{'✓ '}</Text>
+      {row.label ? <Text color={theme.inactive}>{row.label} </Text> : null}
       <TargetText target={row.target} failed={false} />
       <Text>{row.gap}</Text>
       <MetaText meta={row.meta} failed={false} />
@@ -428,6 +439,7 @@ export function AgentMessageInner({
   showAllToolOutputIds = NO_SHOW_ALL_TOOL_OUTPUT_IDS,
   showThinking = true,
   trimTrailingSpacing = false,
+  quietTools,
 }: AgentMessageProps) {
   const theme = useTheme();
   const { toolRowGap, toolBlockGap } = useDensityMetrics();
@@ -488,6 +500,11 @@ export function AgentMessageInner({
       }).filter((part) => part.kind !== 'think' || part.text.length > 0),
     [displayContent, isStreaming, toolCalls.length],
   );
+  // Whether the content box draws anything. An empty `<think></think>` draws
+  // nothing, so it must not buy the tool block below it a blank row either.
+  const showsContent = contentParts.some((part) =>
+    part.kind === 'markdown' ? part.text.trim().length > 0 : showThinking,
+  );
   const renderAsUnifiedDiff = useMemo(
     () => displayContent.length > 0 && isUnifiedDiffLike(displayContent),
     [displayContent],
@@ -510,15 +527,33 @@ export function AgentMessageInner({
       }),
     [message.toolResults, toolCalls],
   );
+  // Which rows this turn draws: a run of quiet calls folds into one summary.
+  const quietRows = useMemo(() => {
+    if (!quietTools || screenReader) return undefined;
+    const byIndex = new Map<number, { head: boolean; summary: QuietRunSummary }>();
+    for (const row of groupQuietInvocations(topLevelInvocations, message, quietTools)) {
+      if (row.kind !== 'quiet') continue;
+      const summary = summarizeQuietRun(row.indices.map((index) => topLevelInvocations[index]!));
+      row.indices.forEach((index, position) =>
+        byIndex.set(index, { head: position === 0, summary }),
+      );
+    }
+    return byIndex.size > 0 ? byIndex : undefined;
+  }, [message, quietTools, screenReader, topLevelInvocations]);
   // Size the label column to this turn's own rows. A turn of `Bash` / `Read`
   // rows padded to fit a hypothetical `Git status` puts seven dead columns
-  // between every verb and its target.
+  // between every verb and its target. Only rows actually drawn count: a call
+  // folded into a summary contributes the summary's label, once.
   const labelWidth = useMemo(
     () =>
       toolLabelColumnWidth(
-        topLevelInvocations.map((invocation) => toolRowLabel(invocation.name, invocation.result)),
+        topLevelInvocations.flatMap((invocation, index) => {
+          const quiet = quietRows?.get(index);
+          if (quiet) return quiet.head ? [quiet.summary.title] : [];
+          return [toolRowLabel(invocation.name, invocation.result)];
+        }),
       ),
-    [topLevelInvocations],
+    [quietRows, topLevelInvocations],
   );
   // The heading sits on the same indented grid as the tool rows it heads.
   const mutationGrid = useMemo(
@@ -633,14 +668,21 @@ export function AgentMessageInner({
         </Box>
       ) : null}
 
-      {/* Every invocation gets its own row. Task subagent tools stay display-only and nest below it. */}
+      {/* Every invocation gets its own row, except that a run of quiet calls folds
+          into one summary in the compact transcript. Task subagent tools stay
+          display-only and nest below it. */}
       {topLevelInvocations.map((invocation, index) => {
+        // The detailed transcript expands every call, so each row carries a block
+        // of output; a blank row between blocks keeps one call's output from
+        // running into the next call's header.
         const marginTop =
           index === 0
-            ? displayContent || (showThinking && reasoningContent)
+            ? showsContent || (showThinking && reasoningContent)
               ? toolBlockGap
               : 0
-            : toolRowGap;
+            : transcriptMode === 'detailed' && !screenReader
+              ? 1
+              : toolRowGap;
         const tc = invocation.call;
         const result = invocation.result;
         const mutation = invocation.mutation;
@@ -673,6 +715,20 @@ export function AgentMessageInner({
         }
         const isPending = pendingPermission?.toolCall.id === tc.id;
         const managedAgentTrace = managedAgentTraces?.get(tc.id);
+        const quiet = quietRows?.get(index);
+        if (quiet) {
+          if (!quiet.head) return null;
+          return (
+            <Box key={tc.id || `tool-${index}`} flexDirection="column" marginTop={marginTop}>
+              <QuietToolRun
+                summary={quiet.summary}
+                grid={mutationGrid}
+                reducedMotion={reducedMotion}
+                screenReader={screenReader}
+              />
+            </Box>
+          );
+        }
         return (
           <Box
             key={tc.id || `tool-${index}`}
@@ -814,6 +870,7 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
     prev.showAllToolOutputIds === next.showAllToolOutputIds &&
     prev.showThinking === next.showThinking &&
     prev.trimTrailingSpacing === next.trimTrailingSpacing &&
+    prev.quietTools === next.quietTools &&
     prev.reducedMotion === next.reducedMotion &&
     prev.screenReader === next.screenReader &&
     prev.terminalWidth === next.terminalWidth

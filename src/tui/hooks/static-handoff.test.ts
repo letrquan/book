@@ -17,6 +17,11 @@ describe('transcript display messages', () => {
   it('treats whitespace-only assistant content as blank', () => {
     expect(isBlankAssistantContent(' \n\t')).toBe(true);
     expect(isBlankAssistantContent('text')).toBe(false);
+    // The empty reasoning block routers put ahead of every tool call draws nothing.
+    expect(isBlankAssistantContent('<think></think>')).toBe(true);
+    expect(isBlankAssistantContent('<think>\n</think>\n')).toBe(true);
+    expect(isBlankAssistantContent('<think>check the loader</think>')).toBe(false);
+    expect(isBlankAssistantContent('<think></think>Reading it now.')).toBe(false);
   });
 
   it('merges completed tool-only assistant messages in order', () => {

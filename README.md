@@ -1302,11 +1302,15 @@ Book clears sessions and rotated debug-log backups after 30 days. Startup resolv
 
 ### Themes
 
-Book uses the `apple` theme by default: near-black neutral surfaces, bright grey text, and one blue accent for the composer and your own turns. Every other hue is a status colour that appears only when a state needs attention.
+Book uses the `rubric` theme by default. It is set like a rubricated manuscript: the body is in ink (warm ivory and greys), and one cinnabar red is kept for the marks you navigate by. Those marks are the pilcrow `¶` that opens each of your turns and prompts the composer, the section sign `§` before a heading, list markers, and the drop cap on an empty page. The agent writes in ink, spinner included, so red never reads as an alarm. Errors are rose and warnings amber, to stay distinct from the rubric.
 
-Roles are kept visually distinct on purpose: blue is the user and composer, cyan is the agent speaking, indigo is product chrome, teal carries references, and distinct status hues carry results.
+The layout follows the same idea. Your turns hang a red `¶` in the margin and are set in italic, so your words read as a different voice from the agent's. The composer and the menus that open above it are drawn as hairlines rather than boxes. Tables are ruled the way a book sets them, with no vertical lines. The status line carries a folio, the turn count in lowercase Roman numerals, at its right edge. An empty session opens on a title page: a five-row drop cap B in rubric, the rest of the word, a rule and a table of contents. The contents list this workspace's five most recent sessions as chapters, with Roman numerals, dot leaders and each one's age where a book prints the page, and `/resume` opens one. Before a first session, the contents list what a new reader needs, with the key to press as the page. When a menu shrinks the transcript, the page folds to its drop cap and never cuts through a glyph. Decision prompts such as the permission prompt are headed by a rule led by the same `¶` rather than drawn as boxes.
 
-Project themes can override any token in `.book/themes/<name>.json`:
+The transcript keeps the agent's reading out of the way. In the default compact transcript, a run of read-only calls (`Read`, `Glob`, `Grep`, the git read tools, `ToolSearch`, task lookups, `BashOutput`, session history) collapses into one row: `✓ Read config.ts, loader.ts   2 files · 3 searches`. The check is grey because nothing changed. The run can span one parallel batch or several turns in a row. Edits, `Bash` (even a read-only command, since the transcript cannot tell), web and MCP calls, delegation, failures, anything awaiting permission, and reads that reach outside the workspace keep their own rows. Ctrl+O's detailed transcript shows every call, and so does screen-reader mode. A row you have expanded is never folded.
+
+Two other built-in palettes use the same layout. `folio` swaps the red for a single gilt accent and uses it on the spinner as well. `apple` is the previous palette: near-black neutral surfaces, bright grey text, a blue composer and user accent, cyan for the agent, and a distinct hue per role. Select one with `"theme": "folio"` or `"theme": "apple"` in `settings.json`. A palette changes colours only: the layout above applies to every theme.
+
+Project themes can override any token in `.book/themes/<name>.json`, starting from `rubric`:
 
 ```json
 {
@@ -1408,11 +1412,12 @@ controls (`/agents`, `/agent`), config (`/model`, `/providers`,
 (`/status`, `/mcp`, `/cost`, `/usage` with `/stats` as an alias, `/context`, `/diff`, `/skills`,
 `/memory`), local output and reload (`/export`, `/reload-skills`), release/support
 (`/release-notes`, `/feedback`), agent prompts (`/init`, `/security-review`), and code review
-(`/review`, see below).
+(`/review`, see below). `/help` is generated from the command registry: every visible built-in, in
+groups, with its visible aliases, followed by your custom commands.
 `/model` switches models, while `/providers` opens the same picker for provider management. BYOK
 providers you add - their credentials, model catalog, and active model selection - are saved to the
 user-global `~/.book/settings.json` so they are shared across projects; such providers are labeled
-`[BYOK]`, and selecting one of their models and pressing `Alt+D` removes it. `/effort` opens a
+`BYOK`, and selecting one of their models and pressing `Alt+D` removes it. `/effort` opens a
 picker when called without an argument and saves successful selections to
 `.book/settings.local.json`.
 

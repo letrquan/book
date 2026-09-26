@@ -71,11 +71,12 @@ EOF
 | `key <name>...` | `enter esc tab shift-tab up down left right backspace space ctrl-c ctrl-d ctrl-e ctrl-j ctrl-l ctrl-o ctrl-r ctrl-t ctrl-u home end pageup pagedown` |
 | `sleep [ms]`, `resize <cols> <rows>` | Timing and layout. |
 | `screen`, `raw`, `shot <name>` | Dump the screen to stdout, dump the raw tail, or write the screen to `<shots>/<name>.txt`. |
+| `shotpng <name>` | Write the screen with colours and attributes kept, as `<shots>/<name>.html` and, via headless Edge or Chromium, `<name>.png` — which the Read tool can look at. The only way to judge a visual change (palette, weight, spacing): a text `shot` shows none of it. Block elements and rules are drawn edge to edge the way a terminal draws them, so a seam in the PNG is a real seam. |
 | `rawbytes [n]` | Print the last `n` (default 3000) bytes of the PTY stream JSON-encoded, escapes kept — the only faithful record of what the renderer emitted when the xterm replay looks wrong. |
 | `status` | Print whether the TUI process has exited, its exit code and the time, without sending a key: how a script tells "that press exited" from "that press only armed". |
 | `quit` | Ctrl-C twice and wait for exit. |
 
-Options: `--mock` (start the mock provider), `--mock-script <json>`, `--mock-port` (8919),
+Options: `--mock` (start the mock provider), `--mock-script <json>`, `--mock-port` (8919), `--sessions` (keep session persistence on, so sessions pre-seeded in `<book-home>/.book/sessions/*.jsonl` show on the title page and in `/resume`; a seeded file needs a `session_meta` line whose `cwd` is the workspace normalized as the store does it, lowercase on Windows, plus at least one `user` record, because the store recounts messages from the records),
 `--workspace <dir>`, `--book-home <dir>` (default: a fresh temp dir), `--shots <dir>`
 (`/tmp/book-shots`), `--cols` (120), `--rows` (40), `--timeout` (20000), `--ready-settle` (2500),
 `--send-gap` (250), `--bin <exe>` (spawn another executable — the Go build's `bin/book.exe` — in
@@ -113,7 +114,8 @@ can assert on what Book actually sent.
 
 A turn with both `text` and `tool` streams the text first and the tool call after it on the same
 turn — how a router that inlines reasoning delivers the `<think></think>` a thinking model emits
-before every tool call. `"holdMs": 9000` keeps a turn open after its text is on the wire, which is
+before every tool call. `"tools": [{...}, {...}]` in place of `tool` sends several calls in one
+turn, the way a model that batches parallel reads does. `"holdMs": 9000` keeps a turn open after its text is on the wire, which is
 the only way to see the live (unsettled) rendering of a streaming message or a child's detail view
 long enough to screenshot it. A reply's text may cite the events Book showed the reducer:
 `{{event:N}}` becomes the Nth `session://current/event/<id>` reference in the request's last user

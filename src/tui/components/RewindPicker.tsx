@@ -4,6 +4,9 @@ import { useKeyState } from '../hooks/useKeyState.js';
 import type { RewindAction, RewindTarget } from '../../types/sessions.js';
 import { useDensityMetrics } from '../density.js';
 import { useTheme } from '../theme.js';
+import { formatAge } from '../relative-age.js';
+import { SoftPanel } from './chrome.js';
+import { panelGrid } from '../layout.js';
 
 interface RewindPickerProps {
   targets: RewindTarget[];
@@ -13,6 +16,8 @@ interface RewindPickerProps {
     action: RewindAction,
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
   onCancel: () => void;
+  /** Terminal columns; the sheet's rule spans them. */
+  terminalWidth?: number;
 }
 
 type ActionChoice = {
@@ -40,23 +45,20 @@ const ACTIONS: ActionChoice[] = [
   { action: 'cancel', label: 'Cancel', description: 'Return without changing anything.' },
 ];
 
-function formatAge(timestamp: number): string {
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return 'just now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
 function promptPreview(prompt: string): string {
   const singleLine = prompt.replace(/\s+/g, ' ').trim();
   return singleLine.length <= 72 ? singleLine : `${singleLine.slice(0, 69)}...`;
 }
 
-export function RewindPicker({ targets, isRewinding, onAction, onCancel }: RewindPickerProps) {
+export function RewindPicker({
+  targets,
+  isRewinding,
+  onAction,
+  onCancel,
+  terminalWidth = 80,
+}: RewindPickerProps) {
   const theme = useTheme();
+  const sheetWidth = panelGrid(Math.max(20, Math.floor(terminalWidth))).width;
   const density = useDensityMetrics();
   // Stage and both cursors are read back by the key handler, so Enter that
   // advances the stage and Enter that acts on the new stage can arrive together.
@@ -115,10 +117,11 @@ export function RewindPicker({ targets, isRewinding, onAction, onCancel }: Rewin
   );
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
-      <Text bold color={theme.brand}>
-        Rewind
-      </Text>
+    <SoftPanel
+      title="Rewind"
+      meta={stage === 'target' ? `${targets.length} prompts` : 'choose what to restore'}
+      width={sheetWidth}
+    >
       {stage === 'target' ? (
         targets.length === 0 ? (
           <Text color={theme.subtle}>(no user prompts to rewind)</Text>
@@ -127,15 +130,16 @@ export function RewindPicker({ targets, isRewinding, onAction, onCancel }: Rewin
             const index = visibleTargets.start + visibleIndex;
             const selected = index === selectedTarget;
             return (
-              <Text
-                key={choice.id}
-                backgroundColor={selected ? theme.surfaceActive : undefined}
-                color={selected ? theme.selectionText : theme.subtle}
-                bold={selected}
-              >
-                {selected ? '›' : ' '} {promptPreview(choice.prompt)} ·{' '}
-                {formatAge(choice.timestamp)} ·{' '}
-                {choice.codeAvailable ? 'code ready' : 'conversation only'}
+              <Text key={choice.id}>
+                <Text color={theme.brand}>{selected ? '› ' : '  '}</Text>
+                <Text color={selected ? theme.selectionText : theme.text} bold={selected} italic>
+                  {promptPreview(choice.prompt)}
+                </Text>
+                <Text color={theme.inactive}>
+                  {'  '}
+                  {formatAge(choice.timestamp)} ·{' '}
+                  {choice.codeAvailable ? 'code ready' : 'conversation only'}
+                </Text>
               </Text>
             );
           })
@@ -149,14 +153,15 @@ export function RewindPicker({ targets, isRewinding, onAction, onCancel }: Rewin
               (choice.action === 'code' || choice.action === 'both') && !target?.codeAvailable;
             return (
               <Box key={choice.action} flexDirection="column">
-                <Text
-                  backgroundColor={selected ? theme.surfaceActive : undefined}
-                  color={disabled ? theme.subtle : selected ? theme.selectionText : theme.text}
-                  bold={selected && !disabled}
-                  dimColor={disabled}
-                >
-                  {selected ? '›' : ' '} {choice.label}
-                  {disabled ? ' (unavailable)' : ''}
+                <Text>
+                  <Text color={theme.brand}>{selected ? '› ' : '  '}</Text>
+                  <Text
+                    color={disabled ? theme.inactive : selected ? theme.selectionText : theme.text}
+                    bold={selected && !disabled}
+                  >
+                    {choice.label}
+                    {disabled ? ' (unavailable)' : ''}
+                  </Text>
                 </Text>
                 {selected ? (
                   <Text color={disabled ? theme.error : theme.subtle} dimColor={!disabled}>
@@ -169,13 +174,13 @@ export function RewindPicker({ targets, isRewinding, onAction, onCancel }: Rewin
           })}
         </>
       )}
-      {isRewinding ? <Text color={theme.brand}>Restoring...</Text> : null}
+      {isRewinding ? <Text color={theme.subtle}>Restoring…</Text> : null}
       {error ? <Text color={theme.error}>✕ {error}</Text> : null}
       {density.showOptionalHelp ? (
-        <Text color={theme.subtle} dimColor>
-          ↑↓ select · Enter confirm · Esc back
-        </Text>
+        <Box marginTop={1}>
+          <Text color={theme.inactive}>↑↓ select · Enter confirm · Esc back</Text>
+        </Box>
       ) : null}
-    </Box>
+    </SoftPanel>
   );
 }

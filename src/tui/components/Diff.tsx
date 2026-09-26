@@ -448,7 +448,8 @@ export function DiffBlock({
           previousSourceIndex === undefined ? sourceIndex : sourceIndex - previousSourceIndex - 1;
         const backgroundColor =
           row.kind === 'add' ? theme.diffAdded : row.kind === 'del' ? theme.diffRemoved : undefined;
-        const foregroundColor = row.kind === 'hunk' ? theme.brand : theme.text;
+        // A hunk header is a signpost, not content: quiet, and never the accent.
+        const foregroundColor = row.kind === 'hunk' ? theme.inactive : theme.text;
         const rawContent = expandTabs(row.content);
         const wrappedSpans = row.spans ? wrapSpans(row.spans, contentWidth) : undefined;
         const wrappedContent = wrappedSpans
@@ -484,7 +485,7 @@ export function DiffBlock({
 
               return (
                 <Box key={visualIndex} marginLeft={2}>
-                  <Text color={theme.subtle}>│</Text>
+                  <Text color={theme.toolRail}>│</Text>
                   <Text color={theme.subtle} dimColor>
                     {lineNumber(continuation ? undefined : row.oldLineNumber, oldWidth)}{' '}
                     {lineNumber(continuation ? undefined : row.newLineNumber, newWidth)}{' '}
@@ -499,7 +500,9 @@ export function DiffBlock({
                     }
                     backgroundColor={backgroundColor}
                   >
-                    {continuation ? ' ' : row.marker}{' '}
+                    {/* `@@ -6 +6 @@` already starts with its marker; a second
+                        `@` in the marker column read as a rendering glitch. */}
+                    {continuation || row.kind === 'hunk' ? ' ' : row.marker}{' '}
                   </Text>
                   <Text color={foregroundColor} backgroundColor={backgroundColor}>
                     {spans

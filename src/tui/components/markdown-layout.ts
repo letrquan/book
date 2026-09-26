@@ -13,6 +13,7 @@ import {
   wordWrap,
 } from './word-wrap.js';
 import type { TuiDensity } from '../density.js';
+import { SECTION_SIGN } from '../marks.js';
 
 export function markdownBlockGap(
   previous: string | undefined,
@@ -40,7 +41,7 @@ export interface TableLayoutInput {
   header: TableCellInput[];
   rows: TableCellInput[][];
   align?: TableAlign[];
-  /** Available terminal columns for the whole table (including borders). */
+  /** Available terminal columns for the whole table, rules and outer air included. */
   terminalWidth: number;
 }
 
@@ -98,6 +99,9 @@ export interface CodeBlockLayout {
 }
 
 const MIN_CELL = 1;
+
+/** Narrower than this, a cell that had to be cut reads as fragments. */
+const MIN_READABLE_CELL = 4;
 // Row format: │ + " " + cell + " " + │ ...  → per column: 3 chrome chars + width,
 // plus one final │. Equivalently: 1 + sum(width_i + 3) for n columns?
 // Actual: "│ " + cell + " │ " + cell + " │"
@@ -123,11 +127,17 @@ const MIN_CELL = 1;
 // With the trailing " │" being 2 chars (space+│) not 3.
 // Formula: 1 + sum(width_i + 2) + (n-1) = sum(width) + 3n
 
+/**
+ * Width of a table row and of its rules: the cells, a {@link TABLE_COLUMN_GAP}
+ * between each two, and a column of air at each end (`sum + 3n - 1`). It used
+ * to count the boxed grid's vertical borders as well (`sum + 3n + 1`), so after
+ * the borders went a table that fit was still squeezed or stacked.
+ */
 function tableChromeWidth(colWidths: number[]): number {
   if (colWidths.length === 0) return 0;
-  // ┌ + ─×(w+2) joined by ┬ + ┐  == sum(w) + 3n
-  // Body: "│ " + cells with " │ " separators ending in " │" matches same width.
-  return colWidths.reduce((sum, w) => sum + w + 2, 0) + (colWidths.length - 1) + 2;
+  return (
+    colWidths.reduce((sum, w) => sum + w, 0) + (colWidths.length - 1) * TABLE_COLUMN_GAP.length + 2
+  );
 }
 
 function normalizeAlign(align: TableAlign): 'left' | 'right' | 'center' {
@@ -154,11 +164,8 @@ export function allocateTableColumns(
   const naturalTotal = tableChromeWidth(natural);
   if (naturalTotal <= terminalWidth) return natural;
 
-  // tableChromeWidth(zeros) = 0*n + 3n = 3n ... wait:
-  // sum(0+2) + (n-1) + 2 = 2n + n - 1 + 2 = 3n + 1. Yes.
-  // contentBudget = terminalWidth - (3n + 1), and sum(widths) must equal contentBudget?
-  // total = sum(w) + 3n + 1 => sum(w) = terminalWidth - 3n - 1
-  const sumTarget = terminalWidth - 3 * n - 1;
+  // Everything but the cells: total = sum(w) + tableChromeWidth(zeros).
+  const sumTarget = terminalWidth - tableChromeWidth(Array<number>(n).fill(0));
   if (sumTarget < n * MIN_CELL) return null;
 
   // Start from natural, shrink largest columns first until sum fits.
@@ -207,8 +214,27 @@ function wrapCellLines(text: string, width: number): string[] {
   return out.length > 0 ? out : [''];
 }
 
-function buildBorder(colWidths: number[], left: string, join: string, right: string): string {
-  return `${left}${colWidths.map((w) => '─'.repeat(w + 2)).join(join)}${right}`;
+/** Spaces between two table columns. Columns are divided by space, not by rules. */
+export const TABLE_COLUMN_GAP = '   ';
+
+/**
+ * One table row as text: cells separated by {@link TABLE_COLUMN_GAP}, with one
+ * column of air at each end so the text sits inside the rules above and below.
+ */
+export function tableRowText(cells: readonly string[]): string {
+  return ` ${cells.join(TABLE_COLUMN_GAP)} `;
+}
+
+/**
+ * A full-width table rule.
+ *
+ * Tables are ruled the way a book sets them (booktabs): a heavy rule above and
+ * below, a light one under the header, and no vertical lines at all. The old
+ * grid drew a box around every cell, which made a three-row comparison the
+ * heaviest object in the answer.
+ */
+function buildRule(colWidths: number[], char: '━' | '─'): string {
+  return char.repeat(Math.max(0, tableChromeWidth(colWidths)));
 }
 
 /**
@@ -238,11 +264,12 @@ export function layoutTable(input: TableLayoutInput): TableLayout {
   const widthBudget = Math.max(0, Math.floor(terminalWidth));
   const colWidths = allocateTableColumns(naturalWidths, widthBudget);
 
-  // Prefer stacked layout when columns are extremely narrow relative to content
-  // or allocation failed (too many columns / tiny terminal).
+  // Prefer stacked layout when a column had to be cut below a readable width
+  // (four columns, or its whole content if that is shorter), or allocation
+  // failed (too many columns / tiny terminal). A `fo`/`o` cell is not a table.
   const tooNarrow =
     colWidths === null ||
-    colWidths.some((w, i) => w < 3 && naturalWidths[i]! > w * 2) ||
+    colWidths.some((w, i) => w < Math.min(MIN_READABLE_CELL, naturalWidths[i]!)) ||
     (colCount >= 4 && widthBudget < colCount * 8);
 
   if (tooNarrow || colWidths === null) {
@@ -277,14 +304,14 @@ export function layoutTable(input: TableLayoutInput): TableLayout {
     }
   }
 
-  const totalWidth = tableChromeWidth(colWidths);
+  const top = buildRule(colWidths, '━');
   return {
     mode: 'grid',
     colWidths,
-    totalWidth,
-    top: buildBorder(colWidths, '┌', '┬', '┐'),
-    middle: buildBorder(colWidths, '├', '┼', '┤'),
-    bottom: buildBorder(colWidths, '└', '┴', '┘'),
+    totalWidth: displayWidth(top),
+    top,
+    middle: buildRule(colWidths, '─'),
+    bottom: buildRule(colWidths, '━'),
     // First visual header row kept as headerCells for simple consumers;
     // full multi-line header is in headerRows.
     headerCells: headerRows[0] ?? Array(colCount).fill(''.padEnd(0)),
@@ -339,12 +366,17 @@ export function layoutHeadingChrome(
   depth: number,
   terminalWidth: number | undefined,
 ): { prefix: string; text: string; suffix: string } {
-  // Headings are bold and brightness-ranked by depth (see MarkdownBlock). They
-  // carry no `=== TEXT ===` side chrome: that competed with the turn rule for
-  // the eye and made an in-answer heading look like a transcript boundary.
-  const budget = terminalWidth && terminalWidth > 0 ? Math.max(1, Math.floor(terminalWidth)) : null;
+  // Headings are bold and brightness-ranked by depth (see MarkdownBlock). The
+  // two that structure an answer open with a rubricated section sign, the only
+  // chrome they carry: `=== TEXT ===` side rules competed with the transcript's
+  // own boundaries for the eye.
+  const prefix = depth <= 2 ? `${SECTION_SIGN} ` : '';
+  const budget =
+    terminalWidth && terminalWidth > 0
+      ? Math.max(1, Math.floor(terminalWidth) - displayWidth(prefix))
+      : null;
   return {
-    prefix: '',
+    prefix,
     text: budget === null || fitsIn(text, budget) ? text : truncateDisplay(text, budget),
     suffix: '',
   };

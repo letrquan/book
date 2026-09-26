@@ -1,8 +1,8 @@
 import { Box, Text, useInput } from 'ink';
 import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
-import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
-import { displayWidth, truncateDisplay } from './word-wrap.js';
+import { floatingFrameMetrics, SoftPanel } from './chrome.js';
+import { displayWidth, padDisplay, truncateDisplay } from './word-wrap.js';
 
 export type ConfigSection =
   'model' | 'compact-model' | 'effort' | 'agents' | 'skills' | 'permission-mode';
@@ -63,6 +63,12 @@ type Row = (typeof ROWS)[number]['row'];
  * the row actually prints. Measuring it beats a hand-kept column count: the
  * budget then cannot drift away from the prefix it is supposed to describe.
  */
+/** Columns of the setting names; the longest, "Model memory writes", fits. */
+const LABEL_WIDTH = 22;
+
+/** Columns the value keeps before the label column starts to shrink. */
+const MIN_VALUE_WIDTH = 6;
+
 function rowPrefix(selected: boolean, key?: string): string {
   return `${selected ? '›' : ' '} ${key ? key.toUpperCase() : ' '}  `;
 }
@@ -177,27 +183,46 @@ export function ConfigMenu({
   };
 
   return (
-    <SoftPanel tone="brand" width={frame.width} marginX={frame.marginX}>
-      <PanelTitle>Settings</PanelTitle>
+    <SoftPanel title="Settings" meta="Esc to close" width={frame.width} marginX={frame.marginX}>
       <Text color={theme.subtle}>Choose a setting to change.</Text>
       <Box flexDirection="column" marginTop={1}>
         {ROWS.map((entry, index) => {
           const item = details[entry.row];
-          const prefix = rowPrefix(index === selected, 'key' in entry ? entry.key : undefined);
+          const current = index === selected;
+          const prefix = rowPrefix(current, 'key' in entry ? entry.key : undefined);
+          // The label column gives way before the row does: on a narrow panel it
+          // shrinks and cuts, so prefix, label and value still fit one row.
+          const labelWidth = Math.max(
+            4,
+            Math.min(LABEL_WIDTH, contentWidth - displayWidth(prefix) - MIN_VALUE_WIDTH),
+          );
+          const label = padDisplay(truncateDisplay(item.label, labelWidth - 1), labelWidth);
+          const valueRoom = Math.max(1, contentWidth - displayWidth(prefix) - labelWidth);
+          const value = truncateDisplay(item.value, Math.min(valueRoom, 24));
+          const descRoom = Math.max(0, valueRoom - displayWidth(value) - 3);
+          // Cursor and letter in rubric, the setting in ink, its value, then what
+          // it does in a quieter grey: columns, not one run of text.
           return (
-            <SelectionRow key={entry.row} selected={index === selected} width={contentWidth}>
-              {prefix}
-              {truncateDisplay(
-                `${item.label.padEnd(22)} ${item.value} — ${item.description}`,
-                contentWidth - displayWidth(prefix),
-              )}
-            </SelectionRow>
+            <Box key={entry.row} width={contentWidth}>
+              <Text color={theme.brand}>{prefix}</Text>
+              <Text bold={current} color={current ? theme.selectionText : theme.text}>
+                {label}
+              </Text>
+              <Text color={theme.text}>{value}</Text>
+              {descRoom >= 8 ? (
+                <Text
+                  color={theme.inactive}
+                >{`   ${truncateDisplay(item.description, descRoom)}`}</Text>
+              ) : null}
+            </Box>
           );
         })}
       </Box>
-      <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter choose · or press the letter · Esc close
-      </Text>
+      <Box marginTop={1}>
+        <Text color={theme.inactive}>
+          ↑↓ select · Enter choose · or press the letter · Esc close
+        </Text>
+      </Box>
     </SoftPanel>
   );
 }

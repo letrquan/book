@@ -3,7 +3,8 @@ import { useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import type { McpHostServerSnapshot } from '../../mcp-host.js';
-import { SelectionRow, SoftPanel, PanelTitle } from './chrome.js';
+import { ChoiceList, DecisionSheet, type Choice } from './chrome.js';
+import { PANEL_CHROME, frameGrid } from '../layout.js';
 
 interface McpServerApprovalPromptProps {
   server: McpHostServerSnapshot;
@@ -12,6 +13,8 @@ interface McpServerApprovalPromptProps {
   onApprove: () => { ok: boolean; error?: string };
   onReject: () => { ok: boolean; error?: string };
   onDefer: () => void;
+  /** Terminal columns; the sheet's rule spans them. */
+  terminalWidth?: number;
 }
 
 const OPTIONS = [
@@ -34,6 +37,7 @@ export function McpServerApprovalPrompt({
   onApprove,
   onReject,
   onDefer,
+  terminalWidth = 80,
 }: McpServerApprovalPromptProps) {
   const theme = useTheme();
   const [selected, setSelected, currentSelected] = useKeyState(0);
@@ -59,10 +63,26 @@ export function McpServerApprovalPrompt({
     if (input === 'n' || input === 'N') return decide('reject');
   });
 
+  const width = frameGrid(Math.max(20, Math.floor(terminalWidth))).width;
+  const contentWidth = Math.max(12, width - PANEL_CHROME);
+  const waiting =
+    remainingCount > 0
+      ? ` · ${remainingCount} more server${remainingCount === 1 ? '' : 's'} waiting`
+      : '';
+  const choices: Choice[] = OPTIONS.map((option) => ({ label: option.label, detail: option.hint }));
+  // Trusting a server a repository declares is a permission like any other, so
+  // it gets the permission sheet's tone.
   return (
-    <SoftPanel tone="permission">
-      <PanelTitle>Use MCP server “{server.name}” from this project?</PanelTitle>
-      <Text color={theme.subtle}>
+    <DecisionSheet
+      label="MCP server"
+      tone={theme.permission}
+      meta={`${server.name}${waiting}`}
+      width={width}
+    >
+      <Text bold color={theme.text}>
+        Use “{server.name}” from this project?
+      </Text>
+      <Text color={theme.subtle} wrap="wrap">
         {server.path} declares this server. Approving connects using the configuration below.
       </Text>
       {server.configChangedSinceApproval ? (
@@ -73,31 +93,32 @@ export function McpServerApprovalPrompt({
       ) : null}
       <Box marginTop={1} flexDirection="column">
         <Text wrap="wrap">
-          <Text color={theme.subtle}>target </Text>
-          {server.target}
+          <Text color={theme.inactive}>{'target   '}</Text>
+          <Text color={theme.text}>{server.target}</Text>
         </Text>
         {server.envKeys.length > 0 ? (
-          <Text color={theme.subtle}>env {server.envKeys.join(', ')}</Text>
+          <Text wrap="wrap">
+            <Text color={theme.inactive}>{'env      '}</Text>
+            <Text color={theme.text}>{server.envKeys.join(', ')}</Text>
+          </Text>
         ) : null}
         {server.headerKeys.length > 0 ? (
-          <Text color={theme.subtle}>headers {server.headerKeys.join(', ')} (values hidden)</Text>
+          <Text wrap="wrap">
+            <Text color={theme.inactive}>{'headers  '}</Text>
+            <Text color={theme.text}>{server.headerKeys.join(', ')}</Text>
+            <Text color={theme.inactive}> (values hidden)</Text>
+          </Text>
         ) : null}
       </Box>
       <Box flexDirection="column" marginTop={1}>
-        {OPTIONS.map((option, index) => (
-          <SelectionRow key={option.key} selected={index === selected}>
-            {index === selected ? '›' : ' '} {option.label.padEnd(22)}{' '}
-            <Text color={theme.subtle}>{option.hint}</Text>
-          </SelectionRow>
-        ))}
+        <ChoiceList choices={choices} selected={selected} width={contentWidth} numbered={false} />
       </Box>
-      <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter confirm · y approve · n reject · Esc not now
-        {remainingCount > 0
-          ? ` · ${remainingCount} more server${remainingCount === 1 ? '' : 's'} waiting`
-          : ''}
-      </Text>
       {error ? <Text color={theme.error}>✕ {error}</Text> : null}
-    </SoftPanel>
+      <Box marginTop={1}>
+        <Text color={theme.inactive}>
+          ↑↓ select · Enter confirm · y approve · n reject · Esc not now
+        </Text>
+      </Box>
+    </DecisionSheet>
   );
 }

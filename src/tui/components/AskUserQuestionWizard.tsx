@@ -5,7 +5,8 @@ import { useKeyState } from '../hooks/useKeyState.js';
 import type { UserQuestion, UserQuestionRequest, UserQuestionResponse } from '../../types/tools.js';
 import { useTheme } from '../theme.js';
 import { truncateDisplay } from './word-wrap.js';
-import { floatingFrameMetrics } from './chrome.js';
+import { ChoiceList, DecisionSheet, floatingFrameMetrics, type Choice } from './chrome.js';
+import { PILCROW } from '../marks.js';
 
 interface AskUserQuestionWizardProps {
   request: UserQuestionRequest;
@@ -290,113 +291,66 @@ export function AskUserQuestionWizard({
   });
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
-  const source = truncateDisplay(
-    sourceLabel(request),
-    compact ? contentWidth - 9 : contentWidth - 18,
-  );
-  const progress = `${questionIndex + 1} of ${request.questions.length}`;
+  const fromAgent = request.source.kind !== 'root';
+  const progress =
+    request.questions.length > 1 ? ` · ${questionIndex + 1} of ${request.questions.length}` : '';
   const queueText = queueLength > 1 ? ` · ${queueLength - 1} waiting` : '';
+  const choiceRows: Choice[] = [
+    ...question.options.map((option) => ({
+      label: option.label,
+      detail: option.description,
+      checked: selectedSet.has(option.label),
+    })),
+    {
+      label: customAnswer
+        ? `Other: ${truncateDisplay(customAnswer, Math.max(8, contentWidth - 24))}`
+        : 'Other…',
+      detail: customAnswer ? undefined : 'write your own answer',
+      checked: Boolean(customAnswer),
+      numeral: '+',
+    },
+  ];
 
+  // The same sheet as a permission: a rule naming who asks (only when it is not
+  // Book itself) and what, the question in bold, then the choices.
   return (
-    <Box
+    <DecisionSheet
+      label={fromAgent ? `${sourceLabel(request)} asks` : 'Question'}
+      tone={theme.text}
+      meta={`${question.header}${progress}${queueText}`}
       width={frame.width}
       marginX={frame.marginX}
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={theme.border}
-      paddingX={1}
     >
-      <Box justifyContent="space-between">
-        <Text bold color={theme.brand}>
-          ? {source}
-        </Text>
-        <Text color={theme.subtle}>
-          {progress}
-          {queueText}
-        </Text>
-      </Box>
+      <Text bold color={theme.text} wrap="wrap">
+        {question.question}
+      </Text>
 
       <Box flexDirection="column" marginTop={1}>
-        <Text bold color={theme.brand}>
-          {question.header.toUpperCase()}
-        </Text>
-        <Text bold color={theme.text}>
-          {question.question}
-        </Text>
-      </Box>
-
-      <Box flexDirection="column" marginTop={1}>
-        {question.options.map((option, index) => {
-          const active = index === cursor && !otherMode;
-          const checked = selectedSet.has(option.label);
-          const marker = question.multiSelect ? (checked ? '■' : '□') : checked ? '●' : '○';
-          const description = truncateDisplay(
-            option.description,
-            compact ? contentWidth - 5 : Math.max(16, contentWidth - option.label.length - 9),
-          );
-          return (
-            <Box
-              key={option.label}
-              paddingLeft={1}
-              flexDirection={compact ? 'column' : 'row'}
-              backgroundColor={active ? theme.surfaceActive : undefined}
-            >
-              <Text
-                bold={active || checked}
-                color={active ? theme.selectionText : checked ? theme.success : theme.text}
-              >
-                {active ? '›' : ' '} {marker} {index + 1}. {option.label}
-              </Text>
-              <Text color={active ? theme.selectionText : theme.subtle}>
-                {compact ? `     ${description}` : ` — ${description}`}
-              </Text>
-            </Box>
-          );
-        })}
-
-        <Box
-          paddingLeft={1}
-          backgroundColor={cursor === question.options.length ? theme.surfaceActive : undefined}
-        >
-          <Text
-            bold={cursor === question.options.length || Boolean(customAnswer)}
-            color={
-              cursor === question.options.length
-                ? theme.selectionText
-                : customAnswer
-                  ? theme.success
-                  : theme.text
-            }
-          >
-            {cursor === question.options.length ? '›' : ' '} {customAnswer ? '■' : '+'} Other
-            {customAnswer
-              ? `: ${truncateDisplay(customAnswer, Math.max(8, contentWidth - 14))}`
-              : '…'}
-          </Text>
-        </Box>
+        <ChoiceList
+          choices={choiceRows}
+          selected={cursor}
+          width={contentWidth}
+          // A column for the ✓ on every question, so an answer already given
+          // shows when you step back to it.
+          marks
+          active={!otherMode}
+        />
       </Box>
 
       {otherMode ? (
-        <Box
-          flexDirection="column"
-          marginTop={1}
-          borderStyle="round"
-          borderColor={theme.border}
-          paddingX={1}
-        >
-          <Text bold color={theme.brand}>
-            Your answer
-          </Text>
+        // Your own answer is written the way everything else you write is:
+        // after a pilcrow, under a hairline, like the composer.
+        <Box flexDirection="column" marginTop={1}>
+          <Text color={theme.border}>{'─'.repeat(Math.max(8, contentWidth))}</Text>
           <Box>
-            <Text color={theme.brand}>› </Text>
+            <Text color={theme.brand}>{`${PILCROW} `}</Text>
             <TextInput
               value={otherValue}
+              placeholder="Write your own answer"
               onChange={(value) => setOtherValue(value.slice(0, 2000))}
             />
           </Box>
-          <Text color={theme.subtle} dimColor>
-            Enter use answer · Esc return to choices
-          </Text>
+          <Text color={theme.inactive}>Enter use answer · Esc return to choices</Text>
         </Box>
       ) : null}
 
@@ -404,7 +358,7 @@ export function AskUserQuestionWizard({
 
       {!otherMode ? (
         <Box flexDirection="column" marginTop={1}>
-          <Text color={theme.subtle} dimColor>
+          <Text color={theme.inactive}>
             {screenReader
               ? question.multiSelect
                 ? 'Use Up and Down to move. Space or number keys toggle choices. Enter confirms. O writes another answer. Escape cancels.'
@@ -417,12 +371,12 @@ export function AskUserQuestionWizard({
                   ? '↑↓ move · Space toggle · Enter continue · 1-4 quick toggle'
                   : '↑↓ move · Enter choose · 1-4 quick choose · O custom'}
           </Text>
-          <Text color={theme.subtle} dimColor>
+          <Text color={theme.inactive}>
             {questionIndex > 0 ? '←/B back · ' : ''}D decline · Esc cancel
             {!compact ? ' · Keep secrets private' : ''}
           </Text>
         </Box>
       ) : null}
-    </Box>
+    </DecisionSheet>
   );
 }

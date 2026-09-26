@@ -304,6 +304,15 @@ export function modelBreakdownLines(
   return lines;
 }
 
+/**
+ * What /cost and /usage say for a model the table has no rate for. It speaks to
+ * the person reading the report: pointing them at a source file they cannot
+ * edit in an installed build only explained how the table is maintained.
+ */
+function unpricedLine(model: string): string {
+  return `Est. cost: pricing unknown for "${model}"; tokens are counted, dollars are not`;
+}
+
 export function costReport(
   model: string,
   usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null,
@@ -321,7 +330,7 @@ export function costReport(
   const usdLine =
     usd !== null
       ? `Est. cost: $${usd}  (estimate computed locally; may differ from your actual bill)`
-      : `Est. cost: (pricing unknown for "${model}" — add it to PRICING in src/pricing.ts)`;
+      : unpricedLine(model);
   const breakdown = modelBreakdownLines(model, usage, delegated);
   return [modelLine, tokenLine, usdLine, ...(breakdown.length ? ['', ...breakdown] : [])].join(
     '\n',
@@ -375,7 +384,7 @@ export function usageReport(
     );
     lines.push(`Est. cost: $${usd}  (local estimate — $${rate.in}/M in, $${rate.out}/M out)`);
   } else {
-    lines.push(`Est. cost: (pricing unknown for "${model}" — add it to PRICING in src/pricing.ts)`);
+    lines.push(unpricedLine(model));
   }
   if (toolCallStats && toolCallStats.length > 0) {
     const totalCalls = toolCallStats.reduce((sum, entry) => sum + entry.calls, 0);

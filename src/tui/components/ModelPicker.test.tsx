@@ -72,8 +72,8 @@ afterEach(cleanup);
 describe('ModelPicker', () => {
   it('renders custom models and the add-BYOK action', () => {
     const { view } = renderPicker();
-    expect(view.lastFrame()).toContain('Models & BYOK providers');
-    expect(view.lastFrame()).toContain('Custom  gateway  [BYOK]');
+    expect(view.lastFrame()).toContain('§ Models');
+    expect(view.lastFrame()).toContain('Custom  gateway  BYOK');
     expect(view.lastFrame()).toContain('Add BYOK provider');
     expect(view.lastFrame()).toContain('Alt+A add');
     expect(view.lastFrame()).toContain('Alt+D remove BYOK');
@@ -114,8 +114,8 @@ describe('ModelPicker', () => {
     const { view, onPick } = renderPicker();
     await write(view, 'gateway');
 
-    expect(view.lastFrame()).toContain('Filter: gateway');
-    expect(view.lastFrame()).toContain('Custom  gateway  [BYOK]');
+    expect(view.lastFrame()).toContain('¶ gateway');
+    expect(view.lastFrame()).toContain('Custom  gateway  BYOK');
     expect(view.lastFrame()).not.toContain('Built In');
 
     await write(view, '\r');
@@ -216,8 +216,8 @@ describe('ModelPicker', () => {
     await write(view, '\x1b');
 
     expect(onSaveProvider).not.toHaveBeenCalled();
-    expect(view.lastFrame()).toContain('Models & BYOK providers');
-    expect(view.lastFrame()).not.toContain('Filter: hidden-a');
+    expect(view.lastFrame()).toContain('§ Models');
+    expect(view.lastFrame()).not.toContain('¶ hidden-a');
   });
 
   it('refuses manual entry on a built-in model row', async () => {
@@ -323,7 +323,7 @@ describe('ModelPicker', () => {
     expect(frame).toContain('.book/settings.local.json');
     expect(frame).toContain('Removes credentials and all saved models.');
     expect(frame).toContain('Active provider: switches to next configured default.');
-    expect(frame).not.toContain('Filter:');
+    expect(frame).not.toContain('¶');
   });
 
   it.each(['\x1b', 'n'])('cancels confirmation with %j without removing', async (key) => {
@@ -333,8 +333,8 @@ describe('ModelPicker', () => {
     await write(view, key);
 
     expect(onRemoveProvider).not.toHaveBeenCalled();
-    expect(view.lastFrame()).toContain('Models & BYOK providers');
-    expect(view.lastFrame()).toContain('Custom  gateway  [BYOK]');
+    expect(view.lastFrame()).toContain('§ Models');
+    expect(view.lastFrame()).toContain('Custom  gateway  BYOK');
   });
 
   it.each(['\r', 'y'])('confirms removal exactly once with %j', async (key) => {
@@ -377,7 +377,7 @@ describe('ModelPicker', () => {
     await write(view, '\x1bd');
 
     expect(onRemoveProvider).not.toHaveBeenCalled();
-    expect(view.lastFrame()).toContain('Filter: (type to filter)');
+    expect(view.lastFrame()).toContain('¶ type to filter');
     expect(view.lastFrame()).not.toContain('Remove BYOK provider?');
   });
 
@@ -397,7 +397,7 @@ describe('ModelPicker', () => {
     await write(view, 'n');
 
     const frame = view.lastFrame();
-    expect(frame).toContain('Filter: gateway');
+    expect(frame).toContain('¶ gateway');
     expect(frame).toContain('› Custom  gateway');
   });
 

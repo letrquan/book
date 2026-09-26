@@ -6,6 +6,110 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **An empty session opens on a title page with a table of contents.** A five-row rubric drop cap
+  B sits beside "O O K", a running head (workspace · model), a rule and a tagline. Below it, the
+  contents list this workspace's five most recent sessions as chapters, with Roman numerals,
+  period dot leaders aligned down the page, and each session's age, followed by an index row
+  (`/resume open a chapter`, …). A first session gets a getting-started table of contents with the
+  key to press where the page number would be. When an open menu shrinks the transcript, the page
+  folds to its drop cap block. The chapters are listed after the first paint, so a large session
+  store never delays the page.
+- **Every decision surface shares one anatomy: a rule, a body, and a list of choices.** This
+  covers the permission prompt, AskUserQuestion, plan approval (the plan, its choices, and the
+  adjustment note), the MCP server trust prompt and MCP elicitation forms. Each drops its box and
+  opens with a row of air and a rule, `─ ¶ Permission required ─────── shell command ─`. The
+  surface's one tone sits on the label (amber for a write, rose for a shell command, lavender for a
+  plan), and a short note sits at the right end, or on its own row under the label when the
+  terminal is too narrow for both. The pilcrow is the composer's mark: the next move is yours.
+  - **Choices stack vertically.** The current one is marked by a rubric `›` and a bold label, with
+    no highlight bar, and details share one column. Number keys pick question answers, so those
+    rows are numbered. Permission rows are not, since a single key must never write a rule.
+    `✓` marks ticked or already-given answers. ↑↓ now move through permission and plan choices as
+    well as ←→.
+  - **Permission prompts state the action.** The first row reads `Create notes.md +3 −0`,
+    `Edit 5 files +5 −5` or `Run` with the command in a code block. A path too long for that row
+    gets a row of its own, in full, and is not repeated. The risk sentence became the rule's note,
+    and "Always allow" shows its rule pattern as plain detail instead of lavender.
+  - **Writing your own answer** (a question's Other, a plan adjustment, an MCP field) happens after
+    a pilcrow under a hairline, like the composer, instead of in a nested box.
+  - **One announcement per wait.** While a sheet is up, the "Waiting for permission" activity row
+    is hidden, because the sheet already says it. Screen readers keep the row.
+  - **Transcript rows** for AskUserQuestion and ExitPlanMode read `Ask  Fallback, Scope   2
+    questions` and `Plan  Fix the timeout fallback   3 steps` instead of a bare tool name and raw
+    markdown.
+- **Menus, reference panels and pickers are set as sheets.** The command, `@file` and skill
+  menus, `/help`, `/status`, `/permissions`, the shortcuts panel, `/config`, `/model`,
+  `/providers`, `/effort`, `/resume`, `/rewind`, `/skills`, the task list, the background-task
+  panel, and the `/usage`, `/context` and `/config` cards drop their boxes and highlight bars. Each
+  opens with a rule, `─ § Commands ───── 32 commands · type to filter ─`: the section sign marks
+  reference, as the pilcrow marks a decision, and the note at the right end holds the count or the
+  way out. Red is kept for marks and cursors; values are ink, and descriptions and hints are grey.
+  - **`/help` is generated from the command registry.** The hand-written list had fallen five
+    commands behind. Commands sit in groups (Conversation, Model, Context, Code, Agents, Setup,
+    Book, then your custom commands), with visible aliases folded in (`/clear, /new`). At 92
+    columns or more the groups flow into two columns, so the list fits on one screen.
+  - **Columns line up.** The command menu, `/config`, `/status` and `/permissions` align their
+    values down the sheet. The command menu's column includes the `[Built-in]`/`[Project]` badges
+    and holds still while you scroll. `/status` no longer cuts `workspace` to `Workspac`, and
+    `/config` shortens its labels on a narrow terminal instead of wrapping every row.
+  - **The composer menus' cursors hold still** instead of shimmering, in the `@file` and skill
+    menus as in the command menu. Hidden rows are counted in the rule's note instead of a "… N
+    more" row.
+  - **The `/usage` and `/context` cards name their command** at the end of the rule. They are
+    transcript entries, and the note used to be a "ready" indicator beside a scanning rail.
+  - **Slash-command output has air around it.** A run of `/cost`, `/mcp` and `/memory` output
+    used to read as one block glued to the reply above.
+  - **`/model` breaks its key hints between chords.** The terminal wrapped `Alt+M add model` in
+    the middle.
+- **The compact transcript folds the agent's reading into one row.** A run of read-only calls
+  (`Read`, `Glob`, `Grep`, git read tools, `ToolSearch`, task lookups, `BashOutput`, session
+  history) collapses into one grey summary row, such as `✓ Read config.ts, loader.ts   2 files · 3 searches`.
+  This holds both within one parallel batch and across consecutive turns with no text of their own.
+  Edits, `Bash`, web and MCP calls, delegation, failures and anything awaiting permission keep their
+  own rows, and so do reads outside the workspace and any row you expanded. Ctrl+O and screen
+  readers still show every call, and the detailed transcript now leaves a blank row between
+  expanded outputs. A running read joins the summary, which carries the spinner.
+- **Empty `<think></think>` blocks no longer split a turn apart.** Routers that inline reasoning
+  put one ahead of every tool call. A tool-only turn with one counted as having content, so it
+  stayed a separate transcript entry and drew two blank rows between consecutive tool rows. It now
+  merges into the turn before it like any other blank tool-only turn.
+- **Opening a composer menu no longer covers the end of the transcript.** The transcript measured
+  its viewport only on its own layout changes, and a menu is composer state the app never sees. So
+  when a menu opened, the viewport kept its old height and the menu hid the transcript's last
+  rows. The composer now reports height changes (a menu opening or closing, the draft gaining or
+  losing a row, soft wraps included), and the transcript measures again.
+- **A delegating turn no longer hides the narration before it.** A tool-only turn that spawned an
+  agent merged into the previous turn, and a merged entry holding an `AgentSpawn` hides its
+  narration, so the previous turn's sentence vanished. Such a turn now always keeps its own entry.
+- **New default look: the `rubric` theme**, set like a rubricated manuscript. Two other palettes
+  share its layout: `folio` (one gilt accent) and `apple` (the old palette). Select one with
+  `"theme"`. A palette changes colours only.
+  - **Palette:** the body is in ink (warm ivory and greys). One cinnabar red is kept for navigation
+    marks, and the agent's spinner and label stay in ink. Errors move to rose and warnings to amber,
+    so neither reads as the accent. Custom themes in `.book/themes/*.json` now start from `rubric`
+    instead of `apple`.
+  - **Your turns** open with a red `¶` in the gutter and are set in italic, with the time at the
+    right edge. This replaces the full-width `── you ──` rule. A pasted code block keeps its
+    indentation, an `@"quoted path"` stays whole and accented when it wraps, and the time column is
+    measured, so a locale that prints `19 h 13` keeps it on the first row.
+  - **Composer:** hairlines above and below replace the blue box. Its prompt is the same `¶` that
+    will open the turn, placed in the gutter so typed text lines up with the transcript. The
+    command, `@file` and skill menus attach above it with a matching hairline.
+  - **Status line:** segments are separated by a faint `·`. A dirty branch keeps its `*` but no
+    longer turns orange next to the mode. A folio (the number of turns you wrote, in lowercase
+    Roman numerals) sits at the right edge. Subagent and background-shell notifications do not
+    count.
+  - **Markdown:** H1 and H2 headings open with a red `§`. Tables use booktabs-style rules: heavy
+    above and below, light under the header, no vertical lines. Column widths are budgeted for
+    that layout, and a table whose columns would be cut below four characters is stacked instead.
+    Code-block language labels are legible.
+  - **Welcome:** an empty session opens on a four-row drop cap B, with "ook", the workspace and
+    model, and the hints set beside it. The tagline is gone, since it only repeated the composer's
+    placeholder.
+  - **Smaller fixes:** tool verbs such as `Read` and `Bash` and their metadata are no longer drawn
+    faint. The diff hunk header loses its doubled `@`. File-mutation groups use the `✓` of every
+    other finished tool row. A locked composer's placeholder is grey instead of full-strength text.
+
 - **Idle Ctrl+C now requires a second press before exiting.**
   - **Composer:** when nothing is running, a non-empty composer is cleared without arming the
     window. A running turn or `/review` is cancelled first. A recalled queued input is removed, as
@@ -132,6 +236,20 @@ All notable changes to this project are documented in this file.
   platform-specific.
 
 ### Fixed
+
+- **"Sending queued follow-up..." now clears when the follow-up is sent.** It was cleared only
+  when `send` resolved, and `send` resolves when the whole turn ends, so the notice stayed under a
+  reply that had been streaming for minutes. It now clears as soon as the queued turn starts. A
+  notice set by something else in the meantime is left alone.
+- **`/cost` no longer tells you to edit `src/pricing.ts`.** For a model Book has no price for, it
+  now says that tokens are counted and dollars are not.
+
+- **Esc now closes the command, `@file` and skill menus.** Ink reports a lone Esc with `meta`
+  set, and the composer's filter for Alt shortcuts returned before the menu handlers ran, so every
+  Esc was swallowed and the menu stayed open. The Esc that closes a menu does nothing else: it no
+  longer also cancels the running turn or drops the queued input being edited. Esc still belongs
+  to the app whenever no menu is open: it cancels a turn, drops a recalled queued input, or closes
+  a panel.
 
 - **A whole-file `Read` of a large file now says where to continue (#248).** Every tool result
   over 50 KB is clipped, and the clip's notice names a file under `BOOK_HOME/tool-output` that

@@ -10,6 +10,7 @@ import { createRenderDebugLogger } from '../../debug-log.js';
 import { modeColorToken, modeLabel } from '../mode-style.js';
 import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
 import { useDebugRender } from '../debug.js';
+import { romanNumeral } from '../roman.js';
 
 const renderLog = createRenderDebugLogger('tui:statusline');
 
@@ -20,13 +21,13 @@ const MODE_CHIP = '◆';
 const CLEAN_TREE = '✓';
 
 /**
- * Segments are separated by space, not `·`.
+ * Segments are separated by a faint middle dot.
  *
- * With every segment the same grey, the dots were the only thing separating
- * them. Now that mode, context pressure and a dirty tree each carry their own
- * colour, the dots are noise the colour already handles.
+ * The dot is drawn a step dimmer than the segments, so it separates them
+ * without adding a colour of its own. Colour is kept for a state that needs a
+ * decision, not for telling one grey fact from the next.
  */
-const SEGMENT_SEPARATOR = '   ';
+const SEGMENT_SEPARATOR = '  ·  ';
 
 interface StatusLineProps {
   model: string;
@@ -43,6 +44,8 @@ interface StatusLineProps {
   agentCount?: number;
   activeAgentCount?: number;
   needsInputAgentCount?: number;
+  /** Turns written so far; drawn at the right edge as the page's folio. */
+  turnCount?: number;
   terminalWidth?: number;
   compact?: boolean;
   reducedMotion?: boolean;
@@ -57,6 +60,7 @@ export function buildColoredSegments(
   segments: Array<{ text: string; color?: string }>,
   maxWidth: number,
   separatorText = ' · ',
+  separatorColor?: string,
 ): Array<{ text: string; color: string }> {
   const result: Array<{ text: string; color: string }> = [];
   let totalWidth = 0;
@@ -67,13 +71,21 @@ export function buildColoredSegments(
     if (candidateWidth > maxWidth) continue;
 
     const color = segment.color ?? 'text';
-    if (separator) result.push({ text: separator, color });
+    if (separator) result.push({ text: separator, color: separatorColor ?? color });
     result.push({ text: segment.text, color });
     totalWidth = candidateWidth;
   }
 
   return result;
 }
+
+/** The status line's folio: the turn count as a front-matter page number. */
+export function romanFolio(count: number): string {
+  return romanNumeral(count);
+}
+
+/** Columns kept clear between the last segment and the folio. */
+const FOLIO_GAP = 3;
 
 /**
  * Single-row responsive status line.
@@ -94,6 +106,7 @@ export function StatusLine({
   agentCount = 0,
   activeAgentCount = 0,
   needsInputAgentCount = 0,
+  turnCount = 0,
   terminalWidth = 80,
   compact = false,
   reducedMotion = false,
@@ -104,7 +117,12 @@ export function StatusLine({
   // Footer rows share the transcript's content column so the status text, the
   // activity label and every tool row start on the same column.
   const horizontalInset = CONTENT_COLUMN;
-  const contentWidth = Math.max(8, width - horizontalInset - 1);
+  // The folio takes the right edge, like a page number in the outer margin. It
+  // is the first thing a narrow row gives up.
+  const rowWidth = Math.max(8, width - horizontalInset - 1);
+  const rawFolio = romanFolio(turnCount);
+  const folio = rawFolio && rowWidth >= 40 ? rawFolio : '';
+  const contentWidth = folio ? rowWidth - displayWidth(folio) - FOLIO_GAP : rowWidth;
 
   const motionDisabled = reducedMotion || screenReader;
   const modeFlash = useTimedFlash(mode, 260, motionDisabled);
@@ -147,9 +165,11 @@ export function StatusLine({
 
     if (gitBranch && gitBranch !== '?') {
       const dirty = Boolean(gitStatus && gitStatus !== CLEAN_TREE);
+      // A dirty tree is not a warning. It is how a working tree normally looks,
+      // so the `*` says it and the colour stays quiet.
       segments.push({
         text: `${truncateDisplay(gitBranch, branchBudget)}${dirty ? '*' : ''}`,
-        color: dirty ? theme.warning : theme.subtle,
+        color: theme.subtle,
       });
     }
 
@@ -172,7 +192,7 @@ export function StatusLine({
       });
     }
 
-    return buildColoredSegments(segments, contentWidth, SEGMENT_SEPARATOR);
+    return buildColoredSegments(segments, contentWidth, SEGMENT_SEPARATOR, theme.inactive);
   }, [
     gitBranch,
     gitStatus,
@@ -185,11 +205,13 @@ export function StatusLine({
     model,
     taskCount,
     needsInputAgentCount,
+    theme.inactive,
     theme.subtle,
     theme.warning,
     width,
   ]);
 
+  const used = coloredRuns.reduce((total, run) => total + displayWidth(run.text), 0);
   return (
     <Box paddingLeft={horizontalInset} width={width} flexDirection="row" flexWrap="nowrap">
       {coloredRuns.map((run, i) => (
@@ -197,6 +219,14 @@ export function StatusLine({
           {run.text}
         </Text>
       ))}
+      {folio ? (
+        <>
+          <Text>{' '.repeat(Math.max(FOLIO_GAP, rowWidth - used - displayWidth(folio)))}</Text>
+          <Text color={theme.inactive} italic>
+            {folio}
+          </Text>
+        </>
+      ) : null}
     </Box>
   );
 }

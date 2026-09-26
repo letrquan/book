@@ -14,6 +14,7 @@ import {
   markdownBlockGap,
   nestedContentWidth,
   sliceStyledLine,
+  tableRowText,
 } from './markdown-layout.js';
 
 /** Columns a list is indented from the surrounding prose. */
@@ -514,19 +515,13 @@ function renderTableCells(
   cells: string[],
   key: string,
   theme: ReturnType<typeof useTheme>,
-  bold = false,
+  header = false,
 ) {
   return (
     <Box key={key} flexDirection="row">
-      <Text color={theme.mdTableBorder}>│ </Text>
-      {cells.map((cell, ci) => (
-        <React.Fragment key={`${key}-${ci}`}>
-          <Text bold={bold} color={theme.text}>
-            {cell}
-          </Text>
-          <Text color={theme.mdTableBorder}>{ci === cells.length - 1 ? ' │' : ' │ '}</Text>
-        </React.Fragment>
-      ))}
+      <Text bold={header} color={header ? theme.mdHeading : theme.text}>
+        {tableRowText(cells)}
+      </Text>
     </Box>
   );
 }
@@ -550,7 +545,7 @@ function renderBlockToken(
         return (
           <Box key={`h-${index}`} flexDirection="column">
             <Text bold color={theme.mdHeadingH1}>
-              {chrome.prefix}
+              <Text color={theme.brand}>{chrome.prefix}</Text>
               {chrome.text}
               {chrome.suffix}
             </Text>
@@ -561,7 +556,7 @@ function renderBlockToken(
         return (
           <Box key={`h-${index}`} flexDirection="column">
             <Text bold color={theme.mdHeadingH2}>
-              {chrome.prefix}
+              <Text color={theme.brand}>{chrome.prefix}</Text>
               {chrome.text}
               {chrome.suffix}
             </Text>
@@ -647,9 +642,7 @@ function renderBlockToken(
             // one-word paragraph — `js` sitting in the answer as if the model
             // had said it. Sharing the rail makes it a caption on the block.
             <Box {...(layout.showRail ? railCaptionProps(theme) : {})}>
-              <Text color={theme.mdCodeBorder} dimColor>
-                {layout.langLabel}
-              </Text>
+              <Text color={theme.inactive}>{layout.langLabel}</Text>
             </Box>
           ) : null}
           <Box flexDirection="column" {...boxProps}>

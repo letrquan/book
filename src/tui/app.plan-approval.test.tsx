@@ -325,7 +325,12 @@ describe('App session commands', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 25));
     view.stdin.write('\t');
-    const childFrame = await frameContaining(view, 'main > Run child checks');
+    // Wait for the tool row itself: the child's heading can land a frame before
+    // its transcript rows do, and a click aimed from that frame hits nothing.
+    // Five seconds, not the helper's two: a loaded runner took just over two.
+    await frameContaining(view, 'main > Run child checks', 5000);
+    const childFrame = await frameContaining(view, 'npm test', 5000);
+    expect(childFrame).toContain('main > Run child checks');
     expect(childFrame).not.toContain('CHILD_MOUSE_OUTPUT');
     const lines = childFrame.split('\n');
     const toolRow = lines.findIndex((line) => line.includes('npm test'));
@@ -786,14 +791,15 @@ describe('App session commands', () => {
 
     const view = render(<App config={config()} session={testSession} />);
     await submit(view, '/providers');
-    expect(stripAnsi(view.lastFrame())).toContain('Models & BYOK providers');
+    expect(stripAnsi(view.lastFrame())).toContain('§ Models');
 
     view.stdin.write('\u001B');
     await new Promise((resolve) => setTimeout(resolve, 75));
     await submit(view, '/help');
     const output = view.frames.map(stripAnsi).join('\n');
     expect(output).toContain('/providers');
-    expect(output).toContain('Alt+D removes selected local BYOK');
+    // /help is generated from the registry now; removal is in the description.
+    expect(output).toContain('Add or remove workspace BYOK providers');
   });
 
   it('opens /rewind only without arguments and lists it in help', async () => {
@@ -1023,7 +1029,7 @@ describe('App agent plan visibility', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(stripAnsi(view.lastFrame())).toContain('Completed plan marker');
-    expect(stripAnsi(view.lastFrame())).toContain('Tasks (0)');
+    expect(stripAnsi(view.lastFrame())).toMatch(/─ § Tasks ─+ 0 ─/);
   });
 });
 
@@ -1064,7 +1070,7 @@ describe('App effort command', () => {
     await submit(view, '/effort');
     const frame = stripAnsi(view.lastFrame());
 
-    expect(frame).toContain('Set effort level');
+    expect(frame).toContain('§ Effort');
     expect(frame).toContain('› high');
     expect(frame).not.toContain('Maximum reasoning depth');
   });
@@ -1097,7 +1103,7 @@ describe('App effort command', () => {
 
     await submit(view, '/effort');
 
-    expect(stripAnsi(view.lastFrame())).not.toContain('Set effort level');
+    expect(stripAnsi(view.lastFrame())).not.toContain('§ Effort');
     expect(agentState.setEffort).not.toHaveBeenCalled();
     expect(agentState.addLocalMessage).toHaveBeenCalledWith(
       '✕ Model "model-x" does not support configurable effort.',
@@ -1113,7 +1119,7 @@ describe('App effort command', () => {
     await new Promise((resolve) => setTimeout(resolve, 75));
 
     expect(stripAnsi(view.lastFrame())).toContain('Settings');
-    expect(stripAnsi(view.lastFrame())).not.toContain('Set effort level');
+    expect(stripAnsi(view.lastFrame())).not.toContain('§ Effort');
     expect(agentState.addLocalMessage).toHaveBeenCalledWith(
       '✕ Model "model-x" does not support configurable effort.',
     );
@@ -1128,7 +1134,7 @@ describe('App effort command', () => {
     await new Promise((resolve) => setTimeout(resolve, 75));
 
     const frame = stripAnsi(view.lastFrame());
-    expect(frame).toContain('Set effort level');
+    expect(frame).toContain('§ Effort');
     expect(frame).toContain('Failed to save effort level: denied');
   });
 
@@ -1144,7 +1150,10 @@ describe('App effort command', () => {
   it('lists /effort in /help', async () => {
     const { view } = renderIdle();
     await submit(view, '/help');
-    expect(view.frames.map(stripAnsi).join('\n')).toContain('/effort [low|medium|high|xhigh|max]');
+    // A wide /help drops the syntax (the command menu shows it); the row stays.
+    const output = view.frames.map(stripAnsi).join('\n');
+    expect(output).toContain('/effort');
+    expect(output).toContain('Set thinking effort');
   });
 
   // The reference sheets used to be four independent booleans, so two open
@@ -1155,11 +1164,11 @@ describe('App effort command', () => {
   it('closes the open reference panel on Esc', async () => {
     const { view } = renderIdle();
     await submit(view, '/status');
-    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Session Status');
+    expect(stripAnsi(view.lastFrame() ?? '')).toContain('§ Session');
 
     view.stdin.write('\u001b');
     await new Promise((resolve) => setTimeout(resolve, 75));
-    expect(stripAnsi(view.lastFrame() ?? '')).not.toContain('Session Status');
+    expect(stripAnsi(view.lastFrame() ?? '')).not.toContain('§ Session');
   });
 
   it('shows one reference panel at a time', async () => {
@@ -1168,14 +1177,14 @@ describe('App effort command', () => {
     await submit(view, '/permissions');
 
     const frame = stripAnsi(view.lastFrame() ?? '');
-    expect(frame).toContain('Permission Mode');
-    expect(frame).not.toContain('Session Status');
+    expect(frame).toContain('§ Permissions');
+    expect(frame).not.toContain('§ Session');
   });
 
   it('states how to close on the panel itself', async () => {
     const { view } = renderIdle();
     await submit(view, '/status');
-    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Session Status  Esc to close');
+    expect(stripAnsi(view.lastFrame() ?? '')).toMatch(/─ § Session ─+ Esc to close ─/);
   });
 });
 
@@ -1197,7 +1206,7 @@ describe('App plan approval keyboard ownership', () => {
     view.stdin.write('\x1bp');
 
     const output = stripAnsi(view.lastFrame());
-    expect(output).not.toContain('Models & BYOK providers');
+    expect(output).not.toContain('§ Models');
     expect(agentState.resolvePlanApproval).not.toHaveBeenCalled();
   });
 

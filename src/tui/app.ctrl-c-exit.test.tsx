@@ -547,7 +547,7 @@ describe('idle Ctrl+C exit confirmation', () => {
     press(view, '/status');
     await waitForFrame(view, '> /status');
     press(view, '\r');
-    await waitForFrame(view, 'Session Status');
+    await waitForFrame(view, '§ Session');
 
     expect(frameOf(view)).not.toContain('Editing queued input');
     await armExit(view);
@@ -564,7 +564,7 @@ describe('idle Ctrl+C exit confirmation', () => {
     press(view, '/status');
     await waitForFrame(view, '> /status');
     press(view, '\r');
-    await waitForFrame(view, 'Session Status');
+    await waitForFrame(view, '§ Session');
     await waitForFrame(view, 'Queue paused');
     rerenderWith({ isThinking: false });
 
@@ -774,5 +774,97 @@ describe('idle Ctrl+C exit confirmation', () => {
     await waitForFrame(view, CTRL_C_EXIT_HINT_TEXT);
     expect(state.cancel).not.toHaveBeenCalled();
     expect(state.endCurrentSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('queued follow-up notice', () => {
+  // `send` resolves when the whole turn ends. The notice used to clear only
+  // then, so "Sending queued follow-up..." sat under a reply that had been
+  // streaming for minutes, reading as a queue that had stuck.
+  it('clears once the queued turn starts, not when it finishes', async () => {
+    const send = vi.fn(() => new Promise(() => {}));
+    const { view, rerenderWith } = await startIdleApp({ isThinking: true, send });
+
+    press(view, 'follow up');
+    await waitForFrame(view, '> follow up');
+    press(view, '\r');
+    await waitForFrame(view, 'Queued follow-up inputs (1)');
+
+    rerenderWith({ isThinking: false, send });
+    await waitForFrame(view, 'Sending queued follow-up...');
+    expect(send).toHaveBeenCalledWith('follow up');
+
+    rerenderWith({ isThinking: true, send });
+    await waitForFrameWithout(view, 'Sending queued follow-up...');
+  });
+});
+
+describe('Esc with a composer menu open', () => {
+  // Ink hands a key to every input handler. The composer closed its menu on
+  // Esc, and the app's handler, which knew nothing of the menu, cancelled the
+  // running turn behind it.
+  it('closes the menu without cancelling the running turn', async () => {
+    const { view, state } = await startIdleApp({ isThinking: true });
+
+    press(view, '/');
+    await waitForFrame(view, '§ Commands');
+    press(view, '\u001b');
+    await waitForFrameWithout(view, '§ Commands');
+    expect(state.cancel).not.toHaveBeenCalled();
+
+    // With the menu gone, Esc means "cancel the turn" again.
+    press(view, '\u001b');
+    await waitUntil(() => expect(state.cancel).toHaveBeenCalledTimes(1));
+  });
+
+  it('closes the menu without dropping the queued input being edited', async () => {
+    const { view, state } = await startIdleApp({ isThinking: true });
+    await queueAndRecallNewest(view, ['keep me']);
+
+    // Clear the recalled text (Ctrl+U) so a leading slash opens the menu.
+    press(view, '\x15');
+    await waitForFrameWithout(view, '> keep me');
+    press(view, '/');
+    await waitForFrame(view, '§ Commands');
+    press(view, '\u001b');
+    await waitForFrameWithout(view, '§ Commands');
+
+    expect(frameOf(view)).not.toContain('Queued input removed');
+    expect(state.cancel).not.toHaveBeenCalled();
+  });
+});
+
+describe('title page contents', () => {
+  // The title page is the sighted layout; screen readers get a prose summary.
+  const pageConfig = () => {
+    const pageConfig = config();
+    pageConfig.accessibility = { screenReader: false, reducedMotion: true };
+    return pageConfig;
+  };
+
+  // Listing reads the session index synchronously; on first render it held the
+  // first paint of every launch until every unindexed session file had loaded.
+  it('lists recent sessions after the first paint, not during it', async () => {
+    const listSessions = vi.fn(() => [
+      { id: 'earlier', name: 'Earlier chapter', updatedAt: Date.now() - 60_000, messageCount: 4 },
+    ]);
+    installAgentState(agentState({ listSessions }));
+    const view = render(<App config={pageConfig()} session={testSession} />);
+
+    expect(listSessions).not.toHaveBeenCalled();
+    // While it waits, the page shows no contents at all, not the first-run list
+    // a returning reader would then see flip to their chapters.
+    expect(frameOf(view)).not.toContain('Ask for a change in your own words');
+    expect(frameOf(view)).not.toContain('Your first chapter begins below');
+    await waitForFrame(view, 'Earlier chapter');
+    expect(listSessions).toHaveBeenCalledTimes(1);
+    expect(frameOf(view)).not.toContain('Ask for a change in your own words');
+  });
+
+  it('shows the getting-started contents when there are genuinely no sessions', async () => {
+    const listSessions = vi.fn(() => []);
+    installAgentState(agentState({ listSessions }));
+    const view = render(<App config={pageConfig()} session={testSession} />);
+    await waitForFrame(view, 'Ask for a change in your own words');
   });
 });

@@ -4,6 +4,8 @@ import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { DensityContext, type TuiDensity } from '../density.js';
 import { ChatPanel, getCompletedTimelineWindow, getStreamingTimelineWindow } from './ChatPanel.js';
 import { AgentMessage } from './AgentMessage.js';
+import { DROP_CAP } from './WelcomeScreen.js';
+import { PILCROW } from '../marks.js';
 import type { FileMutationSummary, ToolCall, ToolResult } from '../../types/tools.js';
 import type { Message } from '../../types/messages.js';
 
@@ -141,8 +143,9 @@ describe('ChatPanel Ink rendering', () => {
     );
 
     const output = frame(view.lastFrame);
-    expect(output).toContain('╭ BOOK');
-    expect(output).toContain('Ask anything, or type / for a command.');
+    expect(output).toContain(DROP_CAP[0].trimEnd());
+    expect(output).toMatch(/O O K\s+book · model-x/);
+    expect(output).toContain('C O N T E N T S');
     expect(output).toContain('/help');
   });
 
@@ -331,12 +334,12 @@ describe('ChatPanel Ink rendering', () => {
     );
 
     const output = frame(view.lastFrame);
-    expect(output).not.toContain('╭ BOOK');
+    expect(output).not.toContain(DROP_CAP[0]);
     expect(output).not.toContain('You');
     expect(output).not.toContain('Book');
-    // The user turn opens with a labelled rule instead of a tinted card.
-    expect(output).toContain('── you ');
-    expect(output).toContain('compact request');
+    // The user turn opens with a pilcrow, with no role label.
+    expect(output).toContain(`${PILCROW} compact request`);
+    expect(output).not.toContain('── you ');
     expect(output).toContain('compact reply');
   });
 
@@ -379,10 +382,10 @@ describe('ChatPanel Ink rendering', () => {
     const answerLine = lines.findIndex((line) => line.includes('FIRST_ANSWER_MARKER'));
     const nextQuestionLine = lines.findIndex((line) => line.includes('SECOND_QUESTION_MARKER'));
 
-    // Blank row, then the turn rule, then the prompt: the next turn is three
-    // rows below the answer, one of which is the boundary itself.
-    expect(nextQuestionLine - answerLine).toBe(3);
-    expect(lines[nextQuestionLine - 1]).toContain('── you ');
+    // Blank row, then the prompt: the pilcrow marks the boundary itself, so the
+    // next turn needs no separate rule row.
+    expect(nextQuestionLine - answerLine).toBe(2);
+    expect(lines[nextQuestionLine]).toContain(`${PILCROW} SECOND_QUESTION_MARKER`);
   });
 
   it('keeps wrapped content mounted exactly once when streaming completes', () => {
@@ -1512,8 +1515,157 @@ describe('ChatPanel Ink rendering', () => {
     );
     const output = frame(view.lastFrame);
 
-    expect(output).toContain('/usage · Session telemetry');
+    expect(output).toContain('─ § Usage ─');
     expect(output).toContain('input 1,000');
     expect(output).not.toContain('Session usage plain fallback');
+  });
+
+  it('leaves exactly one blank row above each slash-command output', () => {
+    const local = (id: string, content: string): Message => ({
+      ...msg(id, 'assistant', content),
+      kind: 'local',
+      includeInContext: false,
+    });
+    const usage: Message = {
+      ...local('local-usage', 'Session usage plain fallback'),
+      localCommand: {
+        kind: 'usage',
+        model: 'claude-sonnet-5',
+        currentTurn: 1,
+        messageCount: 2,
+        turnDurationMs: 800,
+        usage: { promptTokens: 100, completionTokens: 20, totalTokens: 120 },
+      },
+    };
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[
+            msg('reply', 'assistant', 'REPLY-TEXT'),
+            local('cost', 'COST-TEXT'),
+            usage,
+            local('mcp', 'MCP-TEXT'),
+          ]}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+    const rows = frame(view.lastFrame).split('\n');
+    const gapAbove = (pattern: RegExp) => {
+      const at = rows.findIndex((row) => pattern.test(row));
+      let blank = 0;
+      for (let index = at - 1; index >= 0 && rows[index]!.trim() === ''; index--) blank++;
+      return blank;
+    };
+    // The card used to carry its own top margin on top of the transcript's,
+    // so it alone sat under two blank rows.
+    expect(gapAbove(/COST-TEXT/)).toBe(1);
+    expect(gapAbove(/─ § Usage ─/)).toBe(1);
+    expect(gapAbove(/MCP-TEXT/)).toBe(1);
+  });
+});
+
+describe('ChatPanel quiet tool runs', () => {
+  const readTurn = (id: string, file: string, content = '<think></think>'): Message => ({
+    ...msg(id, 'assistant', content),
+    toolCalls: [{ id: `${id}-read`, name: 'Read', arguments: { file_path: file } }],
+    toolResults: [successResult(`${id}-read`, 'contents')],
+  });
+  const session: Message[] = [
+    msg('u1', 'user', 'look around'),
+    readTurn('a1', 'src/a.ts', 'Reading the three modules.'),
+    readTurn('a2', 'src/b.ts'),
+    readTurn('a3', 'src/c.ts'),
+    {
+      ...msg('a4', 'assistant', ''),
+      toolCalls: [{ id: 'edit', name: 'Edit', arguments: { file_path: 'src/c.ts' } }],
+      toolResults: [failureResult('edit', 'old_string not found')],
+    },
+  ];
+
+  it('folds one-read turns into a single summary row in the compact transcript', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel messages={session} terminalWidth={100} transcriptMode="compact" reducedMotion />,
+      ),
+    );
+    const lines = frame(view.lastFrame).split('\n');
+
+    const summary = lines.filter((line) => /Read\s+a\.ts, b\.ts, c\.ts/.test(line));
+    expect(summary).toHaveLength(1);
+    expect(summary[0]).toContain('3 files');
+    expect(lines.some((line) => /Read\s+src\/b\.ts/.test(line))).toBe(false);
+    // The narration that started the run still shows, and the failed edit keeps its row.
+    expect(lines.some((line) => line.includes('Reading the three modules.'))).toBe(true);
+    expect(lines.some((line) => line.includes('old_string not found'))).toBe(true);
+  });
+
+  it('shows every call again in the detailed transcript', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={session}
+          terminalWidth={100}
+          transcriptMode="detailed"
+          reducedMotion
+        />,
+      ),
+    );
+    const output = frame(view.lastFrame);
+    for (const file of ['a', 'b', 'c']) {
+      expect(output).toMatch(new RegExp(`Read\\s+src/${file}\\.ts`));
+    }
+    expect(output).not.toMatch(/Read\s+a\.ts, b\.ts/);
+  });
+
+  it('gives a pinned read back its own row', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={session}
+          terminalWidth={100}
+          transcriptMode="compact"
+          toolExpansionOverrides={new Map([['a2-read', true]])}
+          reducedMotion
+        />,
+      ),
+    );
+    const output = frame(view.lastFrame);
+    expect(output).toMatch(/Read\s+src\/b\.ts/);
+    expect(output).not.toMatch(/a\.ts, b\.ts, c\.ts/);
+  });
+});
+
+describe('ChatPanel folding keeps delegation narration', () => {
+  it('keeps the sentence before a read when the next turn delegates', () => {
+    const messages: Message[] = [
+      msg('u1', 'user', 'check the loader'),
+      {
+        ...msg('a1', 'assistant', 'Let me check the loader.'),
+        toolCalls: [{ id: 'r1', name: 'Read', arguments: { file_path: 'src/config.ts' } }],
+        toolResults: [successResult('r1', 'contents')],
+      },
+      {
+        ...msg('a2', 'assistant', '<think></think>'),
+        toolCalls: [
+          { id: 'spawn', name: 'AgentSpawn', arguments: { profile: 'explorer', task: 'x' } },
+        ],
+      },
+    ];
+    for (const transcriptMode of ['compact', 'detailed'] as const) {
+      const view = render(
+        withTheme(
+          <ChatPanel
+            messages={messages}
+            terminalWidth={100}
+            transcriptMode={transcriptMode}
+            reducedMotion
+          />,
+        ),
+      );
+      expect(frame(view.lastFrame)).toContain('Let me check the loader.');
+      cleanup();
+    }
   });
 });

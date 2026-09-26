@@ -2,22 +2,15 @@ import { useMemo } from 'react';
 import { ListPicker } from './ListPicker.js';
 import type { SessionMeta } from '../../types/sessions.js';
 import { displaySessionName } from '../../session/name.js';
+import { formatAge } from '../relative-age.js';
 
 interface SessionPickerProps {
+  /** Sheet width, from the panel grid; without it the head falls back to a plain title. */
+  width?: number;
   sessions: SessionMeta[];
   currentSessionId: string;
   onPick: (session: SessionMeta) => void;
   onCancel: () => void;
-}
-
-function formatAge(timestamp: number): string {
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return 'just now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
 }
 
 export function SessionPicker({
@@ -25,6 +18,7 @@ export function SessionPicker({
   currentSessionId,
   onPick,
   onCancel,
+  width,
 }: SessionPickerProps) {
   const choices = useMemo(
     () => sessions.filter((session) => session.id !== currentSessionId),
@@ -43,7 +37,8 @@ export function SessionPicker({
 
   return (
     <ListPicker
-      title="Resume conversation"
+      title="Resume"
+      width={width}
       items={items}
       // This list used to be cut to twelve rows while the cursor still wrapped
       // over every session, so past the twelfth nothing was highlighted and

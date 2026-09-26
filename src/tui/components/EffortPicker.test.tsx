@@ -16,6 +16,7 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof EffortPicke
       <EffortPicker
         current="high"
         availableLevels={['low', 'medium', 'high', 'xhigh', 'max']}
+        width={79}
         onSelect={onSelect}
         onCancel={onCancel}
         {...overrides}
@@ -37,7 +38,7 @@ describe('EffortPicker', () => {
     const { view } = renderPicker();
     const frame = stripAnsi(view.lastFrame());
 
-    expect(frame).toContain('Set effort level');
+    expect(frame).toContain('§ Effort');
     expect(frame).toContain('› high');
     expect(frame).toContain('(current)');
     expect(frame).toContain('Maximum reasoning depth');
@@ -90,7 +91,7 @@ describe('EffortPicker', () => {
 
     await write(view, '\r');
     const frame = stripAnsi(view.lastFrame());
-    expect(frame).toContain('Set effort level');
+    expect(frame).toContain('§ Effort');
     expect(frame).toContain('settings.local.json is read-only');
   });
 

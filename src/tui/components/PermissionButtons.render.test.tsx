@@ -6,10 +6,22 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import stripAnsi from 'strip-ansi';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
+import { displayWidth } from './word-wrap.js';
 import { PermissionButtons, toolRiskLevel, wrapPayload } from './PermissionButtons.js';
 
 function withTheme(children: React.ReactElement): React.ReactElement {
   return <ThemeContext.Provider value={DEFAULT_THEME}>{children}</ThemeContext.Provider>;
+}
+
+/** How often `text` appears outside the "Always allow" row, which names the rule. */
+function mentions(frame: string, text: string): number {
+  return (
+    frame
+      .split('\n')
+      .filter((line) => !line.includes('Always allow'))
+      .join('\n')
+      .split(text).length - 1
+  );
 }
 
 const workspaces: string[] = [];
@@ -188,17 +200,17 @@ describe('PermissionButtons', () => {
     const armed = (frame: string) =>
       frame
         .split('\n')
-        .find((line) => line.includes('▸'))
+        .find((line) => line.trimStart().startsWith('›'))
         ?.trim();
 
-    expect(armed(stripAnsi(view.lastFrame() ?? ''))).toContain('▸ Run once');
+    expect(armed(stripAnsi(view.lastFrame() ?? ''))).toContain('› Run once');
 
     view.stdin.write('\u001b[C');
     await waitForImmediate();
     const moved = armed(stripAnsi(view.lastFrame() ?? ''));
-    expect(moved).toContain('▸ Skip');
+    expect(moved).toContain('› Skip');
     // Exactly one marker: two would read as two armed buttons.
-    expect((stripAnsi(view.lastFrame() ?? '').match(/▸/g) ?? []).length).toBe(1);
+    expect((stripAnsi(view.lastFrame() ?? '').match(/›/g) ?? []).length).toBe(1);
   });
 
   it('keeps R and S as single-key shortcuts', () => {
@@ -238,7 +250,7 @@ describe('PermissionButtons payload', () => {
     // Every character of the command is on screen, across rows.
     const joined = frame
       .split('\n')
-      .map((line) => line.replace(/^│ ?/, '').replace(/ ?│$/, ''))
+      .map((line) => line.replace(/^ {2}/, ''))
       .join('');
     expect(joined).toContain('echo cleaned up every old log file in this tree');
     expect(frame).not.toContain('more rows');
@@ -256,7 +268,27 @@ describe('PermissionButtons payload', () => {
         />,
       ),
     );
-    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Permission required · Read README.md');
+    const lines = stripAnsi(view.lastFrame() ?? '').split('\n');
+    // A row of air, the rule, then the action and its argument on one row.
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toMatch(/^─ ¶ Permission required ─+$/);
+    expect(lines[2]).toBe('  Read README.md');
+  });
+
+  it('heads the prompt with a rule instead of boxing it', () => {
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'read-2', name: 'Read', arguments: { file_path: 'README.md' } }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+        />,
+      ),
+    );
+    const frame = stripAnsi(view.lastFrame() ?? '');
+    expect(frame).not.toMatch(/[╭╮╰╯│]/);
+    const rule = frame.split('\n')[1]!;
+    expect(displayWidth(rule)).toBe(79);
   });
 
   it('marks a cut it has to make and opens it on D', async () => {
@@ -301,7 +333,34 @@ describe('PermissionButtons payload', () => {
     );
     const frame = await frameContaining(view, '+ delta');
     expect(frame).toContain('- beta');
-    expect(frame).toContain('update notes.txt +1 −1');
+    // One file is named by the title row, which says what the change does.
+    expect(frame).toContain('Edit notes.txt +1 −1');
+    // A short path is said there, and again only in the "Always allow" rule.
+    expect(mentions(frame, 'notes.txt')).toBe(1);
+  });
+
+  it('gives a path too long for the title row the rows below, and says it once', async () => {
+    // It used to show cut short on the title row and again in full underneath.
+    const name = 'the-permission-sheet-names-this-once.txt';
+    const root = makeWorkspace({ [name]: 'alpha\nbeta\n' });
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{
+            id: 'edit-long',
+            name: 'Edit',
+            arguments: { filePath: name, oldString: 'beta', newString: 'delta' },
+          }}
+          onResolve={vi.fn()}
+          terminalWidth={50}
+          workspaceRoot={root}
+        />,
+      ),
+    );
+    const frame = await frameContaining(view, '+ delta');
+    expect(mentions(frame, name)).toBe(1);
+    expect(frame).toMatch(/Edit \+1 −1/);
+    expect(frame).not.toContain('the-permission-sheet…');
   });
 
   it('says why a mutation cannot be previewed instead of hiding it', async () => {
@@ -393,7 +452,7 @@ describe('PermissionButtons payload', () => {
     expect(frame).toContain('update a.txt +1 −1');
     expect(frame).not.toContain('update b.txt');
     expect(frame).toContain('… 4 more files · +4 −4');
-    expect(frame).toContain('5 files · +5 −5');
+    expect(frame).toContain('Edit 5 files +5 −5');
     // Nothing more can open on a terminal this short, so D is not offered
     // and does not pretend to have opened anything.
     expect(frame).not.toContain('D more');

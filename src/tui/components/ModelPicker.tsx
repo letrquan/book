@@ -3,6 +3,7 @@ import TextInput from './TextInputField.js';
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
+import { PILCROW } from '../marks.js';
 import type { AgentConfig } from '../../types/runtime.js';
 import type { ProviderConfig } from '../../settings.js';
 import { resolveSecret } from '../../config.js';
@@ -17,6 +18,8 @@ import { ByokWizard } from './ByokWizard.js';
 import { modelPickerHints } from './model-picker-hints.js';
 import { useDensityMetrics } from '../density.js';
 import { stripSgrMouseSequences } from '../mouse.js';
+import { SoftPanel } from './chrome.js';
+import { panelGrid, sheetContentWidth } from '../layout.js';
 
 export type ProviderRemovalResult =
   | {
@@ -34,6 +37,8 @@ export type ProviderRemovalResult =
 
 interface ModelPickerProps {
   title?: string;
+  /** Terminal columns; the sheet's rule spans them. */
+  terminalWidth?: number;
   options: ModelPickerOption[];
   currentModel: string;
   currentEffort?: AgentConfig['effort'];
@@ -65,6 +70,7 @@ function plural(count: number): string {
 
 export function ModelPicker({
   title,
+  terminalWidth = 80,
   options,
   currentModel,
   currentEffort,
@@ -88,6 +94,7 @@ export function ModelPicker({
   onCancel,
 }: ModelPickerProps) {
   const theme = useTheme();
+  const sheetWidth = panelGrid(Math.max(20, Math.floor(terminalWidth))).width;
   const density = useDensityMetrics();
   const [selected, setSelected, currentSelected] = useKeyState(0);
   const [filter, setFilter] = useState('');
@@ -429,13 +436,12 @@ export function ModelPicker({
 
   if (manualEntry) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
-        <Text bold color={theme.brand}>
-          Add models to {manualEntry.providerId}
+      <SoftPanel title={`Add models to ${manualEntry.providerId}`} width={sheetWidth}>
+        <Text bold color={theme.text}>
+          Model IDs
         </Text>
-        <Text bold>Model IDs</Text>
         <Box>
-          <Text color={theme.brand}>› </Text>
+          <Text color={theme.brand}>{`${PILCROW} `}</Text>
           <TextInput
             value={manualEntry.value}
             onChange={(value) => setManualEntry({ providerId: manualEntry.providerId, value })}
@@ -445,20 +451,15 @@ export function ModelPicker({
         <Text color={theme.subtle} dimColor>
           Comma-separate to add several. Kept when the list is refreshed.
         </Text>
-        <Text color={theme.subtle} dimColor>
-          Enter add · Esc cancel
-        </Text>
+        <Text color={theme.inactive}>Enter add · Esc cancel</Text>
         {error && <Text color={theme.error}>✕ {error}</Text>}
-      </Box>
+      </SoftPanel>
     );
   }
 
   if (removal) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
-        <Text bold color={theme.error}>
-          Remove BYOK provider?
-        </Text>
+      <SoftPanel tone="error" title="Remove BYOK provider?" width={sheetWidth}>
         <Text>
           Provider: <Text bold>{removal.providerId}</Text>
         </Text>
@@ -470,11 +471,9 @@ export function ModelPicker({
             ? 'Active provider: switches to next configured default.'
             : 'Active model: remains unchanged.'}
         </Text>
-        <Text color={theme.subtle} dimColor>
-          Enter or Y remove · N or Esc cancel
-        </Text>
+        <Text color={theme.inactive}>Enter or Y remove · N or Esc cancel</Text>
         {error && <Text color={theme.error}>✕ {error}</Text>}
-      </Box>
+      </SoftPanel>
     );
   }
 
@@ -501,40 +500,43 @@ export function ModelPicker({
       : undefined;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
-      <Text bold color={theme.brand}>
-        {title ?? (allowProviderManagement ? 'Models & BYOK providers' : 'Choose subagent model')}
+    <SoftPanel
+      title={title ?? (allowProviderManagement ? 'Models' : 'Choose subagent model')}
+      meta={`${filteredOptions.length} ${filteredOptions.length === 1 ? 'model' : 'models'}`}
+      width={sheetWidth}
+    >
+      {/* Typing filters, the way the composer takes a prompt: after a pilcrow. */}
+      <Text>
+        <Text color={theme.brand}>{`${PILCROW} `}</Text>
+        <Text color={filter ? theme.text : theme.inactive}>{filter || 'type to filter'}</Text>
       </Text>
-      <Text color={theme.brand}>Filter: {filter || '(type to filter)'}</Text>
-      <Box flexDirection="column">
+      <Box flexDirection="column" marginTop={1}>
         {rows.map((row, visibleIndex) => {
           const index = windowStart + visibleIndex;
           const isSelected = index === selected && !onEffort;
           if (row.type === 'add') {
             return (
-              <Text
-                key="add-byok"
-                backgroundColor={isSelected ? theme.surfaceActive : undefined}
-                color={isSelected ? theme.selectionText : theme.brand}
-                bold={isSelected}
-              >
-                {isSelected ? '›' : ' '} + Add BYOK provider…
+              <Text key="add-byok">
+                <Text color={theme.brand}>{isSelected ? '› ' : '  '}</Text>
+                <Text color={isSelected ? theme.selectionText : theme.subtle} bold={isSelected}>
+                  + Add BYOK provider…
+                </Text>
               </Text>
             );
           }
           const option = row.option;
           const isCurrent = option.id === currentModel;
           return (
-            <Text
-              key={option.id}
-              backgroundColor={isSelected ? theme.surfaceActive : undefined}
-              color={isSelected ? theme.selectionText : isCurrent ? theme.brand : theme.subtle}
-              bold={isSelected || isCurrent}
-            >
-              {isSelected ? '›' : ' '} {option.label}
-              {option.providerId ? `  ${option.providerId}` : ''}
-              {option.providerId && removableProviderIds.has(option.providerId) ? '  [BYOK]' : ''}
-              {isCurrent ? '  (current)' : ''}
+            <Text key={option.id}>
+              <Text color={theme.brand}>{isSelected ? '› ' : '  '}</Text>
+              <Text color={isSelected ? theme.selectionText : theme.text} bold={isSelected}>
+                {option.label}
+              </Text>
+              <Text color={theme.inactive}>
+                {option.providerId ? `  ${option.providerId}` : ''}
+                {option.providerId && removableProviderIds.has(option.providerId) ? '  BYOK' : ''}
+              </Text>
+              {isCurrent ? <Text color={theme.brand}>{'  ✓ current'}</Text> : null}
             </Text>
           );
         })}
@@ -552,16 +554,17 @@ export function ModelPicker({
           editableProviderId: refreshing ? undefined : editableProviderId,
           compact: compact || !density.showOptionalHelp,
           filterable: true,
+          width: sheetContentWidth(sheetWidth),
         }).map((line) => (
-          <Text key={line} color={theme.subtle} dimColor>
+          <Text key={line} color={theme.inactive}>
             {line}
           </Text>
         ))}
-        {refreshing && <Text color={theme.brand}>Refreshing {refreshing} models…</Text>}
+        {refreshing && <Text color={theme.subtle}>Refreshing {refreshing} models…</Text>}
         {notice && !refreshing && <Text color={theme.success}>✓ {notice}</Text>}
         {onEffort && (
-          <Text color={theme.brand} bold>
-            Effort [{displayedEffort}] <Text color={theme.subtle}>← → adjust</Text>
+          <Text color={theme.text} bold>
+            Effort [{displayedEffort}] <Text color={theme.inactive}>← → adjust</Text>
           </Text>
         )}
         {error && <Text color={theme.error}>✕ {error}</Text>}
@@ -576,6 +579,6 @@ export function ModelPicker({
           </Text>
         ))}
       </Box>
-    </Box>
+    </SoftPanel>
   );
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { displayWidth } from './word-wrap.js';
+import { SECTION_SIGN } from '../marks.js';
 import {
   allocateTableColumns,
   layoutCodeBlock,
@@ -9,6 +10,7 @@ import {
   markdownBlockGap,
   nestedContentWidth,
   sliceStyledLine,
+  tableRowText,
 } from './markdown-layout.js';
 
 describe('markdownBlockGap', () => {
@@ -39,10 +41,24 @@ describe('allocateTableColumns', () => {
   it('shrinks columns to fit terminal width', () => {
     const widths = allocateTableColumns([20, 20], 30);
     expect(widths).not.toBeNull();
-    // total = sum(w) + 3n + 1 = sum + 7 for n=2
-    const total = widths!.reduce((a, b) => a + b, 0) + 3 * 2 + 1;
-    expect(total).toBeLessThanOrEqual(30);
+    // total = sum(w) + 3n - 1 = sum + 5 for n=2: a gap between, air at the ends.
+    const total = widths!.reduce((a, b) => a + b, 0) + 3 * 2 - 1;
+    expect(total).toBe(30);
     expect(widths!.every((w) => w >= 1)).toBe(true);
+  });
+
+  it('keeps a table that exactly fits at its natural widths', () => {
+    // The budget still counted the boxed grid's two vertical borders, so a
+    // table two columns short of the edge was squeezed anyway.
+    expect(allocateTableColumns([10, 20], 35)).toEqual([10, 20]);
+    const layout = layoutTable({
+      header: [{ text: 'x'.repeat(10) }, { text: 'y'.repeat(20) }],
+      rows: [],
+      align: [null, null],
+      terminalWidth: 35,
+    });
+    expect(layout.mode).toBe('grid');
+    if (layout.mode === 'grid') expect(layout.totalWidth).toBe(35);
   });
 
   it('returns null when even minimum columns cannot fit', () => {
@@ -60,7 +76,7 @@ describe('layoutTable', () => {
     align: ['left', 'right'] as Array<'left' | 'right'>,
   };
 
-  it('produces borders matching body width', () => {
+  it('produces rules matching body width', () => {
     const layout = layoutTable({ ...sample, terminalWidth: 40 });
     expect(layout.mode).toBe('grid');
     if (layout.mode !== 'grid') return;
@@ -69,7 +85,7 @@ describe('layoutTable', () => {
     expect(displayWidth(layout.bottom)).toBe(layout.totalWidth);
     // Body row reconstructed width matches borders.
     for (const row of [layout.headerCells, ...layout.bodyRows]) {
-      const body = `│ ${row.join(' │ ')} │`;
+      const body = tableRowText(row);
       expect(displayWidth(body)).toBe(layout.totalWidth);
     }
   });
@@ -132,7 +148,7 @@ describe('layoutTable', () => {
         expect(displayWidth(layout.top)).toBe(layout.totalWidth);
         expect(displayWidth(layout.bottom)).toBe(layout.totalWidth);
         for (const row of [...layout.headerRows, ...layout.bodyRows]) {
-          const body = `│ ${row.join(' │ ')} │`;
+          const body = tableRowText(row);
           expect(displayWidth(body)).toBe(layout.totalWidth);
         }
       } else {
@@ -231,15 +247,21 @@ describe('layoutHeadingChrome / hr / nested budgets', () => {
     expect(displayWidth(h3.prefix + h3.text)).toBeLessThanOrEqual(12);
   });
 
-  it('gives headings no side chrome at any depth', () => {
-    // Hierarchy is carried by weight and brightness. Side rules here read as
-    // turn boundaries, which is the transcript's job, not a heading's.
+  it('marks only the two structuring headings, and with a section sign alone', () => {
+    // Hierarchy is carried by weight and brightness. H1 and H2 open with a
+    // rubricated section sign; nothing gets side rules, which read as turn
+    // boundaries.
     for (const depth of [1, 2, 3, 4, 5, 6]) {
       const chrome = layoutHeadingChrome('Root cause', depth, 80);
-      expect(chrome.prefix).toBe('');
+      expect(chrome.prefix).toBe(depth <= 2 ? `${SECTION_SIGN} ` : '');
       expect(chrome.suffix).toBe('');
       expect(chrome.text).toBe('Root cause');
     }
+  });
+
+  it('fits the section sign and the heading inside the width together', () => {
+    const chrome = layoutHeadingChrome('A heading far too long for its row', 2, 12);
+    expect(displayWidth(chrome.prefix + chrome.text)).toBeLessThanOrEqual(12);
   });
 
   it('builds horizontal rules within bounds', () => {

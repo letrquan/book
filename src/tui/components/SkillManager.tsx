@@ -5,8 +5,9 @@ import type { Skill } from '../../skills.js';
 import type { SkillLifecycleEvent } from '../../skill-registry.js';
 import type { SkillActivation, SkillExecution } from '../../settings.js';
 import { useTheme } from '../theme.js';
+import { PILCROW } from '../marks.js';
 import { stripSgrMouseSequences } from '../mouse.js';
-import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
+import { floatingFrameMetrics, SelectionRow, SoftPanel } from './chrome.js';
 import { truncateDisplay } from './word-wrap.js';
 
 const ACTIVATIONS: readonly SkillActivation[] = ['auto', 'name-only', 'manual', 'off'];
@@ -185,13 +186,22 @@ export function SkillManager({
     : undefined;
 
   return (
-    <SoftPanel tone="brand" width={frame.width} marginX={frame.marginX}>
-      <PanelTitle>Manage skills</PanelTitle>
+    <SoftPanel
+      title="Skills"
+      meta={`${skills.length} discovered`}
+      width={frame.width}
+      marginX={frame.marginX}
+    >
       <Text color={enabled ? theme.success : theme.warning}>
         {enabled ? 'Enabled' : 'Globally off'} · {skills.length} discovered
         {query ? ` · ${filteredSkills.length} matching "${query}"` : ''}
       </Text>
-      {searching ? <Text color={theme.brand}>Search: {query || '_'}</Text> : null}
+      {searching ? (
+        <Text>
+          <Text color={theme.brand}>{`${PILCROW} `}</Text>
+          <Text color={query ? theme.text : theme.inactive}>{query || 'search skills'}</Text>
+        </Text>
+      ) : null}
       {watcherError ? (
         <Text color={theme.warning}>
           Watcher: {truncateDisplay(watcherError, Math.max(8, contentWidth - 9))}

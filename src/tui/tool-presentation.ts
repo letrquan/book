@@ -141,6 +141,9 @@ const LABELS: Record<string, string> = {
   TodoWrite: 'Update todos',
   Task: 'Task',
   InvokeSkill: 'Skill',
+  AskUserQuestion: 'Ask',
+  ExitPlanMode: 'Plan',
+  EnterPlanMode: 'Plan mode',
 };
 
 export function formatDuration(durationMs: number | undefined): string | undefined {
@@ -385,6 +388,31 @@ export function deriveToolPresentation(
   } else if (canonicalName === 'WebSearch') {
     target = stringArg(args, 'query') ?? target;
     previewType = result?.content ? 'markdown' : 'none';
+  } else if (canonicalName === 'AskUserQuestion') {
+    // `Ask  Fallback, Scope   2 questions`, not the tool's name and nothing else.
+    const questions = Array.isArray(args.questions) ? (args.questions as unknown[]) : [];
+    const headers = questions
+      .map((question) =>
+        question &&
+        typeof question === 'object' &&
+        typeof (question as { header?: unknown }).header === 'string'
+          ? (question as { header: string }).header.trim()
+          : '',
+      )
+      .filter(Boolean);
+    target = headers.join(', ') || undefined;
+    if (questions.length > 0) {
+      metadata = [`${questions.length} ${questions.length === 1 ? 'question' : 'questions'}`];
+    }
+  } else if (canonicalName === 'ExitPlanMode') {
+    // `Plan  Fix the timeout fallback   3 steps`: the plan's own title, not its
+    // raw markdown squeezed onto one line.
+    const plan = stringArg(args, 'plan') ?? '';
+    const lines = plan.split('\n').map((line) => line.trim());
+    const heading = lines.find((line) => /^#{1,6}\s+\S/.test(line))?.replace(/^#{1,6}\s+/, '');
+    target = heading ?? lines.find((line) => line.length > 0);
+    const steps = lines.filter((line) => /^\d+[.)]\s/.test(line)).length;
+    if (steps > 0) metadata = [`${steps} ${steps === 1 ? 'step' : 'steps'}`];
   } else if (canonicalName === 'Task') {
     target = stringArg(args, 'agent', 'subject', 'description', 'prompt') ?? target;
     if ((options.nestedActivityCount ?? 0) > 0) {

@@ -460,7 +460,7 @@ describe('MarkdownBlock', () => {
     expect(output).toContain('removed');
   });
 
-  it('renders tables with borders and separators', () => {
+  it('rules tables above, under the header, and below, with no vertical lines', () => {
     const view = render(
       withTheme(
         React.createElement(MarkdownBlock, {
@@ -469,9 +469,10 @@ describe('MarkdownBlock', () => {
       ),
     );
     const output = frame(view.lastFrame);
-    expect(output).toContain('┌');
-    expect(output).toContain('├');
-    expect(output).toContain('└');
+    const lines = output.split('\n');
+    expect(lines.filter((line) => /^━+$/.test(line))).toHaveLength(2);
+    expect(lines.filter((line) => /^─+$/.test(line))).toHaveLength(1);
+    expect(output).not.toMatch(/[│┌├└]/);
     expect(output).toContain('Name');
     expect(output).toContain('Value');
     expect(output).toContain('foo');
@@ -499,8 +500,10 @@ describe('MarkdownBlock', () => {
     expect(output).not.toContain('**book-agent**');
     expect(output).not.toContain('`ready`');
     expect(lines.every((line) => displayWidth(line) <= width)).toBe(true);
-    const borderedLines = lines.filter((line) => /^[┌├└│]/.test(line));
-    expect(new Set(borderedLines.map(displayWidth)).size).toBe(1);
+    // Every rule spans the same width, so the columns sit inside them.
+    const rules = lines.filter((line) => /^[━─]+$/.test(line));
+    expect(rules).toHaveLength(3);
+    expect(new Set(rules.map(displayWidth)).size).toBe(1);
   });
 
   it('renders mixed content: heading + code + list + paragraph', () => {

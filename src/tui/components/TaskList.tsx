@@ -2,22 +2,22 @@ import { Box, Text } from 'ink';
 import { useTheme } from '../theme.js';
 import { STATUS_INDICATORS } from '../status-indicators.js';
 import type { Task } from '../hooks/useTasks.js';
+import { SoftPanel } from './chrome.js';
 
 interface TaskListProps {
   tasks: Task[];
   onUpdateStatus: (id: string, status: Task['status']) => void;
   onRemove: (id: string) => void;
+  /** Sheet width; with it the title becomes a ruled head like the other reference panels. */
+  width?: number;
 }
 
-export function TaskList({ tasks }: TaskListProps) {
+export function TaskList({ tasks, width }: TaskListProps) {
   const theme = useTheme();
   const visible = tasks.slice(0, 5);
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
-      <Text color={theme.brand} bold>
-        Tasks ({tasks.length})
-      </Text>
+    <SoftPanel title="Tasks" meta={String(tasks.length)} width={width}>
       {visible.length === 0 && (
         <Text color={theme.subtle}>No tasks yet. Use /task &lt;description&gt; to create one.</Text>
       )}
@@ -35,7 +35,7 @@ export function TaskList({ tasks }: TaskListProps) {
           </Box>
         );
       })}
-      {tasks.length > 5 && <Text color={theme.subtle}>...and {tasks.length - 5} more</Text>}
-    </Box>
+      {tasks.length > 5 && <Text color={theme.inactive}>…and {tasks.length - 5} more</Text>}
+    </SoftPanel>
   );
 }

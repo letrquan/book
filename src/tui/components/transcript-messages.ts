@@ -1,7 +1,27 @@
 import type { Message } from '../../types/messages.js';
+import { splitReasoningParts } from '../../reasoning-tags.js';
 
+/**
+ * Whether assistant content draws nothing.
+ *
+ * An empty reasoning block counts as blank. Routers that inline thinking emit
+ * `<think></think>` ahead of every tool call, and treating that as content kept
+ * each of those turns as a separate transcript entry with its own spacing: two
+ * blank rows between every tool row of a run. A block with reasoning in it is
+ * not blank, since it renders as a thought row.
+ */
 export function isBlankAssistantContent(content: string | undefined | null): boolean {
-  return !content || content.trim().length === 0;
+  if (!content || content.trim().length === 0) return true;
+  return splitReasoningParts(content).every((part) => part.text.trim().length === 0);
+}
+
+/**
+ * Whether a message delegates. AgentMessage hides a delegating message's
+ * narration (the spawn has its own activity row), so a delegating turn must
+ * never merge into one that carries narration, or that narration vanishes.
+ */
+export function delegatesWork(message: Message): boolean {
+  return Boolean(message.toolCalls?.some((call) => call.name === 'AgentSpawn'));
 }
 
 /** Merge completed tool-only assistant messages into the preceding assistant turn for display. */
@@ -28,6 +48,7 @@ export function mergeAssistantMessages(
       if (next.role !== 'assistant') break;
       if (!isBlankAssistantContent(next.content)) break;
       if (next.id === streamingMessageId) break;
+      if (delegatesWork(next)) break;
       mergedMessage = {
         ...mergedMessage,
         reasoningContent:
@@ -48,4 +69,16 @@ export function mergeAssistantMessages(
   }
 
   return merged;
+}
+
+/**
+ * Turns you wrote: the status line's folio counts one page for each. Subagent
+ * and background-shell notifications arrive as user turns too
+ * (`kind: 'agent-notification'`), and checkpoints and the carried ledger are
+ * host text, so only conversation turns count.
+ */
+export function countWrittenTurns(messages: readonly Message[]): number {
+  return messages.filter(
+    (message) => message.role === 'user' && (message.kind ?? 'conversation') === 'conversation',
+  ).length;
 }

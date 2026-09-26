@@ -79,8 +79,7 @@ describe('CommandPanel', () => {
     );
 
     const output = stripAnsi(view.lastFrame());
-    expect(output).toContain('/usage · Session telemetry');
-    expect(output).toContain('ready');
+    expect(output).toMatch(/─ § Usage ─+ \/usage ─/);
     expect(output).toContain('token traffic');
     expect(output).toContain('input 10,000');
     expect(output).toContain('output 2,000');
@@ -162,7 +161,7 @@ describe('CommandPanel', () => {
       vi.advanceTimersByTime(700);
     });
 
-    expect(stripAnsi(view.lastFrame())).toContain('ready');
+    expect(stripAnsi(view.lastFrame())).toContain('/usage ─');
     expect(view.frames.length).toBeGreaterThan(initialFrames);
   });
 });
