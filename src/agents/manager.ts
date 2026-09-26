@@ -7,16 +7,17 @@ import {
   createTerminalOutcome,
   type AgentTerminalOutcome,
 } from '../types/terminal.js';
-import type { ToolCall, ToolDefinition, ToolResult, UserQuestionResponse } from '../types/tools.js';
+import type {
+  PermissionDecision,
+  PermissionResult,
+  ToolCall,
+  ToolDefinition,
+  ToolResult,
+  UserQuestionResponse,
+} from '../types/tools.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { finalAnswerText } from '../agent/final-answer.js';
 import { runCompact, usagePressureTokens } from '../agent/compact.js';
-import {
-  applyModelDefaults,
-  clampEffortToCatalog,
-  resolveEffortExplicit,
-  resolveModelProviderConfig,
-} from '../config.js';
 import { runHooks } from '../hooks.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { createRegistry } from '../tools/registry-core.js';
@@ -35,7 +36,11 @@ import {
   removeSnapshotRef,
 } from './git-isolation.js';
 import { withBuiltInAgents, type ManagedAgentDef } from './profiles.js';
-import { resolveAgentProfile, usableAgentEffort } from './profile-resolver.js';
+import {
+  resolveAgentProfile,
+  resolveChildAgentConfig,
+  usableAgentEffort,
+} from './profile-resolver.js';
 import { deriveAgentDisplayName, uniqueAgentDisplayName } from './naming.js';
 import { projectAgentCompletion, projectAgentSummary } from './projections.js';
 import { beginTerminalGeneration } from './completion-notification.js';
@@ -174,7 +179,7 @@ export class AgentManager {
   private readonly questionResolvers = new Map<string, (response: UserQuestionResponse) => void>();
   private readonly permissionResolvers = new Map<
     string,
-    (response: 'allow' | 'deny' | 'always') => void
+    (response: PermissionResult | PermissionDecision) => void
   >();
   private readonly permissionRules = new Map<string, string>();
   private readonly activities = new Map<string, Map<string, AgentActivity>>();
@@ -240,7 +245,11 @@ export class AgentManager {
     for (const record of this.agents.values()) {
       let changed = false;
       if (record.pendingPermission) {
-        this.permissionResolvers.get(record.pendingPermission.id)?.('deny');
+        // The host that could answer has gone; the agent runs on with no approver.
+        this.permissionResolvers.get(record.pendingPermission.id)?.({
+          result: 'deny',
+          reason: 'no_approver',
+        });
         this.permissionResolvers.delete(record.pendingPermission.id);
         this.permissionRules.delete(record.pendingPermission.id);
         record.pendingPermission = undefined;
@@ -417,8 +426,9 @@ export class AgentManager {
       // Re-drive what died mid-flight. `ensureInitialized` already hydrates agents,
       // plans, evidence, and snapshots — it just never pushed anything onto the
       // queue, so a restart turned the entire pending backlog into terminal records
-      // nothing picked up. `prompt` and `purpose` are on disk and never mutated
-      // after spawn, so the re-drive needs no information a restart cannot have.
+      // nothing picked up. `purpose` is the spawn task and never changes, and `prompt`
+      // is the run to re-drive -- the spawn task, or a follow-up that was running --
+      // so the re-drive needs no information a restart cannot have.
       if (this.config.settings.agents.resumeInterrupted) {
         for (const record of this.agents.values()) {
           if (!record.resumable) continue;
@@ -431,8 +441,18 @@ export class AgentManager {
           // output into its own report) gets no re-run: it would bill a result nobody
           // receives. The agent stays interrupted and says why.
           if (record.resumeAfterRestart === false) {
+            // Follow-ups sent to it are not run either: one would start with none of the host's
+            // context, and whether its result is the host's or the parent's is not recorded per
+            // run. They are counted, so none is lost without a word: the one that was running
+            // (the prompt is no longer the spawn task) and any queued behind it.
+            const dropped =
+              (record.pendingMessages?.length ?? 0) +
+              (record.purpose !== undefined && record.prompt !== record.purpose ? 1 : 0);
             record.error =
-              'Not resumed after the restart: the host that spawned it handles its result and exited with the process.';
+              'Not resumed after the restart: the host that spawned it handles its result and exited with the process.' +
+              (dropped > 0
+                ? ` ${dropped} follow-up${dropped === 1 ? '' : 's'} sent to it ${dropped === 1 ? 'was' : 'were'} not run either; send ${dropped === 1 ? 'it' : 'them'} again.`
+                : '');
             this.persist(record);
             continue;
           }
@@ -790,6 +810,18 @@ export class AgentManager {
       );
     }
     const resolvedProfile = resolveAgentProfile(definition, this.config, request.model);
+    // The child's level, clamped to its model's catalog. A model id that does not resolve fails
+    // the run, as it always has, not the spawn.
+    let spawnEffort = resolvedProfile.effort;
+    try {
+      spawnEffort = resolveChildAgentConfig(
+        this.config,
+        resolvedProfile,
+        resolvedProfile.resolvedModel,
+      ).effort;
+    } catch {
+      // Reported when the run resolves the model.
+    }
 
     let plan = request.planId ? this.plans.get(request.planId) : undefined;
     const autoCreatedPlan = !request.planId;
@@ -832,7 +864,8 @@ export class AgentManager {
       requestedModel: resolvedProfile.requestedModel,
       resolvedModel: resolvedProfile.resolvedModel,
       provider: resolvedProfile.provider,
-      effort: resolvedProfile.effort,
+      effort: spawnEffort,
+      effortChoice: resolvedProfile.effortExplicit ? resolvedProfile.effort : undefined,
       isolation: definition.isolation,
       name: definition.name,
       role: definition.role,
@@ -1088,7 +1121,10 @@ export class AgentManager {
     record.pendingQuestion = undefined;
     record.pendingQuestionCreatedAt = undefined;
     if (record.pendingPermission) {
-      this.permissionResolvers.get(record.pendingPermission.id)?.('deny');
+      this.permissionResolvers.get(record.pendingPermission.id)?.({
+        result: 'deny',
+        reason: 'dismissed',
+      });
       this.permissionResolvers.delete(record.pendingPermission.id);
       this.permissionRules.delete(record.pendingPermission.id);
       record.pendingPermission = undefined;
@@ -1457,37 +1493,26 @@ export class AgentManager {
         );
       }
       const resolvedProfile = resolveAgentProfile(definition, this.config, record.requestedModel);
-      const resolvedEffort = usableAgentEffort(record.effort) ?? resolvedProfile.effort;
-      let agentConfig: AgentConfig = {
-        ...this.config,
-        workspace: record.worktree ?? this.config.workspace,
-        maxTurns: resolvedProfile.maxTurns,
-        effort: resolvedEffort,
-        effortExplicit: resolvedEffort !== undefined || this.config.effortExplicit,
-        autoCompactEnabled: true,
-        memoryContext: undefined,
-      };
-      if (record.resolvedModel && record.resolvedModel !== 'unknown') {
-        agentConfig = applyModelDefaults(
-          resolveModelProviderConfig(agentConfig, record.resolvedModel),
-        );
+      // A level chosen at spawn is kept for every later run of this agent, clamped against the
+      // catalog in force now. A defaulted one is resolved again, so a queued or re-run child
+      // follows the settings in force now instead of carrying an old default as if someone had
+      // chosen it.
+      const spawnChoice = usableAgentEffort(record.effortChoice);
+      const agentConfig = resolveChildAgentConfig(
+        {
+          ...this.config,
+          workspace: record.worktree ?? this.config.workspace,
+          maxTurns: resolvedProfile.maxTurns,
+          autoCompactEnabled: true,
+          memoryContext: undefined,
+        },
+        spawnChoice ? { effort: spawnChoice, effortExplicit: true } : resolvedProfile,
+        record.resolvedModel,
+      );
+      if (record.effort !== agentConfig.effort) {
+        record.effort = agentConfig.effort;
+        this.persist(record);
       }
-      // The effort is clamped to the child model's catalog, as the reducer's is: `--effort
-      // max` must not reach a model that lists nothing above `high`. Whether the request
-      // sends it follows the reducer's rule: a level chosen for this child, by its profile
-      // or for the session, or one its model's catalog lists. The session's default `high`
-      // is neither, and a strict endpoint answers it on a model that does not reason with a
-      // 400 (#245).
-      const childEffort = clampEffortToCatalog(agentConfig, agentConfig.effort);
-      agentConfig = {
-        ...agentConfig,
-        effort: childEffort,
-        effortExplicit: resolveEffortExplicit(
-          agentConfig,
-          childEffort,
-          resolvedProfile.effortExplicit,
-        ),
-      };
       let loopError: string | undefined;
       let terminalOutcome: AgentTerminalOutcome | undefined;
       const startActivity = (
@@ -1609,7 +1634,9 @@ export class AgentManager {
             record.runOutcome = outcome;
           },
           onPermissionRequired: async (toolCall: ToolCall) => {
-            if (!this.interactivePermissions) return 'deny';
+            if (!this.interactivePermissions) {
+              return { result: 'deny', reason: 'no_approver' } as const;
+            }
             const request: AgentPermissionRequest = {
               id: randomUUID(),
               agentId: record.id,
@@ -1623,7 +1650,7 @@ export class AgentManager {
             this.permissionRules.set(request.id, permissionRuleForToolCall(toolCall));
             this.persist(record);
             this.emit({ type: 'agent_permission', agentId: record.id, request: clone(request) });
-            return new Promise<'allow' | 'deny' | 'always'>((resolvePromise) => {
+            return new Promise<PermissionResult | PermissionDecision>((resolvePromise) => {
               this.permissionResolvers.set(request.id, resolvePromise);
             });
           },
@@ -1831,7 +1858,10 @@ export class AgentManager {
       this.controllers.delete(record.id);
       this.questionResolvers.delete(record.id);
       if (record.pendingPermission) {
-        this.permissionResolvers.get(record.pendingPermission.id)?.('deny');
+        this.permissionResolvers.get(record.pendingPermission.id)?.({
+          result: 'deny',
+          reason: 'dismissed',
+        });
         this.permissionResolvers.delete(record.pendingPermission.id);
         this.permissionRules.delete(record.pendingPermission.id);
         record.pendingPermission = undefined;
@@ -1890,6 +1920,8 @@ export class AgentManager {
       cumulativeTokens: record.usage?.totalTokens,
       promptTokens: record.runUsage?.promptTokens,
       completionTokens: record.runUsage?.completionTokens,
+      cacheReadInputTokens: record.runUsage?.cacheReadInputTokens,
+      cacheCreationInputTokens: record.runUsage?.cacheCreationInputTokens,
       contextTokens: record.runUsage?.contextTokens,
       toolCalls: record.runMetrics?.toolCalls,
       compactions: record.runMetrics?.compactions,

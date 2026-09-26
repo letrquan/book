@@ -74,6 +74,36 @@ describe('runScrollbackSession', () => {
     expect(writes.text()).toContain('file contents');
   });
 
+  it('answers a permission prompt that meets the end of input as having no approver (#264)', async () => {
+    const writes = captureOutput();
+    const decisions: unknown[] = [];
+    const runLoop: NonNullable<ScrollbackOptions['runLoop']> = async (
+      _config,
+      _registry,
+      _prompt,
+      history,
+      callbacks: AgentLoopCallbacks,
+    ): Promise<Message[]> => {
+      decisions.push(
+        await callbacks.onPermissionRequired(toolCall('t1', 'Bash', { command: 'ls' })),
+      );
+      decisions.push(
+        await callbacks.onPermissionRequired(toolCall('t2', 'Bash', { command: 'ls' })),
+      );
+      return history;
+    };
+
+    await runScrollbackSession(defaultConfig(), {
+      mode: 'default',
+      readPrompt: promptReader(['hello', 'n']),
+      output: writes.output,
+      runLoop,
+    });
+
+    // A person's "n" is a plain refusal; the closed input after it is nobody to ask.
+    expect(decisions).toEqual(['deny', { result: 'deny', reason: 'no_approver' }]);
+  });
+
   it('/clear resets accumulated history without calling the agent loop', async () => {
     const writes = captureOutput();
     let calls = 0;

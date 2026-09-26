@@ -5,6 +5,7 @@
     "scripts/compact-eval.ts",
     "scripts/compact-eval-worker.ts",
     "scripts/verify-ink.ts",
-    "scripts/package-smoke.ts"
+    "scripts/package-smoke.ts",
+    "scripts/prompt-eval.ts"
   ]
 }

@@ -72,6 +72,31 @@ learned, and `/context` and the status line mark which source the current window
 (`declared`, `learned`, `family`, or `default`). To discard one, delete its entry from
 `model-windows.json`, or delete the file to forget them all — it is rebuilt on demand.
 
+### Prompt caching on OpenAI-compatible providers
+
+On the Anthropic Messages API, Book places its own cache breakpoints: the last tool, the cached
+system block, and the last message. On an OpenAI-compatible endpoint it sends no cache markers.
+OpenAI and DeepSeek cache without them, and 9router's Claude routes place their own; a router that
+needs a client's markers before it caches an Anthropic model (OpenRouter documents this) caches
+nothing for Book today. What Book does on that path is read the cache counts a provider reports:
+`prompt_tokens_details.cached_tokens`, DeepSeek's `prompt_cache_hit_tokens`, Moonshot's top-level
+`cached_tokens`, OpenRouter's `cache_write_tokens`, 9router's `cache_creation_tokens`, DashScope's
+`prompt_tokens_details.cache_creation_input_tokens`, and LiteLLM's top-level
+`cache_read_input_tokens` / `cache_creation_input_tokens`. `/cost`, `/usage` and
+`--max-budget-usd` then price cached input at the model's cache rates. A cache read on a model with
+no listed cache-read rate is priced at its input rate, and a cache write with no listed rate at
+twice it, the highest write premium a provider charges: both are upper bounds, so
+`--max-budget-usd` keeps working.
+
+**9router** (checked against 0.5.91): its Claude routes (`cc/claude-*`) do cache. 9router adds its
+own breakpoints on the system prompt, the last tool and the last message, and drops the ones a
+client sends. In a five-turn Book session on `cc/claude-opus-5`, all but about 1,000 of the
+roughly 60,000 input tokens were read from or written to the cache upstream. 9router's streamed
+usage reports neither count, though, and adds about 2,000 tokens to `prompt_tokens` on every
+request. So Book shows every input token as uncached on those routes, and its dollar estimate runs
+about three times the real cost. The real counts are on 9router's own usage dashboard. The `cmc/`
+and `ag/` routes report no caching at all, and `prompt_cache_key` changes nothing on them.
+
 ## Example `.book/settings.json`
 
 ```json
@@ -157,39 +182,57 @@ after a failed run.
 
 ## Environment variables
 
-| Variable                                                                                          | Purpose                                                           |
-| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `BOOK_API_KEY`                                                                                    | Default API key (or `{env:VAR}` in provider settings)             |
-| `BOOK_BASE_URL`                                                                                   | Default OpenAI-compatible base URL                                |
-| `BOOK_MODEL`                                                                                      | Default model                                                     |
-| `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                                 |
-| `BOOK_EFFORT`                                                                                     | Thinking effort level                                             |
-| `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                               |
-| `BOOK_SHELL`                                                                                      | Shell for `Bash`: `bash`, `pwsh`, `powershell`, `cmd`, or a path  |
-| `BOOK_WORKSPACE`                                                                                  | Default workspace                                                 |
-| `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                          |
-| `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                        |
-| `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                          |
-| `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout (`Bash` included) and telemetry location             |
-| `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)          |
-| `BOOK_WEB_ALLOW_PRIVATE_NETWORK`                                                                  | Opt into local/private web destinations (disabled by default)     |
-| `BOOK_WEB_MAX_REDIRECTS`                                                                          | Same-origin redirect limit for `WebFetch` (default 5, maximum 10) |
-| `BOOK_TUI_RENDERER`                                                                               | `safe`, `incremental`, or experimental scroll renderer            |
-| `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                               |
-| `BOOK_DEBUG_FILE` / `BOOK_DEBUG_STDERR` / `BOOK_DEBUG_MAX_BYTES` / `BOOK_DEBUG_BACKUPS`           | Debug log destination and rotation controls                       |
+| Variable                                                                                          | Purpose                                                                            |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `BOOK_API_KEY`                                                                                    | Default API key (or `{env:VAR}` in provider settings)                              |
+| `BOOK_BASE_URL`                                                                                   | Default OpenAI-compatible base URL                                                 |
+| `BOOK_MODEL`                                                                                      | Default model                                                                      |
+| `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                                                  |
+| `BOOK_EFFORT`                                                                                     | Thinking effort level                                                              |
+| `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                                                |
+| `BOOK_SHELL`                                                                                      | Shell for `Bash`: `bash`, `pwsh`, `powershell`, `cmd`, or a path                   |
+| `BOOK_WORKSPACE`                                                                                  | Default workspace                                                                  |
+| `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                                           |
+| `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                                         |
+| `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                                           |
+| `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout (`Bash` included) and telemetry location                              |
+| `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)                           |
+| `BOOK_WEB_ALLOW_PRIVATE_NETWORK`                                                                  | Opt into local/private web destinations for every `WebFetch` (disabled by default) |
+| `BOOK_WEB_MAX_REDIRECTS`                                                                          | Same-origin redirect limit for `WebFetch` (default 5, maximum 10)                  |
+| `BOOK_TUI_RENDERER`                                                                               | `safe`, `incremental`, or experimental scroll renderer                             |
+| `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                                                |
+| `BOOK_DEBUG_FILE` / `BOOK_DEBUG_STDERR` / `BOOK_DEBUG_MAX_BYTES` / `BOOK_DEBUG_BACKUPS`           | Debug log destination and rotation controls                                        |
 
 `WebFetch` requires HTTPS by default, validates DNS results and the address used by the network
 connection, blocks private/special-use destinations, and stops on cross-origin redirects so the
-new origin receives its own permission decision. An IPv6 address in one of these IPv4-embedding
-ranges is judged by the IPv4 address it carries: IPv4-mapped `::ffff:0:0/96`, IPv4-compatible `::/96`, NAT64
-`64:ff9b::/96`, 6to4 `2002::/16`, and Teredo `2001::/32`, where either the server or the client
-address being private blocks it. In the local-use NAT64 prefix `64:ff9b:1::/48`, an address laid
-out like the /96 (bits 48-95 zero) is judged by its last 32 bits, and any other shape is blocked,
-because where its IPv4 bits sit depends on a prefix length only the local network knows. It returns Markdown by default; `format` can be
-`markdown`, `text`, or sanitized `html`. `WebSearch` works without configuration through the
-built-in Exa MCP provider and accepts optional `limit`, `domains`, `recencyDays`, and `country`
-hints. Its provider endpoint is built in and cannot be overridden through settings or environment
+new origin receives its own permission decision. A cross-origin redirect is reported before its
+target is resolved, since that target is one the model did not ask for: following it is a new
+`WebFetch` with its own decision. When the checks that need no lookup (scheme, plain HTTP,
+credentials, a local name or a private address literal) already refuse the target, the model is
+told not to follow it, and a target's credentials or a non-web URL are never shown. It returns
+Markdown by default; `format` can be `markdown`, `text`, or sanitized `html`. `WebSearch` works
+without configuration through the built-in Exa MCP provider and accepts optional `limit`,
+`domains`, `recencyDays`, and `country` hints. Its provider endpoint is built in and cannot be overridden through settings or environment
 variables.
+
+An IPv6 address in one of these IPv4-embedding ranges is judged by the IPv4 address it carries:
+IPv4-mapped `::ffff:0:0/96`, SIIT's IPv4-translated `::ffff:0:0:0/96`, IPv4-compatible `::/96`,
+NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, and Teredo `2001::/32`, where either the server or the
+client address being private blocks it. An ISATAP address (interface identifier `0:5efe` or
+`200:5efe` followed by an IPv4 address, RFC 5214) is refused when that IPv4 address is, whatever
+its prefix, except under Teredo's `2001::/32`, where that part of the address is the Teredo
+client. In the local-use NAT64 prefix `64:ff9b:1::/48`, an address laid out like the /96 (bits
+48-95 zero) is judged by its last 32 bits, and any other shape is blocked, because where its IPv4
+bits sit depends on a prefix length only the local network knows.
+
+So on a network whose NAT64 uses another layout inside `64:ff9b:1::/48`, such as the prefix
+`64:ff9b:1:fffe::/96`, every address in it is refused, public or not, and `WebFetch` cannot reach
+IPv4-only sites through DNS64 there. Book has no setting that names the local prefix: decoding by a
+configured prefix would turn a wrong setting into a way past the policy, for a layout few networks
+use. The only way through is `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true`, which turns the private-network
+check off for every destination. A network-specific NAT64 prefix outside `64:ff9b::/96` and
+`64:ff9b:1::/48` (RFC 6052) is not recognized either: an address in it is judged as plain IPv6,
+whatever IPv4 host it reaches.
 
 The TUI defaults to the full-frame `safe` renderer on Windows to avoid ConPTY footer corruption
 during deep transcript scrolling. Other interactive terminals default to `incremental`. Set
