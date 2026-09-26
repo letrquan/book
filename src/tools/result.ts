@@ -13,7 +13,11 @@ import { isFileMutatingTool } from './tool-capabilities.js';
 import { resolveBookHome } from '../book-home.js';
 
 export const TOOL_RESULT_MAX_BYTES = 50 * 1024;
-const TOOL_OUTPUT_DIRECTORY = join(resolveBookHome(), 'tool-output');
+/**
+ * Where clipped tool output is saved in full. `Read` may open it (see the loop's
+ * `readOnlyRoots`).
+ */
+export const TOOL_OUTPUT_DIRECTORY = join(resolveBookHome(), 'tool-output');
 
 interface ToolResultOptions<TData> {
   toolCallId?: string;

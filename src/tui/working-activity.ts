@@ -400,6 +400,7 @@ function retryText(
   if (phase === 'stalled') return `Waiting for API response · retrying in ${countdown}s`;
   if (phase === 'tool') return `Waiting for tool response · retrying in ${countdown}s`;
   if (phase === 'watchdog') return `Retrying watchdog · ${attemptText}`;
+  if (phase === 'reissue') return `Re-sending the turn in ${countdown}s · ${attemptText}`;
   return `Retrying in ${countdown}s · ${attemptText}`;
 }
 

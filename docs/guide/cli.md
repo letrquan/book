@@ -102,16 +102,20 @@ file. `--verbose` adds each call's result, naming its target, because a turn's c
 before its results: `  → success 12ms src/cli/doctor.ts`, or `  → error 4ms missing.txt: File not
 found: missing.txt`. A managed child's calls (through `Task`, `AgentSpawn`, or `/review`) print as
 well, indented and named after the child's profile: `  [explorer] [Read] src/a.ts`, with
-`    → success 3ms src/a.ts` under `--verbose`. `--quiet` turns the progress lines off, `retry:`
+`    → success 3ms src/a.ts` under `--verbose`. Two children of the same profile print as
+`[explorer]` and `[explorer 2]`. `--quiet` turns the progress lines off, `retry:`
 lines included.
 
 The answer on stdout is the model's final answer: the text of the last turn that called no tools,
 read past the prompts Book appends mid-run (`[continuation]`, `[work-state]`, the output-cap
 resume). When the run stopped before the model answered again (a provider failure, a turn that was
 only reasoning, or `--max-turns` reached on a turn that called tools), stdout stays empty rather
-than repeating an earlier turn's narration. The exit status does not depend on the answer: a
-`failed` outcome exits 1, and a run that stalled, timed out, or lost its connection exits 0 like a
-completed one.
+than repeating an earlier turn's narration. A prompt a `UserPromptSubmit` hook refused and a tool
+batch Book rejected are not answers either: stdout stays empty and the reason goes to stderr as an
+`error:` line. A run of host-performed commands only (`book -p --continue "/review"`) prints the
+command's output and no answer, never the previous process's. The exit status does not depend on the
+answer: a `failed` outcome exits 1, and a run that stalled, timed out, or lost its connection exits 0
+like a completed one.
 
 `json` and `stream-json` write no progress lines, but their stderr is not silent. `json` still
 writes `retry:` lines (unless `--quiet`) and `error:` lines there; `stream-json` carries retries and
@@ -174,9 +178,11 @@ not run. SDK `query()` callers see the stop through the forwarded `tool_use` eve
 and its `tool_result` (`structuredError.code = "plan_approval_unavailable"`); the `plan` object is
 not yet carried on the SDK `result` event.
 
-**Exit codes.** Print mode exits 1 when the run throws — a slash command this host cannot perform,
-a command invoked with a bad argument, or a failure inside a host-performed command such as
-`/review`. Everything else exits 0.
+**Exit codes.** Print mode exits 1 when the run fails or throws — a slash command this host cannot
+perform, a command invoked with a bad argument, or a failure inside a host-performed command such as
+`/review`. A cancelled run exits 0 wherever the cancel landed, since cancelling is not failing;
+Ctrl+C (SIGINT) or SIGTERM cancels the run, runs SessionEnd hooks, and exits 130 or 143, and a second
+one exits at once. Everything else exits 0.
 
 ## SDK usage
 
@@ -200,6 +206,8 @@ for await (const event of query('Explain this code', {
   if (event.type === 'result') console.log('usage:', event.usage);
 }
 ```
+
+The `result` event's `answer` is the text print mode would print: empty when the model did not answer.
 
 `AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop` — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK. Host notices (such as saved memories or review candidates) emit `notice` (`{type: 'notice', message}`).
 

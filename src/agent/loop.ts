@@ -76,6 +76,7 @@ import {
   toolFailure,
   toolResultErrorMessage,
   toolResultSucceeded,
+  TOOL_OUTPUT_DIRECTORY,
 } from '../tools/result.js';
 import { toolSearchTools } from '../tools/tool-search.js';
 import { appendToolUseRecords } from '../tool-telemetry.js';
@@ -380,6 +381,7 @@ export async function runAgentLoop(
         id: crypto.randomUUID(),
         role: 'assistant',
         content: `[UserPromptSubmit hook blocked the prompt${r.message ? `: ${r.message}` : ''}]`,
+        hostNotice: true,
         includeInContext: false,
         timestamp: Date.now(),
       });
@@ -506,9 +508,14 @@ export async function runAgentLoop(
   const initialMode = mode as PermissionMode;
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
-    readOnlyRoots: config.memoryContext?.dir
-      ? [{ root: config.memoryContext.dir, exclude: ['.inbox'] }]
-      : undefined,
+    readOnlyRoots: [
+      // The tool-output directory is readable so a clip notice's "Full output: <path>" can be
+      // opened with Read (#248). The memory directory keeps its inbox excluded.
+      options?.toolOutputRoot ?? TOOL_OUTPUT_DIRECTORY,
+      ...(config.memoryContext?.dir
+        ? [{ root: config.memoryContext.dir, exclude: ['.inbox'] }]
+        : []),
+    ],
     env: process.env as Record<string, string>,
     envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,
@@ -1676,7 +1683,7 @@ export async function runAgentLoop(
             recovery === 'continue'
               ? 0
               : Math.min(config.retry.maxDelayMs, config.retry.baseDelayMs * 2 ** streamReissues);
-          callbacks.onRetry?.('transport', spent + 1, allowed, reissueDelayMs);
+          callbacks.onRetry?.('reissue', spent + 1, allowed, reissueDelayMs, streamOutcome.reason);
           await delay(reissueDelayMs, signal);
           if (!signal?.aborted) {
             // Never re-send a request that ENDS with an assistant message.
@@ -1818,6 +1825,7 @@ export async function runAgentLoop(
           content: [assistantContent, `[Tool batch rejected: ${message}]`]
             .filter(Boolean)
             .join('\n\n'),
+          hostNotice: true,
           reasoningContent: reasoningContent || undefined,
           providerMetadata: assistantProviderMetadata,
           includeInContext: true,

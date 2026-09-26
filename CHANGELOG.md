@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **The stream-json `retry` record tells a re-sent turn from an HTTP retry** (#244). A turn sent again
+  after its stream ended is now phase `reissue` with a `reason`, where it was `transport` like an HTTP
+  retry inside one request; an unbounded watchdog retry reports `max: null` instead of `-1` (or
+  `9007199254740991` for a 503); the TUI says "Re-sending the turn".
 - **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
   rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
   green, so every PR that touched them either reformatted unrelated lines or left them drifting.
@@ -276,6 +280,26 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A refused prompt or a rejected tool batch is no longer printed as the answer** (#248). Both are
+  host-written assistant messages, and print mode printed them as the run's answer. stdout now stays
+  empty and the reason goes to stderr as an `error:` line.
+- **`book -p --continue "/review"` no longer reprints the previous process's answer** (#248). A run
+  of host-performed commands has no model turn, so the answer walk is not run at all.
+- **Print and SDK runs mark a resolved command body as derived, as the TUI does** (#248).
+- **SessionEnd gets `status` and `stop_reason`** (#248), the run's terminal outcome, and runs after
+  the run's children and shells are stopped rather than while they keep working.
+- **Ctrl+C in `book -p` cancels the run, runs SessionEnd and exits 130** (#248). An abort that lands
+  in a tool exits 0 like one that lands in the stream, since cancelling is not failing.
+- **Two managed children of one profile get distinct progress labels** (#248): `explorer` and
+  `explorer 2`.
+- **`Read` can open the file a clip notice names** (#248). The full output of a result clipped at
+  50 KB lives in Book's `tool-output` directory, which the loop now makes readable.
+- **An at-sign in a prompt expands only when it names a file** (#261). Print mode and the TUI
+  expanded every at-sign token, including inside fenced and inline code, so a spec quoting a JSDoc
+  `{@link Foo.bar}` reached the model as `[Could not include @link: file not found]`, and the model
+  wrote that marker into source. Tokens inside code are now left alone, and a token that names no
+  existing path stays exactly as written. A path that exists but cannot be included (a directory, a
+  binary file, a file outside the workspace) still gets its `[Could not include …]` note.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller
@@ -752,6 +776,8 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **The SDK `result` event and `HeadlessResult` carry `answer`** (#248), exactly the text print mode
+  would print, so an SDK host need not rebuild one from `messages`.
 - **`Read` has an outline mode.** Before its first edit a run read 40–55 whole files, and each
   survey read cost the entire file on every turn afterwards; the context reached 200k tokens by
   turn 30 (#217). `Read { outline: true }` returns a file's declarations with their line numbers

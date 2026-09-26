@@ -11,6 +11,9 @@ import type { Message } from '../types/messages.js';
  * - an assistant turn with no text and no tool calls, such as a failed turn that
  *   was only reasoning.
  *
+ * A host notice (`hostNotice`: a refused prompt, a rejected tool batch) ends the
+ * walk with no answer: the model did not answer.
+ *
  * The first other message decides. An assistant turn that called no tools is the
  * answer. Anything else (a turn that called tools, or a message the user wrote)
  * means the model stopped before it answered again, so the answer is empty rather
@@ -32,6 +35,7 @@ export function finalAnswerText(history: readonly Message[], openingMessageId?: 
       if (message.derivedContent) continue;
       return '';
     }
+    if (message.hostNotice) return '';
     if ((message.toolCalls?.length ?? 0) > 0) return '';
     if (message.content.trim()) return message.content;
   }

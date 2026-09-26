@@ -116,4 +116,11 @@ export interface HeadlessResult {
    * `stdout` is a sink (the SDK), so it is populated for every output format.
    */
   commandResults?: HostCommandResult[];
+  /**
+   * The run's final answer, exactly what `text` output prints: the text of the last
+   * model turn that called no tools, in this process's final run. Empty when the model
+   * did not answer (a failure, a refused prompt, a rejected tool batch, or a run of
+   * host-performed commands only).
+   */
+  answer?: string;
 }

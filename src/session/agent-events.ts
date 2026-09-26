@@ -59,6 +59,8 @@ export type AgentEvent =
        * would otherwise have no way to read a `/review` they paid for.
        */
       commandResults?: HostCommandResult[];
+      /** The final answer, as print mode prints it. */
+      answer?: string;
     }
   | { type: 'terminal'; outcome: AgentTerminalOutcome; runContext?: AgentRunContext }
   | { type: 'done' };

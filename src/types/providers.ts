@@ -2,7 +2,7 @@ import type { AgentRuntimeEvent } from '../agents/types.js';
 import type { Message, ProviderMessageMetadata, Usage } from './messages.js';
 import type { AgentTask, PermissionMode, RetryPhase } from './runtime.js';
 import type { CompactRequestHints, CompactResult, PreparedCompaction } from './sessions.js';
-import type { AgentTerminalOutcome } from './terminal.js';
+import type { AgentTerminalOutcome, AgentTerminalReason } from './terminal.js';
 import type {
   PermissionDecision,
   PermissionResult,
@@ -168,8 +168,18 @@ export interface AgentLoopCallbacks {
    * conversation with unexplained gaps between assistant turns.
    */
   onUserMessageAppended?: (message: Message) => void;
-  /** Called when a transport-level retry starts (delay > 0). */
-  onRetry?: (phase: RetryPhase, attempt: number, max: number, delayMs: number) => void;
+  /**
+   * Called when a retry starts (delay > 0). `max` is -1 when retries are
+   * unbounded. For `reissue`: why the turn is sent again (`stream_stall`,
+   * `transport_interrupted`, `provider_error`, `output_cap`, …).
+   */
+  onRetry?: (
+    phase: RetryPhase,
+    attempt: number,
+    max: number,
+    delayMs: number,
+    reason?: AgentTerminalReason,
+  ) => void;
   /** Called when the response stream stalls (no data for streamStallTimeoutMs). */
   onStreamStall?: (countdownMs: number) => void;
   /** Called when data resumes after a stream stall. */
