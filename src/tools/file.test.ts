@@ -2084,6 +2084,188 @@ const OUTLINE_CONTRACT: Array<{ shape: string; file: string; lines: string[]; ou
       lines: ['---', 'title: x', '', '# section', 'key: y', '---', '# Heading'],
       outline: ['7: # Heading'],
     },
+    {
+      shape:
+        'C++: trailing comments, attributes, qualifier macros, preprocessor lines and access specifiers inside a class',
+      file: 'cache.h',
+      lines: [
+        'class Cache {',
+        ' public:',
+        '  void Evict() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);  // Drops the oldest entry.',
+        '  int size() const;  ///< Returns it.',
+        '  [[nodiscard]] bool empty() const;',
+        '#ifdef DEBUG',
+        '  void dump() const;',
+        '#endif',
+        '  int n() const { return n_; }  // inline',
+        '};',
+      ],
+      outline: [
+        '1: class Cache {',
+        '3:   void Evict() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);  // Drops the oldest entry.',
+        '4:   int size() const;  ///< Returns it.',
+        '5:   [[nodiscard]] bool empty() const;',
+        '6: #ifdef DEBUG',
+        '7:   void dump() const;',
+        '8: #endif',
+        '9:   int n() const { return n_; }  // inline',
+      ],
+    },
+    {
+      shape:
+        'C++: a class inside a namespace, and free functions whose body opens below a qualifier',
+      file: 'app.hpp',
+      lines: [
+        'namespace app {',
+        '    class Foo {',
+        '    public:',
+        '        Foo(int n);',
+        '        int get() const;',
+        '    };',
+        '    int helper(int x) noexcept',
+        '    {',
+        '        return x;',
+        '    }',
+        '    auto twice(int x) -> int',
+        '    {',
+        '        return x * 2;',
+        '    }',
+        '}',
+      ],
+      outline: [
+        '1: namespace app {',
+        '2:     class Foo {',
+        '4:         Foo(int n);',
+        '5:         int get() const;',
+        '7:     int helper(int x) noexcept',
+        '11:     auto twice(int x) -> int',
+      ],
+    },
+    {
+      shape: 'C: a function returning a struct pointer does not open a class body',
+      file: 'list.h',
+      lines: [
+        'struct node *node_new(int v) {',
+        '    n = alloc(sizeof *n);',
+        '    init(n);',
+        '    set_value(n, v);',
+        '    return n;',
+        '}',
+      ],
+      outline: ['1: struct node *node_new(int v) {'],
+    },
+    {
+      shape: 'C++: pimpl access is not an impl block',
+      file: 'widget.cpp',
+      lines: [
+        'Widget::Widget() {',
+        '    impl->value = compute(',
+        '        impl->a,',
+        '        impl->b);',
+        '}',
+      ],
+      outline: ['1: Widget::Widget() {'],
+    },
+    {
+      shape: 'TypeScript: methods named return, do and try after a modifier',
+      file: 'iter.ts',
+      lines: [
+        'export class Iter {',
+        '  async return(value?: unknown) {',
+        '  }',
+        '  public do(): void {',
+        '  }',
+        '  static try(fn: () => void) {',
+        '  }',
+        '}',
+      ],
+      outline: [
+        '1: export class Iter {',
+        '2:   async return(value?: unknown) {',
+        '4:   public do(): void {',
+        '6:   static try(fn: () => void) {',
+      ],
+    },
+    {
+      shape: 'TypeScript: Jest table tests are listed; calls on objects named it or test are not',
+      file: 'each.test.ts',
+      lines: [
+        "describe('math', () => {",
+        '  it.each`',
+        '    a    | b',
+        '    ${1} | ${2}',
+        "  `('adds $a', ({ a, b }) => {",
+        '  });',
+        "  describe.each`x`('group', () => {",
+        '  });',
+        '  it.push(1);',
+        '  test.context.onTestFailed(handler);',
+        '  it.next();',
+        '});',
+      ],
+      outline: [
+        "1: describe('math', () => {",
+        '2:   it.each`',
+        "7:   describe.each`x`('group', () => {",
+      ],
+    },
+    {
+      shape: 'JavaScript: a column-0 line of a block comment is not a declaration',
+      file: 'banner.js',
+      lines: ['/*', '*Author: someone', '*-----------', '*/', 'function main() {}'],
+      outline: ['5: function main() {}'],
+    },
+    {
+      shape: 'JSON: an element opened on the line that closes the one before',
+      file: 'cuddled.json',
+      lines: ['[', '  {', '    "name": "a"', '  }, {', '    "name": "b"', '  }', ']'],
+      outline: ['1: [', '3:     "name": "a"', '5:     "name": "b"'],
+    },
+    {
+      shape: 'JSON: block and line comments hold no brackets and no root',
+      file: 'tsconfig.json',
+      lines: [
+        '/*',
+        ' * see {docs} [below',
+        ' */',
+        '{',
+        '  "compilerOptions": {',
+        '    "strict": true',
+        '  },',
+        '  // a comment',
+        '  "include": ["src"]',
+        '}',
+      ],
+      outline: ['4: {', '5:   "compilerOptions": {', '9:   "include": ["src"]'],
+    },
+    {
+      shape: 'A YAML .prettierrc is outlined as code, not JSON',
+      file: '.prettierrc',
+      lines: ['semi: false', 'singleQuote: true', 'printWidth: 100'],
+      outline: ['1: semi: false', '2: singleQuote: true', '3: printWidth: 100'],
+    },
+    {
+      shape:
+        'Markdown: a heading beside a prose "Label: text" line after a blank is not front matter',
+      file: 'notes.md',
+      lines: [
+        '---',
+        'Author: Jane',
+        '',
+        '# Introduction',
+        'Summary: what this covers',
+        '---',
+        '',
+        '## Next',
+      ],
+      outline: ['4: # Introduction', '5: Summary: what this covers', '8: ## Next'],
+    },
+    {
+      shape: 'Markdown: a leading heading beside a capitalized label is not a front-matter comment',
+      file: 'release.md',
+      lines: ['---', '# Release notes', 'Version: 1.2', '---', '', '## Body'],
+      outline: ['2: # Release notes', '3: Version: 1.2', '6: ## Body'],
+    },
   ];
 
 describe('Read outline contract', () => {
@@ -2127,6 +2309,18 @@ describe('Read outline contract', () => {
     );
     const bounded = await boundToolResultOutput(outlined, dir, undefined, join(dir, 'tool-output'));
     expect(bounded.content).toBe(outlined.content);
+  });
+
+  it('reads a long C++ qualifier macro in linear time', async () => {
+    const macro = 'A'.repeat(40);
+    writeFileSync(
+      join(dir, 'slow.h'),
+      ['class Cache {', ' public:', `  void Evict() ${macro} ~;`, '};'].join('\n'),
+    );
+    const started = performance.now();
+    const outlined = await read.execute({ filePath: 'slow.h', outline: true }, ctx);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(outlined.content.split('\n').slice(1)).toEqual(['1: class Cache {']);
   });
 });
 

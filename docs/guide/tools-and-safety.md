@@ -18,13 +18,16 @@ can decide what to read in full.
   else. Fenced code blocks are skipped, so a `# comment` in a shell example is not taken for a
   heading. A leading `---` opens front matter, which is skipped, only when YAML runs up to a
   closing `---` (or `...`): the first line that is not a `#` comment is a `key:` line (any text
-  up to a colon), and each run of lines between blank lines holds a `key:`, indented or `- ` line,
-  with `#` comments beside them. A `#` line alone in its run is a heading, so such a block is not
-  front matter. Otherwise it is a horizontal rule, and the headings after it count.
-- **JSON** (`.json`, `.jsonc`, `.json5`, `.webmanifest`, and rc files such as `.babelrc`): the
-  line that opens the root, then an object root's top-level keys, or an array root's elements,
-  each object element by its first key. Nesting depth decides, not indentation, and brackets
-  inside strings do not count.
+  up to a colon), and each run of lines between blank lines holds `key:`, indented or `- ` lines.
+  `#` lines among the keys of the first run are comments. A `#` line that opens the block or sits
+  in a later run is a comment only beside YAML identifier keys (`title:`); beside a label such as
+  `Summary: …`, or alone, it is a heading, so such a block is not front matter. Otherwise it is a
+  horizontal rule, and the headings after it count.
+- **JSON** (`.json`, `.jsonc`, `.json5`, `.webmanifest`, and rc files such as `.babelrc` that hold
+  JSON): the line that opens the root, then an object root's top-level keys, or an array root's
+  elements, each object element by its first key. Nesting depth decides, not indentation, and
+  brackets inside strings do not count. Block and line comments are skipped, and an element opened
+  on the line that closes the one before (`}, {`) is still found.
 - **Everything else**: every line at indentation zero except blank lines, comments, lines of
   closing punctuation alone (`}`, `});`, `]);`) and an Allman-style `{` line, plus lines indented
   by up to four spaces that declare something:
@@ -43,22 +46,26 @@ can decide what to read in full.
   - in C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx`, `.h` and the like), inside a class body
     (under `class`, `struct` or an access specifier such as `public:`), every member function,
     constructor, destructor and operator, declared (`void set(int v);`,
-    `virtual void draw() = 0;`) or defined (`int get() const { return n_; }`); elsewhere a function
-    with a body, qualified names included (`std::string Foo::name() {`). `int x(5);` and
-    `Foo f(1);` outside a class are variables and stay out.
+    `virtual void draw() = 0;`) or defined (`int get() const { return n_; }`), with qualifier
+    macros, `[[attributes]]` and trailing comments allowed; elsewhere a function whose body is on
+    its line or opens below it, qualified names included (`std::string Foo::name() {`).
+    `int x(5);` and `Foo f(1);` outside a class are variables and stay out. Preprocessor lines and
+    access specifiers inside a class do not end it.
 
   An annotation or attribute on the declaration's own line does not hide it
   (`@Override public String toString() {`, `@HostListener('click') onClick() {`,
   `[HttpGet] public IActionResult Get() {`), and a parenthesis inside a quoted default value
   (`paren(s = '(') {`) does not unbalance it. A line deeper than four spaces counts when it
   declares a member of a type the outline lists: a Java inner class's methods, a nested C#
-  class's, an `impl` inside a Rust `mod`.
+  class's, an `impl` inside a Rust `mod`. A trailing comment after a declaration
+  (`void set(int v);  // Sets it.`) does not hide it.
 
   Lines shaped like these that are not declarations stay out: control flow (`if (`, `else if (`,
   `for (`, `foreach (`, `using (`, `lock (`, `switch (`, `catch (`; in Java and C# also with no
   space, as in `foreach(` and `lock(`, which elsewhere may be method names), `assert x;`,
   `return foo(`, `new Foo(`, `go func() {`, `defer func() {`, a call that closes into a callback
-  (`useEffect(() => {`, `).then(() => {`), a chained call (`foo(x).then(`), and a statement
+  (`useEffect(() => {`, `).then(() => {`), a chained call (`foo(x).then(`), a call on an object
+  named like a keyword (`it.next()`, `impl->value = f(`), and a statement
   followed by another on the same line (`foo(x); if (y) {`). In `.ts`, `.mts`, `.cts`, `.mjs` and
   `.cjs` files, the text of a multi-line template literal, and of a string continued with a
   trailing backslash, is skipped at any indentation, and a `/` right after a condition's `)`

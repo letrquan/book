@@ -385,20 +385,23 @@ All notable changes to this project are documented in this file.
     line (`@Override public String toString() {`, `[HttpGet] public IActionResult Get() {`), plain
     `*values()` generator methods, the members of a Java inner class or a nested C# class, Java
     `record`s, and C++ class members: declarations, one-line definitions, constructors,
-    destructors, operators and pure virtuals. A method whose default value quotes a parenthesis
-    (`paren(s = '(') {`) is no longer dropped.
+    destructors, operators and pure virtuals, with trailing comments, `[[attributes]]` and
+    qualifier macros, also inside `#ifdef` blocks and namespaces. A method whose default value
+    quotes a parenthesis (`paren(s = '(') {`) is no longer dropped.
   - **JSON** outlines to its top-level keys, or for an array to each element's first key, instead
-    of its opening brace alone.
+    of its opening brace alone. Block comments are skipped, `}, {` elements are found, and a
+    `.prettierrc` or `.eslintrc` is JSON only when it holds JSON.
   - **No longer listed:** property access on objects named like keywords (`set.add(1);`,
-    `it.skip;`), and a statement followed by another on the same line (`foo(x); if (y) {`).
-    `it.skip('x', () => {` and other test blocks reached through a modifier still are.
+    `it.skip;`, `it.next();`, `impl->value = f(`), and a statement followed by another on the same
+    line (`foo(x); if (y) {`). `it.skip('x', () => {`, `it.each` tables and other test blocks
+    reached through a known modifier still are.
   - **The template scanner keeps its place** through a string continued with a trailing
     backslash, and through a regex right after a condition's `)` (`if (ok) /`/.test(s)`), which
     it read as a division; two such misreads used to hide every line between them.
-  - **Front matter** may open with a `# comment`, and a `#` comment beside keys after a blank line
-    no longer ends it. `src/frontmatter.ts` now owns front-matter detection: the Markdown outline
-    and `parseFrontmatter` share one closing-delimiter rule, which also accepts YAML's `...` and
-    trailing spaces.
+  - **Front matter** may open with a `# comment`, and a `#` comment after a blank line no longer
+    ends it, when the keys beside it are YAML identifiers (`title:`); beside a label such as
+    `Summary: …` a `#` line stays a heading. The Markdown front matter detector moved to
+    `src/frontmatter.ts`, beside `parseFrontmatter`.
   - **Budget:** an entry is cut at 512 bytes and ends with `…`, so a minified first line no longer
     leaves an outline with "0 shown", and the header and truncation note fit inside the 50 KB clip
     whatever the path's length.
@@ -406,12 +409,11 @@ All notable changes to this project are documented in this file.
     each word rules a line out.
   - The `outline` parameter's description now says "up to 2000 of them or 50 KB". It is part of
     the cached tool schema, so the first request after upgrading misses the prompt cache once.
-  - **Measured:** over this repository's 731 tracked files the outline gains 196 entries and loses
-    one. The gains are 184 JSON keys, `.prettierrc`'s six keys, five `.gitignore` and
-    `.prettierignore` patterns such as `*.log` that the old `*` rule took for comment lines, and
-    one constructor of a class declared inside a test. The loss is `def.model ? …`, which had passed for a Python `def`. Over winpty's
-    88 C++ files it gains 295 class members, constructors, destructors and operators, and loses
-    none.
+  - **Measured:** over this repository's 731 tracked files the outline gains 191 entries and loses
+    one. The gains are 184 JSON keys, `.prettierrc`'s six keys, and the constructor of a class
+    declared inside a test; the loss is `def.model ? …`, which had passed for a Python `def`. Over
+    winpty's 88 C++ files it gains 308 class members, constructors, destructors and operators, and
+    loses 18 `impl->field = …` statements that had passed for Rust `impl` blocks.
 - **A failed print run exits 1 on Windows, not 127.** Print mode ended a failed run with
   `exit(1)` straight after its last provider request, while libuv was still closing the pooled
   sockets. On Windows that aborted with
