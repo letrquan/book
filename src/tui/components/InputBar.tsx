@@ -35,19 +35,11 @@ import {
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 import { stripSgrMouseSequences } from '../mouse.js';
-import { InputBox } from './InputBox.js';
+import { COMPOSER_EDIT_KEYS, InputBox } from './InputBox.js';
 import { displayWidth, wordWrap } from './word-wrap.js';
 
 const uiLog = createUiDebugLogger('tui:inputbar');
 const FILE_MENTION_DEBOUNCE_MS = 40;
-
-/**
- * Ctrl chords InputBox handles as text edits while the composer holds a draft.
- *
- * Kept here rather than imported from InputBox so the two lists cannot drift
- * apart silently: this is the routing half of the same decision.
- */
-const COMPOSER_EDIT_KEYS = new Set(['a', 'e', 'w', 'u', 'k', 'y']);
 
 /**
  * Rows the draft takes in the composer at `width`, soft wraps included. The
@@ -245,14 +237,6 @@ export function InputBar({
   // history instead of recalling the queued input. Each update writes these refs at once, and the
   // key handlers read them. The history is never rendered, so it lives in refs alone.
   const valueRef = useRef('');
-  // The draft as the previous stdin read left it, which is what the readline-chord routing and the
-  // Backspace attachment check below have to judge: whether the composer was empty when the key
-  // arrived. `valueRef` cannot say, because InputBox's own handler runs first and has already
-  // applied the key to the draft, so a chord it edits destructively (Ctrl+U) or a Backspace on the
-  // last character leaves the ref empty by the time this handler sees the key. Ink dispatches
-  // every key of one read before any of these microtasks run, so an update leaves the draft behind
-  // for the next read rather than for the key that made it.
-  const readStartValueRef = useRef('');
   const historyRef = useRef<string[]>([]);
   const historyIndexRef = useRef(-1);
   const [attachments, setAttachmentsState] = useState<ImageAttachment[]>([]);
@@ -271,9 +255,6 @@ export function InputBar({
       valueRef.current = next;
       setValueState(next);
       reportDraft();
-      queueMicrotask(() => {
-        readStartValueRef.current = valueRef.current;
-      });
     },
     [reportDraft],
   );
@@ -292,6 +273,24 @@ export function InputBar({
     },
     [reportDraft],
   );
+  // An attachment goes only on a Backspace into an empty draft, as the editor judged it before
+  // the key: a Backspace that deleted the draft's last character leaves the image attached.
+  const removeLastAttachment = useCallback(() => {
+    if (attachmentsRef.current.length === 0) return;
+    setAttachments((current) => current.slice(0, -1));
+    setAttachmentError(undefined);
+  }, [setAttachments]);
+  // An edit chord on an empty draft belongs to the transcript. As with other forwarded shortcuts,
+  // a consumed chord restores the draft the parent may have touched. A plain function: InputBox
+  // re-reads its props each render, and nothing else here needs it.
+  const forwardEmptyChord = (
+    input: string,
+    key: Parameters<NonNullable<typeof onGlobalShortcut>>[1],
+  ) => {
+    if (!onGlobalShortcut?.(input, key)) return;
+    const preservedValue = valueRef.current;
+    queueMicrotask(() => setValue(preservedValue));
+  };
   const [attachmentError, setAttachmentError] = useState<string | undefined>();
   const suggestion = compact ? 'Ask...' : 'Ask me anything...';
 
@@ -429,7 +428,9 @@ export function InputBar({
 
   const acceptSelectedFileMention = useCallback(
     (currentValue: string, trigger: 'Tab' | 'Enter'): boolean => {
-      const mention = fileMentionRef.current;
+      // The refs hold offsets from the last render, and splicing them into a draft typed since
+      // left stray characters, so the mention is read from the draft as it stands.
+      const mention = findActiveFileMention(currentValue);
       const selected = getSelectedFileMention(fileCandidatesRef.current, fileSelectedRef.current);
       if (!mention || !selected) return false;
 
@@ -448,7 +449,7 @@ export function InputBar({
 
   const acceptSelectedSkillMention = useCallback(
     (currentValue: string, trigger: 'Tab' | 'Enter'): boolean => {
-      const mention = skillMentionRef.current;
+      const mention = findActiveSkillMention(currentValue);
       const selected = getSelectedSkillMention(
         skillCandidatesRef.current,
         skillSelectedRef.current,
@@ -494,19 +495,6 @@ export function InputBar({
     if (key.meta && !(key.escape && menuOpen)) {
       const preservedValue = valueRef.current;
       queueMicrotask(() => setValue(preservedValue));
-      return;
-    }
-
-    // An attachment goes only from a composer that was empty when the key arrived, because the
-    // editor has already applied this Backspace to the draft. Most terminals send Backspace as
-    // DEL, which Ink reports as `delete`.
-    if (
-      (key.backspace || key.delete) &&
-      !readStartValueRef.current &&
-      attachmentsRef.current.length > 0
-    ) {
-      setAttachments((current) => current.slice(0, -1));
-      setAttachmentError(undefined);
       return;
     }
 
@@ -659,18 +647,9 @@ export function InputBar({
       uiLog.event(key.ctrl ? 'input:Ctrl+J' : 'input:Shift+Enter', { action: 'insert-newline' });
       return;
     }
-    // A draft in the composer claims the readline chords for editing; an empty
-    // one leaves them to the transcript, where Ctrl+E expands a tool and
-    // Ctrl+U scrolls. Forwarding them while there is text to edit would let the
-    // parent consume the key and then restore the pre-event value, undoing the
-    // edit InputBox just made. The draft is judged as the read that carried the
-    // key left it, since the edit this very chord makes is already in `valueRef`.
-    if (
-      key.ctrl &&
-      readStartValueRef.current.length > 0 &&
-      COMPOSER_EDIT_KEYS.has(_input.toLowerCase())
-    )
-      return;
+    // The readline chords are the editor's: it edits a draft with them, and hands them to
+    // `forwardEmptyChord` below when there is no draft to edit.
+    if (key.ctrl && COMPOSER_EDIT_KEYS.has(_input.toLowerCase())) return;
     // Forward Ctrl-based shortcuts to the parent App. As with Alt chords,
     // restore the pre-event value when consumed to keep shortcut routing defensive.
     // Ctrl+/ arrives as a bare US byte with no `ctrl` flag (see
@@ -809,39 +788,38 @@ export function InputBar({
         setFileMention(null);
         setFileCandidates([]);
         if (!commandValue) {
-          // Nothing in the menu matches what was typed: `/queue` is handled by the app and is not
-          // a catalog command, and a custom command may be misspelled. Submit the text as typed,
-          // as Enter does once a space has closed the menu, rather than clear it without a word.
+          // Nothing in the menu matches: keep the text for fixing rather than clear it. It is not
+          // sent either, since an unknown command would reach the model as a prompt.
           uiLog.event('submit:menu', { result: 'no-command-value' });
-        } else {
-          const action = resolveSubmissionAction(commandValue);
-          if (action === 'blocked') {
-            uiLog.event('submit:menu', {
-              result: 'blocked',
-              command: commandValue.slice(1),
-              submissionMode,
-            });
-            setValue(commandValue);
-          } else if (action === 'queue') {
-            const accepted = onQueue?.(commandValue) ?? false;
-            uiLog.event('submit:menu', {
-              result: accepted ? 'queued' : 'queue-full',
-              command: commandValue.slice(1),
-            });
-            setValue(accepted ? '' : commandValue);
-          } else {
-            uiLog.event('submit:menu', {
-              result: 'command',
-              command: commandValue.slice(1),
-            });
-            setHistory((h) => [commandValue, ...h].slice(0, 100));
-            setHistoryIndex(-1);
-            recordCommandUse(commandValue.slice(1));
-            onSubmit(commandValue);
-            setValue('');
-          }
           return;
         }
+        const action = resolveSubmissionAction(commandValue);
+        if (action === 'blocked') {
+          uiLog.event('submit:menu', {
+            result: 'blocked',
+            command: commandValue.slice(1),
+            submissionMode,
+          });
+          setValue(commandValue);
+        } else if (action === 'queue') {
+          const accepted = onQueue?.(commandValue) ?? false;
+          uiLog.event('submit:menu', {
+            result: accepted ? 'queued' : 'queue-full',
+            command: commandValue.slice(1),
+          });
+          setValue(accepted ? '' : commandValue);
+        } else {
+          uiLog.event('submit:menu', {
+            result: 'command',
+            command: commandValue.slice(1),
+          });
+          setHistory((h) => [commandValue, ...h].slice(0, 100));
+          setHistoryIndex(-1);
+          recordCommandUse(commandValue.slice(1));
+          onSubmit(commandValue);
+          setValue('');
+        }
+        return;
       }
 
       if (skillMenuVisibleRef.current && acceptSelectedSkillMention(val, 'Enter')) {
@@ -1048,6 +1026,8 @@ export function InputBar({
           <InputBox
             value={value}
             liveValueRef={valueRef}
+            onEmptyBackspace={removeLastAttachment}
+            onEmptyChord={forwardEmptyChord}
             onChange={safeOnChange}
             onSubmit={handleSubmit}
             placeholder={placeholder}

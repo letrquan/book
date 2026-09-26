@@ -94,6 +94,16 @@ export function shouldDiscardOptimisticMessages(result: AgentSessionSendResult):
   return result.status === 'failed' && result.phase !== 'run';
 }
 
+/** The card for a manual compaction the user cancelled: not a failure to report. */
+function cancelledCompactUi(preMessages: number) {
+  return {
+    phase: 'skipped',
+    trigger: 'manual',
+    preMessages,
+    message: 'Compaction cancelled.',
+  } as const;
+}
+
 export interface UseAgentSessionOptions extends SessionBootstrap {
   permissionMode?: PermissionMode;
   store?: SessionStoreInterface;
@@ -265,6 +275,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     Array<{ text: string; localCommand?: LocalCommandDisplay; sessionId: string }>
   >([]);
   const [isCompacting, setIsCompacting] = useState(false);
+  // True once the compaction's record is written, so the app stops offering to cancel it: the
+  // PostCompact hooks left are the same signal's and are not cancelled.
+  const [isCompactCommitted, setIsCompactCommitted] = useState(false);
   const [isRewinding, setIsRewinding] = useState(false);
   const [compactUi, setCompactUi] = useState<CompactUiState | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
@@ -722,6 +735,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 trigger: 'auto',
                 preContextTokens: usagePressureTokens(hostUsageRef.current),
                 upcomingUserIntent: messageOptions?.contextMessage ?? userMessage,
+                // Esc on this row's "Esc to cancel" must stop the reducer, not only the send:
+                // without the turn's signal the model kept being called after the send was gone.
+                signal: control.signal,
               },
             });
             const autoResult = autoOutcome.result;
@@ -1424,7 +1440,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           runtime: agentSession.getRuntime(),
           timelineStore,
           isCurrent: stillCurrent,
-          onCommitted: projectCompactResult,
+          onCommitted: (result, boundary) => {
+            projectCompactResult(result, boundary);
+            setIsCompactCommitted(true);
+          },
           options: {
             trigger: 'manual',
             focus,
@@ -1450,12 +1469,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         if (result.status === 'failed') {
           setCompactUi(
             operation.signal?.aborted
-              ? {
-                  phase: 'skipped',
-                  trigger: 'manual',
-                  preMessages,
-                  message: 'Compaction cancelled.',
-                }
+              ? cancelledCompactUi(preMessages)
               : { phase: 'error', trigger: 'manual', preMessages, message: result.error },
           );
           return;
@@ -1480,12 +1494,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         if (stillCurrent()) {
           setCompactUi(
             operation.signal?.aborted
-              ? {
-                  phase: 'skipped',
-                  trigger: 'manual',
-                  preMessages,
-                  message: 'Compaction cancelled.',
-                }
+              ? cancelledCompactUi(preMessages)
               : {
                   phase: 'error',
                   trigger: 'manual',
@@ -1495,6 +1504,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           );
         }
       } finally {
+        setIsCompactCommitted(false);
         if (stillCurrent()) setIsCompacting(false);
         operation.release();
       }
@@ -2139,6 +2149,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     contextHistory: contextHistoryRef.current,
     isThinking,
     isCompacting,
+    isCompactCommitted,
     isRewinding,
     compactUi,
     setCompactUi,

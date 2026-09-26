@@ -998,6 +998,23 @@ describe('AgentSession', () => {
     expect(ends).toEqual(['session-1']);
   });
 
+  // The first caller reports a failed SessionEnd; a caller that only waited for it must not
+  // report the same failure a second time.
+  it('a second end that waited on a failed SessionEnd does not rethrow its error', async () => {
+    const session = new AgentSession({
+      sessionEndRunner: async () => {
+        throw new Error('hook blew up');
+      },
+    });
+    const config = defaultConfig();
+
+    const first = session.endLifecycle(config, 'session-1', 'exit');
+    const second = session.endLifecycle(config, 'session-1', 'exit');
+
+    await expect(first).rejects.toThrow('hook blew up');
+    await expect(second).resolves.toBeUndefined();
+  });
+
   it('owns clear transitions across lifecycle, persistence, cancellation, and projection', async () => {
     const persisted = createSessionFixture('book-agent-session-clear-');
     const timeline = createSessionFixture('book-agent-session-timeline-');

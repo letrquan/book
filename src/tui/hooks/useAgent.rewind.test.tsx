@@ -94,6 +94,7 @@ vi.mock('../../session/lifecycle.js', () => ({
   runSessionEnd: vi.fn(async () => {}),
 }));
 
+import { runCompact, runPostCompactHooks } from '../../agent/compact.js';
 import { useAgent } from './useAgent.js';
 
 const roots: string[] = [];
@@ -627,5 +628,84 @@ describe('useAgent manual compaction', () => {
 
     expect(latest!.isCompacting).toBe(false);
     expect(latest!.compactUi).toMatchObject({ phase: 'skipped', message: 'Compaction cancelled.' });
+  });
+
+  // The pre-turn auto-compaction ran without the turn's abort signal, so Esc on its
+  // "Esc to cancel" row stopped the send while the reducer kept calling the model.
+  it("gives the pre-turn auto-compaction the turn's abort signal", async () => {
+    const { config, timeline, sessionId } = fixture();
+    vi.mocked(runCompact).mockClear();
+    compactMockState.results.push({ status: 'skipped', reason: 'small', message: 'small' });
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    await latest!.send('go on');
+    await tick();
+
+    const options = vi.mocked(runCompact).mock.calls[0]?.[2] as
+      { trigger?: string; signal?: AbortSignal } | undefined;
+    expect(options?.trigger).toBe('auto');
+    expect(options?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  // Once the compaction record is written only the PostCompact hooks are left, and cancelling
+  // then would kill the hooks without undoing anything. The hook says when that point is passed.
+  it('marks a /compact committed once it is saved, while its PostCompact hooks still run', async () => {
+    const { config, timeline, sessionId } = fixture();
+    let finishHooks: () => void = () => {};
+    vi.mocked(runPostCompactHooks).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishHooks = resolve;
+        }),
+    );
+    compactMockState.results.push({
+      status: 'compacted',
+      trigger: 'manual',
+      replacementHistory: [
+        {
+          id: 'checkpoint-1',
+          role: 'assistant',
+          content: 'compact summary',
+          kind: 'checkpoint',
+          includeInContext: true,
+          timestamp: 1,
+        },
+      ],
+      summary: 'compact summary',
+      compactId: 'compact-1',
+      generation: 1,
+      checkpoint: {
+        version: 2,
+        generation: 1,
+        state: { summary: 'compact summary', status: 'active' },
+        constraints: [],
+        files: [],
+        episodes: [],
+        openThreads: [],
+        statistics: { summarizedMessages: 1, retainedMessages: 0, preTokens: 100, postTokens: 10 },
+      },
+      checkpointVersion: 2,
+      summarizedCount: 1,
+      retainedCount: 0,
+      preContextTokens: 100,
+      postContextTokens: 10,
+      preMessageCount: 2,
+      strategy: 'single-pass',
+      modelCalls: 1,
+    });
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    const compacting = latest!.compact();
+    await tick();
+    expect(latest!.isCompacting).toBe(true);
+    expect(latest!.isCompactCommitted).toBe(true);
+
+    finishHooks();
+    await compacting;
+    await tick();
+    expect(latest!.isCompacting).toBe(false);
+    expect(latest!.isCompactCommitted).toBe(false);
   });
 });

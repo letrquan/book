@@ -470,17 +470,29 @@ describe('idle Ctrl+C exit confirmation', () => {
 
   // #268 item 4: the cancel branch checked only the turn, the send and the command resolution,
   // so two presses during a /compact armed the window and then exited halfway through it.
-  it('Ctrl+C during a /compact cancels it, however often it is pressed, and never exits', async () => {
+  it('Ctrl+C during a /compact cancels it instead of arming the exit window', async () => {
     const { view, state, rerenderWith } = await startIdleApp({ isCompacting: true });
 
     press(view, '\x03');
     await waitUntil(() => expect(state.cancel).toHaveBeenCalledTimes(1));
-    press(view, '\x03');
-    await waitUntil(() => expect(state.cancel).toHaveBeenCalledTimes(2));
     rerenderWith({ isCompacting: true });
 
     expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
     expect(state.endCurrentSession).not.toHaveBeenCalled();
+  });
+
+  // A compaction that does not stop when asked must not trap the user: with /exit blocked
+  // while it runs, the next press arms the window and the one after exits, as before.
+  it('a press after a /compact was cancelled arms the exit window', async () => {
+    const { view, state } = await startIdleApp({ isCompacting: true });
+
+    press(view, '\x03');
+    await waitUntil(() => expect(state.cancel).toHaveBeenCalledTimes(1));
+    await armExit(view);
+    expect(state.cancel).toHaveBeenCalledTimes(1);
+
+    press(view, '\x03');
+    await waitUntil(() => expect(state.endCurrentSession).toHaveBeenCalledWith('exit'));
   });
 
   // The working row says "Esc to cancel" during a /compact; Esc did nothing there.
@@ -492,17 +504,41 @@ describe('idle Ctrl+C exit confirmation', () => {
     await waitUntil(() => expect(state.cancel).toHaveBeenCalledTimes(1));
   });
 
-  // A rewind cannot be cancelled halfway, and it is over in a moment: a press waits it out.
-  it('Ctrl+C during a rewind neither arms the exit window nor exits', async () => {
-    const { view, state, rerenderWith } = await startIdleApp({ isRewinding: true });
+  // Once the compaction is saved, only its PostCompact hooks are left, and they run under the
+  // same abort signal: a cancel then killed the user's hooks and changed nothing else.
+  it('Esc after a /compact is saved leaves its PostCompact hooks alone', async () => {
+    const { view, state, rerenderWith } = await startIdleApp({
+      isCompacting: true,
+      isCompactCommitted: true,
+    });
 
-    press(view, '\x03');
-    press(view, '\x03');
-    rerenderWith({ isRewinding: true });
+    press(view, '\x1b');
+    // A lone Esc is held for a moment in case it starts a sequence; give it time to land.
+    await new Promise((resolve) => realSetTimeout(resolve, 150));
+    rerenderWith({ isCompacting: true, isCompactCommitted: true });
 
-    expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
-    expect(state.endCurrentSession).not.toHaveBeenCalled();
     expect(state.cancel).not.toHaveBeenCalled();
+  });
+
+  // Cancelling a compaction is not cancelling a turn: the queue waiting behind it stays as it
+  // was, instead of being poured back into the composer.
+  it('cancelling a /compact leaves the follow-up queue alone', async () => {
+    const { view, state, rerenderWith } = await startIdleApp({ isThinking: true });
+    for (const [index, text] of ['first waiting', 'second waiting'].entries()) {
+      press(view, text);
+      await waitForFrame(view, `> ${text}`);
+      press(view, '\r');
+      await waitForFrame(view, `Queued follow-up inputs (${index + 1})`);
+    }
+    rerenderWith({ isThinking: false, isCompacting: true });
+
+    press(view, '\x1b');
+    await waitUntil(() => expect(state.cancel).toHaveBeenCalledTimes(1));
+    rerenderWith({ isThinking: false, isCompacting: true });
+
+    expect(frameOf(view)).toContain('Queued follow-up inputs (2)');
+    expect(frameOf(view)).not.toContain('Queued inputs restored');
+    expect(frameOf(view)).not.toContain('> first waiting');
   });
 
   it('the exit window is disarmed when command resolution starts', async () => {
@@ -696,6 +732,57 @@ describe('idle Ctrl+C exit confirmation', () => {
 
     await waitUntil(() => expect(endCurrentSession).toHaveBeenCalledWith('exit'));
     expect(state.cancel).toHaveBeenCalled();
+  });
+
+  // The same for a managed child's prompt, which the session's cancel does not reach: left up
+  // during a slow SessionEnd, Enter on it still approved the child's tool.
+  it("an exit withdraws a child agent's permission prompt", async () => {
+    const child = {
+      id: 'agent-1',
+      name: 'patcher',
+      role: 'patcher',
+      description: 'patch',
+      status: 'waiting_permission',
+      applicationStatus: 'not_applied',
+      worktree: '/tmp/book-worktree',
+      branch: 'book-agent/test',
+      prompt: 'continue',
+      referencedEvidenceIds: [],
+      transcript: [],
+      pendingMessages: [],
+      parentSessionId: testSession.sessionId,
+      pendingPermission: {
+        id: 'permission-1',
+        agentId: 'agent-1',
+        displayName: 'Patcher',
+        toolName: 'Bash',
+        toolCall: { id: 'bash-1', name: 'Bash', arguments: { command: 'rm -rf build' } },
+        createdAt: 1,
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    } as unknown as AgentRecord;
+    managedAgentManagerMock.list.mockResolvedValue([child]);
+    try {
+      const fireConfig = startupFireConfig();
+      const endCurrentSession = vi
+        .fn<(reason: string) => Promise<void>>()
+        .mockImplementationOnce(() => new Promise<void>(() => {}))
+        .mockResolvedValue(undefined);
+      const { view } = await startIdleApp(
+        { liveConfig: fireConfig, endCurrentSession },
+        fireConfig,
+      );
+
+      await armExit(view);
+      await waitForFrame(view, 'rm -rf build');
+      press(view, '\x03');
+      await waitUntil(() => expect(endCurrentSession).toHaveBeenCalledWith('exit'));
+
+      await waitForFrameWithout(view, 'rm -rf build');
+    } finally {
+      managedAgentManagerMock.list.mockResolvedValue([]);
+    }
   });
 
   it('the crash screen exits through the same latch', async () => {
@@ -1126,5 +1213,19 @@ describe('queue edges (#268)', () => {
 
     await waitForFrame(view, 'Queue is full');
     expect(frameOf(view)).toContain('> late input edited');
+    // The input is still out for editing, and the screen keeps saying what Enter and Esc do.
+    expect(frameOf(view)).toContain('Esc removes it');
+  });
+
+  // `/queue` is handled by the app, and it was missing from the command catalog, so the menu
+  // that opens on `/` matched nothing and Enter cleared the composer without running it.
+  it('/queue typed and entered from the command menu runs', async () => {
+    const { view } = await startIdleApp();
+
+    press(view, '/queue');
+    await waitForFrame(view, '> /queue');
+    press(view, '\r');
+
+    await waitForFrame(view, 'The follow-up queue is empty.');
   });
 });

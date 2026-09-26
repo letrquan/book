@@ -542,7 +542,7 @@ export class AgentSession {
     options?: SessionLifecycleOptions,
   ): Promise<void> {
     if (this.lifecycleStartedSessionId === sessionId) {
-      await this.lifecycleStart;
+      await this.lifecycleStart?.catch(() => undefined);
       return;
     }
     this.lifecycleStartedSessionId = sessionId;
@@ -552,7 +552,8 @@ export class AgentSession {
 
   // A second call for a session that is already ending waits for the SessionEnd in flight
   // instead of returning at once, which let a second exit or a `/clear` racing an exit move on
-  // while the hooks were still running.
+  // while the hooks were still running. The first caller reports a failed SessionEnd; a caller that
+  // only waited for it does not report the same failure a second time.
   async endLifecycle(
     config: AgentConfig,
     sessionId: string,
@@ -560,7 +561,7 @@ export class AgentSession {
     options?: SessionLifecycleOptions,
   ): Promise<void> {
     if (this.lifecycleEndedSessionId === sessionId) {
-      await this.lifecycleEnd;
+      await this.lifecycleEnd?.catch(() => undefined);
       return;
     }
     this.lifecycleEndedSessionId = sessionId;

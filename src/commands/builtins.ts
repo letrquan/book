@@ -703,6 +703,16 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     execute: () => ({ type: 'managed-agent', operation: 'list' }),
   },
   {
+    name: 'queue',
+    description: 'Show the follow-up queue; /queue clear drops it',
+    argumentHint: '[clear]',
+    // The TUI handles /queue itself before this registry is consulted: the queue is its state.
+    execute: () => ({
+      type: 'local-message',
+      content: 'The follow-up queue belongs to the interactive session.',
+    }),
+  },
+  {
     name: 'agent',
     description: 'Inspect or control a managed agent',
     argumentHint: '<id>|send <id> <message>|stop <id>|apply <id>',

@@ -1246,19 +1246,20 @@ describe('keys judged against the draft the key arrived to (#268)', () => {
     expect(stripAnsi(view.lastFrame())).not.toContain('[image 1');
   });
 
-  // With the command menu open, Enter ran the selected command, and when nothing matched it
-  // cleared the composer without a word. `/queue` is handled by the app rather than listed in
-  // the catalog, so typing it and pressing Enter did nothing at all.
-  it('Enter on a slash command the menu does not list submits it as typed', async () => {
+  // With the command menu open, Enter runs the selected command, and when nothing matched it
+  // cleared the composer without a word. A typo is kept for fixing instead; it is not sent
+  // either, since an unknown command goes to the model as a prompt.
+  it('Enter on a slash command the menu does not list keeps it in the composer', async () => {
     const submitted: string[] = [];
     const view = render(inputBar((value) => submitted.push(value)));
     await tick();
-    view.stdin.write('/queue');
+    view.stdin.write('/zzqx');
     await tick(20);
 
     view.stdin.write('\r');
     await tick(20);
 
-    expect(submitted).toEqual(['/queue']);
+    expect(submitted).toEqual([]);
+    expect(stripAnsi(view.lastFrame())).toContain('/zzqx');
   });
 });
