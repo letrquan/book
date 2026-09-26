@@ -82,14 +82,14 @@ The login form accepts an empty password. Find out why and fix it.
 
 A few things make the conversation go further:
 
-| Type                       | To                                                              |
-| -------------------------- | --------------------------------------------------------------- |
-| `@path`                    | point Book at a file (its contents go with your message)        |
-| `!command`                 | run a shell command yourself and send its output along          |
-| `/`                        | open the command menu (`/help` lists every command)             |
-| `Esc`                      | stop the current turn                                           |
-| `Enter` while Book works   | queue a follow-up; it is sent when the turn ends                |
-| `Ctrl+/`                   | show all keyboard shortcuts                                     |
+| Type                     | To                                                       |
+| ------------------------ | -------------------------------------------------------- |
+| `@path`                  | point Book at a file (its contents go with your message) |
+| `!command`               | run a shell command yourself and send its output along   |
+| `/`                      | open the command menu (`/help` lists every command)      |
+| `Esc`                    | stop the current turn                                    |
+| `Enter` while Book works | queue a follow-up; it is sent when the turn ends         |
+| `Ctrl+/`                 | show all keyboard shortcuts                              |
 
 When Book wants to change a file or run a command, it stops and shows you exactly what it will do:
 
@@ -102,20 +102,20 @@ before commands, or _plan_, where Book proposes a plan and changes nothing until
 
 ## Handy commands
 
-| Command                  | What it does                                                    |
-| ------------------------ | --------------------------------------------------------------- |
-| `/help`                  | every command, grouped                                          |
-| `/model`, `/effort`      | switch model or thinking effort                                 |
-| `/resume`, `/clear`      | pick up an earlier session, or start fresh                      |
-| `/compact`               | shrink the conversation to free up context                      |
-| `/rewind`                | undo back to an earlier turn — conversation, code, or both      |
-| `/diff`                  | see what changed in the working tree                            |
-| `/review`                | review your uncommitted changes (or a branch) for bugs          |
-| `/init`                  | write a `CLAUDE.md` that tells Book about this project          |
-| `/context`, `/cost`      | see what fills the context window, and what the session cost    |
-| `/memory`                | see and manage what Book remembers                              |
-| `/permissions`           | see and remove the rules you have allowed or denied             |
-| `/agents`                | watch background agents at work                                 |
+| Command             | What it does                                                 |
+| ------------------- | ------------------------------------------------------------ |
+| `/help`             | every command, grouped                                       |
+| `/model`, `/effort` | switch model or thinking effort                              |
+| `/resume`, `/clear` | pick up an earlier session, or start fresh                   |
+| `/compact`          | shrink the conversation to free up context                   |
+| `/rewind`           | undo back to an earlier turn — conversation, code, or both   |
+| `/diff`             | see what changed in the working tree                         |
+| `/review`           | review your uncommitted changes (or a branch) for bugs       |
+| `/init`             | write a `CLAUDE.md` that tells Book about this project       |
+| `/context`, `/cost` | see what fills the context window, and what the session cost |
+| `/memory`           | see and manage what Book remembers                           |
+| `/permissions`      | see and remove the rules you have allowed or denied          |
+| `/agents`           | watch background agents at work                              |
 
 From your shell, `book --continue` resumes the latest session in this directory and
 `book --resume <name>` a specific one.

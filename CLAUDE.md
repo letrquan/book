@@ -154,7 +154,7 @@ Other conventions:
 - **Permission modes** (internal): `default` | `auto` | `plan` | `accept-edits` | `dontAsk` | `bypassPermissions`. CLI/settings accept `acceptEdits` and normalize to `accept-edits`.
 - **Prompt content is sorted by volatility, not by topic.** Anthropic matches cache
   prefixes in `tools` → `system` → `messages` order, so anything that changes often must
-  render *after* everything that does not. Three transports:
+  render _after_ everything that does not. Three transports:
   - **Cached prefix** (`buildSystemPromptZones().cachedPrefix`) — session-stable kernel and
     session-context sections, tagged by zone. Adding per-turn text here re-bills the whole
     conversation every turn.
@@ -204,6 +204,11 @@ npm run dev                # run directly via tsx (src/index.ts)
 npm run bench:ui           # TUI micro-benchmarks
 npm run bench:runtime      # runtime benchmarks
 ```
+
+`format:check` covers the root and `docs/` Markdown (`CHANGELOG.md`, `README.md`, the guide) as
+well as the code, so run `npm run format` after editing them. Prose keeps its hand wrapping
+(Prettier's `proseWrap` default, `preserve`), but an inline code span must not cross a line break:
+Prettier re-indents the continuation to column 0, which breaks the list item it sits in.
 
 `npm run check` is the fast gate (no integration tests, no build). Run `npm test` before a release-grade change. Release tooling: `npm run release:check` (version + audit + package smoke).
 

@@ -46,6 +46,7 @@ can decide what to read in full.
   comment in Python, shell, YAML, TOML, Ruby and PowerShell files, Makefiles, Dockerfiles (unless
   the name ends in a code extension, as `makefile.c` does), and extension-less scripts that start
   with `#!`; elsewhere C preprocessor lines and Rust attributes stay in.
+
 - **What it covers:** these shapes fit TypeScript/JavaScript, Python, Go, Rust, Java, Kotlin
   (declarations with `fun`; a `name(args) {` line there is a call taking a trailing lambda), C#
   (members at indentation 8 under a block-scoped `namespace X {`) and Dart. The supported shapes

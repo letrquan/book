@@ -192,8 +192,8 @@ fresh verification pass.
   as data, recorded on the checkpoint's host-owned `audit` by reference only, and shown as a
   warning on the compaction card (which now stays for a warned success). Inherited reducer
   constraints neither cited nor restated nor held by the ledger are counted in the same `audit`
-  and disclosed in a `[reducer: …]` header line, never restored. `npm run eval:compact --
-  --adversarial` is the provider-backed measurement; the deterministic double cannot be steered,
+  and disclosed in a `[reducer: …]` header line, never restored.
+  `npm run eval:compact -- --adversarial` is the provider-backed measurement; the deterministic double cannot be steered,
   so the harness only checks the plumbing. Since P5 phase 1 (2026-09-17,
   `plans/async-compaction-plan.md`) a response that reports usage over the threshold and has
   tool calls starts the reducer on a snapshot ahead of the tool wave (`prepareCompact`), the turn
@@ -232,12 +232,12 @@ Work aimed at running an objective unattended for days rather than hours. All of
 
 - **Continuation.** `runAgentLoop` no longer ends at the model's first tool-free turn; it appends a
   host-authored user turn while the plan says work remains. Two independent brakes stop a run that
-  is going nowhere: `noProgressLimit` (identical todos, file hashes and *executed* tool calls across
+  is going nowhere: `noProgressLimit` (identical todos, file hashes and _executed_ tool calls across
   boundaries) and `blockedToolTurnLimit`, which ends a run whose every tool call was refused on N
   consecutive turns. The second is enforced in unattended hosts regardless of
   `continuation.enabled`, because that spin predates continuation; it does not apply in the TUI or
   in plan mode, where a refusal is a person or a policy, not a stall.
-- **Spend.** `--max-budget-usd` bounds the *objective*: enforced against inclusive cost so delegated
+- **Spend.** `--max-budget-usd` bounds the _objective_: enforced against inclusive cost so delegated
   work counts, carried across submitted prompts and across restarts, persisted from the inclusive
   total so managed-agent and subagent tokens survive a restart, and fail-closed on a ceiling that
   cannot be evaluated. The pre-call check is O(1) in responses.
@@ -308,7 +308,7 @@ Work aimed at running an objective unattended for days rather than hours. All of
   which keys the subscription-auth, adaptive-harness and Zero-Mem removals left behind; validation
   discards a removed block silently, so `book doctor` lists what is still on the machine and what
   to delete — including `<BOOK_HOME>/auth.json`, which holds an OAuth refresh token nothing reads
-  or revokes any more. A removed *value* of a surviving key is coerced rather than rejected, since
+  or revokes any more. A removed _value_ of a surviving key is coerced rather than rejected, since
   `compactStrategy: "zero-mem"` would otherwise fail the whole document and stop Book from
   starting. The credential error names the removal when an `auth` block was the only credential.
 - Managed-agent planning-task linkage, rerun, and task-aware cleanup from the background-job plan
