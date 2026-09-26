@@ -316,9 +316,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // Callbacks read this ref (not state) so multi-turn updates always target
   // the latest in-progress message without stale-closure issues.
   const streamingIdRef = useRef<string | null>(null);
-  // Whether the streaming message has received output (text or a tool call)
-  // since it was created: set synchronously, since the accumulator applies it a flush later.
+  // Whether the streaming message has received output (text, reasoning or
+  // a tool call) since it was created: set synchronously, since the
+  // accumulator applies it a flush later.
   const streamStartedRef = useRef(false);
+  // A compaction committed behind the streaming message's output: the turn's next output opens a
+  // message of its own, below the compaction row.
+  const splitAfterCompactRef = useRef(false);
   const messagesRef = useRef<Message[]>(initialTranscript);
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
@@ -674,6 +678,31 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const stillCurrent = () =>
         sessionGenerationRef.current === generation && operationIsCurrent();
       let activeAccumulator: MessageAccumulator | null = null;
+      // A fresh streaming message for the turn's next output: at each turn after the first, and
+      // after a compaction that committed behind output the same turn then continues.
+      const openStreamingMessage = (reason: 'new-turn' | 'after-compaction') => {
+        activeAccumulator?.stop();
+        uiLog.event('accumulator:stopped', { reason });
+        const next = makeMessage('assistant', '', undefined, true);
+        streamingIdRef.current = next.id;
+        streamStartedRef.current = false;
+        splitAfterCompactRef.current = false;
+        setStreamingMessageId(next.id);
+        setMessages((prev) => {
+          const updated = [...prev, next];
+          messagesRef.current = updated;
+          return updated;
+        });
+        activeAccumulator = createMessageAccumulator(next.id, setMessages, messagesRef, 32);
+        accumulatorRef.current = activeAccumulator;
+        activeAccumulator.start();
+        uiLog.event('accumulator:started', { flushIntervalMs: 32, reason });
+      };
+      // Output of the streaming message: once a compaction committed behind it, it opens a new one.
+      const noteStreamOutput = () => {
+        if (splitAfterCompactRef.current) openStreamingMessage('after-compaction');
+        streamStartedRef.current = true;
+      };
       let activeUserMessage: Message | undefined;
       let placeholder: Message | undefined;
       let activeRunContext: AgentRunContext | undefined;
@@ -786,6 +815,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         placeholder = makeMessage('assistant', '', undefined, true);
         streamingIdRef.current = placeholder.id;
         streamStartedRef.current = false;
+        splitAfterCompactRef.current = false;
         setStreamingMessageId(placeholder.id);
         setIsThinking(true);
         setError(null);
@@ -860,14 +890,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (!stillCurrent()) return;
             switch (event.type) {
               case 'text':
-                if (event.content !== '') streamStartedRef.current = true;
+                if (event.content !== '') noteStreamOutput();
                 activeAccumulator?.addText(event.content);
                 break;
               case 'reasoning':
+                if (event.content !== '') noteStreamOutput();
                 activeAccumulator?.addReasoning(event.content);
                 break;
               case 'tool_use':
-                streamStartedRef.current = true;
+                noteStreamOutput();
                 activeAccumulator?.addToolCall(event.toolCall);
                 break;
               case 'tool_result':
@@ -906,23 +937,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             log.debug('TUI turn start', { turn });
             setCurrentTurn(turn);
             turnStartRef.current = Date.now();
-            if (turn > 1) {
-              activeAccumulator?.stop();
-              uiLog.event('accumulator:stopped', { reason: 'new-turn', turn });
-              const next = makeMessage('assistant', '', undefined, true);
-              streamingIdRef.current = next.id;
-              streamStartedRef.current = false;
-              setStreamingMessageId(next.id);
-              setMessages((prev) => {
-                const updated = [...prev, next];
-                messagesRef.current = updated;
-                return updated;
-              });
-              activeAccumulator = createMessageAccumulator(next.id, setMessages, messagesRef, 32);
-              accumulatorRef.current = activeAccumulator;
-              activeAccumulator.start();
-              uiLog.event('accumulator:started', { flushIntervalMs: 32, turn });
-            }
+            if (turn > 1) openStreamingMessage('new-turn');
           },
           onDone: () => {
             if (!stillCurrent()) return;
@@ -951,6 +966,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (!stillCurrent()) {
               return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
             }
+            const afterOutput = streamingIdRef.current !== null && streamStartedRef.current;
             const outcome = await agentSession.compact({
               config: liveConfigRef.current,
               history,
@@ -977,6 +993,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             const result = outcome.result;
             if (!stillCurrent()) return result;
             if (result.status === 'compacted' && outcome.boundary) {
+              // The row sits below this message; the turn's next output goes below the row.
+              if (afterOutput) splitAfterCompactRef.current = true;
               setCompactUi({
                 phase: 'diff',
                 trigger: 'auto',
@@ -1041,6 +1059,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (!stillCurrent()) {
               return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
             }
+            const afterOutput = streamingIdRef.current !== null && streamStartedRef.current;
             const outcome = await agentSession.commitCompact({
               prepared,
               history,
@@ -1062,6 +1081,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             const result = outcome.result;
             if (!stillCurrent()) return result;
             if (result.status === 'compacted' && outcome.boundary) {
+              // The row sits below this message; the turn's next output goes below the row.
+              if (afterOutput) splitAfterCompactRef.current = true;
               setCompactUi({
                 phase: 'diff',
                 trigger: 'auto',

@@ -474,7 +474,7 @@ function contextualStreamingTail(content: string, maxCharacters: number, step: n
     const tail = content.slice(proseTailStart(content, desiredStart, step));
     return /[*_`~[\]<>|\\]/.test(tail) ? '' : tail;
   }
-  const startContext = fenceContextAt(content, start);
+  const startContext = fenceStart === undefined ? fenceContextAt(content, start) : undefined;
   if (startContext) {
     return `${fenceOpening(startContext)}\n${content.slice(start)}`;
   }

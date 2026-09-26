@@ -291,6 +291,44 @@ describe('ChatPanel Ink rendering', () => {
     expect(lines[boundary + 2]).toContain('answer after the compaction');
   });
 
+  it('draws a compact boundary that follows the streaming message while it streams (#266)', () => {
+    const messages: Message[] = [
+      msg('u1', 'user', 'write it all'),
+      msg('a1', 'assistant', 'partial answer so far'),
+    ];
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          streamingMessageId="a1"
+          compactBoundaries={[
+            {
+              id: 'c1',
+              trigger: 'auto',
+              transcriptOrdinal: 2,
+              preContextCount: 8,
+              postContextCount: 3,
+              preContextTokens: 10_300,
+              postContextTokens: 3_800,
+              generation: 1,
+              checkpointVersion: 2,
+              timestamp: 2,
+            },
+          ]}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('partial answer so far');
+    expect(output).toContain('Compact conversation');
+    expect(output.indexOf('Compact conversation')).toBeGreaterThan(
+      output.indexOf('partial answer so far'),
+    );
+  });
+
   it('keeps automatic child completion notifications out of the visible transcript', () => {
     const notification: Message = {
       id: 'notification-1',

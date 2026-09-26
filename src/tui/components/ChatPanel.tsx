@@ -20,7 +20,7 @@ import {
 import { WelcomeScreen, type RecentChapter } from './WelcomeScreen.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount, useDebugRender } from '../debug.js';
-import { useDensity } from '../density.js';
+import { useDensity, type TuiDensity } from '../density.js';
 import { mergeAssistantMessages } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
 import type { TranscriptMode } from '../tool-presentation.js';
@@ -88,8 +88,10 @@ function estimateTimelineRows(
   entry: Message | CompactBoundary,
   terminalWidth: number,
   quietTools?: QuietToolContext,
+  density: TuiDensity = 'compact',
 ): number {
-  if ('transcriptOrdinal' in entry) return 2;
+  // A boundary is one row of its own plus the blank row it takes, which tight density drops.
+  if ('transcriptOrdinal' in entry) return density === 'tight' ? 1 : 2;
 
   // A user turn is its prompt and nothing else: it wraps by the same rules
   // UserMessage sets it with, so the estimate is its row count exactly.
@@ -276,8 +278,8 @@ export function ChatPanelInner({
   );
   const estimateRows = useCallback(
     (entry: Message | CompactBoundary) =>
-      estimateTimelineRows(entry, terminalWidth ?? 80, quietTools),
-    [quietTools, terminalWidth],
+      estimateTimelineRows(entry, terminalWidth ?? 80, quietTools, density),
+    [quietTools, terminalWidth, density],
   );
   const hiddenHistoryRows = hiddenTimelineEntries > 0 ? (density === 'tight' ? 1 : 2) : 0;
   const virtualTimeline = useVirtualTranscript({
@@ -526,6 +528,7 @@ interface TimelineCache {
   prefixLast?: Message;
   boundaries?: CompactBoundary[];
   prefix: Array<Message | CompactBoundary>;
+  trailing?: CompactBoundary[];
   composed?: Array<Message | CompactBoundary>;
   composedActive?: Message;
 }
@@ -567,6 +570,11 @@ function useIncrementalTimeline(
       prefixLast,
       boundaries,
       prefix: buildTimeline(messages.slice(0, streamingIndex), boundaries, streamingMessageId),
+      // A compaction that committed behind the streaming message's output sits below it until the
+      // turn's next output opens a message of its own: draw it meanwhile, not when the turn ends.
+      trailing: boundaries
+        .filter((boundary) => boundary.transcriptOrdinal > streamingIndex)
+        .sort((a, b) => a.timestamp - b.timestamp),
     };
   }
   const active = messages[streamingIndex];
@@ -574,7 +582,7 @@ function useIncrementalTimeline(
   // Reuse the composed array while the active message object is unchanged so
   // re-renders without new deltas keep a stable timeline identity downstream.
   if (cache.current.composedActive !== active) {
-    cache.current.composed = [...cache.current.prefix, active];
+    cache.current.composed = [...cache.current.prefix, active, ...(cache.current.trailing ?? [])];
     cache.current.composedActive = active;
   }
   return cache.current.composed!;

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ToolContext } from '../types/tools.js';
 import { createRegistry } from './registry.js';
+import { fileTools } from './file.js';
 import {
   normalizeToolResult,
   boundToolResultOutput,
@@ -298,6 +299,52 @@ describe('ToolResult V2', () => {
       expect(result.presentation?.metadata).toEqual(metadata);
     },
   );
+
+  it.each([
+    { name: 'a file that ends in a newline', file: 'a\nb\n', args: {}, metadata: ['2 lines'] },
+    { name: 'an empty file', file: '', args: {}, metadata: ['empty'] },
+    {
+      name: 'the end of a file from an offset',
+      file: 'a\nb\n',
+      args: { offset: 2 },
+      metadata: ['1 line', '2-2'],
+    },
+    {
+      name: 'a page that stops early',
+      file: 'a\nb\nc\nd\ne\nf\n',
+      args: { offset: 3, limit: 2 },
+      metadata: ['2 lines', '3-4'],
+    },
+    {
+      name: 'a page whose last line is blank',
+      file: 'a\nb\n\nd\n',
+      args: { limit: 3 },
+      metadata: ['3 lines'],
+    },
+    {
+      name: 'an outline',
+      file: 'export function a() {}\n\nexport function b() {}\n',
+      args: { outline: true },
+      metadata: ['outline', '2 entries'],
+    },
+  ])('describes a real Read of $name (#247)', async ({ file, args, metadata }) => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-read-row-'));
+    try {
+      writeFileSync(join(workspace, 'a.ts'), file);
+      const registry = createRegistry();
+      registry.register(fileTools.find((tool) => tool.name === 'Read')!);
+
+      const result = await registry.execute(
+        { id: 'read', name: 'Read', arguments: { filePath: 'a.ts', ...args } },
+        { workspaceRoot: workspace, env: {} },
+      );
+
+      expect(result.status).toBe('success');
+      expect(result.presentation?.metadata).toEqual(metadata);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 
   it('upgrades persisted legacy results without retaining legacy projections', () => {
     const result = normalizeToolResult({

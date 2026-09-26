@@ -395,12 +395,22 @@ function nonEmptyLines(content: string): number {
 }
 
 /**
- * A Read row's metadata: how many lines of the file it returned, and their range when the read
- * started partway in. A Read that stops early ends with a notice (`[Lines 3-6 of 20 shown. …]`,
- * `[Line 1 (60000 bytes) was cut …]`), which is not a line of the file.
+ * A Read row's metadata: how many lines of the file it returned and their range when the read
+ * started partway in, or, for an outline, how many declarations it listed. A Read that stops early
+ * ends with a notice (`[Lines 3-6 of 20 shown. …]`, `[Line 1 (60000 bytes) was cut …]`), which is
+ * not a line of the file.
  */
 export function readResultMetadata(args: Record<string, unknown>, content: string): string[] {
-  const body = content.replace(/\n\[Lines? \d[^\n]*\]$/, '');
+  // An outline lists declarations under a header, not lines of the file.
+  if (args.outline === true) {
+    const entries = content.split('\n').filter((line) => /^\d+: /.test(line)).length;
+    return ['outline', entries === 1 ? '1 entry' : `${entries} entries`];
+  }
+  let body = content.replace(/\n\[Lines? \d[^\n]*\]$/, '');
+  // A read that reaches the end of the file shows one more, empty, numbered line past its final
+  // newline (`1: ` for an empty file), which is not a line of the file. A page that stopped early
+  // ends with the notice instead, and its last line is real.
+  if (body === content) body = body.replace(/(?:^|\n)\d+: $/, '');
   const lineCount = body ? body.split('\n').length : 0;
   if (lineCount === 0) return ['empty'];
   const offset = Number(args.offset ?? 0);

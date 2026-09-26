@@ -17,6 +17,7 @@ import { SessionStore } from '../../session/store.js';
 type Step =
   | { turnStart: number }
   | { text: string }
+  | { reasoning: string }
   | { compact: 'sync' | 'recovery' }
   | { commit: true }
   | { wait: true };
@@ -90,6 +91,7 @@ vi.mock('../../agent/loop.js', () => ({
       history: unknown[],
       callbacks: {
         onText: (content: string) => void;
+        onReasoning?: (content: string) => void;
         onTurnStart: (turn: number) => void;
         onCompact?: (history: unknown[], usage: unknown, hints?: unknown) => Promise<unknown>;
         prepareCompact?: (snapshot: unknown[], usage: unknown, hints?: unknown) => Promise<unknown>;
@@ -104,6 +106,7 @@ vi.mock('../../agent/loop.js', () => ({
       for (const step of loopState.steps as Step[]) {
         if ('turnStart' in step) callbacks.onTurnStart(step.turnStart);
         else if ('text' in step) callbacks.onText(step.text);
+        else if ('reasoning' in step) callbacks.onReasoning?.(step.reasoning);
         else if ('wait' in step) await new Promise((resolve) => setTimeout(resolve, 60));
         else if ('compact' in step) {
           await callbacks.onCompact?.(
@@ -233,7 +236,44 @@ describe('the compaction row', () => {
     await run([{ text: 'before compact' }, { compact: 'sync' }, { text: ' and after' }]);
 
     expect(latest!.compactBoundaries).toHaveLength(1);
-    expect(latest!.compactBoundaries[0]!.transcriptOrdinal).toBe(indexOf('before compact') + 1);
+    const ordinal = latest!.compactBoundaries[0]!.transcriptOrdinal;
+    expect(ordinal).toBe(indexOf('before compact') + 1);
+    // What the turn streams after the compaction is a message of its own, below the row.
+    expect(indexOf(' and after')).toBe(ordinal);
+  });
+
+  it('puts a continuation re-sent after the turn compacted below the row (#266)', async () => {
+    // An output-cap continuation or a transport re-issue retries the same turn:
+    // no new turn starts, and its preflight gate can compact before it streams.
+    await run([
+      { text: 'partial answer' },
+      { wait: true },
+      { compact: 'sync' },
+      { text: 'continued answer' },
+    ]);
+
+    expect(latest!.compactBoundaries).toHaveLength(1);
+    const ordinal = latest!.compactBoundaries[0]!.transcriptOrdinal;
+    expect(ordinal).toBe(indexOf('partial answer') + 1);
+    expect(indexOf('continued answer')).toBe(ordinal);
+    expect(latest!.messages[indexOf('partial answer')]!.content).not.toContain('continued');
+  });
+
+  it('counts a turn that has only reasoned as having output (#266)', async () => {
+    await run([
+      { reasoning: 'thinking it over' },
+      { wait: true },
+      { compact: 'sync' },
+      { turnStart: 2 },
+      { text: 'next turn' },
+    ]);
+
+    const reasoned = latest!.messages.findIndex((message) =>
+      message.reasoningContent?.includes('thinking it over'),
+    );
+    expect(reasoned).toBeGreaterThanOrEqual(0);
+    expect(latest!.compactBoundaries).toHaveLength(1);
+    expect(latest!.compactBoundaries[0]!.transcriptOrdinal).toBe(reasoned + 1);
   });
 
   it('lands after the turn a deferred compaction committed behind (#266)', async () => {
