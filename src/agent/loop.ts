@@ -12,6 +12,7 @@ import type {
 import type { ProviderResponseMetadata } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
 import type {
+  ReadOnlyRoot,
   ToolCall,
   ToolResult,
   ToolContext,
@@ -400,6 +401,7 @@ export async function runAgentLoop(
         id: crypto.randomUUID(),
         role: 'assistant',
         content: `[UserPromptSubmit hook blocked the prompt${r.message ? `: ${r.message}` : ''}]`,
+        hostNotice: true,
         includeInContext: false,
         timestamp: Date.now(),
       });
@@ -545,11 +547,20 @@ export async function runAgentLoop(
   });
 
   const initialMode = mode as PermissionMode;
+  // Read may open the memory directory (minus its inbox) and, below, every file this
+  // session clipped a result into: a clip notice's "Full output: <path>" (#248). Never the
+  // whole tool-output directory, which holds every project's clipped output. The earlier
+  // prompts' files come from the runtime, so a notice the model was given one turn ago
+  // stays readable for the rest of the session.
+  const readOnlyRoots: Array<string | ReadOnlyRoot> = [
+    ...(config.memoryContext?.dir
+      ? [{ root: config.memoryContext.dir, exclude: ['.inbox'] } as const]
+      : []),
+    ...runtime.clippedOutputPaths,
+  ];
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
-    readOnlyRoots: config.memoryContext?.dir
-      ? [{ root: config.memoryContext.dir, exclude: ['.inbox'] }]
-      : undefined,
+    readOnlyRoots,
     env: process.env as Record<string, string>,
     envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,
@@ -760,6 +771,14 @@ export async function runAgentLoop(
     let streamReissues = 0;
     /** Continuations after an output cap; budgeted separately from transport faults. */
     let outputCapContinues = 0;
+    /**
+     * Whether the host is currently showing a retry label. The TUI clears that
+     * label on `onStreamResume`, which no provider calls after a re-sent turn,
+     * so the loop reports the resume itself the first time the retried stream
+     * answers. Run-level: a turn that retries after another one has already
+     * spoken still owes the host the same single resume.
+     */
+    let retryLabelShown = false;
     /** Host-authored continuations spent, and the witnesses they were taken at. */
     let continuationCount = 0;
     const continuationWitnesses: string[] = [];
@@ -1188,9 +1207,11 @@ export async function runAgentLoop(
             );
           }
           callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
+          retryLabelShown = true;
         },
         onStreamStall: (countdownMs) => {
           callbacks.onStreamStall?.(countdownMs);
+          retryLabelShown = true;
         },
         onStreamResume: () => {
           callbacks.onStreamResume?.();
@@ -1204,6 +1225,16 @@ export async function runAgentLoop(
 
       try {
         for await (const event of stream) {
+          // The retry label a re-sent turn left up ends with the answer, not with
+          // the run: the host is told the stream resumed on the first content of
+          // the retried attempt.
+          if (
+            retryLabelShown &&
+            (event.type === 'text' || event.type === 'reasoning' || event.type === 'tool_call')
+          ) {
+            retryLabelShown = false;
+            callbacks.onStreamResume?.();
+          }
           if (event.type === 'reasoning' && event.reasoning) {
             reasoningContent += event.reasoning;
             if (reasoningStreamingStarted) callbacks.onReasoning?.(event.reasoning);
@@ -1732,7 +1763,14 @@ export async function runAgentLoop(
             recovery === 'continue'
               ? 0
               : Math.min(config.retry.maxDelayMs, config.retry.baseDelayMs * 2 ** streamReissues);
-          callbacks.onRetry?.('transport', spent + 1, allowed, reissueDelayMs);
+          callbacks.onRetry?.(
+            recovery === 'continue' ? 'continue' : 'reissue',
+            spent + 1,
+            allowed,
+            reissueDelayMs,
+            streamOutcome.reason,
+          );
+          retryLabelShown = true;
           await delay(reissueDelayMs, signal);
           if (!signal?.aborted) {
             // Never re-send a request that ENDS with an assistant message.
@@ -1874,6 +1912,7 @@ export async function runAgentLoop(
           content: [assistantContent, `[Tool batch rejected: ${message}]`]
             .filter(Boolean)
             .join('\n\n'),
+          hostNotice: true,
           reasoningContent: reasoningContent || undefined,
           providerMetadata: assistantProviderMetadata,
           includeInContext: true,
@@ -2531,12 +2570,19 @@ export async function runAgentLoop(
           });
         }
 
-        return boundToolResultOutput(
+        const bounded = await boundToolResultOutput(
           enrichToolResultPresentation(result, canonName, call.arguments),
           context.workspaceRoot,
           undefined,
           options?.toolOutputRoot,
         );
+        const outputPath = bounded.artifacts?.outputPath;
+        if (bounded.pagination?.truncated && outputPath) {
+          if (!readOnlyRoots.includes(outputPath)) readOnlyRoots.push(outputPath);
+          // Session-scoped, so the next prompt of this session can still Read it.
+          runtime.clippedOutputPaths.add(outputPath);
+        }
+        return bounded;
       };
 
       const finishCall = async (entry: PreparedLoopCall, result: ToolResult): Promise<void> => {

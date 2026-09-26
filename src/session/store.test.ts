@@ -652,3 +652,29 @@ describe('SessionStore', () => {
     expect(existsSync(join(dir, `${active}.jsonl`))).toBe(true);
   });
 });
+
+describe('SessionStore — host notices survive a reload (#248)', () => {
+  it('restores hostNotice on an assistant record', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-store-notice-'));
+    try {
+      const store = new SessionStore(dir);
+      const id = store.create({ cwd: dir });
+      store.append(id, {
+        type: 'assistant',
+        timestamp: 2,
+        data: {
+          id: 'notice-1',
+          complete: true,
+          content: '[Tool batch rejected: duplicate ids]',
+          hostNotice: true,
+        },
+      });
+
+      const loaded = store.load(id);
+
+      expect(loaded.transcript.find((message) => message.id === 'notice-1')?.hostNotice).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
