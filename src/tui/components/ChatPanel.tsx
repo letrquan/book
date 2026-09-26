@@ -362,6 +362,7 @@ export function ChatPanelInner({
             <CompactBoundaryRow
               terminalWidth={terminalWidth}
               spaced={index > 0 && density !== 'tight'}
+              screenReader={screenReader}
             />
           );
         } else {
@@ -569,7 +570,13 @@ function useIncrementalTimeline(
       prefixLength: streamingIndex,
       prefixLast,
       boundaries,
-      prefix: buildTimeline(messages.slice(0, streamingIndex), boundaries, streamingMessageId),
+      prefix: buildTimeline(
+        messages.slice(0, streamingIndex),
+        // Only the boundaries this prefix can place: the ones past the streaming message are
+        // drawn after it, from `trailing`.
+        boundaries.filter((boundary) => boundary.transcriptOrdinal <= streamingIndex),
+        streamingMessageId,
+      ),
       // A compaction that committed behind the streaming message's output sits below it until the
       // turn's next output opens a message of its own: draw it meanwhile, not when the turn ends.
       trailing: boundaries
@@ -578,7 +585,10 @@ function useIncrementalTimeline(
     };
   }
   const active = messages[streamingIndex];
-  if (active.kind === 'agent-notification') return cache.current.prefix;
+  if (active.kind === 'agent-notification') {
+    const trailing = cache.current.trailing ?? [];
+    return trailing.length ? [...cache.current.prefix, ...trailing] : cache.current.prefix;
+  }
   // Reuse the composed array while the active message object is unchanged so
   // re-renders without new deltas keep a stable timeline identity downstream.
   if (cache.current.composedActive !== active) {
@@ -616,6 +626,13 @@ function buildTimeline(
       segment.push(messages[index]);
     }
   }
+  // A row placed past the last message, for a streaming message whose append never landed,
+  // still shows: at the end.
+  const beyond = boundaries.filter((boundary) => boundary.transcriptOrdinal > messages.length);
+  if (beyond.length) {
+    flush();
+    timeline.push(...beyond.sort((a, b) => a.timestamp - b.timestamp));
+  }
   flush();
   return timeline;
 }
@@ -627,14 +644,20 @@ function buildTimeline(
 function CompactBoundaryRow({
   terminalWidth = 80,
   spaced,
+  screenReader,
 }: {
   terminalWidth?: number;
   spaced: boolean;
+  screenReader: boolean;
 }) {
   const theme = useTheme();
   const text = indentedGrid(transcriptGrid(terminalWidth)).content;
   return (
-    <Box marginTop={spaced ? 1 : 0} marginLeft={CONTENT_COLUMN} width={GUTTER_WIDTH + text}>
+    <Box
+      marginTop={spaced ? 1 : 0}
+      marginLeft={screenReader ? 0 : CONTENT_COLUMN}
+      width={GUTTER_WIDTH + text}
+    >
       <Text color={theme.success}>✓ </Text>
       <Text color={theme.text}>{truncateDisplay('Compact conversation', text)}</Text>
     </Box>

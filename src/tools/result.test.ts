@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +7,7 @@ import { createRegistry } from './registry.js';
 import { fileTools } from './file.js';
 import {
   normalizeToolResult,
+  readLineMetadata,
   boundToolResultOutput,
   replaceToolResult,
   toolFailure,
@@ -15,6 +16,13 @@ import {
 } from './result.js';
 
 const context: ToolContext = { workspaceRoot: process.cwd(), env: {} };
+const readRowWorkspaces: string[] = [];
+
+afterEach(() => {
+  for (const workspace of readRowWorkspaces.splice(0)) {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
 
 describe('ToolResult V2', () => {
   it('returns a V2 envelope from registered tools', async () => {
@@ -341,21 +349,23 @@ describe('ToolResult V2', () => {
     },
   ])('describes a real Read of $name (#247)', async ({ file, args, metadata }) => {
     const workspace = mkdtempSync(join(tmpdir(), 'book-read-row-'));
-    try {
-      writeFileSync(join(workspace, 'a.ts'), file);
-      const registry = createRegistry();
-      registry.register(fileTools.find((tool) => tool.name === 'Read')!);
+    readRowWorkspaces.push(workspace);
+    writeFileSync(join(workspace, 'a.ts'), file);
+    const registry = createRegistry();
+    registry.register(fileTools.find((tool) => tool.name === 'Read')!);
 
-      const result = await registry.execute(
-        { id: 'read', name: 'Read', arguments: { filePath: 'a.ts', ...args } },
-        { workspaceRoot: workspace, env: {} },
-      );
+    const result = await registry.execute(
+      { id: 'read', name: 'Read', arguments: { filePath: 'a.ts', ...args } },
+      { workspaceRoot: workspace, env: {} },
+    );
 
-      expect(result.status).toBe('success');
-      expect(result.presentation?.metadata).toEqual(metadata);
-    } finally {
-      rmSync(workspace, { recursive: true, force: true });
-    }
+    expect(result.status).toBe('success');
+    expect(result.presentation?.metadata).toEqual(metadata);
+  });
+
+  it('keeps Read row counts whole for a fractional offset', () => {
+    expect(readLineMetadata(2.5, 3.5)).toEqual(['3 lines', '2-4']);
+    expect(readLineMetadata(1, 0.5)).toEqual(['empty']);
   });
 
   it('upgrades persisted legacy results without retaining legacy projections', () => {

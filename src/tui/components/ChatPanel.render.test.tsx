@@ -291,6 +291,70 @@ describe('ChatPanel Ink rendering', () => {
     expect(lines[boundary + 2]).toContain('answer after the compaction');
   });
 
+  it('sets a compact boundary flush left for a screen reader, like the assistant rows', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[msg('u1', 'user', 'go'), msg('a1', 'assistant', 'answer')]}
+          compactBoundaries={[
+            {
+              id: 'c1',
+              trigger: 'auto',
+              transcriptOrdinal: 1,
+              preContextCount: 8,
+              postContextCount: 3,
+              preContextTokens: 10_300,
+              postContextTokens: 3_800,
+              generation: 1,
+              checkpointVersion: 2,
+              timestamp: 2,
+            },
+          ]}
+          terminalWidth={80}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    const row = frame(view.lastFrame)
+      .split('\n')
+      .find((line) => line.includes('Compact conversation'));
+    expect(row?.indexOf('✓')).toBe(0);
+  });
+
+  it('never drops a compact boundary placed past the last message', () => {
+    // A row placed for a streaming message whose append was still queued, which
+    // then never landed (the send was cancelled).
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[msg('u1', 'user', 'go'), msg('a1', 'assistant', 'answer')]}
+          compactBoundaries={[
+            {
+              id: 'c1',
+              trigger: 'auto',
+              transcriptOrdinal: 3,
+              preContextCount: 8,
+              postContextCount: 3,
+              preContextTokens: 10_300,
+              postContextTokens: 3_800,
+              generation: 1,
+              checkpointVersion: 2,
+              timestamp: 2,
+            },
+          ]}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('Compact conversation');
+    expect(output.indexOf('Compact conversation')).toBeGreaterThan(output.indexOf('answer'));
+  });
+
   it('draws a compact boundary that follows the streaming message while it streams (#266)', () => {
     const messages: Message[] = [
       msg('u1', 'user', 'write it all'),

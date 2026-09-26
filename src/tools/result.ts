@@ -396,19 +396,24 @@ function nonEmptyLines(content: string): number {
 
 /** A Read row's line metadata: how many lines of the file, and their range when the read started partway in. */
 export function readLineMetadata(start: number, count: number): string[] {
-  if (count <= 0) return ['empty'];
-  const size = count === 1 ? '1 line' : `${count} lines`;
+  // Read's offset is a number, so a model can send a fraction: a row counts whole lines.
+  const first = Math.max(1, Math.floor(start));
+  const lines = Math.max(0, Math.floor(count));
+  if (lines <= 0) return ['empty'];
+  const size = lines === 1 ? '1 line' : `${lines} lines`;
   // `121 lines · 1-121` says the same thing twice. The range earns its place only when the read
   // started partway into the file.
-  return start > 1 ? [size, `${start}-${start + count - 1}`] : [size];
+  return first > 1 ? [size, `${first}-${first + lines - 1}`] : [size];
 }
 
 /**
- * A Read row's metadata reconstructed from its text, for results that do not carry it (persisted
- * by an older build, and outlines): the lines of the file it returned and their range, or how many
- * declarations an outline listed. A read that stops early ends with a notice (`[Lines 3-6 of 20
- * shown. …]`, `[Line 1 (60000 bytes) was cut …]`), which is not a line of the file. Read's own
- * results carry exact metadata (readLineMetadata).
+ * A Read row's metadata reconstructed from its text, for results that carry none (outlines, and
+ * results persisted before tool results had a presentation): the lines of the file it returned
+ * and their range, or how many declarations an outline listed. A read that stops early ends with
+ * a notice (`[Lines 3-6 of 20 shown. …]`, `[Line 1 (60000 bytes) was cut …]`), which is not a
+ * line of the file. Read's own results carry exact metadata (readLineMetadata). Without Read's
+ * own count, a read that ends exactly at the end of the file on a blank line reads like one past
+ * a final newline, and counts one line short.
  */
 export function readResultMetadata(args: Record<string, unknown>, content: string): string[] {
   // An outline lists declarations under a header, not lines of the file.
