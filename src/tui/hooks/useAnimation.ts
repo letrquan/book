@@ -2,21 +2,16 @@ import { useState, useEffect, useRef } from 'react';
 import { createRenderDebugLogger } from '../../debug-log.js';
 import { isTranscriptScrollActive } from '../scroll-activity.js';
 import { useUiClock } from '../ui-clock.js';
-import { shimmerColor } from '../shimmer.js';
+import { mixColor, shimmerColor } from '../shimmer.js';
+import { QUILL_FRAMES, QUILL_STILL, quillColors } from '../quill.js';
 import { useTheme } from '../theme.js';
 
 const animLog = createRenderDebugLogger('tui:animation');
 
 const BRAILLE_FRAMES = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
 
-/**
- * Book's own spinner: the hedera, the ivy-leaf fleuron printers set between the
- * sections of a book, often in red. It swings like a pendulum (upright, turned
- * right, upright, turned left) and holds the upright pose longest: ten frames at
- * the 100ms clock, one swing a second. It replaced the braille dot circle nearly
- * every terminal tool spins, which said nothing about whose it was.
- */
-export const HEDERA_FRAMES = ['❦', '❦', '❦', '❧', '❧', '❦', '❦', '❦', '☙', '☙'];
+/** Frames of the wording's breath at the quill's 50ms clock: one a second, as at 100ms. */
+const QUILL_BREATH_STEPS = 20;
 
 /**
  * Ten frames at the 100ms clock: one revolution per second, and one shimmer
@@ -36,26 +31,56 @@ const DOT_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇
  */
 export function useGradientSpinner(
   active: boolean,
-  style: SpinnerStyle = 'hedera',
+  style: SpinnerStyle = 'quill',
   reducedMotion = false,
-): { frame: string; color: string; markColor: string } {
+): SpinnerFrame {
   const theme = useTheme();
-  const frames =
-    style === 'braille' ? BRAILLE_FRAMES : style === 'dots' ? DOT_FRAMES : HEDERA_FRAMES;
-  const tick = useUiClock('fast', active && !reducedMotion);
   const animating = active && !reducedMotion;
+  const quill = style === 'quill';
+  const tick = useUiClock(quill ? 'cinematic' : 'fast', animating);
 
+  if (quill) {
+    const frame = animating ? QUILL_FRAMES[tick % QUILL_FRAMES.length]! : QUILL_STILL;
+    return {
+      frame: frame.text,
+      // The ink takes the rubric while it is fresh and dries to the greys.
+      colors: quillColors(
+        frame,
+        { fresh: theme.brand, wet: theme.brandShimmer, drying: theme.subtle, dry: theme.inactive },
+        mixColor,
+      ),
+      // The wording beside the pen breathes in ink.
+      color: animating
+        ? shimmerColor(theme.shimmerPair, tick, QUILL_BREATH_STEPS)
+        : theme.shimmerPair[0],
+      markColor: theme.brand,
+    };
+  }
+
+  const frames = style === 'braille' ? BRAILLE_FRAMES : DOT_FRAMES;
+  const markColor = animating ? shimmerColor([theme.brand, theme.brandShimmer], tick) : theme.brand;
+  const frame = frames[animating ? tick % frames.length : 0]!;
   return {
-    frame: frames[animating ? tick % frames.length : 0]!,
-    // The wording beside the glyph breathes in ink.
+    frame,
+    colors: [markColor],
     color: animating ? shimmerColor(theme.shimmerPair, tick) : theme.shimmerPair[0],
-    // The glyph itself is a mark, so it takes the rubric, breathing between
-    // the accent and its lighter shimmer.
-    markColor: animating ? shimmerColor([theme.brand, theme.brandShimmer], tick) : theme.brand,
+    markColor,
   };
 }
 
-export type SpinnerStyle = 'hedera' | 'braille' | 'dots';
+export type SpinnerStyle = 'quill' | 'braille' | 'dots';
+
+/** One frame of the spinner, ready to draw. */
+export interface SpinnerFrame {
+  /** The glyphs, one terminal cell each. */
+  frame: string;
+  /** One colour per cell of `frame`. */
+  colors: readonly string[];
+  /** The breathing colour of the wording beside the spinner. */
+  color: string;
+  /** The spinner's single colour, where one colour stands for all its cells. */
+  markColor: string;
+}
 
 export function useStaggeredReveal(
   count: number,

@@ -4,6 +4,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { toolActivityText } from '../working-activity.js';
 import { activityPalette, WorkingIndicator } from './WorkingIndicator.js';
+import { QUILL_FRAMES } from '../quill.js';
 import type { Message } from '../../types/messages.js';
 
 function stripAnsi(value: string | undefined): string {
@@ -245,15 +246,16 @@ describe('WorkingIndicator', () => {
 
     const initialFrame = view.lastFrame();
     const initialWriteCount = view.frames.length;
-    expect(stripAnsi(initialFrame).trimStart().startsWith('❦ ')).toBe(true);
+    const quill = (frame: string | undefined) => stripAnsi(frame).trimStart().slice(0, 4);
+    expect(quill(initialFrame)).toBe(QUILL_FRAMES[0]!.text);
 
-    // The fleuron holds upright for three ticks, then swings right.
+    // Eight frames at the 50ms clock: the nib is into the left lobe.
     act(() => {
-      vi.advanceTimersByTime(300);
+      vi.advanceTimersByTime(400);
     });
 
-    expect(view.lastFrame()).not.toBe(initialFrame);
-    expect(stripAnsi(view.lastFrame()).trimStart().startsWith('❧ ')).toBe(true);
+    expect(quill(view.lastFrame())).toBe(QUILL_FRAMES[8]!.text);
+    expect(quill(view.lastFrame())).not.toBe(quill(initialFrame));
     expect(view.frames.length).toBeGreaterThan(initialWriteCount);
   });
 

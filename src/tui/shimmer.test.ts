@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SHIMMER_STEPS, shimmerColor, shimmerPhase } from './shimmer.js';
+import { mixColor, SHIMMER_STEPS, shimmerColor, shimmerPhase } from './shimmer.js';
 
 const PAIR: [string, string] = ['#000000', '#ffffff'];
 
@@ -80,5 +80,19 @@ describe('shimmerColor with a malformed theme', () => {
 
   it('still blends a well-formed pair', () => {
     expect(shimmerColor(['#000000', '#FFFFFF'], 0)).toBe('#000000');
+  });
+});
+
+describe('mixColor', () => {
+  it('blends between two hex colours and clamps the amount', () => {
+    expect(mixColor('#000000', '#ffffff', 0)).toBe('#000000');
+    expect(mixColor('#000000', '#ffffff', 1)).toBe('#ffffff');
+    expect(mixColor('#000000', '#ffffff', 0.5)).toBe('#808080');
+    expect(mixColor('#000000', '#ffffff', 7)).toBe('#ffffff');
+  });
+
+  it('keeps a colour it cannot interpolate', () => {
+    expect(mixColor('red', '#ffffff', 0.5)).toBe('#ffffff');
+    expect(mixColor('#000000', 'ansi256(9)', 0.5)).toBe('ansi256(9)');
   });
 });

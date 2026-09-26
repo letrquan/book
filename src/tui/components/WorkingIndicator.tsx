@@ -9,6 +9,7 @@ import type {
   PendingUserQuestionRequest,
 } from '../../session/agent-interactions.js';
 import { useAnimatedProgress, useGradientSpinner } from '../hooks/useAnimation.js';
+import { SpinnerGlyphs } from './Spinner.js';
 import { useUiClock } from '../ui-clock.js';
 import { useTheme } from '../theme.js';
 import type { ThemeTokens } from '../../types/theme.js';
@@ -16,7 +17,7 @@ import { deriveWorkingActivity } from '../working-activity.js';
 import type { ActivityTone } from '../working-activity.js';
 import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
 import { formatElapsedDuration } from './SubagentRow.js';
-import { displayWidth, truncateDisplay } from './word-wrap.js';
+import { displayWidth, padDisplay, truncateDisplay } from './word-wrap.js';
 
 interface WorkingIndicatorProps {
   isThinking: boolean;
@@ -127,7 +128,7 @@ export function activityPalette(
   if (tone === 'waiting') {
     return { indicator: theme.permission, label: theme.permission, meta: theme.subtle };
   }
-  // The fleuron is a mark and takes the rubric; the wording stays in the
+  // The quill's ink is a mark and takes the rubric; the wording stays in the
   // agent's breathing ink beside it.
   return { indicator: markColor, label: spinnerColor, meta: theme.subtle };
 }
@@ -189,7 +190,7 @@ export function WorkingIndicator({
   const compactProgress = useAnimatedProgress(isCompacting, 2_400, motionDisabled);
   const spinner = useGradientSpinner(
     Boolean(activity) && !showCompactProgress && !motionDisabled && !activity?.blocked,
-    'hedera',
+    'quill',
     motionDisabled,
   );
 
@@ -252,14 +253,28 @@ export function WorkingIndicator({
   // as a duration somewhere around three digits.
   const elapsed =
     shouldTrackElapsed && !motionDisabled ? ` · ${formatElapsedDuration(elapsedSeconds)}` : '';
-  const line = fitActivityLine(activity?.label ?? '', elapsed, hint, Math.max(1, contentWidth - 2));
-  const indicator = activity?.blocked ? '◇' : spinner.frame;
+  // The quill spans four cells. The waiting mark takes the same column, so the
+  // wording does not shift when the turn stops to ask you something.
+  const indicatorWidth = displayWidth(spinner.frame);
+  const line = fitActivityLine(
+    activity?.label ?? '',
+    elapsed,
+    hint,
+    Math.max(1, contentWidth - indicatorWidth - 1),
+  );
+  const indicator = activity?.blocked ? padDisplay('◇', indicatorWidth) : spinner.frame;
   const tone = activity?.tone ?? 'normal';
   const palette = activityPalette(tone, theme, spinner.color, spinner.markColor);
 
   return (
     <Box width={width} flexWrap="nowrap">
-      <Text color={palette.indicator}>{indicator} </Text>
+      {tone === 'normal' && !activity?.blocked ? (
+        // Fresh ink in the rubric drying to grey, a colour per cell.
+        <SpinnerGlyphs frame={spinner.frame} colors={spinner.colors} />
+      ) : (
+        <Text color={palette.indicator}>{indicator}</Text>
+      )}
+      <Text> </Text>
       <Text color={palette.label} bold={tone === 'normal'} dimColor={tone !== 'normal'}>
         {line.label}
       </Text>
