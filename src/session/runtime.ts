@@ -117,6 +117,15 @@ export class SessionRuntime {
    * within one conversation.
    */
   readonly usedToolNames: Set<string>;
+  /**
+   * Files this session's tool output was clipped into, as absolute paths.
+   *
+   * Owned by the session rather than by one `runAgentLoop` call, because a clip
+   * notice ("Full output: <path>") is read by later prompts: a path the session
+   * cannot Read is a path the model was told to go and look at and then could
+   * not (#248).
+   */
+  readonly clippedOutputPaths = new Set<string>();
 
   agentManager?: import('../agents/manager.js').AgentManager;
   private readonly abortControllers = new Set<AbortController>();

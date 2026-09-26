@@ -44,13 +44,11 @@ vi.mock('../../agent/compact.js', () => ({
 }));
 
 vi.mock('../../input/input-expansion.js', () => ({
-  expandAtMentions: (value: string) => {
-    callOrder.push('expand-at');
-    return value;
-  },
-  expandShellCommands: (value: string) => {
-    callOrder.push('expand-shell');
-    return value;
+  // Shell and mention expansion is one pass over the typed text (#261 review),
+  // so one call now stands for both.
+  expandUserInput: (value: string) => {
+    callOrder.push('expand-input');
+    return Promise.resolve(value);
   },
   collectAtMentionObservations: () => [],
 }));
@@ -401,8 +399,9 @@ describe('useAgent rewind integration', () => {
 
     expect(callOrder.indexOf('compact')).toBeLessThan(callOrder.indexOf('capture'));
     expect(callOrder.indexOf('capture')).toBeLessThan(callOrder.indexOf('turn_checkpoint'));
-    expect(callOrder.indexOf('turn_checkpoint')).toBeLessThan(callOrder.indexOf('expand-at'));
-    expect(callOrder.indexOf('expand-at')).toBeLessThan(callOrder.indexOf('expand-shell'));
+    // The checkpoint is taken before any expansion, so a rewind restores the
+    // workspace as it was before a `!` line ran (#261 review).
+    expect(callOrder.indexOf('turn_checkpoint')).toBeLessThan(callOrder.indexOf('expand-input'));
     expect(timeline.readRecords(sessionId).map((record) => record.type)).toContain(
       'turn_checkpoint',
     );

@@ -1,8 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { basename, dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { expandAtMentions, expandShellCommands } from './input-expansion.js';
+import {
+  collectAtMentionObservations,
+  expandAtMentions,
+  expandShellCommands,
+} from './input-expansion.js';
 
 let dirs: string[] = [];
 
@@ -39,29 +43,31 @@ describe('expandAtMentions', () => {
     expect(result).toContain('# Notes');
   });
 
-  it('reports missing files instead of silently leaving raw mentions', () => {
+  it("leaves a missing file's mention as written", () => {
     const ws = workspace();
 
     const result = expandAtMentions('Read @missing.ts', ws);
 
-    expect(result).toContain('[Could not include @missing.ts: file not found]');
+    expect(result).toBe('Read @missing.ts');
   });
 
-  it('reports directories', () => {
+  it('leaves a directory mention as written', () => {
     const ws = workspace();
     mkdirSync(join(ws, 'src'));
+    mkdirSync(join(ws, 'test'));
 
-    const result = expandAtMentions('Read @src', ws);
-
-    expect(result).toContain('path is a directory');
+    expect(expandAtMentions('Read @src', ws)).toBe('Read @src');
+    // An annotation that happens to name a directory (case-insensitively on Windows and
+    // macOS) must not become a marker either (#261 review).
+    expect(expandAtMentions('Add a @Test annotation', ws)).toBe('Add a @Test annotation');
   });
 
-  it('rejects paths outside the workspace', () => {
+  it('leaves a missing path outside the workspace as written', () => {
     const ws = workspace();
 
     const result = expandAtMentions('Read @../secret.txt', ws);
 
-    expect(result).toContain('path is outside the workspace');
+    expect(result).toBe('Read @../secret.txt');
   });
 
   it('adds an explicit truncation notice for large files', () => {
@@ -79,6 +85,97 @@ describe('expandAtMentions', () => {
     const result = expandAtMentions('Email dev@example.com and say @ hello', ws);
 
     expect(result).toBe('Email dev@example.com and say @ hello');
+  });
+});
+
+describe('expandAtMentions — only real paths outside code (#261)', () => {
+  function codeWorkspace(): string {
+    const dir = workspace();
+    mkdirSync(join(dir, 'src'));
+    writeFileSync(join(dir, 'src', 'app.ts'), 'export const value = 1;');
+    return dir;
+  }
+
+  it('leaves a mention of a path that does not exist as written', () => {
+    const ws = codeWorkspace();
+    expect(expandAtMentions('Read @missing.ts please', ws)).toBe('Read @missing.ts please');
+  });
+
+  it('leaves JSDoc tags, decorators and npm scopes as written', () => {
+    const ws = codeWorkspace();
+    const input =
+      'Add {@link AgentSpawnRequest.resumeAfterRestart}, keep @Injectable() and install @types/node.';
+    expect(expandAtMentions(input, ws)).toBe(input);
+  });
+
+  it('does not expand a mention inside a fenced code block', () => {
+    const ws = codeWorkspace();
+    const input = 'Spec:\n```ts\n/** See @src/app.ts */\n```\n';
+    expect(expandAtMentions(input, ws)).toBe(input);
+  });
+
+  it('does not expand a mention inside a tilde fence, or an unclosed fence', () => {
+    const ws = codeWorkspace();
+    const tilde = '~~~\n@src/app.ts\n~~~';
+    expect(expandAtMentions(tilde, ws)).toBe(tilde);
+    const unclosed = 'Code:\n```\n@src/app.ts\nstill code';
+    expect(expandAtMentions(unclosed, ws)).toBe(unclosed);
+  });
+
+  it('does not expand a mention inside an inline code span', () => {
+    const ws = codeWorkspace();
+    const single = 'Call it as `read @src/app.ts now` in the prompt.';
+    expect(expandAtMentions(single, ws)).toBe(single);
+    const double = 'Or ``x @src/app.ts ` y`` there.';
+    expect(expandAtMentions(double, ws)).toBe(double);
+  });
+
+  it('still expands a real mention after a closed fence and beside a lone backtick', () => {
+    const ws = codeWorkspace();
+    const afterFence = expandAtMentions('```\ncode\n```\nExplain @src/app.ts', ws);
+    expect(afterFence).toContain('Contents of src/app.ts:');
+    const loneTick = expandAtMentions('a ` b @src/app.ts', ws);
+    expect(loneTick).toContain('Contents of src/app.ts:');
+  });
+
+  it('leaves an existing file outside the workspace as written, without a note', () => {
+    const ws = workspace();
+    const outside = join(dirname(ws), `${basename(ws)}-secret.txt`);
+    writeFileSync(outside, 'secret');
+    dirs.push(outside);
+    const input = `Read @../${basename(outside)}`;
+    expect(expandAtMentions(input, ws)).toBe(input);
+  });
+
+  it('leaves network paths as written', () => {
+    const ws = workspace();
+    const unc = ['Read @', '\\', '\\', 'server', '\\', 'share', '\\', 'x.txt'].join('');
+    for (const input of ['Read @//server/share/x.txt', unc]) {
+      expect(expandAtMentions(input, ws)).toBe(input);
+    }
+  });
+
+  it('does not take a line that opens with a closed inline span for a fence', () => {
+    const ws = codeWorkspace();
+    const result = expandAtMentions('```npm test``` fails\nsee @src/app.ts', ws);
+    expect(result).toContain('Contents of src/app.ts:');
+  });
+
+  it('does not pair backticks across a blank line', () => {
+    const ws = codeWorkspace();
+    const result = expandAtMentions('press the ` key\n\nthen read @src/app.ts and `x`', ws);
+    expect(result).toContain('Contents of src/app.ts:');
+  });
+
+  it('leaves a mention outside the workspace that does not exist as written', () => {
+    const ws = codeWorkspace();
+    expect(expandAtMentions('Read @../nope-not-here.txt', ws)).toBe('Read @../nope-not-here.txt');
+  });
+
+  it('records no observation for a mention inside code', () => {
+    const ws = codeWorkspace();
+    expect(collectAtMentionObservations('See `read @src/app.ts now`', ws, 'ref')).toEqual([]);
+    expect(collectAtMentionObservations('See @src/app.ts', ws, 'ref')).toHaveLength(1);
   });
 });
 

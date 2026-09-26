@@ -505,6 +505,7 @@ export class SessionStore {
         fileObservations?: Message['fileObservations'];
         agentNotifications?: Message['agentNotifications'];
         attachments?: Message['attachments'];
+        hostNotice?: boolean;
       };
 
       if (data.kind === 'session_meta_patch') {
@@ -710,6 +711,7 @@ export class SessionStore {
             toolCalls: data.toolCalls,
             toolResults: normalizePersistedToolResults(data.toolResults),
             fileObservations: data.fileObservations,
+            hostNotice: data.hostNotice,
             timestamp: record.timestamp,
           };
           transcript.push(message);

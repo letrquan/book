@@ -42,11 +42,7 @@ import type {
   ToolResult,
   UserQuestionResponse,
 } from '../types/tools.js';
-import {
-  collectAtMentionObservations,
-  expandAtMentions,
-  expandShellCommands,
-} from '../input/input-expansion.js';
+import { collectAtMentionObservations, expandUserInput } from '../input/input-expansion.js';
 import { observationKey } from '../tools/file-provenance.js';
 import { promptSizeTokens } from '../pricing.js';
 import { AgentInteractionController } from './agent-interactions.js';
@@ -687,14 +683,19 @@ export class AgentSession {
   async recordUserMessage(
     request: AgentSessionRecordUserRequest,
   ): Promise<{ contextMessage: string; sessionName: string }> {
-    const expandedMentions =
-      request.contextMessage === undefined
-        ? expandAtMentions(request.displayMessage, request.config.workspace)
-        : request.contextMessage;
+    // One pass over what the user typed: a `!cmd` line runs, an `@path` mention
+    // is inlined, and neither is found in the other's output. A mentioned file's
+    // lines must never run as commands, and a command's output must never be read
+    // as the user's own mentions (#261 review).
+    const expandShellInput =
+      request.contextMessage === undefined && request.expandShellInput !== false;
     const contextMessage =
-      request.contextMessage !== undefined || request.expandShellInput === false
-        ? expandedMentions
-        : await expandShellCommands(expandedMentions, request.config.workspace, request.signal);
+      request.contextMessage !== undefined
+        ? request.contextMessage
+        : await expandUserInput(request.displayMessage, request.config.workspace, {
+            expandShell: expandShellInput,
+            signal: request.signal,
+          });
     request.userMessage.contextContent =
       contextMessage === request.displayMessage ? undefined : contextMessage;
     request.userMessage.fileObservations =
@@ -703,6 +704,7 @@ export class AgentSession {
             request.displayMessage,
             request.config.workspace,
             request.userMessage.id,
+            expandShellInput,
           )
         : [];
     const observationLedger = (request.runtime ?? this.runtime).fileObservationLedger;
@@ -1145,6 +1147,9 @@ export class AgentSession {
               toolCalls: message.toolCalls,
               toolResults: message.toolResults,
               fileObservations: message.fileObservations,
+              // Without this a resumed session reads a host notice as the model's
+              // own reply: `finalAnswerText` and the answer walk both key on it.
+              hostNotice: message.hostNotice,
             },
           } satisfies SessionRecord);
           callbacks.onAssistantMessageComplete?.(message);

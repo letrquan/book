@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentLoopRunner } from './agent-session.js';
 import { AgentSession } from './agent-session.js';
 import type { ToolRegistry } from '../tools/registry.js';
@@ -1853,5 +1856,85 @@ describe('AgentSession deferred compaction', () => {
       options: {},
     });
     expect(outcome.result).toMatchObject({ status: 'skipped', reason: 'not-applicable' });
+  });
+});
+
+describe('AgentSession.recordUserMessage — one pass over what the user typed', () => {
+  let workspaces: string[] = [];
+
+  afterEach(() => {
+    for (const dir of workspaces) rmSync(dir, { recursive: true, force: true });
+    workspaces = [];
+  });
+
+  function workspaceWith(files: Record<string, string>): string {
+    const dir = mkdtempSync(join(tmpdir(), 'book-shell-order-'));
+    workspaces.push(dir);
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+    return dir;
+  }
+
+  async function record(displayMessage: string, workspace: string): Promise<Message> {
+    const userMessage: Message = {
+      id: 'user-shell',
+      role: 'user',
+      content: displayMessage,
+      includeInContext: true,
+      timestamp: 10,
+    };
+    const result = await new AgentSession().recordUserMessage({
+      config: defaultConfig({ workspace }),
+      sessionId: 'session-1',
+      displayMessage,
+      userMessage,
+      timelineStore: { append: () => {} },
+    });
+    userMessage.contextContent = result.contextMessage;
+    return userMessage;
+  }
+
+  it('never runs a line of a mentioned file as a command', async () => {
+    const workspace = workspaceWith({ 'notes.md': '# Notes\n!echo PWNED-FROM-FILE\n' });
+
+    const message = await record('Explain @notes.md', workspace);
+
+    expect(message.contextContent).toContain('!echo PWNED-FROM-FILE');
+    expect(message.contextContent).not.toMatch(/^PWNED-FROM-FILE$/m);
+  });
+
+  it('never runs a line inside a fenced block', async () => {
+    const workspace = workspaceWith({});
+    const typed = 'Run this later:\n```\n!echo PWNED-FROM-FENCE\n```';
+
+    expect((await record(typed, workspace)).contextContent).toBe(typed);
+  });
+
+  it('still runs a command line the user typed', async () => {
+    const workspace = workspaceWith({});
+
+    const message = await record('Output:\n!echo typed-by-user', workspace);
+
+    expect(message.contextContent).toContain('typed-by-user');
+    expect(message.contextContent).not.toContain('!echo');
+  });
+
+  it("never mention-expands a command's output", async () => {
+    const workspace = workspaceWith({ 'secret.txt': 'TOP SECRET' });
+
+    const message = await record('!echo see @secret.txt', workspace);
+
+    expect(message.contextContent).toContain('see @secret.txt');
+    expect(message.contextContent).not.toContain('TOP SECRET');
+    expect(message.fileObservations).toEqual([]);
+  });
+
+  it('expands and observes the same mentions, whatever a command printed', async () => {
+    // A command that prints an unclosed fence must not hide a later mention the user typed.
+    const workspace = workspaceWith({ 'notes.md': 'NOTE BODY' });
+
+    const message = await record('!echo ~~~\nNow update @notes.md', workspace);
+
+    expect(message.contextContent).toContain('NOTE BODY');
+    expect(message.fileObservations?.map((observation) => observation.path)).toEqual(['notes.md']);
   });
 });
