@@ -78,7 +78,7 @@ import {
   toolResultSucceeded,
 } from '../tools/result.js';
 import { toolSearchTools } from '../tools/tool-search.js';
-import { appendToolUseRecords } from '../tool-telemetry.js';
+import { appendToolUseRecords, telemetryProviderOf } from '../tool-telemetry.js';
 import type { ToolUseRecord } from '../types/tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
@@ -1565,7 +1565,11 @@ export async function runAgentLoop(
           const abandonedResults = toolCalls.map<ToolResult>((call, callIndex) => {
             const result = toolFailure(
               'INTERRUPTED: the provider stream ended before this tool ran',
-              { toolCallId: call.id, code: 'cancelled', status: 'cancelled' },
+              {
+                toolCallId: call.id,
+                code: 'cancelled_before_start',
+                status: 'cancelled',
+              },
             );
             callbacks.onToolResult(result);
             const nestedTraceId = nestedTraceIds[callIndex];
@@ -1746,7 +1750,7 @@ export async function runAgentLoop(
         const cancelledResults = toolCalls.map<ToolResult>((call, callIndex) => {
           const result = toolFailure('CANCELLED: Agent execution was interrupted', {
             toolCallId: call.id,
-            code: 'cancelled',
+            code: 'cancelled_before_start',
             status: 'cancelled',
           });
           callbacks.onToolResult(result);
@@ -1888,9 +1892,19 @@ export async function runAgentLoop(
         if (signal?.aborted) {
           toolResults[callIndex] = toolFailure('CANCELLED: Agent execution was interrupted', {
             toolCallId: originalCall.id,
-            code: 'cancelled',
+            code: 'cancelled_before_start',
             status: 'cancelled',
           });
+          return undefined;
+        }
+
+        // Arguments that never parsed can never run, so the call is refused before PreToolUse
+        // hooks and the permission check see it: a hook would judge the `{__raw}` wrapper, and in
+        // default mode the user would be asked to approve a call that cannot run - and "Always"
+        // would save a rule built from it.
+        const unparsed = registry.rejectUnparsedArguments(originalCall, toolContext);
+        if (unparsed) {
+          toolResults[callIndex] = unparsed;
           return undefined;
         }
 
@@ -2568,10 +2582,14 @@ export async function runAgentLoop(
       // reliability failures and must not inflate the fail rate. Best-effort.
       if (config.settings.observability.toolTelemetry && toolCalls.length > 0) {
         const recordedAt = Date.now();
+        // The route the model was actually reached through: a bad router is the whole
+        // story behind a run of truncated tool calls, and the model id alone hides it.
+        const telemetryProvider = telemetryProviderOf(effectiveConfig);
         const records: ToolUseRecord[] = [];
         for (let index = 0; index < toolCalls.length; index++) {
           const result = orderedToolResults[index];
           const isFailure = result.status === 'error' || result.status === 'timed_out';
+          const details = result.structuredError?.details;
           records.push({
             ts: recordedAt,
             session: runtime.traceId,
@@ -2579,9 +2597,16 @@ export async function runAgentLoop(
             status: result.status,
             isFailure,
             errorCode: isFailure ? (result.structuredError?.code ?? result.status) : undefined,
+            errorShape:
+              isFailure &&
+              result.structuredError?.code === 'invalid_json_arguments' &&
+              typeof details?.shape === 'string'
+                ? details.shape
+                : undefined,
             durationMs: result.metrics?.durationMs,
             retries: Math.max(0, (result.metrics?.retryAttempt ?? 1) - 1),
             model: effectiveConfig.model,
+            provider: telemetryProvider,
             subagent: options?.isSubagent === true,
             agentRole: options?.agentRole,
           });

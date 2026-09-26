@@ -26,12 +26,25 @@ export interface ToolUseRecord {
   isFailure: boolean;
   /** Structured error code when the call failed; omitted on success/blocked. */
   errorCode?: string;
+  /**
+   * The malformed-arguments shape of an `invalid_json_arguments` failure (`truncated_start`,
+   * `truncated_end`, `concatenated`, `single_quoted`, `syntax`). Only that code carries a
+   * shape, so it is the histogram key for one route's bad tool calls: the shape says whether
+   * the model wrote bad JSON or a router dropped the call's first fragment.
+   */
+  errorShape?: string;
   /** Execution wall time in ms when measured. */
   durationMs?: number;
   /** Retries beyond the first attempt (0 when the first attempt succeeded). */
   retries: number;
   /** Model that issued the call. */
   model: string;
+  /**
+   * The configured provider id the model was reached through (the `9router` of
+   * `9router/cmc/stealth/space-bunny-alpha`), when the selection named one. A route that
+   * mangles tool calls is a route problem, and the model id alone does not name it.
+   */
+  provider?: string;
   /** True when the call was issued by a subagent (Task tool) rather than the root loop. */
   subagent: boolean;
   /** Managed-agent role when the call originated from one (explorer/patcher/…). */
@@ -63,6 +76,8 @@ export interface ModelStatRow {
   calls: number;
   failures: number;
   failRate: number;
+  /** Error-code histogram for this model's failures. */
+  errorCodes: Record<string, number>;
 }
 
 /** Full aggregate over a set of {@link ToolUseRecord}s. */

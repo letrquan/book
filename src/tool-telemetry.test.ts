@@ -8,6 +8,7 @@ import {
   formatToolStatsReport,
   pruneToolUseRecords,
   readToolUseRecords,
+  telemetryProviderOf,
 } from './tool-telemetry.js';
 import type { ToolUseRecord } from './types/tool-telemetry.js';
 
@@ -116,6 +117,45 @@ describe('aggregateToolUse', () => {
     expect(agg.models.map((m) => m.model).sort()).toEqual(['opus', 'sonnet']);
     expect(agg.models.find((m) => m.model === 'opus')?.calls).toBe(2);
   });
+
+  it('keys a model by its provider, so a bad route is not hidden behind a shared model id', () => {
+    const agg = aggregateToolUse([
+      record({ model: 'cmc/x', provider: '9router' }),
+      record({ model: 'cmc/x' }),
+    ]);
+    expect(agg.models.map((m) => m.model).sort()).toEqual(['9router/cmc/x', 'cmc/x']);
+  });
+
+  it('counts malformed arguments by shape, globally, per tool and per model', () => {
+    const agg = aggregateToolUse([
+      record({
+        tool: 'Edit',
+        model: 'cmc/x',
+        provider: '9router',
+        status: 'error',
+        isFailure: true,
+        errorCode: 'invalid_json_arguments',
+        errorShape: 'truncated_start',
+      }),
+    ]);
+    expect(agg.errorCodes).toEqual([{ code: 'invalid_json_arguments:truncated_start', count: 1 }]);
+    expect(agg.tools[0].errorCodes).toEqual({ 'invalid_json_arguments:truncated_start': 1 });
+    expect(agg.models[0].errorCodes).toEqual({ 'invalid_json_arguments:truncated_start': 1 });
+  });
+});
+
+describe('telemetryProviderOf', () => {
+  it('reads the provider prefix off a model selection, and nothing off a bare id', () => {
+    expect(telemetryProviderOf({ model: 'cmc/x', modelSelection: '9router/cmc/x' })).toBe(
+      '9router',
+    );
+    expect(telemetryProviderOf({ model: 'gpt-4o', modelSelection: 'gpt-4o' })).toBeUndefined();
+    expect(telemetryProviderOf({ model: 'cmc/x' })).toBeUndefined();
+    // A selection that is not a prefix of the model names no provider; it is not a route.
+    expect(
+      telemetryProviderOf({ model: 'cmc/x', modelSelection: '9router/cmc/y' }),
+    ).toBeUndefined();
+  });
 });
 
 describe('formatToolStatsReport', () => {
@@ -140,6 +180,26 @@ describe('formatToolStatsReport', () => {
     expect(report).toContain('1 failed');
     expect(report).toMatch(/Bash\s+2\s+1\s+50\.0%/);
     expect(report).toContain('Top error codes: tool_timeout(1)');
+  });
+
+  it('names the provider and the error codes on a per-model line', () => {
+    const report = formatToolStatsReport(
+      aggregateToolUse([
+        record({ model: 'cmc/x', provider: '9router' }),
+        record({
+          model: 'cmc/x',
+          provider: '9router',
+          status: 'error',
+          isFailure: true,
+          errorCode: 'invalid_json_arguments',
+          errorShape: 'truncated_start',
+        }),
+        record({ model: 'gpt-4o' }),
+      ]),
+    );
+    // `cmc/x` alone would not say which route mangled the call.
+    expect(report).toContain('9router/cmc/x: 2 calls, 1 failed (50.0%)');
+    expect(report).toContain('codes: invalid_json_arguments:truncated_start(1)');
   });
 });
 

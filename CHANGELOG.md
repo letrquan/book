@@ -276,6 +276,24 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A tool call that lost its first fragment is resent, not re-escaped** (#260). On 9router's
+  `cmc/stealth/space-bunny-alpha` route a parallel call sometimes arrives with its opening
+  fragment missing: the raw text starts `/tools/file.ts", "newString": …`. The router dropped it,
+  but the error told the model to escape backslashes. `invalid_json_arguments` now names the shape
+  the text arrived in (truncated at the start, cut off at the end, two objects, single quotes, other
+  syntax) with advice for each, quotes the text on both sides of the parse position, and shows an
+  invisible character as a `\uXXXX` escape instead of a space. `book tool-stats` counts the shapes
+  per provider and model, and both provider clients log raw argument fragments under `BOOK_DEBUG`.
+- **A call whose arguments never parsed is refused before hooks and the permission prompt** (#242).
+  PreToolUse hooks judged the `{__raw}` wrapper, and in `default` mode the user was asked to approve
+  a call that could never run, with "Always" saving a rule built from it.
+- **Calls refused before they started no longer count as tools that ran** (#242). After a reload,
+  `toolNamesFromHistory` counted an `unknown_tool` result and a call cancelled before it started.
+  Both now belong to one shared set of pre-execution codes, and a call the abort or an ended stream
+  cancelled before it ran is coded `cancelled_before_start`.
+- **A failed tool row stays on one line** (#242). The TUI folded control characters out of a row's
+  target but not its error text, and neither fold covered bidi overrides or U+2028/2029, so a
+  `Read` of a path holding U+202E drew its row reversed. Both now fold with the one shared set.
 - **`ToolSearch` is always callable** (#270). In eager mode the surface activates every authorized
   tool and leaves `ToolSearch` off the provider's tool list, but a call to it was still refused as
   `tool_not_active` — a refusal whose own remediation said to call `ToolSearch` to discover it. The
