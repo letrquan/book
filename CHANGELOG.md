@@ -378,6 +378,42 @@ All notable changes to this project are documented in this file.
   timestamps, so it kept the outline, and an `Edit` after the resume was refused as "only
   outlined". A rebuilt ledger now lets a real observation replace an outline, and never the
   reverse, whatever the timestamps. A checkpoint's file observations follow the same rule.
+- **`Read { outline: true }` covers more of what #247's reviews found missing, and lists less
+  that is not a declaration (#247).**
+  - **Now listed:** Java and C# methods with their body on the same line
+    (`public int get() { return n; }`), declarations with an annotation or attribute on their own
+    line (`@Override public String toString() {`, `[HttpGet] public IActionResult Get() {`), plain
+    `*values()` generator methods, the members of a Java inner class or a nested C# class, Java
+    `record`s, and C++ class members: declarations, one-line definitions, constructors,
+    destructors, operators and pure virtuals, with trailing comments, `[[attributes]]` and
+    qualifier macros, also inside `#ifdef` blocks and namespaces. A method whose default value
+    quotes a parenthesis (`paren(s = '(') {`) is no longer dropped.
+  - **JSON** outlines to its top-level keys, or for an array to each element's first key, instead
+    of its opening brace alone. Block comments are skipped, `}, {` elements are found, and a
+    `.prettierrc` or `.eslintrc` is JSON only when it holds JSON.
+  - **No longer listed:** property access on objects named like keywords (`set.add(1);`,
+    `it.skip;`, `it.next();`, `impl->value = f(`), and a statement followed by another on the same
+    line (`foo(x); if (y) {`). `it.skip('x', () => {`, `it.each` tables and other test blocks
+    reached through a known modifier still are.
+  - **The template scanner keeps its place** through a string continued with a trailing
+    backslash, and through a regex right after a condition's `)` (`if (ok) /`/.test(s)`), which
+    it read as a division; two such misreads used to hide every line between them.
+  - **Front matter** may open with a `# comment`, and a `#` comment after a blank line no longer
+    ends it, when the keys beside it are YAML identifiers (`title:`); beside a label such as
+    `Summary: …` a `#` line stays a heading. The Markdown front matter detector moved to
+    `src/frontmatter.ts`, beside `parseFrontmatter`.
+  - **Budget:** an entry is cut at 512 bytes and ends with `…`, so a minified first line no longer
+    leaves an outline with "0 shown", and the header and truncation note fit inside the 50 KB clip
+    whatever the path's length.
+  - **Code:** the three lists of statement words, which disagreed, are one table that says where
+    each word rules a line out.
+  - The `outline` parameter's description now says "up to 2000 of them or 50 KB". It is part of
+    the cached tool schema, so the first request after upgrading misses the prompt cache once.
+  - **Measured:** over this repository's 731 tracked files the outline gains 191 entries and loses
+    one. The gains are 184 JSON keys, `.prettierrc`'s six keys, and the constructor of a class
+    declared inside a test; the loss is `def.model ? …`, which had passed for a Python `def`. Over
+    winpty's 88 C++ files it gains 308 class members, constructors, destructors and operators, and
+    loses 18 `impl->field = …` statements that had passed for Rust `impl` blocks.
 - **A failed print run exits 1 on Windows, not 127.** Print mode ended a failed run with
   `exit(1)` straight after its last provider request, while libuv was still closing the pooled
   sockets. On Windows that aborted with
