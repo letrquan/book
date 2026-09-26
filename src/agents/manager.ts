@@ -1920,6 +1920,8 @@ export class AgentManager {
       cumulativeTokens: record.usage?.totalTokens,
       promptTokens: record.runUsage?.promptTokens,
       completionTokens: record.runUsage?.completionTokens,
+      cacheReadInputTokens: record.runUsage?.cacheReadInputTokens,
+      cacheCreationInputTokens: record.runUsage?.cacheCreationInputTokens,
       contextTokens: record.runUsage?.contextTokens,
       toolCalls: record.runMetrics?.toolCalls,
       compactions: record.runMetrics?.compactions,
