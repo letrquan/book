@@ -3003,7 +3003,8 @@ describe('runAgentLoop error handling', () => {
               const enc = new TextEncoder();
               c.enqueue(
                 enc.encode(
-                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"deny_1","function":{"name":"Read","arguments":"{\\"filePath\\":\\"x\\"}"}}]}}]}\n\n',
+                  // Bash, not a workspace Read: reading the workspace no longer asks (#264).
+                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"deny_1","function":{"name":"Bash","arguments":"{\\"command\\":\\"ls\\"}"}}]}}]}\n\n',
                 ),
               );
               c.enqueue(enc.encode('data: [DONE]\n\n'));

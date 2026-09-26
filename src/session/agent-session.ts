@@ -36,7 +36,12 @@ import {
   createTerminalOutcome,
   type AgentTerminalOutcome,
 } from '../types/terminal.js';
-import type { ToolCall, ToolResult, UserQuestionResponse } from '../types/tools.js';
+import type {
+  PermissionDecision,
+  ToolCall,
+  ToolResult,
+  UserQuestionResponse,
+} from '../types/tools.js';
 import {
   collectAtMentionObservations,
   expandAtMentions,
@@ -1039,7 +1044,9 @@ export class AgentSession {
           finalizeOutcome(outcome);
         },
         onPermissionRequired: (toolCall) => {
-          if (request.isCurrent?.() === false) return Promise.resolve('deny');
+          if (request.isCurrent?.() === false) {
+            return Promise.resolve<PermissionDecision>({ result: 'deny', reason: 'dismissed' });
+          }
           return callbacks.onPermissionRequired
             ? callbacks.onPermissionRequired(toolCall)
             : this.interactions.requestPermission(toolCall);
