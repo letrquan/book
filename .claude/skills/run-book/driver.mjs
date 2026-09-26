@@ -530,7 +530,9 @@ async function run() {
         break;
       case 'key': {
         for (const name of rest.split(/\s+/)) {
-          const seq = KEYS[name.toLowerCase()];
+          // `alt-a` is ESC then the key, the way a terminal sends Alt+A.
+          const alt = /^alt-(.)$/i.exec(name);
+          const seq = alt ? `\x1b${alt[1].toLowerCase()}` : KEYS[name.toLowerCase()];
           if (seq === undefined) await fail(`unknown key: ${name}`);
           pty.write(seq);
           await sleep(60);

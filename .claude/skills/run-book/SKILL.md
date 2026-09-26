@@ -68,7 +68,7 @@ EOF
 | `expect <regex>` | Assert the current screen matches now; fail otherwise. |
 | `send <text>` | Type text, then submit. Writes the text and `\r` as separate PTY reads — one chunk would be parsed as a paste and the submit dropped. |
 | `type <text>` | Type without submitting. |
-| `key <name>...` | `enter esc tab shift-tab up down left right backspace space ctrl-c ctrl-d ctrl-e ctrl-j ctrl-l ctrl-o ctrl-r ctrl-t ctrl-u home end pageup pagedown` |
+| `key <name>...` | `enter esc tab shift-tab up down left right backspace space ctrl-c ctrl-d ctrl-e ctrl-j ctrl-l ctrl-o ctrl-r ctrl-t ctrl-u home end pageup pagedown`, and `alt-<key>` (ESC then the key: `alt-a`) |
 | `sleep [ms]`, `resize <cols> <rows>` | Timing and layout. |
 | `screen`, `raw`, `shot <name>` | Dump the screen to stdout, dump the raw tail, or write the screen to `<shots>/<name>.txt`. |
 | `shotpng <name>` | Write the screen with colours and attributes kept, as `<shots>/<name>.html` and, via headless Edge or Chromium, `<name>.png` — which the Read tool can look at. The only way to judge a visual change (palette, weight, spacing): a text `shot` shows none of it. Block elements and rules are drawn edge to edge the way a terminal draws them, so a seam in the PNG is a real seam. |
@@ -97,6 +97,9 @@ workspace to turn the startup splash off, so the splash can be driven without an
 layer. The splash replaces the input bar that `ready` waits for, so such a script starts with
 `sleep` (the splash plays for about three seconds) and a key that dismisses it.
 
+`--record <file>` writes every PTY chunk with its arrival time, as JSON, when the driver exits: the
+input to `record-gif.mjs` below.
+
 ### `mock-provider.mjs` — a provider without an API key
 
 Book refuses to start without `BOOK_API_KEY`, and a real key costs money and makes runs
@@ -115,7 +118,8 @@ can assert on what Book actually sent.
 A turn with both `text` and `tool` streams the text first and the tool call after it on the same
 turn — how a router that inlines reasoning delivers the `<think></think>` a thinking model emits
 before every tool call. `"tools": [{...}, {...}]` in place of `tool` sends several calls in one
-turn, the way a model that batches parallel reads does. `"holdMs": 9000` keeps a turn open after its text is on the wire, which is
+turn, the way a model that batches parallel reads does. `"thinkMs": 1500` holds a turn before its
+first delta, the way a real model pauses to think, so the working spinner stays on screen. `"holdMs": 9000` keeps a turn open after its text is on the wire, which is
 the only way to see the live (unsettled) rendering of a streaming message or a child's detail view
 long enough to screenshot it. A reply's text may cite the events Book showed the reducer:
 `{{event:N}}` becomes the Nth `session://current/event/<id>` reference in the request's last user
@@ -152,6 +156,29 @@ the run with `EADDRINUSE`. A hard kill of the driver (on Windows, `kill` and `pr
 one) skips its handlers and orphans the mock; stop that one by its PID. Never clear a port with
 `pkill -f mock-provider` or a `taskkill` by image name: on a shared machine the other mocks belong to
 other runs.
+
+### `record-gif.mjs` — a GIF or a screenshot from a recording
+
+`node .claude/skills/run-book/record-gif.mjs <rec.json> <out.gif|out.webp|out.png> [options]`
+replays a `--record` file into headless xterm, samples it at `--fps` (12), draws each distinct
+screen the way `shotpng` does, screenshots the frames with headless Edge or Chromium, and joins them
+with sharp. Identical frames merge into one longer frame and a pause is cut to `--max-hold` ms;
+`--end-hold` sets the last frame's. `--start-at <regex>` starts at the first screen that matches,
+and `--until <regex> --after <ms>` stops that long after one does. A `.png` output is the final frame
+alone, which is how a screenshot of an exact moment is taken: `--until "Permission required"
+--after 2000`. `--rows a:b` crops to screen rows a..b-1 (negative counts from the bottom), and
+`--title <text>` adds a window title bar. Chunks less than 6 ms apart are applied together, so a
+frame the renderer wrote in pieces is never sampled half-drawn.
+
+### `readme-media.sh` — the README's GIF and screenshots
+
+`bash .claude/skills/run-book/readme-media.sh` rebuilds `docs/media/`: it writes a small demo project
+(`weather-api`, a config loader with a real bug and a test that catches it), drives the hero
+session in `demo/hero.json` + `demo/hero-drive.txt` and the add-provider wizard in
+`demo/add-provider-drive.txt`, and renders `demo.gif`, `title-page.png`, `permission.png`, and
+`add-provider.png`. Everything runs in a temp workspace and BOOK_HOME, on `BOOK_MEDIA_PORT` (8931).
+Run it after a change to how any of those surfaces look, then look at every image before committing
+it: a still is one frame, and a timing bug can land in it.
 
 ## Traps the scripts do not cover
 

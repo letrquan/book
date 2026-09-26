@@ -1,0 +1,35 @@
+# The add-provider wizard up to its review step, with the model IDs entered by
+# hand so no network is needed. Ends on Esc: nothing is saved.
+ready 30000
+send /model
+wait Alt\+A add BYOK
+sleep 500
+key alt-a
+wait Step 1/9
+sleep 500
+send openrouter
+sleep 700
+key enter
+sleep 700
+key backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace backspace
+send https://openrouter.ai/api/v1
+sleep 700
+send sk-or-v1-demo
+wait Step 5/9
+key down
+sleep 300
+key enter
+wait Model IDs
+sleep 500
+send anthropic/claude-sonnet-5, openai/gpt-5
+wait Display label
+sleep 500
+key enter
+wait Step 9/9
+sleep 1500
+key esc
+sleep 300
+key esc
+sleep 300
+key esc
+quit

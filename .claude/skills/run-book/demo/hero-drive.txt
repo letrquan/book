@@ -1,0 +1,97 @@
+# The README hero: a prompt typed a few keys at a time, then two permission
+# prompts approved with Enter. Pairs with demo/hero.json; see readme-media.sh.
+ready 30000
+sleep 1500
+type An
+sleep 55
+type  e
+sleep 70
+type mpt
+sleep 70
+type y
+sleep 55
+type  T
+sleep 55
+type I
+sleep 45
+type ME
+sleep 45
+type O
+sleep 45
+type UT
+sleep 35
+type _
+sleep 55
+type M
+sleep 70
+type S t
+sleep 55
+type urn
+sleep 70
+type s
+sleep 55
+type  t
+sleep 35
+type h
+sleep 35
+type e r
+sleep 70
+type e
+sleep 45
+type q
+sleep 55
+type ue
+sleep 45
+type s
+sleep 70
+type t t
+sleep 70
+type i
+sleep 35
+type me
+sleep 35
+type o
+sleep 55
+type ut
+sleep 55
+type  o
+sleep 55
+type ff.
+sleep 70
+type  F
+sleep 70
+type i
+sleep 35
+type x i
+sleep 35
+type t a
+sleep 55
+type n
+sleep 70
+type d r
+sleep 35
+type un
+sleep 35
+type  t
+sleep 55
+type h
+sleep 70
+type e
+sleep 55
+type  t
+sleep 70
+type est
+sleep 55
+type s.
+sleep 35
+sleep 600
+key enter
+wait Permission required @20000
+sleep 2800
+key enter
+wait Permission required[\s\S]*Run npm test @20000
+sleep 1600
+key enter
+wait client.ts intends @30000
+sleep 4000
+quit
