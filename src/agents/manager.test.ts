@@ -1692,7 +1692,7 @@ describe('AgentManager lifecycle', () => {
     });
   });
 
-  it('keeps the no-resume mark on a follow-up the review still waits on, and drops it on one it does not (#245)', async () => {
+  it("extends the review's claim over a follow-up it still waits on, and not over one it does not (#245)", async () => {
     const root = tempRoot();
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = false;
@@ -1709,27 +1709,36 @@ describe('AgentManager lifecycle', () => {
       },
     });
     const runner = reviewRunnerFor(manager);
+    const reviewClaim = { notifyParent: false, resumeAfterRestart: false };
 
     // A follow-up sent while the review's own run is going is queued behind it. That run
     // never reaches a finished status, so the review's `wait` receives the follow-up's
-    // result: the follow-up is still the review's, and a restart must not re-run it.
+    // result: the follow-up's run is still the review's, and a restart must not re-run it.
     const queued = await runner.spawn('explorer', 'review this');
     await vi.waitFor(async () => expect((await manager.get(queued.id))?.status).toBe('running'));
-    expect((await manager.get(queued.id))?.resumeAfterRestart).toBe(false);
+    expect(await manager.get(queued.id)).toMatchObject({
+      runSequence: 1,
+      spawnerClaim: { ...reviewClaim, throughRunSequence: 1 },
+    });
     await manager.send(queued.id, 'queued follow-up');
     const reviewWait = runner.wait(queued.id, 5000);
     release();
     const received = await reviewWait;
     expect(received.status).toBe('completed');
-    expect((await manager.get(queued.id))?.prompt).toBe('queued follow-up');
-    expect((await manager.get(queued.id))?.resumeAfterRestart).toBe(false);
+    expect(await manager.get(queued.id)).toMatchObject({
+      prompt: 'queued follow-up',
+      runSequence: 2,
+      spawnerClaim: { ...reviewClaim, throughRunSequence: 2 },
+    });
 
-    // A follow-up sent after the review's run finished starts a run of its own.
+    // A follow-up sent after the review's run finished starts a run of its own, past the claim.
     const finished = await runner.spawn('explorer', 'quick look');
     await manager.wait(finished.id, 1000);
-    expect((await manager.get(finished.id))?.resumeAfterRestart).toBe(false);
-    await manager.send(finished.id, 'please continue');
-    expect((await manager.get(finished.id))?.resumeAfterRestart).toBeUndefined();
+    const resent = await manager.send(finished.id, 'please continue');
+    expect(resent).toMatchObject({
+      runSequence: 2,
+      spawnerClaim: { ...reviewClaim, throughRunSequence: 1 },
+    });
     manager.dispose();
   });
 
@@ -1902,6 +1911,228 @@ describe('reviewRunnerFor attribution', () => {
       parentSessionId: 'session-7',
       notifyParentOnCompletion: false,
     });
+  });
+});
+
+describe('delivery belongs to a run, not to the record (#245 item 5)', () => {
+  function answer(prompt: string): Message {
+    return {
+      id: `answer-${prompt}`,
+      role: 'assistant',
+      content: `answered ${prompt}`,
+      timestamp: 0,
+    } as Message;
+  }
+
+  /** A manager whose runs answer at once, except those gated by `hold`. */
+  function managerFor(
+    hold: Record<string, Promise<void>> = {},
+    fail: Set<string> = new Set(),
+    configure?: (config: AgentConfig) => void,
+  ) {
+    const config = defaultConfig({ workspace: tempRoot() });
+    config.settings.agents.persist = false;
+    configure?.(config);
+    const prompts: string[] = [];
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, prompt, history) => {
+        prompts.push(prompt);
+        await hold[prompt];
+        if (fail.has(prompt)) throw new Error(`${prompt} failed`);
+        return [...history, answer(prompt)];
+      },
+    });
+    const delivered: string[] = [];
+    manager.subscribe((event) => {
+      if (event.type === 'agent_completion') {
+        delivered.push(event.notification.completion.summary ?? '');
+      }
+    });
+    return { manager, prompts, delivered };
+  }
+
+  function gate(): { promise: Promise<void>; release: () => void } {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  }
+
+  it("claims the spawner's first run at spawn, before it starts", async () => {
+    const held = gate();
+    const { manager } = managerFor({ survey: held.promise });
+    const spawned = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'survey',
+      parentSessionId: 'parent-1',
+      notifyParentOnCompletion: false,
+    });
+    // The queued first run is numbered and claimed as it is queued, so every terminal
+    // generation it opens, even one opened before it starts, is judged against the claim.
+    expect(spawned).toMatchObject({
+      runSequence: 1,
+      spawnerClaim: { throughRunSequence: 1, notifyParent: false },
+    });
+    expect(spawned).not.toHaveProperty('notifyParentOnCompletion');
+    held.release();
+    manager.dispose();
+  });
+
+  it("keeps the continuation the spawner's wait still covers undelivered", async () => {
+    const held = gate();
+    const { manager, delivered } = managerFor({ survey: held.promise });
+    const spawned = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'survey',
+      parentSessionId: 'parent-1',
+      notifyParentOnCompletion: false,
+    });
+    await vi.waitFor(async () => expect((await manager.get(spawned.id))?.status).toBe('running'));
+    await manager.send(spawned.id, 'also this');
+    const waited = manager.wait(spawned.id, 5000);
+    held.release();
+    expect(await waited).toMatchObject({ status: 'completed', result: 'answered also this' });
+    expect(await manager.get(spawned.id)).toMatchObject({
+      runSequence: 2,
+      spawnerClaim: { throughRunSequence: 2 },
+    });
+    expect(delivered).toEqual([]);
+    manager.dispose();
+  });
+
+  it('delivers a follow-up sent after the spawner took its result to the parent', async () => {
+    const { manager, delivered } = managerFor();
+    const spawned = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'survey',
+      parentSessionId: 'parent-1',
+      notifyParentOnCompletion: false,
+    });
+    await manager.wait(spawned.id, 5000);
+    const resent = await manager.send(spawned.id, 'please continue');
+    // The new run is numbered as it is queued, past the claim: nothing on the record had
+    // to be cleared for it to report to the parent.
+    expect(resent).toMatchObject({ runSequence: 2, spawnerClaim: { throughRunSequence: 1 } });
+    await vi.waitFor(async () =>
+      expect((await manager.get(spawned.id))?.result).toBe('answered please continue'),
+    );
+    expect(delivered).toEqual(['answered please continue']);
+    manager.dispose();
+  });
+
+  it('hands a failure to the spawner and the follow-up queued behind it to the parent', async () => {
+    const held = gate();
+    const { manager, prompts, delivered } = managerFor(
+      { survey: held.promise },
+      new Set(['survey']),
+    );
+    const spawned = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'survey',
+      parentSessionId: 'parent-1',
+      notifyParentOnCompletion: false,
+    });
+    await vi.waitFor(async () => expect((await manager.get(spawned.id))?.status).toBe('running'));
+    await manager.send(spawned.id, 'try another way');
+    const waited = manager.wait(spawned.id, 5000);
+    held.release();
+    // The spawner's wait ends with its own run's failure...
+    expect(await waited).toMatchObject({ status: 'failed', error: 'survey failed' });
+    // ...and the follow-up runs next, as a run of its own that reports to the parent.
+    await vi.waitFor(async () =>
+      expect(await manager.get(spawned.id)).toMatchObject({
+        status: 'completed',
+        result: 'answered try another way',
+      }),
+    );
+    expect(prompts).toEqual(['survey', 'try another way']);
+    expect(await manager.get(spawned.id)).toMatchObject({
+      runSequence: 2,
+      spawnerClaim: { throughRunSequence: 1 },
+    });
+    expect(delivered).toEqual(['answered try another way']);
+    manager.dispose();
+  });
+
+  it("reports a parent's queued run the process leaves unfinished", async () => {
+    const blocker = gate();
+    const { manager } = managerFor({ blocker: blocker.promise }, new Set(), (config) => {
+      config.settings.agents.maxConcurrent = 1;
+    });
+    const spawned = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'survey',
+      parentSessionId: 'parent-1',
+      notifyParentOnCompletion: false,
+    });
+    await manager.wait(spawned.id, 5000);
+    const busy = await manager.spawn({ agent: 'explorer', prompt: 'blocker' });
+    await vi.waitFor(async () => expect((await manager.get(busy.id))?.status).toBe('running'));
+    // Queued behind the blocker: the parent's run has a number, and no claim, before it starts.
+    const resent = await manager.send(spawned.id, 'please continue');
+    expect(resent).toMatchObject({ status: 'queued', runSequence: 2 });
+    manager.dispose();
+    const pending = await manager.listPendingCompletions();
+    expect(pending.map((notification) => notification.completion.agentId)).toContain(spawned.id);
+    blocker.release();
+  });
+
+  it('says so when agents.resumeInterrupted is off and follow-ups were left unrun', async () => {
+    const root = tempRoot();
+    const bookHome = tempRoot();
+    vi.stubEnv('BOOK_HOME', bookHome);
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+    config.settings.agents.resumeInterrupted = false;
+    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
+    store.saveAgent({
+      id: 'explorer-1',
+      name: 'explorer',
+      role: 'explorer',
+      description: '',
+      prompt: 'survey',
+      purpose: 'survey',
+      parentSessionId: 'parent-1',
+      status: 'interrupted',
+      stopReason: 'process_exit',
+      resumable: true,
+      resumedFromStatus: 'running',
+      applicationStatus: 'not_applied',
+      referencedEvidenceIds: [],
+      transcript: [],
+      pendingMessages: ['queued follow-up'],
+      isolation: 'none',
+      runSequence: 1,
+      completionSequence: 1,
+      completionDeliveredSequence: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    } as unknown as Parameters<AgentStore['saveAgent']>[0]);
+    store.dispose();
+
+    const prompts: string[] = [];
+    const manager = new AgentManager(config, [], {
+      storeRoot: bookHome,
+      findGitRoot: async () => undefined,
+      runLoop: async (_c, _r, prompt, history) => {
+        prompts.push(prompt);
+        return history;
+      },
+    });
+    await manager.list();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(prompts).toEqual([]);
+    const record = await manager.get('explorer-1');
+    expect(record?.error).toMatch(/1 follow-up sent to it was not run/);
+    expect(record?.error).toMatch(/agents\.resumeInterrupted/);
+    // The parent hears it with the interruption it has not been told about yet.
+    const [pending] = await manager.listPendingCompletions();
+    expect(pending?.completion.error).toBe(record?.error);
+    manager.dispose();
   });
 });
 
@@ -2093,11 +2324,22 @@ describe('children re-driven after a restart', () => {
       await second.waitForIdle();
       await new Promise((resolve) => setTimeout(resolve, 100));
       const record = await second.get(spawned.id);
+      // The last user message of each request after the restart: the task each re-run ran.
+      const tasks = (resumedFetch.mock.calls as unknown as Array<[unknown, RequestInit?]>).map(
+        ([, init]) => {
+          const body = JSON.parse(String(init?.body ?? '{}')) as {
+            messages?: Array<{ role: string; content: unknown }>;
+          };
+          const last = (body.messages ?? []).filter((message) => message.role === 'user').pop();
+          return typeof last?.content === 'string' ? last.content : JSON.stringify(last?.content);
+        },
+      );
       return {
         result: record?.result,
         completions,
         record,
         requests: resumedFetch.mock.calls.length,
+        tasks,
       };
     } finally {
       second.dispose();
@@ -2110,15 +2352,19 @@ describe('children re-driven after a restart', () => {
   }
 
   it('delivers the re-run of a Task child whose first run Task would have handed back', async () => {
-    const { result, completions } = await restartAndCollect('call-task-1');
+    const { result, completions, record } = await restartAndCollect('call-task-1');
     expect(result).toBe('resumed answer');
     expect(completions).toHaveLength(1);
+    // Task died with the process, so its claim ends with the run it was waiting on.
+    expect(record).toMatchObject({ runSequence: 2, spawnerClaim: { throughRunSequence: 1 } });
   });
 
   it('keeps a delivery-suppressed child silent after a restart', async () => {
-    const { result, completions } = await restartAndCollect(undefined);
+    const { result, completions, record } = await restartAndCollect(undefined);
     expect(result).toBe('resumed answer');
     expect(completions).toHaveLength(0);
+    // Any other host that suppresses delivery keeps its claim over the re-run.
+    expect(record).toMatchObject({ runSequence: 2, spawnerClaim: { throughRunSequence: 2 } });
   });
 
   it('does not re-run a /review agent, whose report died with the process (#245)', async () => {
@@ -2131,31 +2377,31 @@ describe('children re-driven after a restart', () => {
     expect(completions).toHaveLength(0);
   });
 
-  it('says so when a restart drops a follow-up queued behind a /review run (#245)', async () => {
-    const { record, completions, requests } = await restartAndCollect(
-      undefined,
-      async (manager) => {
-        const spawned = await reviewRunnerFor(manager, { parentSessionId: 'parent-1' }).spawn(
-          'explorer',
-          'survey',
-        );
-        await vi.waitFor(async () =>
-          expect((await manager.get(spawned.id))?.status).toBe('running'),
-        );
-        // Queued behind the review's own run, which the restart does not re-run.
-        await manager.send(spawned.id, 'queued follow-up');
-        return spawned;
-      },
-    );
-    expect(requests).toBe(0);
-    expect(record).toMatchObject({ status: 'interrupted', resumable: false });
-    expect(record?.error).toMatch(/not resumed/i);
-    expect(record?.error).toMatch(/1 follow-up sent to it was not run either/);
-    expect(completions).toHaveLength(0);
+  it('runs a follow-up queued behind a /review run for the parent, not the review task (#245)', async () => {
+    const { record, completions, tasks } = await restartAndCollect(undefined, async (manager) => {
+      const spawned = await reviewRunnerFor(manager, { parentSessionId: 'parent-1' }).spawn(
+        'explorer',
+        'survey',
+      );
+      await vi.waitFor(async () => expect((await manager.get(spawned.id))?.status).toBe('running'));
+      // Queued behind the review's own run, which the restart does not re-run.
+      await manager.send(spawned.id, 'queued follow-up');
+      return spawned;
+    });
+    // Only the follow-up runs: the review that would have taken the task's result is gone,
+    // while whoever sent the follow-up is the parent, and it is told the answer.
+    expect(tasks).toEqual([expect.stringContaining('queued follow-up')]);
+    expect(record).toMatchObject({
+      status: 'completed',
+      result: 'resumed answer',
+      runSequence: 2,
+      spawnerClaim: { throughRunSequence: 1 },
+    });
+    expect(completions).toHaveLength(1);
   });
 
-  it('counts the follow-up that was running after the /review run among those dropped (#245)', async () => {
-    const { record, requests } = await restartAndCollect(undefined, async (manager) => {
+  it('runs the follow-up that was running after the /review run, then the one behind it (#245)', async () => {
+    const { record, completions, tasks } = await restartAndCollect(undefined, async (manager) => {
       // The review's own run answers once two follow-ups are queued behind it; the first of
       // them is running, the second still queued, when the process dies.
       let release!: () => void;
@@ -2187,8 +2433,16 @@ describe('children re-driven after a restart', () => {
       );
       return spawned;
     });
-    expect(requests).toBe(0);
-    expect(record).toMatchObject({ status: 'interrupted', resumable: false });
-    expect(record?.error).toMatch(/2 follow-ups sent to it were not run either/);
+    expect(tasks).toEqual([
+      expect.stringContaining('first follow-up'),
+      expect.stringContaining('second follow-up'),
+    ]);
+    expect(record).toMatchObject({
+      status: 'completed',
+      prompt: 'second follow-up',
+      result: 'resumed answer',
+    });
+    // The two follow-ups are one parent run and its continuation: one completion.
+    expect(completions).toHaveLength(1);
   });
 });
