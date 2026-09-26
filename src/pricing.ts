@@ -25,11 +25,10 @@ export interface ModelPricing {
  * derived so a provider changing the ratio stays expressible, but any edit to
  * `in` should carry them along.
  *
- * A cache write with no `cacheCreation` rate is priced `unknown`, which makes
- * `checkBeforeModelCall` refuse every call — so an omission here disables the USD
- * budget rather than merely blurring a report. Book caches on every Anthropic
- * request, so that is the normal path, not an edge case. A cache read with no
- * `cacheRead` rate is priced at `in` instead (see `usageCostUsd`).
+ * A cache token with no rate for it is priced at an upper bound (see
+ * `usageCostUsd`) rather than `unknown`, because an unknown estimate makes
+ * `checkBeforeModelCall` refuse every call under a USD budget. Book caches on
+ * every Anthropic request, so list real cache rates for Anthropic models.
  */
 export const PRICING: Record<string, ModelPricing> = {
   // Anthropic
@@ -128,22 +127,27 @@ export type CostedUsage = Pick<Usage, 'promptTokens' | 'completionTokens'> &
   Partial<Pick<Usage, 'cacheReadInputTokens' | 'cacheCreationInputTokens'>>;
 
 /**
- * USD for one usage figure at `rate`, or null when it carries cache writes the rate cannot price.
- *
- * A cache read never bills above the input rate on any provider Book talks to, so a rate without
- * `cacheRead` prices reads at `in`: the figure Book reported before it could see cached tokens at
- * all, and an upper bound a USD budget can enforce. A cache write can bill above input (Anthropic's
- * 1.25x), so there is no safe stand-in for a missing `cacheCreation` rate.
+ * The highest cache-write premium a provider charges, as a multiple of the input rate:
+ * Anthropic's one-hour cache. A write on a model with no `cacheCreation` rate is priced at it.
  */
-export function usageCostUsd(rate: ModelPricing, usage: CostedUsage): number | null {
+const MAX_CACHE_WRITE_MULTIPLIER = 2;
+
+/**
+ * USD for one usage figure at `rate`.
+ *
+ * A missing cache rate is priced at an upper bound rather than refused, because a refused
+ * (`unknown`) estimate makes a USD budget stop the run: a cache read never bills above the input
+ * rate, so it is priced at `in` (the figure Book reported before it could see cached tokens), and a
+ * cache write never above twice it (`MAX_CACHE_WRITE_MULTIPLIER`).
+ */
+export function usageCostUsd(rate: ModelPricing, usage: CostedUsage): number {
   const cacheRead = usage.cacheReadInputTokens ?? 0;
   const cacheCreation = usage.cacheCreationInputTokens ?? 0;
-  if (cacheCreation > 0 && rate.cacheCreation === undefined) return null;
   return (
     (usage.promptTokens * rate.in +
       usage.completionTokens * rate.out +
       cacheRead * (rate.cacheRead ?? rate.in) +
-      cacheCreation * (rate.cacheCreation ?? 0)) /
+      cacheCreation * (rate.cacheCreation ?? rate.in * MAX_CACHE_WRITE_MULTIPLIER)) /
     1_000_000
   );
 }
@@ -165,14 +169,11 @@ export function trafficTokens(usage: CostedUsage & { totalTokens: number }): num
   return cache > 0 ? promptSizeTokens(usage) + usage.completionTokens : usage.totalTokens;
 }
 
-/**
- * The rate and USD cost of a usage on `model`: undefined for a model with no rate, and
- * `costUsd: null` for cache writes the rate cannot price.
- */
+/** The rate and USD cost of a usage on `model`, or undefined for a model with no rate. */
 export function usageCostForModel(
   model: string,
   usage: CostedUsage,
-): { rate: ModelPricing; costUsd: number | null } | undefined {
+): { rate: ModelPricing; costUsd: number } | undefined {
   const rate = resolveModelPricing(model)?.rate;
   return rate ? { rate, costUsd: usageCostUsd(rate, usage) } : undefined;
 }
@@ -191,7 +192,7 @@ export type UsageCostEstimate =
       costUsd: null;
       model: string;
       pricingVersion: string;
-      reason: 'unknown-model' | 'cache-pricing-unavailable';
+      reason: 'unknown-model';
     };
 
 export function hasKnownPricing(
@@ -202,8 +203,8 @@ export function hasKnownPricing(
 }
 
 /**
- * Estimate one provider-reported usage event. A cache read on a model with no cache-read rate is
- * priced at the input rate, an upper bound; a cache write with no rate makes the estimate unknown.
+ * Estimate one provider-reported usage event. A missing cache rate is priced at an upper bound
+ * (see `usageCostUsd`), so only a model with no rate at all is `unknown`.
  */
 export function estimateUsageCost(
   model: string,
@@ -223,15 +224,6 @@ export function estimateUsageCost(
   const { key, rate } = resolved;
 
   const costUsd = usageCostUsd(rate, usage);
-  if (costUsd === null) {
-    return {
-      status: 'unknown',
-      costUsd: null,
-      model,
-      pricingVersion: PRICING_VERSION,
-      reason: 'cache-pricing-unavailable',
-    };
-  }
   return {
     status: 'known',
     costUsd,
@@ -327,12 +319,7 @@ export function modelBreakdownLines(
   const lines = ['Per model'];
   for (const row of rows) {
     const who = row.agents > 0 ? `${row.agents} delegated` : 'session';
-    const cost =
-      row.usd !== null
-        ? `$${row.usd.toFixed(4)}`
-        : resolveModelPricing(row.model)
-          ? 'no cache-write price'
-          : 'pricing unknown';
+    const cost = row.usd === null ? 'pricing unknown' : `$${row.usd.toFixed(4)}`;
     lines.push(
       `  ${row.model} (${who}) - prompt ${row.promptTokens.toLocaleString()}, completion ${row.completionTokens.toLocaleString()}${row.cacheReadInputTokens > 0 ? `, cache read ${row.cacheReadInputTokens.toLocaleString()}` : ''}${row.cacheCreationInputTokens > 0 ? `, cache write ${row.cacheCreationInputTokens.toLocaleString()}` : ''} - ${cost}`,
     );
@@ -385,16 +372,14 @@ export function costReport(
     return 'No token usage recorded for this session yet.\n\n(USD estimate available after the first model response.)';
   }
   const priced = usageCostForModel(model, usage);
-  const usd = priced?.costUsd == null ? null : priced.costUsd.toFixed(4);
+  const usd = priced ? priced.costUsd.toFixed(4) : null;
   // One line: what it cost, what it used, on which model. It used to take
   // three labelled lines (Model, Tokens, Est. cost) to say the same thing.
   const tokens = `${trafficTokens(usage).toLocaleString()} tokens (${usage.promptTokens.toLocaleString()} in${cacheTokenNote(usage)}, ${usage.completionTokens.toLocaleString()} out)`;
   const summary =
     usd !== null
       ? `$${usd} estimated · ${tokens} · ${model}`
-      : priced
-        ? `${tokens} · ${model} has no cache-write price, so no dollar estimate`
-        : `${tokens} · ${model} has no price, so no dollar estimate`;
+      : `${tokens} · ${model} has no price, so no dollar estimate`;
   const breakdown = modelBreakdownLines(model, usage, delegated);
   return [summary, ...(breakdown.length ? ['', ...breakdown] : [])].join('\n');
 }
@@ -440,13 +425,9 @@ export function usageReport(
     `Tokens: prompt ${usage.promptTokens.toLocaleString()}  •  completion ${usage.completionTokens.toLocaleString()}  •  total ${trafficTokens(usage).toLocaleString()}${cacheTokenNote(usage).replace(/, /g, '  •  ')}`,
   );
   const priced = usageCostForModel(model, usage);
-  if (priced && priced.costUsd !== null) {
+  if (priced) {
     lines.push(
       `Est. cost: $${priced.costUsd.toFixed(4)}  (local estimate — $${priced.rate.in}/M in, $${priced.rate.out}/M out)`,
-    );
-  } else if (priced) {
-    lines.push(
-      `Est. cost: unknown — "${model}" has no cache-write rate; tokens are counted, dollars are not`,
     );
   } else {
     lines.push(unpricedLine(model));

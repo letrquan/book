@@ -281,9 +281,9 @@ All notable changes to this project are documented in this file.
   DeepSeek, OpenRouter, LiteLLM) was billed in `/cost`, `/usage` and the USD budget as if nothing
   was cached. Book now reads `prompt_tokens_details.cached_tokens` and the other providers' fields,
   keeps `promptTokens` as the uncached input as on the Anthropic path, and prices a cache read with
-  no listed rate at the input rate instead of refusing it, so a USD budget keeps working on
-  OpenAI models. `/cost` and `/usage` now include cache tokens in their dollar figure and show
-  them (`9,000 cached`).
+  no listed rate at the input rate and a cache write at twice it, upper bounds instead of an
+  `unknown` that stops a USD-budgeted run. `/cost` and `/usage` now include cache tokens in their
+  dollar figure and show them (`9,000 cached`).
   9router caches its Claude routes upstream too, but its streamed usage carries no cache counts,
   so there Book still shows every input token as uncached; the configuration guide has the numbers.
   In print-mode JSON and SDK results, `usage.promptTokens` is now the uncached input whenever a

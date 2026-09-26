@@ -43,6 +43,7 @@ import {
   expandShellCommands,
 } from '../input/input-expansion.js';
 import { observationKey } from '../tools/file-provenance.js';
+import { promptSizeTokens } from '../pricing.js';
 import { AgentInteractionController } from './agent-interactions.js';
 import {
   AgentSessionOperations,
@@ -1089,10 +1090,7 @@ export class AgentSession {
           // `total_tokens`; the record still carries spend.
           if (
             recordUsage.totalTokens <= 0 &&
-            recordUsage.promptTokens <= 0 &&
-            recordUsage.completionTokens <= 0 &&
-            (recordUsage.cacheReadInputTokens ?? 0) <= 0 &&
-            (recordUsage.cacheCreationInputTokens ?? 0) <= 0
+            promptSizeTokens(recordUsage) + recordUsage.completionTokens <= 0
           )
             return;
           // `RunAccounting.roots` is rebuilt with the process, so without a durable

@@ -536,8 +536,12 @@ function UsagePanelBody({
               <Text color={theme.success}>• output {usage.completionTokens.toLocaleString()}</Text>
               {cacheRead + cacheWrite > 0 ? (
                 <Text color={theme.subtle}>
-                  • cache {cacheRead.toLocaleString()}
-                  {cacheWrite > 0 ? ` · ${cacheWrite.toLocaleString()} written` : ''}
+                  {`• cache ${[
+                    cacheRead > 0 ? cacheRead.toLocaleString() : '',
+                    cacheWrite > 0 ? `${cacheWrite.toLocaleString()} written` : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}`}
                 </Text>
               ) : null}
             </Box>

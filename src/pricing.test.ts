@@ -53,12 +53,16 @@ describe('estimateUsageCost with cache tokens', () => {
     expect(quote.costUsd).toBeCloseTo(0.01255, 8);
   });
 
-  it('still refuses to guess a missing cache-write rate', () => {
+  it('prices a missing cache-write rate at twice the input rate instead of refusing it', () => {
+    // An unknown estimate stops a USD-budgeted run; twice the input rate is the highest
+    // cache-write premium a provider charges, so the figure is an upper bound.
     const quote = estimateUsageCost('gpt-5', { ...NO_CACHE, cacheCreationInputTokens: 10 });
-    expect(quote).toMatchObject({ status: 'unknown', reason: 'cache-pricing-unavailable' });
+    expect(quote.status).toBe('known');
+    // (1000*5 + 500*15 + 10*5*2) / 1e6
+    expect(quote.costUsd).toBeCloseTo(0.0126, 8);
     expect(
       usageCostUsd(PRICING['gpt-5'], { ...NO_CACHE, cacheCreationInputTokens: 10 }),
-    ).toBeNull();
+    ).toBeCloseTo(0.0126, 8);
   });
 });
 
@@ -228,17 +232,18 @@ describe('costReport (unchanged)', () => {
     );
   });
 
-  it('names a missing cache-write price instead of calling a priced model unpriced', () => {
+  it('prices cache writes on a model with no cache-write rate in both reports', () => {
     const usage = {
       promptTokens: 1000,
-      completionTokens: 10,
-      totalTokens: 1010,
+      completionTokens: 20,
+      totalTokens: 1020,
       cacheCreationInputTokens: 500,
     };
-    expect(costReport('gpt-5', usage)).toContain('gpt-5 has no cache-write price');
+    // (1000*5 + 20*15 + 500*10) / 1e6 = 0.0103
+    expect(costReport('gpt-5', usage)).toContain('$0.0103 estimated');
     expect(
       usageReport('gpt-5', usage, { currentTurn: 1, messageCount: 2, turnDurationMs: 0 }),
-    ).toContain('"gpt-5" has no cache-write rate');
+    ).toContain('Est. cost: $0.0103');
   });
 
   it('counts prompt size and traffic across cache tokens', () => {

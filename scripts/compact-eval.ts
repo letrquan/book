@@ -113,6 +113,8 @@ export interface CompactEvalFixture {
 
 export interface UsageTotals {
   promptTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
   completionTokens: number;
   totalTokens: number;
 }
@@ -263,10 +265,18 @@ const COMPACT_EVAL_TIMEOUT_MS = (() => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 30 * 60_000;
 })();
 
-const EMPTY_USAGE: UsageTotals = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+const EMPTY_USAGE: UsageTotals = {
+  promptTokens: 0,
+  cacheReadInputTokens: 0,
+  cacheCreationInputTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+};
 
 function addUsage(target: UsageTotals, usage: UsageTotals): void {
   target.promptTokens += usage.promptTokens;
+  target.cacheReadInputTokens += usage.cacheReadInputTokens;
+  target.cacheCreationInputTokens += usage.cacheCreationInputTokens;
   target.completionTokens += usage.completionTokens;
   target.totalTokens += usage.totalTokens;
 }
@@ -275,6 +285,8 @@ function usageTotals(usage: Usage | null | undefined): UsageTotals {
   return usage
     ? {
         promptTokens: usage.promptTokens,
+        cacheReadInputTokens: usage.cacheReadInputTokens ?? 0,
+        cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
         completionTokens: usage.completionTokens,
         totalTokens: usage.totalTokens,
       }
@@ -472,7 +484,7 @@ export function createMeteredProvider(config: AgentConfig, meter: Meter): Provid
         if (event.type === 'done' && event.usage) {
           call.usage = event.usage;
           call.responseModel = event.responseModel;
-          addUsage(meter.usage, event.usage);
+          addUsage(meter.usage, usageTotals(event.usage));
           const responseQuote = event.responseModel
             ? estimateUsageCost(event.responseModel, event.usage)
             : undefined;

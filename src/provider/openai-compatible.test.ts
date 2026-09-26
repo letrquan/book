@@ -1271,6 +1271,43 @@ describe('parseCompatibleUsage', () => {
     });
   });
 
+  it('counts Anthropic top-level cache on top when the details object carries no count', () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 2,
+        total_tokens: 1002,
+        prompt_tokens_details: { cached_tokens: 0 },
+        cache_read_input_tokens: 400,
+      }),
+    ).toMatchObject({ promptTokens: 1000, cacheReadInputTokens: 400, contextTokens: 1400 });
+  });
+
+  it("reads Moonshot's top-level cached_tokens and DashScope's cache writes as included", () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 1,
+        total_tokens: 1001,
+        cached_tokens: 700,
+      }),
+    ).toEqual({
+      promptTokens: 300,
+      completionTokens: 1,
+      totalTokens: 1001,
+      cacheReadInputTokens: 700,
+      cacheCreationInputTokens: 0,
+    });
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 1,
+        total_tokens: 1001,
+        prompt_tokens_details: { cache_creation_input_tokens: 900 },
+      }),
+    ).toMatchObject({ promptTokens: 100, cacheCreationInputTokens: 900 });
+  });
+
   it('carries cache tokens through the stream into the done event', async () => {
     vi.stubGlobal(
       'fetch',

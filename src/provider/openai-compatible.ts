@@ -96,14 +96,16 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
  * writes counted separately. Where the cache counts sit depends on who reported them:
  *
  * - `prompt_tokens_details.cached_tokens` / `cache_creation_tokens` / `cache_write_tokens`
- *   (OpenAI, xAI, 9router, OpenRouter) and DeepSeek's `prompt_cache_hit_tokens` are part of
- *   `prompt_tokens`, so they are subtracted from it. `total_tokens` already covers them, so
- *   `contextTokens` stays unset and compaction pressure is `total_tokens`, as before.
+ *   (OpenAI, xAI, 9router, OpenRouter) and DeepSeek's `prompt_cache_hit_tokens`, plus Moonshot's
+ *   top-level `cached_tokens` and DashScope's `prompt_tokens_details.cache_creation_input_tokens`,
+ *   are part of `prompt_tokens`, so they are subtracted from it. `total_tokens` already covers them,
+ *   so `contextTokens` stays unset and compaction pressure is `total_tokens`, as before.
  * - Anthropic's own top-level names (`cache_read_input_tokens`, `cache_creation_input_tokens`)
  *   from a proxy that sends no `prompt_tokens_details` are Anthropic's numbers passed through,
  *   where the input count excludes the cache: they are added on top, and `contextTokens` carries
- *   the whole prompt. A proxy that also sends `prompt_tokens_details` (LiteLLM) has normalised
- *   `prompt_tokens` to include them.
+ *   the whole prompt. A proxy that reports an OpenAI-style count
+ *   beside them (LiteLLM's `prompt_tokens_details.cached_tokens`) has normalised `prompt_tokens` to
+ *   include them; with no such count the cache is counted on top, the side that overstates.
  *
  * Counts that cannot fit inside `prompt_tokens` are treated as on top of it whatever their
  * source. A usage with no cache tokens maps exactly as before, with no cache fields.
@@ -111,9 +113,10 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
 export function parseCompatibleUsage(raw: unknown): Usage | null {
   if (!raw || typeof raw !== 'object') return null;
   const usage = raw as Record<string, unknown>;
-  const hasDetails =
-    !!usage.prompt_tokens_details && typeof usage.prompt_tokens_details === 'object';
-  const details = hasDetails ? (usage.prompt_tokens_details as Record<string, unknown>) : {};
+  const details =
+    usage.prompt_tokens_details && typeof usage.prompt_tokens_details === 'object'
+      ? (usage.prompt_tokens_details as Record<string, unknown>)
+      : {};
   const tokens = (value: unknown): number =>
     typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
   const firstCount = (...values: unknown[]): number => {
@@ -131,11 +134,26 @@ export function parseCompatibleUsage(raw: unknown): Usage | null {
   };
   const topRead = tokens(usage.cache_read_input_tokens);
   const topWrite = tokens(usage.cache_creation_input_tokens);
-  const read = firstCount(details.cached_tokens, usage.prompt_cache_hit_tokens) || topRead;
-  const write = firstCount(details.cache_creation_tokens, details.cache_write_tokens) || topWrite;
+  // Inside `prompt_tokens` by the OpenAI convention: OpenAI, xAI, 9router, OpenRouter, DeepSeek,
+  // Moonshot (top-level `cached_tokens`) and DashScope (`cache_creation_input_tokens` in details).
+  const normalisedRead = firstCount(
+    details.cached_tokens,
+    usage.prompt_cache_hit_tokens,
+    usage.cached_tokens,
+  );
+  const normalisedWrite = firstCount(
+    details.cache_creation_tokens,
+    details.cache_write_tokens,
+    details.cache_creation_input_tokens,
+  );
+  const read = normalisedRead || topRead;
+  const write = normalisedWrite || topWrite;
   if (read === 0 && write === 0) return base;
-  const anthropicPassThrough =
-    !hasDetails && tokens(usage.prompt_cache_hit_tokens) === 0 && topRead + topWrite > 0;
+  // Anthropic's top-level names with no OpenAI-style count beside them are Anthropic's numbers
+  // passed through, where the input count excludes the cache. The reading is ambiguous for a proxy
+  // that normalises `prompt_tokens` without saying so, and counting the cache on top is the safe
+  // side of it: cost and context pressure are overstated, never understated.
+  const anthropicPassThrough = normalisedRead + normalisedWrite === 0 && topRead + topWrite > 0;
   if (!anthropicPassThrough && read + write <= prompt) {
     return {
       ...base,

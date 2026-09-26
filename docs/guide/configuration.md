@@ -75,16 +75,18 @@ learned, and `/context` and the status line mark which source the current window
 ### Prompt caching on OpenAI-compatible providers
 
 On the Anthropic Messages API, Book places its own cache breakpoints: the last tool, the cached
-system block, and the last message. On an OpenAI-compatible endpoint it sends no cache markers,
-because the providers behind that API cache without them (OpenAI, DeepSeek) or ignore them, and a
-router that translates to Anthropic places its own. What Book does on that path is read the cache
-counts a provider reports: `prompt_tokens_details.cached_tokens`, DeepSeek's
-`prompt_cache_hit_tokens`, OpenRouter's `cache_write_tokens`, 9router's `cache_creation_tokens`,
-and LiteLLM's top-level `cache_read_input_tokens` / `cache_creation_input_tokens`.
-`/cost`, `/usage` and `--max-budget-usd` then price cached input at the model's cache rates. A cache
-read on a model with no listed cache-read rate is priced at its input rate, an upper bound. A cache
-write with no listed rate leaves the estimate unknown, and an unknown estimate makes
-`--max-budget-usd` refuse further calls.
+system block, and the last message. On an OpenAI-compatible endpoint it sends no cache markers.
+OpenAI and DeepSeek cache without them, and 9router's Claude routes place their own; a router that
+needs a client's markers before it caches an Anthropic model (OpenRouter documents this) caches
+nothing for Book today. What Book does on that path is read the cache counts a provider reports:
+`prompt_tokens_details.cached_tokens`, DeepSeek's `prompt_cache_hit_tokens`, Moonshot's top-level
+`cached_tokens`, OpenRouter's `cache_write_tokens`, 9router's `cache_creation_tokens`, DashScope's
+`prompt_tokens_details.cache_creation_input_tokens`, and LiteLLM's top-level
+`cache_read_input_tokens` / `cache_creation_input_tokens`. `/cost`, `/usage` and
+`--max-budget-usd` then price cached input at the model's cache rates. A cache read on a model with
+no listed cache-read rate is priced at its input rate, and a cache write with no listed rate at
+twice it, the highest write premium a provider charges: both are upper bounds, so
+`--max-budget-usd` keeps working.
 
 **9router** (checked against 0.5.91): its Claude routes (`cc/claude-*`) do cache. 9router adds its
 own breakpoints on the system prompt, the last tool and the last message, and drops the ones a

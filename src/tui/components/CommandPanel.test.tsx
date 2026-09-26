@@ -110,6 +110,28 @@ describe('CommandPanel', () => {
     expect(output).toContain('12,750');
     expect(output).toContain('input 1,400');
     expect(output).toContain('cache 11,000 · 300 written');
+
+    const writesOnly = render(
+      withTheme(
+        <CommandPanel
+          display={{
+            ...usageDisplay,
+            usage: {
+              promptTokens: 400,
+              completionTokens: 50,
+              totalTokens: 12_450,
+              cacheCreationInputTokens: 12_000,
+            },
+          }}
+          fallback="Session usage"
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+    const writesOutput = stripAnsi(writesOnly.lastFrame());
+    expect(writesOutput).toContain('cache 12,000 written');
+    expect(writesOutput).not.toContain('cache 0');
   });
 
   it('keeps the context panel inside a narrow terminal', () => {
