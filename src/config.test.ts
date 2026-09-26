@@ -818,12 +818,12 @@ describe('loadConfig provider registry', () => {
     expect(clampEffortToCatalog(none, 'low', { raiseToLowest: true })).toBeUndefined();
   });
 
-  it('sends the default of a catalog entry that names a default but no levels (#245)', () => {
-    // An entry without a `levels` list vouches for the level it names, and only that one.
+  it('sends any level to a catalog entry that names a default but no levels (#245)', () => {
+    // Such an entry says the model takes an effort, and `/effort` offers it every level.
     const defaultOnly = defaultConfig({ modelInfo: { effort: { default: 'medium' } } });
     expect(resolveEffortExplicit(defaultOnly, 'medium', false)).toBe(true);
-    expect(resolveEffortExplicit(defaultOnly, 'high', false)).toBe(false);
-    expect(resolveEffortExplicit(defaultOnly, 'high', true)).toBe(true);
+    expect(resolveEffortExplicit(defaultOnly, 'low', false)).toBe(true);
+    // An entry that names neither a default nor levels vouches for nothing.
     const bareEntry = defaultConfig({ modelInfo: { effort: {} } });
     expect(resolveEffortExplicit(bareEntry, 'high', false)).toBe(false);
     const empty = defaultConfig({ modelInfo: { effort: { levels: [] } } });

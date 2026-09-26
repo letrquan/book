@@ -228,11 +228,12 @@ The reducer's and the judge's requests are also retried at most twice, instead o
 reducer falls back to the deterministic checkpoint, and a failed judge leaves the verdict
 inconclusive, so the checkpoint is committed anyway. Memory extraction keeps the session's retry
 policy, because it gives up on a session after three failed starts. A reply that ended at the
-output limit is kept when its JSON object closes the reply. An empty reply, or one cut off mid-answer, counts
-as a failed start rather than as the session read, and a session given up on is recorded as
-`truncated` when its last reply was cut off (`provider-failed` otherwise). On that retry policy one
-session's call can outlast the extraction lock's 30-minute lifetime, so a run keeps its lock fresh
-while it lasts; a run whose lock another Book session took over writes nothing.
+output limit is kept when it is one JSON object and nothing else. An empty reply, or one cut off
+mid-answer, counts as a failed start rather than as the session read, and a session given up on is
+recorded as `truncated` when its last reply was cut off (`provider-failed` otherwise). On that
+retry policy one session's call can outlast the extraction lock's 30-minute lifetime, so a run
+keeps its lock fresh while it lasts, for at most two hours; a run whose lock another Book session
+took over writes nothing more.
 
 `toolDiscovery.mode` accepts `auto`, `eager`, or `deferred`. Auto mode sends all authorized definitions only when there are at most ten and their schemas fit the configured budget; otherwise the provider receives the practical core plus `ToolSearch`. Search never returns tools outside the current command, skill, agent-role, permission-mode, or runtime-state capability intersection.
 

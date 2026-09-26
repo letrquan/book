@@ -425,8 +425,9 @@ function compactModelEffort(config: AgentConfig): AgentConfig['effort'] {
  * its model's catalog lists that level. With neither -- the default `gpt-4o`, or
  * any model without a catalog entry -- it carries none, like the main agent's.
  * Every request on the compact model, and every managed child, decides by this
- * one rule. A catalog entry without a `levels` list vouches for the level it
- * names as its `default`, and only that one.
+ * one rule. A catalog entry without a `levels` list that names a `default` says
+ * the model takes an effort, and lists every level, as `getAvailableEffortLevels`
+ * and `/effort` read it; an entry that names neither (`effort: {}`) lists none.
  */
 export function resolveEffortExplicit(
   config: Pick<AgentConfig, 'modelInfo'>,
@@ -437,7 +438,7 @@ export function resolveEffortExplicit(
   if (chosen) return true;
   const catalog = config.modelInfo?.effort;
   if (typeof catalog !== 'object') return false;
-  return catalog.levels ? catalog.levels.includes(effort) : catalog.default === effort;
+  return catalog.levels ? catalog.levels.includes(effort) : catalog.default !== undefined;
 }
 
 /**

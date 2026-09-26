@@ -2588,6 +2588,15 @@ describe('judgeCompaction', () => {
     await judgeCompaction(listed, result, delta);
     const [catalogued] = mockedStream.mock.calls.at(-1)!;
     expect(catalogued).toMatchObject({ effort: 'low', effortExplicit: true });
+
+    // An entry that names a default but no levels takes any level, as `/effort` offers it.
+    judgeReply('{"sufficient": true}');
+    const defaulted = makeConfig({
+      modelInfo: { contextWindow: 200_000, effort: { default: 'high' } },
+    });
+    await judgeCompaction(defaulted, result, delta);
+    const [defaultOnly] = mockedStream.mock.calls.at(-1)!;
+    expect(defaultOnly).toMatchObject({ effort: 'low', effortExplicit: true });
   });
 
   it("does not ask for an effort the compact model's catalog refuses", async () => {

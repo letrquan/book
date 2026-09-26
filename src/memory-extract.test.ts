@@ -564,6 +564,25 @@ describe('runMemoryExtraction', () => {
     });
     // A failed start, retried next time, not the session read with nothing written.
     expect(result.processed).toEqual([]);
+    // Nor when the cut lands right after that first object.
+    const cutAtExample: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: 'Per the rules I return {"memories":[]}' };
+        yield { type: 'done', finishReasons: ['length'] };
+      },
+    } as Provider;
+    expect(
+      (
+        await runMemoryExtraction({
+          config: config(),
+          sessions,
+          bookRoot,
+          nowMs: NOW,
+          provider: cutAtExample,
+        })
+      ).processed,
+    ).toEqual([]);
     const fenced: Provider = {
       id: 'scripted',
       stream: async function* () {
@@ -582,6 +601,25 @@ describe('runMemoryExtraction', () => {
         })
       ).processed,
     ).toEqual([{ id: 's1', written: 1 }]);
+  });
+
+  it('reads a whole reply of the wrong shape as unparseable, even when it ended at the limit (#245)', async () => {
+    const sessions = source({ s1: { meta: meta('s1'), transcript: talk } });
+    const wrongShape: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: '{"memories": "none"}' };
+        yield { type: 'done', finishReasons: ['length'] };
+      },
+    } as Provider;
+    const result = await runMemoryExtraction({
+      config: config(),
+      sessions,
+      bookRoot,
+      nowMs: NOW,
+      provider: wrongShape,
+    });
+    expect(result.processed).toEqual([{ id: 's1', written: 0, skipped: 'unparseable' }]);
   });
 
   describe('the lock', () => {
@@ -659,6 +697,38 @@ describe('runMemoryExtraction', () => {
 
       first.release();
       expect((await running).processed).toEqual([{ id: 's1', written: 1 }]);
+    });
+
+    it('stops refreshing it after a ceiling, so a stuck run cannot hold it forever (#245)', async () => {
+      const start = Date.now();
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+      vi.setSystemTime(start);
+      const stuck = held();
+      const running = runMemoryExtraction({
+        config: config(),
+        sessions: source({
+          s1: { meta: meta('s1', { updatedAt: start - 5 * HOUR }), transcript: talk },
+        }),
+        bookRoot,
+        provider: stuck.provider,
+      });
+      await vi.waitFor(() => expect(stuck.started).toEqual(['stream']));
+
+      // Two hours of refreshes, then the lock's own 30 minutes, and then some.
+      await vi.advanceTimersByTimeAsync(2 * HOUR + 40 * MINUTE);
+      const second = await runMemoryExtraction({
+        config: config(),
+        sessions: source({
+          s2: { meta: meta('s2', { updatedAt: start - 5 * HOUR }), transcript: talk },
+        }),
+        bookRoot,
+        provider: provider(SAVE),
+      });
+      expect(second.processed).toEqual([{ id: 's2', written: 1 }]);
+
+      // The stuck run finds its lock gone when its call finally returns, and writes nothing.
+      stuck.release();
+      expect(await running).toEqual({ processed: [], reason: 'lock-lost' });
     });
 
     it('stops without writing when another start took the lock over (#245)', async () => {

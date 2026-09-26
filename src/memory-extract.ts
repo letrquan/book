@@ -61,6 +61,12 @@ const log = createDebugLogger('memory');
 const LOCK_TTL_MS = 30 * 60 * 1000;
 /** How often a running extraction refreshes its lock: well inside the lock's lifetime. */
 const LOCK_REFRESH_MS = LOCK_TTL_MS / 3;
+/**
+ * How long a run keeps its lock fresh. Past it the lock goes stale and another start may take it
+ * over, so a provider call stuck in retries cannot hold off extraction for this workspace for as
+ * long as its TUI stays open; the run that lost the lock then writes nothing more.
+ */
+const LOCK_MAX_HOLD_MS = 4 * LOCK_TTL_MS;
 const MAX_TRANSCRIPT_CHARS = 60_000;
 const MAX_MESSAGE_CHARS = 4_000;
 /** A session whose extraction call fails this many times is given up on, so it cannot block newer ones. */
@@ -135,10 +141,14 @@ function readState(path: string): ExtractionState {
 }
 
 interface ExtractionLock {
-  /** Whether the lock still holds this start's token: another start takes over a stale lock. */
+  /**
+   * False once the lock is gone or holds another start's token (a start takes over a stale lock);
+   * true while it holds this start's token, or cannot be read at all.
+   */
   held(): boolean;
-  /** Mark the lock fresh, so no other start judges it stale; a no-op once it is lost. */
+  /** Mark the lock fresh, so no other start judges it stale; only while its token reads back. */
   refresh(): void;
+  /** Remove the lock, only while its token reads back as this start's. */
   release(): void;
 }
 
@@ -166,19 +176,20 @@ function acquireLock(path: string, nowMs: number): ExtractionLock | null {
   } catch {
     return null;
   }
-  const held = (): boolean => {
+  // Gone, or another start's token, means the lock was taken over or removed. Any other failed
+  // read -- a scanner holding the file on Windows -- says nothing about who owns it.
+  const owner = (): 'ours' | 'lost' | 'unknown' => {
     try {
-      return readFileSync(path, 'utf-8') === token;
+      return readFileSync(path, 'utf-8') === token ? 'ours' : 'lost';
     } catch (error) {
-      // Gone means another start took it over or removed it. Any other failed read -- a scanner
-      // holding the file on Windows -- says nothing about who owns it.
-      return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+      return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'lost' : 'unknown';
     }
   };
   return {
-    held,
+    held: () => owner() !== 'lost',
     refresh: () => {
-      if (!held()) return;
+      // Touch only a lock whose token was read back: an unreadable one may be another start's.
+      if (owner() !== 'ours') return;
       try {
         const now = new Date();
         utimesSync(path, now, now);
@@ -187,7 +198,7 @@ function acquireLock(path: string, nowMs: number): ExtractionLock | null {
       }
     },
     release: () => {
-      if (held()) rmSync(path, { force: true });
+      if (owner() === 'ours') rmSync(path, { force: true });
     },
   };
 }
@@ -283,15 +294,19 @@ export function parseExtraction(text: string, max: number): ExtractedMemory[] | 
 }
 
 /**
- * Whether a reply cut off at its output limit still holds a whole answer: its first complete JSON
- * object is the last thing in it, bar whitespace and a closing fence. The first complete object of
- * a reply that goes on may be an example, not the answer.
+ * Whether a reply cut off at its output limit still holds a whole answer: the reply is one JSON
+ * object, bar whitespace and a code fence around it, as the prompt asks. Any other text before or
+ * after it means the cut may have fallen anywhere, and the first complete object in a reply that
+ * talks may be an example echoed from the prompt, not the answer.
  */
 function wholeAnswer(text: string): boolean {
   const candidate = extractJsonObject(text);
   if (!candidate) return false;
-  const rest = text.slice(text.indexOf(candidate) + candidate.length);
-  return /^\s*(```\s*)?$/.test(rest);
+  const at = text.indexOf(candidate);
+  return (
+    /^\s*(```(?:json)?\s*)?$/i.test(text.slice(0, at)) &&
+    /^\s*(```\s*)?$/.test(text.slice(at + candidate.length))
+  );
 }
 
 async function complete(
@@ -395,8 +410,12 @@ export async function runMemoryExtraction(
     return { processed: [], reason: 'locked' };
   }
   // On the session's retry policy one provider call can outlast the lock's lifetime, and a start
-  // that finds a stale lock takes it over: keep it fresh while this run lasts.
-  const refresher = setInterval(() => lock.refresh(), LOCK_REFRESH_MS);
+  // that finds a stale lock takes it over: keep it fresh while this run lasts, up to a ceiling.
+  const refreshUntil = Date.now() + LOCK_MAX_HOLD_MS;
+  const refresher = setInterval(() => {
+    if (Date.now() > refreshUntil) clearInterval(refresher);
+    else lock.refresh();
+  }, LOCK_REFRESH_MS);
   refresher.unref?.();
   const result: MemoryExtractionResult = { processed: [] };
   try {
@@ -416,6 +435,12 @@ export async function runMemoryExtraction(
     const provider = opts.provider ?? createProvider(modelConfig);
     for (const meta of candidates) {
       if (opts.signal?.aborted) break;
+      // Every write below replaces the whole state file with this run's copy: once another start
+      // has taken the lock over, this run must not write it again.
+      if (!lock.held()) {
+        result.reason = 'lock-lost';
+        break;
+      }
       let seenLength = state.seen[meta.id] ?? 0;
       const markDone = (entry: MemoryExtractionResult['processed'][number]) => {
         state.processed[meta.id] = meta.messageCount;
@@ -464,11 +489,11 @@ export async function runMemoryExtraction(
         break;
       }
       const text = reply?.text.trim() ? reply.text : undefined;
-      const items =
-        text && (!reply?.truncated || wholeAnswer(text))
-          ? parseExtraction(text, settings.extraction.maxPerSession)
-          : undefined;
-      if (!items && (failure !== undefined || !text || reply?.truncated)) {
+      // A reply that ended at its output limit is an answer only when it is whole; one that is
+      // whole but not the answer's shape is `unparseable`, like any other.
+      const whole = text !== undefined && (!reply?.truncated || wholeAnswer(text));
+      const items = whole ? parseExtraction(text, settings.extraction.maxPerSession) : undefined;
+      if (failure !== undefined || !whole) {
         // A reply cut off at its output limit, an empty one, or a provider failure: transient
         // trouble, retried at the next start. A session that keeps failing is given up on so it
         // cannot block every newer session behind it.

@@ -430,21 +430,17 @@ export class AgentManager {
           // output into its own report) gets no re-run: it would bill a result nobody
           // receives. The agent stays interrupted and says why.
           if (record.resumeAfterRestart === false) {
-            // The host's own run died with the host, which would have received it, and is not
-            // re-run. A parent's follow-up still has its sender: the one that was running (the
-            // prompt is no longer the spawn task) or one queued behind the host's run. It runs as
-            // the parent's.
-            const followUpRunning =
-              record.purpose !== undefined && record.prompt !== record.purpose;
-            if (!followUpRunning && (record.pendingMessages?.length ?? 0) === 0) {
-              record.error =
-                'Not resumed after the restart: the host that spawned it handles its result and exited with the process.';
-              this.persist(record);
-              continue;
-            }
-            if (!followUpRunning) record.prompt = record.pendingMessages.shift()!;
-            record.notifyParentOnCompletion = undefined;
-            record.resumeAfterRestart = undefined;
+            // A follow-up queued behind the host's run is not run either: it would start with
+            // none of the host's context, and whether its result is the host's or the parent's
+            // is not recorded per run. It is named, so it is not lost without a word.
+            const queued = record.pendingMessages?.length ?? 0;
+            record.error =
+              'Not resumed after the restart: the host that spawned it handles its result and exited with the process.' +
+              (queued > 0
+                ? ` ${queued} follow-up${queued === 1 ? '' : 's'} queued behind its run ${queued === 1 ? 'was' : 'were'} not run either; send ${queued === 1 ? 'it' : 'them'} again.`
+                : '');
+            this.persist(record);
+            continue;
           }
           record.status = 'queued';
           record.stopReason = undefined;

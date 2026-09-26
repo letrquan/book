@@ -2131,8 +2131,8 @@ describe('children re-driven after a restart', () => {
     expect(completions).toHaveLength(0);
   });
 
-  it('runs a follow-up queued on a /review agent after the restart, for the parent that sent it (#245)', async () => {
-    const { record, completions, requests, result } = await restartAndCollect(
+  it('says so when a restart drops a follow-up queued behind a /review run (#245)', async () => {
+    const { record, completions, requests } = await restartAndCollect(
       undefined,
       async (manager) => {
         const spawned = await reviewRunnerFor(manager, { parentSessionId: 'parent-1' }).spawn(
@@ -2147,54 +2147,10 @@ describe('children re-driven after a restart', () => {
         return spawned;
       },
     );
-    expect(requests).toBe(1);
-    expect(record).toMatchObject({ status: 'completed', prompt: 'queued follow-up' });
-    expect(record?.resumeAfterRestart).toBeUndefined();
-    expect(result).toBe('resumed answer');
-    // The review that would have received it died with the process; the parent sent it.
-    expect(completions).toHaveLength(1);
-  });
-
-  it("re-runs a parent's follow-up that the /review run had already handed on when the process died (#245)", async () => {
-    const { record, completions, requests, result } = await restartAndCollect(
-      undefined,
-      async (manager) => {
-        // The review's own run answers once the follow-up is queued behind it; the follow-up's
-        // run is still streaming when the process dies.
-        let release!: () => void;
-        const gate = new Promise<void>((resolve) => {
-          release = resolve;
-        });
-        let calls = 0;
-        vi.stubGlobal(
-          'fetch',
-          vi.fn(async (_url: unknown, init?: RequestInit) => {
-            if (calls++ > 0) return held(init?.signal);
-            await gate;
-            return answered('review answer');
-          }),
-        );
-        const spawned = await reviewRunnerFor(manager, { parentSessionId: 'parent-1' }).spawn(
-          'explorer',
-          'survey',
-        );
-        await vi.waitFor(async () =>
-          expect((await manager.get(spawned.id))?.status).toBe('running'),
-        );
-        await manager.send(spawned.id, 'queued follow-up');
-        release();
-        await vi.waitFor(async () => {
-          const current = await manager.get(spawned.id);
-          expect(current).toMatchObject({ status: 'running', prompt: 'queued follow-up' });
-          expect(current?.resumeAfterRestart).toBe(false);
-        });
-        return spawned;
-      },
-    );
-    expect(requests).toBe(1);
-    expect(record).toMatchObject({ status: 'completed', prompt: 'queued follow-up' });
-    expect(record?.resumeAfterRestart).toBeUndefined();
-    expect(result).toBe('resumed answer');
-    expect(completions).toHaveLength(1);
+    expect(requests).toBe(0);
+    expect(record).toMatchObject({ status: 'interrupted', resumable: false });
+    expect(record?.error).toMatch(/not resumed/i);
+    expect(record?.error).toMatch(/1 follow-up queued behind its run was not run either/);
+    expect(completions).toHaveLength(0);
   });
 });
