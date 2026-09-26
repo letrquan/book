@@ -165,6 +165,8 @@ interface ChatPanelProps {
   workspace?: string;
   /** This workspace's recent sessions, for the title page's contents. */
   recentSessions?: readonly RecentChapter[];
+  /** The recent sessions are still being listed; the title page waits for them. */
+  contentsPending?: boolean;
   model?: string;
   mode?: string;
   commandCount?: number;
@@ -195,6 +197,7 @@ export function ChatPanelInner({
   terminalHeight,
   workspace,
   recentSessions,
+  contentsPending,
   model,
   mode,
   commandCount = 0,
@@ -332,6 +335,7 @@ export function ChatPanelInner({
         screenReader={screenReader}
         animate={false}
         recentSessions={recentSessions}
+        contentsPending={contentsPending}
       />
     );
   }
@@ -480,6 +484,7 @@ export const ChatPanel = React.memo(ChatPanelInner, (previous, next) => {
     previous.terminalHeight !== next.terminalHeight ||
     previous.workspace !== next.workspace ||
     previous.recentSessions !== next.recentSessions ||
+    previous.contentsPending !== next.contentsPending ||
     previous.model !== next.model ||
     previous.mode !== next.mode ||
     previous.commandCount !== next.commandCount ||

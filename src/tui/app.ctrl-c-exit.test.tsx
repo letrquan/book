@@ -835,6 +835,13 @@ describe('Esc with a composer menu open', () => {
 });
 
 describe('title page contents', () => {
+  // The title page is the sighted layout; screen readers get a prose summary.
+  const pageConfig = () => {
+    const pageConfig = config();
+    pageConfig.accessibility = { screenReader: false, reducedMotion: true };
+    return pageConfig;
+  };
+
   // Listing reads the session index synchronously; on first render it held the
   // first paint of every launch until every unindexed session file had loaded.
   it('lists recent sessions after the first paint, not during it', async () => {
@@ -842,10 +849,22 @@ describe('title page contents', () => {
       { id: 'earlier', name: 'Earlier chapter', updatedAt: Date.now() - 60_000, messageCount: 4 },
     ]);
     installAgentState(agentState({ listSessions }));
-    const view = render(<App config={config()} session={testSession} />);
+    const view = render(<App config={pageConfig()} session={testSession} />);
 
     expect(listSessions).not.toHaveBeenCalled();
+    // While it waits, the page shows no contents at all, not the first-run list
+    // a returning reader would then see flip to their chapters.
+    expect(frameOf(view)).not.toContain('Ask for a change in your own words');
+    expect(frameOf(view)).not.toContain('Your first chapter begins below');
     await waitForFrame(view, 'Earlier chapter');
     expect(listSessions).toHaveBeenCalledTimes(1);
+    expect(frameOf(view)).not.toContain('Ask for a change in your own words');
+  });
+
+  it('shows the getting-started contents when there are genuinely no sessions', async () => {
+    const listSessions = vi.fn(() => []);
+    installAgentState(agentState({ listSessions }));
+    const view = render(<App config={pageConfig()} session={testSession} />);
+    await waitForFrame(view, 'Ask for a change in your own words');
   });
 });

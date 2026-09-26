@@ -247,6 +247,9 @@ interface AppProps {
 
 const QUEUED_SEND_NOTICE = 'Sending queued follow-up...';
 
+/** One empty list, so a pending title page does not hand ChatPanel a new array each render. */
+const NO_RECENT_SESSIONS: readonly never[] = [];
+
 /**
  * Full-screen interactive TUI with an application-owned transcript viewport.
  *
@@ -569,10 +572,14 @@ export function App({
   // and a stale index loads every session file, so it waits for the first
   // paint: someone with hundreds of sessions sees the title page at once and
   // its chapters a moment later, instead of a blank terminal until they load.
-  const [recentSessions, setRecentSessions] = useState<ReturnType<typeof listSessions>>([]);
+  // `undefined` until listed: an empty list means a genuine first run, and the
+  // title page must not show the getting-started contents while it waits.
+  const [recentSessions, setRecentSessions] = useState<ReturnType<typeof listSessions> | undefined>(
+    undefined,
+  );
   useEffect(() => {
     if (!transcriptEmpty) {
-      setRecentSessions((current) => (current.length === 0 ? current : []));
+      setRecentSessions(undefined);
       return;
     }
     const timer = setTimeout(() => {
@@ -2412,7 +2419,8 @@ export function App({
                   showThinking={liveConfig.settings.ui.showThinking}
                   terminalHeight={termHeight}
                   workspace={config.workspace}
-                  recentSessions={recentSessions}
+                  recentSessions={recentSessions ?? NO_RECENT_SESSIONS}
+                  contentsPending={recentSessions === undefined}
                   model={liveConfig.modelSelection ?? liveConfig.model}
                   mode={mode}
                   commandCount={commands.length}

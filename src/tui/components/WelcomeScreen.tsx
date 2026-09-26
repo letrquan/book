@@ -34,6 +34,12 @@ interface WelcomeScreenProps {
   animate?: boolean;
   /** This workspace's recent sessions, newest first; the title page's contents. */
   recentSessions?: readonly RecentChapter[];
+  /**
+   * The sessions are still being listed. The page then leaves its contents
+   * out, instead of showing the getting-started list a returning reader would
+   * see flip to their chapters a moment later.
+   */
+  contentsPending?: boolean;
   /** The clock the chapter ages are measured against. Tests pin it. */
   now?: number;
 }
@@ -262,6 +268,7 @@ export function WelcomeScreen({
   screenReader = false,
   animate = true,
   recentSessions = [],
+  contentsPending = false,
   now = Date.now(),
 }: WelcomeScreenProps) {
   const theme = useTheme();
@@ -377,6 +384,7 @@ export function WelcomeScreen({
       workspace={workspace}
       model={model}
       recentSessions={recentSessions}
+      contentsPending={contentsPending}
       now={now}
     />
   );
@@ -407,6 +415,7 @@ function TitlePage({
   workspace,
   model,
   recentSessions,
+  contentsPending,
   now,
 }: {
   width: number;
@@ -415,11 +424,14 @@ function TitlePage({
   workspace?: string;
   model: string;
   recentSessions: readonly RecentChapter[];
+  contentsPending: boolean;
   now: number;
 }) {
   const theme = useTheme();
   const notifyLayoutChange = useTranscriptLayoutChange();
-  const { entries, chapters } = contentsEntries(recentSessions, now);
+  const { entries, chapters } = contentsPending
+    ? { entries: [], chapters: false }
+    : contentsEntries(recentSessions, now);
   const fit = fitTitlePage(availableRows, entries.length, chapters);
   // The page resizes itself to the viewport (a menu opening shrinks it to the
   // cap), and the transcript only re-measures its content when told.
@@ -437,9 +449,11 @@ function TitlePage({
     `${workspaceName(workspace)} · ${model}`,
     Math.max(0, textWidth - displayWidth(word) - 4),
   );
-  const tagline = chapters
-    ? 'Pick up a chapter with /resume, or begin a new one below.'
-    : 'Your first chapter begins below.';
+  const tagline = contentsPending
+    ? ''
+    : chapters
+      ? 'Pick up a chapter with /resume, or begin a new one below.'
+      : 'Your first chapter begins below.';
   const beside: React.ReactNode[] = [
     <Box key="title" width={textWidth}>
       <Text color={theme.text} bold>
