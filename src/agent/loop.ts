@@ -1,6 +1,8 @@
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import { systemClock, type Clock } from '../clock.js';
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import type {
   ImageAttachment,
   Message,
@@ -36,16 +38,20 @@ import {
   LEARNED_WINDOW_SAFETY_MARGIN,
   type ModelWindowStore,
 } from '../model-window-store.js';
+import { resolveBookHome } from '../book-home.js';
 import {
   ALWAYS_ALLOWED_TOOLS,
   evaluatePermissionDetail,
+  permissionReasonOf,
   permissionResultOf,
   permissionRuleForToolCall,
   permissionRuleMatchesCall,
   permissionRuleOf,
+  WORKSPACE_READ_AUTO_ALLOW_MODES,
 } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
+import { resolveWorkspacePath } from '../tools/path-utils.js';
 import {
   isToolDefinitionAllowed,
   parseCapabilityRules,
@@ -82,7 +88,12 @@ import { appendToolUseRecords } from '../tool-telemetry.js';
 import type { ToolUseRecord } from '../types/tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
-import { permissionDeniedError } from './actionable-errors.js';
+import {
+  permissionDeniedError,
+  unattendedRefusalNotice,
+  type PermissionDenialCause,
+  type UnattendedRemedy,
+} from './actionable-errors.js';
 import {
   isContextOverflowError,
   isErrorEnvelopeShape,
@@ -333,6 +344,14 @@ export async function runAgentLoop(
   const ownsRuntime = !options?.runtime;
   const runtime = options?.runtime ?? new SessionRuntime({ history });
   runtime.toolExecutionScheduler.setLimit(config.settings.toolExecution.maxConcurrent);
+  /** Tell the operator, once per session per tool and remedy, what would let a refused call through. */
+  const noteUnattendedRefusal = (toolName: string, remedy: UnattendedRemedy): void => {
+    const key = `${toolName}:${remedy.kind}`;
+    if (runtime.unattendedRefusalNotices.has(key)) return;
+    runtime.unattendedRefusalNotices.add(key);
+    const notice = unattendedRefusalNotice(toolName, remedy);
+    if (notice) callbacks.onNotice?.(notice);
+  };
   runtime.agentContextCache.beginTurn();
   if (!registry.getTool('ToolSearch')) registry.registerAll(toolSearchTools);
 
@@ -422,6 +441,7 @@ export async function runAgentLoop(
     };
     const activationPolicy = skillRegistry.activationPolicy(skillName, 'user');
     let approved = activationPolicy !== 'deny';
+    let noApprover = false;
     if (activationPolicy === 'ask') {
       skillRegistry.requestConsent(skillName, 'user');
       const verdict = evaluatePermissionDetail(call.name, call.arguments, config.settings);
@@ -433,6 +453,7 @@ export async function runAgentLoop(
         const decision = await callbacks.onPermissionRequired(call);
         permission = permissionResultOf(decision);
         chosenRule = permissionRuleOf(decision);
+        noApprover = permissionReasonOf(decision) === 'no_approver';
       }
       approved = permission === 'allow' || permission === 'always';
       if (permission === 'always' && callbacks.onPersistPermissionRule) {
@@ -445,8 +466,18 @@ export async function runAgentLoop(
       const message =
         activationPolicy === 'deny'
           ? `Skill activation is denied: ${skillName}`
-          : `Explicit skill activation was denied: ${skillName}`;
-      if (activationPolicy === 'ask') skillRegistry.denyConsent(skillName, 'user');
+          : noApprover
+            ? `Explicit skill activation needs approval, and nothing in this run can answer a permission prompt: ${skillName}`
+            : `Explicit skill activation was denied: ${skillName}`;
+      if (activationPolicy === 'ask') {
+        skillRegistry.denyConsent(skillName, 'user', noApprover ? 'no_approver' : 'user_denied');
+      }
+      if (noApprover) {
+        noteUnattendedRefusal('InvokeSkill', {
+          kind: 'allow_rule_only',
+          rule: permissionRuleForToolCall(call),
+        });
+      }
       skillRegistry.recordActivationBlocked(skillName, 'user', code, message);
       explicitSkillFailures.push(message);
       continue;
@@ -743,6 +774,20 @@ export async function runAgentLoop(
      * because each kind names a different remedy in the terminal message.
      */
     const blockedStreakCauses = new Set<NetworkPolicyRefusal | 'other'>();
+    /**
+     * A workspace that holds a home directory — the OS home, or Book's own (`BOOK_HOME`) — keeps
+     * prompting for reads: a home carries SSH and provider keys and Book's trust store (#264).
+     */
+    const workspaceHoldsHome = [resolveBookHome(), homedir()].some(
+      (home) => resolveWorkspacePath(config.workspace, home) !== null,
+    );
+    /** The workspace root after following links, resolved once for the run. */
+    let workspaceRealRoot: string | undefined;
+    try {
+      workspaceRealRoot = realpathSync.native(config.workspace);
+    } catch {
+      workspaceRealRoot = undefined;
+    }
     // Monotonic, and never leaves this function as a stamp. Over a run measured
     // in days a wall-clock correction would silently rewrite how long the model
     // is told it has been working, in either direction.
@@ -2018,7 +2063,16 @@ export async function runAgentLoop(
         // while `deny: ["Write(.env)"]` in the same list held. Modes decide
         // whether the user is *asked*; they do not decide whether a rule the user
         // already wrote applies.
-        const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
+        const judgeReads = WORKSPACE_READ_AUTO_ALLOW_MODES.has(effectiveMode);
+        const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings, {
+          workspace: {
+            root: toolContext.workspaceRoot,
+            realRoot: workspaceRealRoot,
+            readOnlyRoots: toolContext.readOnlyRoots,
+            judgeReads,
+            autoAllowReads: judgeReads && !workspaceHoldsHome,
+          },
+        });
         if (verdict.decision === 'deny') {
           // Consent was requested a few lines up; close it out, or the registry
           // keeps an activation request that never resolves. The later
@@ -2030,7 +2084,7 @@ export async function runAgentLoop(
             toolCallId: call.id,
             code: 'permission_denied',
             status: 'blocked',
-            content: permissionDeniedError(canonName, verdict.matchedRule),
+            content: permissionDeniedError(canonName, { kind: 'rule', rule: verdict.matchedRule }),
           });
           return undefined;
         }
@@ -2053,6 +2107,8 @@ export async function runAgentLoop(
           if (!autoApproved || userRuleAsked) {
             let permission: 'allow' | 'deny' | 'always' | undefined;
             let chosenRule: string | undefined;
+            let noApprover = false;
+            let dismissed = false;
             // A tool on the always-allowed list is never prompted for in any
             // mode, so `dontAsk` — which refuses what it cannot ask about —
             // has nothing to refuse. A `deny` rule already returned above, and
@@ -2069,6 +2125,9 @@ export async function runAgentLoop(
               const decision = await callbacks.onPermissionRequired(call);
               permission = permissionResultOf(decision);
               chosenRule = permissionRuleOf(decision);
+              const reason = permissionReasonOf(decision);
+              noApprover = reason === 'no_approver';
+              dismissed = reason === 'dismissed';
             }
             permission ??= 'deny';
 
@@ -2078,14 +2137,39 @@ export async function runAgentLoop(
                 skillRegistry.denyConsent(
                   invokedSkillName,
                   skillActivationReason,
-                  effectiveMode === 'dontAsk' ? 'dont_ask' : 'user_denied',
+                  effectiveMode === 'dontAsk'
+                    ? 'dont_ask'
+                    : noApprover
+                      ? 'no_approver'
+                      : 'user_denied',
                 );
               }
+              const askRule = verdict.source === 'ask' ? verdict.matchedRule : undefined;
+              // What would actually let this call through if nobody could approve it. An
+              // outside target comes first: no rule or mode makes the tool serve it.
+              const remedy: UnattendedRemedy = persistentBackgroundShell
+                ? { kind: 'bypass_only' }
+                : verdict.outsideWorkspace
+                  ? { kind: 'outside_workspace' }
+                  : askRule
+                    ? { kind: 'ask_rule', rule: askRule }
+                    : forceSkillPermission
+                      ? { kind: 'allow_rule_only', rule: permissionRuleForToolCall(call) }
+                      : { kind: 'rule_or_auto', rule: permissionRuleForToolCall(call) };
+              const cause: PermissionDenialCause =
+                effectiveMode === 'dontAsk'
+                  ? { kind: 'dont_ask', askRule }
+                  : noApprover
+                    ? { kind: 'no_approver', remedy }
+                    : dismissed
+                      ? { kind: 'dismissed' }
+                      : { kind: 'user' };
+              if (cause.kind === 'no_approver') noteUnattendedRefusal(canonName, remedy);
               toolResults[callIndex] = toolFailure('SKIPPED: Permission denied', {
                 toolCallId: call.id,
                 code: 'permission_denied',
                 status: 'blocked',
-                content: permissionDeniedError(canonName, verdict.matchedRule),
+                content: permissionDeniedError(canonName, cause),
               });
               return undefined;
             }

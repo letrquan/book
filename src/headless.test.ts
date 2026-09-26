@@ -2085,3 +2085,105 @@ describe('runHeadless — managed child progress on stderr (#248)', () => {
     expect(stderrWrites.some((line) => line.includes('[explorer]'))).toBe(false);
   });
 });
+
+describe('runHeadless — permission prompts it cannot show (#264)', () => {
+  interface StreamEvent {
+    type: string;
+    message?: string;
+    tool_result?: { status: string; content: string };
+  }
+
+  function streamEvents(writes: string[]): StreamEvent[] {
+    return writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as StreamEvent);
+  }
+
+  function callThenDone(name: string, args: Record<string, unknown>) {
+    let requests = 0;
+    return vi.fn(async () => {
+      requests += 1;
+      return requests === 1 ? sse([toolDelta('call-1', name, args)]) : sse([textDelta('DONE')]);
+    });
+  }
+
+  function readThenDone(filePath: string) {
+    return callThenDone('Read', { filePath });
+  }
+
+  async function runDefault(workspace: string): Promise<StreamEvent[]> {
+    const writes: string[] = [];
+    await runHeadless(freshConfig({ workspace }), createDefaultRegistry(), {
+      prompt: 'do it',
+      inputFormat: 'text',
+      outputFormat: 'stream-json',
+      history: [],
+      mode: 'default',
+      maxTurns: 3,
+      stdout: { write: (value) => (writes.push(value), true) },
+    });
+    return streamEvents(writes);
+  }
+
+  for (const mode of ['default', 'accept-edits'] as const) {
+    it(`reads a workspace file without asking in ${mode}`, async () => {
+      const workspace = makeWorkspace();
+      writeFileSync(join(workspace, 'notes.txt'), 'hello from notes\n');
+      vi.stubGlobal('fetch', readThenDone('notes.txt'));
+      const writes: string[] = [];
+
+      await runHeadless(freshConfig({ workspace }), createDefaultRegistry(), {
+        prompt: 'read notes.txt',
+        inputFormat: 'text',
+        outputFormat: 'stream-json',
+        history: [],
+        mode,
+        maxTurns: 3,
+        stdout: { write: (value) => (writes.push(value), true) },
+      });
+
+      const result = streamEvents(writes).find((event) => event.type === 'tool_result');
+      expect(result?.tool_result?.status).toBe('success');
+      expect(result?.tool_result?.content).toContain('hello from notes');
+    });
+  }
+
+  it('refuses a call it would have to ask about, and says why', async () => {
+    const workspace = makeWorkspace();
+    vi.stubGlobal('fetch', callThenDone('Bash', { command: 'echo hi' }));
+
+    const events = await runDefault(workspace);
+
+    const result = events.find((event) => event.type === 'tool_result');
+    expect(result?.tool_result?.status).toBe('blocked');
+    expect(result?.tool_result?.content).toContain('print mode');
+    expect(result?.tool_result?.content).toContain('--permission-mode auto');
+    expect(result?.tool_result?.content).not.toContain('configured permission policy');
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'notice',
+        message: expect.stringContaining('"Bash(echo hi)"'),
+      }),
+    );
+  });
+
+  it('says a read outside the workspace cannot be allowed, and prints no remedy', async () => {
+    const workspace = makeWorkspace();
+    const outside = makeWorkspace();
+    writeFileSync(join(outside, 'secret.txt'), 'secret\n');
+    vi.stubGlobal('fetch', readThenDone(join(outside, 'secret.txt')));
+
+    const events = await runDefault(workspace);
+
+    const result = events.find((event) => event.type === 'tool_result');
+    expect(result?.tool_result?.status).toBe('blocked');
+    expect(result?.tool_result?.content).toContain('outside the workspace');
+    expect(
+      events.filter(
+        (event) => event.type === 'notice' && event.message?.includes('needs approval'),
+      ),
+    ).toEqual([]);
+  });
+});

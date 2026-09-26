@@ -10,6 +10,17 @@ All notable changes to this project are documented in this file.
   rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
   green, so every PR that touched them either reformatted unrelated lines or left them drifting.
   They are formatted once, and `npm run format` and `format:check` now include them.
+- **Reading and searching the workspace no longer asks** (#264). In `default` and `acceptEdits`, a
+  `Read`, `Glob` or `Grep` the tool can serve (inside the workspace, or for `Read` Book's memory
+  directory) runs without a permission prompt. The target is resolved the way the tool resolves it
+  (`..` applied, symlinks and junctions followed), so a link out of the workspace, a `Glob` pattern
+  with a `..` segment in any brace alternative, and any target outside still ask. Still asking too:
+  anything an `ask` rule covers; every `Grep` and `Glob` while a `deny` or `ask` rule names `Read`,
+  `Grep` or `Glob`, since a `Read` rule cannot see what they read; `.book/settings.local.json`, which
+  can hold an API key (and which `Grep` no longer searches at all); and everything in a workspace
+  that holds a home directory, the OS one or Book's `BOOK_HOME`. An unattended `acceptEdits`
+  run could edit a file it was refused to read; print mode and the SDK now read the workspace in
+  both modes. `plan`, `dontAsk`, `auto` and `bypassPermissions` are unchanged.
 - **An empty session opens on a title page with a table of contents.** A five-row rubric drop cap
   B sits beside "O O K", a running head (workspace · model), a rule and a tagline. Below it, the
   contents list this workspace's five most recent sessions as chapters, with Roman numerals,
@@ -276,6 +287,25 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A refused permission prompt names its real cause** (#264). Every refusal told the model "The
+  configured permission policy blocks this call", including a person pressing Skip and a print-mode
+  run that had nobody to ask. The tool result now says which it was: a `permissions.deny` rule
+  (named), the user declining, `dontAsk` mode, or a run where nothing can answer a prompt (print
+  mode, the SDK, a background agent, a scrollback session whose input closed). The last names what
+  would let the call through: an allow rule or `--permission-mode auto` for most calls; the `ask`
+  rule for a call one covers, since no allow rule outranks it; an allow rule only for skill consent;
+  only `bypassPermissions` for a persistent background shell; and nothing for a `Read`, `Glob` or
+  `Grep` outside the workspace, which the tool cannot open. Print mode and the SDK also print that
+  remedy once per session for each tool, on stderr in `text` output and as a `notice` event in
+  `stream-json`. A prompt withdrawn before anyone answered it (an interrupt, a session change, a
+  stopped agent) is reported as dismissed rather than as a person declining.
+- **A path rule matches the file however the call spells it** (#264). `deny: ["Read(.env)"]` and
+  `deny: ["Write(.env)"]` were globs over the raw argument, so a call on
+  `/abs/path/to/workspace/.env` or `src/../.env` slipped past them, straight to the file in `auto`
+  and `bypassPermissions` (and for writes, in `acceptEdits`). Rules for `Read`, `Write`, `Edit`,
+  `MultiEdit` and `NotebookEdit` are now also matched against the target's workspace-relative and
+  absolute spellings, before and after following links, in every mode; `Write` and `Edit` rules
+  apply the same way to the paths an `ApplyPatch` touches.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller

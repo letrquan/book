@@ -1266,7 +1266,8 @@ describe('AgentManager lifecycle', () => {
 
     const record = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
     expect((await manager.wait(record.id, 1000)).status).toBe('completed');
-    expect(decision).toHaveBeenCalledWith('deny');
+    // It says why, so the refusal the child's model sees names the cause (#264).
+    expect(decision).toHaveBeenCalledWith({ result: 'deny', reason: 'no_approver' });
     expect((await manager.get(record.id))?.pendingPermission).toBeUndefined();
     manager.dispose();
   });

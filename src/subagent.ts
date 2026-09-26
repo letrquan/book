@@ -69,7 +69,10 @@ export async function runSubagent(
     },
     onTurnStart: () => {},
     onDone: () => {},
-    onPermissionRequired: async () => 'deny' as const,
+    onPermissionRequired: async () => ({
+      result: 'deny' as const,
+      reason: 'no_approver' as const,
+    }),
     onUsage: () => {},
     onCompact: (compactHistory: Message[], usage: Usage | null, hints?: CompactRequestHints) =>
       runCompact(subConfig, compactHistory, {

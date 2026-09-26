@@ -991,6 +991,26 @@ describe('grep', () => {
     expect(JSON.stringify(result.data)).not.toContain('native.dll');
   });
 
+  it("never searches Book's project-local settings, which can hold an API key (#264)", async () => {
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(join(dir, '.book', 'settings.local.json'), '{"apiKey":"sk-local-marker"}');
+    writeFileSync(join(dir, 'a.ts'), 'const note = "sk-visible-marker";');
+    for (const env of [{}, { BOOK_GREP_BACKEND: 'typescript' }] as Record<string, string>[]) {
+      const context = { ...ctx, env };
+      for (const args of [
+        { pattern: 'sk-' },
+        { pattern: 'sk-', include: '.book/settings.local.json' },
+        { pattern: 'sk-', path: '.book' },
+      ]) {
+        const result = await grep.execute(args, context);
+        expect(JSON.stringify(result)).not.toContain('sk-local-marker');
+      }
+      expect((await grep.execute({ pattern: 'sk-' }, context)).content).toContain(
+        'sk-visible-marker',
+      );
+    }
+  });
+
   it('searches supported project files under .book', async () => {
     mkdirSync(join(dir, '.book', 'commands'), { recursive: true });
     writeFileSync(join(dir, '.book', 'commands', 'review.md'), 'project-command-marker');

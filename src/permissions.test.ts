@@ -1,5 +1,13 @@
-import { describe, it, expect } from 'vitest';
-import { permissionRuleLadder, permissionResultOf, permissionRuleOf } from './permissions.js';
+import { afterEach, describe, it, expect } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import {
+  permissionReasonOf,
+  permissionRuleLadder,
+  permissionResultOf,
+  permissionRuleOf,
+} from './permissions.js';
 import {
   evaluatePermission,
   evaluatePermissionDetail,
@@ -7,6 +15,7 @@ import {
   permissionRuleForToolCall,
   permissionRuleMatchesCall,
   primaryArgForRule,
+  type WorkspaceScope,
 } from './permissions.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from './settings.js';
 
@@ -524,5 +533,340 @@ describe('permission decision accessors', () => {
     expect(permissionRuleOf('always')).toBeUndefined();
     expect(permissionResultOf({ result: 'always', rule: 'Bash(npm *)' })).toBe('always');
     expect(permissionRuleOf({ result: 'always', rule: 'Bash(npm *)' })).toBe('Bash(npm *)');
+  });
+
+  it('reads why an approver refused', () => {
+    expect(permissionReasonOf('deny')).toBeUndefined();
+    expect(permissionReasonOf({ result: 'deny', reason: 'no_approver' })).toBe('no_approver');
+  });
+});
+
+describe('workspace reads need no prompt (#264)', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function tempDir(prefix: string): string {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    dirs.push(dir);
+    return dir;
+  }
+
+  function settings(overrides: Partial<ResolvedSettings['permissions']> = {}): ResolvedSettings {
+    return {
+      ...DEFAULT_SETTINGS,
+      permissions: { ...DEFAULT_SETTINGS.permissions, ...overrides },
+    };
+  }
+
+  function scope(root: string, extra: Partial<WorkspaceScope> = {}): { workspace: WorkspaceScope } {
+    return { workspace: { root, judgeReads: true, autoAllowReads: true, ...extra } };
+  }
+
+  function setup() {
+    const workspace = tempDir('book-perm-ws-');
+    const outside = tempDir('book-perm-out-');
+    writeFileSync(join(workspace, 'notes.txt'), 'notes\n');
+    mkdirSync(join(workspace, 'src'));
+    writeFileSync(join(workspace, 'src', 'a.ts'), 'a\n');
+    writeFileSync(join(outside, 'secret.txt'), 'secret\n');
+    return { workspace, outside };
+  }
+
+  it('allows Read, Glob and Grep inside the workspace', () => {
+    const { workspace } = setup();
+    const s = settings();
+    expect(
+      evaluatePermissionDetail('Read', { filePath: 'notes.txt' }, s, scope(workspace)),
+    ).toEqual({ decision: 'allow', source: 'workspace' });
+    expect(
+      evaluatePermission(
+        'Read',
+        { file_path: join(workspace, 'src', 'a.ts') },
+        s,
+        scope(workspace),
+      ),
+    ).toBe('allow');
+    expect(evaluatePermission('Glob', { pattern: 'src/**/*.ts' }, s, scope(workspace))).toBe(
+      'allow',
+    );
+    expect(evaluatePermission('Grep', { pattern: 'notes' }, s, scope(workspace))).toBe('allow');
+    expect(evaluatePermission('Grep', { pattern: 'a', path: 'src' }, s, scope(workspace))).toBe(
+      'allow',
+    );
+    expect(evaluatePermission('Grep', { pattern: 'a', path: '.' }, s, scope(workspace))).toBe(
+      'allow',
+    );
+  });
+
+  it('still asks where reads are not auto-allowed, and for every other tool', () => {
+    const { workspace } = setup();
+    const s = settings();
+    expect(evaluatePermission('Read', { filePath: 'notes.txt' }, s)).toBe('ask');
+    expect(
+      evaluatePermission(
+        'Read',
+        { filePath: 'notes.txt' },
+        s,
+        scope(workspace, { autoAllowReads: false }),
+      ),
+    ).toBe('ask');
+    expect(evaluatePermission('GitStatus', {}, s, scope(workspace))).toBe('ask');
+    expect(evaluatePermission('Bash', { command: 'cat notes.txt' }, s, scope(workspace))).toBe(
+      'ask',
+    );
+    expect(
+      evaluatePermission('Write', { filePath: 'notes.txt', content: 'x' }, s, scope(workspace)),
+    ).toBe('ask');
+  });
+
+  it('asks for a target outside the workspace, however it is spelled, and says it is outside', () => {
+    const { workspace, outside } = setup();
+    const s = settings();
+    const outsideFile = join(outside, 'secret.txt');
+    expect(
+      evaluatePermissionDetail('Read', { filePath: outsideFile }, s, scope(workspace)),
+    ).toEqual({ decision: 'ask', source: 'default', outsideWorkspace: true });
+    expect(evaluatePermission('Read', { filePath: '../secret.txt' }, s, scope(workspace))).toBe(
+      'ask',
+    );
+    expect(
+      evaluatePermission('Read', { filePath: 'src/../../secret.txt' }, s, scope(workspace)),
+    ).toBe('ask');
+    expect(evaluatePermission('Grep', { pattern: 'x', path: outside }, s, scope(workspace))).toBe(
+      'ask',
+    );
+    expect(
+      evaluatePermissionDetail('Grep', { pattern: 'x', path: '..' }, s, scope(workspace)),
+    ).toMatchObject({ decision: 'ask', outsideWorkspace: true });
+    expect(evaluatePermission('Glob', { pattern: '../**/*' }, s, scope(workspace))).toBe('ask');
+    expect(evaluatePermission('Glob', { pattern: '{..,src}/*' }, s, scope(workspace))).toBe('ask');
+    expect(
+      evaluatePermission(
+        'Glob',
+        { pattern: `${outside.replace(/\\/g, '/')}/**` },
+        s,
+        scope(workspace),
+      ),
+    ).toBe('ask');
+    // No path at all is not "outside": the tool rejects the call itself.
+    expect(evaluatePermissionDetail('Read', {}, s, scope(workspace))).toEqual({
+      decision: 'ask',
+      source: 'default',
+    });
+  });
+
+  it('judges an absolute Glob by where it starts, and expands braces before looking for ..', () => {
+    const { workspace, outside } = setup();
+    const s = settings();
+    const posix = (path: string) => path.replace(/\\/g, '/');
+    expect(
+      evaluatePermission('Glob', { pattern: `${posix(workspace)}/src/*.ts` }, s, scope(workspace)),
+    ).toBe('allow');
+    expect(
+      evaluatePermission('Glob', { pattern: `${posix(outside)}/*.txt` }, s, scope(workspace)),
+    ).toBe('ask');
+    expect(evaluatePermission('Glob', { pattern: '.{.,x}/*' }, s, scope(workspace))).toBe('ask');
+    expect(evaluatePermission('Glob', { pattern: 'src/{a,{b,..}}/*' }, s, scope(workspace))).toBe(
+      'ask',
+    );
+    expect(evaluatePermission('Glob', { pattern: '**/*.{ts,tsx}' }, s, scope(workspace))).toBe(
+      'allow',
+    );
+    expect(evaluatePermission('Glob', { pattern: 'logs/{1..3}.txt' }, s, scope(workspace))).toBe(
+      'allow',
+    );
+  });
+
+  it('marks an outside target even where reads keep asking, and under an ask rule', () => {
+    const { workspace, outside } = setup();
+    const outsideFile = join(outside, 'secret.txt');
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: outsideFile },
+        settings(),
+        scope(workspace, { autoAllowReads: false }),
+      ),
+    ).toEqual({ decision: 'ask', source: 'default', outsideWorkspace: true });
+    const rule = `Read(${outside.replace(/\\/g, '/')}/**)`;
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: outsideFile.replace(/\\/g, '/') },
+        settings({ ask: [rule] }),
+        scope(workspace),
+      ),
+    ).toEqual({ decision: 'ask', source: 'ask', matchedRule: rule, outsideWorkspace: true });
+    // Only judged in the modes that prompt for reads.
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: outsideFile },
+        settings(),
+        scope(workspace, { judgeReads: false, autoAllowReads: false }),
+      ),
+    ).toEqual({ decision: 'ask', source: 'default' });
+  });
+
+  it('matches Write and Edit rules against an ApplyPatch path however it is spelled', () => {
+    const { workspace } = setup();
+    writeFileSync(join(workspace, '.env'), 'KEY=1\n');
+    const off = scope(workspace, { judgeReads: false, autoAllowReads: false });
+    const denied = settings({ deny: ['Write(.env)', 'Edit(.env)'] });
+    for (const path of ['src/../.env', join(workspace, '.env').replace(/\\/g, '/')]) {
+      const patch = `*** Begin Patch\n*** Update File: ${path}\n@@\n-KEY=1\n+KEY=2\n*** End Patch`;
+      expect(evaluatePermissionDetail('ApplyPatch', { patch }, denied, off)).toMatchObject({
+        decision: 'deny',
+      });
+    }
+    const allowed = settings({ allow: ['Edit(src/**)'] });
+    const inSrc = join(workspace, 'src', 'a.ts').replace(/\\/g, '/');
+    const patch = `*** Begin Patch\n*** Update File: ${inSrc}\n@@\n-a\n+b\n*** End Patch`;
+    expect(evaluatePermission('ApplyPatch', { patch }, allowed, off)).toBe('allow');
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'matches a path rule on Windows whatever the case of the path',
+    () => {
+      const { workspace } = setup();
+      writeFileSync(join(workspace, '.env'), 'KEY=1\n');
+      const s = settings({ deny: ['Read(.env)'] });
+      expect(evaluatePermission('Read', { filePath: '.ENV' }, s, scope(workspace))).toBe('deny');
+    },
+  );
+
+  it('allows a Glob whose file names merely contain two dots', () => {
+    const { workspace } = setup();
+    const s = settings();
+    expect(evaluatePermission('Glob', { pattern: '**/*..orig' }, s, scope(workspace))).toBe(
+      'allow',
+    );
+    expect(evaluatePermission('Glob', { pattern: 'docs/v1..v2/*.md' }, s, scope(workspace))).toBe(
+      'allow',
+    );
+  });
+
+  it('follows a link inside the workspace that points out of it', () => {
+    const { workspace, outside } = setup();
+    // A junction needs no symlink privilege on Windows; elsewhere the type is ignored.
+    symlinkSync(outside, join(workspace, 'link'), 'junction');
+    const s = settings();
+    expect(evaluatePermission('Read', { filePath: 'link/secret.txt' }, s, scope(workspace))).toBe(
+      'ask',
+    );
+    expect(evaluatePermission('Grep', { pattern: 'x', path: 'link' }, s, scope(workspace))).toBe(
+      'ask',
+    );
+  });
+
+  it("allows a Read of Book's memory directory, which the Read tool can open, but not its inbox", () => {
+    const { workspace } = setup();
+    const memory = tempDir('book-perm-memory-');
+    writeFileSync(join(memory, 'MEMORY.md'), '- a memory\n');
+    mkdirSync(join(memory, '.inbox'));
+    writeFileSync(join(memory, '.inbox', 'pending.md'), 'pending\n');
+    const s = settings();
+    const withMemory = scope(workspace, { readOnlyRoots: [{ root: memory, exclude: ['.inbox'] }] });
+    expect(evaluatePermission('Read', { filePath: join(memory, 'MEMORY.md') }, s, withMemory)).toBe(
+      'allow',
+    );
+    expect(
+      evaluatePermission('Read', { filePath: join(memory, '.inbox', 'pending.md') }, s, withMemory),
+    ).toBe('ask');
+    // Grep and Glob reach only the workspace.
+    expect(evaluatePermission('Grep', { pattern: 'x', path: memory }, s, withMemory)).toBe('ask');
+  });
+
+  it("keeps asking for Book's project-local settings, which can hold an API key", () => {
+    const { workspace } = setup();
+    mkdirSync(join(workspace, '.book'));
+    writeFileSync(join(workspace, '.book', 'settings.local.json'), '{}\n');
+    const s = settings();
+    expect(
+      evaluatePermission('Read', { filePath: '.book/settings.local.json' }, s, scope(workspace)),
+    ).toBe('ask');
+    expect(
+      evaluatePermission(
+        'Read',
+        { filePath: join(workspace, '.book', 'settings.local.json') },
+        s,
+        scope(workspace),
+      ),
+    ).toBe('ask');
+    expect(evaluatePermission('Grep', { pattern: 'x', path: '.book' }, s, scope(workspace))).toBe(
+      'ask',
+    );
+  });
+
+  it('keeps deny and ask rules in force, however the path is spelled', () => {
+    const { workspace } = setup();
+    writeFileSync(join(workspace, '.env'), 'KEY=1\n');
+    mkdirSync(join(workspace, 'secrets'));
+    writeFileSync(join(workspace, 'secrets', 'key.pem'), 'pem\n');
+    const s = settings({ deny: ['Read(.env)'], ask: ['Read(secrets/**)'] });
+    const absoluteEnv = join(workspace, '.env');
+    expect(
+      evaluatePermissionDetail('Read', { filePath: '.env' }, s, scope(workspace)),
+    ).toMatchObject({ decision: 'deny', matchedRule: 'Read(.env)' });
+    expect(
+      evaluatePermissionDetail('Read', { filePath: absoluteEnv }, s, scope(workspace)),
+    ).toMatchObject({ decision: 'deny', matchedRule: 'Read(.env)' });
+    expect(
+      evaluatePermissionDetail('Read', { filePath: 'src/../.env' }, s, scope(workspace)),
+    ).toMatchObject({ decision: 'deny' });
+    // A deny rule is not a mode decision: the same spelling is denied where reads are not
+    // auto-allowed (auto, bypassPermissions).
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: absoluteEnv },
+        s,
+        scope(workspace, { autoAllowReads: false }),
+      ),
+    ).toMatchObject({ decision: 'deny' });
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: join(workspace, 'secrets', 'key.pem') },
+        s,
+        scope(workspace),
+      ),
+    ).toMatchObject({ decision: 'ask', source: 'ask', matchedRule: 'Read(secrets/**)' });
+    expect(evaluatePermission('Read', { filePath: 'notes.txt' }, s, scope(workspace))).toBe(
+      'allow',
+    );
+  });
+
+  it('matches a path rule for a file-writing tool however the path is spelled', () => {
+    const { workspace } = setup();
+    writeFileSync(join(workspace, '.env'), 'KEY=1\n');
+    const s = settings({ deny: ['Write(.env)', 'Edit(.env)'] });
+    const off = scope(workspace, { autoAllowReads: false });
+    for (const tool of ['Write', 'Edit']) {
+      expect(
+        evaluatePermissionDetail(tool, { filePath: join(workspace, '.env') }, s, off),
+      ).toMatchObject({ decision: 'deny', matchedRule: `${tool}(.env)` });
+      expect(evaluatePermissionDetail(tool, { file_path: 'src/../.env' }, s, off)).toMatchObject({
+        decision: 'deny',
+      });
+    }
+  });
+
+  it('keeps Grep and Glob asking while a rule adjudicates reads, since a Read rule cannot see them', () => {
+    const { workspace } = setup();
+    writeFileSync(join(workspace, '.env'), 'KEY=1\n');
+    for (const s of [settings({ deny: ['Read(.env)'] }), settings({ ask: ['Read(secrets/**)'] })]) {
+      expect(evaluatePermission('Grep', { pattern: '.', path: '.env' }, s, scope(workspace))).toBe(
+        'ask',
+      );
+      expect(evaluatePermission('Grep', { pattern: 'KEY' }, s, scope(workspace))).toBe('ask');
+      expect(evaluatePermission('Glob', { pattern: '**/*' }, s, scope(workspace))).toBe('ask');
+      // Read's own rules see every spelling, so an unrelated Read still needs no prompt.
+      expect(evaluatePermission('Read', { filePath: 'notes.txt' }, s, scope(workspace))).toBe(
+        'allow',
+      );
+    }
   });
 });

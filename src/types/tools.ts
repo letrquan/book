@@ -25,6 +25,13 @@ export interface PermissionDecision {
   result: PermissionResult;
   /** Overrides the derived rule when the result is `always`. */
   rule?: string;
+  /**
+   * Why the approver refused, when it is not a person saying no. `no_approver`: nothing in this
+   * run can answer a prompt (print mode, the SDK, a background agent), so the call was refused
+   * unasked. `dismissed`: the prompt was withdrawn before anyone answered it (the run was
+   * interrupted, the session changed, or the agent was stopped).
+   */
+  reason?: 'no_approver' | 'dismissed';
 }
 
 /** Why a submitted plan was never applied when the host could not approve it. */
