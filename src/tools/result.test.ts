@@ -316,6 +316,18 @@ describe('ToolResult V2', () => {
       metadata: ['2 lines', '3-4'],
     },
     {
+      name: 'a blank last line, read to the end of the file',
+      file: 'a\n\n',
+      args: { offset: 2, limit: 1 },
+      metadata: ['1 line', '2-2'],
+    },
+    {
+      name: 'a file whose last line is blank',
+      file: 'a\n\n',
+      args: {},
+      metadata: ['2 lines'],
+    },
+    {
       name: 'a page whose last line is blank',
       file: 'a\nb\n\nd\n',
       args: { limit: 3 },

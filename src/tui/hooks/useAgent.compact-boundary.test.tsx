@@ -20,6 +20,8 @@ type Step =
   | { reasoning: string }
   | { compact: 'sync' | 'recovery' }
   | { commit: true }
+  | { discard: true }
+  | { tool: string }
   | { wait: true };
 
 const loopState = vi.hoisted(() => ({ steps: [] as unknown[] }));
@@ -92,6 +94,18 @@ vi.mock('../../agent/loop.js', () => ({
       callbacks: {
         onText: (content: string) => void;
         onReasoning?: (content: string) => void;
+        onAttemptDiscarded?: () => void;
+        onToolCall?: (call: {
+          id: string;
+          name: string;
+          arguments: Record<string, unknown>;
+        }) => void;
+        onToolResult?: (result: {
+          version: 2;
+          toolCallId: string;
+          status: 'success';
+          content: string;
+        }) => void;
         onTurnStart: (turn: number) => void;
         onCompact?: (history: unknown[], usage: unknown, hints?: unknown) => Promise<unknown>;
         prepareCompact?: (snapshot: unknown[], usage: unknown, hints?: unknown) => Promise<unknown>;
@@ -107,7 +121,20 @@ vi.mock('../../agent/loop.js', () => ({
         if ('turnStart' in step) callbacks.onTurnStart(step.turnStart);
         else if ('text' in step) callbacks.onText(step.text);
         else if ('reasoning' in step) callbacks.onReasoning?.(step.reasoning);
-        else if ('wait' in step) await new Promise((resolve) => setTimeout(resolve, 60));
+        else if ('discard' in step) callbacks.onAttemptDiscarded?.();
+        else if ('tool' in step) {
+          callbacks.onToolCall?.({
+            id: step.tool,
+            name: 'Bash',
+            arguments: { command: step.tool },
+          });
+          callbacks.onToolResult?.({
+            version: 2,
+            toolCallId: step.tool,
+            status: 'success',
+            content: 'ok',
+          });
+        } else if ('wait' in step) await new Promise((resolve) => setTimeout(resolve, 60));
         else if ('compact' in step) {
           await callbacks.onCompact?.(
             history,
@@ -306,5 +333,57 @@ describe('the compaction row', () => {
 
     expect(latest!.compactBoundaries).toHaveLength(1);
     expect(latest!.compactBoundaries[0]!.transcriptOrdinal).toBe(indexOf('turn two'));
+  });
+
+  it('keeps the answer above the row when an attempt after it is discarded', async () => {
+    // A re-sent request after the compaction came back empty: it streamed
+    // nothing below the row, so there is nothing of it to reset, and the
+    // partial answer above the row stays.
+    await run([
+      { text: 'partial answer' },
+      { wait: true },
+      { compact: 'sync' },
+      { discard: true },
+      { wait: true },
+      { text: 'retry answer' },
+    ]);
+
+    const ordinal = latest!.compactBoundaries[0]!.transcriptOrdinal;
+    expect(indexOf('partial answer')).toBe(ordinal - 1);
+    expect(indexOf('retry answer')).toBe(ordinal);
+  });
+
+  it('keeps a later row below output that came before it, across a discarded attempt', async () => {
+    await run([
+      { text: 'partial answer' },
+      { wait: true },
+      { compact: 'sync' },
+      { discard: true },
+      { wait: true },
+      { compact: 'sync' },
+      { text: 'retry answer' },
+    ]);
+
+    const [first, second] = latest!.compactBoundaries.map((boundary) => boundary.transcriptOrdinal);
+    expect(first).toBe(indexOf('partial answer') + 1);
+    expect(second).toBeGreaterThanOrEqual(first!);
+  });
+
+  it('keeps a row below tool activity a discarded attempt leaves in place', async () => {
+    // A discard clears the attempt's text but not the tool rows the turn ran.
+    await run([
+      { tool: 'npm test' },
+      { text: 'then this' },
+      { discard: true },
+      { wait: true },
+      { compact: 'sync' },
+      { text: 'after compact' },
+    ]);
+
+    const withTool = latest!.messages.findIndex((message) =>
+      message.toolCalls?.some((call) => call.id === 'npm test'),
+    );
+    expect(withTool).toBeGreaterThanOrEqual(0);
+    expect(latest!.compactBoundaries[0]!.transcriptOrdinal).toBe(withTool + 1);
   });
 });

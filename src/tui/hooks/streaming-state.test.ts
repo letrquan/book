@@ -5,7 +5,7 @@ import {
   appendNestedToolResultToMessage,
   appendToolCallToMessage,
   appendToolResultToMessage,
-  compactionTranscriptOrdinal,
+  compactionPlacement,
   isTotallyEmptyAssistant,
   makeMessage,
   removeTrailingEmptyAssistantPlaceholder,
@@ -297,7 +297,7 @@ describe('streaming TUI message state helpers', () => {
   });
 });
 
-describe('compactionTranscriptOrdinal', () => {
+describe('compactionPlacement', () => {
   const messages = [
     msg('u1', 'user', 'q'),
     msg('a1', 'assistant', ''),
@@ -305,20 +305,43 @@ describe('compactionTranscriptOrdinal', () => {
   ];
 
   it('lands after everything when no turn is streaming', () => {
-    expect(compactionTranscriptOrdinal(messages, null, false)).toBe(messages.length);
-    expect(compactionTranscriptOrdinal(messages, undefined, false)).toBe(messages.length);
+    expect(compactionPlacement(messages, null, false)).toEqual({
+      ordinal: messages.length,
+      afterStreaming: false,
+    });
+    expect(compactionPlacement(messages, undefined, true)).toEqual({
+      ordinal: messages.length,
+      afterStreaming: false,
+    });
   });
 
-  it('lands after everything once the streaming turn has output', () => {
-    expect(compactionTranscriptOrdinal(messages, 'a2', true)).toBe(messages.length);
+  it('lands after the streaming message once it has output', () => {
+    expect(compactionPlacement(messages, 'a2', true)).toEqual({
+      ordinal: messages.length,
+      afterStreaming: true,
+    });
   });
 
   it('lands before the streaming message while it has streamed nothing', () => {
-    expect(compactionTranscriptOrdinal(messages, 'a1', false)).toBe(1);
-    expect(compactionTranscriptOrdinal(messages, 'a2', false)).toBe(2);
+    expect(compactionPlacement(messages, 'a1', false)).toEqual({
+      ordinal: 1,
+      afterStreaming: false,
+    });
+    expect(compactionPlacement(messages, 'a2', false)).toEqual({
+      ordinal: 2,
+      afterStreaming: false,
+    });
   });
 
-  it('lands where a streaming message not in the list yet will land', () => {
-    expect(compactionTranscriptOrdinal(messages, 'a3', false)).toBe(messages.length);
+  it('places a streaming message not in the list yet at the index it will land at', () => {
+    // Its append is still queued: it lands at messages.length.
+    expect(compactionPlacement(messages, 'a3', false)).toEqual({
+      ordinal: messages.length,
+      afterStreaming: false,
+    });
+    expect(compactionPlacement(messages, 'a3', true)).toEqual({
+      ordinal: messages.length + 1,
+      afterStreaming: true,
+    });
   });
 });

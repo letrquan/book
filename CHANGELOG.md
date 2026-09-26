@@ -288,9 +288,10 @@ All notable changes to this project are documented in this file.
 - **A foreground Task row re-renders when its child changes** (#245), so the "Tab to open" hint goes
   when the child's Background-panel row does.
 - **A Read row counts the lines it returned, not its continue notice** (#247): `4 lines · 3-6`
-  instead of `5 lines`, the same as for a result without a presentation. The empty line Read shows
-  past a file's final newline is not counted, so an empty file shows `empty`; an outline shows
-  `outline · N entries`; a failed read shows no line count.
+  instead of `5 lines`, the same as for a result without a presentation. Read now reports how many
+  lines of the file a page holds, so the empty numbered line it shows past a final newline is not
+  counted and an empty file shows `empty`; an outline shows `outline · N entries`; a failed read
+  shows no line count.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller

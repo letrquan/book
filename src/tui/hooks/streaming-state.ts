@@ -208,19 +208,34 @@ export function appendNestedToolResultToMessage(
   return next;
 }
 
+/** What the streaming message holds, tracked as events arrive: the accumulator applies them a flush later. */
+export interface StreamOutput {
+  /** Text, reasoning or tool activity since the message was created. */
+  any: boolean;
+  /** Tool calls or results, which a discarded attempt leaves in place. */
+  tools: boolean;
+  /** A compaction committed behind this message's output: the turn's next output opens a new message. */
+  closed: boolean;
+}
+
+export function freshStreamOutput(): StreamOutput {
+  return { any: false, tools: false, closed: false };
+}
+
 /**
- * Where a compaction's transcript row goes: before the streaming message while that turn has
- * streamed nothing yet (a compaction at its preflight gate, or an overflow recovery that retries
- * it), because its reply will stream into that message; after everything otherwise. A streaming
- * message not in `messages` yet is being appended, and lands at `messages.length`, which the row
- * then precedes.
+ * Where a compaction's transcript row goes, and whether that is after the streaming message. While
+ * the message has streamed nothing (a compaction at its turn's preflight gate, or an overflow
+ * recovery that retries the turn) the row goes before it, because the turn's reply streams into it.
+ * Once it has output the row goes after it, and the turn's next output opens a message of its own.
+ * A streaming message not in `messages` yet is still being appended, and lands at `messages.length`.
  */
-export function compactionTranscriptOrdinal(
+export function compactionPlacement(
   messages: readonly Message[],
   streamingId: string | null | undefined,
-  streamStarted: boolean,
-): number {
-  if (!streamingId || streamStarted) return messages.length;
+  hasOutput: boolean,
+): { ordinal: number; afterStreaming: boolean } {
+  if (!streamingId) return { ordinal: messages.length, afterStreaming: false };
   const index = messages.findIndex((message) => message.id === streamingId);
-  return index >= 0 ? index : messages.length;
+  if (!hasOutput) return { ordinal: index >= 0 ? index : messages.length, afterStreaming: false };
+  return { ordinal: index >= 0 ? messages.length : messages.length + 1, afterStreaming: true };
 }

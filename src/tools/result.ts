@@ -394,11 +394,21 @@ function nonEmptyLines(content: string): number {
   return content.split('\n').filter((line) => line.trim()).length;
 }
 
+/** A Read row's line metadata: how many lines of the file, and their range when the read started partway in. */
+export function readLineMetadata(start: number, count: number): string[] {
+  if (count <= 0) return ['empty'];
+  const size = count === 1 ? '1 line' : `${count} lines`;
+  // `121 lines · 1-121` says the same thing twice. The range earns its place only when the read
+  // started partway into the file.
+  return start > 1 ? [size, `${start}-${start + count - 1}`] : [size];
+}
+
 /**
- * A Read row's metadata: how many lines of the file it returned and their range when the read
- * started partway in, or, for an outline, how many declarations it listed. A Read that stops early
- * ends with a notice (`[Lines 3-6 of 20 shown. …]`, `[Line 1 (60000 bytes) was cut …]`), which is
- * not a line of the file.
+ * A Read row's metadata reconstructed from its text, for results that do not carry it (persisted
+ * by an older build, and outlines): the lines of the file it returned and their range, or how many
+ * declarations an outline listed. A read that stops early ends with a notice (`[Lines 3-6 of 20
+ * shown. …]`, `[Line 1 (60000 bytes) was cut …]`), which is not a line of the file. Read's own
+ * results carry exact metadata (readLineMetadata).
  */
 export function readResultMetadata(args: Record<string, unknown>, content: string): string[] {
   // An outline lists declarations under a header, not lines of the file.
@@ -412,14 +422,9 @@ export function readResultMetadata(args: Record<string, unknown>, content: strin
   // ends with the notice instead, and its last line is real.
   if (body === content) body = body.replace(/(?:^|\n)\d+: $/, '');
   const lineCount = body ? body.split('\n').length : 0;
-  if (lineCount === 0) return ['empty'];
   const offset = Number(args.offset ?? 0);
   const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 1;
-  const end = start + lineCount - 1;
-  const size = lineCount === 1 ? '1 line' : `${lineCount} lines`;
-  // `121 lines · 1-121` says the same thing twice. The range earns its place only when the read
-  // started partway into the file.
-  return start > 1 ? [size, `${start}-${end}`] : [size];
+  return readLineMetadata(start, lineCount);
 }
 
 /** Attach stable UI data while execution still has the tool name and arguments. */
