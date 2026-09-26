@@ -19,24 +19,24 @@ can decide what to read in full.
   heading. A leading `---` opens front matter, which is skipped, only when YAML runs up to a
   closing `---` (or `...`): the first line that is not a `#` comment is a `key:` line (any text
   up to a colon), and each run of lines between blank lines holds `key:`, indented or `- ` lines.
-  `#` lines among the keys of the first run are comments. A `#` line that opens the block or sits
-  in a later run is a comment only beside YAML identifier keys (`title:`); alone in its run it is a
-  comment only when every key of the block is one, and beside a label such as
-  `Summary: …` it is a heading, so such a block is not front matter. Otherwise it is a
-  horizontal rule, and the headings after it count.
+  `#` lines among the keys of the first run are comments, and so is a `#` line that opens the
+  block or sits in a later run beside YAML identifier keys (`title:`). A `#` line alone in its
+  run, or beside a label such as `Summary: …`, is a heading, so such a block is not front matter:
+  a horizontal rule, and the headings after it count.
 - **JSON** (`.json`, `.jsonc`, `.json5`, `.webmanifest`, and rc files such as `.babelrc` that hold
-  JSON): the line that opens the root (or each record of a file with one per line), then an object
-  root's top-level keys, or an array root's
-  elements, each object element by its first key. Nesting depth decides, not indentation, and
-  brackets inside strings do not count. Block and line comments are skipped, JSON5's bare and
-  single-quoted keys count, and an element opened
-  on the line that closes the one before (`}, {`) is still found.
+  JSON): the line that opens the root (or each record of a file with one per line), then an
+  object root's top-level keys, or an array root's elements, each object element by its first
+  key. Nesting depth decides, not indentation, so a key after a block comment
+  (`/* c */ "a": 1,`) or after a closing brace (`}, "c": 2,`) is found, and an element opened on
+  the line that closes the one before (`}, {`) too. Brackets inside strings and comments do not
+  count, and JSON5's bare and single-quoted keys do.
 - **Everything else**: every line at indentation zero except blank lines, comments, lines of
-  closing punctuation alone (`}`, `});`, `]);`) and an Allman-style `{` line, plus lines indented
-  by up to four spaces that declare something:
+  closing punctuation alone (`}`, `});`, `]);`, a trailing comment allowed) and an Allman-style
+  `{` line, plus lines indented by up to four spaces that declare something:
   - a `function`/`class`/`def`/`fn`/`fun`-style keyword line, unless the keyword is an object key,
     an import-list member or a property access (`enum: [...]`, `describe,`, `set.add(x)`,
-    `it.skip;`), and a test block reached through a modifier (`it.skip('later', () => {`);
+    `it.skip;`); in JavaScript and TypeScript, also a test block reached through a modifier
+    (`it.skip('later', () => {`, `it.each` tables);
   - a method named first whose parameter list closes into a body, on the same line or a later one
     (`async *entries() {`, `*values() {`, `#secret(): string {`, `async send(` …
     `): Promise<void> {`, or `}: Args): Promise<void> {` after a destructured parameter);
@@ -50,36 +50,38 @@ can decide what to read in full.
     (under `class`, `struct` or an access specifier such as `public:`), every member function,
     constructor, destructor and operator, declared (`void set(int v);`,
     `virtual void draw() = 0;`) or defined (`int get() const { return n_; }`), with qualifier
-    macros, `[[attributes]]` and trailing comments allowed; elsewhere a function whose body is on
-    its line or opens below it, qualified names included (`std::string Foo::name() {`).
-    `int x(5);` and `Foo f(1);` outside a class are variables and stay out. Preprocessor lines and
-    access specifiers inside a class do not end it. A class head may carry an export macro,
-    `__declspec(…)` or `alignas(…)`, and a call named in capitals with no
-    return type (`Q_PROPERTY(…)`, `GENERATED_BODY()`) is a macro, not a member.
+    macros and `[[attributes]]` allowed; elsewhere a function whose body is on its line or opens
+    below it, qualified names included (`std::string Foo::name() {`). `int x(5);` and
+    `Foo f(1);` outside a class are variables and stay out, and so does `static_assert(…)`. A
+    capitalised call with an underscore (`Q_PROPERTY(…)`, `GENERATED_BODY()`, a field's
+    `ABSL_GUARDED_BY(mu_)`) or a builtin such as `__attribute__((…))` is a macro, not a member,
+    unless a body follows it (`BOOST_AUTO_TEST_CASE(works) {`); `RGB(int r, int g, int b);` is a
+    constructor. A class head may carry an export macro, `__declspec(…)` or `alignas(…)`, and
+    preprocessor lines and access specifiers inside a class do not end it.
 
   An annotation or attribute on the declaration's own line does not hide it
   (`@Override public String toString() {`, `@HostListener('click') onClick() {`,
   `[HttpGet] public IActionResult Get() {`) in languages that have them (Java, Kotlin, Scala,
-  Groovy, C#, Dart, Swift, TypeScript and
-  JavaScript), and a parenthesis inside a quoted default value
-  (`paren(s = '(') {`) does not unbalance it. A line deeper than four spaces counts when it
-  declares a member of a type the outline lists: a Java inner class's methods, a nested C#
-  class's, an `impl` inside a Rust `mod`. A trailing comment after a declaration
-  (`void set(int v);  // Sets it.`) does not hide it.
+  Groovy, C#, Dart, Swift, TypeScript and JavaScript). A parenthesis inside a quoted default value
+  (`paren(s = '(') {`, a C# verbatim string, a C++ `1'000`) does not unbalance a signature, and
+  neither does a trailing comment (`void set(int v);  // Sets it.`) or a block comment before the
+  body (`run() /* entry */ {`). A line deeper than four spaces counts when it declares a member of
+  a type the outline lists: a Java inner class's methods, a nested C# or C++ class's, an `impl`
+  inside a Rust `mod`.
 
   Lines shaped like these that are not declarations stay out: control flow (`if (`, `else if (`,
   `for (`, `foreach (`, `using (`, `lock (`, `switch (`, `catch (`; in Java and C# also with no
   space, as in `foreach(` and `lock(`, which elsewhere may be method names), `assert x;`,
   `return foo(`, `new Foo(`, `go func() {`, `defer func() {`, a call that closes into a callback
   (`useEffect(() => {`, `).then(() => {`), a chained call (`foo(x).then(`), a call on an object
-  named like a keyword (`it.next()`, `impl->value = f(`), and a statement
-  followed by another on the same line (`foo(x); if (y) {`). In `.ts`, `.mts`, `.cts`, `.mjs` and
-  `.cjs` files, the text of a multi-line template literal, and of a string continued with a
-  trailing backslash, is skipped at any indentation, and a `/` right after a condition's `)`
-  (`if (ok) /\d+/.test(s)`) opens a regex. `.tsx`, `.jsx` and `.js` files are not scanned for it,
-  because JSX text may hold a `/*` or a lone backtick that would open a comment or template that
-  never closes, and a scan that still ends inside one masks nothing. A `#` line is a comment in
-  Python, shell, YAML, TOML, Ruby and PowerShell files, Makefiles, Dockerfiles (unless the name
+  named like a keyword (`it.next()`, `impl->value = f(`, Kotlin's `it.split(",")`), and a
+  statement followed by another on the same line (`foo(x); if (y) {`). In `.ts`, `.mts`, `.cts`,
+  `.mjs` and `.cjs` files, the text of a multi-line template literal, and of a string continued
+  with a trailing backslash, is skipped at any indentation, and a `/` right after a condition's
+  `)` (`if (ok) /\d+/.test(s)`) opens a regex. `.tsx`, `.jsx` and `.js` files are not scanned for
+  it, because JSX text may hold a `/*` or a lone backtick that would open a comment or template
+  that never closes, and a scan that still ends inside one masks nothing. A `#` line is a comment
+  in Python, shell, YAML, TOML, Ruby and PowerShell files, Makefiles, Dockerfiles (unless the name
   ends in a code extension, as `makefile.c` does), and extension-less scripts that start with
   `#!`; elsewhere C preprocessor lines and Rust attributes stay in.
 
@@ -87,9 +89,9 @@ can decide what to read in full.
   (declarations with `fun`; a `name(args) {` line there is a call taking a trailing lambda), C#
   (members at indentation 8 under a block-scoped `namespace X {`), Dart, C++ class members and
   JSON. The supported shapes are the `Read outline contract` table in `src/tools/file.test.ts`.
-  Not covered: Kotlin `companion object` members, a Dart
-  constructor with no body, a signature whose closing `)` shares a line with its last parameter,
-  and PowerShell `<# … #>` block comments.
+  Not covered: Kotlin `companion object` members, a Dart constructor with no body, a signature
+  whose closing `)` shares a line with its last parameter, and PowerShell `<# … #>` block
+  comments.
 
 What an outline saves depends on the file: `src/agent/loop.ts` goes from 2876 lines to 51, and
 this README goes to its 33 headings. A test file keeps its `describe`/`it` lines, and a JSON file

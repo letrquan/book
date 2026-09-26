@@ -382,36 +382,38 @@ All notable changes to this project are documented in this file.
   that is not a declaration (#247).**
   - **Now listed:** Java and C# methods with their body on the same line
     (`public int get() { return n; }`), declarations with an annotation or attribute on their own
-    line (`@Override public String toString() {`, `[HttpGet] public IActionResult Get() {`), plain
-    `*values()` generator methods, the members of a Java inner class or a nested C# class, Java
-    `record`s, and C++ class members: declarations, one-line definitions, constructors,
-    destructors, operators and pure virtuals, with trailing comments, `[[attributes]]` and
-    qualifier macros, also inside `#ifdef` blocks and namespaces, under class heads with a comment,
-    an export macro, `__declspec` or `alignas`. A method whose default value
-    quotes a parenthesis (`paren(s = '(') {`) is no longer dropped, nor is one whose
-    default value is a C# verbatim string (`@"C:\"`) or holds a C++ digit separator (`1'000`).
+    line (`@Override public String toString() {`, `[HttpGet] public IActionResult Get() {`) in
+    languages that have them, plain `*values()` generator methods, the members of a Java inner
+    class or a nested C# or C++ class, Java `record`s, and C++ class members: declarations,
+    one-line definitions, constructors, destructors, operators and pure virtuals, with qualifier
+    macros and `[[attributes]]`, inside `#ifdef` blocks and namespaces, and under class heads that
+    carry a comment, an export macro, `__declspec` or `alignas`. A signature is no longer dropped
+    for a parenthesis in a quoted default value (`paren(s = '(') {`, a C# verbatim string, a C++
+    `1'000`), a trailing comment, or a block comment before its body (`run() /* entry */ {`).
   - **JSON** outlines to its top-level keys, or for an array to each element's first key, instead
-    of its opening brace alone. Block comments are skipped, `}, {` elements are found, and a
-    `.prettierrc` or `.eslintrc` is JSON only when it holds JSON. JSON5's bare and single-quoted
-    keys count, and a file with one record per line lists every record.
+    of its opening brace alone. Depth decides, so keys after a block comment or a closing brace
+    are found; JSON5's bare and single-quoted keys count; a file with one record per line lists
+    every record; and a `.prettierrc` or `.eslintrc` is JSON only when it holds JSON.
   - **No longer listed:** property access on objects named like keywords (`set.add(1);`,
-    `it.skip;`, `it.next();`, `impl->value = f(`), and a statement followed by another on the same
-    line (`foo(x); if (y) {`). `it.skip('x', () => {`, `it.each` tables and other test blocks
-    reached through a known modifier still are. In a C++ class body a call named in capitals with
-    no return type (`Q_PROPERTY(…)`, `GENERATED_BODY()`) is a macro, and after `};` the class is
-    closed. An `@` prefix is read as an annotation only in languages that have them, so a
-    Makefile's `@go get` and SCSS's `@include mq(…) {` stay out.
+    `it.skip;`, `it.next();`, `impl->value = f(`, Kotlin's `it.split(",")`), and a statement
+    followed by another on the same line (`foo(x); if (y) {`). In JavaScript and TypeScript,
+    `it.skip('x', () => {`, `it.each` tables and other test blocks reached through a modifier
+    still are. In C++, a capitalised call with an underscore (`Q_PROPERTY(…)`, `GENERATED_BODY()`,
+    a field's `ABSL_GUARDED_BY(mu_)`) or a builtin such as `__attribute__` is a macro, not a
+    member, unless a body follows it (`BOOST_AUTO_TEST_CASE(works) {`); `static_assert(…)` is
+    not a member; and after `};` the class is closed. An `@` prefix is read as an annotation only
+    in languages that have them, so a Makefile's `@go get` and SCSS's `@include mq(…) {` stay
+    out.
   - **The template scanner keeps its place** through a string continued with a trailing
-    backslash, and through a regex right after a condition's `)` (`if (ok) /`/.test(s)`), which
-    it read as a division; two such misreads used to hide every line between them.
-  - **Front matter** may open with a `# comment`, and a `#` comment after a blank line no longer
-    ends it, when the keys beside it are YAML identifiers (`title:`) (alone in its run, when every
-    key of the block is one); beside a label such as
-    `Summary: …` a `#` line stays a heading. The Markdown front matter detector moved to
-    `src/frontmatter.ts`, beside `parseFrontmatter`.
+    backslash, and through a regex right after a condition's `)` (`if (ok) /\d+/.test(s)`),
+    which it read as a division; two such misreads used to hide every line between them.
+  - **Front matter** may open with a `# comment`, and a `#` comment beside YAML identifier keys
+    (`title:`) after a blank line no longer ends it. A `#` line alone in its run, or beside a
+    label such as `Summary: …`, stays a heading. The Markdown front-matter detector moved to
+    `src/frontmatter.ts`, beside `parseFrontmatter`, which keeps its own exact-`---` rule.
   - **Budget:** an entry is cut at 512 bytes and ends with `…`, so a minified first line no longer
     leaves an outline with "0 shown", and the header and truncation note fit inside the 50 KB clip
-    whatever the path's length.
+    whatever the path's length. A long C++ qualifier macro is read in linear time.
   - **Code:** the three lists of statement words, which disagreed, are one table that says where
     each word rules a line out.
   - The `outline` parameter's description now says "up to 2000 of them or 50 KB". It is part of
@@ -420,7 +422,8 @@ All notable changes to this project are documented in this file.
     one. The gains are 184 JSON keys, `.prettierrc`'s six keys, and the constructor of a class
     declared inside a test; the loss is `def.model ? …`, which had passed for a Python `def`. Over
     winpty's 88 C++ files it gains 304 class members, constructors, destructors and operators, and
-    loses 18 `impl->field = …` statements that had passed for Rust `impl` blocks.
+    loses 36 lines: 18 `impl->field = …` statements that had passed for Rust `impl` blocks, and 18
+    `} // anonymous namespace` closing lines.
 - **A failed print run exits 1 on Windows, not 127.** Print mode ended a failed run with
   `exit(1)` straight after its last provider request, while libuv was still closing the pooled
   sockets. On Windows that aborted with

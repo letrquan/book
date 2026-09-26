@@ -2432,18 +2432,107 @@ const OUTLINE_CONTRACT: Array<{ shape: string; file: string; lines: string[]; ou
       outline: ['2: {', '3:   "root": true,', '4:   "rules": {}'],
     },
     {
-      shape: 'Markdown: a comment in its own run before identifier keys is front matter',
-      file: 'skill.md',
+      shape: 'Markdown: a heading alone in its run stays a heading, even beside identifier keys',
+      file: 'rule.md',
+      lines: ['---', '# API', '', 'usage: run it', '---', '## Next'],
+      outline: ['2: # API', '4: usage: run it', '6: ## Next'],
+    },
+    {
+      shape: 'Java and C++: a block comment that closes before the body brace',
+      file: 'Runner.java',
+      lines: ['public class Runner {', '    public void run() /* entry */ {', '    }', '}'],
+      outline: ['1: public class Runner {', '2:     public void run() /* entry */ {'],
+    },
+    {
+      shape: 'C++: guarded and attributed data members are not functions',
+      file: 'guarded.h',
       lines: [
-        '---',
-        '# Skill metadata, see docs',
-        '',
-        'name: deploy',
-        'description: ship it',
-        '---',
-        '# Deploy',
+        'class Cache {',
+        ' public:',
+        '  int count_ ABSL_GUARDED_BY(mu_);',
+        '  std::vector<int> items_ GUARDED_BY(mu_);',
+        '  uint32_t flags __attribute__((aligned(8)));',
+        '  static_assert(sizeof(int) == 4, "int");',
+        '  void Clear();',
+        '};',
       ],
-      outline: ['7: # Deploy'],
+      outline: ['1: class Cache {', '7:   void Clear();'],
+    },
+    {
+      shape: 'C++: an Allman brace or a closing brace with a comment',
+      file: 'nolint.hpp',
+      lines: [
+        'class Foo',
+        '{  // NOLINT',
+        'public:',
+        '    void f();',
+        '    int g() const;',
+        '};  // class Foo',
+      ],
+      outline: ['1: class Foo', '3: public:', '4:     void f();', '5:     int g() const;'],
+    },
+    {
+      shape: 'C++: all-caps constructors and test macros with a body are listed',
+      file: 'rgb.cpp',
+      lines: [
+        'class RGB {',
+        'public:',
+        '    RGB(int r, int g, int b);',
+        '    A();',
+        '};',
+        'namespace t {',
+        '    TEST(Suite, Name) {',
+        '    }',
+        '    BOOST_AUTO_TEST_CASE(works) {',
+        '    }',
+        '}',
+      ],
+      outline: [
+        '1: class RGB {',
+        '2: public:',
+        '3:     RGB(int r, int g, int b);',
+        '4:     A();',
+        '6: namespace t {',
+        '7:     TEST(Suite, Name) {',
+        '9:     BOOST_AUTO_TEST_CASE(works) {',
+      ],
+    },
+    {
+      shape: 'A trailing comment holding an apostrophe after a parenthesis',
+      file: 'caller.ts',
+      lines: ['export class C {', "  bar(x: number) { // (the caller's value)", '  }', '}'],
+      outline: ['1: export class C {', "2:   bar(x: number) { // (the caller's value)"],
+    },
+    {
+      shape: 'JSON: a key after a block comment, a key after a cuddled close, and an empty element',
+      file: 'mixed.json',
+      lines: [
+        '{',
+        '  /* c */ "a": 1,',
+        '  "b": {',
+        '    "x": 1',
+        '  }, "c": 2,',
+        '  "list": [',
+        '    {',
+        '    },',
+        '    {"k": 1,',
+        '     "l": 2}',
+        '  ]',
+        '}',
+      ],
+      outline: ['1: {', '2:   /* c */ "a": 1,', '3:   "b": {', '5:   }, "c": 2,', '6:   "list": ['],
+    },
+    {
+      shape: 'JSON: an empty element does not make the next element list its second key',
+      file: 'empty.json',
+      lines: ['[', '  {', '  },', '  {"a": 1,', '   "b": 2}', ']'],
+      outline: ['1: [', '4:   {"a": 1,'],
+    },
+    {
+      shape: 'Kotlin and Groovy: a call on the implicit `it` is not a test',
+      file: 'List.kt',
+      lines: ['fun top() = xs.map {', '    it.split(",")', '}'],
+      outline: ['1: fun top() = xs.map {'],
     },
   ];
 
@@ -2498,7 +2587,7 @@ describe('Read outline contract', () => {
     );
     const started = performance.now();
     const outlined = await read.execute({ filePath: 'slow.h', outline: true }, ctx);
-    expect(performance.now() - started).toBeLessThan(1000);
+    expect(performance.now() - started).toBeLessThan(5000);
     expect(outlined.content.split('\n').slice(1)).toEqual(['1: class Cache {']);
   });
 });

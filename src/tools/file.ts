@@ -298,6 +298,18 @@ const ANNOTATION_EXTENSIONS = new Set([
 function declarationText(line: string, profile: OutlineProfile): string {
   return profile.annotations ? line.replace(OUTLINE_LEADING_ANNOTATIONS, '$1') : line;
 }
+// Where `describe`/`it`/`test` chains are test blocks. In Kotlin and Groovy,
+// `it.split(",")` is a call on a lambda's implicit parameter.
+const TEST_CHAIN_EXTENSIONS = new Set([
+  '.ts',
+  '.tsx',
+  '.mts',
+  '.cts',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+]);
 /**
  * Where each place a statement word rules a line out:
  * - `call`: as the name of a method written name first, with or without a
@@ -411,7 +423,7 @@ const OUTLINE_ONE_LINE_BODY = /^\s*(?:throws\s[^{;]*)?\{.*\}\s*;?\s*$/;
 // operator, or a qualified name (`Foo::name`).
 const CPP_TYPE_WORD = `(?:template\\s*${OUTLINE_GENERIC}\\s*)?[A-Za-z_][\\w:]*(?:${OUTLINE_GENERIC})?`;
 const CPP_METHOD_HEAD = new RegExp(
-  `^\\s+(?:\\[\\[[^\\]]*\\]\\]\\s*)*(?!${OUTLINE_STATEMENT_TYPE})(?<returnType>(?:${CPP_TYPE_WORD}[\\s*&]+)*)(?<name>(?:[A-Za-z_]\\w*::)*(?:~?[A-Za-z_]\\w*|operator\\s*(?:\\(\\)|[^\\s(]+)))\\s*\\(`,
+  `^\\s+(?:\\[\\[[^\\]]*\\]\\]\\s*)*(?!${OUTLINE_STATEMENT_TYPE}|(?:static_assert|co_await|co_return|co_yield)\\b)(?<returnType>(?:${CPP_TYPE_WORD}[\\s*&]+)*)(?<name>(?:[A-Za-z_]\\w*::)*(?:~?[A-Za-z_]\\w*|operator\\s*(?:\\(\\)|[^\\s(]+)))\\s*\\(`,
 );
 // A C++ class body opens on a type definition's head: `class Foo {`,
 // `template <typename T> struct Vec : Base<T>`, `class EXPORT Foo final {`,
@@ -427,10 +439,10 @@ const OUTLINE_TRANSPARENT_LINE =
   /^(?:#\s*(?:if|ifdef|ifndef|elif|else|endif|define|undef|include|pragma|region|endregion|error|warning|line)\b|#!?\[|(?:(?:public|private|protected)(?:\s+(?:slots|Q_SLOTS))?|signals|Q_SIGNALS)\s*:\s*$)/;
 // One thing that may follow a C++ member's parameter list before its body or
 // `;`: a qualifier, a qualifier macro such as `Q_DECL_OVERRIDE`, an attribute
-// or a trailing return type. Sticky: each match starts where the last ended,
+// or a trailing return type. `cppTailRest` reads it sticky from a local copy,
 // so a tail is read in one pass whatever it holds.
 const CPP_QUALIFIER =
-  /\s*(?:(?:const|volatile|override|final)\b|noexcept\b(?:\s*\([^()]*\))?|&&?|\[\[[^\]]*\]\]|[A-Z_][A-Z0-9_]*\b(?:\s*\([^()]*\))?|->[^;{=]*)/y;
+  /\s*(?:(?:const|volatile|override|final)\b|noexcept\b(?:\s*\([^()]*\))?|&&?|\[\[[^\]]*\]\]|[A-Z_][A-Z0-9_]*\b(?:\s*\([^()]*\))?|->[^;{=]*)/;
 // A class member bound to an arrow function: `name = (...) => {`, `#name = async (...) => {`.
 const OUTLINE_ARROW_MEMBER =
   /^\s+(?:(?:public|private|protected|static|readonly|override)\s+)*#?[A-Za-z_$][\w$]*\s*(?::[^=]*)?=\s*(?:async\s*)?\(.*\)\s*(?::[^=]*)?=>\s*\{\s*$/;
@@ -520,8 +532,6 @@ const JSON_EXTENSIONS = new Set(['.json', '.jsonc', '.json5', '.webmanifest']);
 // JSON configuration files named without an extension,
 // when they hold JSON rather than YAML: `.babelrc`, `.prettierrc`.
 const JSON_BASENAME = /^\.(?:babelrc|eslintrc|prettierrc|swcrc|jshintrc)$/;
-// A key line: a quoted key, or JSON5's single-quoted or bare key.
-const JSON_KEY = /^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[A-Za-z_$][\w$]*)\s*:/;
 
 interface OutlineProfile {
   hashComments: boolean;
@@ -531,6 +541,7 @@ interface OutlineProfile {
   reservedStatements: boolean;
   cpp: boolean;
   annotations: boolean;
+  testChains: boolean;
   maxIndent: number;
 }
 
@@ -548,6 +559,7 @@ function outlineProfile(filePath: string, lines: readonly string[]): OutlineProf
     reservedStatements: JAVA_CSHARP_EXTENSIONS.has(extension),
     cpp: CPP_EXTENSIONS.has(extension),
     annotations: ANNOTATION_EXTENSIONS.has(extension),
+    testChains: TEST_CHAIN_EXTENSIONS.has(extension),
     maxIndent:
       extension === '.cs' && lines.some((line) => /^namespace\s+[\w.]+\s*\{?\s*$/.test(line))
         ? OUTLINE_MAX_INDENT_CSHARP_BLOCK_NAMESPACE
@@ -719,13 +731,18 @@ function textLines(lines: readonly string[]): boolean[] {
   return comment || quote !== undefined || stack.length > 0 ? text.map(() => false) : text;
 }
 
-/** Whether every parenthesis opened on the line is closed on it, quoted text aside. */
+/** Whether every parenthesis opened on the line is closed on it, quoted text and comments aside. */
 function balancedParentheses(line: string): boolean {
   let depth = 0;
   for (let index = 0; index < line.length; index++) {
     const char = line[index];
     if (char === "'" || char === '"' || char === '`') index = skipQuoted(line, index);
-    else if (char === '(') depth++;
+    else if (char === '/' && line[index + 1] === '/') break;
+    else if (char === '/' && line[index + 1] === '*') {
+      const close = line.indexOf('*/', index + 2);
+      if (close < 0) break;
+      index = close + 1;
+    } else if (char === '(') depth++;
     else if (char === ')') depth--;
   }
   return depth === 0;
@@ -737,7 +754,12 @@ function afterParameters(line: string, open: number): string | undefined {
   for (let index = open; index < line.length; index++) {
     const char = line[index];
     if (char === "'" || char === '"' || char === '`') index = skipQuoted(line, index);
-    else if (char === '(') depth++;
+    else if (char === '/' && line[index + 1] === '/') break;
+    else if (char === '/' && line[index + 1] === '*') {
+      const close = line.indexOf('*/', index + 2);
+      if (close < 0) break;
+      index = close + 1;
+    } else if (char === '(') depth++;
     else if (char === ')' && --depth === 0) return line.slice(index + 1);
   }
   return undefined;
@@ -766,25 +788,42 @@ function closesIntoBody(lines: readonly string[], start: number, indent: number)
 }
 
 /**
- * A line or a tail after a parameter list, read once: the code before a
- * trailing `//` or block comment, and whether a `;` outside braces ends a
- * statement that more code follows (`foo(x); if (y) {`). Quoted text is skipped.
+ * A line or a tail after a parameter list, read once: the code with its comments removed: a block comment that closes on the
+ * line reads as a space, and a `//` or an unclosed `/*` ends it, and whether a
+ * `;` outside braces ends a statement that more code follows (`foo(x); if (y) {`). Quoted text is skipped.
  */
 function splitCode(text: string): { code: string; statementsFollow: boolean } {
   let depth = 0;
   let semicolon = -1;
+  let code = '';
+  let from = 0;
   let end = text.length;
   for (let index = 0; index < text.length; index++) {
     const char = text[index];
-    if (char === "'" || char === '"' || char === '`') index = skipQuoted(text, index);
-    else if (char === '/' && (text[index + 1] === '/' || text[index + 1] === '*')) {
+    if (char === "'" || char === '"' || char === '`') {
+      index = skipQuoted(text, index);
+    } else if (char === '/' && text[index + 1] === '/') {
       end = index;
       break;
-    } else if (char === '{') depth++;
-    else if (char === '}') depth--;
-    else if (char === ';' && depth === 0 && semicolon < 0) semicolon = index;
+    } else if (char === '/' && text[index + 1] === '*') {
+      const close = text.indexOf('*/', index + 2);
+      if (close < 0) {
+        end = index;
+        break;
+      }
+      // `run() /* entry */ {`: the comment reads as a space.
+      code += `${text.slice(from, index)} `;
+      from = close + 2;
+      index = close + 1;
+    } else if (char === '{') {
+      depth++;
+    } else if (char === '}') {
+      depth--;
+    } else if (char === ';' && depth === 0 && semicolon < 0) {
+      semicolon = code.length + index - from;
+    }
   }
-  const code = text.slice(0, end);
+  code += text.slice(from, Math.max(from, end));
   return {
     code,
     statementsFollow: semicolon >= 0 && code.slice(semicolon + 1).trim().length > 0,
@@ -793,12 +832,12 @@ function splitCode(text: string): { code: string; statementsFollow: boolean } {
 
 /** What is left of a C++ member's tail once its qualifiers are read off. */
 function cppTailRest(tail: string): string {
+  const qualifier = new RegExp(CPP_QUALIFIER.source, 'y');
   let position = 0;
   for (;;) {
-    CPP_QUALIFIER.lastIndex = position;
-    const match = CPP_QUALIFIER.exec(tail);
-    if (!match || CPP_QUALIFIER.lastIndex === position) break;
-    position = CPP_QUALIFIER.lastIndex;
+    qualifier.lastIndex = position;
+    if (!qualifier.exec(tail) || qualifier.lastIndex === position) break;
+    position = qualifier.lastIndex;
   }
   return tail.slice(position).trim();
 }
@@ -811,7 +850,8 @@ function isShallowDeclaration(
   inCppClass: boolean,
 ): boolean {
   const line = declarationText(lines[index], profile);
-  if (OUTLINE_KEYWORD.test(line) || OUTLINE_TEST_CHAIN.test(line)) return true;
+  if (OUTLINE_KEYWORD.test(line) || (profile.testChains && OUTLINE_TEST_CHAIN.test(line)))
+    return true;
   if (profile.cpp) return isCppMember(lines, index, indent, inCppClass);
   if (profile.keywordsOnly) return false;
   if (OUTLINE_ARROW_MEMBER.test(line)) return true;
@@ -859,11 +899,11 @@ function isCppMember(
   const line = lines[index];
   const head = CPP_METHOD_HEAD.exec(line);
   if (!head) return false;
-  // A call named in capitals with no return type is a macro, not a member:
-  // `Q_PROPERTY(int x READ x)`, `GENERATED_BODY()`, `DISALLOW_COPY_AND_ASSIGN(Foo);`.
-  if (head.groups?.returnType.trim() === '' && /^[A-Z][A-Z0-9_]*$/.test(head.groups.name)) {
-    return false;
-  }
+  // A macro: a capitalised name with an underscore (`Q_PROPERTY(int x READ x)`,
+  // `GENERATED_BODY()`, a field's `ABSL_GUARDED_BY(mu_)`) or a compiler
+  // builtin (`__attribute__((packed))`). Only a body makes one a declaration:
+  // `BOOST_AUTO_TEST_CASE(works) {`. `RGB(int r, int g, int b);` is a constructor.
+  const macro = /^(?:[A-Z][A-Z0-9]*_[A-Z0-9_]*|__\w+)$/.test(head.groups?.name ?? '');
   const open = head[0].length - 1;
   if (!line.slice(open).includes(')')) return closesIntoBody(lines, index, indent);
   const after = afterParameters(line, open);
@@ -874,8 +914,10 @@ function isCppMember(
   // A body: on the line (`int get() const { return n_; }`), opening at its
   // end, or after a constructor's initializer list (`Foo(int n) : n_(n) {`).
   if (rest.startsWith('{') || /^:.*\{/.test(rest)) return true;
-  // Nothing after the qualifiers: the body opens below.
-  if (rest.length === 0) return inClass || opensBodyBelow(lines, index, indent);
+  // Nothing after the qualifiers: the body opens below, or in a class body a
+  // declaration without `;` (but not a macro such as `Q_DISABLE_COPY(Foo)`).
+  if (rest.length === 0) return (inClass && !macro) || opensBodyBelow(lines, index, indent);
+  if (macro) return false;
   // In a class body a declaration counts too: `void set(int v);`,
   // `virtual void draw() = 0;`, and an initializer list that wraps.
   return inClass && /^(?:(?:=\s*(?:0|default|delete)\s*)?;|:.*)$/.test(rest);
@@ -906,22 +948,24 @@ function codeOutlineIndexes(lines: readonly string[], profile: OutlineProfile): 
     if (text?.[index]) continue;
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
-    const indent = line.length - line.trimStart().length;
-    // A closing line ends the blocks opened at its indentation or deeper: after
-    // `};` a class is no longer the parent of what follows.
-    if (/^[}\])]+[;,]?$/.test(trimmed)) {
-      close(indent);
-      continue;
-    }
     // A `*` line is a comment unless it opens a generator method: `*values() {`.
     if (/^(?:\/\/|\/\*|\*(?![A-Za-z_$#][\w$]*\s*[<(])|--|<!--)/.test(trimmed)) continue;
     if (profile.hashComments && /^#(?!!)/.test(trimmed)) continue;
+    const indent = line.length - line.trimStart().length;
+    // The line without a trailing comment (`{  // NOLINT`, `};  // class Foo`).
+    // Most lines hold no `/`, and are not split at all.
+    const code = trimmed.includes('/') ? splitCode(trimmed).code.trim() : trimmed;
+    // A closing line ends the blocks opened at its indentation or deeper: after
+    // `};` a class is no longer the parent of what follows.
+    if (/^[}\])]+[;,]?$/.test(code)) {
+      close(indent);
+      continue;
+    }
     // The closing line of a multi-line import is punctuation, not a declaration.
-    if (/^\} from\b/.test(trimmed)) continue;
+    if (/^\} from\b/.test(code)) continue;
     // An Allman-style brace belongs to the line above it. Only a file that
     // opens with one lists it.
-    if (trimmed === '{' && output.length > 0) continue;
-    const code = splitCode(trimmed).code.trimEnd();
+    if (code === '{' && output.length > 0) continue;
     // A preprocessor line or an access specifier neither closes nor opens a
     // block, so the class around it stays the parent of what follows.
     const transparent = OUTLINE_TRANSPARENT_LINE.test(code);
@@ -973,14 +1017,28 @@ function markdownOutlineIndexes(lines: readonly string[]): number[] {
   return output;
 }
 
+/** Whether the next character after spaces and tabs from `index` is a `:`. */
+function colonFollows(line: string, index: number): boolean {
+  let position = index;
+  while (line[position] === ' ' || line[position] === '\t') position++;
+  return line[position] === ':';
+}
+
 /**
- * How far a JSON line moves the nesting depth, and where its first character of code
- * sits (-1 for a line of comments or blanks). Brackets inside strings and `//` or block
- * comments do not count; `state.comment` carries a block comment over to the next line.
+ * A JSON line read from nesting depth `depth`: the depth after it, where its
+ * first character of code sits (-1 for a line of comments or blanks), and the
+ * depth of each key on it, quoted or JSON5-bare. Brackets inside strings and
+ * comments do not count; `state.comment` carries a block comment over to the
+ * next line.
  */
-function jsonScan(line: string, state: { comment: boolean }): { change: number; first: number } {
-  let change = 0;
+function jsonScan(
+  line: string,
+  state: { comment: boolean },
+  depth: number,
+): { depth: number; first: number; keyDepths: number[] } {
+  let current = depth;
   let first = -1;
+  const keyDepths: number[] = [];
   for (let index = 0; index < line.length; index++) {
     const char = line[index];
     if (state.comment) {
@@ -993,14 +1051,24 @@ function jsonScan(line: string, state: { comment: boolean }): { change: number; 
     } else if (char === '/' && line[index + 1] === '*') {
       state.comment = true;
       index++;
-    } else if (!/\s/.test(char)) {
+    } else if (line.charCodeAt(index) > 32) {
       if (first < 0) first = index;
-      if (char === '"' || char === "'") index = skipQuoted(line, index);
-      else if (char === '{' || char === '[') change++;
-      else if (char === '}' || char === ']') change--;
+      if (char === '"' || char === "'") {
+        index = skipQuoted(line, index);
+        if (colonFollows(line, index + 1)) keyDepths.push(current);
+      } else if (char === '{' || char === '[') {
+        current++;
+      } else if (char === '}' || char === ']') {
+        current--;
+      } else if (/[A-Za-z_$]/.test(char)) {
+        let end = index + 1;
+        while (end < line.length && /[\w$]/.test(line[end])) end++;
+        if (colonFollows(line, end)) keyDepths.push(current);
+        index = end - 1;
+      }
     }
   }
-  return { change, first };
+  return { depth: current, first, keyDepths };
 }
 
 /**
@@ -1018,26 +1086,27 @@ function jsonOutlineIndexes(lines: readonly string[]): number[] {
   // and whose first key is still to come.
   let elementOpen = false;
   for (let index = 0; index < lines.length; index++) {
-    const trimmed = lines[index].trim();
     const start = depth;
-    const { change, first } = jsonScan(lines[index], state);
-    depth += change;
-    if (first < 0) continue;
-    const key = JSON_KEY.test(trimmed);
-    const opensElement = depth === 2 && /\{\s*$/.test(trimmed);
+    const scan = jsonScan(lines[index], state, depth);
+    depth = scan.depth;
+    if (scan.first < 0) continue;
+    const code = lines[index].slice(scan.first).trimEnd();
+    const opensElement = depth === 2 && /\{\s*$/.test(code);
     if (start === 0) {
       output.push(index);
-      root = lines[index][first] === '[' ? 'array' : 'object';
-      elementOpen = root === 'array' && opensElement;
+      root = lines[index][scan.first] === '[' ? 'array' : 'object';
     } else if (root === 'object') {
-      if (start === 1 && key) output.push(index);
-    } else if (start === 2 && elementOpen && key) {
+      // `/* c */ "a": 1,` and `}, "c": 2,` hold a top-level key too.
+      if (scan.keyDepths.includes(1)) output.push(index);
+    } else if (elementOpen && scan.keyDepths.includes(2)) {
       output.push(index);
       elementOpen = false;
-    } else {
-      if (start === 1 && !opensElement && !/^[}\]]+,?$/.test(trimmed)) output.push(index);
-      if (opensElement) elementOpen = true;
+    } else if (start === 1 && !opensElement && !/^[}\]]+,?$/.test(code)) {
+      output.push(index);
     }
+    // An element opened at the end of this line waits for its first key; one
+    // that closed (`},`) takes its wait with it.
+    if (root === 'array') elementOpen = opensElement || (elementOpen && depth >= 2);
   }
   return output;
 }
