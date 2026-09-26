@@ -1603,7 +1603,7 @@ describe('AgentManager lifecycle', () => {
       expect(child).toMatchObject({ model: 'defaulted', effort: 'medium', effortExplicit: true });
     });
 
-    it("raises a chosen level below the catalog to its lowest listed level instead of dropping it", async () => {
+    it('raises a chosen level below the catalog to its lowest listed level instead of dropping it', async () => {
       const config = gatewayConfig({ upper: { effort: { levels: ['medium', 'high'] } } });
       config.settings.agents.profiles.explorer = { model: 'gateway/upper', effort: 'low' };
       const { child, effort } = await runChild(config);
@@ -1638,9 +1638,7 @@ describe('AgentManager lifecycle', () => {
         },
       });
       const blocker = await manager.spawn({ agent: 'explorer', prompt: 'blocker' });
-      await vi.waitFor(async () =>
-        expect((await manager.get(blocker.id))?.status).toBe('running'),
-      );
+      await vi.waitFor(async () => expect((await manager.get(blocker.id))?.status).toBe('running'));
       const queued = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
       // The session's default moves while the child waits in the queue; nothing chose `high`.
       manager.updateConfig({ ...config, effort: 'medium', defaultEffort: 'medium' });
@@ -2094,7 +2092,7 @@ describe('children re-driven after a restart', () => {
     expect(completions).toHaveLength(0);
   });
 
-  it("runs a follow-up queued on a /review agent after the restart, for the parent that sent it (#245)", async () => {
+  it('runs a follow-up queued on a /review agent after the restart, for the parent that sent it (#245)', async () => {
     const { record, completions, requests, result } = await restartAndCollect(
       undefined,
       async (manager) => {

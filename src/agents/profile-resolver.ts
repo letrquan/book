@@ -1,5 +1,11 @@
 import type { AgentConfig } from '../types/runtime.js';
 import type { ManagedAgentDef } from './profiles.js';
+import {
+  applyModelDefaults,
+  clampEffortToCatalog,
+  resolveEffortExplicit,
+  resolveModelProviderConfig,
+} from '../config.js';
 
 export interface ResolvedAgentProfile {
   definition: ManagedAgentDef;
@@ -61,5 +67,41 @@ export function resolveAgentProfile(
     effortExplicit: chosenEffort !== undefined || config.effortExplicit === true,
     maxTurns: override?.maxTurns ?? definition.maxTurns ?? config.maxTurns,
     color: override?.color ?? definition.color,
+  };
+}
+
+/**
+ * A managed child's config for its model and effort, from its resolved profile.
+ *
+ * - The model resolves through `settings.provider`, and its catalog `default` applies when no
+ *   level was chosen: the session's defaulted `high` is not a choice.
+ * - The effort is clamped to the child model's catalog. A chosen level below every listed level
+ *   is raised to the lowest one rather than dropped; a defaulted one is dropped, as the reducer's
+ *   is.
+ * - It is sent (`effortExplicit`) when it was chosen or the catalog lists it, and
+ *   `effortChosen` keeps the difference, so the child's own compaction does not count a level
+ *   its catalog merely listed as chosen.
+ */
+export function resolveChildAgentConfig(
+  base: AgentConfig,
+  profile: Pick<ResolvedAgentProfile, 'effort' | 'effortExplicit'>,
+  resolvedModel: string | undefined,
+): AgentConfig {
+  const chosen = profile.effortExplicit;
+  let config: AgentConfig = {
+    ...base,
+    effort: profile.effort,
+    effortExplicit: chosen,
+    effortChosen: chosen,
+  };
+  if (resolvedModel && resolvedModel !== 'unknown') {
+    config = applyModelDefaults(resolveModelProviderConfig(config, resolvedModel));
+  }
+  const effort = clampEffortToCatalog(config, config.effort, { raiseToLowest: chosen });
+  return {
+    ...config,
+    effort,
+    effortChosen: chosen,
+    effortExplicit: resolveEffortExplicit(config, effort, chosen),
   };
 }

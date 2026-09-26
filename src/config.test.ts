@@ -827,7 +827,7 @@ describe('loadConfig provider registry', () => {
     expect(resolveEffortExplicit(empty, 'medium', false)).toBe(false);
   });
 
-  it("does not carry a level the catalog merely listed into the compact model as chosen (#245)", () => {
+  it('does not carry a level the catalog merely listed into the compact model as chosen (#245)', () => {
     const config = defaultConfig({
       effort: 'high',
       // Sent, because a managed child's catalog listed it -- but nobody chose it.

@@ -11,12 +11,6 @@ import type { ToolCall, ToolDefinition, ToolResult, UserQuestionResponse } from 
 import { runAgentLoop } from '../agent/loop.js';
 import { finalAnswerText } from '../agent/final-answer.js';
 import { runCompact, usagePressureTokens } from '../agent/compact.js';
-import {
-  applyModelDefaults,
-  clampEffortToCatalog,
-  resolveEffortExplicit,
-  resolveModelProviderConfig,
-} from '../config.js';
 import { runHooks } from '../hooks.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { createRegistry } from '../tools/registry-core.js';
@@ -35,7 +29,11 @@ import {
   removeSnapshotRef,
 } from './git-isolation.js';
 import { withBuiltInAgents, type ManagedAgentDef } from './profiles.js';
-import { resolveAgentProfile, usableAgentEffort } from './profile-resolver.js';
+import {
+  resolveAgentProfile,
+  resolveChildAgentConfig,
+  usableAgentEffort,
+} from './profile-resolver.js';
 import { deriveAgentDisplayName, uniqueAgentDisplayName } from './naming.js';
 import { projectAgentCompletion, projectAgentSummary } from './projections.js';
 import { beginTerminalGeneration } from './completion-notification.js';
@@ -153,6 +151,19 @@ function errorKind(value: string | undefined): string | undefined {
   if (/abort|cancel|stop/i.test(value)) return 'aborted';
   if (/permission|capability denied/i.test(value)) return 'permission';
   return 'other';
+}
+
+/**
+ * A `/review` agent recorded by a build that predates `resumeAfterRestart` (#256): the only shape
+ * that build gave its reserved `reviewer` profile -- delivery suppressed, and no `Task` call.
+ */
+function isLegacyReviewRecord(record: AgentRecord): boolean {
+  return (
+    record.resumeAfterRestart === undefined &&
+    (record.profile ?? record.name) === 'reviewer' &&
+    record.notifyParentOnCompletion === false &&
+    !record.parentToolCallId
+  );
 }
 
 export class AgentManager {
@@ -430,11 +441,18 @@ export class AgentManager {
           // A host whose receiver died with the process (`/review` renders its agents'
           // output into its own report) gets no re-run: it would bill a result nobody
           // receives. The agent stays interrupted and says why.
-          if (record.resumeAfterRestart === false) {
-            record.error =
-              'Not resumed after the restart: the host that spawned it handles its result and exited with the process.';
-            this.persist(record);
-            continue;
+          if (record.resumeAfterRestart === false || isLegacyReviewRecord(record)) {
+            if ((record.pendingMessages?.length ?? 0) === 0) {
+              record.error =
+                'Not resumed after the restart: the host that spawned it handles its result and exited with the process.';
+              this.persist(record);
+              continue;
+            }
+            // The host's own run is not re-run, but a follow-up queued behind it came from the
+            // parent (AgentSend), which is still here to receive it: it runs as the parent's.
+            record.prompt = record.pendingMessages.shift()!;
+            record.notifyParentOnCompletion = undefined;
+            record.resumeAfterRestart = undefined;
           }
           record.status = 'queued';
           record.stopReason = undefined;
@@ -790,6 +808,13 @@ export class AgentManager {
       );
     }
     const resolvedProfile = resolveAgentProfile(definition, this.config, request.model);
+    // The level the child runs at, clamped to its model's catalog, so the record never
+    // reports one the child does not send.
+    const spawnEffort = resolveChildAgentConfig(
+      this.config,
+      resolvedProfile,
+      resolvedProfile.resolvedModel,
+    ).effort;
 
     let plan = request.planId ? this.plans.get(request.planId) : undefined;
     const autoCreatedPlan = !request.planId;
@@ -832,7 +857,8 @@ export class AgentManager {
       requestedModel: resolvedProfile.requestedModel,
       resolvedModel: resolvedProfile.resolvedModel,
       provider: resolvedProfile.provider,
-      effort: resolvedProfile.effort,
+      effort: spawnEffort,
+      effortChosen: resolvedProfile.effortExplicit,
       isolation: definition.isolation,
       name: definition.name,
       role: definition.role,
@@ -1457,37 +1483,26 @@ export class AgentManager {
         );
       }
       const resolvedProfile = resolveAgentProfile(definition, this.config, record.requestedModel);
-      const resolvedEffort = usableAgentEffort(record.effort) ?? resolvedProfile.effort;
-      let agentConfig: AgentConfig = {
-        ...this.config,
-        workspace: record.worktree ?? this.config.workspace,
-        maxTurns: resolvedProfile.maxTurns,
-        effort: resolvedEffort,
-        effortExplicit: resolvedEffort !== undefined || this.config.effortExplicit,
-        autoCompactEnabled: true,
-        memoryContext: undefined,
-      };
-      if (record.resolvedModel && record.resolvedModel !== 'unknown') {
-        agentConfig = applyModelDefaults(
-          resolveModelProviderConfig(agentConfig, record.resolvedModel),
-        );
+      // A level chosen at spawn is kept for every later run of this agent. A defaulted one is
+      // resolved again, so a queued or re-run child follows the settings in force now instead of
+      // carrying an old default as if someone had chosen it.
+      const spawnChoice =
+        record.effortChosen === true ? usableAgentEffort(record.effort) : undefined;
+      const agentConfig = resolveChildAgentConfig(
+        {
+          ...this.config,
+          workspace: record.worktree ?? this.config.workspace,
+          maxTurns: resolvedProfile.maxTurns,
+          autoCompactEnabled: true,
+          memoryContext: undefined,
+        },
+        spawnChoice ? { effort: spawnChoice, effortExplicit: true } : resolvedProfile,
+        record.resolvedModel,
+      );
+      if (record.effort !== agentConfig.effort) {
+        record.effort = agentConfig.effort;
+        this.persist(record);
       }
-      // The effort is clamped to the child model's catalog, as the reducer's is: `--effort
-      // max` must not reach a model that lists nothing above `high`. Whether the request
-      // sends it follows the reducer's rule: a level chosen for this child, by its profile
-      // or for the session, or one its model's catalog lists. The session's default `high`
-      // is neither, and a strict endpoint answers it on a model that does not reason with a
-      // 400 (#245).
-      const childEffort = clampEffortToCatalog(agentConfig, agentConfig.effort);
-      agentConfig = {
-        ...agentConfig,
-        effort: childEffort,
-        effortExplicit: resolveEffortExplicit(
-          agentConfig,
-          childEffort,
-          resolvedProfile.effortExplicit,
-        ),
-      };
       let loopError: string | undefined;
       let terminalOutcome: AgentTerminalOutcome | undefined;
       const startActivity = (

@@ -516,8 +516,15 @@ describe('runMemoryExtraction', () => {
     // The whole answer arrived before the limit: the session is read.
     const whole = source({ s1: { meta: meta('s1'), transcript: talk } });
     expect(
-      (await runMemoryExtraction({ config: config(), sessions: whole, bookRoot, nowMs: NOW, provider: cutOff(SAVE) }))
-        .processed,
+      (
+        await runMemoryExtraction({
+          config: config(),
+          sessions: whole,
+          bookRoot,
+          nowMs: NOW,
+          provider: cutOff(SAVE),
+        })
+      ).processed,
     ).toEqual([{ id: 's1', written: 1 }]);
 
     // A session whose every reply is cut off is given up on as truncated, not as a provider failure.

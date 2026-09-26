@@ -99,6 +99,12 @@ export interface AgentRecord {
   resolvedModel?: string;
   provider?: string;
   effort?: string;
+  /**
+   * Whether `effort` was chosen for this agent at spawn (its profile or definition, or the
+   * session's own choice). Only a chosen level is kept for a later run; a defaulted one is
+   * resolved again, from the settings in force when that run starts.
+   */
+  effortChosen?: boolean;
   isolation?: AgentIsolation;
   currentActivity?: AgentActivitySummary;
   /** @deprecated Use profile. Retained for persisted version 1 compatibility. */

@@ -269,13 +269,20 @@ function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
   };
 }
 
+/** Whether a human chose the config's effort level; see `AgentConfig.effortChosen`. */
+export function isEffortChosen(
+  config: Pick<AgentConfig, 'effortChosen' | 'effortExplicit'>,
+): boolean {
+  return config.effortChosen ?? config.effortExplicit === true;
+}
+
 export function applyModelDefaults(config: AgentConfig): AgentConfig {
   const maxTokens = config.maxTokensExplicit
     ? config.maxTokens
     : (config.modelInfo?.maxOutputTokens ?? config.defaultMaxTokens ?? config.maxTokens);
 
   let effort = config.effort;
-  if (!config.effortExplicit) {
+  if (!isEffortChosen(config)) {
     if (config.modelInfo?.effort === false) {
       effort = undefined;
     } else if (typeof config.modelInfo?.effort === 'object' && config.modelInfo.effort.default) {
@@ -369,19 +376,24 @@ export function resolveModelProviderConfig(
 
 /**
  * Clamp an effort down to the highest level the model's catalog lists at or
- * below it. A catalog that disables effort, or lists no level at or below it,
- * gets none: an unlisted level is a 400 on a strict endpoint, and the clamp
- * never goes back up. A model without a catalog entry, or one whose entry lists
- * no levels, keeps the effort as asked.
+ * below it. A catalog that disables effort gets none. A catalog entry without a
+ * `levels` list, and a model without a catalog entry, keep the effort as asked;
+ * an empty `levels` list exposes no choices, and gets none. When the catalog
+ * lists no level at or below it, a defaulted effort gets none -- an unlisted
+ * level is a 400 on a strict endpoint, and the clamp never goes back up -- while
+ * `raiseToLowest` (a level someone chose) takes the lowest listed level instead,
+ * the nearest the model offers to what was asked.
  */
 export function clampEffortToCatalog(
   config: Pick<AgentConfig, 'model' | 'modelSelection' | 'modelInfo'>,
   effort: AgentConfig['effort'],
+  options: { raiseToLowest?: boolean } = {},
 ): AgentConfig['effort'] {
   const levels = getAvailableEffortLevels(config);
   if (levels === null || effort === undefined) return undefined;
   const ceiling = EFFORT_LEVELS.indexOf(effort);
-  return levels.filter((level) => EFFORT_LEVELS.indexOf(level) <= ceiling).at(-1);
+  const clamped = levels.filter((level) => EFFORT_LEVELS.indexOf(level) <= ceiling).at(-1);
+  return clamped ?? (options.raiseToLowest ? levels[0] : undefined);
 }
 
 /**
@@ -409,17 +421,20 @@ function compactModelEffort(config: AgentConfig): AgentConfig['effort'] {
  * its model's catalog lists that level. With neither -- the default `gpt-4o`, or
  * any model without a catalog entry -- it carries none, like the main agent's.
  * Every request on the compact model, and every managed child, decides by this
- * one rule.
+ * one rule. A catalog entry with no `levels` list accepts every level, as
+ * `getAvailableEffortLevels` reads it.
  */
 export function resolveEffortExplicit(
-  config: Pick<AgentConfig, 'modelInfo'>,
+  config: Pick<AgentConfig, 'model' | 'modelSelection' | 'modelInfo'>,
   effort: AgentConfig['effort'],
   chosen: boolean,
 ): boolean {
   if (effort === undefined) return false;
   if (chosen) return true;
-  const catalog = config.modelInfo?.effort;
-  return typeof catalog === 'object' && (catalog.levels?.includes(effort) ?? false);
+  return (
+    typeof config.modelInfo?.effort === 'object' &&
+    (getAvailableEffortLevels(config)?.includes(effort) ?? false)
+  );
 }
 
 /**
@@ -437,16 +452,14 @@ export function resolveCompactModelConfig(config: AgentConfig): AgentConfig {
       ? config
       : applyModelDefaults(resolveModelProviderConfig(config, compactModel));
   const effort = compactModelEffort(resolved);
+  // A level was chosen by `compactEffort` or for the session. A level a managed child's catalog
+  // merely listed is sent to the child's model, but is not a choice the compact model inherits.
+  const chosen = resolved.compactEffort !== undefined || isEffortChosen(resolved);
   return {
     ...resolved,
     effort,
-    // A level was chosen by `compactEffort` or an explicit session effort; with
-    // neither, the request sends one only when its catalog lists it.
-    effortExplicit: resolveEffortExplicit(
-      resolved,
-      effort,
-      resolved.compactEffort !== undefined || resolved.effortExplicit === true,
-    ),
+    effortChosen: chosen,
+    effortExplicit: resolveEffortExplicit(resolved, effort, chosen),
   };
 }
 
