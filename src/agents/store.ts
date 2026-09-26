@@ -17,7 +17,7 @@ import { createDebugLogger } from '../debug-log.js';
 import { resolveBookHome } from '../book-home.js';
 import { deriveAgentDisplayName } from './naming.js';
 import { beginTerminalGeneration } from './completion-notification.js';
-import { migrateSpawnerClaim } from './spawner-claim.js';
+import { inSpawnerRun, migrateSpawnerClaim } from './spawner-claim.js';
 import {
   AtomicJsonWriter,
   type AtomicJsonWriterOptions,
@@ -48,6 +48,12 @@ interface StoreOwnerMetadata {
 
 interface PersistedAgentRecord extends AgentRecord {
   _store?: StoreOwnerMetadata;
+  /**
+   * The record-level pair a build from before per-run claims reads. Written from the claim for
+   * as long as the claim covers the run the record is on; see {@link legacyDeliveryFlags}.
+   */
+  notifyParentOnCompletion?: boolean;
+  resumeAfterRestart?: boolean;
 }
 
 interface InstanceLease extends StoreOwnerMetadata {
@@ -150,6 +156,23 @@ function withoutStoreMetadata(record: PersistedAgentRecord): AgentRecord {
   const publicRecord = { ...record };
   delete publicRecord._store;
   return publicRecord;
+}
+
+/**
+ * The record-level delivery pair a build from before per-run claims reads, taken from the claim
+ * for as long as the claim covers the run the record is on. An older Book shares this store: with
+ * neither flag written, it treats a claimed `/review` agent as an ordinary one, re-narrates the
+ * review, and re-runs its tasks. Past the claim the flags are absent, which is what that build
+ * wants too. Written to the file only; the record in memory is the claim.
+ */
+function legacyDeliveryFlags(
+  record: Pick<AgentRecord, 'runSequence' | 'spawnerClaim'>,
+): Pick<PersistedAgentRecord, 'notifyParentOnCompletion' | 'resumeAfterRestart'> {
+  const claim = inSpawnerRun(record) ? record.spawnerClaim : undefined;
+  return {
+    ...(claim?.notifyParent === false ? { notifyParentOnCompletion: false } : {}),
+    ...(claim?.resumeAfterRestart === false ? { resumeAfterRestart: false } : {}),
+  };
 }
 
 function compareRevision(left: LogicalRevision, right: LogicalRevision): number {
@@ -707,8 +730,12 @@ export class AgentStore {
       }
     }
     const owner = this.ownerMetadata();
-    const detailed = this.persistedAgent(persisted, owner);
-    const summary = this.persistedAgent(this.agentSummary(persisted), owner);
+    const legacy = legacyDeliveryFlags(agent);
+    const detailed: PersistedAgentRecord = { ...this.persistedAgent(persisted, owner), ...legacy };
+    const summary: PersistedAgentRecord = {
+      ...this.persistedAgent(this.agentSummary(persisted), owner),
+      ...legacy,
+    };
     if (options.required) {
       this.cancelPendingWrite(this.agentPath(agent.id));
       this.cancelPendingWrite(this.agentSummaryPath(agent.id));

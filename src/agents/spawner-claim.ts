@@ -41,7 +41,10 @@ export function resumesAfterRestart(record: ClaimedRun): boolean {
  */
 export function advanceRun(record: ClaimedRun, continuesSpawnerRun: boolean): void {
   const continuing = continuesSpawnerRun && inSpawnerRun(record);
-  record.runSequence = (record.runSequence ?? 0) + 1;
+  // A record written before runs were numbered is on run 1 (`run()` numbers it that way when it
+  // starts), so the next run is 2. Numbering it 1 would repeat a run, and land inside a claim
+  // whose lowest covered run is 1.
+  record.runSequence = (record.runSequence ?? 1) + 1;
   if (continuing && record.spawnerClaim) {
     record.spawnerClaim.throughRunSequence = record.runSequence;
   }
@@ -74,18 +77,16 @@ interface LegacyDeliveryFlags {
 export function migrateSpawnerClaim<T extends ClaimedRun>(record: T & LegacyDeliveryFlags): T {
   const { notifyParentOnCompletion, resumeAfterRestart, ...rest } = record;
   const migrated = rest as unknown as T;
-  if (
-    migrated.spawnerClaim !== undefined ||
-    (notifyParentOnCompletion !== false && resumeAfterRestart !== false)
-  ) {
+  const claim = spawnerClaimFor({ notifyParentOnCompletion, resumeAfterRestart });
+  if (migrated.spawnerClaim !== undefined || claim === undefined) {
     return migrated;
   }
+  // A record that never started claims its first run, and is on it: leaving `runSequence`
+  // undefined would have `advanceRun` number the next run 1, inside the claim.
+  const throughRunSequence = Math.max(migrated.runSequence ?? 0, claim.throughRunSequence);
   return {
     ...migrated,
-    spawnerClaim: {
-      throughRunSequence: Math.max(migrated.runSequence ?? 0, 1),
-      ...(notifyParentOnCompletion === false ? { notifyParent: false as const } : {}),
-      ...(resumeAfterRestart === false ? { resumeAfterRestart: false as const } : {}),
-    },
+    runSequence: migrated.runSequence ?? throughRunSequence,
+    spawnerClaim: { ...claim, throughRunSequence },
   };
 }

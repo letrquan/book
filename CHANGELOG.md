@@ -304,16 +304,20 @@ All notable changes to this project are documented in this file.
   carries a `spawnerClaim` over a range of run numbers, and runs are numbered as they are queued.
   The spawner keeps its first run and any follow-up it still waits on; every other run reports to
   the parent with nothing to clear. Records written before this read their flags as a claim on the
-  run they were on.
-  - **A restart runs the follow-ups sent to a `/review` agent.** With `agents.resumeInterrupted`
-    on, a restart left the review's own run interrupted and dropped the follow-ups sent to it: the
-    one running after that run, and any queued behind it. The review's task still is not re-run,
-    since its report died with the process. The follow-ups now run, and report to the parent that
-    sent them.
-  - **With `agents.resumeInterrupted` off, unrun follow-ups are named.** Nothing re-drives an
-    interrupted agent then, and the follow-ups sent to it were dropped without a word. Its error now
-    says how many were not run. The parent sees that in the interrupted completion, unless it had
-    already received that completion.
+  run they were on, and a record still writes both old flags for as long as the claim covers the run
+  it is on, so an older Book sharing the store keeps reading a claimed agent as the host's.
+  - **A restart does not re-run the follow-ups sent to a `/review` agent; it tells the parent how
+    many went unrun.** Mid-run the transcript holds the interrupted run's answers but not the task
+    that opened it, which is written only when the run ends, so re-running a follow-up answered
+    with the review missing from its own context. The review's task is still not re-run, since its
+    report died with the process. The follow-ups were the parent's runs, so the parent is told how
+    many were not run — in a completion of its own, which it receives even though the review's own
+    run never was.
+  - **The parent is told the same way everywhere else a run is not resumed.** Nothing re-drives an
+    interrupted agent with `agents.resumeInterrupted` off, or one that was interrupted while waiting
+    for an answer or an approval, and in both cases its error now says how many follow-ups were not
+    run. The parent sees that in the interrupted completion when it has not had that one yet, and
+    otherwise in a new completion the record opens past its claim.
 - **Memory extraction keeps its lock, and keeps a whole answer that reached the output limit**
   (#245). On the session's retry policy one session's provider call can take far longer than the
   extraction lock's 30-minute lifetime, and a second Book session then took the lock over and

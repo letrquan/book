@@ -641,6 +641,40 @@ describe('AgentStore recovery of host-owned agents', () => {
     } as unknown as AgentRecord;
   }
 
+  /**
+   * An older Book build shares this store and knows only the record-level pair, so a claimed
+   * agent has to keep reading as the host's to it for as long as the claim covers the run the
+   * record is on.
+   */
+  it('writes the legacy flag pair while the claim covers the run, and drops it past the claim', () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const recordPath = join(root, 'repo', 'records', 'reviewer-5.json');
+    const store = new AgentStore('repo', root, true, {
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 12345,
+      hostname: 'test-host',
+      now: () => 1,
+    });
+    store.saveAgent({ ...reviewerRecord('reviewer-5'), runSequence: 1 });
+
+    const claimed = JSON.parse(readFileSync(recordPath, 'utf8'));
+    expect(claimed.notifyParentOnCompletion).toBe(false);
+    expect(claimed.resumeAfterRestart).toBe(false);
+    // The in-memory record is the claim; the pair exists only for the build that reads it.
+    expect(store.loadAgent('reviewer-5')).not.toHaveProperty('notifyParentOnCompletion');
+    expect(store.loadAgent('reviewer-5')).not.toHaveProperty('resumeAfterRestart');
+
+    // A follow-up the parent sent after the review took its result: run 2, past the claim.
+    store.saveAgent({ ...reviewerRecord('reviewer-5'), runSequence: 2 });
+
+    const pastClaim = JSON.parse(readFileSync(recordPath, 'utf8'));
+    expect(pastClaim).not.toHaveProperty('notifyParentOnCompletion');
+    expect(pastClaim).not.toHaveProperty('resumeAfterRestart');
+    expect(store.loadAgent('reviewer-5')).not.toHaveProperty('notifyParentOnCompletion');
+    expect(store.loadAgent('reviewer-5')).not.toHaveProperty('resumeAfterRestart');
+    store.dispose();
+  });
+
   it('reads a legacy flag pair as a claim on the run the record was on', () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const store = new AgentStore('repo', root, true, {

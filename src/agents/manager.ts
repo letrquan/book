@@ -431,27 +431,37 @@ export class AgentManager {
           // A user stop stays stopped; only process death is resumable, and only
           // for work that had not reached a terminal decision of its own.
           if (record.stopReason !== 'process_exit') continue;
-          if (!['queued', 'starting', 'running'].includes(record.resumedFromStatus ?? '')) continue;
+          if (!['queued', 'starting', 'running'].includes(record.resumedFromStatus ?? '')) {
+            // A wait for an answer or an approval is a run in flight rather than one that
+            // decided anything, and it is not one this start re-runs either. The follow-ups
+            // behind it were the parent's, so the parent is told how many went unrun.
+            this.announceUnrunFollowUps(
+              record,
+              'Interrupted by a restart while waiting for an answer, and not resumed.',
+            );
+            record.resumable = false;
+            continue;
+          }
           record.resumable = false;
           // A Task child's run is handed back by Task itself, which died with the process, so
           // its re-run is the parent's. Any other host that suppresses delivery still owns its
           // agents' output, and keeps its claim over the re-run.
-          let continuesSpawnerRun = record.parentToolCallId === undefined;
+          const continuesSpawnerRun = record.parentToolCallId === undefined;
           if (!resumesAfterRestart(record)) {
             // The spawner's run is not re-run: its receiver (`/review` renders its agents'
             // output into its own report) died with the process, so the result would reach
-            // nobody. Follow-ups sent to the agent are another matter: whoever sent them is the
-            // parent, which is still here, so they run, as a run of the parent's.
-            const followUps = unrunFollowUps(record);
-            if (followUps.length === 0) {
-              record.error =
-                'Not resumed after the restart: the host that spawned it handles its result and exited with the process.';
+            // nobody. Mid-run the transcript holds this run's answers but not the task that
+            // opened it, which is written only when the run ends, so re-running a follow-up
+            // here would answer with the review missing from its own context.
+            const reason =
+              'Not resumed after the restart: the host that spawned it handles its result and exited with the process.';
+            if (unrunFollowUps(record).length === 0) {
+              record.error = reason;
               this.persist(record);
-              continue;
+            } else {
+              this.announceUnrunFollowUps(record, reason);
             }
-            record.prompt = followUps[0]!;
-            record.pendingMessages = followUps.slice(1);
-            continuesSpawnerRun = false;
+            continue;
           }
           advanceRun(record, continuesSpawnerRun);
           record.status = 'queued';
@@ -468,15 +478,10 @@ export class AgentManager {
         // the error there.
         for (const record of this.agents.values()) {
           if (!record.resumable || record.stopReason !== 'process_exit') continue;
-          const unrun = unrunFollowUps(record).length;
-          if (unrun === 0) continue;
-          const error =
-            `Interrupted by a restart and not resumed: agents.resumeInterrupted is off. ` +
-            `${unrun} follow-up${unrun === 1 ? '' : 's'} sent to it ${unrun === 1 ? 'was' : 'were'} not run; ` +
-            `send ${unrun === 1 ? 'it' : 'them'} again.`;
-          if (record.error === error) continue;
-          record.error = error;
-          this.persist(record);
+          this.announceUnrunFollowUps(
+            record,
+            'Interrupted by a restart and not resumed: agents.resumeInterrupted is off.',
+          );
         }
       }
       this.exitHandler = () => {
@@ -510,6 +515,31 @@ export class AgentManager {
       process.once('exit', this.exitHandler);
     })();
     return this.initialized;
+  }
+
+  /**
+   * Tell the parent how many follow-ups an interrupted run left unrun. They were the parent's
+   * runs whatever the interrupted run was, and nothing re-runs them: the run they were queued
+   * behind is not the one the parent would have had answered from. Where a completion of the
+   * interrupted run is still outstanding the new error rides out on it; otherwise the record
+   * takes a new run past its claim, which the parent receives and which is a terminal result it
+   * can show.
+   */
+  private announceUnrunFollowUps(record: AgentRecord, reason: string): void {
+    const unrun = unrunFollowUps(record).length;
+    if (unrun === 0) return;
+    const note =
+      `${unrun} follow-up${unrun === 1 ? '' : 's'} sent to it ` +
+      `${unrun === 1 ? 'was' : 'were'} not run; send ${unrun === 1 ? 'it' : 'them'} again.`;
+    if (record.error?.includes(note)) return;
+    record.error =
+      record.error === undefined ? `${reason} ${note}` : `${record.error} ${reason} ${note}`;
+    if ((record.completionSequence ?? 0) > (record.completionDeliveredSequence ?? 0)) {
+      this.persist(record);
+      return;
+    }
+    advanceRun(record, false);
+    this.persist(record, 'result');
   }
 
   private hydrateAgent(agentId: string): AgentRecord | undefined {
@@ -1052,7 +1082,14 @@ export class AgentManager {
       return this.recordForReturn(record);
     }
 
-    if (['queued', 'starting', 'running'].includes(record.status)) {
+    // A run that is in flight takes the message as its next run. A wait for a permission or for
+    // an answer nobody is there to give is still inside that run, so starting another one here
+    // would run two loops against the same record.
+    const awaitingAnswer = record.status === 'waiting_input' && !record.pendingQuestion;
+    if (
+      ['queued', 'starting', 'running', 'waiting_permission'].includes(record.status) ||
+      awaitingAnswer
+    ) {
       record.pendingMessages.push(trimmed);
       this.persist(record);
       return this.recordForReturn(record);
