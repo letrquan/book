@@ -6,6 +6,21 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **System prompt v5** (`book-system-prompt-v5`): the prompt and the tool descriptions stop
+  contradicting each other. `TaskCreate` no longer says to use it instead of `TodoWrite`; both
+  descriptions now say the todo list is the one shown in every turn's `<session-state>`.
+  `MemorySave` no longer asks for conventions the code already shows, matching the kernel's memory
+  rules. A subagent, or a session with `agents.mode: "off"`, no longer gets the line about
+  batching `AgentSpawn` calls it cannot make. The `Bash` description is a complete sentence.
+- **`ApplyPatch` matches hunks in order.** A hunk whose context occurs more than once in the file
+  is now accepted when exactly one occurrence lies at or after the end of the previous hunk. This
+  is the shape of most real `ambiguous_patch_context` failures: a later hunk whose context is a
+  function tail that also ends an earlier function. Replaying the 17 such failures that could be
+  reconstructed from real sessions, 5 now apply, each at the location the model's successful retry
+  chose where that could be checked; the other 12 still have several candidates after the previous
+  hunk and are still refused, since Book never picks between candidates. The ambiguous error now
+  reports `matchesAfterPreviousHunk` and asks for the enclosing function signature, and the tool
+  description states the matching rule and that `@@` takes no anchor text.
 - **Settings validation runs on Zod 4** (#88). Book moves from Zod 3.25 to Zod 4.6. Defaults, and
   which fields a rejected document names, are unchanged; `src/settings.test.ts` now pins them,
   including a check that no object schema is defaulted in the way Zod 4 would leave bare. What

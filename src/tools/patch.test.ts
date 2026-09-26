@@ -305,3 +305,88 @@ describe('ApplyPatch', () => {
     expect((await stat(file)).mode & 0o777).toBe(0o755);
   });
 });
+
+describe('ApplyPatch hunk matching', () => {
+  it('applies a later hunk whose context repeats earlier in the file when it is unique after the previous hunk', async () => {
+    const { root, context } = await fixture();
+    const file = join(root, 'tails.txt');
+    await writeFile(file, 'a\nend\nb\nend\n');
+    const result = await execute(
+      {
+        patch:
+          '*** Begin Patch\n*** Update File: tails.txt\n@@\n-b\n+B\n@@\n-end\n+END\n*** End Patch',
+      },
+      context,
+    );
+    expect(result.structuredError).toBeUndefined();
+    expect(await readFile(file, 'utf8')).toBe('a\nend\nB\nEND\n');
+  });
+
+  it('applies the Go function-tail shape that real sessions failed on', async () => {
+    const { root, context } = await fixture();
+    const file = join(root, 'store.go');
+    const tail = '\tif err := s.flush(); err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n';
+    await writeFile(
+      file,
+      `func (s *Store) Save() error {\n${tail}\n// Sync flushes.\nfunc (s *Store) Sync() error {\n\treturn nil\n}\n\nfunc (s *Store) Close() error {\n\tdefer s.file.Close()\n${tail}`,
+    );
+    const result = await execute(
+      {
+        patch: [
+          '*** Begin Patch',
+          '*** Update File: store.go',
+          '@@',
+          '-// Sync flushes.',
+          '+// Sync flushes pending writes.',
+          '@@',
+          ' \tif err := s.flush(); err != nil {',
+          ' \t\treturn err',
+          ' \t}',
+          '+\ts.file = nil',
+          ' \treturn nil',
+          ' }',
+          '*** End Patch',
+        ].join('\n'),
+      },
+      context,
+    );
+    expect(result.structuredError).toBeUndefined();
+    const text = await readFile(file, 'utf8');
+    expect(text.split('s.file = nil').length).toBe(2);
+    expect(text.indexOf('s.file = nil')).toBeGreaterThan(text.indexOf('func (s *Store) Close'));
+  });
+
+  it('still rejects a hunk that repeats after the previous hunk, without changing the file', async () => {
+    const { root, context } = await fixture();
+    const file = join(root, 'tails.txt');
+    await writeFile(file, 'a\nend\nb\nend\nc\nend\n');
+    const result = await execute(
+      {
+        patch:
+          '*** Begin Patch\n*** Update File: tails.txt\n@@\n-a\n+A\n@@\n-end\n+END\n*** End Patch',
+      },
+      context,
+    );
+    expect(result.structuredError?.code).toBe('ambiguous_patch_context');
+    expect(result.structuredError?.details).toMatchObject({
+      hunkIndex: 2,
+      matches: 3,
+      matchesAfterPreviousHunk: 3,
+    });
+    expect(await readFile(file, 'utf8')).toBe('a\nend\nb\nend\nc\nend\n');
+  });
+
+  it('applies a globally unique hunk that precedes the previous hunk', async () => {
+    const { root, context } = await fixture();
+    const file = join(root, 'order.txt');
+    await writeFile(file, 'x\ny\nz\n');
+    const result = await execute(
+      {
+        patch: '*** Begin Patch\n*** Update File: order.txt\n@@\n-z\n+Z\n@@\n-x\n+X\n*** End Patch',
+      },
+      context,
+    );
+    expect(result.structuredError).toBeUndefined();
+    expect(await readFile(file, 'utf8')).toBe('X\ny\nZ\n');
+  });
+});

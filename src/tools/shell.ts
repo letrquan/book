@@ -457,7 +457,7 @@ export const shellTools: ToolDefinition[] = [
     name: 'Bash',
     argumentAliases: { runInBackground: 'run_in_background' },
     description:
-      'Execute a command in the session shell named by the Harness section of the system prompt (Git Bash, PowerShell, /bin/sh, or cmd.exe) in the workspace',
+      'Execute a command in the workspace, in the session shell named by the Harness section of the system prompt (Git Bash, PowerShell, /bin/sh, or cmd.exe).',
     timeoutMs: DEFAULT_BASH_TIMEOUT_MS,
     parameters: {
       type: 'object',

@@ -208,7 +208,7 @@ export const memorySaveTools: ToolDefinition[] = [
   {
     name: 'MemorySave',
     description:
-      'Save or delete durable repository and user facts in the project memory store. Save memories when the user corrects you, says "remember", or you learn persistent project conventions. Check <memory-index> first and supply slug to update existing entries instead of duplicating. Formatting: title, then body as the fact followed by "Why:" and "How to apply:".',
+      'Save or delete durable repository and user facts in the project memory store. Save when the user corrects you, states a convention or decision the code does not show, or says "remember"; never save what the code, git history, or CLAUDE.md/AGENTS.md already record. Check <memory-index> first and supply slug to update existing entries instead of duplicating. Formatting: title, then body as the fact followed by "Why:" and "How to apply:".',
     parameters: {
       type: 'object',
       properties: {

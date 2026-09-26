@@ -101,7 +101,7 @@ export const todoTools: ToolDefinition[] = [
   {
     name: 'TodoWrite',
     description:
-      'Write the full agent todo list. Use this to track multi-step work: set status to in_progress for the one task you are currently doing, completed for finished steps, pending for upcoming. Only one todo may be in_progress at a time. Pass the ENTIRE updated list each call (this replaces, not appends).',
+      "Write the full agent todo list. The list is shown back to you in every turn's <session-state> block, so use it to track multi-step work: set status to in_progress for the one task you are currently doing, completed for finished steps, pending for upcoming. Only one todo may be in_progress at a time. Pass the ENTIRE updated list each call (this replaces, not appends).",
     parameters: {
       type: 'object',
       properties: {
