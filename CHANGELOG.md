@@ -290,6 +290,8 @@ All notable changes to this project are documented in this file.
   provider reports cache counts, as it already was on the Anthropic path, with the cache counts in
   `cacheReadInputTokens` and `cacheCreationInputTokens`. The token totals `/cost`, `/usage` and the
   usage panel show now include cache tokens on every provider.
+  A provider that omits `total_tokens` no longer reads as zero context pressure, which kept
+  usage-driven compaction from ever firing: the total defaults to prompt plus completion.
 - **A managed child's effort follows its model's catalog, and only a real choice sticks** (#245).
   - **Catalog default:** with no level chosen, a child ran at the session's defaulted `high`
     rather than its model's catalog `default`, and a catalog entry with a `default` but no
