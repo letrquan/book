@@ -11,7 +11,7 @@ import {
   writeSync,
 } from 'fs';
 import { basename, dirname, join } from 'path';
-import type { ZodIssue } from 'zod';
+import type { core } from 'zod';
 import { deleteNestedValue, setNestedValue } from './cli/utils.js';
 import { bookSettingsSchema } from './settings.js';
 import { redactSettingValue } from './settings-redaction.js';
@@ -48,7 +48,7 @@ export function formatSettingsKeyHelp(heading = 'Supported top-level settings:')
   return `${heading}\n${SETTINGS_TOP_LEVEL_KEYS.map((key) => `  ${key}`).join('\n')}`;
 }
 
-function issueDiagnostic(path: string, issue: ZodIssue): SettingsDiagnostic {
+function issueDiagnostic(path: string, issue: core.$ZodIssue): SettingsDiagnostic {
   return {
     path,
     issuePath: issue.path.join('.'),

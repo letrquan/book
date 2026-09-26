@@ -16,6 +16,7 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
 import type { Message, Usage } from '../types/messages.js';
 import { askUserQuestionTools } from '../tools/ask-user-question.js';
+import { fileTools } from '../tools/file.js';
 import { toolSuccess } from '../tools/result.js';
 import { readToolUseRecords } from '../tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
@@ -6255,7 +6256,7 @@ describe('content filter and upstream error recoveries', () => {
 
       expect(DEFAULT_SETTINGS.retry.streamReissueAttempts).toBe(3);
       expect(fetchCalls, String(status)).toBe(4);
-      expect(retries, String(status)).toEqual(['transport', 'transport', 'transport']);
+      expect(retries, String(status)).toEqual(['reissue', 'reissue', 'reissue']);
       expect(outcomes[0], String(status)).toMatchObject({
         status: 'failed',
         reason: 'provider_error',
@@ -7578,5 +7579,211 @@ describe('the last-resort compaction, review round 3 (#238, #244)', () => {
     expect(calls.count).toBe(0);
     const assistant = result.find((message) => message.id === 'r4-assistant');
     expect(assistant?.toolResults?.[0]?.content).toHaveLength(12_000);
+  });
+});
+
+describe('runAgentLoop — the clip notice names a file Read can open (#248)', () => {
+  it('lets Read open the full output a clipped result was saved to', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-spill-'));
+    const toolOutputRoot = mkdtempSync(join(tmpdir(), 'book-loop-spill-out-'));
+    const strayPath = join(toolOutputRoot, 'another-session.txt').split('\\').join('/');
+    writeFileSync(strayPath, 'secret from another project');
+    let providerTurn = 0;
+    let spillPath = '';
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        providerTurn++;
+        if (providerTurn === 1) {
+          yield { type: 'tool_call', toolCall: { id: 'big_1', name: 'Big', arguments: {} } };
+        } else if (providerTurn === 2) {
+          const clipped = String(messages.at(-1)?.content ?? '');
+          spillPath = /Full output: (\S+?)\]/.exec(clipped)?.[1] ?? '';
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'read_1', name: 'Read', arguments: { file_path: spillPath, limit: 5 } },
+          };
+          // Another project's clipped output in the same directory stays out of reach.
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'read_2', name: 'Read', arguments: { file_path: strayPath } },
+          };
+        } else {
+          yield { type: 'text', content: 'read it' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    registry.registerAll(fileTools);
+    registry.register({
+      name: 'Big',
+      description: 'Return a large result',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => toolSuccess(`first line\n${'x'.repeat(100_000)}`),
+    });
+    const results: ToolResult[] = [];
+
+    try {
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 3, autoCompactEnabled: false }),
+        registry,
+        'inspect',
+        [],
+        noopCallbacks({ onToolResult: (result) => results.push(result) }),
+        'bypassPermissions',
+        { provider, isNewSession: false, toolOutputRoot },
+      );
+
+      expect(spillPath).not.toBe('');
+      const read = results.find((result) => result.toolCallId === 'read_1');
+      expect(read?.status).toBe('success');
+      expect(read?.content).toContain('first line');
+      const stray = results.find((result) => result.toolCallId === 'read_2');
+      expect(stray?.status).not.toBe('success');
+      expect(stray?.content ?? '').not.toContain('secret');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+      rmSync(toolOutputRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('runAgentLoop — a retry label ends when the retried stream speaks', () => {
+  it('reports the stream resumed once the re-sent turn starts answering', async () => {
+    let request = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        request++;
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(
+              enc.encode(
+                `data: ${JSON.stringify({ choices: [{ delta: { content: request === 1 ? 'Partial ' : 'Whole answer' } }] })}\n\n`,
+              ),
+            );
+            if (request === 1) {
+              c.error(new TypeError('terminated'));
+              return;
+            }
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+    const events: string[] = [];
+    const base = defaultConfig({ baseUrl: 'http://localhost/v1', maxTurns: 2 });
+
+    try {
+      await runAgentLoop(
+        { ...base, retry: { ...base.retry, streamReissueAttempts: 1 } },
+        createRegistry(),
+        'go',
+        [],
+        noopCallbacks({
+          onRetry: (phase) => events.push(`retry:${phase}`),
+          onStreamResume: () => events.push('resume'),
+        }),
+        'bypassPermissions',
+        { isNewSession: false },
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(events).toEqual(['retry:reissue', 'resume']);
+  });
+});
+
+describe('runAgentLoop — a clip file stays readable for the rest of the session (#248)', () => {
+  let dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    dirs = [];
+  });
+
+  it('lets a later prompt of the same session Read the file an earlier prompt clipped into', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-spill-session-'));
+    const toolOutputRoot = mkdtempSync(join(tmpdir(), 'book-loop-spill-session-out-'));
+    dirs.push(workspace, toolOutputRoot);
+    let spillPath = '';
+    const firstRun: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        if (!messages.some((message) => message.role === 'tool')) {
+          yield { type: 'tool_call', toolCall: { id: 'big_1', name: 'Big', arguments: {} } };
+        } else {
+          spillPath =
+            /Full output: (\S+?)\]/.exec(String(messages.at(-1)?.content ?? ''))?.[1] ?? '';
+          yield { type: 'text', content: 'clipped' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    let readCalled = false;
+    const secondRun: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        if (!readCalled) {
+          readCalled = true;
+          yield {
+            type: 'tool_call',
+            toolCall: {
+              id: 'read_later',
+              name: 'Read',
+              arguments: { file_path: spillPath, limit: 3 },
+            },
+          };
+        } else {
+          yield { type: 'text', content: 'read it' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    registry.registerAll(fileTools);
+    registry.register({
+      name: 'Big',
+      description: 'Return a large result',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => toolSuccess(`first line\n${'x'.repeat(100_000)}`),
+    });
+    const runtime = new SessionRuntime();
+    const results: ToolResult[] = [];
+    const config = defaultConfig({ workspace, maxTurns: 3, autoCompactEnabled: false });
+
+    const history = await runAgentLoop(
+      config,
+      registry,
+      'clip it',
+      [],
+      noopCallbacks(),
+      'bypassPermissions',
+      {
+        provider: firstRun,
+        isNewSession: false,
+        toolOutputRoot,
+        runtime,
+      },
+    );
+    await runAgentLoop(
+      config,
+      registry,
+      'now read it',
+      history,
+      noopCallbacks({ onToolResult: (result) => results.push(result) }),
+      'bypassPermissions',
+      { provider: secondRun, isNewSession: false, toolOutputRoot, runtime },
+    );
+
+    expect(spillPath).not.toBe('');
+    const read = results.find((result) => result.toolCallId === 'read_later');
+    expect(read?.status).toBe('success');
+    expect(read?.content).toContain('first line');
   });
 });

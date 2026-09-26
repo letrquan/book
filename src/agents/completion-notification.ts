@@ -1,30 +1,31 @@
 import type { AgentNotificationDisplay } from '../types/messages.js';
-import type { AgentCompletionNotification } from './types.js';
+import { notifiesParent } from './spawner-claim.js';
+import type { AgentCompletionNotification, SpawnerClaim } from './types.js';
 
 export const AGENT_COMPLETION_BATCH_CHARS = 64 * 1024;
 
 /**
  * Open a new terminal-result generation for `record`.
  *
- * An agent whose host owns its output (`notifyParentOnCompletion: false`) has
- * that generation marked delivered in the same step. Delivery is what
- * `listPendingCompletions` and the parent host's replay are keyed on, so
- * leaving it outstanding would resurface the agent as an undelivered completion
- * — the exact model turn the flag exists to avoid — and pin it in the session's
- * agent list forever.
+ * A run whose spawner consumes its output itself (see `SpawnerClaim`) has that generation marked
+ * delivered in the same step. Delivery is what `listPendingCompletions` and the parent host's
+ * replay are keyed on, so leaving it outstanding would resurface the agent as an undelivered
+ * completion (the exact model turn the claim exists to avoid) and pin it in the session's agent
+ * list forever. The claim is judged against the run the record is on, so a later run of the same
+ * agent is delivered with nothing to clear.
  *
- * Shared rather than inlined at each call site because a terminal generation is
- * opened from three places with different lifetimes — a normal result, this
- * process exiting, and another process's abandoned agents being recovered at
- * startup — and a crash mid-`/review` reaches the third one.
+ * Shared rather than inlined at each call site because a terminal generation is opened from
+ * three places with different lifetimes: a normal result, this process exiting, and another
+ * process's abandoned agents being recovered at startup. A crash mid-`/review` reaches the third.
  */
 export function beginTerminalGeneration(record: {
   completionSequence?: number;
   completionDeliveredSequence?: number;
-  notifyParentOnCompletion?: boolean;
+  runSequence?: number;
+  spawnerClaim?: SpawnerClaim;
 }): void {
   record.completionSequence = (record.completionSequence ?? 0) + 1;
-  if (record.notifyParentOnCompletion === false) {
+  if (!notifiesParent(record)) {
     record.completionDeliveredSequence = record.completionSequence;
   }
 }
