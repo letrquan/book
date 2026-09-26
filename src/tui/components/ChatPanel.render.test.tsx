@@ -245,6 +245,90 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).not.toContain('Historical conversation checkpoint');
   });
 
+  it('sets a compact boundary on the tool-row column, a blank row from its neighbours (#266)', () => {
+    const messages: Message[] = [
+      msg('u1', 'user', 'run the checks'),
+      {
+        ...msg('a1', 'assistant', 'Running them.'),
+        toolCalls: [{ id: 'bash-1', name: 'Bash', arguments: { command: 'npm test' } }],
+        toolResults: [successResult('bash-1', 'ok')],
+      },
+      msg('a2', 'assistant', 'answer after the compaction'),
+    ];
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          compactBoundaries={[
+            {
+              id: 'c1',
+              trigger: 'auto',
+              transcriptOrdinal: 2,
+              preContextCount: 8,
+              postContextCount: 3,
+              preContextTokens: 10_300,
+              postContextTokens: 3_800,
+              generation: 1,
+              checkpointVersion: 2,
+              timestamp: 2,
+            },
+          ]}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const lines = frame(view.lastFrame).split('\n');
+    const boundary = lines.findIndex((line) => line.includes('Compact conversation'));
+    const toolRow = lines.findIndex((line) => line.includes('npm test'));
+    expect(boundary).toBeGreaterThan(toolRow);
+    // The mark sits in the column every tool row's status mark does, not at column 0.
+    expect(lines[boundary]!.indexOf('✓')).toBe(lines[toolRow]!.indexOf('✓'));
+    expect(lines[boundary]!.indexOf('✓')).toBeGreaterThan(0);
+    expect(lines[boundary - 1]!.trim()).toBe('');
+    expect(lines[boundary + 1]!.trim()).toBe('');
+    expect(lines[boundary + 2]).toContain('answer after the compaction');
+  });
+
+  it('draws a compact boundary that follows the streaming message while it streams (#266)', () => {
+    const messages: Message[] = [
+      msg('u1', 'user', 'write it all'),
+      msg('a1', 'assistant', 'partial answer so far'),
+    ];
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          streamingMessageId="a1"
+          compactBoundaries={[
+            {
+              id: 'c1',
+              trigger: 'auto',
+              transcriptOrdinal: 2,
+              preContextCount: 8,
+              postContextCount: 3,
+              preContextTokens: 10_300,
+              postContextTokens: 3_800,
+              generation: 1,
+              checkpointVersion: 2,
+              timestamp: 2,
+            },
+          ]}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('partial answer so far');
+    expect(output).toContain('Compact conversation');
+    expect(output.indexOf('Compact conversation')).toBeGreaterThan(
+      output.indexOf('partial answer so far'),
+    );
+  });
+
   it('keeps automatic child completion notifications out of the visible transcript', () => {
     const notification: Message = {
       id: 'notification-1',

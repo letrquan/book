@@ -394,6 +394,34 @@ function nonEmptyLines(content: string): number {
   return content.split('\n').filter((line) => line.trim()).length;
 }
 
+/**
+ * A Read row's metadata: how many lines of the file it returned and their range when the read
+ * started partway in, or, for an outline, how many declarations it listed. A Read that stops early
+ * ends with a notice (`[Lines 3-6 of 20 shown. …]`, `[Line 1 (60000 bytes) was cut …]`), which is
+ * not a line of the file.
+ */
+export function readResultMetadata(args: Record<string, unknown>, content: string): string[] {
+  // An outline lists declarations under a header, not lines of the file.
+  if (args.outline === true) {
+    const entries = content.split('\n').filter((line) => /^\d+: /.test(line)).length;
+    return ['outline', entries === 1 ? '1 entry' : `${entries} entries`];
+  }
+  let body = content.replace(/\n\[Lines? \d[^\n]*\]$/, '');
+  // A read that reaches the end of the file shows one more, empty, numbered line past its final
+  // newline (`1: ` for an empty file), which is not a line of the file. A page that stopped early
+  // ends with the notice instead, and its last line is real.
+  if (body === content) body = body.replace(/(?:^|\n)\d+: $/, '');
+  const lineCount = body ? body.split('\n').length : 0;
+  if (lineCount === 0) return ['empty'];
+  const offset = Number(args.offset ?? 0);
+  const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 1;
+  const end = start + lineCount - 1;
+  const size = lineCount === 1 ? '1 line' : `${lineCount} lines`;
+  // `121 lines · 1-121` says the same thing twice. The range earns its place only when the read
+  // started partway into the file.
+  return start > 1 ? [size, `${start}-${end}`] : [size];
+}
+
 /** Attach stable UI data while execution still has the tool name and arguments. */
 export function enrichToolResultPresentation(
   input: ToolResult,
@@ -431,8 +459,8 @@ export function enrichToolResultPresentation(
     }
   } else if (name === 'Read') {
     if (inferKind) kind = 'file';
-    const lines = content ? content.split('\n').length : 0;
-    if (inferMetadata) metadata.push(lines === 1 ? '1 line' : `${lines} lines`);
+    if (inferMetadata && result.status === 'success')
+      metadata.push(...readResultMetadata(args, content));
     if (inferSummary) summary = target ? `Read ${target}` : summary;
   } else if (name === 'Glob') {
     if (inferKind) kind = 'search';

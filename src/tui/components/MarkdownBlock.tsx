@@ -311,6 +311,23 @@ function fenceOpening(context: FenceContext): string {
   return `${context.marker}${context.info}`;
 }
 
+/** The fence state after one more line: `open` unchanged, a fence it opens, or none it closes. */
+function nextFenceContext(
+  open: FenceContext | undefined,
+  rawLine: string,
+): FenceContext | undefined {
+  const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(rawLine.replace(/\r$/, ''));
+  if (!match) return open;
+  const marker = match[2]!;
+  const rest = match[3]!;
+  // Backtick fences cannot contain backticks in their info string.
+  if (marker[0] === '`' && rest.includes('`')) return open;
+  if (!open) return { marker, info: rest.trim() };
+  return marker[0] === open.marker[0] && marker.length >= open.marker.length && rest.trim() === ''
+    ? undefined
+    : open;
+}
+
 function fenceContextAt(content: string, offset: number): FenceContext | undefined {
   let open: FenceContext | undefined;
   let lineStart = 0;
@@ -319,26 +336,7 @@ function fenceContextAt(content: string, offset: number): FenceContext | undefin
     const lineEnd = content.indexOf('\n', lineStart);
     if (lineEnd === -1 || lineEnd > offset) break;
 
-    const line = content.slice(lineStart, lineEnd).replace(/\r$/, '');
-    const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
-    if (match) {
-      const marker = match[2]!;
-      const rest = match[3]!;
-      // Backtick fences cannot contain backticks in their info string.
-      if (!(marker[0] === '`' && rest.includes('`'))) {
-        if (open) {
-          if (
-            marker[0] === open.marker[0] &&
-            marker.length >= open.marker.length &&
-            rest.trim() === ''
-          ) {
-            open = undefined;
-          }
-        } else {
-          open = { marker, info: rest.trim() };
-        }
-      }
-    }
+    open = nextFenceContext(open, content.slice(lineStart, lineEnd));
 
     lineStart = lineEnd + 1;
   }
@@ -422,12 +420,30 @@ function fenceLineAt(
   const start = content.lastIndexOf('\n', offset - 1) + 1;
   const end = content.indexOf('\n', offset);
   if (end === -1 || !/^ {0,3}(?:`{3,}|~{3,})/.test(content.slice(start, end))) return undefined;
-  const openBefore = fenceContextAt(content, start) !== undefined;
-  const openAfter = fenceContextAt(content, end) !== undefined;
+  const before = fenceContextAt(content, start);
+  const after = nextFenceContext(before, content.slice(start, end));
+  const openBefore = before !== undefined;
+  const openAfter = after !== undefined;
   // A delimiter-shaped line that changes nothing, such as a backtick line inside a tilde
   // fence, is only code.
   if (openBefore === openAfter) return undefined;
   return { start, end, opens: openAfter };
+}
+
+/**
+ * The start of the first line after `offset` and before `limit` that opens a fence, when the text at
+ * `offset` is outside one.
+ */
+function fenceOpeningBefore(content: string, offset: number, limit: number): number | undefined {
+  let lineStart = content.indexOf('\n', offset) + 1;
+  while (lineStart > 0 && lineStart < limit) {
+    const lineEnd = content.indexOf('\n', lineStart);
+    const line = content.slice(lineStart, lineEnd === -1 ? content.length : lineEnd);
+    if (nextFenceContext(undefined, line)) return lineStart;
+    if (lineEnd === -1) return undefined;
+    lineStart = lineEnd + 1;
+  }
+  return undefined;
 }
 
 function contextualStreamingTail(content: string, maxCharacters: number, step: number): string {
@@ -448,14 +464,17 @@ function contextualStreamingTail(content: string, maxCharacters: number, step: n
   // Start complete Markdown blocks whenever possible. This avoids turning a
   // truncated table/list/paragraph prefix into a misleading partial block.
   const blankLine = content.indexOf('\n\n', desiredStart);
-  const standaloneStart =
-    blankLine === -1 ? standaloneBlockStart(content, desiredStart) : undefined;
-  const start = blankLine >= 0 ? blankLine + 2 : standaloneStart;
+  // A fence that opens before that blank line starts the tail. Searching past it would skip the
+  // whole block, then bring it back from the cutoff once the cutoff entered it.
+  const fenceStart =
+    blankLine >= 0 ? fenceOpeningBefore(content, desiredStart, blankLine) : undefined;
+  const start =
+    fenceStart ?? (blankLine >= 0 ? blankLine + 2 : standaloneBlockStart(content, desiredStart));
   if (start === undefined) {
     const tail = content.slice(proseTailStart(content, desiredStart, step));
     return /[*_`~[\]<>|\\]/.test(tail) ? '' : tail;
   }
-  const startContext = fenceContextAt(content, start);
+  const startContext = fenceStart === undefined ? fenceContextAt(content, start) : undefined;
   if (startContext) {
     return `${fenceOpening(startContext)}\n${content.slice(start)}`;
   }

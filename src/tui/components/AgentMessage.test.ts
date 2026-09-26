@@ -198,6 +198,24 @@ describe('managed-agent render invalidation', () => {
 
     expect(managedAgentTracesEqualForMessage(message, before, after)).toBe(false);
   });
+
+  it('rerenders a foreground Task row when its child trace changes (#245)', () => {
+    // A Task child is traced under the Task call's id, not an AgentSpawn's.
+    const taskMessage: Message = {
+      ...message,
+      toolCalls: [{ id: 'task-1', name: 'Task', arguments: {} }],
+    };
+    const taskTrace = { ...trace('agent-1'), parentToolCallId: 'task-1', blocking: true };
+    const before = new Map([['task-1', { ...taskTrace, openable: true }]]);
+    const lostRow = new Map([['task-1', { ...taskTrace, openable: false }]]);
+    const finished = new Map([
+      ['task-1', { ...taskTrace, openable: true, status: 'completed' as const }],
+    ]);
+
+    expect(managedAgentTracesEqualForMessage(taskMessage, before, lostRow)).toBe(false);
+    expect(managedAgentTracesEqualForMessage(taskMessage, before, finished)).toBe(false);
+    expect(managedAgentTracesEqualForMessage(taskMessage, before, new Map(before))).toBe(true);
+  });
 });
 
 describe('splitThinkBlocks reasoning tags', () => {
