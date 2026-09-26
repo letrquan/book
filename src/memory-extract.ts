@@ -12,9 +12,10 @@
  *   `disable_on_external_context`).
  * - Only user and assistant text is shown to the model; tool output never is.
  * - Every session is attempted once: the watermark records it whatever the outcome, except when the
- *   provider call itself failed, or its reply was empty or cut off at the output limit, which is
- *   retried at the next start.
- * - Runs are serialized by a lock file; a stale lock (older than the lock TTL) is taken over.
+ *   provider call itself failed, or its reply was empty or cut off at the output limit before its
+ *   JSON closed, which is retried at the next start.
+ * - Runs are serialized by a lock file, kept fresh while a run lasts; a stale lock (older than the
+ *   lock TTL) is taken over.
  * - Nothing here throws to the caller.
  */
 import {
@@ -25,12 +26,14 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeSync,
 } from 'fs';
 import { dirname } from 'path';
 import { writeJsonAtomic } from './jobs/persistent-store.js';
 import { normalizeWorkspace } from './session/store.js';
 import { createProvider, type Provider } from './provider/index.js';
+import { TRUNCATION_FINISH_REASONS } from './provider/finish-reasons.js';
 import { resolveCompactModelConfig } from './config.js';
 import {
   deleteMemoryEntry,
@@ -47,7 +50,7 @@ import {
   type MemoryType,
 } from './memory-store.js';
 import { createDebugLogger } from './debug-log.js';
-import { parseJsonObject } from './review/json.js';
+import { extractJsonObject, parseJsonObject } from './review/json.js';
 import { toolNamesFromHistory } from './session/runtime.js';
 import { isExternalContextTool } from './tools/memory-save.js';
 import type { Message } from './types/messages.js';
@@ -56,14 +59,20 @@ import type { AgentConfig, PermissionMode } from './types/runtime.js';
 
 const log = createDebugLogger('memory');
 const LOCK_TTL_MS = 30 * 60 * 1000;
+/** How often a running extraction refreshes its lock: well inside the lock's lifetime. */
+const LOCK_REFRESH_MS = LOCK_TTL_MS / 3;
+/**
+ * How long a run keeps its lock fresh. Past it the lock goes stale and another start may take it
+ * over, so a provider call stuck in retries cannot hold off extraction for this workspace for as
+ * long as its TUI stays open; the run that lost the lock then writes nothing more.
+ */
+const LOCK_MAX_HOLD_MS = 4 * LOCK_TTL_MS;
 const MAX_TRANSCRIPT_CHARS = 60_000;
 const MAX_MESSAGE_CHARS = 4_000;
 /** A session whose extraction call fails this many times is given up on, so it cannot block newer ones. */
 const MAX_ATTEMPTS = 3;
 /** Older sessions are not mined: their facts are the likeliest to have been reversed since. */
 const MAX_AGE_MS = 14 * 24 * 3_600_000;
-/** Finish reasons that mean a reply stopped at its output limit (OpenAI and Anthropic spellings). */
-const TRUNCATION_FINISH_REASONS = new Set(['length', 'max_tokens']);
 
 export interface ExtractionSessionSource {
   list(): SessionMeta[];
@@ -131,8 +140,20 @@ function readState(path: string): ExtractionState {
   }
 }
 
-/** Take the lock, taking over a stale one; returns a release function, or null when busy. */
-function acquireLock(path: string, nowMs: number): (() => void) | null {
+interface ExtractionLock {
+  /**
+   * False once the lock is gone or holds another start's token (a start takes over a stale lock);
+   * true while it holds this start's token, or cannot be read at all.
+   */
+  held(): boolean;
+  /** Mark the lock fresh, so no other start judges it stale; only while its token reads back. */
+  refresh(): void;
+  /** Remove the lock, only while its token reads back as this start's. */
+  release(): void;
+}
+
+/** Take the lock, taking over a stale one; returns null when another start holds it. */
+function acquireLock(path: string, nowMs: number): ExtractionLock | null {
   try {
     mkdirSync(dirname(path), { recursive: true });
   } catch {
@@ -155,8 +176,30 @@ function acquireLock(path: string, nowMs: number): (() => void) | null {
   } catch {
     return null;
   }
-  return () => {
-    if (readFileSync(path, 'utf-8') === token) rmSync(path, { force: true });
+  // Gone, or another start's token, means the lock was taken over or removed. Any other failed
+  // read -- a scanner holding the file on Windows -- says nothing about who owns it.
+  const owner = (): 'ours' | 'lost' | 'unknown' => {
+    try {
+      return readFileSync(path, 'utf-8') === token ? 'ours' : 'lost';
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'lost' : 'unknown';
+    }
+  };
+  return {
+    held: () => owner() !== 'lost',
+    refresh: () => {
+      // Touch only a lock whose token was read back: an unreadable one may be another start's.
+      if (owner() !== 'ours') return;
+      try {
+        const now = new Date();
+        utimesSync(path, now, now);
+      } catch {
+        // The next refresh tries again; the lock goes stale only after its whole lifetime.
+      }
+    },
+    release: () => {
+      if (owner() === 'ours') rmSync(path, { force: true });
+    },
   };
 }
 
@@ -250,12 +293,28 @@ export function parseExtraction(text: string, max: number): ExtractedMemory[] | 
   return out;
 }
 
+/**
+ * Whether a reply cut off at its output limit still holds a whole answer: the reply is one JSON
+ * object, bar whitespace and a code fence around it, as the prompt asks. Any other text before or
+ * after it means the cut may have fallen anywhere, and the first complete object in a reply that
+ * talks may be an example echoed from the prompt, not the answer.
+ */
+function wholeAnswer(text: string): boolean {
+  const candidate = extractJsonObject(text);
+  if (!candidate) return false;
+  const at = text.indexOf(candidate);
+  return (
+    /^\s*(```(?:json)?\s*)?$/i.test(text.slice(0, at)) &&
+    /^\s*(```\s*)?$/.test(text.slice(at + candidate.length))
+  );
+}
+
 async function complete(
   provider: Provider,
   config: AgentConfig,
   prompt: string,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<{ text: string; truncated: boolean }> {
   let text = '';
   let truncated = false;
   for await (const event of provider.stream(
@@ -273,12 +332,9 @@ async function complete(
       truncated = true;
     }
   }
-  // A reply that spent its output limit on reasoning comes back empty, or cut off
-  // mid-answer. Neither is the session's answer, so it counts as a failed attempt
-  // and is retried at the next start instead of marking the session read.
-  if (truncated) throw new Error('extraction reply was cut off at its output limit');
-  if (!text.trim()) throw new Error('extraction reply was empty');
-  return text;
+  // A reply that ended at its output limit is the session's answer only if its JSON parsed
+  // whole; the caller parses first and decides.
+  return { text, truncated };
 }
 
 /** Apply one session's extracted memories; returns how many operations succeeded. */
@@ -348,11 +404,19 @@ export async function runMemoryExtraction(
   await new Promise<void>((r) => setImmediate(r));
   const nowMs = opts.nowMs ?? Date.now();
   const statePath = getMemoryExtractionStatePath(config.workspace, opts);
-  const release = acquireLock(getMemoryExtractionLockPath(config.workspace, opts), nowMs);
-  if (!release) {
+  const lock = acquireLock(getMemoryExtractionLockPath(config.workspace, opts), nowMs);
+  if (!lock) {
     log.info('extraction skipped', { reason: 'locked' });
     return { processed: [], reason: 'locked' };
   }
+  // On the session's retry policy one provider call can outlast the lock's lifetime, and a start
+  // that finds a stale lock takes it over: keep it fresh while this run lasts, up to a ceiling.
+  const refreshUntil = Date.now() + LOCK_MAX_HOLD_MS;
+  const refresher = setInterval(() => {
+    if (Date.now() > refreshUntil) clearInterval(refresher);
+    else lock.refresh();
+  }, LOCK_REFRESH_MS);
+  refresher.unref?.();
   const result: MemoryExtractionResult = { processed: [] };
   try {
     const state = readState(statePath);
@@ -371,6 +435,12 @@ export async function runMemoryExtraction(
     const provider = opts.provider ?? createProvider(modelConfig);
     for (const meta of candidates) {
       if (opts.signal?.aborted) break;
+      // Every write below replaces the whole state file with this run's copy: once another start
+      // has taken the lock over, this run must not write it again.
+      if (!lock.held()) {
+        result.reason = 'lock-lost';
+        break;
+      }
       let seenLength = state.seen[meta.id] ?? 0;
       const markDone = (entry: MemoryExtractionResult['processed'][number]) => {
         state.processed[meta.id] = meta.messageCount;
@@ -398,34 +468,53 @@ export async function runMemoryExtraction(
         continue;
       }
       const index = loadMemoryContext(config.workspace, opts).indexText || '(empty)';
-      let text: string;
+      let reply: { text: string; truncated: boolean } | undefined;
+      let failure: string | undefined;
       try {
-        text = await complete(
+        reply = await complete(
           provider,
           modelConfig,
           `EXISTING MEMORY INDEX (file names are slugs):\n${index}\n\nCONVERSATION:\n${conversation}`,
           opts.signal,
         );
       } catch (error) {
-        log.warn('extraction provider failed', {
+        failure = error instanceof Error ? error.message : String(error);
+      }
+      // Providers end an aborted stream quietly; partial text must not mark the session read.
+      if (opts.signal?.aborted) break;
+      // Another start took the lock over while the provider answered, and may be reading this
+      // very session: write nothing.
+      if (!lock.held()) {
+        result.reason = 'lock-lost';
+        break;
+      }
+      const text = reply?.text.trim() ? reply.text : undefined;
+      // A reply that ended at its output limit is an answer only when it is whole; one that is
+      // whole but not the answer's shape is `unparseable`, like any other.
+      const whole = text !== undefined && (!reply?.truncated || wholeAnswer(text));
+      const items = whole ? parseExtraction(text, settings.extraction.maxPerSession) : undefined;
+      if (failure !== undefined || !whole) {
+        // A reply cut off at its output limit, an empty one, or a provider failure: transient
+        // trouble, retried at the next start. A session that keeps failing is given up on so it
+        // cannot block every newer session behind it.
+        const truncated = failure === undefined && reply?.truncated === true;
+        log.warn('extraction attempt failed', {
           session: meta.id,
-          error: error instanceof Error ? error.message : String(error),
+          error: failure ?? (truncated ? 'reply cut off at its output limit' : 'reply was empty'),
         });
-        if (opts.signal?.aborted) break;
-        // Transient trouble is retried at the next start; a session that keeps failing is given
-        // up on so it cannot block every newer session behind it.
         state.failures[meta.id] = (state.failures[meta.id] ?? 0) + 1;
         if (state.failures[meta.id] >= MAX_ATTEMPTS) {
-          markDone({ id: meta.id, written: 0, skipped: 'provider-failed' });
+          markDone({
+            id: meta.id,
+            written: 0,
+            skipped: truncated ? 'truncated' : 'provider-failed',
+          });
         } else {
           writeJsonAtomic(statePath, state);
         }
         continue;
       }
-      // Providers end an aborted stream quietly; partial text must not mark the session read.
-      if (opts.signal?.aborted) break;
-      log.debug('extraction reply', { session: meta.id, reply: text.slice(0, 600) });
-      const items = parseExtraction(text, settings.extraction.maxPerSession);
+      log.debug('extraction reply', { session: meta.id, reply: text!.slice(0, 600) });
       markDone(
         items
           ? { id: meta.id, written: apply(items, meta.id, opts, gated) }
@@ -436,8 +525,9 @@ export async function runMemoryExtraction(
   } catch (error) {
     return { ...result, reason: error instanceof Error ? error.message : String(error) };
   } finally {
+    clearInterval(refresher);
     try {
-      release();
+      lock.release();
     } catch {
       // A lock we cannot remove goes stale and is taken over after the lock TTL.
     }

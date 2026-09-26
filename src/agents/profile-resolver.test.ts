@@ -22,6 +22,18 @@ describe('resolveAgentProfile', () => {
     );
   });
 
+  it('does not count a level its config merely sends as chosen (#245)', () => {
+    const explorer = BUILTIN_AGENTS[0];
+    // A managed child's own config: `high` is sent because its catalog lists it, not chosen.
+    const child = defaultConfig({ effort: 'high', effortExplicit: true, effortChosen: false });
+    expect(resolveAgentProfile(explorer, child)).toMatchObject({
+      effort: 'high',
+      effortExplicit: false,
+    });
+    const session = defaultConfig({ effort: 'high', effortExplicit: true });
+    expect(resolveAgentProfile(explorer, session).effortExplicit).toBe(true);
+  });
+
   it('leaves explorer turns unlimited by default and preserves explicit limits', () => {
     const config = defaultConfig({ maxTurns: undefined });
     const explorer = BUILTIN_AGENTS[0];

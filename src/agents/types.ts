@@ -99,6 +99,13 @@ export interface AgentRecord {
   resolvedModel?: string;
   provider?: string;
   effort?: string;
+  /**
+   * The level chosen for this agent at spawn (its profile or definition, or the session's own
+   * choice), as asked, before any catalog clamp; absent when the level was defaulted. Every later
+   * run starts from it and clamps it against the catalog in force then; a defaulted level is
+   * resolved again instead.
+   */
+  effortChoice?: string;
   isolation?: AgentIsolation;
   currentActivity?: AgentActivitySummary;
   /** @deprecated Use profile. Retained for persisted version 1 compatibility. */

@@ -1139,10 +1139,14 @@ export function App({
     shellCompletionRetryTick,
   ]);
   // Tab (`cycleAgentFocus`) reaches only agents with a Background-panel row. Keyed on
-  // the joined ids, not the summaries array: a child's status event replaces the array
-  // without changing which rows exist, and must not re-project every trace.
+  // the sorted, joined ids, not the summaries array: a child's status event replaces the array,
+  // and a re-sort reorders it, without changing which rows exist, and neither must re-project
+  // every trace.
   const openableAgentKey = managedAgentUiEnabled
-    ? managedAgents.summaries.map((summary) => summary.agentId).join(' ')
+    ? managedAgents.summaries
+        .map((summary) => summary.agentId)
+        .sort()
+        .join(' ')
     : '';
   const openableAgentIds = useMemo(
     () => new Set(openableAgentKey ? openableAgentKey.split(' ') : []),

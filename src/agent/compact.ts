@@ -22,8 +22,9 @@ import type {
 } from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
 import { createProvider, type Provider } from '../provider/index.js';
-import { resolveReducerModelConfig } from '../config.js';
+import { isEffortChosen, resolveEffortExplicit, resolveReducerModelConfig } from '../config.js';
 import { isContextOverflowError } from '../provider/reliability.js';
+import { TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
 import { runHooks } from '../hooks.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { resolveContextLimit } from '../models.js';
@@ -114,8 +115,6 @@ const CARRIED_TURN_CLIP_LADDER = [1_024, 512, 256] as const;
  */
 const REDUCER_OUTPUT_HEADROOM = 3;
 const REDUCER_OUTPUT_MIN_MARGIN_TOKENS = 2_048;
-/** Provider finish reasons that mean "cut off at the cap", not "done". */
-const TRUNCATION_FINISH_REASONS = new Set(['length', 'max_tokens']);
 const MESSAGE_OVERHEAD_TOKENS = 6;
 const TOOL_OVERHEAD_TOKENS = 12;
 /** Floor per-tool-result token limit that scales with the retained tail. */
@@ -2818,9 +2817,10 @@ function withoutReasoning(message: Message): Message {
 }
 
 /**
- * The compact model's effort for the judge. `effortExplicit` means a human
- * chose the level and the OpenAI-compatible path sends it unconditionally, so
- * it is only asked for on a model whose catalog says it accepts one.
+ * The compact model's effort for the judge: `low`, unless its catalog disables
+ * effort or lists levels without `low`. It is not a human's choice, so whether it
+ * is sent is decided as for any request on the compact model: where a level was
+ * chosen, or the catalog lists it (`resolveEffortExplicit`).
  */
 function judgeEffort(config: AgentConfig): AgentConfig['effort'] | undefined {
   const catalog = config.modelInfo?.effort;
@@ -2894,8 +2894,16 @@ Return JSON only: {"sufficient": true} or {"sufficient": false, "missing": ["...
     return inconclusive('too-large', 0);
   }
   const effort = judgeEffort(judgeConfig);
+  // An uncatalogued model on a strict endpoint answers an effort nobody chose with a 400.
+  const requestConfig = effort
+    ? {
+        ...judgeConfig,
+        effort,
+        effortExplicit: resolveEffortExplicit(judgeConfig, effort, isEffortChosen(judgeConfig)),
+      }
+    : judgeConfig;
   const generated = await generateCheckpoint(
-    judgeConfig,
+    requestConfig,
     prompt,
     JUDGE_MAX_OUTPUT_TOKENS,
     options.signal,
@@ -2904,7 +2912,6 @@ Return JSON only: {"sufficient": true} or {"sufficient": false, "missing": ["...
       beforeModelCall: options.beforeModelCall,
       onUsage: options.onUsage,
       onUsageMissing: options.onUsageMissing,
-      ...(effort ? { effort } : {}),
       system: JUDGE_SYSTEM,
     },
   );
