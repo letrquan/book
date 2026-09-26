@@ -119,14 +119,21 @@ Mutation reliability guardrails, tuned for heterogeneous models:
 - **Malformed-JSON arguments.** A call whose arguments are not valid JSON fails with
   `invalid_json_arguments`, and the error names the shape the text arrived in rather than reporting
   schema errors about arguments the model did send:
-  - _truncated at the start_ — the text does not begin with `{`, which is usually a provider or a
-    router dropping the call's first fragment on the wire. The model's own JSON was fine, so the
-    advice is to resend the whole call unchanged.
+  - _truncated at the start_ — the text does not begin with `{` and is the rest of an object,
+    ending in its closing brace, which is usually a provider or a router dropping the call's first
+    fragment on the wire. The model's own JSON was fine, so the advice is to resend the whole call
+    unchanged.
+  - _wrapped_ — a complete object arrived inside a code fence, a tag or a sentence, or text
+    followed a complete object. The object is intact, so only the text around it has to go.
+  - _not an object_ — there is no object in the text at all, such as a bare `ls -la` or a JSON
+    array. Send one object per call.
   - _cut off at the end_ — the arguments stop before the JSON is complete, so the output was
     probably truncated. Resend, and split the change into smaller calls if its arguments are long.
   - _two objects_ — more than one JSON object arrived in one call. Send exactly one per call.
   - _single quotes_ — a key or string value is single-quoted. JSON needs double quotes.
-  - _other syntax_ — most often an unescaped backslash or a newline inside a string.
+  - _other syntax_ — most often an unescaped backslash or a newline inside a string, including a
+    backslash that escapes the closing quote (a Windows path ending in `\`, which reads as a
+    cut-off string and is not one).
 
   "position N" counts in the raw argument text, which the model never sees again as such — its
   replayed call is `JSON.stringify({__raw})` — so the text on both sides of the position is quoted
@@ -134,7 +141,13 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   folded to a space, so the one V8 rejected stays visible. Such a call is refused right after the
   call is normalized, before PreToolUse hooks and the permission prompt: it can never run, so a
   hook would judge the `{__raw}` wrapper, and in `default` mode the user would be asked to approve a
-  call that cannot — with "Always" saving a permission rule built from it.
+  call that cannot — with "Always" saving a permission rule built from it. Schema-invalid
+  arguments (`invalid_arguments`) and unknown tools (`unknown_tool`) are refused at the same point,
+  for the same reason: a Bash call with no `command` has no primary argument, so an "Always" there
+  would save a bare `Bash` rule allowing every Bash call. A tool that _is_ active but whose
+  arguments this run's allowed-tools rules do not cover is refused as `arguments_not_allowed` just
+  before the prompt instead — the tool needs no activation, so "call ToolSearch" would name one
+  that already has it and cannot lift the rule.
 
 - **Retry-loop braking.** Repeating a call that already failed with identical arguments returns
   escalated guidance instead of the same error; structured `Fix:` remediation lines are rendered

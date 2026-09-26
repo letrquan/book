@@ -27,6 +27,13 @@ describe('refusalKind', () => {
     expect(refusalKind(blocked('user_questions_disabled'))).toBe('question');
     expect(refusalKind(blocked('user_declined'))).toBe('question');
     expect(refusalKind(blocked('invalid_json_arguments'))).toBe('malformed');
+    // Both are refused before the call ran, so both are the same kind: the model has to
+    // correct the call, and no permission rule or mode lifts either one.
+    expect(refusalKind(blocked('invalid_arguments'))).toBe('malformed');
+    expect(refusalKind(blocked('unknown_tool'))).toBe('malformed');
+    // An active tool whose arguments this run does not allow belongs to the tool surface:
+    // ToolSearch cannot lift an allowed-tools rule, but the tool needs no activation.
+    expect(refusalKind(blocked('arguments_not_allowed'))).toBe('inactive');
   });
 
   it('counts a plain permission refusal as a permission', () => {

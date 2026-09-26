@@ -304,46 +304,56 @@ function searchWords(text: string): string[] {
   return words;
 }
 
+/** The endings that make a longer word the same word as its stem, with nothing before the stem. */
+const WORD_SUFFIXES = ['s', 'es', 'd', 'ed', 'ing', 'er', 'ers'] as const;
+
 /**
- * True when one word is the other with one letter dropped, doubled, substituted, or two adjacent
- * letters swapped. Callers pass the shorter word first.
+ * The single edit that turns one word into the other, or undefined when they are further apart:
+ * `'substitution'` for a swapped letter, `'other'` for a letter inserted, dropped or two adjacent
+ * letters transposed. Callers pass the shorter word first, and need the distinction: one
+ * substitution among five letters is often two different words, the same edit among six is a typo.
  */
-function oneEditApart(short: string, long: string): boolean {
-  if (long.length - short.length > 1) return false;
+function oneEditApart(short: string, long: string): 'substitution' | 'other' | undefined {
+  if (long.length - short.length > 1) return undefined;
   if (short.length === long.length) {
     const differ: number[] = [];
     for (let index = 0; index < short.length; index++) {
       if (short[index] !== long[index]) differ.push(index);
-      if (differ.length > 2) return false;
+      if (differ.length > 2) return undefined;
     }
-    if (differ.length === 1) return true;
+    if (differ.length === 1) return 'substitution';
     // An adjacent transposition: `commti` for `commit`.
-    return (
+    if (
       differ.length === 2 &&
       differ[1] === differ[0] + 1 &&
       short[differ[0]] === long[differ[1]] &&
       short[differ[1]] === long[differ[0]]
-    );
+    )
+      return 'other';
+    return undefined;
   }
   let index = 0;
   while (index < short.length && short[index] === long[index]) index++;
-  return short.slice(index) === long.slice(index + 1);
+  return short.slice(index) === long.slice(index + 1) ? 'other' : undefined;
 }
 
 /**
- * True when a query token names the same word: equal, a plural/verb-form of it, or one typo. A
- * plain plural counts from three letters (`logs` meets `log`, `urls` meets `url`): nothing else
- * that short is a different word often enough to be worth matching. A typo counts only from five
- * letters: four-letter words one edit apart are too often different words (`lint`/`list`,
- * `test`/`text`, `read`/`head`).
+ * True when a query token names the same word: equal, a suffix form of it (`logs` for `log`,
+ * `searches` for `search`, `fetching` for `fetch`), or one typo. A prefix is not a form:
+ * `checkout` is not `check` any more than it is `out`, and matching it put `Check` first for
+ * "git checkout". A typo counts from five letters, and a substituted letter only from six: one
+ * substitution between five-letter words is too often a different word (`match`/`patch`,
+ * `texts`/`tests`), while an inserted, dropped or transposed letter is a typo from five (`comit`,
+ * `commti`).
  */
 function sameWord(token: string, word: string): boolean {
   if (token === word) return true;
   const [short, long] = token.length <= word.length ? [token, word] : [word, token];
-  if (short.length >= 3 && (long === `${short}s` || long === `${short}es`)) return true;
-  if (token.length < 4 || word.length < 4) return false;
-  if (long.startsWith(short) && long.length - short.length <= 3) return true;
-  return short.length >= 5 && oneEditApart(short, long);
+  if (short.length >= 3 && WORD_SUFFIXES.some((suffix) => long === `${short}${suffix}`))
+    return true;
+  if (token.length < 5 || word.length < 5) return false;
+  const edit = oneEditApart(short, long);
+  return edit === 'other' ? true : edit === 'substitution' && short.length >= 6;
 }
 
 const SEARCH_FIELD_WEIGHTS = {
@@ -498,15 +508,24 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
 
   /**
    * The Fuse fallback for a query no word of which names anything, which is mostly a name whose
-   * letters are all wrong (`Webfetch` spelled `Wibfetch`). The index is built here rather than
-   * once per search: ranking answers nearly every query, and indexing the whole catalog to throw
-   * it away costs every ToolSearch call.
+   * letters are all wrong (`Webfetch` spelled `Wibfetch`). The records it needs are built here
+   * rather than for every search: ranking answers nearly every query on the definitions alone, and
+   * indexing the whole catalog to throw it away costs every ToolSearch call.
    */
   const fuseFallback = (
-    records: SearchRecord[],
+    definitions: ToolDefinition[],
     query: string,
     count: number,
   ): ToolDefinition[] => {
+    const records: SearchRecord[] = definitions.map((definition) => ({
+      definition,
+      name: definition.name,
+      aliases: definition.catalog?.aliases?.join(' ') ?? '',
+      keywords: definition.catalog?.keywords?.join(' ') ?? '',
+      description: definition.description,
+      category: definition.catalog?.category ?? 'other',
+      namespace: definition.catalog?.namespace ?? '',
+    }));
     const fuse = new Fuse(records, {
       includeScore: true,
       threshold: 0.42,
@@ -532,32 +551,18 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     const active = new Set(
       activeDefinitions().map((definition) => canonicalToolName(definition.name)),
     );
-    const records: SearchRecord[] = authorized()
+    const candidates = authorized()
       .filter((definition) => definition.name !== 'ToolSearch')
       .filter((definition) => !active.has(canonicalToolName(definition.name)))
       .filter((definition) => !category || definition.catalog?.category === category)
-      .filter((definition) => !namespace || definition.catalog?.namespace === namespace)
-      .map((definition) => ({
-        definition,
-        name: definition.name,
-        aliases: definition.catalog?.aliases?.join(' ') ?? '',
-        keywords: definition.catalog?.keywords?.join(' ') ?? '',
-        description: definition.description,
-        category: definition.catalog?.category ?? 'other',
-        namespace: definition.catalog?.namespace ?? '',
-      }));
+      .filter((definition) => !namespace || definition.catalog?.namespace === namespace);
 
     const count = Math.max(1, Math.min(5, limit));
-    const ranked = query.trim()
-      ? rankByWords(
-          query,
-          records.map((record) => record.definition),
-        )
-      : records.map((record) => record.definition);
+    const ranked = query.trim() ? rankByWords(query, candidates) : candidates;
     const matchedDefinitions =
       ranked.length > 0 || !query.trim()
         ? ranked.slice(0, count)
-        : fuseFallback(records, query, count);
+        : fuseFallback(candidates, query, count);
     return matchedDefinitions.map((definition) => ({
       name: definition.name,
       description: definition.description,

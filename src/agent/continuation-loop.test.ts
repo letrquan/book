@@ -710,6 +710,26 @@ function mangledEditProvider(): Provider {
   } as unknown as Provider;
 }
 
+/**
+ * A provider that calls a tool no registry holds on every turn. The call is refused before it
+ * runs, so no permission was ever asked for, and nothing a run can grant makes the name exist:
+ * the streak has to stop with the remedy for calls that could not run as sent.
+ */
+function unknownToolProvider(): Provider {
+  let turn = 0;
+  return {
+    id: 'scripted',
+    stream: async function* () {
+      turn++;
+      yield {
+        type: 'tool_call',
+        toolCall: { id: `unknown-${turn}`, name: 'NoSuchTool', arguments: {} },
+      };
+      yield { type: 'done' };
+    },
+  } as unknown as Provider;
+}
+
 describe('the refusal brake names the cause it stopped on', () => {
   it('points a streak of network-policy refusals at the host opt-in, not at permissions', async () => {
     // Under bypassPermissions there is no permission left to grant, so "grant the permission, add
@@ -751,6 +771,17 @@ describe('the refusal brake names the cause it stopped on', () => {
 
     expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
     expect(outcome?.message).toContain('never parsed as JSON');
+    expect(outcome?.message).not.toContain('grant the permission');
+  });
+
+  it('stops a streak of calls to a tool that does not exist, and names that as the cause', async () => {
+    // The call is refused before it runs, so it never reaches the prompt an unattended
+    // run answers `deny`; the brake has to count it, or a run reissuing the same name
+    // until the turn budget ran out is not stopped at all.
+    const { outcome } = await runRefusals(unknownToolProvider(), 'default');
+
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('could not run as sent');
     expect(outcome?.message).not.toContain('grant the permission');
   });
 

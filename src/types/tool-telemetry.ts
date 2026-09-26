@@ -27,10 +27,11 @@ export interface ToolUseRecord {
   /** Structured error code when the call failed; omitted on success/blocked. */
   errorCode?: string;
   /**
-   * The malformed-arguments shape of an `invalid_json_arguments` failure (`truncated_start`,
-   * `truncated_end`, `concatenated`, `single_quoted`, `syntax`). Only that code carries a
-   * shape, so it is the histogram key for one route's bad tool calls: the shape says whether
-   * the model wrote bad JSON or a router dropped the call's first fragment.
+   * The malformed-arguments shape of an `invalid_json_arguments` failure: truncated at the start,
+   * wrapped in other text, not an object, cut off at the end, two objects, single quotes, or other
+   * syntax. Only that code carries a shape, so it is the histogram key for one route's bad tool
+   * calls: the shape says whether the model wrote bad JSON or a router dropped the call's first
+   * fragment.
    */
   errorShape?: string;
   /** Execution wall time in ms when measured. */

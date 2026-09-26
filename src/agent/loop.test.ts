@@ -1168,6 +1168,100 @@ describe('unparsed tool-call arguments', () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  it('lets plan mode refuse its own hidden tool rather than reporting it inactive', async () => {
+    // Plan mode hides its mutating tools, and its own refusal names the mode. Told
+    // "not active, call ToolSearch" the model would search for a tool no search can
+    // activate, and lose the instruction to present a plan instead.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-plan-raw-'));
+    try {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'plan-raw-1',
+                name: 'Edit',
+                arguments: { __raw: '{"filePath": "a"' },
+              },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const onPermissionRequired = vi.fn(async () => 'allow' as const);
+      const results: ToolResult[] = [];
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'edit the file',
+        [],
+        noopCallbacks({
+          onPermissionRequired,
+          onToolResult: (result) => results.push(result),
+        }),
+        'plan',
+        { provider, isNewSession: false },
+      );
+
+      expect(results[0]?.structuredError?.code).toBe('plan_mode_blocked');
+      expect(results[0]?.structuredError?.message).toMatch(/not allowed in plan mode/);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses schema-invalid arguments before the prompt, so no bare rule is saved', async () => {
+    // A Bash call with no `command` has no primary argument, so the prompt has nothing to
+    // scope an "Always" rule to and would save a bare `Bash` rule allowing every Bash
+    // call afterwards.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-schema-'));
+    try {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: { id: 'schema-1', name: 'Bash', arguments: { script: 'rm -rf x' } },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const onPermissionRequired = vi.fn(async () => 'allow' as const);
+      const results: ToolResult[] = [];
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'delete everything',
+        [],
+        noopCallbacks({
+          onPermissionRequired,
+          onToolResult: (result) => results.push(result),
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+      expect(results[0]?.structuredError?.code).toBe('invalid_arguments');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('runAgentLoop streaming render callbacks', () => {

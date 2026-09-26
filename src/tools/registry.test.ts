@@ -494,14 +494,40 @@ describe('invalid JSON tool-call arguments', () => {
     runtime.dispose();
   });
 
-  it('names a fenced or tagged object as wrapped, not as cut off at the start', async () => {
+  it.each([
+    ['a one-argument call whose opening never arrived', 'ls -la"}'],
+    ['a bare path', 'src/a.ts"}'],
+    [
+      'a fragment that ends inside a string holding a brace',
+      'unction f() { return 1; }", "path": "x"}',
+    ],
+  ])('names %s truncated at the start', async (_label, raw) => {
+    // A dropped opening leaves no `":` separator for the old tail test to key on, and a
+    // fragment that ends inside a string reads as a whole object inside other text. Both
+    // are the same wire loss, so both must name the route that dropped the fragment.
+    const { registry } = editLikeRegistry();
+
+    const result = await registry.execute(
+      { id: 'tail', name: 'Edit', arguments: { __raw: raw } },
+      ctx,
+    );
+
+    expect(result.structuredError?.details?.shape).toBe('truncated_start');
+    expect(result.structuredError?.message).toContain('truncated at the start');
+    expect(result.structuredError?.remediation).toContain('dropped the first fragment');
+  });
+
+  it.each([
+    ['a code fence', ['```json', '{"filePath": "a"}', '```'].join('\n')],
+    ['a tag', '<args>{"filePath": "a"}</args>'],
+    ['text after the object', '{"filePath": "a"}garbage'],
+  ])('names %s as wrapped, not as cut off', async (_label, raw) => {
     // A code fence is the model's own formatting mistake, and resending the same
     // text unchanged would only reproduce it.
     const { registry } = editLikeRegistry();
-    const fence = ['```json', '{"filePath": "a"}', '```'].join('\n');
 
     const result = await registry.execute(
-      { id: 'fenced', name: 'Edit', arguments: { __raw: fence } },
+      { id: 'wrapped', name: 'Edit', arguments: { __raw: raw } },
       ctx,
     );
 
@@ -509,9 +535,27 @@ describe('invalid JSON tool-call arguments', () => {
     expect(result.structuredError?.remediation).toContain('bare JSON object');
   });
 
+  it('names a backslash that escapes the closing quote as a syntax error, not a cut-off', async () => {
+    // A Windows path ending in `\` makes V8 report an unterminated string at the very
+    // end, which read as "the output was cut off" and sent the model to resend the
+    // identical call; the fix is the escape.
+    const { registry } = editLikeRegistry();
+    const windowsPath = `{"path": "src${String.fromCharCode(92)}"}`;
+
+    const result = await registry.execute(
+      { id: 'escaped-quote', name: 'Edit', arguments: { __raw: windowsPath } },
+      ctx,
+    );
+
+    expect(result.structuredError?.details?.shape).toBe('syntax');
+    expect(result.structuredError?.remediation).toContain('escapes the quote');
+  });
+
   it.each([
     ['plain text', 'ls -la'],
-    ['an array', '[1,'],
+    // A well-formed array is not a parse failure, so the providers hand it over as a real
+    // object and it never reaches this shape test; an array that arrives as text does.
+    ['a JSON array', '[{"filePath": "a"},]'],
   ])('names %s as not a JSON object at all', async (_label, raw) => {
     const { registry } = editLikeRegistry();
 
@@ -639,18 +683,16 @@ describe('rejectBeforeGates', () => {
     catalogSummary: () => '',
   };
 
-  it('says nothing for a visible tool whose arguments parsed', () => {
+  it('says nothing for a visible tool whose arguments passed the schema', () => {
     const { registry } = editLikeRegistry();
 
     expect(
       registry.rejectBeforeGates(
-        { id: 'ok-1', name: 'Edit', arguments: { filePath: 'a.ts' } },
-        ctx,
-      ),
-    ).toBeUndefined();
-    expect(
-      registry.rejectBeforeGates(
-        { id: 'ok-2', name: 'Edit', arguments: { __raw: '{"filePath":"a.ts"}' } },
+        {
+          id: 'ok-1',
+          name: 'Edit',
+          arguments: { filePath: 'a.ts', oldString: 'a', newString: 'b' },
+        },
         ctx,
       ),
     ).toBeUndefined();
@@ -694,7 +736,7 @@ describe('rejectBeforeGates', () => {
     expect(result?.structuredError?.code).toBe('tool_not_active');
   });
 
-  it('leaves an inactive tool whose arguments parsed to rejectInactive', () => {
+  it('leaves an inactive tool whose arguments parsed to rejectBeforePrompt', () => {
     // A mode hides tools as well (plan mode its mutating tools), and the loop's own refusal
     // names the mode; refusing here would pre-empt it with "call ToolSearch".
     const { registry, execute } = editLikeRegistry();
@@ -702,11 +744,78 @@ describe('rejectBeforeGates', () => {
     const context = { ...ctx, toolDiscovery: inactiveDiscovery };
 
     expect(registry.rejectBeforeGates(call, context)).toBeUndefined();
-    expect(registry.rejectInactive(call, context)?.structuredError?.code).toBe('tool_not_active');
-    expect(registry.rejectInactive(call, ctx)).toBeUndefined();
+    expect(registry.rejectBeforePrompt(call, context)?.structuredError?.code).toBe(
+      'tool_not_active',
+    );
+    expect(registry.rejectBeforePrompt(call, ctx)).toBeUndefined();
     expect(
-      registry.rejectInactive({ id: 'unknown-2', name: 'NoSuchTool', arguments: {} }, context),
+      registry.rejectBeforePrompt({ id: 'unknown-2', name: 'NoSuchTool', arguments: {} }, context),
     ).toBeUndefined();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses schema-invalid arguments before the prompt, not at it', () => {
+    // A Bash call with no `command` has no primary argument, so the permission prompt has
+    // nothing to scope an "Always" rule to: the rule it saved was a bare `Bash`, allowing
+    // every Bash call afterwards. It must be refused where the prompt cannot see it.
+    const { registry, execute } = editLikeRegistry();
+    registry.register({
+      name: 'Bash',
+      description: 'run a shell command',
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string' } },
+        required: ['command'],
+      },
+      execute,
+    });
+
+    const result = registry.rejectBeforeGates(
+      { id: 'schema-1', name: 'Bash', arguments: { __raw: '{"script": "x"}' } },
+      ctx,
+    );
+
+    expect(result?.structuredError?.code).toBe('invalid_arguments');
+    expect(result?.structuredError?.message).toContain('Allowed arguments: command');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses an active tool whose arguments the run does not allow, without naming a search', () => {
+    // `Bash(git *)` against `rm -rf x`: the tool is already active, so "call ToolSearch to
+    // discover it" names a tool the model has and a search that cannot lift the rule.
+    const { registry, execute } = editLikeRegistry();
+    const argumentRefused: ToolContext['toolDiscovery'] = {
+      search: () => [],
+      activate: () => [],
+      restrict: () => {},
+      pushRestriction: () => () => {},
+      previewRestriction: () => [],
+      isActive: () => true,
+      canExecute: () => false,
+      activeDefinitions: () => [],
+      catalogSummary: () => '',
+    };
+    const call = {
+      id: 'args-1',
+      name: 'Edit',
+      arguments: { filePath: 'a.ts', oldString: 'a', newString: 'b' },
+    };
+    const context = { ...ctx, toolDiscovery: argumentRefused };
+
+    const result = registry.rejectBeforePrompt(call, context);
+
+    expect(result?.status).toBe('blocked');
+    expect(result?.structuredError?.code).toBe('arguments_not_allowed');
+    expect(result?.structuredError?.remediation).toContain('allowed-tools');
+    expect(result?.structuredError?.remediation).not.toContain('ToolSearch');
+    // The early gates know nothing about the arguments' rules, so the call is left to the
+    // prompt-side check and to `prepare`.
+    expect(registry.rejectBeforeGates(call, context)).toBeUndefined();
+    const prepared = registry.prepare(call, context);
+    expect(prepared.status).toBe('rejected');
+    expect(prepared.status === 'rejected' && prepared.result.structuredError?.code).toBe(
+      'arguments_not_allowed',
+    );
     expect(execute).not.toHaveBeenCalled();
   });
 

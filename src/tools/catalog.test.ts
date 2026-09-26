@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS } from '../settings.js';
 import { createToolSurface, normalizeToolDefinition } from './catalog.js';
 import { createDefaultRegistry, createRegistry } from './registry.js';
 import { webTools } from './web.js';
+import { toolSearchTools } from './tool-search.js';
 import { toolSuccess } from './result.js';
 import { SessionRuntime } from '../session/runtime.js';
 
@@ -477,7 +478,9 @@ describe('discovery gate and invalid JSON arguments', () => {
     );
 
     expect(malformed.structuredError?.code).toBe('invalid_json_arguments');
-    expect(refused.structuredError?.code).toBe('tool_not_active');
+    // `Bash` is active; only its arguments are outside `Bash(git *)`, so the refusal names
+    // the rule rather than telling the model to activate a tool it already has.
+    expect(refused.structuredError?.code).toBe('arguments_not_allowed');
   });
 });
 
@@ -504,10 +507,25 @@ describe('ToolSearch query matching', () => {
     ['run the project tests', 'Check'],
     ['GitComit', 'GitCommit'],
     ['GitCommet', 'GitCommit'],
+    ['fetching web pages', 'WebFetch'],
     ['show git logs', 'GitLog'],
     ['gitlog', 'GitLog'],
   ])('ranks %s first as %s', (query, expected) => {
     expect(surface().search(query)[0]?.name).toBe(expected);
+  });
+
+  it.each([
+    ['git checkout', 'Check'],
+    ['find lines that match a pattern', 'GitDiff'],
+    ['find lines that match a pattern', 'AgentApply'],
+  ])('does not answer %s with %s', (query, unexpected) => {
+    // `checkout` is no form of `check`, and `patch` is a different word from `match`:
+    // reading either as the query's own put a tool the query never named in the answer.
+    expect(
+      surface()
+        .search(query)
+        .map((match) => match.name),
+    ).not.toContain(unexpected);
   });
 
   it.each([
@@ -583,5 +601,23 @@ describe('ToolSearch in a bare registry (#270)', () => {
     expect(surface.canExecute({ id: 's', name: 'ToolSearch', arguments: { query: 'x' } })).toBe(
       true,
     );
+  });
+
+  it('names the tools already active this turn beside the ones it loaded', async () => {
+    // A model searching for a tool it already has should learn that from the answer. The
+    // names were only listed when nothing matched, which is the one case where the model
+    // had just been told every deferred tool was tried.
+    const surface = bareSurface('deferred');
+    surface.activate(['WebSearch']);
+    surface.activeDefinitions();
+    const registry = createRegistry();
+    registry.registerAll([...webTools, ...toolSearchTools]);
+
+    const result = await registry.execute(
+      { id: 'again', name: 'ToolSearch', arguments: { query: 'web search' } },
+      { ...context(), toolDiscovery: surface },
+    );
+
+    expect(result.content).toContain('Already active this turn: WebSearch');
   });
 });

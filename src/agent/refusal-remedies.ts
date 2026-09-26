@@ -42,6 +42,7 @@ export function refusalKind(
     case 'hook_blocked':
       return 'hook';
     case 'tool_not_active':
+    case 'arguments_not_allowed':
       return 'inactive';
     case 'capability_denied':
     case 'child_agent_unavailable':
@@ -53,6 +54,8 @@ export function refusalKind(
     case 'user_declined':
       return 'question';
     case 'invalid_json_arguments':
+    case 'invalid_arguments':
+    case 'unknown_tool':
       return 'malformed';
     default:
       return 'other';
@@ -65,7 +68,7 @@ export const REFUSAL_REMEDIES: Readonly<Record<RefusalKind, string>> = {
     'grant the permission, add an allow rule, or change the permission mode (a permissions.deny rule is lifted only by changing that rule)',
   hook: 'a PreToolUse hook refused the calls, which no permission rule or mode lifts; change or remove that hook',
   inactive:
-    "the calls named tools that were not active for the turn, which no permission rule or mode changes; the model has to activate them with ToolSearch first, and the run's allowed tools (--allowedTools, or a skill's or command's allowed-tools) must include them",
+    "the calls named tools, or arguments, that this turn's tool surface does not allow, which no permission rule or mode changes; a deferred tool has to be activated with ToolSearch first, and the run's allowed tools (--allowedTools, or a skill's or command's allowed-tools) must cover the tool and its arguments",
   capability:
     "the calls are outside this agent's tool policy (its profile or definition), which no permission rule or mode lifts; give the step to an agent whose policy allows it",
   skill:
@@ -73,7 +76,7 @@ export const REFUSAL_REMEDIES: Readonly<Record<RefusalKind, string>> = {
   question:
     'the model asked the user questions this run cannot put to anyone (dontAsk mode, or a declined question); it has to proceed without asking',
   malformed:
-    "the calls' arguments never parsed as JSON, which no permission rule or mode lifts; the model has to resend them whole, and if `book tool-stats` shows invalid_json_arguments:truncated_start the provider route is dropping the first fragment of calls",
+    "the calls could not run as sent (arguments that never parsed as JSON or failed the tool's schema, or a tool that does not exist), which no permission rule or mode lifts; the model has to correct them, and if `book tool-stats` shows invalid_json_arguments:truncated_start the provider route is dropping the first fragment of calls",
   ...NETWORK_POLICY_REMEDIES,
   other:
     "the calls were refused for a reason no permission rule or mode lifts; each refused call's own message names the cause",

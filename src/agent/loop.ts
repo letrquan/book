@@ -1901,12 +1901,26 @@ export async function runAgentLoop(
           return undefined;
         }
 
-        // A call that can never run however it is approved — an unknown tool, or arguments that
-        // never parsed — is refused before PreToolUse hooks and the permission check see it, so a
-        // hook never judges it and the user is never asked to approve one (an 'Always' would save
-        // a rule for it). A tool that is merely not active is refused just before the permission
-        // prompt instead, once the mode-specific refusals below have named their mode.
-        const unrunnable = registry.rejectBeforeGates(originalCall, toolContext);
+        // A call that can never run however it is approved — an unknown tool, arguments that
+        // never parsed, or arguments that fail the tool's schema — is refused before PreToolUse
+        // hooks and the permission check see it, so a hook never judges it and the user is never
+        // asked to approve one (an 'Always' on a Bash call with no command would save a bare
+        // `Bash` rule). A tool that is merely not active, or active but refused on its
+        // arguments, is refused just before the permission prompt instead, once the
+        // mode-specific refusals below have named their mode.
+        syncHostMode();
+        const earlyName = canonicalToolName(
+          registry.getTool(originalCall.name)?.name ?? originalCall.name,
+        );
+        // Plan mode hides its mutating tools and dontAsk its question tool, and each refuses them
+        // below with a message that names the mode. "Not active; call ToolSearch" would send the
+        // model after a tool no search can activate, so those calls are left to the mode.
+        const modeRefusesItself =
+          (effectiveMode === 'plan' && !READ_ONLY_PLAN_TOOLS.has(earlyName)) ||
+          (effectiveMode === 'dontAsk' && earlyName === 'AskUserQuestion');
+        const unrunnable = modeRefusesItself
+          ? undefined
+          : registry.rejectBeforeGates(originalCall, toolContext);
         if (unrunnable) {
           toolResults[callIndex] = unrunnable;
           return undefined;
@@ -2053,11 +2067,12 @@ export async function runAgentLoop(
           return undefined;
         }
 
-        // A tool that is not active this turn can never run, so the user is not asked to approve
-        // it (an 'Always' would save a rule for it). Plan mode hides its mutating tools too, and
-        // its own refusal below names the mode, which "call ToolSearch" would not.
-        if (effectiveMode !== 'plan' || READ_ONLY_PLAN_TOOLS.has(canonName)) {
-          const inactive = registry.rejectInactive(call, toolContext);
+        // A tool this turn does not expose, or an active tool whose arguments this run's
+        // allowed-tools rules do not cover, can never run, so the user is not asked to approve it
+        // (an 'Always' would save a rule for it). Plan mode hides its mutating tools too, and its
+        // own refusal below names the mode, which "call ToolSearch" would not.
+        if (!modeRefusesItself) {
+          const inactive = registry.rejectBeforePrompt(call, toolContext);
           if (inactive) {
             if (forceSkillPermission && invokedSkillName && skillActivationReason) {
               skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'tool_not_active');
@@ -2555,9 +2570,20 @@ export async function runAgentLoop(
       // policy or user decision and `cancelled` is an abort; neither ran, so neither
       // counts toward the witness. Everything that did run counts, including errors —
       // an error-spin is caught by the witness freezing on identical file hashes.
-      /** Whether a result feeds the refusal brake. */
-      const countsAsRefusal = (result: ToolResult | undefined): boolean =>
-        isRefusal(result) || result?.structuredError?.code === 'invalid_json_arguments';
+      /**
+       * Whether a result feeds the refusal brake: a refusal, or a call refused before it ran
+       * (unknown tool, arguments that never parsed or failed the schema). Those used to reach the
+       * permission prompt, which an unattended run answers `deny`, so a spin on them was stopped;
+       * refused ahead of the prompt now, they still must be. An abort that cancelled a call before
+       * it started is not a refusal.
+       */
+      const countsAsRefusal = (result: ToolResult | undefined): boolean => {
+        const code = result?.structuredError?.code ?? '';
+        return (
+          isRefusal(result) ||
+          (PRE_EXECUTION_ERROR_CODES.has(code) && code !== 'cancelled_before_start')
+        );
+      };
       let refusedThisTurn = 0;
       for (let index = 0; index < toolCalls.length; index++) {
         const result = orderedToolResults[index];

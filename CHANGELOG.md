@@ -286,16 +286,18 @@ All notable changes to this project are documented in this file.
   `cmc/stealth/space-bunny-alpha` route a parallel call sometimes arrives with its opening
   fragment missing: the raw text starts `/tools/file.ts", "newString": …`. The router dropped it,
   but the error told the model to escape backslashes. `invalid_json_arguments` now names the shape
-  the text arrived in (truncated at the start, cut off at the end, two objects, single quotes, other
-  syntax) with advice for each, quotes the text on both sides of the parse position, and shows an
-  invisible character as a `\uXXXX` escape instead of a space. `book tool-stats` counts the shapes
+  the text arrived in (truncated at the start, wrapped in other text, not an object, cut off at the
+  end, two objects, single quotes, other syntax) with advice for each, quotes the text on both sides
+  of the parse position, and shows an invisible character as a `\uXXXX` escape instead of a space. `book tool-stats` counts the shapes
   per provider and model, and both provider clients log raw argument fragments under `BOOK_DEBUG`.
   Records written before this version carry no provider, so they stay under the bare model id: a
   route whose calls span the upgrade shows as two rows until the older records age out of the
   retention window.
 - **A call whose arguments never parsed is refused before hooks and the permission prompt** (#242).
   PreToolUse hooks judged the `{__raw}` wrapper, and in `default` mode the user was asked to approve
-  a call that could never run, with "Always" saving a rule built from it.
+  a call that could never run, with "Always" saving a rule built from it. Schema-invalid arguments
+  and unknown tools are refused at that same point — a `Bash` call with no `command` has no primary
+  argument, so the "Always" it would have saved is a bare `Bash` rule allowing every `Bash` call.
 - **Calls refused before they started no longer count as tools that ran** (#242). After a reload,
   `toolNamesFromHistory` counted an `unknown_tool` result and a call cancelled before it started.
   Both now belong to one shared set of pre-execution codes, and a call the abort or an ended stream
@@ -314,8 +316,9 @@ All notable changes to this project are documented in this file.
   string, so `fetch url page` matched nothing and `Task delegate subagent` found only `AgentSpawn`.
   The query is now scored word by word against tool names, aliases, intent keywords and
   descriptions, so a multi-word request ranks the tool that names the most of it, and CamelCase,
-  `sub-agent`/`subagent` and plural spellings meet each other. Fuzzy matching stays the fallback
-  for a misspelled name (`GitComit`), and the intent keywords were filled out for the git,
+  `sub-agent`/`subagent` and plural spellings meet each other, and the word ranking tolerates one
+  typo in a longer word (`GitComit`, `GitCommet`). Fuzzy matching is the fallback for a query none
+  of whose words names anything, and the intent keywords were filled out for the git,
   session, agent, evidence, check and notebook tools.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
