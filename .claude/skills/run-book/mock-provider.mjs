@@ -181,6 +181,9 @@ async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 1
   const delayMs = typeof turn.chunkDelayMs === 'number' ? turn.chunkDelayMs : chunkDelayMs;
 
   sse(res, { ...base, choices: [{ index: 0, delta: { role: 'assistant' } }] });
+  // `thinkMs` holds the turn before its first delta, the way a real model pauses
+  // to think, so the working spinner is on screen long enough to be seen.
+  if (turn.thinkMs) await new Promise((resolve) => setTimeout(resolve, turn.thinkMs));
 
   // `tools: [...]` sends several calls in one turn, the way a model that
   // batches parallel reads does; `tool` is the one-call shorthand.

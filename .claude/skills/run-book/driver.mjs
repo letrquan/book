@@ -57,6 +57,9 @@ const DEFAULT_TIMEOUT = Number(opt('timeout', '20000'));
 // keystrokes, 600ms does not. 2500ms is the comfortable margin.
 const READY_SETTLE_MS = Number(opt('ready-settle', '2500'));
 const SEND_GAP_MS = Number(opt('send-gap', '250'));
+// `--record <file>`: every PTY chunk with its arrival time, as JSON, for
+// record-gif.mjs to replay into an animated GIF.
+const RECORD_FILE = opt('record', null);
 // Forwarded to the mock: the pause before each streamed delta (see mock-provider.mjs).
 const CHUNK_DELAY_MS = opt('chunk-delay-ms', null);
 // Leave the startup splash on: skip the workspace settings.json that turns it off.
@@ -173,8 +176,11 @@ const pty = BIN
       [DIST_INDEX, '--workspace', WORKSPACE, ...PERSISTENCE, ...extraArgs],
       { cwd: WORKSPACE, cols: COLS, rows: ROWS, env, name: 'xterm-256color' },
     );
+const recordStart = Date.now();
+const recorded = [];
 pty.onData((d) => {
   raw += d;
+  if (RECORD_FILE) recorded.push([Date.now() - recordStart, d]);
 });
 pty.onExit((e) => {
   exited = true;
@@ -454,6 +460,10 @@ async function cleanup() {
   }
   releasePty();
   mockProc?.kill();
+  if (RECORD_FILE) {
+    writeFileSync(RECORD_FILE, JSON.stringify({ cols, rows, chunks: recorded }));
+    console.log(`[driver] record -> ${RECORD_FILE}`);
+  }
   if (scratch) rmSync(scratch, { recursive: true, force: true });
 }
 
