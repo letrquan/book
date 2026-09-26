@@ -70,14 +70,19 @@ function refusedDestinations(result: RefusalResult): string[] {
   });
 }
 
-/** `a`, `a and b`, `a, b and c`, or `a, b, c and 2 more`. */
-function namedList(names: string[]): string {
+/** `a`, `a and b`, `a, b and c`, or `a, b, c and 2 more`, where `unnamed` counts the rest. */
+function namedList(names: string[], unnamed: number): string {
   const shown = names.slice(0, MAX_NAMED_DESTINATIONS);
-  const hidden = names.length - shown.length;
+  const hidden = names.length - shown.length + unnamed;
   const items = hidden > 0 ? [...shown, `${hidden} more`] : shown;
   return items.length === 1
     ? items[0]
     : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/** The host a refused destination is named by: what precedes its ` (address)` part. */
+function destinationHost(destination: string): string {
+  return destination.replace(/ \([^()]*\)$/, '');
 }
 
 /**
@@ -86,25 +91,36 @@ function namedList(names: string[]): string {
  * destinations it refused. Results that are not network-policy refusals are ignored.
  */
 export function networkPolicyRemedies(results: readonly RefusalResult[]): string[] {
-  const destinations: Record<NetworkPolicyRefusal, Set<string>> = {
-    fetch: new Set(),
-    search: new Set(),
+  // Keyed by host, so one host that resolved to several addresses is named once: the operator
+  // acts on the host, and every address for it comes from the same DNS answer or the same prefix.
+  const destinations: Record<NetworkPolicyRefusal, Map<string, string>> = {
+    fetch: new Map(),
+    search: new Map(),
   };
+  const unnamed: Record<NetworkPolicyRefusal, number> = { fetch: 0, search: 0 };
   const kinds = new Set<NetworkPolicyRefusal>();
   for (const result of results) {
     const kind = networkPolicyRefusal(result);
     if (!kind) continue;
     kinds.add(kind);
-    for (const destination of refusedDestinations(result)) destinations[kind].add(destination);
+    const named = refusedDestinations(result);
+    // A refusal that names no destination is still one more of its kind, so it is counted in the
+    // "2 more" rather than dropped.
+    if (named.length === 0) unnamed[kind] += 1;
+    for (const destination of named) {
+      const host = destinationHost(destination);
+      if (!destinations[kind].has(host)) destinations[kind].set(host, destination);
+    }
   }
 
   const remedies: string[] = [];
   if (kinds.has('fetch')) {
-    const names = [...destinations.fetch];
+    const names = [...destinations.fetch.values()];
+    const total = names.length + unnamed.fetch;
     const refused =
       names.length === 0
         ? 'a private or special-use destination'
-        : `the private or special-use destination${names.length === 1 ? '' : 's'} ${namedList(names)}`;
+        : `the private or special-use destination${total === 1 ? '' : 's'} ${namedList(names, unnamed.fetch)}`;
     remedies.push(
       `the web network policy refused ${refused}, which no permission rule or mode lifts; ` +
         'BOOK_WEB_ALLOW_PRIVATE_NETWORK=true in the host environment lifts it, but for every ' +
@@ -113,11 +129,11 @@ export function networkPolicyRemedies(results: readonly RefusalResult[]): string
     );
   }
   if (kinds.has('search')) {
-    const names = [...destinations.search];
+    const names = [...destinations.search.values()];
     remedies.push(
       (names.length === 0
         ? 'every built-in search provider resolved to a private or special-use destination'
-        : `every built-in search provider resolved to a private or special-use destination, namely ${namedList(names)}`) +
+        : `every built-in search provider resolved to a private or special-use destination, namely ${namedList(names, unnamed.search)}`) +
         ", which no setting, permission rule or mode lifts; check the host's DNS or proxy (a fake-IP " +
         'DNS such as 198.18.0.0/15 causes this)',
     );
@@ -263,6 +279,8 @@ function embeddedIpv4Destinations(groups: number[]): string[] | undefined {
  * through. An ISATAP router tunnels to that IPv4 address, so the IPv4 policy has to decide it.
  */
 function isatapIpv4(groups: number[]): string | undefined {
+  // Teredo 2001:0::/32 is not ISATAP: its last 32 bits are the obfuscated client, not an address.
+  if (groups[0] === 0x2001 && groups[1] === 0x0000) return undefined;
   if ((groups[4] & 0xfcff) !== 0 || groups[5] !== 0x5efe) return undefined;
   return ipv4FromGroups(groups[6], groups[7]);
 }
@@ -378,12 +396,12 @@ export const safeNetworkLookup: LookupFunction = (hostname, options, callback) =
     if (options.all) callback(error, []);
     else callback(error, '', 0);
   };
-  const refuse = (reason: string, destination?: string): void =>
+  const refuse = (reason: string, destination: string): void =>
     fail(
       Object.assign(new Error(reason), {
         code: 'EACCES',
         [CONNECTION_BLOCKED]: true,
-        ...(destination === undefined ? {} : { [BLOCKED_DESTINATION]: destination }),
+        [BLOCKED_DESTINATION]: destination,
       }) as NodeJS.ErrnoException,
     );
 
@@ -400,12 +418,16 @@ export const safeNetworkLookup: LookupFunction = (hostname, options, callback) =
       );
       return;
     }
-    // Refuse an empty result rather than reporting success: the single-address form would
-    // otherwise hand the connector '' as a destination it never validated.
+    // Fail an empty result rather than reporting success: the single-address form would otherwise
+    // hand the connector '' as a destination it never validated. It is a resolution failure, as
+    // `dns.lookup` reports one, not a policy refusal: nothing private was involved.
     if (addresses.length === 0) {
-      // No destination to name: nothing private was involved, and naming the host would present
-      // it as a private destination.
-      refuse(`Connection blocked because ${hostname} resolved to no usable address.`);
+      fail(
+        Object.assign(new Error(`${hostname} resolved to no usable address.`), {
+          code: 'ENOTFOUND',
+          hostname,
+        }) as NodeJS.ErrnoException,
+      );
       return;
     }
     if (options.all) callback(null, addresses);
@@ -413,11 +435,16 @@ export const safeNetworkLookup: LookupFunction = (hostname, options, callback) =
   });
 };
 
-function normalizedHostname(url: URL): string {
-  return url.hostname
+/** A hostname as the policy names it: no IPv6 brackets, no trailing dot, lowercase. */
+function normalizeHost(hostname: string): string {
+  return hostname
     .replace(/^\[|\]$/g, '')
     .replace(/\.$/, '')
     .toLowerCase();
+}
+
+function normalizedHostname(url: URL): string {
+  return normalizeHost(url.hostname);
 }
 
 function isBlockedHostname(hostname: string): boolean {
@@ -434,15 +461,12 @@ function isBlockedHostname(hostname: string): boolean {
 /**
  * How a refused destination is named to the operator: the host the model asked for, and the address
  * it resolved to when that differs (`example.com (10.0.0.2)`). A literal address or a name refused
- * before any lookup (`localhost`) is named once. The host is normalized as `normalizedHostname`
- * does, lowercased and without a trailing dot, so the connect-time name matches the pre-flight one.
+ * before any lookup (`localhost`) is named once. The host is normalized by `normalizeHost`,
+ * lowercased and without a trailing dot, so the connect-time name matches the pre-flight one.
  */
 function refusedDestination(hostname: string, address?: string): string {
-  const host = hostname
-    .replace(/^\[|\]$/g, '')
-    .replace(/\.$/, '')
-    .toLowerCase();
-  return address === undefined || address === host ? host : `${host} (${address})`;
+  const host = normalizeHost(hostname);
+  return address === undefined || address.toLowerCase() === host ? host : `${host} (${address})`;
 }
 
 export async function validateWebUrl(

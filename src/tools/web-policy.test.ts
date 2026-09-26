@@ -344,6 +344,12 @@ describe('web URL policy', () => {
       expect(isBlockedIpAddress(address)).toBe(false);
     });
 
+    it('does not read a Teredo address as ISATAP when its obfuscated port happens to be 5efe', () => {
+      // Teredo owns groups 4-7 (flags, port, obfuscated client): server 65.54.227.120 and client
+      // ~f7f7:f7f7 = 8.8.8.8, both public. Read raw as ISATAP, the tail would be 247.247.247.247.
+      expect(isBlockedIpAddress('2001:0:4136:e378:0:5efe:f7f7:f7f7')).toBe(false);
+    });
+
     it('blocks SIIT and ISATAP literals at pre-flight without resolving them', async () => {
       const resolver = vi.fn(async () => ['93.184.216.34']);
 
@@ -418,10 +424,10 @@ describe('web URL policy', () => {
 
     it('names a connect-time host the way pre-flight does: lowercased, without a trailing dot', async () => {
       // undici hands the lookup the host as written, so `EXAMPLE.com.` and `example.com` would
-      // otherwise be two destinations in one stop message.
-      const refused = (await runSafeLookup('LOCALHOST', { all: true })).error;
+      // otherwise be two destinations in one stop message. A literal needs no DNS.
+      const refused = (await runSafeLookup('::FFFF:0:A00:1', { all: true })).error;
 
-      expect(connectionBlockedDestination(refused)).toMatch(/^localhost \(/);
+      expect(connectionBlockedDestination(refused)).toBe('::ffff:0:a00:1');
     });
   });
 });
@@ -507,6 +513,23 @@ describe('network-policy refusals', () => {
     expect(many).toContain('10.0.0.3');
     expect(many).not.toContain('b.example');
     expect(many).toContain('2 more');
+  });
+
+  it('counts a refusal that named no destination rather than hiding it', () => {
+    const [fetch] = networkPolicyRemedies([fetchRefusal('10.0.0.1'), fetchRefusal()]);
+
+    expect(fetch).toContain('destinations 10.0.0.1 and 1 more');
+  });
+
+  it('names one host once even when it resolved to different private addresses', () => {
+    // Pre-flight and connect time can each pick another address of the same round-robin host.
+    const [fetch] = networkPolicyRemedies([
+      fetchRefusal('example.com (10.0.0.2)'),
+      fetchRefusal('example.com (10.0.0.3)'),
+    ]);
+
+    expect(fetch).toContain('the private or special-use destination example.com (10.0.0.2),');
+    expect(fetch).not.toContain('10.0.0.3');
   });
 
   it("names the search providers' private destinations", () => {

@@ -168,18 +168,20 @@ describe('WebFetch', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
-  it('reports a cross-origin redirect to a private host as the redirect, not as a refused destination', async () => {
-    // The target is a host the model never asked for. Refusing it as private_network_forbidden
-    // would name it as the model's destination and point the operator at the global private-network
-    // switch, which would still leave the call refused, now as a cross-origin redirect.
+  it('stops at a cross-origin redirect before judging, or even resolving, the target', async () => {
+    // The target is a host the model never asked for. Following it is a new WebFetch with its own
+    // permission and policy decision, so this call reports the origin change whatever the target
+    // is: refused as private_network_forbidden it would be named as the model's own destination,
+    // and the switch that lifts that would still leave this call stopped at the origin check.
+    const resolver = vi.fn(async () => ['93.184.216.34']);
     const fetchImpl = vi.fn(
       async () =>
         new Response(null, {
           status: 302,
-          headers: { location: 'https://169.254.169.254/latest/meta-data/#frag' },
+          headers: { location: 'https://internal.example/latest/meta-data/#frag' },
         }),
     );
-    const { fetchTool } = toolsFor(fetchImpl);
+    const { fetchTool } = toolsFor(fetchImpl, resolver);
 
     const result = await fetchTool.execute({ url: 'https://example.com/start' }, context());
 
@@ -187,12 +189,26 @@ describe('WebFetch', () => {
     expect(result.structuredError?.code).toBe('cross_origin_redirect');
     expect(result.structuredError?.details).toMatchObject({
       sourceUrl: 'https://example.com/start',
-      targetUrl: 'https://169.254.169.254/latest/meta-data/',
+      targetUrl: 'https://internal.example/latest/meta-data/',
     });
-    // Following it would be refused, so the model is not invited to.
-    expect(result.structuredError?.remediation).not.toContain('Call WebFetch again');
-    expect(result.structuredError?.remediation).toContain('private or special-use');
+    // Only the requested host was looked up; an attacker-chosen target never reaches DNS.
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(resolver).toHaveBeenCalledWith('example.com');
     expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('reports a cross-origin redirect to a private address or plain HTTP as the redirect', async () => {
+    for (const location of ['https://169.254.169.254/', 'http://other.example/']) {
+      const fetchImpl = vi.fn(
+        async () => new Response(null, { status: 302, headers: { location } }),
+      );
+      const { fetchTool } = toolsFor(fetchImpl);
+
+      const result = await fetchTool.execute({ url: 'https://example.com/start' }, context());
+
+      expect(result.structuredError?.code, location).toBe('cross_origin_redirect');
+      expect(result.structuredError?.remediation, location).toContain(location);
+    }
   });
 
   it('still refuses a same-origin redirect whose host now resolves privately', async () => {

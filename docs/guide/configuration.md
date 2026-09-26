@@ -180,11 +180,12 @@ after a failed run.
 
 `WebFetch` requires HTTPS by default, validates DNS results and the address used by the network
 connection, blocks private/special-use destinations, and stops on cross-origin redirects so the
-new origin receives its own permission decision. A cross-origin redirect is reported as such even
-when its target is a private destination, since that target is one the model did not ask for. It
-returns Markdown by default; `format` can be `markdown`, `text`, or sanitized `html`. `WebSearch`
-works without configuration through the built-in Exa MCP provider and accepts optional `limit`,
-`domains`, `recencyDays`, and `country` hints. Its provider endpoint is built in and cannot be overridden through settings or environment
+new origin receives its own permission decision. A cross-origin redirect is reported before its
+target is judged or even resolved, since that target is one the model did not ask for; following
+it is a new `WebFetch` with its own decision. It returns Markdown by default; `format` can be
+`markdown`, `text`, or sanitized `html`. `WebSearch` works without configuration through the
+built-in Exa MCP provider and accepts optional `limit`, `domains`, `recencyDays`, and `country`
+hints. Its provider endpoint is built in and cannot be overridden through settings or environment
 variables.
 
 An IPv6 address in one of these IPv4-embedding ranges is judged by the IPv4 address it carries:

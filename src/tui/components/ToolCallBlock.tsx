@@ -32,12 +32,16 @@ import { networkPolicyRefusal } from '../../tools/web-policy.js';
 
 /**
  * A blocked result shows its reason only for a network-policy refusal, which the user needs to
- * understand. `networkPolicyRefusal` owns the list of those codes, shared with the loop's stop
- * message.
+ * understand, and for a cross-origin redirect, whose target may be a host the model never asked
+ * for. `networkPolicyRefusal` owns the list of those codes, shared with the loop's stop message.
  */
 function showsErrorMessage(result: ToolResult | undefined): boolean {
   if (!result?.structuredError) return false;
-  return result.status !== 'blocked' || networkPolicyRefusal(result) !== undefined;
+  return (
+    result.status !== 'blocked' ||
+    networkPolicyRefusal(result) !== undefined ||
+    result.structuredError.code === 'cross_origin_redirect'
+  );
 }
 
 interface ToolCallBlockProps {

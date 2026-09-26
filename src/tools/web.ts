@@ -135,8 +135,6 @@ class CrossOriginRedirectError extends Error {
   constructor(
     readonly sourceUrl: string,
     readonly targetUrl: string,
-    /** The target is a destination the private-network policy refuses. */
-    readonly privateTarget = false,
   ) {
     super(`Redirect from ${sourceUrl} to a different origin requires a new WebFetch approval.`);
     this.name = 'CrossOriginRedirectError';
@@ -479,31 +477,17 @@ async function fetchWithPolicy(
     if (!location)
       throw new Error(`HTTP ${response.status} redirect did not include a Location header.`);
     if (redirects.length >= policy.maxRedirects) throw new RedirectLimitError(policy.maxRedirects);
-    let next: URL;
-    try {
-      next = await validateWebUrl(
-        new URL(location, current).toString(),
-        policy,
-        deps.resolveHostname,
-      );
-    } catch (error) {
-      // A cross-origin target the private-network policy refuses is still reported as the
-      // cross-origin redirect it is. It is a host the model never asked for, and following it
-      // is a new WebFetch with its own policy and permission decision. Refused as a private
-      // destination, it would be named as the model's own and point the operator at a switch
-      // that would still leave this call stopped at the origin check.
-      if (error instanceof WebPolicyError && error.code === 'private_network_forbidden') {
-        const target = new URL(location, current);
-        target.hash = '';
-        if (target.origin !== current.origin) {
-          throw new CrossOriginRedirectError(current.toString(), target.toString(), true);
-        }
-      }
-      throw error;
+    // A different origin is reported before the target is judged, or even resolved: it is a host
+    // the model never asked for, and following it is a new WebFetch that gets its own permission
+    // and policy decision. Judged here, a private or plain-HTTP target would be refused under its
+    // own code, naming the target as the model's destination and a switch that would still leave
+    // this call stopped at the origin change; and an attacker-chosen host would reach DNS.
+    const target = new URL(location, current);
+    target.hash = '';
+    if (target.origin !== current.origin) {
+      throw new CrossOriginRedirectError(current.toString(), target.toString());
     }
-    if (next.origin !== current.origin) {
-      throw new CrossOriginRedirectError(current.toString(), next.toString());
-    }
+    const next = await validateWebUrl(target.toString(), policy, deps.resolveHostname);
     redirects.push(next.toString());
     current = next;
   }
@@ -541,9 +525,7 @@ function webPolicyFailure(error: unknown): ToolResult | undefined {
     return toolFailure(error.message, {
       code: 'cross_origin_redirect',
       status: 'blocked',
-      remediation: error.privateTarget
-        ? `The redirect target ${error.targetUrl} is a private or special-use destination, which the web network policy refuses; do not follow it.`
-        : `Call WebFetch again with url: ${error.targetUrl}`,
+      remediation: `Call WebFetch again with url: ${error.targetUrl}`,
       details: { sourceUrl: error.sourceUrl, targetUrl: error.targetUrl },
     });
   }
