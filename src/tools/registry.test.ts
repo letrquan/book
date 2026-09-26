@@ -734,6 +734,83 @@ describe('repeated identical failure escalation', () => {
     expect(second.structuredError?.remediation).toMatch(/Do not retry it unchanged/);
     runtime.dispose();
   });
+
+  it('escalates a repeated identical refusal for a tool that is not active', async () => {
+    // An inactive tool is refused before it ever runs, so the model gets the same rejection
+    // turn after turn. "Call ToolSearch" alone never says whether the call was refused before,
+    // which is how a model re-sends it unchanged until the run is stopped.
+    const registry = createRegistry();
+    registry.register({
+      name: 'Deferred',
+      description: 'never active',
+      parameters: { type: 'object', properties: { q: { type: 'string' } } },
+      execute: async () => toolSuccess('never reached'),
+    });
+    const runtime = new SessionRuntime();
+    const context: ToolContext = {
+      workspaceRoot: dir,
+      env: {},
+      runtime,
+      toolDiscovery: {
+        isActive: () => false,
+        canExecute: () => false,
+      } as unknown as ToolContext['toolDiscovery'],
+    };
+    const args = { q: 'x' };
+
+    const first = await registry.execute({ id: 'i1', name: 'Deferred', arguments: args }, context);
+    const second = await registry.execute({ id: 'i2', name: 'Deferred', arguments: args }, context);
+
+    expect(first.structuredError?.code).toBe('tool_not_active');
+    expect(second.structuredError?.code).toBe('tool_not_active');
+    expect(second.structuredError?.remediation).toContain('Do not retry it unchanged');
+    // A refusal is not a failure, and "already failed" would send the model hunting a broken
+    // tool instead of the turn that never activated it.
+    expect(second.structuredError?.remediation).toContain('was already refused');
+    runtime.dispose();
+  });
+
+  it('forgets a call earlier failures once the same call succeeds', async () => {
+    // A fail/succeed/fail sequence is not a model spinning on one call: the second failure is
+    // the first failure of a new attempt, and counting the one before the success would tell
+    // the model not to retry a call that has since worked.
+    let attempt = 0;
+    const registry = createRegistry();
+    registry.register({
+      name: 'Intermittent',
+      description: 'fails, works, fails again',
+      parameters: { type: 'object', properties: { a: { type: 'string' } } },
+      execute: async () => {
+        attempt++;
+        return attempt === 2
+          ? toolSuccess('recovered')
+          : toolFailure('nope', { code: 'tool_error' });
+      },
+    });
+    const runtime = new SessionRuntime();
+    const context: ToolContext = { workspaceRoot: dir, env: {}, runtime };
+    const args = { a: 'x' };
+
+    const first = await registry.execute(
+      { id: 's1', name: 'Intermittent', arguments: args },
+      context,
+    );
+    const second = await registry.execute(
+      { id: 's2', name: 'Intermittent', arguments: args },
+      context,
+    );
+    const third = await registry.execute(
+      { id: 's3', name: 'Intermittent', arguments: args },
+      context,
+    );
+
+    expect(first.structuredError?.remediation).toBeUndefined();
+    expect(second.status).toBe('success');
+    // The success cleared the record, so the next failure is a first failure again.
+    expect(third.structuredError?.remediation).toBeUndefined();
+    expect(third.structuredError?.remediation ?? '').not.toContain('already failed');
+    runtime.dispose();
+  });
 });
 
 describe('tool cancellation and timeout', () => {

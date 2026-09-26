@@ -276,6 +276,12 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A refusal now says what lifts it** (#246). A run stopped as `all_tools_blocked` blamed a
+  permission for every refusal, so a PreToolUse hook, an inactive tool, a managed agent's tool
+  policy or a cross-origin redirect was answered with "grant the permission" — advice nothing acts
+  on. Each kind of refusal has its own remedy, an inactive call is escalated like a failure, a
+  refusal says it was refused rather than failed, and a call's remembered failures are forgotten
+  once it succeeds.
 - **A tool call that lost its first fragment is resent, not re-escaped** (#260). On 9router's
   `cmc/stealth/space-bunny-alpha` route a parallel call sometimes arrives with its opening
   fragment missing: the raw text starts `/tools/file.ts", "newString": …`. The router dropped it,

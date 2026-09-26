@@ -203,6 +203,13 @@ function describeInvalidJson(
   };
 }
 
+/** The hash of the arguments that identify a call, ignoring the host-only `timeout` budget. */
+function argumentsDigest(call: ToolCall): string {
+  const significantArgs = { ...call.arguments };
+  delete significantArgs.timeout;
+  return createHash('sha256').update(stableStringify(significantArgs)).digest('hex');
+}
+
 /**
  * Advisory circuit breaker: when the model repeats a call that already failed
  * with the same arguments and error, escalate the remediation instead of
@@ -214,11 +221,7 @@ function noteRepeatedFailure(context: ToolContext, call: ToolCall, result: ToolR
   // retried, but a model re-issuing it unchanged is spinning just the same.
   const escalates = result.status === 'error' || result.status === 'blocked';
   if (!memory || !escalates || !result.structuredError) return result;
-  const significantArgs = { ...call.arguments };
-  delete significantArgs.timeout;
-  const signature = `${call.name}:${result.structuredError.code}:${createHash('sha256')
-    .update(stableStringify(significantArgs))
-    .digest('hex')}`;
+  const signature = `${call.name}:${result.structuredError.code}:${argumentsDigest(call)}`;
   const previousFailures = memory.get(signature) ?? 0;
   memory.delete(signature);
   memory.set(signature, previousFailures + 1);
@@ -230,7 +233,10 @@ function noteRepeatedFailure(context: ToolContext, call: ToolCall, result: ToolR
   // Escalate only genuine repeats; a retryable transient failure may legitimately
   // be retried unchanged, and the tool's own remediation must stay visible.
   if (previousFailures === 0 || result.structuredError.retryable) return result;
-  const escalation = `This exact ${call.name} call already failed ${previousFailures} time(s) with the same arguments. Do not retry it unchanged: re-read the target, revise the arguments, or use a different tool.`;
+  // A refusal did not fail, and telling the model it did sends it looking for a broken tool
+  // rather than for the rule, hook or policy that refused it.
+  const verb = result.status === 'blocked' ? 'was already refused' : 'already failed';
+  const escalation = `This exact ${call.name} call ${verb} ${previousFailures} time(s) with the same arguments. Do not retry it unchanged: re-read the target, revise the arguments, or use a different tool.`;
   const existing = result.structuredError.remediation;
   return {
     ...result,
@@ -239,6 +245,20 @@ function noteRepeatedFailure(context: ToolContext, call: ToolCall, result: ToolR
       remediation: existing ? `${existing} ${escalation}` : escalation,
     },
   };
+}
+
+/**
+ * Forget a call's remembered failures once the same call succeeds, so a later failure is not
+ * told it "already failed" counting failures from before the success.
+ */
+function forgetFailures(context: ToolContext, call: ToolCall): void {
+  const memory = context.runtime?.recentToolFailures;
+  if (!memory || memory.size === 0) return;
+  const prefix = `${call.name}:`;
+  const suffix = `:${argumentsDigest(call)}`;
+  for (const signature of [...memory.keys()]) {
+    if (signature.startsWith(prefix) && signature.endsWith(suffix)) memory.delete(signature);
+  }
 }
 
 async function executeWithTimeout(
@@ -394,13 +414,17 @@ export function createRegistry() {
     return { ...call, name: tool.name, arguments: normalizeToolArguments(tool, call.arguments) };
   };
 
-  const inactiveRejection = (call: ToolCall): ToolResult =>
-    toolFailure(`Tool "${call.name}" is not active for this turn.`, {
-      toolCallId: call.id,
-      code: 'tool_not_active',
-      status: 'blocked',
-      remediation: 'Call ToolSearch to discover it or use an authorized active tool.',
-    });
+  const inactiveRejection = (call: ToolCall, context: ToolContext): ToolResult =>
+    noteRepeatedFailure(
+      context,
+      call,
+      toolFailure(`Tool "${call.name}" is not active for this turn.`, {
+        toolCallId: call.id,
+        code: 'tool_not_active',
+        status: 'blocked',
+        remediation: 'Call ToolSearch to discover it or use an authorized active tool.',
+      }),
+    );
 
   /** The invalid-JSON rejection for a normalized call, or undefined when its arguments parsed. */
   const invalidJsonRejection = (
@@ -465,7 +489,7 @@ export function createRegistry() {
         arguments: normalizeToolArguments(tool, call.arguments),
       };
       if (describeInvalidJson(tool.name, normalizedCall.arguments) === undefined) return undefined;
-      if (!isVisible(normalizedCall, context)) return inactiveRejection(call);
+      if (!isVisible(normalizedCall, context)) return inactiveRejection(call, context);
       return invalidJsonRejection(tool, normalizedCall, context);
     },
     prepare(call: ToolCall, context: ToolContext): PrepareToolCallResult {
@@ -496,14 +520,14 @@ export function createRegistry() {
       // `canExecute` check here instead, before the JSON check, which is where
       // it ran before `isActive` existed: every call it refused is refused alike.
       if (!isVisible(normalizedCall, context))
-        return { status: 'rejected', result: inactiveRejection(call) };
+        return { status: 'rejected', result: inactiveRejection(call, context) };
       // Invalid JSON is named before the argument-scoped rules run: a rule such
       // as `Bash(git *)` cannot match text that never parsed, so the gate would
       // report a malformed call to an active tool as an inactive one.
       const jsonRejection = invalidJsonRejection(tool, normalizedCall, context);
       if (jsonRejection) return { status: 'rejected', result: jsonRejection };
       if (discovery?.isActive && !discovery.canExecute(normalizedCall))
-        return { status: 'rejected', result: inactiveRejection(call) };
+        return { status: 'rejected', result: inactiveRejection(call, context) };
 
       const providerArguments = { ...normalizedCall.arguments };
       // Hide the host control from validation only while the tool keeps it
@@ -586,6 +610,7 @@ export function createRegistry() {
           );
           if (result.status === 'success') {
             if (attempt > 0) result.metrics = { ...result.metrics, retryAttempt: attempt + 1 };
+            forgetFailures(context, normalizedCall);
             return result;
           }
           if (result.status === 'blocked')

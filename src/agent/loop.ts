@@ -60,10 +60,11 @@ import {
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import {
-  NETWORK_POLICY_REMEDIES,
-  networkPolicyRefusal,
-  type NetworkPolicyRefusal,
-} from '../tools/web-policy.js';
+  REFUSAL_KIND_ORDER,
+  REFUSAL_REMEDIES,
+  refusalKind,
+  type RefusalKind,
+} from './refusal-remedies.js';
 import {
   formatUserQuestionAnswers,
   validateUserQuestionResponse,
@@ -738,11 +739,11 @@ export async function runAgentLoop(
      */
     const blockedTurnTools = new Set<string>();
     /**
-     * What refused the streak's calls: a kind of network-policy refusal, or `other` for a
-     * permission or any other refusal. Kept over every turn of the streak, not only the last,
-     * because each kind names a different remedy in the terminal message.
+     * What refused the streak's calls, as the kind of refusal that decides what lifts it. Kept
+     * over every turn of the streak, not only the last, because each kind names a different
+     * remedy in the terminal message.
      */
-    const blockedStreakCauses = new Set<NetworkPolicyRefusal | 'other'>();
+    const blockedStreakCauses = new Set<RefusalKind>();
     // Monotonic, and never leaves this function as a stamp. Over a run measured
     // in days a wall-clock correction would silently rewrite how long the model
     // is told it has been working, in either direction.
@@ -2551,7 +2552,7 @@ export async function runAgentLoop(
         blockedTurnStreak++;
         for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
         for (const result of orderedToolResults) {
-          blockedStreakCauses.add(networkPolicyRefusal(result) ?? 'other');
+          blockedStreakCauses.add(refusalKind(result));
         }
       } else {
         blockedTurnStreak = 0;
@@ -2694,17 +2695,13 @@ export async function runAgentLoop(
           turns: blockedTurnStreak,
           tools: refused,
         });
-        // Each kind of refusal has its own remedy, and a streak that mixes kinds names
-        // each one, because every refused call needs its own fix before anything can
-        // proceed. A permission refusal is lifted by a rule or a mode. A network-policy
-        // refusal is lifted by neither, bypassPermissions included: a refused WebFetch
-        // by the host's opt-in, a refused WebSearch only by fixing the host's DNS.
-        const remedies: string[] = [];
-        if (blockedStreakCauses.has('other') || blockedStreakCauses.size === 0) {
-          remedies.push('grant the permission, add an allow rule, or change the permission mode');
-        }
-        if (blockedStreakCauses.has('fetch')) remedies.push(NETWORK_POLICY_REMEDIES.fetch);
-        if (blockedStreakCauses.has('search')) remedies.push(NETWORK_POLICY_REMEDIES.search);
+        // Each kind of refusal has its own remedy, and a streak that mixes kinds names each one,
+        // because every refused call needs its own fix before anything can proceed.
+        const causes: RefusalKind[] =
+          blockedStreakCauses.size > 0 ? [...blockedStreakCauses] : ['permission'];
+        const remedies = REFUSAL_KIND_ORDER.filter((kind) => causes.includes(kind)).map(
+          (kind) => REFUSAL_REMEDIES[kind],
+        );
         const detail =
           `Every tool call was refused on ${blockedTurnStreak} consecutive turns (${refused}). ` +
           `Nothing can proceed: ${remedies.join('. Separately, ')}.`;
