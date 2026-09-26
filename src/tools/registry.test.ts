@@ -880,7 +880,12 @@ describe('rejectBeforeGates', () => {
       catalogSummary: () => '',
     };
     const runtime = new SessionRuntime();
-    const context: ToolContext = { workspaceRoot: dir, env: {}, runtime, toolDiscovery: unauthorized };
+    const context: ToolContext = {
+      workspaceRoot: dir,
+      env: {},
+      runtime,
+      toolDiscovery: unauthorized,
+    };
     const call = {
       id: 'unauthorized-1',
       name: 'Edit',

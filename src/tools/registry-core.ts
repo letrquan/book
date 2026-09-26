@@ -194,8 +194,10 @@ function describeInvalidJson(
       }
     }
     // What a dropped first fragment leaves: the rest of an object, ending in its closing brace,
-    // with nothing in front that opens an array, a fence or a tag.
-    if (closing.endsWith('}') && !/^[[<`]/.test(opening)) {
+    // with nothing in front that opens an array, a fence or a tag. An object's tail still
+    // carries quoted keys or values, so a `}`-terminated text without one (`function f()
+    // { return 1; }`) is prose, not a fragment.
+    if (closing.endsWith('}') && !/^[[<`]/.test(opening) && raw.includes('"')) {
       return {
         shape: 'truncated_start',
         message: `${prefix} they arrived truncated at the start, beginning ${excerpt} instead of "{".`,
@@ -213,9 +215,10 @@ function describeInvalidJson(
   const position = positionMatch ? Number(positionMatch[1]) : undefined;
   // A Windows path ending in a backslash (`{"path": "src\"}`) escapes the closing quote, so V8
   // reports an unterminated string at the very end: nothing was cut off, and the advice is the
-  // escape rather than a resend.
+  // escape rather than a resend. The brace must be there for that story — text that ends right
+  // at the `\"` (`{"command": "echo hi\"`) swallowed nothing; the output was cut off.
   const escapedClosingQuote =
-    parseError.startsWith('Unterminated string') && /\\"\s*}?\s*$/.test(closing);
+    parseError.startsWith('Unterminated string') && /\\"\s*}\s*$/.test(closing);
   // V8 says "Unexpected end of JSON input" only for some cut-off texts; `{"a": "b"` gets
   // "Expected ',' or '}' after property value … at position 9", a position at the very end.
   const endsEarly = parseError.startsWith('Unexpected end of JSON input');
@@ -245,6 +248,21 @@ function describeInvalidJson(
         position,
         message,
         remediation: `The arguments hold more than one JSON object, and none of them were read. Send exactly one JSON object per call: merge the arguments into one object, or make separate calls. ${ONLY_THIS_CALL}`,
+      };
+    }
+    // The object that parsed is complete, but what follows it may close more than it opens:
+    // `{"content":"x"}, {"content":"y"}]}` is the middle of a call whose opening (`{"todos": [`)
+    // was dropped, not an object wrapped in prose. Strings are stripped before counting so a
+    // brace inside one (`"}"`) cannot tip the balance.
+    const rest = raw.slice(position).replace(/"(?:[^"\\]|\\.)*"/g, '""');
+    const opens = (rest.match(/[[{]/g) ?? []).length;
+    const closes = (rest.match(/[\]}]/g) ?? []).length;
+    if (closes > opens) {
+      return {
+        shape: 'truncated_start',
+        position,
+        message: `${message} What follows the first object closes more than it opens, so the call's opening fragment was dropped before the rest.`,
+        remediation: `The provider or router most likely dropped the first fragment of this call on its way to Book, so none of its arguments were read. Resend the whole call. ${ONLY_THIS_CALL}`,
       };
     }
     // The object is complete; what follows it is a code fence's closing, a stray sentence or
@@ -310,7 +328,9 @@ function noteRepeatedFailure(context: ToolContext, call: ToolCall, result: ToolR
   const verb = result.status === 'blocked' ? 'was already refused' : 'already failed';
   const advice =
     result.structuredError.code === 'tool_not_active'
-      ? 'activate it with ToolSearch first, or use a tool that is active.'
+      ? result.structuredError.details?.activatable === false
+        ? "use a tool this run allows; the run's allowed tools do not include this one."
+        : 'activate it with ToolSearch first, or use a tool that is active.'
       : 're-read the target, revise the arguments, or use a different tool.';
   const escalation = `This exact ${call.name} call ${verb} ${previousFailures} time(s) with the same arguments. Do not retry it unchanged: ${advice}`;
   const existing = result.structuredError.remediation;
@@ -515,6 +535,7 @@ export function createRegistry() {
         toolCallId: call.id,
         code: 'unknown_tool',
         remediation: 'Call ToolSearch or use a provider-visible tool name.',
+        details: PRE_EXECUTION_DETAILS,
       }),
     );
 
@@ -528,17 +549,26 @@ export function createRegistry() {
     call: ToolCall,
     normalizedCall: ToolCall,
     context: ToolContext,
-  ): ToolResult =>
-    noteRepeatedFailure(
+  ): ToolResult => {
+    // A name the run's capability rules exclude can never be activated by a search, so
+    // "call ToolSearch" would send the model after a tool no search can return; the
+    // advice names the rules instead, and `activatable` keeps the repeat escalation
+    // from repeating the wrong one.
+    const activatable = context.toolDiscovery?.isAuthorized?.(normalizedCall.name) !== false;
+    return noteRepeatedFailure(
       context,
       normalizedCall,
       toolFailure(`Tool "${call.name}" is not active for this turn.`, {
         toolCallId: call.id,
         code: 'tool_not_active',
         status: 'blocked',
-        remediation: 'Call ToolSearch to discover it or use an authorized active tool.',
+        remediation: activatable
+          ? 'Call ToolSearch to discover it or use an authorized active tool.'
+          : "It is outside this run's allowed tools (--allowedTools, or a skill's or command's allowed-tools), which no search can change; use a tool this run allows.",
+        details: { ...PRE_EXECUTION_DETAILS, ...(activatable ? {} : { activatable: false }) },
       }),
     );
+  };
 
   /**
    * The refusal for a tool that is active this turn but whose arguments no allowed-tools rule of
@@ -561,6 +591,7 @@ export function createRegistry() {
           status: 'blocked',
           remediation:
             "Use arguments the run's allowed-tools rules cover (--allowedTools, or a skill's or command's allowed-tools), or a different tool.",
+          details: PRE_EXECUTION_DETAILS,
         },
       ),
     );
@@ -583,6 +614,7 @@ export function createRegistry() {
         remediation: invalid.remediation,
         details: {
           shape: invalid.shape,
+          ...PRE_EXECUTION_DETAILS,
           ...(invalid.position === undefined ? {} : { position: invalid.position }),
         },
       }),
@@ -623,6 +655,7 @@ export function createRegistry() {
           toolCallId: callId,
           code: 'invalid_arguments',
           remediation: 'Correct only this failed call; do not repeat successful siblings.',
+          details: PRE_EXECUTION_DETAILS,
         },
       ),
     );

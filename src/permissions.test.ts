@@ -115,9 +115,9 @@ describe('remembered permission rules', () => {
       id: 'other',
       arguments: { url: 'https://status.example.com/' },
     };
-    const rule = permissionRuleForToolCall(fetchCall);
+    const rule = 'WebFetch(https://docs.example.com/**)';
 
-    expect(rule).toBe('WebFetch(https://docs.example.com/**)');
+    expect(permissionRuleForToolCall(fetchCall)).toBe(rule);
     expect(permissionRuleMatchesCall(rule, sameOrigin)).toBe(true);
     expect(permissionRuleMatchesCall(rule, originRoot)).toBe(true);
     expect(permissionRuleMatchesCall(rule, queryOnly)).toBe(true);

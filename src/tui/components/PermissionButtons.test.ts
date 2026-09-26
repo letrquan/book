@@ -56,7 +56,7 @@ describe('permissionPatternForTool', () => {
   it('keeps long persisted rules intact while bounding their display form', () => {
     const command = `bash ${'x'.repeat(200)}`;
     const call: ToolCall = { id: 'bash', name: 'Bash', arguments: { command } };
-    const persisted = permissionPatternForTool(call, command);
+    const persisted = permissionPatternForTool(call, command) ?? '';
     const displayed = permissionPatternForDisplay(persisted);
 
     expect(persisted).toBe(`Bash(${command})`);

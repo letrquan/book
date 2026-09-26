@@ -98,7 +98,10 @@ function riskHint(level: ReturnType<typeof toolRiskLevel>): string | null {
   return null;
 }
 
-export function permissionPatternForTool(toolCall: ToolCall, primaryArg: string): string | undefined {
+export function permissionPatternForTool(
+  toolCall: ToolCall,
+  primaryArg: string,
+): string | undefined {
   void primaryArg;
   return permissionRuleForToolCall(toolCall);
 }

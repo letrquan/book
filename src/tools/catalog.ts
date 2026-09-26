@@ -476,9 +476,11 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
    * Rank definitions against a query by its words, not the query as one fuzzy string: each query
    * word scores the heaviest field it names (tool name 4, alias 3, keyword 2, MCP namespace 2,
    * description 1, category 1), and a definition's score is the sum over the words. A tool
-   * qualifies when a word names its name, an alias or a keyword, or when at least two words (one
-   * for a one-word query) appear in its description - description words alone are too common to
-   * admit a tool on one hit. Ties keep catalog order.
+   * qualifies when a word names its name, an alias or a keyword, or when at least two words
+   * appear in its description - description words alone are too common to admit a tool on
+   * one hit, even a one-word query's (`not` takes the `es` suffix form of `notes`, which
+   * would let every "do not" in a description answer a search for notes). Ties keep catalog
+   * order.
    */
   const rankByWords = (query: string, candidates: ToolDefinition[]): ToolDefinition[] => {
     const tokens = [...new Set(searchWords(query))].filter((token) => !QUERY_STOPWORDS.has(token));
@@ -498,7 +500,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
         else if (best === SEARCH_FIELD_WEIGHTS.description) descriptionHits++;
         score += best;
       }
-      const qualifies = strongHits > 0 || descriptionHits >= Math.min(2, tokens.length);
+      const qualifies = strongHits > 0 || descriptionHits >= 2;
       if (qualifies && score > 0) scored.push({ definition, score, index });
     });
     return scored
@@ -646,6 +648,22 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     return canonical === 'ToolSearch' || activeSnapshot.has(canonical);
   };
 
+  /**
+   * Whether the run admits the tool at all — its role, the capability rule sets and the
+   * MemorySave setting — ignoring activation and the mode. A name this rejects can never be
+   * activated by a search this run, so the registry's refusal names the allowed tools instead
+   * of pointing at ToolSearch.
+   */
+  const isAuthorized = (name: string): boolean => {
+    const canonical = canonicalToolName(name);
+    if (canonical === 'ToolSearch') return true;
+    const definition = byName.get(canonical);
+    if (!definition) return false;
+    if (!definition.catalog?.roles?.includes(role)) return false;
+    if (canonical === 'MemorySave' && !isMemorySaveAvailable(config.settings)) return false;
+    return [...ruleSets.values()].every((rules) => isToolDefinitionAllowed(rules, definition));
+  };
+
   const canExecute = (call: ToolCall): boolean => {
     const name = canonicalToolName(call.name);
     if (!isActive(name)) return false;
@@ -694,6 +712,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     pushRestriction,
     previewRestriction,
     isActive,
+    isAuthorized,
     canExecute,
     activeDefinitions,
     catalogSummary,

@@ -346,7 +346,7 @@ export function formatToolStatsReport(aggregate: ToolUseAggregate): string {
     );
   }
 
-  if (aggregate.models.length > 1) {
+  if (aggregate.models.length > 0) {
     lines.push('');
     lines.push('By model:');
     for (const row of aggregate.models) {
