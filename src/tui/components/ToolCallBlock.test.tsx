@@ -552,6 +552,35 @@ describe('ToolCallBlock', () => {
     expect(frame(inactive.lastFrame)).not.toContain('is not active');
   });
 
+  it('shows why a cross-origin redirect was stopped', () => {
+    // The redirect target may be a private host the model never asked for; the row says the fetch
+    // stopped at the origin change rather than showing a bare skip.
+    const view = render(
+      withTheme(
+        <ToolCallBlock
+          name="WebFetch"
+          args={{ url: 'https://example.com/start' }}
+          result={{
+            version: 2,
+            toolCallId: 'call-redirect',
+            status: 'blocked',
+            content: '',
+            structuredError: {
+              code: 'cross_origin_redirect',
+              message:
+                'Redirect from https://example.com/start to a different origin requires a new WebFetch approval.',
+              retryable: false,
+            },
+          }}
+          isExpanded={false}
+          terminalWidth={200}
+          reducedMotion
+        />,
+      ),
+    );
+    expect(frame(view.lastFrame)).toContain('Redirect from');
+  });
+
   it('shows the reason of a WebSearch whose every provider was refused', () => {
     const view = render(
       withTheme(
