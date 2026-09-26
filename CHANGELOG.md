@@ -6,6 +6,31 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Only the turn in progress replays its reasoning** (#248 item 6). Every earlier assistant turn's
+  reasoning went back to the model as a `<reasoning_context>` block on every request. It now goes
+  back only for the assistant steps after the newest message the user wrote. The loop's own mid-run
+  prompts (`[continuation]`, the completion gate, `[work-state]`) do not end a turn, and a closed
+  turn's reply that was only reasoning keeps it. Otherwise a closed turn is sent as its answer and
+  tool calls, the way the Anthropic API drops earlier turns' thinking; this holds on both providers,
+  and Anthropic's signed thinking blocks are unchanged. Measured with the new
+  `npm run eval:prompt -- --suite replay` on `cmc/stealth/space-bunny-alpha` and
+  `ag/gemini-3.8-flash-high`, 12 trials per arm over two runs: every request of a later turn is
+  about 10% smaller on these histories (1.4k and 2.2k tokens), an agentic follow-up task cost the
+  same on the first model and 23% fewer prompt tokens on the second, request counts did not change
+  (8.3 against 8.5 on average), and every answer stayed correct (120 of 120 per arm). Replaying no
+  reasoning at all took 1.5 to 2 more requests per task, so the turn in progress keeps it. Neither
+  route reported cached prompt tokens, so rewriting a closed turn costs no cache hit today; a
+  provider that caches prefixes re-reads the closed turn once per new user message.
+- **A checkpoint's "tests passed" is no longer reported as a result** (#247 item 6). After a
+  compaction, a checkpoint claiming `npm test` passed over a suite that now fails one test, with
+  nothing else flagging the files as changed, was reported as a pass in 9 of 32 trials
+  (`npm run eval:prompt -- --suite verify`, both models above, 8 trials per cell). One kernel line
+  now says that a checkpoint or summary saying a check passed is not a tool result, and to run the
+  check again when that claim is the only evidence left: 32 of 32 trials re-ran it and reported the
+  failure (Fisher p = 0.002). With a real passing run in the transcript, neither prompt re-ran
+  anything (0 of 32) and both reported green (32 of 32). The system prompt changes, so
+  `SYSTEM_PROMPT_VERSION` is `book-system-prompt-v4` and the first request after upgrading misses the
+  prompt cache once.
 - **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
   rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
   green, so every PR that touched them either reformatted unrelated lines or left them drifting.
@@ -879,6 +904,12 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **`npm run eval:prompt`** measures prompt-shaping choices with the real agent loop in throwaway
+  git sandboxes, with config loaded against an empty workspace. `--suite verify` pits a checkpoint's
+  claim against a transcript's tool result across four conditions. `--suite replay` records a
+  session once per model (`--record --trials 0`), then runs recall probes and an agentic follow-up
+  graded by the sandbox's tests and a hidden check. Arms differ only in one config field or one
+  request transform, and `--regrade` re-scores a saved verify report.
 - **`Read` has an outline mode.** Before its first edit a run read 40–55 whole files, and each
   survey read cost the entire file on every turn afterwards; the context reached 200k tokens by
   turn 30 (#217). `Read { outline: true }` returns a file's declarations with their line numbers
