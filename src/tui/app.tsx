@@ -291,7 +291,7 @@ export function App({
   config,
   permissionMode,
   session,
-  redrawViewport,
+  redrawViewport: wipeViewport,
   interactiveAssets,
   mcp,
 }: AppProps) {
@@ -623,7 +623,27 @@ export function App({
   }, [listSessions, sessionId, transcriptEmpty]);
   // The status line's folio: one page per turn you have written.
   const turnCount = useMemo(() => countWrittenTurns(messages), [messages]);
-  const { exit: exitApp } = useApp();
+  const { exit: exitApp, suspendTerminal } = useApp();
+  const redrawInFlightRef = useRef(false);
+  /**
+   * Wipes the screen and has Ink paint the whole frame again. Ink skips a frame identical to the
+   * last one it wrote, so wiping alone left the screen blank after Ctrl+L, and left rows blank that
+   * a resized frame shared with the old one. suspendTerminal() erases Ink's frame, runs the wipe,
+   * then forgets the old frame and repaints.
+   */
+  const redrawViewport = useCallback(() => {
+    if (!wipeViewport || redrawInFlightRef.current) return;
+    redrawInFlightRef.current = true;
+    void suspendTerminal(wipeViewport)
+      .catch((error: unknown) =>
+        uiLog.event('redraw:failed', {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      )
+      .finally(() => {
+        redrawInFlightRef.current = false;
+      });
+  }, [wipeViewport, suspendTerminal]);
   // Set once an exit starts. SessionEnd can take seconds, and a press meanwhile must neither
   // arm the window again nor start a second exit: the session-end guard returns at once for a
   // session that is already ending, so a second exit would unmount Ink before the first

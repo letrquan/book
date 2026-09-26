@@ -1,10 +1,13 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { INK_TRAILING_NEWLINE_FIX, VERIFIED_INK_VERSION } from '../src/cli/ink-renderer.js';
+import {
+  VERIFIED_INK_VERSION,
+  hasInkTrailingNewlineFix,
+  installedInkVersion,
+} from '../src/cli/ink-renderer.js';
 
 interface PackResult {
   filename: string;
@@ -75,23 +78,15 @@ try {
   if (typeof sdk.query !== 'function') throw new Error('Installed SDK does not export query().');
 
   // The installed CLI picks the incremental renderer only when the Ink it resolves carries the
-  // trailing-newline fix. Resolve Ink the way the installed dist does, not from this checkout.
-  const installedInkEntry = createRequire(join(installedRoot, 'dist', 'index.js')).resolve('ink');
-  const installedInkVersion = (
-    JSON.parse(readFileSync(join(dirname(installedInkEntry), '..', 'package.json'), 'utf8')) as {
-      version: string;
-    }
-  ).version;
-  if (installedInkVersion !== VERIFIED_INK_VERSION) {
+  // trailing-newline fix, so resolve Ink the way the installed dist does, not from this checkout.
+  const installedEntry = join(installedRoot, 'dist', 'index.js');
+  const installedInk = installedInkVersion(installedEntry);
+  if (installedInk !== VERIFIED_INK_VERSION) {
     throw new Error(
-      `Installed package resolves ink@${installedInkVersion}; the TUI was verified against ink@${VERIFIED_INK_VERSION}.`,
+      `Installed package resolves ink@${installedInk ?? 'missing'}; the TUI was verified against ink@${VERIFIED_INK_VERSION}.`,
     );
   }
-  if (
-    !readFileSync(join(dirname(installedInkEntry), 'log-update.js'), 'utf8').includes(
-      INK_TRAILING_NEWLINE_FIX,
-    )
-  ) {
+  if (!hasInkTrailingNewlineFix(installedEntry)) {
     throw new Error("Installed Ink's renderer lacks the trailing-newline fix.");
   }
 

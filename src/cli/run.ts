@@ -343,8 +343,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     const mcpHost = new McpSessionHost(config.workspace, config.settings);
     mcpHost.start();
     let app: ReturnType<typeof render> | undefined;
+    // App runs this inside Ink's suspendTerminal(), which erases Ink's frame before it and repaints
+    // the whole frame after it, so this only wipes whatever else is on the screen.
     const redrawViewport = () => {
-      app?.clear();
       process.stdout.write('\x1b[H\x1b[2J');
     };
     const extraction = new AbortController();

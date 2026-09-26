@@ -1,23 +1,49 @@
 import { cleanup, render } from 'ink-testing-library';
+import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InputBox } from './InputBox.js';
 
 afterEach(() => cleanup());
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 30));
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/** Feeds each edit back as the new value, the way InputBar does. */
+function Harness({
+  initial,
+  onBackspaceWhenEmpty,
+  onChange,
+}: {
+  initial: string;
+  onBackspaceWhenEmpty?: () => void;
+  onChange?: (value: string) => void;
+}) {
+  const [value, setValue] = useState(initial);
+  return (
+    <InputBox
+      value={value}
+      onChange={(next) => {
+        setValue(next);
+        onChange?.(next);
+      }}
+      onBackspaceWhenEmpty={onBackspaceWhenEmpty}
+    />
+  );
+}
+
+const BACKSPACE = '\x7f';
 
 describe('InputBox', () => {
   it('reports Backspace on an empty composer instead of editing', async () => {
     const onChange = vi.fn();
     const onBackspaceWhenEmpty = vi.fn();
     const view = render(
-      <InputBox value="" onChange={onChange} onBackspaceWhenEmpty={onBackspaceWhenEmpty} />,
+      <Harness initial="" onChange={onChange} onBackspaceWhenEmpty={onBackspaceWhenEmpty} />,
     );
-    await settle();
+    await sleep(30);
 
-    view.stdin.write('\x7f');
+    view.stdin.write(BACKSPACE);
     await vi.waitFor(() => expect(onBackspaceWhenEmpty).toHaveBeenCalledOnce());
     expect(onChange).not.toHaveBeenCalled();
   });
@@ -26,60 +52,98 @@ describe('InputBox', () => {
     const onChange = vi.fn();
     const onBackspaceWhenEmpty = vi.fn();
     const view = render(
-      <InputBox value="a" onChange={onChange} onBackspaceWhenEmpty={onBackspaceWhenEmpty} />,
+      <Harness initial="a" onChange={onChange} onBackspaceWhenEmpty={onBackspaceWhenEmpty} />,
     );
-    await settle();
+    await sleep(30);
 
-    view.stdin.write('\x7f');
+    view.stdin.write(BACKSPACE);
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith(''));
+    await sleep(250);
     expect(onBackspaceWhenEmpty).not.toHaveBeenCalled();
   });
 
-  it('does not report Backspace repeats that emptied the composer', async () => {
+  it('removes nothing when repeats in one read empty the composer', async () => {
     const onChange = vi.fn();
     const onBackspaceWhenEmpty = vi.fn();
     const view = render(
-      <InputBox value="ab" onChange={onChange} onBackspaceWhenEmpty={onBackspaceWhenEmpty} />,
+      <Harness initial="ab" onChange={onChange} onBackspaceWhenEmpty={onBackspaceWhenEmpty} />,
     );
-    await settle();
+    await sleep(30);
 
-    // A held key: four repeats in one read. Two delete the text, two land on the empty composer.
-    view.stdin.write('\x7f\x7f\x7f\x7f');
+    view.stdin.write(BACKSPACE.repeat(4));
     await vi.waitFor(() => expect(onChange).toHaveBeenLastCalledWith(''));
-    await settle();
+    await sleep(250);
     expect(onBackspaceWhenEmpty).not.toHaveBeenCalled();
   });
 
-  it('reports a fresh Backspace press on the empty composer', async () => {
+  it('removes nothing when a held Backspace empties the composer across the repeat delay', async () => {
     const onBackspaceWhenEmpty = vi.fn();
-    const view = render(
-      <InputBox value="a" onChange={() => {}} onBackspaceWhenEmpty={onBackspaceWhenEmpty} />,
-    );
-    await settle();
+    const view = render(<Harness initial="a" onBackspaceWhenEmpty={onBackspaceWhenEmpty} />);
+    await sleep(30);
 
-    view.stdin.write('\x7f');
-    await settle();
+    // Press, the key-repeat delay, then repeats every ~35 ms.
+    view.stdin.write(BACKSPACE);
+    await sleep(400);
+    view.stdin.write(BACKSPACE);
+    await sleep(35);
+    view.stdin.write(BACKSPACE);
+    await sleep(35);
+    view.stdin.write(BACKSPACE);
+    await sleep(250);
     expect(onBackspaceWhenEmpty).not.toHaveBeenCalled();
-    // The composer is empty now, which is the state the parent would have committed.
-    view.rerender(
-      <InputBox value="" onChange={() => {}} onBackspaceWhenEmpty={onBackspaceWhenEmpty} />,
-    );
-    await settle();
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    view.stdin.write('\x7f');
-    await vi.waitFor(() => expect(onBackspaceWhenEmpty).toHaveBeenCalledOnce());
+  });
+
+  it('removes exactly one attachment for a Backspace held on an empty composer', async () => {
+    const onBackspaceWhenEmpty = vi.fn();
+    const view = render(<Harness initial="" onBackspaceWhenEmpty={onBackspaceWhenEmpty} />);
+    await sleep(30);
+
+    view.stdin.write(BACKSPACE);
+    await sleep(400);
+    view.stdin.write(BACKSPACE);
+    await sleep(35);
+    view.stdin.write(BACKSPACE);
+    await sleep(250);
+    expect(onBackspaceWhenEmpty).toHaveBeenCalledOnce();
+  });
+
+  it('removes one attachment per deliberate tap', async () => {
+    const onBackspaceWhenEmpty = vi.fn();
+    const view = render(<Harness initial="" onBackspaceWhenEmpty={onBackspaceWhenEmpty} />);
+    await sleep(30);
+
+    view.stdin.write(BACKSPACE);
+    await sleep(250);
+    view.stdin.write(BACKSPACE);
+    await sleep(250);
+    expect(onBackspaceWhenEmpty).toHaveBeenCalledTimes(2);
   });
 
   it('deletes the character after the cursor with the Delete key', async () => {
     const onChange = vi.fn();
-    const view = render(<InputBox value="abc" onChange={onChange} />);
-    await settle();
+    const view = render(<Harness initial="abc" onChange={onChange} />);
+    await sleep(30);
 
     view.stdin.write('\x1b[D');
-    await settle();
+    await sleep(30);
     view.stdin.write('\x1b[D');
-    await settle();
+    await sleep(30);
     view.stdin.write('\x1b[3~');
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith('ac'));
+  });
+
+  it('deletes the word after the cursor with Alt+Delete', async () => {
+    const onChange = vi.fn();
+    const view = render(<Harness initial="foo bar baz" onChange={onChange} />);
+    await sleep(30);
+
+    view.stdin.write('\x1b[H');
+    await sleep(30);
+    for (let index = 0; index < 4; index += 1) {
+      view.stdin.write('\x1b[C');
+      await sleep(30);
+    }
+    view.stdin.write('\x1b[3;3~');
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith('foo  baz'));
   });
 });

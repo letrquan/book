@@ -47,11 +47,11 @@ function mount(props: Partial<Parameters<typeof McpElicitationForm>[0]> = {}) {
   return { view, onResolve };
 }
 
-async function press(view: ReturnType<typeof render>, input: string) {
+async function press(view: ReturnType<typeof render>, input: string, delayMs = 20) {
   act(() => {
     view.stdin.write(input);
   });
-  await wait(20);
+  await wait(delayMs);
 }
 
 afterEach(cleanup);
@@ -167,14 +167,15 @@ describe('McpElicitationForm', () => {
     expect(declined.onResolve).toHaveBeenCalledWith({ action: 'decline' });
 
     const cancelled = mount();
-    await press(cancelled.view, ESC);
+    // Ink 7 flushes a lone Esc only after 20 ms, so a 20 ms wait is a coin flip.
+    await press(cancelled.view, ESC, 60);
     expect(cancelled.onResolve).toHaveBeenCalledWith({ action: 'cancel' });
   });
 
   it('leaves the form open when Escape closes an editor instead', async () => {
     const { view, onResolve } = mount();
     await press(view, ENTER); // open picker
-    await press(view, ESC); // close picker only
+    await press(view, ESC, 60); // close picker only
     expect(onResolve).not.toHaveBeenCalled();
     await press(view, UP);
     expect(stripAnsi(view.lastFrame())).toContain('Send to azure-devops');

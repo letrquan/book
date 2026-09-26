@@ -900,3 +900,32 @@ describe('queue notices for one-off events', () => {
     expect(frameOf(view)).toContain('Editing queued input');
   });
 });
+
+describe('Ctrl+L redraw', () => {
+  it('wipes the screen through Ink, once per press', async () => {
+    const { view } = await startIdleApp();
+    // Ink's suspendTerminal() repaints and then waits for the write callback a real stream
+    // runs. ink-testing-library's fake stdout drops it, so the repaint would never settle and
+    // App's in-flight guard would swallow every press after the first.
+    const writeFrame = view.stdout.write;
+    view.stdout.write = (frame: string, done?: () => void) => {
+      writeFrame(frame);
+      done?.();
+    };
+    const wipe = vi.fn();
+    const appConfig = config();
+    view.rerender(<App config={appConfig} session={testSession} redrawViewport={wipe} />);
+    settleApp = () =>
+      view.rerender(<App config={appConfig} session={testSession} redrawViewport={wipe} />);
+
+    const painted = view.stdout.frames.length;
+    press(view, '\x0c');
+    await waitUntil(() => expect(wipe).toHaveBeenCalledTimes(1));
+    // Ink has the terminal suspended until it has repainted, and a key written in that window
+    // is dropped, so wait for the frame and for the redraw's promise to settle.
+    await waitUntil(() => expect(view.stdout.frames.length).toBeGreaterThan(painted));
+    await new Promise((resolve) => realSetTimeout(resolve, 0));
+    press(view, '\x0c');
+    await waitUntil(() => expect(wipe).toHaveBeenCalledTimes(2));
+  });
+});

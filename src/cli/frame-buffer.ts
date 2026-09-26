@@ -1,30 +1,13 @@
-import { pathToFileURL } from 'node:url';
-import { inkLogUpdatePath } from './ink-renderer.js';
+import {
+  wrapInkLogUpdate,
+  type CreateLogUpdate,
+  type InkStream,
+  type LogUpdateRenderer,
+} from './ink-renderer.js';
 
 export interface FrameCursorPosition {
   x: number;
   y: number;
-}
-
-interface InkStream {
-  isTTY?: boolean;
-  rows?: number;
-  write: (data: string) => unknown;
-}
-
-interface LogUpdateRenderer {
-  (output: string): boolean | void;
-  clear: () => void;
-  done: () => void;
-  reset?: () => void;
-  sync: (output: string) => void;
-  setCursorPosition: (position: unknown) => void;
-  isCursorDirty: () => boolean;
-  willRender: (output: string) => boolean;
-}
-
-interface LogUpdateModule {
-  create: (stream: InkStream, options?: { incremental?: boolean }) => LogUpdateRenderer;
 }
 
 let latestFrame = '';
@@ -81,7 +64,7 @@ export function setFrameSnapshotForTesting(
 export function createFrameCapturingRenderer(
   stream: InkStream,
   options: { incremental?: boolean } | undefined,
-  createBase: LogUpdateModule['create'],
+  createBase: CreateLogUpdate,
 ): LogUpdateRenderer {
   const base = createBase(stream, options);
 
@@ -125,14 +108,9 @@ export async function installFrameCapture(): Promise<void> {
   if (captureInstalled) return;
   captureInstalled = true;
 
-  try {
-    const logUpdateUrl = pathToFileURL(inkLogUpdatePath()).href;
-    const module = (await import(logUpdateUrl)) as { default: LogUpdateModule };
-    const logUpdate = module.default;
-    const createBase = logUpdate.create;
-    logUpdate.create = (stream, options) =>
-      createFrameCapturingRenderer(stream, options, createBase);
-  } catch {
-    // Keep the TUI usable if Ink changes its private renderer layout.
-  }
+  // Keep the TUI usable if Ink changes its private renderer layout: wrapInkLogUpdate reports
+  // false and leaves Ink's own renderer in place.
+  await wrapInkLogUpdate(
+    (createBase) => (stream, options) => createFrameCapturingRenderer(stream, options, createBase),
+  );
 }

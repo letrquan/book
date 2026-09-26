@@ -33,9 +33,9 @@ function mount(props: Partial<React.ComponentProps<typeof ListPicker>> = {}) {
   return { view, onSelect, onCancel };
 }
 
-async function press(view: ReturnType<typeof render>, input: string) {
+async function press(view: ReturnType<typeof render>, input: string, delayMs = 20) {
   view.stdin.write(input);
-  await wait(20);
+  await wait(delayMs);
 }
 
 afterEach(cleanup);
@@ -48,7 +48,8 @@ describe('ListPicker', () => {
     await press(view, '\r');
     expect(onSelect).toHaveBeenCalledWith(2);
 
-    await press(view, '\u001b');
+    // Ink 7 flushes a lone Esc only after 20 ms, so a 20 ms wait is a coin flip.
+    await press(view, '\u001b', 60);
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
@@ -151,7 +152,8 @@ describe('ListPicker', () => {
     const { view, onSelect, onCancel } = mount({ isActive: false });
 
     await press(view, '\r');
-    await press(view, '\u001b');
+    // Ink 7 flushes a lone Esc only after 20 ms, so a 20 ms wait is a coin flip.
+    await press(view, '\u001b', 60);
     expect(onSelect).not.toHaveBeenCalled();
     expect(onCancel).not.toHaveBeenCalled();
   });

@@ -35,11 +35,11 @@ function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
 }
 
-async function press(view: ReturnType<typeof render>, input: string) {
+async function press(view: ReturnType<typeof render>, input: string, delayMs = 20) {
   act(() => {
     view.stdin.write(input);
   });
-  await wait(20);
+  await wait(delayMs);
 }
 
 async function waitForText(view: ReturnType<typeof render>, text: string) {
@@ -162,7 +162,8 @@ describe('AskUserQuestionWizard', () => {
         <AskUserQuestionWizard request={request} onResolve={cancel} />
       </ThemeContext.Provider>,
     );
-    await press(cancelView, '\u001b');
+    // Ink 7 flushes a lone Esc only after 20 ms, so a 20 ms wait is a coin flip.
+    await press(cancelView, '\u001b', 60);
     expect(cancel).toHaveBeenCalledWith({ action: 'cancel' });
   });
 
@@ -186,7 +187,8 @@ describe('AskUserQuestionWizard', () => {
     );
     await press(view, 'o');
     expect(stripAnsi(view.lastFrame())).toContain('Enter use answer');
-    await press(view, '\u001b');
+    // Ink 7 flushes a lone Esc only after 20 ms, so a 20 ms wait is a coin flip.
+    await press(view, '\u001b', 60);
     expect(stripAnsi(view.lastFrame())).not.toContain('Enter use answer');
     expect(stripAnsi(view.lastFrame())).toContain('+  Other…');
   });
