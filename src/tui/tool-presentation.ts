@@ -29,6 +29,11 @@ export interface ToolPresentation {
 export interface ToolPresentationOptions {
   isPending?: boolean;
   nestedActivityCount?: number;
+  /**
+   * The argument text of a call the provider could not parse. Its `arguments` are
+   * `{}`, so this is the only text there is to show for the row.
+   */
+  unparsedArguments?: { raw: string; error: string };
 }
 
 export function getTranscriptShortcutAction(
@@ -436,7 +441,9 @@ export function deriveToolPresentation(
     metadata.push(`attempt ${result.metrics.retryAttempt}`);
 
   // A target is shown on one line, in the row and in the summary. A call whose
-  // arguments were not valid JSON shows its raw text here, newlines and all.
+  // arguments were not valid JSON shows its raw text here, newlines and all — the
+  // typed field's text now, the `{__raw}` sentinel's through `getPrimaryArg`.
+  target = target || options.unparsedArguments?.raw;
   target = foldControlCharacters(target);
   const targetText = target ? `(${target})` : '';
   const metadataText = metadata.length > 0 ? ` · ${metadata.join(' ')}` : '';

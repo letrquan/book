@@ -692,6 +692,170 @@ describe('invalid JSON tool-call arguments', () => {
   });
 });
 
+describe('typed unparsed arguments', () => {
+  // The provider clients mark a call whose argument text never parsed with
+  // `call.unparsedArguments` — `arguments` is `{}` and the field carries the raw
+  // text and the parse error — instead of the in-band `{ __raw: "…" }` sentinel.
+  // The registry detects the type before hooks and the permission check see the
+  // call, exactly as it did the sentinel.
+  const backslash = String.fromCharCode(92);
+  const badEscape = `{"filePath":"src/a.ts","oldString":"const re = /${backslash}d+/;","newString":"x"}`;
+  const badEscapeError = (() => {
+    try {
+      JSON.parse(badEscape);
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+    return '';
+  })();
+
+  function editLikeRegistry() {
+    const execute = vi.fn(async () => toolSuccess('ok'));
+    const registry = createRegistry();
+    registry.register({
+      name: 'Edit',
+      description: 'edit a file',
+      parameters: {
+        type: 'object',
+        properties: {
+          filePath: { type: 'string' },
+          oldString: { type: 'string' },
+          newString: { type: 'string' },
+        },
+        required: ['filePath', 'oldString', 'newString'],
+      },
+      execute,
+    });
+    return { registry, execute };
+  }
+
+  it('produces the same invalid_json_arguments rejection as the sentinel', async () => {
+    const { registry, execute } = editLikeRegistry();
+
+    const result = await registry.execute(
+      {
+        id: 'typed-1',
+        name: 'Edit',
+        arguments: {},
+        unparsedArguments: { raw: badEscape, error: badEscapeError },
+      },
+      ctx,
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.code).toBe('invalid_json_arguments');
+    expect(result.structuredError?.details?.shape).toBe('syntax');
+    const message = result.structuredError?.message ?? '';
+    expect(message).toContain('Invalid JSON arguments for Edit: ');
+    expect(message).toContain(badEscapeError);
+    expect(message).toMatch(/position \d+/);
+    expect(toolResultModelContent(result)).not.toContain('__raw');
+  });
+
+  it('classifies a dropped opening fragment as truncated_start through the field', async () => {
+    const { registry } = editLikeRegistry();
+    const dropped = '/tools/file.ts", "oldString": "a", "newString": "b"}';
+
+    const result = await registry.execute(
+      {
+        id: 'typed-2',
+        name: 'Edit',
+        arguments: {},
+        unparsedArguments: { raw: dropped, error: 'Unexpected token /' },
+      },
+      ctx,
+    );
+
+    expect(result.structuredError?.code).toBe('invalid_json_arguments');
+    expect(result.structuredError?.details?.shape).toBe('truncated_start');
+    expect(result.structuredError?.retryable).toBe(true);
+  });
+
+  it('rejectBeforeGates returns the same rejection', () => {
+    const { registry } = editLikeRegistry();
+
+    const result = registry.rejectBeforeGates(
+      {
+        id: 'typed-3',
+        name: 'Edit',
+        arguments: {},
+        unparsedArguments: { raw: badEscape, error: badEscapeError },
+      },
+      ctx,
+    );
+
+    expect(result?.structuredError?.code).toBe('invalid_json_arguments');
+    expect(result?.structuredError?.details?.shape).toBe('syntax');
+  });
+
+  it('does not confuse a different malformed text with a remembered failure', async () => {
+    // The repeat-failure signature keys on the argument text; with `arguments`
+    // now `{}` the signature has to take the raw text, or every malformed call
+    // to one tool would read as a retry of the first.
+    const { registry } = editLikeRegistry();
+    const runtime = new SessionRuntime();
+    const context: ToolContext = { workspaceRoot: dir, env: {}, runtime };
+    // A second syntax-shape failure (non-retryable, like badEscape) — the
+    // escalation only fires when the SAME text repeats.
+    const other = `{"filePath":"b.ts","oldString":"${backslash}w+"}`;
+    const otherError = (() => {
+      try {
+        JSON.parse(other);
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+      return '';
+    })();
+
+    await registry.execute(
+      {
+        id: 'sig-1',
+        name: 'Edit',
+        arguments: {},
+        unparsedArguments: { raw: badEscape, error: badEscapeError },
+      },
+      context,
+    );
+    const distinct = await registry.execute(
+      {
+        id: 'sig-2',
+        name: 'Edit',
+        arguments: {},
+        unparsedArguments: { raw: other, error: otherError },
+      },
+      context,
+    );
+    const repeat = await registry.execute(
+      {
+        id: 'sig-3',
+        name: 'Edit',
+        arguments: {},
+        unparsedArguments: { raw: other, error: otherError },
+      },
+      context,
+    );
+
+    expect(distinct.structuredError?.remediation ?? '').not.toContain('already failed');
+    expect(repeat.structuredError?.remediation ?? '').toContain('already failed');
+    runtime.dispose();
+  });
+
+  it('keeps a session-persisted {__raw} arguments object working as before', async () => {
+    // Sessions written before the typed field carry `{ __raw: "…" }` inside
+    // `arguments`; the legacy shape must still classify the same way.
+    const { registry } = editLikeRegistry();
+
+    const result = await registry.execute(
+      { id: 'legacy-raw', name: 'Edit', arguments: { __raw: badEscape } },
+      ctx,
+    );
+
+    expect(result.structuredError?.code).toBe('invalid_json_arguments');
+    expect(result.structuredError?.details?.shape).toBe('syntax');
+  });
+});
+
 describe('rejectBeforeGates', () => {
   function editLikeRegistry() {
     const execute = vi.fn(async () => toolSuccess('ok'));

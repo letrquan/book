@@ -93,6 +93,7 @@ export function ManagedAgentActivityBlock({
             tool.call.name,
             tool.call.arguments,
             tool.result,
+            { unparsedArguments: tool.call.unparsedArguments },
           );
           return (
             <Text key={tool.id}>
@@ -139,6 +140,7 @@ export function ManagedAgentActivityBlock({
           tool.call.name,
           tool.call.arguments,
           tool.result,
+          { unparsedArguments: tool.call.unparsedArguments },
         );
         const running = tool.status === 'running';
         const connector = index === visible.length - 1 ? '└' : '├';

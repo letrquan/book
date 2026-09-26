@@ -122,6 +122,13 @@ export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /**
+   * Set when the provider's argument text never parsed. `raw` is that text exactly as
+   * it was streamed, `error` is V8's `JSON.parse` message for it, and `arguments` is
+   * `{}` — nothing was read. The registry rejects such a call (or repairs it, when the
+   * text is one of the three shapes `repairToolArguments` accepts).
+   */
+  unparsedArguments?: { raw: string; error: string };
 }
 
 /** Display-only trace for a tool invoked inside a Task subagent. */

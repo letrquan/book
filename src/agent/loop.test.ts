@@ -1121,6 +1121,110 @@ describe('unparsed tool-call arguments', () => {
     }
   });
 
+  it('refuses a call carrying the typed unparsedArguments field before hooks and the prompt', async () => {
+    // Same refusal as the `{__raw}` sentinel, detected through the type the
+    // provider clients set: `arguments` stays `{}` and the raw text and parse
+    // error ride in `unparsedArguments`.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-typed-'));
+    try {
+      const raw = '{"command": "ls';
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'typed-1',
+                name: 'Bash',
+                arguments: {},
+                unparsedArguments: {
+                  raw,
+                  error: 'Unexpected end of JSON input',
+                },
+              },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const onPermissionRequired = vi.fn(async () => 'allow' as const);
+      const results: ToolResult[] = [];
+
+      const history = await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'list the files',
+        [],
+        noopCallbacks({
+          onPermissionRequired,
+          onToolResult: (result) => results.push(result),
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+      expect(results[0]?.structuredError?.code).toBe('invalid_json_arguments');
+      expect(results[0]?.structuredError?.details?.shape).toBe('truncated_end');
+      expect(history.some((message) => (message.toolResults ?? []).length > 0)).toBe(true);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('runs a call whose unparsed arguments repaired conservatively', async () => {
+    // A trailing comma is a repairable shape: the repair drops it, the result
+    // validates against Read's schema, and the call runs with the repaired
+    // arguments instead of burning a turn on a resend.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-repair-'));
+    try {
+      writeFileSync(join(workspace, 'a.txt'), 'hello\n');
+      const raw = '{"filePath":"a.txt",}';
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'repair-1',
+                name: 'Read',
+                arguments: {},
+                unparsedArguments: { raw, error: 'Expected double-quoted property name' },
+              },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const results: ToolResult[] = [];
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'read the file',
+        [],
+        noopCallbacks({ onToolResult: (result) => results.push(result) }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(results[0]?.status).toBe('success');
+      expect(results[0]?.content).toContain('hello');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a call to an inactive deferred tool before the permission prompt', async () => {
     // NotebookEdit is registered but never activated this turn, so it can never run
     // however it is approved. Approving it would save a rule for a call that cannot
