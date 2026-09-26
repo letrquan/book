@@ -1620,6 +1620,45 @@ describe('AgentManager lifecycle', () => {
       expect(child).toMatchObject({ effort: 'high', effortExplicit: true, effortChosen: false });
     });
 
+    it('keeps the level chosen at spawn, not its clamp, for a later run', async () => {
+      const config = gatewayConfig({ upper: { effort: { levels: ['medium', 'high'] } } });
+      config.settings.agents.maxConcurrent = 1;
+      config.settings.agents.profiles.explorer = { model: 'gateway/upper', effort: 'low' };
+      const childConfigs = new Map<string, AgentConfig>();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const manager = new AgentManager(config, [], {
+        storeRoot: tempRoot(),
+        findGitRoot: async () => undefined,
+        runLoop: async (nextConfig, _registry, prompt, history) => {
+          if (prompt === 'blocker') await gate;
+          childConfigs.set(prompt, nextConfig);
+          return history;
+        },
+      });
+      const blocker = await manager.spawn({ agent: 'explorer', prompt: 'blocker' });
+      await vi.waitFor(async () => expect((await manager.get(blocker.id))?.status).toBe('running'));
+      const queued = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+      // Reported clamped: the model does not list `low` yet.
+      expect(queued.effort).toBe('medium');
+      // The catalog gains `low` and the profile moves on before the queued child runs.
+      const updated = gatewayConfig(
+        { upper: { effort: { levels: ['low', 'medium', 'high'] } } },
+        { workspace: config.workspace },
+      );
+      updated.settings.agents.maxConcurrent = 1;
+      updated.settings.agents.profiles.explorer = { model: 'gateway/upper', effort: 'high' };
+      manager.updateConfig(updated);
+      release();
+      await manager.wait(blocker.id, 1000);
+      await manager.wait(queued.id, 1000);
+      expect(childConfigs.get('inspect')).toMatchObject({ effort: 'low', effortExplicit: true });
+      expect((await manager.get(queued.id))?.effort).toBe('low');
+      manager.dispose();
+    });
+
     it("re-resolves a queued child's effort when none was chosen at spawn (F4)", async () => {
       const config = gatewayConfig({});
       config.settings.agents.maxConcurrent = 1;
@@ -2116,18 +2155,46 @@ describe('children re-driven after a restart', () => {
     expect(completions).toHaveLength(1);
   });
 
-  it('does not re-run a /review reviewer recorded before the no-resume mark existed (#245)', async () => {
-    const { record, requests } = await restartAndCollect(undefined, (manager) =>
-      // The shape a pre-#256 build wrote for `/review`: delivery suppressed, no mark.
-      manager.spawn({
-        agent: 'reviewer',
-        prompt: 'survey',
-        parentSessionId: 'parent-1',
-        notifyParentOnCompletion: false,
-      }),
+  it("re-runs a parent's follow-up that the /review run had already handed on when the process died (#245)", async () => {
+    const { record, completions, requests, result } = await restartAndCollect(
+      undefined,
+      async (manager) => {
+        // The review's own run answers once the follow-up is queued behind it; the follow-up's
+        // run is still streaming when the process dies.
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let calls = 0;
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async (_url: unknown, init?: RequestInit) => {
+            if (calls++ > 0) return held(init?.signal);
+            await gate;
+            return answered('review answer');
+          }),
+        );
+        const spawned = await reviewRunnerFor(manager, { parentSessionId: 'parent-1' }).spawn(
+          'explorer',
+          'survey',
+        );
+        await vi.waitFor(async () =>
+          expect((await manager.get(spawned.id))?.status).toBe('running'),
+        );
+        await manager.send(spawned.id, 'queued follow-up');
+        release();
+        await vi.waitFor(async () => {
+          const current = await manager.get(spawned.id);
+          expect(current).toMatchObject({ status: 'running', prompt: 'queued follow-up' });
+          expect(current?.resumeAfterRestart).toBe(false);
+        });
+        return spawned;
+      },
     );
-    expect(requests).toBe(0);
-    expect(record).toMatchObject({ status: 'interrupted', resumable: false });
-    expect(record?.error).toMatch(/not resumed/i);
+    expect(requests).toBe(1);
+    expect(record).toMatchObject({ status: 'completed', prompt: 'queued follow-up' });
+    expect(record?.resumeAfterRestart).toBeUndefined();
+    expect(result).toBe('resumed answer');
+    expect(completions).toHaveLength(1);
   });
 });

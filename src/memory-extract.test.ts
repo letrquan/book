@@ -542,6 +542,48 @@ describe('runMemoryExtraction', () => {
     expect((await attempt()).processed).toEqual([{ id: 's2', written: 0, skipped: 'truncated' }]);
   });
 
+  it('does not take the first complete object of a cut-off reply for its answer (#245)', async () => {
+    const sessions = source({ s1: { meta: meta('s1'), transcript: talk } });
+    const cutOff: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield {
+          type: 'text',
+          content:
+            'Per the rules I return {"memories":[]} only when nothing qualifies. Here: {"memories":[{"action":"create"',
+        };
+        yield { type: 'done', finishReasons: ['length'] };
+      },
+    } as Provider;
+    const result = await runMemoryExtraction({
+      config: config(),
+      sessions,
+      bookRoot,
+      nowMs: NOW,
+      provider: cutOff,
+    });
+    // A failed start, retried next time, not the session read with nothing written.
+    expect(result.processed).toEqual([]);
+    const fenced: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: '```json\n' + SAVE + '\n```\n' };
+        yield { type: 'done', finishReasons: ['length'] };
+      },
+    } as Provider;
+    expect(
+      (
+        await runMemoryExtraction({
+          config: config(),
+          sessions,
+          bookRoot,
+          nowMs: NOW,
+          provider: fenced,
+        })
+      ).processed,
+    ).toEqual([{ id: 's1', written: 1 }]);
+  });
+
   describe('the lock', () => {
     const MINUTE = 60_000;
     afterEach(() => {
@@ -592,6 +634,28 @@ describe('runMemoryExtraction', () => {
         provider: provider(SAVE),
       });
       expect(second.reason).toBe('locked');
+
+      first.release();
+      expect((await running).processed).toEqual([{ id: 's1', written: 1 }]);
+    });
+
+    it('does not take a lock it cannot read for one it lost (#245)', async () => {
+      const sessions = source({ s1: { meta: meta('s1'), transcript: talk } });
+      const first = held();
+      const running = runMemoryExtraction({
+        config: config(),
+        sessions,
+        bookRoot,
+        nowMs: NOW,
+        provider: first.provider,
+      });
+      await vi.waitFor(() => expect(first.started).toEqual(['stream']));
+      // A read that fails for any reason but a missing file (a scanner holding it on Windows)
+      // says nothing about who owns the lock. A directory in its place fails the read the same way.
+      const lock = getMemoryExtractionLockPath(workspace, { bookRoot });
+      rmSync(lock);
+      const { mkdirSync } = await import('fs');
+      mkdirSync(lock);
 
       first.release();
       expect((await running).processed).toEqual([{ id: 's1', written: 1 }]);

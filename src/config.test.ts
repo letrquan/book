@@ -818,13 +818,57 @@ describe('loadConfig provider registry', () => {
     expect(clampEffortToCatalog(none, 'low', { raiseToLowest: true })).toBeUndefined();
   });
 
-  it('sends an effort for a catalog entry that names a default but no levels (#245)', () => {
-    // `getAvailableEffortLevels` reads a missing `levels` list as every level.
+  it('sends the default of a catalog entry that names a default but no levels (#245)', () => {
+    // An entry without a `levels` list vouches for the level it names, and only that one.
     const defaultOnly = defaultConfig({ modelInfo: { effort: { default: 'medium' } } });
     expect(resolveEffortExplicit(defaultOnly, 'medium', false)).toBe(true);
-    expect(resolveEffortExplicit(defaultOnly, 'high', false)).toBe(true);
+    expect(resolveEffortExplicit(defaultOnly, 'high', false)).toBe(false);
+    expect(resolveEffortExplicit(defaultOnly, 'high', true)).toBe(true);
+    const bareEntry = defaultConfig({ modelInfo: { effort: {} } });
+    expect(resolveEffortExplicit(bareEntry, 'high', false)).toBe(false);
     const empty = defaultConfig({ modelInfo: { effort: { levels: [] } } });
     expect(resolveEffortExplicit(empty, 'medium', false)).toBe(false);
+  });
+
+  it('raises an explicit compactEffort below the catalog to its lowest listed level (#245)', () => {
+    const config = defaultConfig({
+      effort: 'high',
+      compactEffort: 'low',
+      compactModel: 'reducer/upper',
+      settings: {
+        ...defaultConfig().settings,
+        provider: {
+          reducer: {
+            type: 'openai',
+            baseURL: 'https://reducer.example/v1',
+            apiKey: 'reducer-key',
+            models: { upper: { maxOutputTokens: 4096, effort: { levels: ['medium', 'high'] } } },
+          },
+        },
+      },
+    });
+    expect(resolveCompactModelConfig(config)).toMatchObject({
+      model: 'upper',
+      effort: 'medium',
+      effortExplicit: true,
+    });
+    // The session's effort capped at `medium` is not raised: it never goes back up.
+    const capped = resolveCompactModelConfig({
+      ...config,
+      compactEffort: undefined,
+      effort: 'max',
+      effortExplicit: true,
+      settings: {
+        ...config.settings,
+        provider: {
+          reducer: {
+            ...config.settings.provider.reducer!,
+            models: { upper: { maxOutputTokens: 4096, effort: { levels: ['high', 'max'] } } },
+          },
+        },
+      },
+    });
+    expect(capped.effort).toBeUndefined();
   });
 
   it('does not carry a level the catalog merely listed into the compact model as chosen (#245)', () => {
