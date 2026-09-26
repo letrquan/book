@@ -1631,7 +1631,10 @@ export class AgentManager {
             };
             record.status = 'waiting_permission';
             record.pendingPermission = request;
-            this.permissionRules.set(request.id, permissionRuleForToolCall(toolCall));
+            // A call with no primary argument has no rule to remember: `resolvePermission`
+            // persists what the map holds, so an absent rule saves nothing.
+            const rule = permissionRuleForToolCall(toolCall);
+            if (rule) this.permissionRules.set(request.id, rule);
             this.persist(record);
             this.emit({ type: 'agent_permission', agentId: record.id, request: clone(request) });
             return new Promise<'allow' | 'deny' | 'always'>((resolvePromise) => {

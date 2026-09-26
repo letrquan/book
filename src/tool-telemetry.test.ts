@@ -201,6 +201,27 @@ describe('formatToolStatsReport', () => {
     expect(report).toContain('9router/cmc/x: 2 calls, 1 failed (50.0%)');
     expect(report).toContain('codes: invalid_json_arguments:truncated_start(1)');
   });
+
+  it('prints the by-model block for a single model whose line carries a code', () => {
+    // A run of `truncated_start` on one model is the whole diagnosis, and it was hidden
+    // by a block that only appeared once a second model was on record.
+    const report = formatToolStatsReport(
+      aggregateToolUse([
+        record({
+          model: 'cmc/x',
+          provider: '9router',
+          status: 'error',
+          isFailure: true,
+          errorCode: 'invalid_json_arguments',
+          errorShape: 'truncated_start',
+        }),
+      ]),
+    );
+
+    expect(report).toContain('By model:');
+    expect(report).toContain('9router/cmc/x: 1 calls, 1 failed (100.0%)');
+    expect(report).toContain('invalid_json_arguments:truncated_start(1)');
+  });
 });
 
 describe('pruneToolUseRecords', () => {

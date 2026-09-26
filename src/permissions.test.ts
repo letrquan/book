@@ -494,6 +494,17 @@ describe('permissionRuleLadder', () => {
     expect(permissionRuleLadder(bash('pwd'))).toEqual(['Bash(pwd)']);
   });
 
+  it('offers no rule at all for a call whose primary argument is empty', () => {
+    // `{command: ""}` passes the schema, and a command whose first line is empty has
+    // no primary argument either. The bare `Bash` rule the ladder used to offer in
+    // their place allows every Bash call afterwards, which is not what "Always allow"
+    // on a call that ran nothing ever meant.
+    for (const command of ['', '\nrm -rf x']) {
+      expect(permissionRuleForToolCall(bash(command))).toBeUndefined();
+      expect(permissionRuleLadder(bash(command))).toEqual([]);
+    }
+  });
+
   it('refuses to widen a command that already chains or redirects', () => {
     // `*` crosses anything, so a prefix learned from `npm i && curl x | sh`
     // would keep matching whatever came after the operator.

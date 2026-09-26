@@ -408,6 +408,85 @@ describe('a run whose every tool call is refused', () => {
   });
 });
 
+describe('a run that keeps calling a tool no registry answers to', () => {
+  /** A provider that calls a name no registered tool answers to, forever. */
+  function unknownToolProvider(): Provider {
+    let call = 0;
+    return {
+      id: 'scripted',
+      stream: async function* () {
+        call++;
+        yield {
+          type: 'tool_call',
+          toolCall: {
+            id: `ghost-${call}`,
+            name: 'GhostTool',
+            arguments: { path: 'a.ts' },
+          },
+        };
+        yield { type: 'done' };
+      },
+    } as unknown as Provider;
+  }
+
+  async function runGhosts(
+    config: ReturnType<typeof configWith>,
+    mode: string,
+  ): Promise<{ outcome?: AgentTerminalOutcome; prompts: number }> {
+    let outcome: AgentTerminalOutcome | undefined;
+    let prompts = 0;
+    const callbacks = {
+      onText: () => {},
+      onToolCall: () => {},
+      onToolResult: () => {},
+      onError: () => {},
+      onTurnStart: () => {},
+      onDone: () => {},
+      onTerminal: (value: AgentTerminalOutcome) => (outcome = value),
+      onPermissionRequired: async () => {
+        prompts++;
+        return 'allow' as const;
+      },
+    } as unknown as AgentLoopCallbacks;
+
+    await runAgentLoop(config, createDefaultRegistry(), 'do the work', [], callbacks, mode, {
+      provider: unknownToolProvider(),
+      isNewSession: false,
+      runtime: new SessionRuntime(),
+      unattended: true,
+    });
+    return { outcome, prompts };
+  }
+
+  function ghostConfig(): ReturnType<typeof configWith> {
+    const config = configWith({ enabled: false });
+    config.settings.continuation.blockedToolTurnLimit = 2;
+    // A ceiling, so a broken brake fails the assertion instead of hanging the suite.
+    config.maxTurns = 6;
+    return config;
+  }
+
+  it('still stops the streak in a mode that would have asked', async () => {
+    // The refusal reached the permission prompt, which an unattended run answers
+    // `deny`, so the brake was built around it; refusing the call earlier changed
+    // nothing about the fact that the mode would have asked about it.
+    const { outcome, prompts } = await runGhosts(ghostConfig(), 'default');
+
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(prompts).toBe(0);
+  });
+
+  it('does not stop the streak in a mode that never asks', async () => {
+    // `bypassPermissions` runs a name no registry answers to exactly as it runs a
+    // mutation, and stops only on the turn budget. Counting the pre-execution refusal
+    // here ended an unattended run that was never refused by anything.
+    const { outcome } = await runGhosts(ghostConfig(), 'bypassPermissions');
+
+    expect(outcome?.reason).not.toBe('all_tools_blocked');
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'max_turns' });
+  });
+});
+
 describe('the no-progress witness', () => {
   it('does not accept a refused tool call as progress', async () => {
     // `toolCallStats` increments for every attempted call, refusals included, so a

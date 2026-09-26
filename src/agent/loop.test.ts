@@ -1262,6 +1262,100 @@ describe('unparsed tool-call arguments', () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  it('saves no rule for an "Always" on a call with an empty primary argument', async () => {
+    // `Bash {command: ''}` passes the schema, so it reaches the prompt with nothing to
+    // scope a rule to. The rule the ladder used to offer was a bare `Bash`, which allows
+    // every Bash call afterwards; the answer applies to this one call and writes nothing.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-empty-arg-'));
+    try {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: { id: 'empty-1', name: 'Bash', arguments: { command: '' } },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const onPermissionRequired = vi.fn(async () => 'always' as const);
+      const onPersistPermissionRule = vi.fn();
+      const results: ToolResult[] = [];
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'run nothing',
+        [],
+        noopCallbacks({
+          onPermissionRequired,
+          onPersistPermissionRule,
+          onToolResult: (result) => results.push(result),
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(onPermissionRequired).toHaveBeenCalledOnce();
+      expect(onPersistPermissionRule).not.toHaveBeenCalled();
+      // The call itself is still allowed; only the rule is withheld.
+      expect(results[0]?.status).not.toBe('blocked');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('names an unknown tool as unknown in plan mode, not as a plan refusal', async () => {
+    // Only a registered tool defers to the mode. `FooTool` has no definition for plan
+    // mode to hide, so "not allowed in plan mode" told the model to write a plan for a
+    // tool that does not exist and lost the one instruction that would have helped.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-plan-unknown-'));
+    try {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: { id: 'plan-unknown-1', name: 'FooTool', arguments: { path: 'a.ts' } },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const onPermissionRequired = vi.fn(async () => 'allow' as const);
+      const results: ToolResult[] = [];
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'call the tool',
+        [],
+        noopCallbacks({
+          onPermissionRequired,
+          onToolResult: (result) => results.push(result),
+        }),
+        'plan',
+        { provider, isNewSession: false },
+      );
+
+      expect(results[0]?.structuredError?.code).toBe('unknown_tool');
+      expect(results[0]?.structuredError?.message).not.toMatch(/plan mode/);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('runAgentLoop streaming render callbacks', () => {

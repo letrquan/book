@@ -83,12 +83,18 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
-/**
- * The key both provider clients wrap tool-call arguments in when they are not
+/** The key both provider clients wrap tool-call arguments in when they are not
  * valid JSON: `{ __raw: "<text>" }` (`parseToolArguments` in
  * provider/openai-compatible.ts and provider/anthropic.ts).
  */
 const RAW_ARGUMENTS_KEY = '__raw';
+
+/**
+ * Marked on every rejection this registry makes before a tool runs, so `refusedBeforeRun`
+ * can tell one apart from a tool that ran and then refused its own arguments
+ * (`Read {outline: true, offset}` returns `invalid_arguments` after reading the file).
+ */
+const PRE_EXECUTION_DETAILS = { preExecution: true } as const;
 
 type InvalidJsonShape =
   | 'truncated_start'

@@ -136,6 +136,29 @@ describe('PermissionButtons', () => {
     expect(onResolve).toHaveBeenCalledWith({ result: 'always', rule: 'Bash(echo one)' });
   });
 
+  it('saves no rule when the call has no primary argument to scope one to', () => {
+    // `{command: ''}` reaches the prompt, and a bare `Bash` rule would allow every Bash
+    // call afterwards. The card says so rather than naming a rule it will not write.
+    const onResolve = vi.fn();
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-empty', name: 'Bash', arguments: { command: '' } }}
+          onResolve={onResolve}
+        />,
+      ),
+    );
+
+    expect(stripAnsi(view.lastFrame() ?? '')).toContain('no rule to save');
+
+    view.stdin.write('a');
+    view.stdin.write('\r');
+
+    expect(onResolve).toHaveBeenCalledOnce();
+    // `always` with no rule: the call is allowed and the loop persists nothing.
+    expect(onResolve).toHaveBeenCalledWith('always');
+  });
+
   // The exact rule matches that byte sequence and nothing else, so a user who
   // pressed "Always allow" to stop being asked was asked again next call.
   it('steps the Always allow scope on repeated A and writes the chosen rule', async () => {

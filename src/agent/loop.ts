@@ -441,7 +441,10 @@ export async function runAgentLoop(
       }
       approved = permission === 'allow' || permission === 'always';
       if (permission === 'always' && callbacks.onPersistPermissionRule) {
-        callbacks.onPersistPermissionRule(chosenRule ?? permissionRuleForToolCall(call));
+        // No rule, no write: a call with no primary argument has nothing to scope one
+        // to, and the bare tool rule would allow every call of that tool afterwards.
+        const rule = chosenRule ?? permissionRuleForToolCall(call);
+        if (rule) callbacks.onPersistPermissionRule(rule);
       }
     }
     if (!approved) {
@@ -2142,10 +2145,17 @@ export async function runAgentLoop(
             }
             if (permission === 'always' && !persistentBackgroundShell) {
               log.debug('permission always', { tool: canonName });
+              // No rule, no write: a call with no primary argument has nothing to scope
+              // one to, and a bare `Bash` rule allows every shell command afterwards. The
+              // answer still stands for this one call.
               const rule = chosenRule ?? permissionRuleForToolCall(call);
-              approveAllRules.push(rule);
-              if (callbacks.onPersistPermissionRule) {
-                callbacks.onPersistPermissionRule(rule);
+              if (!rule) {
+                log.debug('permission always with no rule to save', { tool: canonName });
+              } else {
+                approveAllRules.push(rule);
+                if (callbacks.onPersistPermissionRule) {
+                  callbacks.onPersistPermissionRule(rule);
+                }
               }
             }
           }

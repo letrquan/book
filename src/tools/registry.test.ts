@@ -556,6 +556,9 @@ describe('invalid JSON tool-call arguments', () => {
     // A well-formed array is not a parse failure, so the providers hand it over as a real
     // object and it never reaches this shape test; an array that arrives as text does.
     ['a JSON array', '[{"filePath": "a"},]'],
+    // Balanced braces, and no quoted key or value: a function body is text, not an object
+    // that lost its opening. "Resend the same call" would reproduce it exactly.
+    ['a function body', 'function f() { return 1; }'],
   ])('names %s as not a JSON object at all', async (_label, raw) => {
     const { registry } = editLikeRegistry();
 
@@ -565,6 +568,46 @@ describe('invalid JSON tool-call arguments', () => {
     );
 
     expect(result.structuredError?.details?.shape).toBe('not_object');
+  });
+
+  it.each([
+    // The router dropped `{"todos": [` and left the array's contents, so the closers
+    // outnumber the openers. V8 reads that as one complete object followed by text, and
+    // the advice was to strip the text around an object that is not whole.
+    [
+      'a nested array whose opening never arrived',
+      '{"content":"x","status":"pending"}, {"content":"y","status":"done"}]}',
+    ],
+  ])('names %s truncated at the start', async (_label, raw) => {
+    const { registry, execute } = editLikeRegistry();
+
+    const result = await registry.execute(
+      { id: 'dropped-array', name: 'Edit', arguments: { __raw: raw } },
+      ctx,
+    );
+
+    expect(result.structuredError?.code).toBe('invalid_json_arguments');
+    expect(result.structuredError?.details?.shape).toBe('truncated_start');
+    expect(result.structuredError?.retryable).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    // Cut off right after an escaped quote: the command was `echo "hi"` and the tail
+    // (`"}`) never arrived. The escaped quote used to read as a backslash the model must
+    // double, which would have rewritten the command it meant to run.
+    [`{"command": "echo ${backslash}"hi${backslash}""`],
+    [`{"command": "echo hi${backslash}"`],
+  ])('reads a call cut off after an escaped quote as cut off at the end', async (raw) => {
+    const { registry } = editLikeRegistry();
+
+    const result = await registry.execute(
+      { id: 'escaped-cut', name: 'Edit', arguments: { __raw: raw } },
+      ctx,
+    );
+
+    expect(result.structuredError?.details?.shape).toBe('truncated_end');
+    expect(result.structuredError?.remediation).not.toContain('escapes the quote');
   });
 
   it('reads leading whitespace before the object as cut off at the end, not the start', async () => {
@@ -817,6 +860,44 @@ describe('rejectBeforeGates', () => {
       'arguments_not_allowed',
     );
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('tells a tool outside the run that no search can activate it', async () => {
+    // `--allowedTools Read,Grep` makes Bash inactive and unauthorized at once. "Call
+    // ToolSearch to discover it" sends the model after a search that cannot return it,
+    // and the repeat escalation used to repeat that advice.
+    const { registry, execute } = editLikeRegistry();
+    const unauthorized: ToolContext['toolDiscovery'] = {
+      search: () => [],
+      activate: () => [],
+      restrict: () => {},
+      pushRestriction: () => () => {},
+      previewRestriction: () => [],
+      isActive: () => false,
+      isAuthorized: () => false,
+      canExecute: () => false,
+      activeDefinitions: () => [],
+      catalogSummary: () => '',
+    };
+    const runtime = new SessionRuntime();
+    const context: ToolContext = { workspaceRoot: dir, env: {}, runtime, toolDiscovery: unauthorized };
+    const call = {
+      id: 'unauthorized-1',
+      name: 'Edit',
+      arguments: { filePath: 'a.ts', oldString: 'a', newString: 'b' },
+    };
+
+    const first = await registry.execute(call, context);
+    const second = await registry.execute({ ...call, id: 'unauthorized-2' }, context);
+
+    for (const result of [first, second]) {
+      expect(result.structuredError?.code).toBe('tool_not_active');
+      const remediation = result.structuredError?.remediation ?? '';
+      expect(remediation).toContain('allowed tools');
+      expect(remediation).not.toContain('ToolSearch');
+    }
+    expect(execute).not.toHaveBeenCalled();
+    runtime.dispose();
   });
 
   it('keys an aliased inactive call on the canonical name, so a resend escalates', async () => {

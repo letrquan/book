@@ -23,6 +23,8 @@ import { displayWidth, hardWrapLine, truncateDisplay } from './word-wrap.js';
 
 const uiLog = createUiDebugLogger('tui:permbtn');
 const PERMISSION_PATTERN_DISPLAY_MAX_LENGTH = 40;
+/** What the "Always allow" row offers when the call has nothing to scope a rule to. */
+const NO_RULE_TO_SAVE = 'this call only — no rule to save';
 
 /**
  * Rows the payload (a wrapped command, or a diff) may take before the card
@@ -96,7 +98,7 @@ function riskHint(level: ReturnType<typeof toolRiskLevel>): string | null {
   return null;
 }
 
-export function permissionPatternForTool(toolCall: ToolCall, primaryArg: string): string {
+export function permissionPatternForTool(toolCall: ToolCall, primaryArg: string): string | undefined {
   void primaryArg;
   return permissionRuleForToolCall(toolCall);
 }
@@ -204,8 +206,12 @@ export function PermissionButtons({
   const ladderRef = useRef(ladder);
   ladderRef.current = ladder;
   const [scopeIndex, setScopeIndex, currentScope] = useKeyState(0);
+  // No ladder means no rule to write, so the row says so rather than naming one. The
+  // answer is still `always`: the loop applies it to this call and persists nothing.
   const alwaysPattern = ladder[scopeIndex] ?? ladder[0];
-  const alwaysPatternDisplay = permissionPatternForDisplay(alwaysPattern);
+  const alwaysPatternDisplay = alwaysPattern
+    ? permissionPatternForDisplay(alwaysPattern)
+    : NO_RULE_TO_SAVE;
   const scopeHint = scopeCaption(ladder, scopeIndex);
   const [expanded, setExpanded] = useState(false);
 
@@ -465,7 +471,7 @@ export function PermissionButtons({
         ))}
         <Text>Press: [R] Run once, [S] Skip, [Esc] Deny.</Text>
         <Text>Always allow: press [A] to select it, then Enter to confirm.</Text>
-        <Text>Rule to be saved: {alwaysPattern}</Text>
+        <Text>Rule to be saved: {alwaysPattern ?? '(none — this call only)'}</Text>
         {ladder.length > 1 ? <Text>Press [A] again to widen or narrow that rule.</Text> : null}
       </Box>
     );

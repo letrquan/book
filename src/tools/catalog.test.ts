@@ -543,6 +543,27 @@ describe('ToolSearch query matching', () => {
   it('matches nothing for a query that names nothing', () => {
     expect(surface().search('zzqx')).toEqual([]);
   });
+
+  it('does not qualify a tool on a description that only negates the query', () => {
+    // `not` + `es` met `notes`, and one word of a description was enough to qualify a
+    // tool: every deferred tool with a "do not" in its description answered `notes`.
+    const runtimeConfig = config();
+    runtimeConfig.settings.toolDiscovery.mode = 'deferred';
+    const deferred = createToolSurface({
+      config: runtimeConfig,
+      context: context(),
+      definitions: [
+        definition('Read'),
+        definition('GuardTool', 'Do not lose pending work'),
+        definition('NoteTool', 'Read the notes of a meeting'),
+      ],
+    });
+
+    const names = deferred.search('notes').map((match) => match.name);
+    // The plain plural still reaches a description, and a tool named for it still wins.
+    expect(names).toContain('NoteTool');
+    expect(names).not.toContain('GuardTool');
+  });
 });
 
 describe('ToolSearch in a bare registry (#270)', () => {
