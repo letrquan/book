@@ -135,6 +135,8 @@ class CrossOriginRedirectError extends Error {
   constructor(
     readonly sourceUrl: string,
     readonly targetUrl: string,
+    /** The target is a destination the private-network policy refuses. */
+    readonly privateTarget = false,
   ) {
     super(`Redirect from ${sourceUrl} to a different origin requires a new WebFetch approval.`);
     this.name = 'CrossOriginRedirectError';
@@ -477,11 +479,28 @@ async function fetchWithPolicy(
     if (!location)
       throw new Error(`HTTP ${response.status} redirect did not include a Location header.`);
     if (redirects.length >= policy.maxRedirects) throw new RedirectLimitError(policy.maxRedirects);
-    const next = await validateWebUrl(
-      new URL(location, current).toString(),
-      policy,
-      deps.resolveHostname,
-    );
+    let next: URL;
+    try {
+      next = await validateWebUrl(
+        new URL(location, current).toString(),
+        policy,
+        deps.resolveHostname,
+      );
+    } catch (error) {
+      // A cross-origin target the private-network policy refuses is still reported as the
+      // cross-origin redirect it is. It is a host the model never asked for, and following it
+      // is a new WebFetch with its own policy and permission decision. Refused as a private
+      // destination, it would be named as the model's own and point the operator at a switch
+      // that would still leave this call stopped at the origin check.
+      if (error instanceof WebPolicyError && error.code === 'private_network_forbidden') {
+        const target = new URL(location, current);
+        target.hash = '';
+        if (target.origin !== current.origin) {
+          throw new CrossOriginRedirectError(current.toString(), target.toString(), true);
+        }
+      }
+      throw error;
+    }
     if (next.origin !== current.origin) {
       throw new CrossOriginRedirectError(current.toString(), next.toString());
     }
@@ -491,22 +510,24 @@ async function fetchWithPolicy(
 }
 
 /** A request refused by the network policy: final, never retried, and its reason shown. */
-function privateNetworkBlocked(reason: string, details?: Record<string, unknown>): ToolResult {
+function privateNetworkBlocked(
+  reason: string,
+  details?: Record<string, unknown>,
+  destination?: string,
+): ToolResult {
+  const merged = destination === undefined ? details : { ...details, destination };
   return toolFailure(reason, {
     code: 'private_network_forbidden',
     status: 'blocked',
     retryable: false,
-    ...(details ? { details } : {}),
+    ...(merged ? { details: merged } : {}),
   });
 }
 
 function webPolicyFailure(error: unknown): ToolResult | undefined {
   if (error instanceof WebPolicyError) {
     return error.code === 'private_network_forbidden'
-      ? privateNetworkBlocked(
-          error.message,
-          error.destination === undefined ? undefined : { destination: error.destination },
-        )
+      ? privateNetworkBlocked(error.message, undefined, error.destination)
       : toolFailure(error.message, { code: error.code });
   }
   // The connect-time guard refuses after pre-flight validation has already passed -- a rebinding
@@ -514,17 +535,15 @@ function webPolicyFailure(error: unknown): ToolResult | undefined {
   // of the `fetch failed` undici wraps it in, and do not invite a retry that cannot succeed.
   const blockedReason = connectionBlockedReason(error);
   if (blockedReason) {
-    const destination = connectionBlockedDestination(error);
-    return privateNetworkBlocked(
-      blockedReason,
-      destination === undefined ? undefined : { destination },
-    );
+    return privateNetworkBlocked(blockedReason, undefined, connectionBlockedDestination(error));
   }
   if (error instanceof CrossOriginRedirectError) {
     return toolFailure(error.message, {
       code: 'cross_origin_redirect',
       status: 'blocked',
-      remediation: `Call WebFetch again with url: ${error.targetUrl}`,
+      remediation: error.privateTarget
+        ? `The redirect target ${error.targetUrl} is a private or special-use destination, which the web network policy refuses; do not follow it.`
+        : `Call WebFetch again with url: ${error.targetUrl}`,
       details: { sourceUrl: error.sourceUrl, targetUrl: error.targetUrl },
     });
   }
@@ -773,12 +792,11 @@ function providerRequestFailure(
   // way WebFetch does: it is a policy decision, not a transient network fault.
   const blockedReason = connectionBlockedReason(error);
   if (blockedReason) {
-    const destination = connectionBlockedDestination(error);
-    return privateNetworkBlocked(blockedReason, {
-      provider: provider.id,
-      phase,
-      ...(destination === undefined ? {} : { destination }),
-    });
+    return privateNetworkBlocked(
+      blockedReason,
+      { provider: provider.id, phase },
+      connectionBlockedDestination(error),
+    );
   }
   return toolFailure(
     `${provider.label} ${phase} failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -833,11 +851,11 @@ async function runBuiltinSearchProvider(
     );
   } catch (error) {
     if (error instanceof WebPolicyError && error.code === 'private_network_forbidden') {
-      return privateNetworkBlocked(error.message, {
-        provider: provider.id,
-        phase: 'endpoint_validation',
-        ...(error.destination === undefined ? {} : { destination: error.destination }),
-      });
+      return privateNetworkBlocked(
+        error.message,
+        { provider: provider.id, phase: 'endpoint_validation' },
+        error.destination,
+      );
     }
     return toolFailure(
       `${provider.label} endpoint is unavailable: ${error instanceof Error ? error.message : String(error)}`,
@@ -1060,25 +1078,25 @@ async function builtinWebSearch(
     if (result.status === 'success' || result.status === 'cancelled') return result;
 
     const cooldownMs = providerCooldownMs(result);
+    const refusedDestination = result.structuredError?.details?.destination;
+    const refused = typeof refusedDestination === 'string' ? refusedDestination : undefined;
     if (cooldownMs !== undefined) {
-      const blockedDestination = result.structuredError?.details?.destination;
       cooldowns.set(provider.id, {
         until: now().getTime() + cooldownMs,
         ...(result.structuredError?.code === 'private_network_forbidden'
           ? {
               blockedReason: result.structuredError.message,
-              ...(typeof blockedDestination === 'string' ? { blockedDestination } : {}),
+              ...(refused === undefined ? {} : { blockedDestination: refused }),
             }
           : {}),
       });
     }
-    const failedDestination = result.structuredError?.details?.destination;
     attempts.push({
       provider: provider.id,
       status: 'failed',
       code: result.structuredError?.code,
       message: result.structuredError?.message,
-      ...(typeof failedDestination === 'string' ? { destination: failedDestination } : {}),
+      ...(refused === undefined ? {} : { destination: refused }),
       retryable: result.structuredError?.retryable ?? false,
       ...(cooldownMs === undefined ? {} : { retryAfterMs: cooldownMs }),
     });

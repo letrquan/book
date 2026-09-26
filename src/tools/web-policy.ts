@@ -114,10 +114,11 @@ export function networkPolicyRemedies(results: readonly RefusalResult[]): string
   }
   if (kinds.has('search')) {
     const names = [...destinations.search];
-    const where = names.length === 0 ? '' : ` (${namedList(names)})`;
     remedies.push(
-      `every built-in search provider resolved to a private or special-use destination${where}, ` +
-        "which no setting, permission rule or mode lifts; check the host's DNS or proxy (a fake-IP " +
+      (names.length === 0
+        ? 'every built-in search provider resolved to a private or special-use destination'
+        : `every built-in search provider resolved to a private or special-use destination, namely ${namedList(names)}`) +
+        ", which no setting, permission rule or mode lifts; check the host's DNS or proxy (a fake-IP " +
         'DNS such as 198.18.0.0/15 causes this)',
     );
   }
@@ -274,7 +275,10 @@ function isBlockedIpv6(address: string): boolean {
   const uniqueLocal = (groups[0] & 0xfe00) === 0xfc00;
   const linkLocal = (groups[0] & 0xffc0) === 0xfe80;
   const multicast = (groups[0] & 0xff00) === 0xff00;
-  const documentation = groups[0] === 0x2001 && groups[1] === 0x0db8;
+  // Documentation: 2001:db8::/32 (RFC 3849) and 3fff::/20 (RFC 9637).
+  const documentation =
+    (groups[0] === 0x2001 && groups[1] === 0x0db8) ||
+    (groups[0] === 0x3fff && (groups[1] & 0xf000) === 0);
   const ipv4Mapped = groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff;
   // SIIT's IPv4-translated addresses (RFC 2765, RFC 6145): the mapped layout one group to the left.
   const ipv4Translated =
@@ -374,12 +378,12 @@ export const safeNetworkLookup: LookupFunction = (hostname, options, callback) =
     if (options.all) callback(error, []);
     else callback(error, '', 0);
   };
-  const refuse = (reason: string, destination: string): void =>
+  const refuse = (reason: string, destination?: string): void =>
     fail(
       Object.assign(new Error(reason), {
         code: 'EACCES',
         [CONNECTION_BLOCKED]: true,
-        [BLOCKED_DESTINATION]: destination,
+        ...(destination === undefined ? {} : { [BLOCKED_DESTINATION]: destination }),
       }) as NodeJS.ErrnoException,
     );
 
@@ -399,10 +403,9 @@ export const safeNetworkLookup: LookupFunction = (hostname, options, callback) =
     // Refuse an empty result rather than reporting success: the single-address form would
     // otherwise hand the connector '' as a destination it never validated.
     if (addresses.length === 0) {
-      refuse(
-        `Connection blocked because ${hostname} resolved to no usable address.`,
-        refusedDestination(hostname),
-      );
+      // No destination to name: nothing private was involved, and naming the host would present
+      // it as a private destination.
+      refuse(`Connection blocked because ${hostname} resolved to no usable address.`);
       return;
     }
     if (options.all) callback(null, addresses);
@@ -431,10 +434,15 @@ function isBlockedHostname(hostname: string): boolean {
 /**
  * How a refused destination is named to the operator: the host the model asked for, and the address
  * it resolved to when that differs (`example.com (10.0.0.2)`). A literal address or a name refused
- * before any lookup (`localhost`) is named once.
+ * before any lookup (`localhost`) is named once. The host is normalized as `normalizedHostname`
+ * does, lowercased and without a trailing dot, so the connect-time name matches the pre-flight one.
  */
 function refusedDestination(hostname: string, address?: string): string {
-  return address === undefined || address === hostname ? hostname : `${hostname} (${address})`;
+  const host = hostname
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '')
+    .toLowerCase();
+  return address === undefined || address === host ? host : `${host} (${address})`;
 }
 
 export async function validateWebUrl(

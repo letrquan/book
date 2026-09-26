@@ -286,7 +286,9 @@ All notable changes to this project are documented in this file.
   message names each refused destination (up to three, then a count) and, for `WebFetch`, warns that
   `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` turns the private-network (SSRF) check off for every
   destination rather than the one refused. The TUI and the stop message now read the list of policy
-  refusal codes from one place.
+  refusal codes from one place. A cross-origin redirect to a private host is now reported as a
+  cross-origin redirect rather than as a refused destination, and RFC 9637's documentation prefix
+  `3fff::/20` is refused beside `2001:db8::/32`.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller

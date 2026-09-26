@@ -2539,8 +2539,9 @@ export async function runAgentLoop(
         blockedTurnStreak++;
         for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
         for (const result of orderedToolResults) {
-          blockedStreakCauses.add(networkPolicyRefusal(result) ?? 'other');
-          if (result && networkPolicyRefusal(result)) blockedStreakNetworkRefusals.push(result);
+          const kind = networkPolicyRefusal(result);
+          blockedStreakCauses.add(kind ?? 'other');
+          if (kind && result) blockedStreakNetworkRefusals.push(result);
         }
       } else {
         blockedTurnStreak = 0;

@@ -48,9 +48,9 @@ refusal is lifted by a grant, an allow rule, or another permission mode, except 
 or narrowing that rule lifts it. A refusal by the web
 network policy (a private or special-use destination) is lifted by none of those, bypassPermissions
 included. For a refused `WebFetch` the message names the destinations it refused (the host the
-model asked for, and the address it resolved to) and `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the
-host environment, warning that the variable lifts the policy for every destination rather than only
-those. For a refused `WebSearch`, whose built-in providers resolved to a private destination, it
+model asked for, and the address it resolved to; a redirect to another origin is reported as a
+cross-origin redirect instead) and `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment,
+warning that the variable lifts the policy for every destination rather than only those. For a refused `WebSearch`, whose built-in providers resolved to a private destination, it
 names the private addresses the providers resolved to and points at the host's DNS or proxy
 instead: the providers always validate strictly, so that variable does nothing for them. A streak
 holding several kinds names each remedy. It is separate because a refusal spin never

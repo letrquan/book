@@ -168,6 +168,53 @@ describe('WebFetch', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it('reports a cross-origin redirect to a private host as the redirect, not as a refused destination', async () => {
+    // The target is a host the model never asked for. Refusing it as private_network_forbidden
+    // would name it as the model's destination and point the operator at the global private-network
+    // switch, which would still leave the call refused, now as a cross-origin redirect.
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: 'https://169.254.169.254/latest/meta-data/#frag' },
+        }),
+    );
+    const { fetchTool } = toolsFor(fetchImpl);
+
+    const result = await fetchTool.execute({ url: 'https://example.com/start' }, context());
+
+    expect(result.status).toBe('blocked');
+    expect(result.structuredError?.code).toBe('cross_origin_redirect');
+    expect(result.structuredError?.details).toMatchObject({
+      sourceUrl: 'https://example.com/start',
+      targetUrl: 'https://169.254.169.254/latest/meta-data/',
+    });
+    // Following it would be refused, so the model is not invited to.
+    expect(result.structuredError?.remediation).not.toContain('Call WebFetch again');
+    expect(result.structuredError?.remediation).toContain('private or special-use');
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('still refuses a same-origin redirect whose host now resolves privately', async () => {
+    const resolver = vi
+      .fn(async (): Promise<string[]> => [])
+      .mockResolvedValueOnce(['93.184.216.34'])
+      .mockResolvedValue(['10.0.0.9']);
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: '/next' },
+        }),
+    );
+    const { fetchTool } = toolsFor(fetchImpl, resolver);
+
+    const result = await fetchTool.execute({ url: 'https://example.com/start' }, context());
+
+    expect(result.structuredError?.code).toBe('private_network_forbidden');
+    expect(result.structuredError?.details?.destination).toBe('example.com (10.0.0.9)');
+  });
+
   it('follows bounded same-origin redirects and reports the final URL', async () => {
     const fetchImpl = vi
       .fn()

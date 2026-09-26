@@ -53,6 +53,9 @@ describe('web URL policy', () => {
     'fe80::1',
     'ff02::1',
     '2001:db8::1',
+    // RFC 9637's documentation prefix 3fff::/20, beside 2001:db8::/32.
+    '3fff::1',
+    '3fff:fff:ffff::1',
     '::ffff:127.0.0.1',
     '::127.0.0.1',
     'fec0::1',
@@ -412,6 +415,14 @@ describe('web URL policy', () => {
       expect(connectionBlockedDestination(new Error('boom'))).toBeUndefined();
       expect(connectionBlockedDestination(undefined)).toBeUndefined();
     });
+
+    it('names a connect-time host the way pre-flight does: lowercased, without a trailing dot', async () => {
+      // undici hands the lookup the host as written, so `EXAMPLE.com.` and `example.com` would
+      // otherwise be two destinations in one stop message.
+      const refused = (await runSafeLookup('LOCALHOST', { all: true })).error;
+
+      expect(connectionBlockedDestination(refused)).toMatch(/^localhost \(/);
+    });
   });
 });
 
@@ -503,6 +514,9 @@ describe('network-policy refusals', () => {
 
     expect(search).toContain('mcp.exa.ai (198.18.0.5)');
     expect(search).toContain('DNS or proxy');
+    // A name already carries its address in parentheses; the list is not wrapped in another pair.
+    expect(search).not.toContain('((');
+    expect(search).not.toMatch(/\([^()]*\([^()]*\)\)/);
   });
 
   it('gives one remedy per kind, WebFetch first, and none without a network refusal', () => {
