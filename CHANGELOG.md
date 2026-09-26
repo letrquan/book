@@ -6,6 +6,26 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Only the turn in progress replays its reasoning on the OpenAI-compatible path** (#248 item 6).
+  Every earlier assistant turn's reasoning went back to the model as a `<reasoning_context>` block
+  on every request. It now goes back only for the assistant steps after the newest user message,
+  which a tool loop needs; a turn that a later user message closed is sent as its answer and tool
+  calls, the way the Anthropic API drops earlier turns' thinking. Measured with the new
+  `npm run eval:prompt -- --suite replay`, six trials per cell on `cmc/stealth/space-bunny-alpha` and
+  `ag/gemini-3.8-flash-high`: the first request of a later turn is 9.6% and 6.6% smaller, an agentic
+  follow-up task spends 10% and 17% fewer prompt tokens, every answer stayed correct (30 of 30 per
+  model), and replies that wrote the block into their own text fell from 9 of 12 follow-ups to 4.
+  Replaying no reasoning at all took one to two more requests and 16% more prompt tokens than
+  today on the follow-up, so the turn in progress keeps it. Neither route reported cached prompt
+  tokens, so the rewrite of a closed turn costs no cache hit today; a provider that caches prefixes
+  re-reads that turn once per new user message.
+- **`npm run eval:prompt`** measures two prompt-shaping choices with the real agent loop in
+  throwaway sandboxes: `--suite replay` (the reasoning replay above) and `--suite verify` (#247
+  item 6, whether the kernel line "Report verification from the tool results already in the
+  transcript" suppresses a re-run a compaction checkpoint made necessary). The verify suite found no
+  such suppression: with a checkpoint claiming a pass over a now-failing suite, both models re-ran
+  the tests and reported the failure in 15 of 16 and 16 of 16 trials without any new wording, and
+  16 of 16 and 16 of 16 with a candidate line, so the kernel prompt is unchanged.
 - **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
   rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
   green, so every PR that touched them either reformatted unrelated lines or left them drifting.

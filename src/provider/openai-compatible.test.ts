@@ -83,7 +83,64 @@ describe('chatCompletionStream request body', () => {
     ]);
   });
 
-  it('replays prior reasoning as delimited assistant context', async () => {
+  it('replays reasoning only for the turn in progress, as delimited assistant context', async () => {
+    const readCall = {
+      id: 'c1',
+      type: 'function' as const,
+      function: { name: 'Read', arguments: '{}' },
+    };
+    const editCall = {
+      id: 'c2',
+      type: 'function' as const,
+      function: { name: 'Edit', arguments: '{}' },
+    };
+    const stream = chatCompletionStream(
+      config,
+      [
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: 'earlier answer', reasoningContent: 'earlier thought' },
+        { role: 'user', content: 'second' },
+        {
+          role: 'assistant',
+          content: null,
+          reasoningContent: 'inspect first',
+          tool_calls: [readCall],
+        },
+        { role: 'tool', tool_call_id: 'c1', content: 'file text' },
+        {
+          role: 'assistant',
+          content: 'Editing now.',
+          reasoningContent: 'then edit',
+          tool_calls: [editCall],
+        },
+        { role: 'tool', tool_call_id: 'c2', content: 'edited' },
+      ],
+      [],
+    );
+    await drain(stream);
+    expect(capturedBody.messages).toEqual([
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'earlier answer' },
+      { role: 'user', content: 'second' },
+      {
+        role: 'assistant',
+        content: '<reasoning_context>\ninspect first\n</reasoning_context>',
+        tool_calls: [readCall],
+      },
+      { role: 'tool', tool_call_id: 'c1', content: 'file text' },
+      {
+        role: 'assistant',
+        content: '<reasoning_context>\nthen edit\n</reasoning_context>\nEditing now.',
+        tool_calls: [editCall],
+      },
+      { role: 'tool', tool_call_id: 'c2', content: 'edited' },
+    ]);
+    const sent = JSON.stringify(capturedBody);
+    expect(sent).not.toContain('reasoningContent');
+    expect(sent).not.toContain('earlier thought');
+  });
+
+  it('does not replay the reasoning of a turn that a later user message closed', async () => {
     const stream = chatCompletionStream(
       config,
       [
@@ -94,13 +151,9 @@ describe('chatCompletionStream request body', () => {
     );
     await drain(stream);
     expect(capturedBody.messages).toEqual([
-      {
-        role: 'assistant',
-        content: '<reasoning_context>\ninspect first\n</reasoning_context>\nanswer',
-      },
+      { role: 'assistant', content: 'answer' },
       { role: 'user', content: 'continue' },
     ]);
-    expect(JSON.stringify(capturedBody)).not.toContain('reasoningContent');
   });
 
   it('does not send max_turns (not an OpenAI param)', async () => {
