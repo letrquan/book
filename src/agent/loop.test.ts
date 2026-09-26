@@ -6650,3 +6650,92 @@ describe('runAgentLoop — a retry label ends when the retried stream speaks', (
     expect(events).toEqual(['retry:reissue', 'resume']);
   });
 });
+
+describe('runAgentLoop — a clip file stays readable for the rest of the session (#248)', () => {
+  let dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    dirs = [];
+  });
+
+  it('lets a later prompt of the same session Read the file an earlier prompt clipped into', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-spill-session-'));
+    const toolOutputRoot = mkdtempSync(join(tmpdir(), 'book-loop-spill-session-out-'));
+    dirs.push(workspace, toolOutputRoot);
+    let spillPath = '';
+    const firstRun: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        if (!messages.some((message) => message.role === 'tool')) {
+          yield { type: 'tool_call', toolCall: { id: 'big_1', name: 'Big', arguments: {} } };
+        } else {
+          spillPath =
+            /Full output: (\S+?)\]/.exec(String(messages.at(-1)?.content ?? ''))?.[1] ?? '';
+          yield { type: 'text', content: 'clipped' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    let readCalled = false;
+    const secondRun: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        if (!readCalled) {
+          readCalled = true;
+          yield {
+            type: 'tool_call',
+            toolCall: {
+              id: 'read_later',
+              name: 'Read',
+              arguments: { file_path: spillPath, limit: 3 },
+            },
+          };
+        } else {
+          yield { type: 'text', content: 'read it' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    registry.registerAll(fileTools);
+    registry.register({
+      name: 'Big',
+      description: 'Return a large result',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => toolSuccess(`first line\n${'x'.repeat(100_000)}`),
+    });
+    const runtime = new SessionRuntime();
+    const results: ToolResult[] = [];
+    const config = defaultConfig({ workspace, maxTurns: 3, autoCompactEnabled: false });
+
+    const history = await runAgentLoop(
+      config,
+      registry,
+      'clip it',
+      [],
+      noopCallbacks(),
+      'bypassPermissions',
+      {
+        provider: firstRun,
+        isNewSession: false,
+        toolOutputRoot,
+        runtime,
+      },
+    );
+    await runAgentLoop(
+      config,
+      registry,
+      'now read it',
+      history,
+      noopCallbacks({ onToolResult: (result) => results.push(result) }),
+      'bypassPermissions',
+      { provider: secondRun, isNewSession: false, toolOutputRoot, runtime },
+    );
+
+    expect(spillPath).not.toBe('');
+    const read = results.find((result) => result.toolCallId === 'read_later');
+    expect(read?.status).toBe('success');
+    expect(read?.content).toContain('first line');
+  });
+});

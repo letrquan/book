@@ -28,15 +28,20 @@ export function formatTurnTime(timestamp?: number): string {
 
 /**
  * Split content into text segments and @mention tokens.
- * Shares `findMentionTokens` with input-expansion, so the TUI accents exactly
- * the mentions the agent loop expands — an at-sign inside fenced or inline code
- * is left as plain text.
+ * Shares `findMentionTokens` with input-expansion, so the TUI never accents an
+ * at-sign the agent loop would not expand — an at-sign inside fenced or inline
+ * code is left as plain text. The ranges are the ones `mentionTokenRanges`
+ * found in the *whole* prompt: a fence or a code span that spans lines only
+ * reads as code when the lines are taken together (#261).
  */
-function parseMentionSegments(content: string): Array<{ text: string; isMention: boolean }> {
+function parseMentionSegments(
+  content: string,
+  ranges: ReadonlyArray<[number, number]>,
+): Array<{ text: string; isMention: boolean }> {
   const segments: Array<{ text: string; isMention: boolean }> = [];
   let cursor = 0;
 
-  for (const [start, end] of mentionTokenRanges(content)) {
+  for (const [start, end] of ranges) {
     if (start > cursor) segments.push({ text: content.slice(cursor, start), isMention: false });
     segments.push({ text: content.slice(start, end), isMention: true });
     cursor = end;
@@ -75,17 +80,26 @@ const TAB = '    ';
 /**
  * Wraps one hard line of a prompt into rows of at most `width` columns.
  *
- * The line's indentation is kept, on its first row and on every row it wraps
- * onto, so a pasted code block keeps its shape. Words break at whitespace,
- * and a run of spaces at a break is dropped rather than carried to the end of
- * a row where it would push it past `width`. An @mention is one unbreakable
- * word, so a quoted path that wraps keeps its accent; only a word wider than
- * a whole row is cut.
+ * `mentionRanges` are this line's, already resolved against the whole prompt and
+ * given in columns of `line`. The line's indentation is kept, on its first row
+ * and on every row it wraps onto, so a pasted code block keeps its shape. Words
+ * break at whitespace, and a run of spaces at a break is dropped rather than
+ * carried to the end of a row where it would push it past `width`. An @mention is
+ * one unbreakable word, so a quoted path that wraps keeps its accent; only a word
+ * wider than a whole row is cut.
  */
-function wrapPromptLine(line: string, width: number): PromptPiece[][] {
+function wrapPromptLine(
+  line: string,
+  width: number,
+  mentionRanges: ReadonlyArray<[number, number]>,
+): PromptPiece[][] {
   const lead = /^[ \t]*/.exec(line)![0];
   const body = line.slice(lead.length);
   if (!body) return [[]];
+  // The line's own columns, past the indent the rows open with.
+  const bodyRanges = mentionRanges
+    .filter(([start, end]) => start >= lead.length && end <= line.length)
+    .map(([start, end]): [number, number] => [start - lead.length, end - lead.length]);
   // Leave at least half the row for text, however deep the indent.
   const indent = lead.replace(/\t/g, TAB).slice(0, Math.floor(width / 2));
   const indentWidth = displayWidth(indent);
@@ -112,7 +126,7 @@ function wrapPromptLine(line: string, width: number): PromptPiece[][] {
   };
 
   startRow();
-  for (const segment of parseMentionSegments(body)) {
+  for (const segment of parseMentionSegments(body, bodyRanges)) {
     const tokens = segment.isMention ? [segment.text] : segment.text.split(/(\s+)/);
     for (const token of tokens) {
       if (!token) continue;
@@ -143,7 +157,17 @@ function wrapPromptLine(line: string, width: number): PromptPiece[][] {
 /** A prompt as the transcript sets it: one entry per row, each within `width`. */
 export function wrapUserPrompt(content: string, width: number): PromptPiece[][] {
   if (!content) return [];
-  return content.split('\n').flatMap((line) => wrapPromptLine(line, width));
+  // The whole prompt is scanned once, before it is split: a fence or a code span
+  // that crosses a line break is only visible with the lines together (#261).
+  const ranges = mentionTokenRanges(content);
+  let offset = 0;
+  return content.split('\n').flatMap((line) => {
+    const lineRanges = ranges
+      .filter(([start, end]) => start >= offset && end <= offset + line.length)
+      .map(([start, end]): [number, number] => [start - offset, end - offset]);
+    offset += line.length + 1;
+    return wrapPromptLine(line, width, lineRanges);
+  });
 }
 
 /** Rows a user turn takes at `terminalWidth`, for the transcript's row estimate. */

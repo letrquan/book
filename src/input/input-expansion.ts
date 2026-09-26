@@ -114,17 +114,30 @@ function collectInlineCodeSpans(text: string, base: number, ranges: Array<[numbe
   }
 }
 
-function isInsideCode(ranges: Array<[number, number]>, index: number): boolean {
+function isInsideRanges(ranges: Array<[number, number]>, index: number): boolean {
   return ranges.some(([start, end]) => index >= start && index < end);
 }
 
-function findMentionTokens(input: string): MentionToken[] {
+/**
+ * `excluded` covers spans the caller has already spoken for — the `!` lines a
+ * shell expansion replaces — so a mention inside one is never both run and
+ * inlined, and is never observed either.
+ */
+function findMentionTokens(input: string, excluded: Array<[number, number]> = []): MentionToken[] {
+  // Most prompts name no file at all, and every token below is anchored on an
+  // at-sign, so the scan has nothing to find until one is present.
+  if (!input.includes('@')) return [];
   const tokens: MentionToken[] = [];
   const code = codeRanges(input);
   let i = 0;
 
   while (i < input.length) {
-    if (input[i] !== '@' || !isMentionBoundary(input, i) || isInsideCode(code, i)) {
+    if (
+      input[i] !== '@' ||
+      !isMentionBoundary(input, i) ||
+      isInsideRanges(code, i) ||
+      isInsideRanges(excluded, i)
+    ) {
       i++;
       continue;
     }
@@ -252,14 +265,21 @@ export function expandAtMentions(input: string, workspace: string): string {
   return output;
 }
 
+/**
+ * Provenance for the files `expandUserInput` inlined. `expandShellInput` must
+ * be the same value that call was given, so a mention inside a `!` line — which
+ * is run, never inlined — is observed neither (#261).
+ */
 export function collectAtMentionObservations(
   input: string,
   workspace: string,
   sourceRef: string,
+  expandShellInput = false,
 ): FileObservation[] {
   const workspaceId = workspaceIdentity(workspace);
   const observations: FileObservation[] = [];
-  for (const token of findMentionTokens(input)) {
+  const shellLines = expandShellInput ? findShellLines(input) : [];
+  for (const token of findMentionTokens(input, shellLineRanges(shellLines))) {
     const resolved = resolveWorkspaceMentionPath(workspace, token.path);
     if (!resolved || !existsSync(resolved.filePath)) continue;
     try {
@@ -282,6 +302,83 @@ export function collectAtMentionObservations(
   return observations;
 }
 
+/** One `!cmd` line the user typed, with the span it occupies. */
+interface ShellLine {
+  start: number;
+  end: number;
+  command: string;
+}
+
+/** The `!cmd` lines of the typed input that a shell expansion will replace. */
+function findShellLines(input: string): ShellLine[] {
+  const fenced = fencedCodeRanges(input);
+  return (
+    [...input.matchAll(/^!(\S.*)$/gm)]
+      // A `!` line inside fenced code is shown, not run (#261).
+      .filter((match) => !isInsideRanges(fenced, match.index ?? 0))
+      .map((match) => {
+        const start = match.index ?? 0;
+        return { start, end: start + match[0].length, command: match[1] };
+      })
+  );
+}
+
+function shellLineRanges(lines: ShellLine[]): Array<[number, number]> {
+  return lines.map((line) => [line.start, line.end]);
+}
+
+export interface UserInputExpansion {
+  /** Replace `!cmd` lines with their output. Off for a host that never expands them. */
+  expandShell?: boolean;
+  signal?: AbortSignal;
+}
+
+/**
+ * Expand what the user typed, in one pass and in one order.
+ *
+ * `!cmd` lines run, `@path` mentions are inlined, and both are found on the
+ * typed text — never on the result of the other. A file's contents must not run
+ * as commands, and a command's output must not be read as the user's own
+ * mentions: `@notes.md` is expanded where it was typed and its `!` lines stay
+ * text, and `!cat @notes.md` prints the path rather than the file (#261).
+ */
+export async function expandUserInput(
+  input: string,
+  workspace: string,
+  options: UserInputExpansion = {},
+): Promise<string> {
+  const shellLines = options.expandShell ? findShellLines(input) : [];
+  const tokens = findMentionTokens(input, shellLineRanges(shellLines));
+  if (shellLines.length === 0 && tokens.length === 0) return input;
+
+  // One left-to-right walk of the typed text, replacing each `!` line and each
+  // mention where it was written. Output is inserted, never rescanned, so the
+  // spans below can never overlap and are already in order.
+  const edits: Array<{ start: number; end: number; apply: () => string | Promise<string> }> = [
+    ...shellLines.map((line) => ({
+      start: line.start,
+      end: line.end,
+      apply: () => executeShellExpansion(line.command, workspace, options.signal),
+    })),
+    ...tokens.map((token) => ({
+      start: token.start,
+      end: token.end,
+      apply: () => expandMention(token.path, workspace) ?? token.raw,
+    })),
+  ].sort((left, right) => left.start - right.start);
+
+  let output = '';
+  let cursor = 0;
+  for (const edit of edits) {
+    output += input.slice(cursor, edit.start);
+    output += await edit.apply();
+    // A token's trailing punctuation is outside `end`, so it rides along in the
+    // next slice exactly as `expandAtMentions` leaves it.
+    cursor = edit.end;
+  }
+  return output + input.slice(cursor);
+}
+
 /**
  * Expand !cmd shell commands to their output in user input.
  * Replaces lines starting with !<cmd> with the command's stdout.
@@ -291,20 +388,14 @@ export async function expandShellCommands(
   workspace: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const fenced = fencedCodeRanges(input);
-  const matches = [...input.matchAll(/^!(\S.*)$/gm)].filter(
-    // A `!` line inside fenced code is shown, not run (#261).
-    (match) => !isInsideCode(fenced, match.index ?? 0),
-  );
-  if (matches.length === 0) return input;
+  const lines = findShellLines(input);
+  if (lines.length === 0) return input;
   let output = '';
   let cursor = 0;
-  for (const match of matches) {
-    const index = match.index ?? 0;
-    const command = match[1];
-    output += input.slice(cursor, index);
-    output += await executeShellExpansion(command, workspace, signal);
-    cursor = index + match[0].length;
+  for (const line of lines) {
+    output += input.slice(cursor, line.start);
+    output += await executeShellExpansion(line.command, workspace, signal);
+    cursor = line.end;
   }
   return output + input.slice(cursor);
 }

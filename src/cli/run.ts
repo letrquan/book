@@ -285,8 +285,11 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           promptSuggestions: options.promptSuggestions as boolean | undefined,
         });
       } finally {
-        await disconnectMcpServers(mcp.connections);
+        // The run has settled: its SIGINT/SIGTERM handlers go now, not after the
+        // MCP disconnect. Waiting on a shutting-down server can take seconds, and
+        // a second Ctrl+C in that window must still exit at once.
         printInterrupt?.dispose();
+        await disconnectMcpServers(mcp.connections);
       }
       // Not `exit(1)`: a failed run returns like a successful one and only marks the exit
       // code, so Node exits once the provider's pooled sockets have closed. Exiting while

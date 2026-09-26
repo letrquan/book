@@ -51,6 +51,7 @@ import { resolvePermissionMode } from './permission-mode.js';
 import { separateInlineReasoning } from './reasoning-tags.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { toolResultErrorMessage } from './tools/result.js';
+import { onAbort, throwIfAborted } from './async.js';
 
 /**
  * Re-price restored tokens.
@@ -101,26 +102,10 @@ function destroyOnAbort(
   signal: AbortSignal | undefined,
 ): () => void {
   if (!signal) return () => {};
-  const destroy = () => {
+  return onAbort(signal, () => {
     const reason = signal.reason instanceof Error ? signal.reason : new Error('Aborted');
     (stream as NodeJS.ReadableStream & { destroy?: (error?: Error) => void }).destroy?.(reason);
-  };
-  if (signal.aborted) {
-    destroy();
-    return () => {};
-  }
-  signal.addEventListener('abort', destroy, { once: true });
-  return () => signal.removeEventListener('abort', destroy);
-}
-
-/**
- * Re-throw a signal's reason as an Error. A read that ends cleanly after the abort
- * (a TTY returns at once) must still take the run's abort path rather than reading
- * as an empty prompt.
- */
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (!signal?.aborted) return;
-  throw signal.reason instanceof Error ? signal.reason : new Error('Aborted');
+  });
 }
 
 /**
@@ -136,15 +121,14 @@ async function raceAbort(
     return true;
   }
   if (signal.aborted) return false;
-  let onAbort: (() => void) | undefined;
+  let release: (() => void) | undefined;
   const aborted = new Promise<false>((resolve) => {
-    onAbort = () => resolve(false);
-    signal.addEventListener('abort', onAbort, { once: true });
+    release = onAbort(signal, () => resolve(false));
   });
   try {
     return await Promise.race([promise.then(() => true as const), aborted]);
   } finally {
-    if (onAbort) signal.removeEventListener('abort', onAbort);
+    release?.();
   }
 }
 
@@ -335,6 +319,13 @@ export async function runHeadless(
 
     let lastUsage: Usage | null = null;
     let lastOutcome: AgentTerminalOutcome | null = null;
+    /**
+     * Whether an abort may reclassify the run as cancelled when it ends a wait
+     * for managed children. Set once the prompts are done, and only ever false
+     * when the run's last turn failed: a failure is what went wrong, whatever
+     * arrived afterwards (#248).
+     */
+    let mayReclassify = true;
     /** The opening message of the latest model run: the answer is read from that run only. */
     let finalRunOpeningId: string | undefined;
     const runResults: AgentRunResult[] = [];
@@ -561,7 +552,15 @@ export async function runHeadless(
         // text at all. Emitting only deltas made the flag load-bearing for the
         // basic contract, which is why leaving it off had to mean "maximum volume".
         if (opts.outputFormat === 'stream-json' && message.content) {
-          emit({ type: 'assistant', text: message.content, complete: true });
+          // A host notice is what Book said, not what the model answered, and the
+          // wire has to say so: the record's shape is otherwise indistinguishable
+          // from an ordinary reply (#248).
+          emit({
+            type: 'assistant',
+            text: message.content,
+            complete: true,
+            ...(message.hostNotice ? { host_notice: true } : {}),
+          });
         }
       },
     });
@@ -946,15 +945,14 @@ export async function runHeadless(
         ),
       );
       while (true) {
-        if (opts.signal?.aborted) {
-          lastOutcome = classifyAbortReason(opts.signal.reason, true);
-          break;
-        }
-        const idle = await raceAbort(managedAgentManager.waitForIdle(), opts.signal);
+        // Waiting for active children is the one place an abort reclassifies the
+        // run: a reader that goes away after the last turn already ended — after
+        // it failed, most of all — changes nothing about how that run ended.
+        const idle =
+          !opts.signal?.aborted &&
+          (await raceAbort(managedAgentManager.waitForIdle(), opts.signal));
         if (!idle) {
-          // Cancelled while children were still working: stop waiting, and let the run end
-          // as the abort says rather than as the last parent turn did (#248).
-          lastOutcome = classifyAbortReason(opts.signal?.reason, true);
+          if (mayReclassify) lastOutcome = classifyAbortReason(opts.signal?.reason, true);
           break;
         }
         const pending = (await managedAgentManager.listPendingCompletions()).filter(
@@ -1033,6 +1031,9 @@ export async function runHeadless(
     // A run made only of host-performed commands has no last turn, so reporting
     // `null` would say "this cost nothing" about work that really spent tokens.
     const reportedUsage = lastUsage ?? commandUsage;
+    // A turn that failed failed: an abort afterwards is a reader going away, a
+    // cancel, or a timeout, and none of them is what went wrong (#248).
+    mayReclassify = lastOutcome?.status !== 'failed';
     // No model turn in this process (a run of host-performed commands, such as
     // `book -p --continue "/review"`) has no answer: the walk would otherwise read the
     // previous process's answer out of the resumed history (#248).
@@ -1151,16 +1152,17 @@ export async function runHeadless(
     }
 
     if (sessionId) {
-      // A run that completed reports `completion`, even when its reader went away
-      // afterwards. Otherwise an aborted signal (a cancel, or an `AbortSignal.timeout`
-      // that ended the run as timed out) reports `aborted`, and a failed run `error`.
+      // A run that completed reports `completion`, a failed one `error`, and only
+      // then does an abort count: an `aborted` signal is how a cancel, a timeout
+      // and a reader that walked away all arrive, and none of them may rewrite
+      // how the run actually ended (#248).
       const sessionEndReason =
         outcome.status === 'completed'
           ? 'completion'
-          : opts.signal?.aborted || outcome.status === 'cancelled'
-            ? 'aborted'
-            : outcome.status === 'failed'
-              ? 'error'
+          : outcome.status === 'failed'
+            ? 'error'
+            : outcome.status === 'cancelled' || opts.signal?.aborted
+              ? 'aborted'
               : 'completion';
       disposeSession();
       await agentSession.endLifecycle(config, sessionId, sessionEndReason, {

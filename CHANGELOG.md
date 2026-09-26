@@ -294,8 +294,8 @@ All notable changes to this project are documented in this file.
   in a tool exits 0 like one that lands in the stream, since cancelling is not failing.
 - **Two managed children of one profile get distinct progress labels** (#248): `explorer` and
   `explorer 2`.
-- **`Read` can open the file a clip notice names** (#248): each file a result of this run was clipped
-  into, never the rest of the shared `tool-output` directory.
+- **`Read` can open the file a clip notice names** (#248): each file a result of this session was clipped
+  into, for the rest of the session, never the rest of the shared `tool-output` directory.
 - **An at-sign in a prompt expands only when it names a file** (#261). Print mode and the TUI
   expanded every at-sign token, including inside fenced and inline code, so a spec quoting a JSDoc
   `{@link Foo.bar}` reached the model as `[Could not include @link: file not found]`, and the model
@@ -303,8 +303,9 @@ All notable changes to this project are documented in this file.
   existing path stays exactly as written. A file that exists inside the workspace but cannot be
   included (a binary file, an unreadable one) keeps its `[Could not include …]` note; a directory, a
   missing path and a path outside the workspace are left as written, and a path outside it is never
-  touched on disk. The TUI accents exactly the mentions Book expands. A `!` line runs only when the
-  user typed it outside fenced code, never from a mentioned file's contents.
+  touched on disk. The TUI never accents an at-sign inside code. A `!` line runs only when the
+  user typed it outside fenced code, never from a mentioned file's contents, and its output is never
+  mention-expanded.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller

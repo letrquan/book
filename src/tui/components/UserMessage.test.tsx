@@ -159,6 +159,12 @@ describe('user prompt wrapping', () => {
     expect(mentions.map((piece) => piece.text)).toEqual(['@src/b.ts']);
   });
 
+  it('does not accent a mention inside a fenced block that spans lines', () => {
+    const rows = wrapUserPrompt('```\n@src/a.ts\n```\nthen @src/b.ts', 80);
+    const mentions = rows.flat().filter((piece) => piece.isMention);
+    expect(mentions.map((piece) => piece.text)).toEqual(['@src/b.ts']);
+  });
+
   it('keeps blank lines between paragraphs', () => {
     expect(text(wrapUserPrompt('first\n\nsecond', 20))).toEqual(['first', '', 'second']);
   });

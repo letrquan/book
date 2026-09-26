@@ -117,10 +117,12 @@ export interface HeadlessResult {
    */
   commandResults?: HostCommandResult[];
   /**
-   * The run's final answer, exactly what `text` output prints: the text of the last
-   * model turn that called no tools, in this process's final run. Empty when the model
-   * did not answer (a failure, a refused prompt, a rejected tool batch, or a run of
-   * host-performed commands only).
+   * The model's final answer: the text of the last model turn that called no
+   * tools, in this process's final run. Empty when the model did not answer (a
+   * failure, a refused prompt, a rejected tool batch, or a run of
+   * host-performed commands only), and empty on a plan stop, where the plan is
+   * the deliverable — see `plan`, and note that `text` output prints that plan
+   * rather than an answer.
    */
   answer?: string;
 }

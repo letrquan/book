@@ -506,12 +506,17 @@ export async function runAgentLoop(
   });
 
   const initialMode = mode as PermissionMode;
-  // Read may open the memory directory (minus its inbox) and, below, each file this run
-  // clipped a result into: a clip notice's "Full output: <path>" (#248). Never the whole
-  // tool-output directory, which holds every project's clipped output.
-  const readOnlyRoots: Array<string | ReadOnlyRoot> = config.memoryContext?.dir
-    ? [{ root: config.memoryContext.dir, exclude: ['.inbox'] }]
-    : [];
+  // Read may open the memory directory (minus its inbox) and, below, every file this
+  // session clipped a result into: a clip notice's "Full output: <path>" (#248). Never the
+  // whole tool-output directory, which holds every project's clipped output. The earlier
+  // prompts' files come from the runtime, so a notice the model was given one turn ago
+  // stays readable for the rest of the session.
+  const readOnlyRoots: Array<string | ReadOnlyRoot> = [
+    ...(config.memoryContext?.dir
+      ? [{ root: config.memoryContext.dir, exclude: ['.inbox'] } as const]
+      : []),
+    ...runtime.clippedOutputPaths,
+  ];
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
     readOnlyRoots,
@@ -2474,12 +2479,11 @@ export async function runAgentLoop(
           undefined,
           options?.toolOutputRoot,
         );
-        if (
-          bounded.pagination?.truncated &&
-          bounded.artifacts?.outputPath &&
-          !readOnlyRoots.includes(bounded.artifacts.outputPath)
-        ) {
-          readOnlyRoots.push(bounded.artifacts.outputPath);
+        const outputPath = bounded.artifacts?.outputPath;
+        if (bounded.pagination?.truncated && outputPath) {
+          if (!readOnlyRoots.includes(outputPath)) readOnlyRoots.push(outputPath);
+          // Session-scoped, so the next prompt of this session can still Read it.
+          runtime.clippedOutputPaths.add(outputPath);
         }
         return bounded;
       };

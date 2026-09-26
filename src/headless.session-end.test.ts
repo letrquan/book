@@ -344,3 +344,157 @@ describe('runHeadless — an abort stops waiting (#248)', () => {
     }
   }, 10_000);
 });
+
+describe('runHeadless — a failure outlives a reader that leaves (#248)', () => {
+  function duplicateIdsTurn(): Response {
+    const call = (index: number) =>
+      `data: ${JSON.stringify({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { index, id: 'dup', function: { name: 'Read', arguments: '{"file_path":"a"}' } },
+              ],
+            },
+          },
+        ],
+      })}\n\n`;
+    return sse([call(0), call(1)]);
+  }
+
+  /** Aborts the run's signal as soon as the run writes a record matching `trigger`. */
+  function readerLeavesAfter(trigger: string, controller: AbortController, writes: string[]) {
+    return {
+      write: (s: string) => {
+        writes.push(s);
+        if (s.includes(trigger)) controller.abort();
+        return true;
+      },
+    };
+  }
+
+  it('keeps a failed outcome, and SessionEnd reason error, when the reader then goes away', async () => {
+    const controller = new AbortController();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => duplicateIdsTurn()),
+    );
+    const writes: string[] = [];
+
+    const result = await runHeadless(sessionEndConfig(), createDefaultRegistry(), {
+      ...streamOptions(controller.signal, writes),
+      stdout: readerLeavesAfter('"type":"error"', controller, writes),
+    });
+
+    expect(result.outcome.status).toBe('failed');
+    expect(sessionEndRecords(writes)).toEqual([
+      expect.objectContaining({ reason: 'error', status: 'failed' }),
+    ]);
+  });
+
+  it('keeps a failed outcome when children exist and the reader goes away', async () => {
+    const controller = new AbortController();
+    const fakeManager = {
+      waitForIdle: vi.fn(async () => {}),
+      listPendingCompletions: vi.fn(async () => []),
+      acknowledgeCompletion: vi.fn(async () => {}),
+      dispose: vi.fn(),
+    } as unknown as AgentManager;
+    const registry = createRegistry();
+    registry.registerAll(createDefaultRegistry().getDefinitions());
+    registry.register({
+      name: 'SpawnFakeAgent',
+      description: 'Create the managed-agent runtime.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, context) => {
+        context.runtime!.agentManager = fakeManager;
+        return toolSuccess('spawned');
+      },
+    });
+    let request = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        request++;
+        return request === 1 ? sse([toolDelta('call-1', 'SpawnFakeAgent')]) : duplicateIdsTurn();
+      }),
+    );
+    const writes: string[] = [];
+
+    const result = await runHeadless(sessionEndConfig(), registry, {
+      ...streamOptions(controller.signal, writes),
+      stdout: readerLeavesAfter('"type":"error"', controller, writes),
+    });
+
+    expect(result.outcome.status).toBe('failed');
+  });
+
+  it('marks a rejected tool batch as a host notice on the stream-json assistant record', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => duplicateIdsTurn()),
+    );
+    const writes: string[] = [];
+
+    await runHeadless(
+      sessionEndConfig(),
+      createDefaultRegistry(),
+      streamOptions(undefined, writes),
+    );
+
+    const complete = writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((record) => record.type === 'assistant' && record.complete);
+    expect(complete).toEqual([expect.objectContaining({ host_notice: true })]);
+  });
+});
+
+describe('runHeadless — a cancelled wait leaves nothing unhandled (#248)', () => {
+  it('does not leak a rejection from children that fail after the cancel', async () => {
+    const controller = new AbortController();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    const fakeManager = {
+      waitForIdle: vi.fn(() => {
+        setTimeout(() => controller.abort(), 10);
+        return new Promise<void>((_, reject) => setTimeout(() => reject(new Error('late')), 60));
+      }),
+      listPendingCompletions: vi.fn(async () => []),
+      acknowledgeCompletion: vi.fn(async () => {}),
+      dispose: vi.fn(),
+    } as unknown as AgentManager;
+    const registry = createRegistry();
+    registry.register({
+      name: 'SpawnFakeAgent',
+      description: 'Leave a background child running.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, context) => {
+        context.runtime!.agentManager = fakeManager;
+        return toolSuccess('spawned');
+      },
+    });
+    let request = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        request++;
+        return request === 1
+          ? sse([toolDelta('call-1', 'SpawnFakeAgent')])
+          : sse([textDelta('started it')]);
+      }),
+    );
+
+    try {
+      await runHeadless(sessionEndConfig(), registry, streamOptions(controller.signal, []));
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+
+    expect(unhandled).toEqual([]);
+  }, 10_000);
+});

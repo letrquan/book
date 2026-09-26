@@ -104,11 +104,10 @@ export async function runSubagent(
       },
     );
 
-    // Extract the last assistant message content from the history. A host notice
-    // is what the host said, not what the child answered (#248).
+    // Extract the last assistant message content from the history.
     for (let i = updatedHistory.length - 1; i >= 0; i--) {
       const m = updatedHistory[i];
-      if (m.role === 'assistant' && m.content && !m.hostNotice) {
+      if (m.role === 'assistant' && m.content) {
         result = m.content;
         break;
       }

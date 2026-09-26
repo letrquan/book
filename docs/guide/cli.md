@@ -140,7 +140,9 @@ itself opens with an unfenced reasoning tag, such as a template, loses that bloc
 the tag to keep it. A tag later in the answer is answer
 text, and an answer with no such block is printed exactly as written, plus a newline. `stream-json` partial deltas
 (`--include-partial-messages`) still carry the raw tags; the complete `assistant` record carries the
-split content.
+split content. A complete `assistant` record that reports what Book itself said — a prompt a
+`UserPromptSubmit` hook refused, a tool batch Book rejected — carries `"host_notice": true`, so a
+consumer can tell a host notice from a model reply without matching on its text.
 
 Three things behave differently in print mode, because there is nobody to ask.
 
@@ -208,8 +210,9 @@ for await (const event of query('Explain this code', {
 }
 ```
 
-The `result` event's `answer` is the text print mode would print: empty when the model did not answer.
-The `json` and `stream-json` result documents carry it too.
+The `result` event's `answer` is the model's final answer: empty when the model did not answer, and
+empty on a plan stop, where the plan is the deliverable (see `plan`, which print mode's `text` output
+prints instead). The `json` and `stream-json` result documents carry it too.
 
 `AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop` — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK. Host notices (such as saved memories or review candidates) emit `notice` (`{type: 'notice', message}`).
 
