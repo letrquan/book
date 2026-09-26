@@ -1292,7 +1292,7 @@ Running children and background shells appear in one flat job panel directly bel
 
 `Bash` accepts `run_in_background: true` with an optional `title`, `max_runtime_ms`, `notify`, and `lifetime`. Session jobs are the default and end with Book. `lifetime: "persistent"` is explicit, receives a separate permission decision, and reattaches from repository-scoped state after Book restarts. `notify: "ui"` is the default, `"none"` suppresses completion delivery, and `"agent"` queues one bounded output tail for the parent model when it is idle. Persistent logs are bounded and are removed when the completed job is dismissed.
 
-`/agents` explains where subagent definitions are configured rather than opening a second runtime dashboard. Import third-party Claude-style definitions with `/agents import <path>` to preview normalized tools and warnings, then `/agents import --confirm <path>` to install under `.book/agents/`. The lower-level `/agent <id>`, `/agent send <id> <message>`, `/agent stop <id>`, and `/agent apply <id> [evidence-id]` commands remain available for direct scripting and recovery.
+`/agents` opens the subagent profiles, where each profile's model is chosen (the same picker as `/config` → Subagent profiles), rather than a second runtime dashboard. Import third-party Claude-style definitions with `/agents import <path>` to preview normalized tools and warnings, then `/agents import --confirm <path>` to install under `.book/agents/`. The lower-level `/agent <id>`, `/agent send <id> <message>`, `/agent stop <id>`, and `/agent apply <id> [evidence-id]` commands remain available for direct scripting and recovery.
 
 Profile model precedence is invocation override, `agents.profiles.<name>.model`, definition frontmatter, then the parent model. `inherit` falls through rather than becoming a literal provider model. Profile effort precedence is `agents.profiles.<name>.effort`, definition frontmatter, then the session's effort, clamped down to the highest level the child model's catalog lists at or below it. On an OpenAI-compatible route a child sends it as `reasoning_effort` only when one of those chose a level (for the session: `--effort`, `BOOK_EFFORT` or `settings.effort`) or its model's catalog lists that level, so with nothing configured a child on a model with no catalog entry sends none, like the main agent. Stream-json and SDK hosts receive status, activity, question, permission, completion, and evidence events by default; high-volume child text deltas require `forwardSubagentText`.
 
@@ -1413,7 +1413,13 @@ controls (`/agents`, `/agent`), config (`/model`, `/providers`,
 `/memory`), local output and reload (`/export`, `/reload-skills`), release/support
 (`/release-notes`, `/feedback`), agent prompts (`/init`, `/security-review`), and code review
 (`/review`, see below). `/help` is generated from the command registry: every visible built-in, in
-groups, with its visible aliases, followed by your custom commands.
+groups, with its visible aliases, followed by your custom commands. `/release-notes` lists the
+installed version's changes from the CHANGELOG that ships with Book, one line each.
+
+Commands say only what the screen does not already show. Switching the model or the effort writes
+nothing into the transcript, since the status line names the model and its effort. Other settings,
+`/reload-skills`, provider changes and MCP connections confirm with a note above the composer that
+fades after a few seconds; errors stay in the transcript.
 `/model` switches models, while `/providers` opens the same picker for provider management. BYOK
 providers you add - their credentials, model catalog, and active model selection - are saved to the
 user-global `~/.book/settings.json` so they are shared across projects; such providers are labeled

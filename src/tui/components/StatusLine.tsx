@@ -31,6 +31,12 @@ const SEGMENT_SEPARATOR = '  ·  ';
 
 interface StatusLineProps {
   model: string;
+  /**
+   * Reasoning effort, when the model takes one. Shown beside the model, so a
+   * change of either is visible where it lives instead of announced in the
+   * transcript.
+   */
+  effort?: string;
   tokenCount?: number;
   maxTokens?: number;
   maxTokensSource?: ContextWindowSource;
@@ -95,6 +101,7 @@ const FOLIO_GAP = 3;
  */
 export function StatusLine({
   model,
+  effort,
   tokenCount: _tokenCount,
   maxTokens: _maxTokens,
   maxTokensSource: _maxTokensSource,
@@ -174,6 +181,7 @@ export function StatusLine({
     }
 
     segments.push({ text: truncateDisplay(displayModel, modelBudget), color: theme.subtle });
+    if (effort) segments.push({ text: `${effort} effort`, color: theme.inactive });
 
     if (taskCount > 0) {
       segments.push({
@@ -203,6 +211,7 @@ export function StatusLine({
     mode,
     activeModeColor,
     model,
+    effort,
     taskCount,
     needsInputAgentCount,
     theme.inactive,

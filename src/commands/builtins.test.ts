@@ -136,8 +136,8 @@ describe('built-in command contract', () => {
       operation: 'list',
     });
     expect(registry.execute('agents', '', context())).toEqual({
-      type: 'local-message',
-      content: expect.stringContaining('/tasks'),
+      type: 'show-modal',
+      modal: 'agents',
     });
     expect(registry.execute('agent', 'send agent-1 status update', context())).toEqual({
       type: 'managed-agent',

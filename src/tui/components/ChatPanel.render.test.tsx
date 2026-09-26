@@ -1,3 +1,4 @@
+import chalk from 'chalk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
@@ -1518,6 +1519,39 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('─ § Usage ─');
     expect(output).toContain('input 1,000');
     expect(output).not.toContain('Session usage plain fallback');
+  });
+
+  it('sets a marked local note as an event row, the mark in its colour', () => {
+    const level = chalk.level;
+    chalk.level = 3;
+    let raw: string;
+    try {
+      const view = render(
+        withTheme(
+          <ChatPanel
+            messages={[
+              {
+                ...msg('failed', 'assistant', '✕ Could not save the setting.'),
+                kind: 'local',
+                includeInContext: false,
+              },
+            ]}
+            terminalWidth={80}
+            reducedMotion
+          />,
+        ),
+      );
+      raw = view.lastFrame() ?? '';
+    } finally {
+      chalk.level = level;
+    }
+    const row = raw
+      .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+      .split('\n')
+      .find((line) => line.includes('Could not save'));
+    expect(row?.startsWith('  ✕ Could not save the setting.')).toBe(true);
+    const [r, g, b] = [1, 3, 5].map((at) => parseInt(DEFAULT_THEME.error.slice(at, at + 2), 16));
+    expect(raw).toContain(`38;2;${r};${g};${b}m✕`);
   });
 
   it('leaves exactly one blank row above each slash-command output', () => {

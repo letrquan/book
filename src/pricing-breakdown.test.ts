@@ -51,7 +51,9 @@ describe('per-model cost breakdown', () => {
 
   it('leaves the single-model /cost report as it was', () => {
     const report = costReport(LEAD, usage(1000, 200));
-    expect(report).toContain(`Model: ${LEAD}`);
+    expect(report.split('\n')).toHaveLength(1);
+    expect(report).toContain(LEAD);
+    expect(report).toContain('1,200 tokens (1,000 in, 200 out)');
     expect(report).not.toContain('Per model');
     expect(report).not.toContain('not yet implemented');
   });

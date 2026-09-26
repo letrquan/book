@@ -27,10 +27,11 @@ afterEach(() => {
 describe('buildMemoryReport', () => {
   it('reports no approved memory when the memory dir is absent', () => {
     const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
-    expect(report).toContain('Loaded index: none found');
-    expect(report).toContain('Pending candidates: 0');
+    expect(report).not.toContain('Index:');
+    expect(report).toMatch(/Health: 0 approved, 0 superseded, 0 inbox/);
+    expect(report).toContain('No approved memories yet.');
     expect(report).toContain(
-      'Model writes: enabled (direct to store; to inbox after external content)',
+      'model writes enabled (direct to store; to inbox after external content)',
     );
   });
 
@@ -68,8 +69,9 @@ describe('buildMemoryReport', () => {
     );
 
     const report = buildMemoryReport({ workspace, bookRoot, settings });
-    expect(report).toContain('Model writes: disabled');
-    expect(report).toContain('Pending candidates: 1');
+    expect(report).toContain('model writes disabled');
+    expect(report).toMatch(/Health: .*1 inbox/);
+    expect(report).toContain('Inbox: `');
     expect(buildMemoryInboxReport({ workspace, bookRoot })).toContain('User likes short answers');
   });
 
@@ -182,8 +184,8 @@ describe('buildMemoryReport', () => {
 
     // Both reports wrap paths in inline code spans (`...`)
     expect(report).toContain(`Location: \`${winBookRoot}`);
-    expect(report).toContain(`Inbox: \`${winBookRoot}`);
-    expect(report).toContain(`Path: \`${winBookRoot}`);
+    // The directory is printed once; it used to repeat as `Path:` at the end.
+    expect(report.split(winBookRoot).length - 1).toBe(1);
     expect(inboxReport).toContain(`Inbox: \`${winBookRoot}`);
 
     // When processed through marked, the backslashes survive inside <code> blocks
@@ -193,12 +195,11 @@ describe('buildMemoryReport', () => {
 
   it('reflects requireApproval setting in report', () => {
     const defaultReport = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
-    expect(defaultReport).toContain('Approval required: no');
+    expect(defaultReport).not.toContain('needs approval');
 
     const approvalSettings = structuredClone(DEFAULT_SETTINGS);
     approvalSettings.memory.requireApproval = true;
     const approvalReport = buildMemoryReport({ workspace, bookRoot, settings: approvalSettings });
-    expect(approvalReport).toContain('Approval required: yes');
-    expect(approvalReport).toContain('Model writes: enabled (to inbox, needs approval)');
+    expect(approvalReport).toContain('model writes enabled (to inbox, needs approval)');
   });
 });

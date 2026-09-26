@@ -97,7 +97,7 @@ export type BuiltinCommandEffect =
   | { type: 'exit' }
   | {
       type: 'show-modal';
-      modal: 'config' | 'model' | 'rewind' | 'effort' | 'skills';
+      modal: 'config' | 'model' | 'rewind' | 'effort' | 'skills' | 'agents';
     }
   | { type: 'set-model'; selection: string }
   | { type: 'set-effort'; level: EffortLevel }
@@ -679,12 +679,11 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     argumentHint: '[import [--confirm] <path>]',
     execute: ({ rawArguments }) => {
       const parts = rawArguments.split(/\s+/).filter(Boolean);
+      // Bare, it opens the subagent profiles, which is what "configure" means;
+      // it used to print a sentence pointing somewhere else.
+      if (parts.length === 0) return { type: 'show-modal', modal: 'agents' };
       if (parts[0] !== 'import') {
-        return {
-          type: 'local-message',
-          content:
-            'Subagents run from the prompt-adjacent job panel. Use /jobs (or /tasks) to inspect them; configure definitions in .book/agents or ~/.book/agents.',
-        };
+        return { type: 'local-message', content: 'Usage: /agents [import [--confirm] <path>]' };
       }
       const confirmed = parts[1] === '--confirm';
       const importPath = parts.slice(confirmed ? 2 : 1).join(' ');
@@ -884,9 +883,9 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   {
     name: 'release-notes',
     description: 'Show installed version + changelog',
-    execute: (_invocation, context) => ({
+    execute: () => ({
       type: 'local-message',
-      content: buildReleaseNotesReport(context.workspace),
+      content: buildReleaseNotesReport(),
     }),
   },
   {

@@ -3,7 +3,6 @@ import {
   DEFAULT_MAX_INDEX_LINES,
   getMemoryHealth,
   getMemoryInboxDir,
-  getProjectMemoryDir,
   isMemorySaveAvailable,
   listMemoryCandidates,
   loadMemoryContext,
@@ -85,9 +84,9 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
   const health = getMemoryHealth(ctx, input);
   const lastWrite = health.lastWrite ? health.lastWrite.toISOString() : 'never';
 
-  const lines: string[] = ['Auto-memory for this workspace:', ''];
-  lines.push(`Location: \`${ctx.dir}\``);
-  lines.push(`Loading: ${enabled ? 'enabled' : 'disabled'}`);
+  // One line per fact. The report used to print the memory directory twice
+  // (Location, Path), a Loading line, an Approval line the writes line already
+  // implied, and a pending count the health line already held.
   const quarantineExternal = settings?.memory.quarantineExternal ?? true;
   const modelWrites = !isMemorySaveAvailable(settings)
     ? 'disabled'
@@ -96,41 +95,35 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
       : quarantineExternal
         ? 'enabled (direct to store; to inbox after external content)'
         : 'enabled (direct to store)';
-  lines.push(`Model writes: ${modelWrites}`);
-  lines.push(`Approval required: ${requireApproval ? 'yes' : 'no'}`);
-  lines.push(`Inbox: \`${getMemoryInboxDir(input.workspace, input)}\``);
-  lines.push(
+  const lines: string[] = [
+    `Memory: ${enabled ? 'loaded each session' : 'not loaded'} · model writes ${modelWrites}`,
     `Health: ${health.approvedCount} approved, ${health.supersededCount} superseded, ${health.inboxCount} inbox, ${health.indexLineCount}/${DEFAULT_MAX_INDEX_LINES} index lines, last write: ${lastWrite}`,
-  );
-  lines.push('');
-
+  ];
   if (ctx.indexFile) {
     const cap =
       ctx.loadedLineCount < ctx.indexLineCount
         ? `first ${ctx.loadedLineCount} of ${ctx.indexLineCount} non-empty lines`
         : `${ctx.loadedLineCount} non-empty lines`;
-    lines.push(`Loaded index: \`${ctx.indexFile}\` (${cap})`);
-  } else {
-    lines.push('Loaded index: none found');
+    lines.push(`Index: ${cap}`);
+  }
+  lines.push(`Location: \`${ctx.dir}\``);
+  if (health.inboxCount > 0 || ctx.candidates.length > 0) {
+    lines.push(`Inbox: \`${getMemoryInboxDir(input.workspace, input)}\``);
   }
 
-  lines.push(`Pending candidates: ${ctx.candidates.length}`);
-  lines.push('');
-
   const approvedFiles = ctx.files.filter((file) => file.name !== 'MEMORY.md');
+  lines.push('');
   if (approvedFiles.length === 0) {
-    lines.push('Approved memory files: none yet');
+    lines.push('No approved memories yet.');
   } else {
-    lines.push('Approved memory files:');
     for (const file of approvedFiles) {
-      lines.push(`  - ${file.title ?? file.name} (${file.type ?? 'unknown'}) — ${file.name}`);
+      lines.push(`- ${file.title ?? file.name} (${file.type ?? 'unknown'}) — ${file.name}`);
     }
   }
 
   lines.push('');
   lines.push(
-    'Commands: /memory inbox, /memory approve <n|file>, /memory discard <n|file>, /memory delete <file>, /memory on, /memory off, /memory path',
+    '`/memory inbox` · `approve <n|file>` · `discard <n|file>` · `delete <file>` · `on` · `off`',
   );
-  lines.push(`Path: \`${getProjectMemoryDir(input.workspace, input)}\``);
   return lines.join('\n');
 }

@@ -687,7 +687,7 @@ describe('App session commands', () => {
     expect(frame.indexOf('queued first')).toBeLessThan(frame.indexOf('current draft'));
   });
 
-  it('/agents gives configuration guidance instead of opening Agent Center', async () => {
+  it('/agents opens the subagent profiles instead of Agent Center', async () => {
     const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
     useAgentMock.mockReturnValue(agentState);
     useTasksMock.mockReturnValue({
@@ -701,7 +701,8 @@ describe('App session commands', () => {
     const view = render(<App config={config()} session={testSession} />);
     await submit(view, '/agents');
 
-    expect(agentState.addLocalMessage).toHaveBeenCalledWith(expect.stringContaining('/tasks'));
+    expect(stripAnsi(view.lastFrame())).toContain('Subagent profiles');
+    expect(agentState.addLocalMessage).not.toHaveBeenCalled();
     expect(stripAnsi(view.lastFrame())).not.toContain('Agent Center');
   });
 
@@ -1075,15 +1076,34 @@ describe('App effort command', () => {
     expect(frame).not.toContain('Maximum reasoning depth');
   });
 
-  it('applies direct arguments case-insensitively and reports success', async () => {
+  it('switches the model without a transcript line; the status line names it', async () => {
+    const setModel = vi.fn(() => ({ ok: true }));
+    const { agentState, view } = renderIdle({ setModel });
+
+    await submit(view, '/model gpt-5');
+
+    expect(setModel).toHaveBeenCalledWith('gpt-5');
+    // "Switched to … (saved as default)." used to be written into the transcript.
+    expect(agentState.addLocalMessage).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed switch in the transcript', async () => {
+    const setModel = vi.fn(() => ({ ok: false, error: 'unknown model' }));
+    const { agentState, view } = renderIdle({ setModel });
+
+    await submit(view, '/model nope');
+
+    expect(agentState.addLocalMessage).toHaveBeenCalledWith('✕ unknown model');
+  });
+
+  it('applies direct arguments case-insensitively without a transcript line', async () => {
     const { agentState, view } = renderIdle();
 
     await submit(view, '/effort XHIGH');
 
     expect(agentState.setEffort).toHaveBeenCalledWith('xhigh');
-    expect(agentState.addLocalMessage).toHaveBeenCalledWith(
-      'Set effort level to xhigh (saved as default).',
-    );
+    // The status line shows the effort beside the model; nothing is announced.
+    expect(agentState.addLocalMessage).not.toHaveBeenCalled();
   });
 
   it('shows accepted usage for invalid levels', async () => {
