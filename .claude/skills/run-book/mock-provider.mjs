@@ -117,10 +117,6 @@ const sequenceTurns = turns.filter((turn) => typeof turn.match !== 'string');
 let requestCount = 0;
 let sequencePosition = 0;
 
-function sse(res, obj) {
-  res.write(`data: ${JSON.stringify(obj)}\n\n`);
-}
-
 /** Thrown out of a turn whose client went away (Esc aborts Book's request). */
 class ClientGone extends Error {}
 
@@ -186,104 +182,101 @@ function substituteEvents(text, prompt) {
 }
 
 async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 100) {
-  let sent = 0;
-  try {
-    await writeTurn(res, turn, model, id, prompt, estimatedTokens, () => (sent += 1));
-  } catch (error) {
-    if (!(error instanceof ClientGone)) throw error;
-    // Book aborted the request (Esc, a timeout): stop writing to the closed response.
-    console.error(`mock-provider: ${id} closed by the client after ${sent} chunks; stopped`);
-  }
-}
-
-async function writeTurn(res, turn, model, id, prompt, estimatedTokens, onSent) {
   const base = { id, object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: {} }] };
   const delayMs = typeof turn.chunkDelayMs === 'number' ? turn.chunkDelayMs : chunkDelayMs;
-  const send = (obj) => {
-    if (res.destroyed || res.writableEnded) throw new ClientGone();
-    sse(res, obj);
-    onSent();
+  // Every write and pause checks the response: once Book closes it (Esc, a timeout), the
+  // turn stops rather than writing the rest of its script into a closed socket.
+  let sent = 0;
+  const write = (text) => {
+    if (res.destroyed) throw new ClientGone();
+    res.write(text);
+    sent += 1;
   };
+  const send = (obj) => write(`data: ${JSON.stringify(obj)}\n\n`);
   const wait = async (ms) => {
     await pause(res, ms);
     if (res.destroyed) throw new ClientGone();
   };
 
-  send({ ...base, choices: [{ index: 0, delta: { role: 'assistant' } }] });
-  // `thinkMs` holds the turn before its first delta, the way a real model pauses
-  // to think, so the working spinner is on screen long enough to be seen.
-  if (turn.thinkMs) await wait(turn.thinkMs);
+  try {
+    send({ ...base, choices: [{ index: 0, delta: { role: 'assistant' } }] });
+    // `thinkMs` holds the turn before its first delta, the way a real model pauses
+    // to think, so the working spinner is on screen long enough to be seen.
+    if (turn.thinkMs) await wait(turn.thinkMs);
 
-  // `tools: [...]` sends several calls in one turn, the way a model that
-  // batches parallel reads does; `tool` is the one-call shorthand.
-  const turnTools = Array.isArray(turn.tools) ? turn.tools : turn.tool ? [turn.tool] : [];
-  if (turnTools.length > 0) {
-    if (turn.text) {
-      for (const piece of turn.text.match(/.{1,12}/gs) ?? [turn.text]) {
+    // `tools: [...]` sends several calls in one turn, the way a model that
+    // batches parallel reads does; `tool` is the one-call shorthand.
+    const turnTools = Array.isArray(turn.tools) ? turn.tools : turn.tool ? [turn.tool] : [];
+    if (turnTools.length > 0) {
+      if (turn.text) {
+        for (const piece of turn.text.match(/.{1,12}/gs) ?? [turn.text]) {
+          if (delayMs > 0) await wait(delayMs);
+          send({ ...base, choices: [{ index: 0, delta: { content: piece } }] });
+        }
+      }
+      if (turn.holdMs) await wait(turn.holdMs);
+      for (const [index, tool] of turnTools.entries()) {
+        if (delayMs > 0) await wait(delayMs);
+        // Tool arguments are streamed as a JSON string, exactly like OpenAI does.
+        send({
+          ...base,
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index,
+                    id: `call_mock_${id}_${index}`,
+                    type: 'function',
+                    function: {
+                      name: tool.name,
+                      arguments:
+                        typeof tool.rawArguments === 'string'
+                          ? tool.rawArguments
+                          : JSON.stringify(tool.arguments ?? {}),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        });
+      }
+      send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
+    } else {
+      // Chunk the text so the TUI exercises its streaming render path.
+      const text = substituteEvents(turn.text ?? replyText, prompt);
+      for (const piece of text.match(/.{1,12}/gs) ?? [text]) {
         if (delayMs > 0) await wait(delayMs);
         send({ ...base, choices: [{ index: 0, delta: { content: piece } }] });
       }
-    }
-    if (turn.holdMs) await wait(turn.holdMs);
-    for (const [index, tool] of turnTools.entries()) {
-      if (delayMs > 0) await wait(delayMs);
-      // Tool arguments are streamed as a JSON string, exactly like OpenAI does.
+      if (turn.holdMs) await wait(turn.holdMs);
+      // `finishReason` overrides the terminal reason of a text turn: `content_filter`
+      // is what Gemini's safety filter answers on ordinary code-shaped prose.
       send({
         ...base,
-        choices: [
-          {
-            index: 0,
-            delta: {
-              tool_calls: [
-                {
-                  index,
-                  id: `call_mock_${id}_${index}`,
-                  type: 'function',
-                  function: {
-                    name: tool.name,
-                    arguments:
-                      typeof tool.rawArguments === 'string'
-                        ? tool.rawArguments
-                        : JSON.stringify(tool.arguments ?? {}),
-                  },
-                },
-              ],
-            },
-          },
-        ],
+        choices: [{ index: 0, delta: {}, finish_reason: turn.finishReason ?? 'stop' }],
       });
     }
-    send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
-  } else {
-    // Chunk the text so the TUI exercises its streaming render path.
-    const text = substituteEvents(turn.text ?? replyText, prompt);
-    for (const piece of text.match(/.{1,12}/gs) ?? [text]) {
-      if (delayMs > 0) await wait(delayMs);
-      send({ ...base, choices: [{ index: 0, delta: { content: piece } }] });
-    }
-    if (turn.holdMs) await wait(turn.holdMs);
-    // `finishReason` overrides the terminal reason of a text turn: `content_filter`
-    // is what Gemini's safety filter answers on ordinary code-shaped prose.
+
     send({
       ...base,
-      choices: [{ index: 0, delta: {}, finish_reason: turn.finishReason ?? 'stop' }],
+      choices: [],
+      // `usage` overrides the reported usage; `{prompt_tokens: 0, completion_tokens: 0}`
+      // is the tell of a router that rendered an upstream error as content.
+      usage:
+        turn.usage ??
+        (usageFromEstimate
+          ? { prompt_tokens: estimatedTokens, completion_tokens: 20, total_tokens: estimatedTokens + 20 }
+          : { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }),
     });
+    write('data: [DONE]\n\n');
+    res.end();
+  } catch (error) {
+    if (!(error instanceof ClientGone)) throw error;
+    console.error(`mock-provider: ${id} closed by the client after ${sent} chunks; stopped`);
   }
-
-  send({
-    ...base,
-    choices: [],
-    // `usage` overrides the reported usage; `{prompt_tokens: 0, completion_tokens: 0}`
-    // is the tell of a router that rendered an upstream error as content.
-    usage:
-      turn.usage ??
-      (usageFromEstimate
-        ? { prompt_tokens: estimatedTokens, completion_tokens: 20, total_tokens: estimatedTokens + 20 }
-        : { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }),
-  });
-  if (res.destroyed) throw new ClientGone();
-  res.write('data: [DONE]\n\n');
-  res.end();
 }
 
 const server = createServer((req, res) => {

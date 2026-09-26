@@ -22,7 +22,15 @@
  */
 import { spawn as ptySpawn } from 'node-pty';
 import { spawn as procSpawn } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,18 +73,29 @@ const CHUNK_DELAY_MS = opt('chunk-delay-ms', null);
 // Leave the startup splash on (the driver otherwise turns it off).
 const STARTUP_ANIMATION = flag('startup-animation');
 
+/** A directory option: null when absent; an empty value (an unset shell variable) is an error. */
+function dirOpt(name) {
+  const value = opt(name, null);
+  if (value === '') {
+    console.error(`[driver] --${name} was given an empty path`);
+    process.exit(1);
+  }
+  return value ?? null;
+}
+
+// Before any temp dir exists, so a failure here leaks none.
+mkdirSync(SHOT_DIR, { recursive: true });
+
 // A scratch workspace keeps the driver from touching the repo. Override with
 // --workspace <path> when you want the TUI pointed at real code.
-const explicitWorkspace = opt('workspace', null);
-const scratch = explicitWorkspace ? null : mkdtempSync(join(tmpdir(), 'book-drive-'));
-const WORKSPACE = explicitWorkspace ?? scratch;
+const explicitWorkspace = dirOpt('workspace');
 // BOOK_HOME must be writable and separate from the user's real ~/.book. A home the
 // driver made is removed when it exits; pass --book-home to keep one.
-const explicitBookHome = opt('book-home', null);
+const explicitBookHome = dirOpt('book-home');
+const scratch = explicitWorkspace ? null : mkdtempSync(join(tmpdir(), 'book-drive-'));
+const WORKSPACE = explicitWorkspace ?? scratch;
 const ownedBookHome = explicitBookHome ? null : mkdtempSync(join(tmpdir(), 'book-home-'));
 const BOOK_HOME = explicitBookHome ?? ownedBookHome;
-
-mkdirSync(SHOT_DIR, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -99,21 +118,23 @@ async function startMock() {
     mockStderr = (mockStderr + d).slice(-2000);
   });
   await new Promise((res, rej) => {
-    const hint =
+    const portHint =
       'pass --mock-port <other>, and never kill mocks by name: on a shared machine they ' +
       'belong to other runs';
     const timer = setTimeout(
-      () => rej(new Error(`mock provider did not become ready on port ${MOCK_PORT}; ${hint}`)),
+      () => rej(new Error(`mock provider did not become ready on port ${MOCK_PORT}; ${portHint}`)),
       10000,
     );
     // A mock that dies before READY (a port in use, a bad --mock-script) fails the run
-    // at once rather than after the full timeout.
-    mockProc.on('exit', (code, signal) => {
+    // at once rather than after the full timeout. 'close', not 'exit': it fires once the
+    // mock's stderr has drained, so the reason is in the message.
+    mockProc.on('close', (code, signal) => {
       clearTimeout(timer);
+      const hint = mockStderr.includes('EADDRINUSE') ? `\n${portHint}` : '';
       rej(
         new Error(
           `mock provider exited before it was ready (${signal ?? `code ${code}`}) on port ` +
-            `${MOCK_PORT}${mockStderr ? `:\n${mockStderr.trimEnd()}` : ''}\n${hint}`,
+            `${MOCK_PORT}${mockStderr ? `:\n${mockStderr.trimEnd()}` : ''}${hint}`,
         ),
       );
     });
@@ -149,30 +170,40 @@ const BIN = opt('bin', null);
 // Either way the value goes in a `--settings` layer the driver owns, which outranks every
 // settings file: the workspace's own `.book/settings.json` is never written, and a value
 // an older driver left there cannot win. A `--settings` of your own after `--` is merged
-// into that layer, its keys winning. `--no-settings` skips every layer, this one too.
-// The Go build (`--bin`) reads a flat `startupAnimation` key and gets no layer.
+// into that layer, its keys winning; one the driver cannot read fails the run here, since
+// Book would ignore a missing file and the splash would then hide the input bar. (Book
+// takes one `--settings` layer, hence the merge.) `--no-settings` skips every layer, this
+// one too. The Go build (`--bin`) reads a flat `startupAnimation` key and gets no layer.
 let settingsLayerDir = null;
 const settingsArgs = (() => {
   if (BIN || extraArgs.includes('--no-settings')) return [];
   const layer = { ui: { startupAnimation: STARTUP_ANIMATION } };
+  let merged = '';
   const i = extraArgs.findIndex((a) => a === '--settings' || a.startsWith('--settings='));
   if (i !== -1) {
     const eq = extraArgs[i].startsWith('--settings=');
     const path = eq ? extraArgs[i].slice('--settings='.length) : extraArgs[i + 1];
+    // Book reads a relative path from its own cwd, the workspace.
+    const file = path ? resolve(WORKSPACE, path) : '';
     let own;
     try {
-      // Book reads a relative path from its own cwd, the workspace.
-      own = JSON.parse(readFileSync(resolve(WORKSPACE, path), 'utf8'));
+      own = JSON.parse(readFileSync(file, 'utf8').replace(/^﻿/, ''));
     } catch (error) {
-      console.error(`[driver] cannot merge --settings ${path} (${error.message}); passing it as is`);
-      return [];
+      console.error(`[driver] cannot read --settings ${path ?? '(no path)'}: ${error.message}`);
+      removeOwnedDirs();
+      process.exit(1);
     }
     Object.assign(layer, own, { ui: { ...layer.ui, ...(own.ui ?? {}) } });
     extraArgs.splice(i, eq ? 1 : 2);
+    merged = ` merged from ${file}`;
   }
   settingsLayerDir = mkdtempSync(join(tmpdir(), 'book-drive-settings-'));
   const file = join(settingsLayerDir, 'settings.json');
   writeFileSync(file, JSON.stringify(layer, null, 2));
+  // A settings error from Book names this temp file: say what it holds.
+  console.log(
+    `[driver] settings layer ${file}: ui.startupAnimation=${layer.ui.startupAnimation}${merged}`,
+  );
   return ['--settings', file];
 })();
 
@@ -205,15 +236,23 @@ if (USE_MOCK) {
 // `--sessions` keeps session persistence on, so a pre-seeded
 // `<book-home>/.book/sessions/*.jsonl` shows up in /resume and on the title page.
 const PERSISTENCE = flag('sessions') ? [] : ['--no-session-persistence'];
-const pty = BIN
-  ? ptySpawn(BIN, ['--workspace', WORKSPACE, ...PERSISTENCE, ...extraArgs], {
-      cwd: WORKSPACE, cols: COLS, rows: ROWS, env, name: 'xterm-256color',
-    })
-  : ptySpawn(
-      process.execPath,
-      [DIST_INDEX, '--workspace', WORKSPACE, ...PERSISTENCE, ...settingsArgs, ...extraArgs],
-      { cwd: WORKSPACE, cols: COLS, rows: ROWS, env, name: 'xterm-256color' },
-    );
+let pty;
+try {
+  pty = BIN
+    ? ptySpawn(BIN, ['--workspace', WORKSPACE, ...PERSISTENCE, ...extraArgs], {
+        cwd: WORKSPACE, cols: COLS, rows: ROWS, env, name: 'xterm-256color',
+      })
+    : ptySpawn(
+        process.execPath,
+        [DIST_INDEX, '--workspace', WORKSPACE, ...PERSISTENCE, ...settingsArgs, ...extraArgs],
+        { cwd: WORKSPACE, cols: COLS, rows: ROWS, env, name: 'xterm-256color' },
+      );
+} catch (error) {
+  // node-pty throws synchronously for a missing executable (a wrong --bin, on Windows).
+  console.error(`[driver] cannot start ${BIN ?? DIST_INDEX}: ${error.message}`);
+  removeOwnedDirs();
+  process.exit(1);
+}
 const recordStart = Date.now();
 const recorded = [];
 pty.onData((d) => {
@@ -509,8 +548,17 @@ async function cleanup() {
 // with --book-home), and its settings layer. Windows can hold a file of the just-killed
 // child for a moment, hence the retries.
 function removeOwnedDirs() {
+  // Managed-agent worktrees are registered in the workspace's repository, and a background
+  // job's runner outlives Book in the workspace: deleting the home would leave a dangling
+  // `git worktree` entry or an orphaned job nobody can find, and deleting the scratch
+  // workspace would pull the files out from under a job still running there.
+  const outlives = ownedBookHome ? stateOutlivingBook(ownedBookHome) : [];
+  const kept = outlives.length > 0 ? [ownedBookHome, scratch].filter(Boolean) : [];
+  if (kept.length > 0) {
+    console.error(`[driver] kept ${kept.join(' and ')}: the home holds ${outlives.join(' and ')}`);
+  }
   for (const dir of [scratch, ownedBookHome, settingsLayerDir]) {
-    if (!dir) continue;
+    if (!dir || kept.includes(dir)) continue;
     try {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     } catch (error) {
@@ -519,13 +567,28 @@ function removeOwnedDirs() {
   }
 }
 
+/** Non-empty `worktrees/` or `jobs/` under the home's BOOK_HOME (`<home>/.book`). */
+function stateOutlivingBook(home) {
+  const kinds = [];
+  for (const [name, label] of [['worktrees', 'agent worktrees'], ['jobs', 'background jobs']]) {
+    try {
+      if (readdirSync(join(home, '.book', name)).length > 0) kinds.push(label);
+    } catch {
+      // Absent: nothing of that kind.
+    }
+  }
+  return kinds;
+}
+
 // A signal skips cleanup(), and the mock would outlive the driver holding its port. Kill
 // that one child — the only mock this driver may kill; others belong to other runs. (On
 // Windows only a console Ctrl-C arrives as SIGINT; a kill there is TerminateProcess.)
+// Book gets the same two seconds to exit as in cleanup(), so the dirs it holds open can go.
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  process.on(signal, () => {
+  process.on(signal, async () => {
     releasePty();
     mockProc?.kill();
+    for (let i = 0; i < 40 && !exited; i++) await sleep(50);
     removeOwnedDirs();
     process.exit(1);
   });
