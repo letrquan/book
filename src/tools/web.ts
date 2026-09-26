@@ -9,7 +9,9 @@ import { resolveToolTimeoutMs } from './timeouts.js';
 import {
   type HostResolver,
   WebPolicyError,
+  connectionBlockedDestination,
   connectionBlockedReason,
+  refusalWithoutLookup,
   resolveHostname,
   safeNetworkLookup,
   validateWebUrl,
@@ -68,6 +70,8 @@ interface SearchProviderAttempt {
   status: 'failed' | 'cooldown';
   code?: string;
   message?: string;
+  /** What the policy refused, when it named one. */
+  destination?: string;
   retryable: boolean;
   retryAfterMs?: number;
 }
@@ -76,6 +80,8 @@ interface SearchProviderCooldown {
   until: number;
   /** Set when the provider was refused on policy grounds: the refusal outlives the cooldown's retry hint. */
   blockedReason?: string;
+  /** The destination the policy refused, carried through the cooldown to the next search. */
+  blockedDestination?: string;
 }
 
 const BUILTIN_SEARCH_PROVIDERS: readonly BuiltinSearchProvider[] = [
@@ -126,13 +132,36 @@ interface FetchedResponse {
   redirects: string[];
 }
 
+/**
+ * A redirect target as it is shown to the model and in the transcript: an http(s) URL without any
+ * embedded credentials, or only the scheme of anything else (`file:`, `data:`, `javascript:`),
+ * whose body could be a local path or a payload.
+ */
+function displayRedirectTarget(target: URL): string {
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') return target.protocol;
+  if (!target.username && !target.password) return target.toString();
+  const shown = new URL(target.toString());
+  shown.username = '';
+  shown.password = '';
+  return shown.toString();
+}
+
 class CrossOriginRedirectError extends Error {
+  readonly targetUrl: string;
+
   constructor(
     readonly sourceUrl: string,
-    readonly targetUrl: string,
+    target: URL,
+    /** Set when a check that needs no lookup already refuses the target. */
+    readonly targetRefused?: WebPolicyError['code'],
   ) {
-    super(`Redirect from ${sourceUrl} to a different origin requires a new WebFetch approval.`);
+    super(
+      targetRefused === undefined
+        ? `Redirect from ${sourceUrl} to a different origin requires a new WebFetch approval.`
+        : `Redirect from ${sourceUrl} to ${displayRedirectTarget(target)} was not followed: the web policy refuses that target (${targetRefused}).`,
+    );
     this.name = 'CrossOriginRedirectError';
+    this.targetUrl = displayRedirectTarget(target);
   }
 }
 
@@ -472,46 +501,69 @@ async function fetchWithPolicy(
     if (!location)
       throw new Error(`HTTP ${response.status} redirect did not include a Location header.`);
     if (redirects.length >= policy.maxRedirects) throw new RedirectLimitError(policy.maxRedirects);
-    const next = await validateWebUrl(
-      new URL(location, current).toString(),
-      policy,
-      deps.resolveHostname,
-    );
-    if (next.origin !== current.origin) {
-      throw new CrossOriginRedirectError(current.toString(), next.toString());
+    // A different origin is reported before the target is judged, or even resolved: it is a host
+    // the model never asked for, and following it is a new WebFetch that gets its own permission
+    // and policy decision. Judged here, a private or plain-HTTP target would be refused under its
+    // own code, naming the target as the model's destination and a switch that would still leave
+    // this call stopped at the origin change; and an attacker-chosen host would reach DNS. The
+    // checks that need no lookup still run on the target, so a target they refuse is reported as
+    // one the model must not follow.
+    const target = new URL(location, current);
+    target.hash = '';
+    if (target.origin !== current.origin) {
+      throw new CrossOriginRedirectError(
+        current.toString(),
+        target,
+        refusalWithoutLookup(target, policy)?.code,
+      );
     }
+    const next = await validateWebUrl(target.toString(), policy, deps.resolveHostname);
     redirects.push(next.toString());
     current = next;
   }
 }
 
 /** A request refused by the network policy: final, never retried, and its reason shown. */
-function privateNetworkBlocked(reason: string, details?: Record<string, unknown>): ToolResult {
+function privateNetworkBlocked(
+  reason: string,
+  details?: Record<string, unknown>,
+  destination?: string,
+): ToolResult {
+  const merged = destination === undefined ? details : { ...details, destination };
   return toolFailure(reason, {
     code: 'private_network_forbidden',
     status: 'blocked',
     retryable: false,
-    ...(details ? { details } : {}),
+    ...(merged ? { details: merged } : {}),
   });
 }
 
 function webPolicyFailure(error: unknown): ToolResult | undefined {
   if (error instanceof WebPolicyError) {
     return error.code === 'private_network_forbidden'
-      ? privateNetworkBlocked(error.message)
+      ? privateNetworkBlocked(error.message, undefined, error.destination)
       : toolFailure(error.message, { code: error.code });
   }
   // The connect-time guard refuses after pre-flight validation has already passed -- a rebinding
   // answer, or a redirect target that resolves privately. Report the policy's own reason instead
   // of the `fetch failed` undici wraps it in, and do not invite a retry that cannot succeed.
   const blockedReason = connectionBlockedReason(error);
-  if (blockedReason) return privateNetworkBlocked(blockedReason);
+  if (blockedReason) {
+    return privateNetworkBlocked(blockedReason, undefined, connectionBlockedDestination(error));
+  }
   if (error instanceof CrossOriginRedirectError) {
     return toolFailure(error.message, {
       code: 'cross_origin_redirect',
       status: 'blocked',
-      remediation: `Call WebFetch again with url: ${error.targetUrl}`,
-      details: { sourceUrl: error.sourceUrl, targetUrl: error.targetUrl },
+      remediation:
+        error.targetRefused === undefined
+          ? `Call WebFetch again with url: ${error.targetUrl}`
+          : `Do not follow this redirect: the web policy refuses its target (${error.targetRefused}), so a WebFetch of it would be refused too.`,
+      details: {
+        sourceUrl: error.sourceUrl,
+        targetUrl: error.targetUrl,
+        ...(error.targetRefused === undefined ? {} : { targetRefused: error.targetRefused }),
+      },
     });
   }
   if (error instanceof RedirectLimitError) {
@@ -552,8 +604,13 @@ async function webFetch(
     const policyFailure = webPolicyFailure(error);
     if (policyFailure) return policyFailure;
     const message = error instanceof Error ? error.message : String(error);
+    // undici rejects with a bare `fetch failed` and puts the reason, such as a refused connection or
+    // an empty DNS answer, on `cause`.
+    const cause =
+      error instanceof Error && error.cause instanceof Error ? error.cause.message : undefined;
+    const detail = cause && cause !== message ? `${message} (${cause})` : message;
     const timedOut = error instanceof Error && error.name === 'TimeoutError';
-    return toolFailure(`Fetch failed: ${message}`, {
+    return toolFailure(`Fetch failed: ${detail}`, {
       code: timedOut ? 'fetch_timeout' : 'fetch_failed',
       retryable: !timedOut,
     });
@@ -758,7 +815,13 @@ function providerRequestFailure(
   // resolves to a private address is refused by the connect-time guard. Report that the same
   // way WebFetch does: it is a policy decision, not a transient network fault.
   const blockedReason = connectionBlockedReason(error);
-  if (blockedReason) return privateNetworkBlocked(blockedReason, { provider: provider.id, phase });
+  if (blockedReason) {
+    return privateNetworkBlocked(
+      blockedReason,
+      { provider: provider.id, phase },
+      connectionBlockedDestination(error),
+    );
+  }
   return toolFailure(
     `${provider.label} ${phase} failed: ${error instanceof Error ? error.message : String(error)}`,
     {
@@ -812,10 +875,11 @@ async function runBuiltinSearchProvider(
     );
   } catch (error) {
     if (error instanceof WebPolicyError && error.code === 'private_network_forbidden') {
-      return privateNetworkBlocked(error.message, {
-        provider: provider.id,
-        phase: 'endpoint_validation',
-      });
+      return privateNetworkBlocked(
+        error.message,
+        { provider: provider.id, phase: 'endpoint_validation' },
+        error.destination,
+      );
     }
     return toolFailure(
       `${provider.label} endpoint is unavailable: ${error instanceof Error ? error.message : String(error)}`,
@@ -1013,6 +1077,9 @@ async function builtinWebSearch(
           : {
               code: 'private_network_forbidden',
               message: cooldown.blockedReason,
+              ...(cooldown.blockedDestination === undefined
+                ? {}
+                : { destination: cooldown.blockedDestination }),
               retryable: false,
             }),
         retryAfterMs: cooldown.until - currentTime,
@@ -1035,11 +1102,16 @@ async function builtinWebSearch(
     if (result.status === 'success' || result.status === 'cancelled') return result;
 
     const cooldownMs = providerCooldownMs(result);
+    const refusedDestination = result.structuredError?.details?.destination;
+    const refused = typeof refusedDestination === 'string' ? refusedDestination : undefined;
     if (cooldownMs !== undefined) {
       cooldowns.set(provider.id, {
         until: now().getTime() + cooldownMs,
         ...(result.structuredError?.code === 'private_network_forbidden'
-          ? { blockedReason: result.structuredError.message }
+          ? {
+              blockedReason: result.structuredError.message,
+              ...(refused === undefined ? {} : { blockedDestination: refused }),
+            }
           : {}),
       });
     }
@@ -1048,6 +1120,7 @@ async function builtinWebSearch(
       status: 'failed',
       code: result.structuredError?.code,
       message: result.structuredError?.message,
+      ...(refused === undefined ? {} : { destination: refused }),
       retryable: result.structuredError?.retryable ?? false,
       ...(cooldownMs === undefined ? {} : { retryAfterMs: cooldownMs }),
     });
