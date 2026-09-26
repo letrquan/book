@@ -215,6 +215,54 @@ describe('buildMessages', () => {
     });
   });
 
+  it('replays reasoning only for the turn in progress (#248 item 6)', async () => {
+    const history: Message[] = [
+      userMsg('first'),
+      { ...assistantMsg('Earlier answer.'), reasoningContent: 'earlier thought' },
+      { ...assistantMsg(''), id: 'a-only', reasoningContent: 'a reply that was only reasoning' },
+      { ...userMsg('second'), id: 'u2' },
+      {
+        ...assistantMsg(
+          '',
+          [toolCall('c1', 'Read', { filePath: 'a.ts' })],
+          [toolResult('c1', 'text')],
+        ),
+        id: 'a2',
+        reasoningContent: 'inspect first',
+      },
+      {
+        ...userMsg('[continuation] Continue from exactly where you stopped.'),
+        id: 'u3',
+        derivedContent: true,
+      },
+      { ...assistantMsg('Done.'), id: 'a3', reasoningContent: 'then finish' },
+    ];
+    const out = await buildMessages(config, history);
+    expect(out.filter((m) => m.role === 'assistant').map((m) => m.reasoningContent)).toEqual([
+      undefined,
+      'a reply that was only reasoning',
+      'inspect first',
+      'then finish',
+    ]);
+  });
+
+  it('replays every turn of reasoning when replayAllReasoning is set', async () => {
+    const history: Message[] = [
+      userMsg('first'),
+      { ...assistantMsg('Earlier answer.'), reasoningContent: 'earlier thought' },
+      { ...userMsg('second'), id: 'u2' },
+    ];
+    const out = await buildMessages({ ...config, replayAllReasoning: true }, history);
+    expect(out.find((m) => m.role === 'assistant')?.reasoningContent).toBe('earlier thought');
+  });
+
+  it('says a checkpoint claim is not a tool result, right after the verification line', async () => {
+    const prefix = systemPrefix(await buildMessages(config, [userMsg('hi')]));
+    expect(prefix).toContain(
+      'a second run of the same suite spends a turn and proves nothing new.\n- A checkpoint or summary that says a check passed is not a tool result. When such a claim is the only evidence left, as after compaction, run the check again before you report it.',
+    );
+  });
+
   it('injects workspace CLAUDE.md and AGENTS.md instructions into the system prompt', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'book-context-'));
     try {

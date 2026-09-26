@@ -75,6 +75,7 @@
     "eval:memory": "tsx scripts/memory-eval.ts",
     "eval:skills": "tsx scripts/skill-eval.ts",
     "eval:review": "tsx scripts/review-eval.ts",
+    "eval:prompt": "tsx scripts/prompt-eval.ts",
     "apply:ink-patch": "node scripts/apply-ink-patch.mjs",
     "lint": "eslint src/ --ext .ts,.tsx --max-warnings 0",
     "format": "prettier --write \"{src,scripts}/**/*.{ts,tsx}\" \"*.config.ts\" \"*.md\" \"docs/**/*.md\"",
