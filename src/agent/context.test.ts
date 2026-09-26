@@ -136,6 +136,20 @@ describe('buildMessages', () => {
     ]);
   });
 
+  it('replays a tool call whose record carries no arguments field', async () => {
+    // A session written before `arguments` was always present can load a call
+    // without one; replay reads the raw text through the same helper, so it must
+    // not throw on the missing field.
+    const call = { id: 'call_1', name: 'Edit' } as ReturnType<typeof toolCall>;
+    const history = [userMsg('edit it'), assistantMsg('', [call], [toolResult('call_1', 'err')])];
+
+    const out = await buildMessages(config, history);
+
+    expect(out[2].tool_calls).toEqual([
+      { id: 'call_1', type: 'function', function: { name: 'Edit', arguments: '{}' } },
+    ]);
+  });
+
   it('serializes only explicitly included conversation messages', async () => {
     const call = toolCall('call_1', 'Read', { filePath: 'a.ts' });
     const result = toolResult('call_1', 'file contents');

@@ -54,6 +54,8 @@ const LF = String.fromCharCode(10);
 const NUL = String.fromCharCode(0);
 const ESC = String.fromCharCode(27);
 const backslash = String.fromCharCode(92);
+/** An astral character: two UTF-16 code units but one code point. */
+const EMOJI = '\u{1F600}';
 
 interface CorpusCase {
   name: string;
@@ -126,6 +128,21 @@ const CORPUS: CorpusCase[] = [
     raw: `{"command": "ls -la",  \n}`,
     schema: BASH,
     expect: { command: 'ls -la' },
+  },
+  {
+    // The drop index counts code units, so an astral character earlier in the text
+    // must not shift the comma it points at: dropping by code point left the comma
+    // in place and the repair never happened.
+    name: 'trailing comma after an astral character in a value',
+    raw: `{"command":"echo ${EMOJI}","a":1,}`,
+    schema: ANY,
+    expect: { command: `echo ${EMOJI}`, a: 1 },
+  },
+  {
+    name: 'several dropped commas after an astral character',
+    raw: `{"emoji":"${EMOJI}","a":[1,2,],"b":{"c":3,},}`,
+    schema: ANY,
+    expect: { emoji: EMOJI, a: [1, 2], b: { c: 3 } },
   },
 
   // ── Repairable: missing closing brace/bracket at the very end ─────────────

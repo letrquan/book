@@ -21,7 +21,10 @@ export const RAW_ARGUMENTS_KEY = '__raw';
  */
 export function unparsedArgumentsText(call: ToolCall): string | undefined {
   if (call.unparsedArguments) return call.unparsedArguments.raw;
-  const args = call.arguments;
+  // `?? {}`: a session persisted before `arguments` was always a field can load a tool
+  // call without one, and the replay path in agent/context.ts reads this on every
+  // assistant tool call.
+  const args = call.arguments ?? {};
   if (Object.keys(args).length !== 1) return undefined;
   const raw = args[RAW_ARGUMENTS_KEY];
   if (typeof raw !== 'string') return undefined;

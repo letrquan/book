@@ -40,6 +40,8 @@ function repairCandidate(raw: string): string | undefined {
   /**
    * Where each non-whitespace character outside a string landed, so a comma before a
    * closer can be dropped afterwards and the character in front of it remembered.
+   * `index` counts UTF-16 code units into `out` (what `out.length` counts), so the
+   * drop filter has to walk code units too — see the end of this function.
    */
   const significant: Array<{ index: number; isComma: boolean }> = [];
   const dropped = new Set<number>();
@@ -95,7 +97,13 @@ function repairCandidate(raw: string): string | undefined {
   // so it stays refused.
   out += stack.reverse().join('');
   if (dropped.size === 0) return out;
-  return [...out].filter((_, index) => !dropped.has(index)).join('');
+  // `split('')`, not `[...out]`: the recorded indices are code units, and iterating code
+  // points instead would shift them by one for every astral character in the text,
+  // leaving the comma in place and the repair missed.
+  return out
+    .split('')
+    .filter((_, index) => !dropped.has(index))
+    .join('');
 }
 
 /**
