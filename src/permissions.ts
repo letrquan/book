@@ -42,15 +42,21 @@ export interface PermissionVerdict {
 export interface WorkspaceScope {
   /** The workspace root, as the file tools resolve paths against it. */
   root: string;
+  /** The root after following links, when the caller has resolved it once; resolved here if not. */
+  realRoot?: string;
   /**
    * Directories outside the workspace that the Read tool may open (Book's memory directory),
    * exactly as `ToolContext.readOnlyRoots`, so a Read is judged by the rule the tool applies.
    */
   readOnlyRoots?: readonly (string | ReadOnlyRoot)[];
   /**
-   * Whether a Read, Glob or Grep the tool can serve runs without a prompt: true only in the modes
-   * that would otherwise prompt for it (`WORKSPACE_READ_AUTO_ALLOW_MODES`), and false for a
-   * workspace that holds Book's own home directory.
+   * Whether to judge what a Read, Glob or Grep reaches at all: true in the modes that prompt for
+   * them (`WORKSPACE_READ_AUTO_ALLOW_MODES`), so a refusal can say when no approval could help.
+   */
+  judgeReads: boolean;
+  /**
+   * Whether a target the tool can serve runs without a prompt. Takes effect only with
+   * `judgeReads`; false for a workspace that holds a home directory.
    */
   autoAllowReads: boolean;
 }
@@ -237,8 +243,8 @@ function patchOperations(args: Record<string, unknown>): PatchOperation[] {
   return 'operations' in parsed ? parsed.operations : [];
 }
 
-function ruleMatchesPatch(rule: ParsedRule, path: string): boolean {
-  return ruleMatches(rule, rule.toolName, path);
+function ruleMatchesPatch(rule: ParsedRule, paths: readonly string[]): boolean {
+  return paths.some((path) => ruleMatches(rule, rule.toolName, path));
 }
 
 function patchRuleSupportsOperation(rule: ParsedRule, operation: PatchOperation): boolean {
@@ -248,13 +254,17 @@ function patchRuleSupportsOperation(rule: ParsedRule, operation: PatchOperation)
   return false;
 }
 
-function compatiblePatchRuleMatches(rule: ParsedRule, operations: PatchOperation[]): boolean {
+function compatiblePatchRuleMatches(
+  rule: ParsedRule,
+  operations: PatchOperation[],
+  spellingsOf: (path: string) => readonly string[],
+): boolean {
   if (!['ApplyPatch', 'Edit', 'Write'].includes(rule.toolName)) return false;
   if (rule.toolName === 'ApplyPatch' && rule.pattern === null) return true;
   return operations.some(
     (operation) =>
       patchRuleSupportsOperation(rule, operation) &&
-      (rule.pattern === null || ruleMatchesPatch(rule, operation.path)),
+      (rule.pattern === null || ruleMatchesPatch(rule, spellingsOf(operation.path))),
   );
 }
 
@@ -319,6 +329,16 @@ function sandboxAutoAllows(
 
 const toPosix = (value: string) => value.replace(/\\/g, '/');
 
+/** The workspace root after following links, or `undefined` if it cannot be resolved. */
+function realRootOf(scope: WorkspaceScope): string | undefined {
+  if (scope.realRoot) return scope.realRoot;
+  try {
+    return realpathSync.native(scope.root);
+  } catch {
+    return undefined;
+  }
+}
+
 /** The file path a path-rule tool acts on, read through the tool's own argument aliases. */
 function pathArgument(toolName: string, args: Record<string, unknown>): string | undefined {
   const keys =
@@ -344,18 +364,12 @@ function rulesName(settings: ResolvedSettings, toolName: string): boolean {
 }
 
 /**
- * The other spellings of a path-rule tool's target that a rule may have been written against:
- * relative to the workspace (as written and after following links) and absolute, with forward
- * slashes. Outside the workspace only a Read of Book's memory directory gets spellings, absolute
- * ones: the tools refuse everything else there.
+ * The other spellings of a target path that a rule may have been written against: relative to the
+ * workspace (as written and after following links) and absolute, with forward slashes. Outside the
+ * workspace, only Book's memory directory gets spellings, absolute ones, and only when
+ * `readOnlyRoots` apply (a Read): the tools refuse everything else there.
  */
-function pathRuleSpellings(
-  toolName: string,
-  args: Record<string, unknown>,
-  scope: WorkspaceScope,
-): string[] {
-  const raw = pathArgument(toolName, args);
-  if (!raw) return [];
+function spellingsOfPath(raw: string, scope: WorkspaceScope, readOnlyRoots: boolean): string[] {
   const spellings: string[] = [];
   const inWorkspace = resolveWorkspacePath(scope.root, raw);
   if (inWorkspace) {
@@ -364,12 +378,9 @@ function pathRuleSpellings(
       toPosix(inWorkspace.filePath),
       toPosix(inWorkspace.canonicalPath),
     );
-    try {
-      spellings.push(toPosix(relative(realpathSync.native(scope.root), inWorkspace.canonicalPath)));
-    } catch {
-      // The workspace vanished mid-call; the lexical relative path above still counts.
-    }
-  } else if (toolName === 'Read') {
+    const realRoot = realRootOf(scope);
+    if (realRoot) spellings.push(toPosix(relative(realRoot, inWorkspace.canonicalPath)));
+  } else if (readOnlyRoots) {
     const readable = resolveReadablePath(
       { workspaceRoot: scope.root, readOnlyRoots: scope.readOnlyRoots },
       raw,
@@ -379,14 +390,104 @@ function pathRuleSpellings(
   return [...new Set(spellings)].filter((spelling) => spelling !== '' && spelling !== raw);
 }
 
+/** The other spellings of a path-rule tool's target; see `spellingsOfPath`. */
+function pathRuleSpellings(
+  toolName: string,
+  args: Record<string, unknown>,
+  scope: WorkspaceScope,
+): string[] {
+  const raw = pathArgument(toolName, args);
+  return raw ? spellingsOfPath(raw, scope, toolName === 'Read') : [];
+}
+
+/** Characters that make a path segment a glob rather than a fixed name (`\x40` is the at sign). */
+const GLOB_MAGIC = /[*?[\]{}()!+\x40]/;
+
+/** The first brace group with a top-level comma, skipping escapes and groups without one. */
+function firstBraceGroup(
+  text: string,
+): { start: number; end: number; alternatives: string[] } | undefined {
+  for (let start = 0; start < text.length; start++) {
+    if (text[start] === '\\') {
+      start++;
+      continue;
+    }
+    if (text[start] !== '{') continue;
+    let depth = 0;
+    let from = start + 1;
+    const alternatives: string[] = [];
+    for (let index = start; index < text.length; index++) {
+      const char = text[index];
+      if (char === '\\') {
+        index++;
+        continue;
+      }
+      if (char === '{') {
+        depth++;
+      } else if (char === '}') {
+        depth--;
+        if (depth === 0) {
+          // `{x}` and the range `{1..3}` have no top-level comma: keep scanning inside them.
+          if (alternatives.length === 0) break;
+          alternatives.push(text.slice(from, index));
+          return { start, end: index, alternatives };
+        }
+      } else if (char === ',' && depth === 1) {
+        alternatives.push(text.slice(from, index));
+        from = index + 1;
+      }
+    }
+  }
+  return undefined;
+}
+
 /**
- * Whether a Glob pattern climbs out of the workspace: a `..` path segment, also as a brace
- * alternative (`{..,src}`), or a start at an absolute path, a drive letter or `~`. Two dots inside
- * a file name (`*..orig`, `v1..v2`) do not climb.
+ * The patterns a glob's brace groups expand to (`a{b,c}` becomes `ab` and `ac`), the way fast-glob
+ * expands them before it walks; `undefined` when there would be more than `limit`.
  */
-function globClimbsOut(pattern: string): boolean {
-  if (pattern.startsWith('~') || isAbsolute(pattern) || /^[A-Za-z]:/.test(pattern)) return true;
-  return pattern.split(/[\\/]/).some((segment) => segment.split(/[{},]/).includes('..'));
+function expandBraces(pattern: string, limit = 64): string[] | undefined {
+  const done: string[] = [];
+  const pending = [pattern];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    const group = firstBraceGroup(current);
+    if (!group) {
+      done.push(current);
+      if (done.length > limit) return undefined;
+      continue;
+    }
+    for (const alternative of group.alternatives) {
+      pending.push(current.slice(0, group.start) + alternative + current.slice(group.end + 1));
+    }
+    if (pending.length > limit) return undefined;
+  }
+  return done;
+}
+
+/**
+ * Where a Glob pattern reaches: `outside` when any brace alternative climbs out (a `..` path
+ * segment), starts at `~`, or starts at an absolute path outside the workspace; `servable`
+ * otherwise. An absolute pattern is judged by its fixed leading segments. Two dots inside a file
+ * name (`*..orig`) do not climb.
+ */
+function globTarget(pattern: string, scope: WorkspaceScope): 'servable' | 'outside' {
+  const alternatives = expandBraces(pattern);
+  if (!alternatives) return 'outside';
+  for (const alternative of alternatives) {
+    const segments = alternative.split(/[\\/]/);
+    if (alternative.startsWith('~') || segments.includes('..')) return 'outside';
+    if (isAbsolute(alternative) || /^[A-Za-z]:/.test(alternative)) {
+      const fixed: string[] = [];
+      for (const segment of segments) {
+        if (GLOB_MAGIC.test(segment)) break;
+        fixed.push(segment);
+      }
+      let base = fixed.join('/');
+      if (base === '' || base.endsWith(':')) base += '/';
+      if (!resolveWorkspacePath(scope.root, base)) return 'outside';
+    }
+  }
+  return 'servable';
 }
 
 /**
@@ -394,13 +495,9 @@ function globClimbsOut(pattern: string): boolean {
  * Read or Grep aimed at either keeps asking. Compared on the canonical path, case-folded where the
  * file system folds case.
  */
-function isBookLocalSettings(canonicalPath: string, root: string): boolean {
-  let realRoot: string;
-  try {
-    realRoot = realpathSync.native(root);
-  } catch {
-    return false;
-  }
+function isBookLocalSettings(canonicalPath: string, scope: WorkspaceScope): boolean {
+  const realRoot = realRootOf(scope);
+  if (!realRoot) return false;
   const fold = (value: string) => (process.platform === 'linux' ? value : value.toLowerCase());
   const target = fold(canonicalPath);
   const bookDir = join(realRoot, '.book');
@@ -425,19 +522,19 @@ function readToolTarget(
       raw,
     );
     if (!match) return 'outside';
-    return isBookLocalSettings(match.canonicalPath, scope.root) ? 'guarded' : 'servable';
+    return isBookLocalSettings(match.canonicalPath, scope) ? 'guarded' : 'servable';
   }
   if (toolName === 'Glob') {
     const pattern = typeof args.pattern === 'string' ? args.pattern.trim() : '';
     if (!pattern) return 'none';
-    return globClimbsOut(pattern) ? 'outside' : 'servable';
+    return globTarget(pattern, scope);
   }
   // Grep: no path, or `.`, searches the workspace. Grep never reads Book's memory directory.
   const raw = typeof args.path === 'string' ? args.path.trim() : '';
   if (raw === '' || raw === '.') return 'servable';
   const match = resolveWorkspacePath(scope.root, raw);
   if (!match) return 'outside';
-  return isBookLocalSettings(match.canonicalPath, scope.root) ? 'guarded' : 'servable';
+  return isBookLocalSettings(match.canonicalPath, scope) ? 'guarded' : 'servable';
 }
 
 /**
@@ -478,6 +575,17 @@ export function evaluatePermissionDetail(
   // target is covered; a deny on any target wins.
   if (toolName === 'ApplyPatch') {
     const operations = patchOperations(args);
+    // A Write or Edit rule applies however the patch spells the path (`src/../.env`, absolute).
+    const scope = options.workspace;
+    const spellings = new Map<string, readonly string[]>();
+    const spellingsOf = (path: string): readonly string[] => {
+      let known = spellings.get(path);
+      if (!known) {
+        known = scope ? [path, ...spellingsOfPath(path, scope, false)] : [path];
+        spellings.set(path, known);
+      }
+      return known;
+    };
     const compatible = (ruleStr: string) => {
       const rule = parseRule(ruleStr);
       return (
@@ -487,13 +595,13 @@ export function evaluatePermissionDetail(
     for (const ruleStr of deny) {
       if (!compatible(ruleStr)) continue;
       const rule = parseRule(ruleStr);
-      if (compatiblePatchRuleMatches(rule, operations))
+      if (compatiblePatchRuleMatches(rule, operations, spellingsOf))
         return { decision: 'deny', matchedRule: ruleStr, source: 'deny' };
     }
     for (const ruleStr of ask) {
       if (!compatible(ruleStr)) continue;
       const rule = parseRule(ruleStr);
-      if (compatiblePatchRuleMatches(rule, operations))
+      if (compatiblePatchRuleMatches(rule, operations, spellingsOf))
         return { decision: 'ask', matchedRule: ruleStr, source: 'ask' };
     }
     const allowRules = allow.filter(compatible).map(parseRule);
@@ -503,7 +611,7 @@ export function evaluatePermissionDetail(
         allowRules.some(
           (rule) =>
             patchRuleSupportsOperation(rule, operation) &&
-            (rule.pattern === null || ruleMatchesPatch(rule, operation.path)),
+            (rule.pattern === null || ruleMatchesPatch(rule, spellingsOf(operation.path))),
         ),
       )
     ) {
@@ -531,6 +639,13 @@ export function evaluatePermissionDetail(
   const ruleMatches = (ruleStr: string) =>
     permissionRuleMatchesCall(ruleStr, call) ||
     respelled.some((candidate) => permissionRuleMatchesCall(ruleStr, candidate));
+  // What a Read, Glob or Grep reaches, judged only in the modes that prompt for them, so a
+  // refusal can say when no approval could make the tool serve it.
+  const readTarget =
+    scope?.judgeReads && WORKSPACE_READ_TOOLS.has(tool)
+      ? readToolTarget(tool, args, scope)
+      : undefined;
+  const outside = readTarget === 'outside' ? { outsideWorkspace: true as const } : {};
 
   // Deny rules first.
   for (const ruleStr of deny) {
@@ -542,7 +657,7 @@ export function evaluatePermissionDetail(
   // Ask rules second.
   for (const ruleStr of ask) {
     if (ruleMatches(ruleStr)) {
-      return { decision: 'ask', matchedRule: ruleStr, source: 'ask' };
+      return { decision: 'ask', matchedRule: ruleStr, source: 'ask', ...outside };
     }
   }
 
@@ -567,14 +682,15 @@ export function evaluatePermissionDetail(
 
   // Reading or searching what the tool can serve needs no prompt in the modes that would
   // otherwise ask (#264). Every user-written rule outranks it: deny and ask returned above.
-  if (scope?.autoAllowReads && WORKSPACE_READ_TOOLS.has(tool)) {
-    const target = readToolTarget(tool, args, scope);
-    if (target === 'servable' && (tool === 'Read' || !hasReadAdjudication(settings))) {
-      return { decision: 'allow', source: 'workspace' };
-    }
-    if (target === 'outside') {
-      return { decision: 'ask', source: 'default', outsideWorkspace: true };
-    }
+  if (
+    scope?.autoAllowReads &&
+    readTarget === 'servable' &&
+    (tool === 'Read' || !hasReadAdjudication(settings))
+  ) {
+    return { decision: 'allow', source: 'workspace' };
+  }
+  if (readTarget === 'outside') {
+    return { decision: 'ask', source: 'default', outsideWorkspace: true };
   }
 
   if (ALWAYS_ALLOWED_TOOLS.has(canonicalToolName(toolName))) {

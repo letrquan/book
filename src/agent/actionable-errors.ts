@@ -38,6 +38,8 @@ export type PermissionDenialCause =
   | { kind: 'user' }
   /** Nothing in this run can answer a prompt (print mode, the SDK, a background agent). */
   | { kind: 'no_approver'; remedy: UnattendedRemedy }
+  /** The prompt was withdrawn before anyone answered it. */
+  | { kind: 'dismissed' }
   /** `dontAsk` mode refuses every call that would need approval. */
   | { kind: 'dont_ask'; askRule?: string };
 
@@ -88,6 +90,18 @@ export function permissionDeniedError(toolName: string, cause: PermissionDenialC
         alternatives: [LOCAL_ALTERNATIVE],
         nextAction:
           'If the blocked action is essential, explain why and ask the user to approve that specific action.',
+        requiresUserApproval: true,
+      });
+    case 'dismissed':
+      return formatActionableToolError({
+        code: 'permission_denied',
+        action: denied,
+        reason:
+          'The permission prompt was dismissed before anyone answered it (the run was ' +
+          'interrupted, the session changed, or the agent was stopped).',
+        restrictionIntent: DO_NOT_BYPASS,
+        alternatives: [LOCAL_ALTERNATIVE],
+        nextAction: 'If the call is still needed, make it again once the work resumes.',
         requiresUserApproval: true,
       });
     case 'no_approver': {

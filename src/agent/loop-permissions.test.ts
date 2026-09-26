@@ -30,6 +30,17 @@ const noApprover = async (): Promise<PermissionDecision> => ({
 
 type ScriptedCall = { id: string; name: string; arguments: Record<string, unknown> };
 
+function writeLoopSkill(workspace: string, name: string): void {
+  const root = join(workspace, '.book', 'skills', name);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(root, 'SKILL.md'),
+    ['---', `name: ${name}`, `description: Use the ${name} workflow`, '---', 'Follow it.'].join(
+      '\n',
+    ),
+  );
+}
+
 /** Turn 1 makes the given tool calls; every later turn answers with text. */
 function toolsThenText(calls: ScriptedCall[]): Provider {
   let turn = 0;
@@ -143,6 +154,124 @@ describe('runAgentLoop workspace reads (#264)', () => {
       },
     );
     expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps asking in a workspace that holds the home directory, wherever BOOK_HOME points', async () => {
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    // os.homedir() reads HOME (POSIX) or USERPROFILE (Windows) on every call.
+    process.env.HOME = workspace;
+    process.env.USERPROFILE = workspace;
+    try {
+      const prompt = vi.fn(async () => 'allow' as const);
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'read it',
+        [],
+        noopCallbacks({ onPermissionRequired: prompt }),
+        'default',
+        {
+          provider: toolsThenText([
+            { id: 'r1', name: 'Read', arguments: { filePath: 'notes.txt' } },
+          ]),
+          isNewSession: false,
+        },
+      );
+      expect(prompt).toHaveBeenCalledTimes(1);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it('names an outside target as unreachable even where reads keep asking', async () => {
+    process.env.BOOK_HOME = join(workspace, '.book-home');
+    mkdirSync(process.env.BOOK_HOME);
+    const notices: string[] = [];
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2 }),
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({
+        onPermissionRequired: noApprover,
+        onToolResult: (r) => results.push(r),
+        onNotice: (notice) => notices.push(notice),
+      }),
+      'default',
+      {
+        provider: toolsThenText([
+          { id: 'r1', name: 'Read', arguments: { filePath: join(outside, 'secret.txt') } },
+        ]),
+        isNewSession: false,
+      },
+    );
+    expect(byId(results, 'r1')?.content).toContain('outside the workspace');
+    expect(notices.filter((notice) => notice.includes('needs approval'))).toHaveLength(0);
+  });
+
+  it('says a prompt nobody answered was dismissed, and prints no remedy', async () => {
+    const notices: string[] = [];
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2 }),
+      createDefaultRegistry(),
+      'run it',
+      [],
+      noopCallbacks({
+        onPermissionRequired: async (): Promise<PermissionDecision> => ({
+          result: 'deny',
+          reason: 'dismissed',
+        }),
+        onToolResult: (r) => results.push(r),
+        onNotice: (notice) => notices.push(notice),
+      }),
+      'default',
+      {
+        provider: toolsThenText([{ id: 'b1', name: 'Bash', arguments: { command: 'echo hi' } }]),
+        isNewSession: false,
+      },
+    );
+    const content = byId(results, 'b1')?.content ?? '';
+    expect(content).toContain('dismissed');
+    expect(content).not.toContain('The user declined');
+    expect(notices.filter((notice) => notice.includes('needs approval'))).toHaveLength(0);
+  });
+
+  it('names the allow rule when an explicitly requested skill needs consent nobody can give', async () => {
+    writeLoopSkill(workspace, 'review');
+    const config = defaultConfig({ workspace, maxTurns: 1 });
+    config.settings.skills.execution.review = 'ask';
+    let requestText = '';
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        requestText = JSON.stringify(messages);
+        yield { type: 'text' as const, content: 'done' };
+        yield { type: 'done' as const };
+      },
+    };
+    const notices: string[] = [];
+    await runAgentLoop(
+      config,
+      createDefaultRegistry(),
+      '$review inspect this change',
+      [],
+      noopCallbacks({
+        onPermissionRequired: noApprover,
+        onNotice: (notice) => notices.push(notice),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+    expect(requestText).toContain('nothing in this run can answer');
+    const refusals = notices.filter((notice) => notice.includes('needs approval'));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toContain('"InvokeSkill(review)"');
+    expect(refusals[0]).toContain('--permission-mode auto still asks');
   });
 
   it('prompts for a workspace read that an ask rule covers, however the path is spelled', async () => {

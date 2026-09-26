@@ -65,6 +65,13 @@ describe('actionable tool errors', () => {
     expect(error).not.toContain('permissions.allow');
   });
 
+  it('says a dismissed prompt went unanswered rather than declined', () => {
+    const error = permissionDeniedError('Bash', { kind: 'dismissed' });
+    expect(error).toContain('dismissed');
+    expect(error).not.toContain('The user declined');
+    expect(error).not.toContain('permissions.allow');
+  });
+
   it('says dontAsk refused the call rather than a rule', () => {
     const error = permissionDeniedError('Read', { kind: 'dont_ask' });
     expect(error).toContain('dontAsk');

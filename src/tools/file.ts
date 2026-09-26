@@ -40,6 +40,8 @@ const GREP_BINARY_SAMPLE_BYTES = 8 * 1024;
 const GREP_DEFAULT_IGNORES = [
   '**/.git/**',
   '**/.book/tool-output/**',
+  // Book's project-local settings can hold an API key; no search should return it (#264).
+  '**/.book/settings.local.json',
   '**/node_modules/**',
   '**/dist/**',
   '**/coverage/**',

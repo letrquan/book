@@ -561,7 +561,7 @@ describe('workspace reads need no prompt (#264)', () => {
   }
 
   function scope(root: string, extra: Partial<WorkspaceScope> = {}): { workspace: WorkspaceScope } {
-    return { workspace: { root, autoAllowReads: true, ...extra } };
+    return { workspace: { root, judgeReads: true, autoAllowReads: true, ...extra } };
   }
 
   function setup() {
@@ -656,6 +656,86 @@ describe('workspace reads need no prompt (#264)', () => {
       source: 'default',
     });
   });
+
+  it('judges an absolute Glob by where it starts, and expands braces before looking for ..', () => {
+    const { workspace, outside } = setup();
+    const s = settings();
+    const posix = (path: string) => path.replace(/\\/g, '/');
+    expect(
+      evaluatePermission('Glob', { pattern: `${posix(workspace)}/src/*.ts` }, s, scope(workspace)),
+    ).toBe('allow');
+    expect(
+      evaluatePermission('Glob', { pattern: `${posix(outside)}/*.txt` }, s, scope(workspace)),
+    ).toBe('ask');
+    expect(evaluatePermission('Glob', { pattern: '.{.,x}/*' }, s, scope(workspace))).toBe('ask');
+    expect(evaluatePermission('Glob', { pattern: 'src/{a,{b,..}}/*' }, s, scope(workspace))).toBe(
+      'ask',
+    );
+    expect(evaluatePermission('Glob', { pattern: '**/*.{ts,tsx}' }, s, scope(workspace))).toBe(
+      'allow',
+    );
+    expect(evaluatePermission('Glob', { pattern: 'logs/{1..3}.txt' }, s, scope(workspace))).toBe(
+      'allow',
+    );
+  });
+
+  it('marks an outside target even where reads keep asking, and under an ask rule', () => {
+    const { workspace, outside } = setup();
+    const outsideFile = join(outside, 'secret.txt');
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: outsideFile },
+        settings(),
+        scope(workspace, { autoAllowReads: false }),
+      ),
+    ).toEqual({ decision: 'ask', source: 'default', outsideWorkspace: true });
+    const rule = `Read(${outside.replace(/\\/g, '/')}/**)`;
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: outsideFile.replace(/\\/g, '/') },
+        settings({ ask: [rule] }),
+        scope(workspace),
+      ),
+    ).toEqual({ decision: 'ask', source: 'ask', matchedRule: rule, outsideWorkspace: true });
+    // Only judged in the modes that prompt for reads.
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: outsideFile },
+        settings(),
+        scope(workspace, { judgeReads: false, autoAllowReads: false }),
+      ),
+    ).toEqual({ decision: 'ask', source: 'default' });
+  });
+
+  it('matches Write and Edit rules against an ApplyPatch path however it is spelled', () => {
+    const { workspace } = setup();
+    writeFileSync(join(workspace, '.env'), 'KEY=1\n');
+    const off = scope(workspace, { judgeReads: false, autoAllowReads: false });
+    const denied = settings({ deny: ['Write(.env)', 'Edit(.env)'] });
+    for (const path of ['src/../.env', join(workspace, '.env').replace(/\\/g, '/')]) {
+      const patch = `*** Begin Patch\n*** Update File: ${path}\n@@\n-KEY=1\n+KEY=2\n*** End Patch`;
+      expect(evaluatePermissionDetail('ApplyPatch', { patch }, denied, off)).toMatchObject({
+        decision: 'deny',
+      });
+    }
+    const allowed = settings({ allow: ['Edit(src/**)'] });
+    const inSrc = join(workspace, 'src', 'a.ts').replace(/\\/g, '/');
+    const patch = `*** Begin Patch\n*** Update File: ${inSrc}\n@@\n-a\n+b\n*** End Patch`;
+    expect(evaluatePermission('ApplyPatch', { patch }, allowed, off)).toBe('allow');
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'matches a path rule on Windows whatever the case of the path',
+    () => {
+      const { workspace } = setup();
+      writeFileSync(join(workspace, '.env'), 'KEY=1\n');
+      const s = settings({ deny: ['Read(.env)'] });
+      expect(evaluatePermission('Read', { filePath: '.ENV' }, s, scope(workspace))).toBe('deny');
+    },
+  );
 
   it('allows a Glob whose file names merely contain two dots', () => {
     const { workspace } = setup();
