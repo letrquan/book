@@ -6,7 +6,7 @@ import type {
 } from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
 import type { Usage } from '../types/messages.js';
-import { createDebugLogger } from '../debug-log.js';
+import { createDebugLogger, isDebugEnabled } from '../debug-log.js';
 import { escapeInvisibleCharacters } from '../control-characters.js';
 import {
   classifyApiError,
@@ -647,14 +647,18 @@ export async function* chatCompletionStream(
                   (currentContentBlock.signature ?? '') + String(delta.signature);
               }
             } else if (delta.type === 'input_json_delta' && delta.partial_json) {
+              // The head of each call's first fragment, not of every one: a call that arrives
+              // missing its opening `{"filePath": ` is visible here (#260) and nowhere else.
+              // Behind the flag, so a large streamed Write does no string work and writes no
+              // lines when debugging is off.
+              if (currentToolArgs === '' && isDebugEnabled()) {
+                log.debug('stream tool input delta', {
+                  id: currentToolId,
+                  length: String(delta.partial_json).length,
+                  head: escapeInvisibleCharacters(String(delta.partial_json).slice(0, 120)),
+                });
+              }
               currentToolArgs += delta.partial_json as string;
-              // The head of every fragment, not a count: a call that arrives missing its
-              // opening `{"filePath": ` is visible here (#260) and nowhere else.
-              log.debug('stream tool input delta', {
-                id: currentToolId,
-                length: String(delta.partial_json).length,
-                head: escapeInvisibleCharacters(String(delta.partial_json).slice(0, 120)),
-              });
             }
             break;
           }

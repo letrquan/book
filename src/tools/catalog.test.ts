@@ -503,6 +503,9 @@ describe('ToolSearch query matching', () => {
     ['edit a jupyter notebook cell', 'NotebookEdit'],
     ['run the project tests', 'Check'],
     ['GitComit', 'GitCommit'],
+    ['GitCommet', 'GitCommit'],
+    ['show git logs', 'GitLog'],
+    ['gitlog', 'GitLog'],
   ])('ranks %s first as %s', (query, expected) => {
     expect(surface().search(query)[0]?.name).toBe(expected);
   });
@@ -548,6 +551,13 @@ describe('ToolSearch in a bare registry (#270)', () => {
     );
     expect(surface.search('search the web')).toEqual([]);
     expect(surface.activeMatches?.('search the web')[0]).toBe('WebSearch');
+  });
+
+  it('filters the already-active names by the category ToolSearch searched with', () => {
+    // The filter the call carried is the model's own: answering "WebSearch is already
+    // active" to a git-scoped search points it at a tool it excluded.
+    const surface = bareSurface('auto');
+    expect(surface.activeMatches?.('search the web', { category: 'git' })).toEqual([]);
   });
 
   it('refuses a deferred tool until ToolSearch activates it in deferred mode', () => {

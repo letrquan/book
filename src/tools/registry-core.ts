@@ -91,7 +91,13 @@ function stableStringify(value: unknown): string {
 const RAW_ARGUMENTS_KEY = '__raw';
 
 type InvalidJsonShape =
-  'truncated_start' | 'truncated_end' | 'concatenated' | 'single_quoted' | 'syntax';
+  | 'truncated_start'
+  | 'truncated_end'
+  | 'wrapped'
+  | 'not_object'
+  | 'concatenated'
+  | 'single_quoted'
+  | 'syntax';
 
 interface InvalidJsonArguments {
   shape: InvalidJsonShape;
@@ -114,11 +120,13 @@ function quoteRaw(text: string): string {
  * The providers keep only the raw text, so it is parsed again here to recover
  * V8's error, and sorted into a shape with its own advice:
  *
- * - `truncated_start`: the text does not begin with `{`. A router dropped the
- *   call's first fragment on the wire (seen on 9router, #260); the model's JSON
- *   was fine, so it resends as is.
+ * - `truncated_start`: the text is the tail of an object, its first fragment
+ *   missing. A router dropped the call's opening on the wire (seen on 9router,
+ *   #260); the model's JSON was fine, so it resends as is.
  * - `truncated_end`: the text stops before the JSON is complete (`Unexpected
  *   end of JSON input`, or a parse error at its very end): the output was cut off.
+ * - `wrapped`: the object is fenced, tagged or surrounded by text.
+ * - `not_object`: there is no object in the text at all (`ls -la`, `[1,`).
  * - `concatenated`: a second object follows the first.
  * - `single_quoted`: a key or string in single quotes.
  * - `syntax`: anything else, most often an unescaped backslash or newline in a
@@ -146,11 +154,35 @@ function describeInvalidJson(
   }
   const prefix = `Invalid JSON arguments for ${toolName}:`;
   const opening = raw.trimStart();
+  const closing = raw.trimEnd();
   if (!opening.startsWith('{')) {
+    const braceAt = opening.indexOf('{');
+    const separatorAt = opening.search(/"\s*:/);
+    // What a dropped first fragment leaves: the tail of an object - a key-value separator before
+    // any opening brace, a closing brace at the end, and no fence, tag or array in front.
+    const looksLikeObjectTail =
+      closing.endsWith('}') &&
+      separatorAt !== -1 &&
+      (braceAt === -1 || separatorAt < braceAt) &&
+      !/^[[<`]/.test(opening);
+    if (looksLikeObjectTail) {
+      return {
+        shape: 'truncated_start',
+        message: `${prefix} they arrived truncated at the start, beginning ${quoteRaw(opening.slice(0, 40))} instead of "{".`,
+        remediation: `The provider or router most likely dropped the first fragment of this call on its way to Book, so none of its arguments were read. Resend the whole call. ${ONLY_THIS_CALL}`,
+      };
+    }
+    if (braceAt > 0) {
+      return {
+        shape: 'wrapped',
+        message: `${prefix} the JSON object is wrapped in other text, beginning ${quoteRaw(opening.slice(0, 40))}.`,
+        remediation: `Send the arguments as one bare JSON object: no code fence, tag or text before or after it. None of them were read. ${ONLY_THIS_CALL}`,
+      };
+    }
     return {
-      shape: 'truncated_start',
-      message: `${prefix} they arrived truncated at the start, beginning ${quoteRaw(opening.slice(0, 40))} instead of "{".`,
-      remediation: `The provider or router most likely dropped the first fragment of this call on its way to Book, so none of its arguments were read. Resend the whole call. ${ONLY_THIS_CALL}`,
+      shape: 'not_object',
+      message: `${prefix} they are not a JSON object, beginning ${quoteRaw(opening.slice(0, 40))}.`,
+      remediation: `The arguments must be one JSON object holding the tool's fields by name. None of them were read. Resend the whole call as an object. ${ONLY_THIS_CALL}`,
     };
   }
   const detail = escapeInvisibleCharacters(parseError);
@@ -236,7 +268,11 @@ function noteRepeatedFailure(context: ToolContext, call: ToolCall, result: ToolR
   // A refusal did not fail, and telling the model it did sends it looking for a broken tool
   // rather than for the rule, hook or policy that refused it.
   const verb = result.status === 'blocked' ? 'was already refused' : 'already failed';
-  const escalation = `This exact ${call.name} call ${verb} ${previousFailures} time(s) with the same arguments. Do not retry it unchanged: re-read the target, revise the arguments, or use a different tool.`;
+  const advice =
+    result.structuredError.code === 'tool_not_active'
+      ? 'activate it with ToolSearch first, or use a tool that is active.'
+      : 're-read the target, revise the arguments, or use a different tool.';
+  const escalation = `This exact ${call.name} call ${verb} ${previousFailures} time(s) with the same arguments. Do not retry it unchanged: ${advice}`;
   const existing = result.structuredError.remediation;
   return {
     ...result,
@@ -255,6 +291,10 @@ function forgetFailures(context: ToolContext, call: ToolCall): void {
   const memory = context.runtime?.recentToolFailures;
   if (!memory || memory.size === 0) return;
   const prefix = `${call.name}:`;
+  // Nothing remembered under this tool, so no signature can match: hashing the arguments
+  // (a large Write serializes them all) only for a key that is not there is a cost every
+  // successful call pays for an unrelated remembered failure.
+  if (![...memory.keys()].some((signature) => signature.startsWith(prefix))) return;
   const suffix = `:${argumentsDigest(call)}`;
   for (const signature of [...memory.keys()]) {
     if (signature.startsWith(prefix) && signature.endsWith(suffix)) memory.delete(signature);
@@ -414,10 +454,32 @@ export function createRegistry() {
     return { ...call, name: tool.name, arguments: normalizeToolArguments(tool, call.arguments) };
   };
 
-  const inactiveRejection = (call: ToolCall, context: ToolContext): ToolResult =>
+  /** The rejection for a name no registered tool answers to. */
+  const unknownToolRejection = (call: ToolCall, context: ToolContext): ToolResult =>
     noteRepeatedFailure(
       context,
       call,
+      toolFailure(`Unknown tool: ${call.name}`, {
+        toolCallId: call.id,
+        code: 'unknown_tool',
+        remediation: 'Call ToolSearch or use a provider-visible tool name.',
+      }),
+    );
+
+  /**
+   * The rejection for a tool this turn does not expose. The message names what the model sent
+   * (`call.name`), while the repeat is keyed on the canonical call (`normalizedCall`), so an
+   * aliased or prefixed name shares one signature with its canonical spelling — and with the
+   * normalized call `forgetFailures` receives, which clears that signature on a success.
+   */
+  const inactiveRejection = (
+    call: ToolCall,
+    normalizedCall: ToolCall,
+    context: ToolContext,
+  ): ToolResult =>
+    noteRepeatedFailure(
+      context,
+      normalizedCall,
       toolFailure(`Tool "${call.name}" is not active for this turn.`, {
         toolCallId: call.id,
         code: 'tool_not_active',
@@ -426,20 +488,21 @@ export function createRegistry() {
       }),
     );
 
-  /** The invalid-JSON rejection for a normalized call, or undefined when its arguments parsed. */
+  /** The rejection for a call whose arguments never parsed, for an already classified shape. */
   const invalidJsonRejection = (
-    tool: ToolDefinition,
+    invalid: InvalidJsonArguments,
     normalizedCall: ToolCall,
     context: ToolContext,
-  ): ToolResult | undefined => {
-    const invalid = describeInvalidJson(tool.name, normalizedCall.arguments);
-    if (!invalid) return undefined;
-    return noteRepeatedFailure(
+  ): ToolResult =>
+    noteRepeatedFailure(
       context,
       normalizedCall,
       toolFailure(invalid.message, {
         toolCallId: normalizedCall.id,
         code: 'invalid_json_arguments',
+        // The model's own JSON was fine and the fix is to resend the same call, so
+        // `noteRepeatedFailure` must not answer that resend with "Do not retry it unchanged".
+        retryable: invalid.shape === 'truncated_start',
         remediation: invalid.remediation,
         details: {
           shape: invalid.shape,
@@ -447,7 +510,6 @@ export function createRegistry() {
         },
       }),
     );
-  };
 
   /** Name-only visibility, or the whole `canExecute` for a discovery object without `isActive`. */
   const isVisible = (normalizedCall: ToolCall, context: ToolContext): boolean => {
@@ -474,13 +536,33 @@ export function createRegistry() {
       return Array.from(tools.values());
     },
     /**
-     * The rejection for a call whose arguments never parsed (`{__raw}`), or undefined for any
-     * other call. The agent loop asks this before PreToolUse hooks and the permission check,
-     * because such a call can never run: a hook would judge the wrapper, the user would be asked
-     * to approve it, and "Always" would save a rule built from junk. An inactive tool is still
-     * refused as inactive first, as in `prepare`.
+     * The rejection for a call that can never run however it is approved, whatever the mode: an
+     * unknown tool, or arguments that never parsed (a tool that is not active is still refused as
+     * inactive first, as in `prepare`); `undefined` for any other call. The agent loop asks this
+     * before PreToolUse hooks and the permission check, so a hook never judges such a call and
+     * the user is never asked to approve one (an 'Always' would save a rule for it).
      */
-    rejectUnparsedArguments(call: ToolCall, context: ToolContext): ToolResult | undefined {
+    rejectBeforeGates(call: ToolCall, context: ToolContext): ToolResult | undefined {
+      const tool = resolveRegisteredTool(tools, call.name);
+      if (!tool) return unknownToolRejection(call, context);
+      const normalizedCall: ToolCall = {
+        ...call,
+        name: tool.name,
+        arguments: normalizeToolArguments(tool, call.arguments),
+      };
+      const invalid = describeInvalidJson(tool.name, normalizedCall.arguments);
+      if (invalid === undefined) return undefined;
+      if (!isVisible(normalizedCall, context))
+        return inactiveRejection(call, normalizedCall, context);
+      return invalidJsonRejection(invalid, normalizedCall, context);
+    },
+    /**
+     * The `tool_not_active` rejection for a registered tool that is not active this turn, or
+     * `undefined`. Separate from `rejectBeforeGates` because a mode hides tools too - plan mode
+     * its mutating tools, dontAsk its question tool - and the loop's own refusal names the mode,
+     * which "call ToolSearch" does not; the loop asks this only once those have had their turn.
+     */
+    rejectInactive(call: ToolCall, context: ToolContext): ToolResult | undefined {
       const tool = resolveRegisteredTool(tools, call.name);
       if (!tool) return undefined;
       const normalizedCall: ToolCall = {
@@ -488,25 +570,14 @@ export function createRegistry() {
         name: tool.name,
         arguments: normalizeToolArguments(tool, call.arguments),
       };
-      if (describeInvalidJson(tool.name, normalizedCall.arguments) === undefined) return undefined;
-      if (!isVisible(normalizedCall, context)) return inactiveRejection(call, context);
-      return invalidJsonRejection(tool, normalizedCall, context);
+      return isVisible(normalizedCall, context)
+        ? undefined
+        : inactiveRejection(call, normalizedCall, context);
     },
     prepare(call: ToolCall, context: ToolContext): PrepareToolCallResult {
       const tool = resolveRegisteredTool(tools, call.name);
       if (!tool) {
-        return {
-          status: 'rejected',
-          result: noteRepeatedFailure(
-            context,
-            call,
-            toolFailure(`Unknown tool: ${call.name}`, {
-              toolCallId: call.id,
-              code: 'unknown_tool',
-              remediation: 'Call ToolSearch or use a provider-visible tool name.',
-            }),
-          ),
-        };
+        return { status: 'rejected', result: unknownToolRejection(call, context) };
       }
 
       const normalizedCall: ToolCall = {
@@ -520,14 +591,18 @@ export function createRegistry() {
       // `canExecute` check here instead, before the JSON check, which is where
       // it ran before `isActive` existed: every call it refused is refused alike.
       if (!isVisible(normalizedCall, context))
-        return { status: 'rejected', result: inactiveRejection(call, context) };
+        return { status: 'rejected', result: inactiveRejection(call, normalizedCall, context) };
       // Invalid JSON is named before the argument-scoped rules run: a rule such
       // as `Bash(git *)` cannot match text that never parsed, so the gate would
       // report a malformed call to an active tool as an inactive one.
-      const jsonRejection = invalidJsonRejection(tool, normalizedCall, context);
-      if (jsonRejection) return { status: 'rejected', result: jsonRejection };
+      const invalid = describeInvalidJson(tool.name, normalizedCall.arguments);
+      if (invalid)
+        return {
+          status: 'rejected',
+          result: invalidJsonRejection(invalid, normalizedCall, context),
+        };
       if (discovery?.isActive && !discovery.canExecute(normalizedCall))
-        return { status: 'rejected', result: inactiveRejection(call, context) };
+        return { status: 'rejected', result: inactiveRejection(call, normalizedCall, context) };
 
       const providerArguments = { ...normalizedCall.arguments };
       // Hide the host control from validation only while the tool keeps it

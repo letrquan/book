@@ -461,11 +461,13 @@ describe('invalid JSON tool-call arguments', () => {
     // (#260). The model's JSON was fine, so "escape backslashes" is the wrong
     // advice and only makes it resend a mangled call again.
     const { registry, execute } = editLikeRegistry();
+    const runtime = new SessionRuntime();
+    const context: ToolContext = { workspaceRoot: dir, env: {}, runtime };
     const dropped = '/tools/file.ts", "oldString": "a", "newString": "b"}';
 
     const result = await registry.execute(
       { id: 'cut-start', name: 'Edit', arguments: { __raw: dropped } },
-      ctx,
+      context,
     );
 
     expect(execute).not.toHaveBeenCalled();
@@ -474,10 +476,51 @@ describe('invalid JSON tool-call arguments', () => {
     expect(message).toContain('truncated at the start');
     expect(message).toContain('"/tools/file.ts');
     expect(result.structuredError?.details?.shape).toBe('truncated_start');
+    // The route dropped it, not the model: the same call resent is the fix, so the
+    // repeat breaker must not answer it with "do not retry it unchanged".
+    expect(result.structuredError?.retryable).toBe(true);
     const remediation = result.structuredError?.remediation ?? '';
     expect(remediation).toContain('dropped the first fragment');
     expect(remediation).toContain('Resend the whole call');
     expect(remediation).not.toContain('escape backslashes');
+
+    const second = await registry.execute(
+      { id: 'cut-start-2', name: 'Edit', arguments: { __raw: dropped } },
+      context,
+    );
+
+    expect(second.structuredError?.code).toBe('invalid_json_arguments');
+    expect(second.structuredError?.remediation ?? '').not.toContain('Do not retry it unchanged');
+    runtime.dispose();
+  });
+
+  it('names a fenced or tagged object as wrapped, not as cut off at the start', async () => {
+    // A code fence is the model's own formatting mistake, and resending the same
+    // text unchanged would only reproduce it.
+    const { registry } = editLikeRegistry();
+    const fence = ['```json', '{"filePath": "a"}', '```'].join('\n');
+
+    const result = await registry.execute(
+      { id: 'fenced', name: 'Edit', arguments: { __raw: fence } },
+      ctx,
+    );
+
+    expect(result.structuredError?.details?.shape).toBe('wrapped');
+    expect(result.structuredError?.remediation).toContain('bare JSON object');
+  });
+
+  it.each([
+    ['plain text', 'ls -la'],
+    ['an array', '[1,'],
+  ])('names %s as not a JSON object at all', async (_label, raw) => {
+    const { registry } = editLikeRegistry();
+
+    const result = await registry.execute(
+      { id: 'no-object', name: 'Edit', arguments: { __raw: raw } },
+      ctx,
+    );
+
+    expect(result.structuredError?.details?.shape).toBe('not_object');
   });
 
   it('reads leading whitespace before the object as cut off at the end, not the start', async () => {
@@ -562,7 +605,7 @@ describe('invalid JSON tool-call arguments', () => {
   });
 });
 
-describe('rejectUnparsedArguments', () => {
+describe('rejectBeforeGates', () => {
   function editLikeRegistry() {
     const execute = vi.fn(async () => toolSuccess('ok'));
     const registry = createRegistry();
@@ -584,34 +627,52 @@ describe('rejectUnparsedArguments', () => {
   }
 
   const badEscape = `{"filePath":"src/a.ts","oldString":"const re = /${String.fromCharCode(92)}d+/;","newString":"x"}`;
+  const inactiveDiscovery: ToolContext['toolDiscovery'] = {
+    search: () => [],
+    activate: () => [],
+    restrict: () => {},
+    pushRestriction: () => () => {},
+    previewRestriction: () => [],
+    isActive: () => false,
+    canExecute: () => true,
+    activeDefinitions: () => [],
+    catalogSummary: () => '',
+  };
 
-  it('says nothing for arguments that parsed or for a tool it does not know', () => {
+  it('says nothing for a visible tool whose arguments parsed', () => {
     const { registry } = editLikeRegistry();
 
     expect(
-      registry.rejectUnparsedArguments(
+      registry.rejectBeforeGates(
         { id: 'ok-1', name: 'Edit', arguments: { filePath: 'a.ts' } },
         ctx,
       ),
     ).toBeUndefined();
     expect(
-      registry.rejectUnparsedArguments(
+      registry.rejectBeforeGates(
         { id: 'ok-2', name: 'Edit', arguments: { __raw: '{"filePath":"a.ts"}' } },
-        ctx,
-      ),
-    ).toBeUndefined();
-    expect(
-      registry.rejectUnparsedArguments(
-        { id: 'ok-3', name: 'NoSuchTool', arguments: { __raw: badEscape } },
         ctx,
       ),
     ).toBeUndefined();
   });
 
+  it('refuses a name no registered tool answers to', () => {
+    // A call the agent loop would have taken to a PreToolUse hook and the permission
+    // prompt, both of which can only judge it wrongly.
+    const { registry } = editLikeRegistry();
+
+    const result = registry.rejectBeforeGates(
+      { id: 'unknown-1', name: 'NoSuchTool', arguments: { __raw: badEscape } },
+      ctx,
+    );
+
+    expect(result?.structuredError?.code).toBe('unknown_tool');
+  });
+
   it('returns the invalid-JSON rejection the registry would have produced', () => {
     const { registry, execute } = editLikeRegistry();
 
-    const result = registry.rejectUnparsedArguments(
+    const result = registry.rejectBeforeGates(
       { id: 'unparsed-1', name: 'Edit', arguments: { __raw: badEscape } },
       ctx,
     );
@@ -623,25 +684,59 @@ describe('rejectUnparsedArguments', () => {
 
   it('refuses an inactive tool as inactive, before the JSON verdict', () => {
     const { registry } = editLikeRegistry();
-    const inactiveDiscovery: ToolContext['toolDiscovery'] = {
-      search: () => [],
-      activate: () => [],
-      restrict: () => {},
-      pushRestriction: () => () => {},
-      previewRestriction: () => [],
-      isActive: () => false,
-      canExecute: () => true,
-      activeDefinitions: () => [],
-      catalogSummary: () => '',
-    };
 
-    const result = registry.rejectUnparsedArguments(
+    const result = registry.rejectBeforeGates(
       { id: 'unparsed-2', name: 'Edit', arguments: { __raw: badEscape } },
       { ...ctx, toolDiscovery: inactiveDiscovery },
     );
 
     expect(result?.status).toBe('blocked');
     expect(result?.structuredError?.code).toBe('tool_not_active');
+  });
+
+  it('leaves an inactive tool whose arguments parsed to rejectInactive', () => {
+    // A mode hides tools as well (plan mode its mutating tools), and the loop's own refusal
+    // names the mode; refusing here would pre-empt it with "call ToolSearch".
+    const { registry, execute } = editLikeRegistry();
+    const call = { id: 'inactive-1', name: 'Edit', arguments: { filePath: 'a.ts' } };
+    const context = { ...ctx, toolDiscovery: inactiveDiscovery };
+
+    expect(registry.rejectBeforeGates(call, context)).toBeUndefined();
+    expect(registry.rejectInactive(call, context)?.structuredError?.code).toBe('tool_not_active');
+    expect(registry.rejectInactive(call, ctx)).toBeUndefined();
+    expect(
+      registry.rejectInactive({ id: 'unknown-2', name: 'NoSuchTool', arguments: {} }, context),
+    ).toBeUndefined();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('keys an aliased inactive call on the canonical name, so a resend escalates', async () => {
+    // `apply_patch` and `ApplyPatch` are one call: the model must not learn the second
+    // spelling is a different one, and a remembered refusal of one is the refusal of both.
+    const { registry } = editLikeRegistry();
+    registry.register({
+      name: 'ApplyPatch',
+      description: 'apply a patch',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => toolSuccess('ok'),
+    });
+    const runtime = new SessionRuntime();
+    const context: ToolContext = {
+      workspaceRoot: dir,
+      env: {},
+      runtime,
+      toolDiscovery: inactiveDiscovery,
+    };
+
+    await registry.execute({ id: 'alias-1', name: 'apply_patch', arguments: {} }, context);
+    const second = await registry.execute(
+      { id: 'alias-2', name: 'apply_patch', arguments: {} },
+      context,
+    );
+
+    expect(second.structuredError?.code).toBe('tool_not_active');
+    expect(second.structuredError?.remediation).toContain('activate it with ToolSearch first');
+    runtime.dispose();
   });
 });
 

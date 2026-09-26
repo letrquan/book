@@ -686,6 +686,30 @@ function fakeIpDnsWebRegistry() {
   return registry;
 }
 
+/**
+ * A provider that mangles the same Edit on every turn, the way a route that drops the opening
+ * of a call's arguments does. No permission lifts the call, so the streak has to stop with the
+ * remedy for arguments that never parsed.
+ */
+function mangledEditProvider(): Provider {
+  let call = 0;
+  return {
+    id: 'scripted',
+    stream: async function* () {
+      call++;
+      yield {
+        type: 'tool_call',
+        toolCall: {
+          id: `mangled-${call}`,
+          name: 'Edit',
+          arguments: { __raw: '{"filePath": "a", "oldString":' },
+        },
+      };
+      yield { type: 'done' };
+    },
+  } as unknown as Provider;
+}
+
 describe('the refusal brake names the cause it stopped on', () => {
   it('points a streak of network-policy refusals at the host opt-in, not at permissions', async () => {
     // Under bypassPermissions there is no permission left to grant, so "grant the permission, add
@@ -715,6 +739,18 @@ describe('the refusal brake names the cause it stopped on', () => {
     expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
     expect(outcome?.message).toContain('ToolSearch');
     expect(outcome?.message).toContain('NotebookEdit');
+    expect(outcome?.message).not.toContain('grant the permission');
+  });
+
+  it('points a streak of unparsed arguments at the route, not at permissions', async () => {
+    // The call never parsed, so it can never run: asking for a permission on it, and
+    // telling the run to "grant the permission" once it stops, points at a gate that
+    // was never the one that refused. `runRefusals` records blocked codes only, so the
+    // outcome is the assertion that matters here.
+    const { outcome } = await runRefusals(mangledEditProvider(), 'bypassPermissions');
+
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('never parsed as JSON');
     expect(outcome?.message).not.toContain('grant the permission');
   });
 

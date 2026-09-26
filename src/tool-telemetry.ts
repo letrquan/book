@@ -216,10 +216,12 @@ export function aggregateToolUse(records: ToolUseRecord[]): ToolUseAggregate {
     if (record.retries > 0) tool.retried++;
 
     // The route is part of the model identity: the same id behind two providers is two
-    // different wire formats, and only one of them may be mangling tool calls.
-    const modelKey = record.provider
-      ? `${record.provider}/${record.model}`
-      : record.model || 'unknown';
+    // different wire formats, and only one of them may be mangling tool calls. A record with a
+    // provider and no model falls back to the model id alone, never to `provider/undefined`.
+    const modelKey =
+      record.provider && record.model
+        ? `${record.provider}/${record.model}`
+        : record.model || 'unknown';
     const model = modelAgg.get(modelKey) ?? {
       calls: 0,
       failures: 0,

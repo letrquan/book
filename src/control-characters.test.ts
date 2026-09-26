@@ -3,6 +3,7 @@ import {
   CONTROL_CHARACTERS,
   escapeInvisibleCharacters,
   foldControlCharacters,
+  stripTerminalControls,
 } from './control-characters.js';
 
 const at = (code: number): string => String.fromCharCode(code);
@@ -17,6 +18,15 @@ describe('foldControlCharacters', () => {
 
   it('keeps ordinary spaces, which are part of what the row shows', () => {
     expect(foldControlCharacters('^    def foo')).toBe('^    def foo');
+  });
+});
+
+describe('stripTerminalControls', () => {
+  it('keeps the line structure and the tab, and strips the rest', () => {
+    // Multi-line tool output shown as is: a CRLF is one newline, a tab indents, and
+    // nothing else may reach the terminal to rewrite it.
+    const raw = ['a', '\r\n', 'b', at(0x202e), 'c', '\t', 'd'].join('');
+    expect(stripTerminalControls(raw)).toBe('a\nb c\td');
   });
 });
 

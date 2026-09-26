@@ -83,7 +83,12 @@ export const toolSearchTools: ToolDefinition[] = [
       }));
       const loadedMatches = resolvedMatches.filter((match) => match.loaded);
       if (matches.length === 0) {
-        const active = context.toolDiscovery.activeMatches?.(query) ?? [];
+        const active =
+          context.toolDiscovery.activeMatches?.(query, {
+            category: args.category as ToolCategory | undefined,
+            namespace: typeof args.namespace === 'string' ? args.namespace : undefined,
+            limit: typeof args.limit === 'number' ? args.limit : undefined,
+          }) ?? [];
         return toolSuccess(
           active.length > 0
             ? `No deferred tools matched: ${query}. Already active this turn, so call them directly: ${active.join(', ')}.`

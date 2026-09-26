@@ -290,6 +290,9 @@ All notable changes to this project are documented in this file.
   syntax) with advice for each, quotes the text on both sides of the parse position, and shows an
   invisible character as a `\uXXXX` escape instead of a space. `book tool-stats` counts the shapes
   per provider and model, and both provider clients log raw argument fragments under `BOOK_DEBUG`.
+  Records written before this version carry no provider, so they stay under the bare model id: a
+  route whose calls span the upgrade shows as two rows until the older records age out of the
+  retention window.
 - **A call whose arguments never parsed is refused before hooks and the permission prompt** (#242).
   PreToolUse hooks judged the `{__raw}` wrapper, and in `default` mode the user was asked to approve
   a call that could never run, with "Always" saving a rule built from it.

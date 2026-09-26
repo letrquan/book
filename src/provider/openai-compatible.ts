@@ -6,7 +6,7 @@ import type {
 } from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
 import type { Usage } from '../types/messages.js';
-import { createDebugLogger } from '../debug-log.js';
+import { createDebugLogger, isDebugEnabled } from '../debug-log.js';
 import { escapeInvisibleCharacters } from '../control-characters.js';
 import {
   classifyApiError,
@@ -331,20 +331,23 @@ export async function* chatCompletionStream(
             toolCallParts.push(part);
           }
 
-          // The head of every fragment, not a count: a call that arrives missing its
-          // opening `{"filePath": ` is visible here (#260) and nowhere else. Escaped, because the
-          // text is the model's and a debug log on stderr may be a terminal.
-          log.debug('stream tool_call delta', {
-            index,
-            id: tc.id,
-            name: escapeInvisibleCharacters(tc.function?.name ?? ''),
-            argumentsLength: tc.function?.arguments?.length ?? 0,
-            argumentsHead: escapeInvisibleCharacters(tc.function?.arguments?.slice(0, 120) ?? ''),
-          });
-
           if (tc.id) part.id = tc.id;
           if (tc.function?.name) part.name = tc.function.name;
           if (tc.function?.arguments) {
+            // The head of each call's first fragment, not of every one: a call that arrives
+            // missing its opening `{"filePath": ` is visible here (#260) and nowhere else.
+            // Escaped, because the text is the model's and a debug log on stderr may be a
+            // terminal; behind the flag, so a large streamed Write does no string work and
+            // writes no lines when debugging is off.
+            if (part.fragments === 0 && isDebugEnabled()) {
+              log.debug('stream tool_call delta', {
+                index,
+                id: tc.id,
+                name: escapeInvisibleCharacters(tc.function.name ?? ''),
+                argumentsLength: tc.function.arguments.length,
+                argumentsHead: escapeInvisibleCharacters(tc.function.arguments.slice(0, 120)),
+              });
+            }
             part.arguments += tc.function.arguments;
             part.fragments++;
           }

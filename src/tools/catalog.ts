@@ -281,9 +281,10 @@ const QUERY_STOPWORDS = new Set([
 
 /**
  * Lowercase words of a name, keyword, or query. CamelCase and digits split (`WebFetch` → web,
- * fetch; `SpecialTool3` → special, tool, 3), so do `_`, `-`, spaces and punctuation; a compound
- * joined by `-` or `_` also yields its joined form (`sub-agent` → sub, agent, subagent), so a
- * query spelled either way meets a keyword spelled either way.
+ * fetch; `SpecialTool3` → special, tool, 3), so do `_`, `-`, spaces and punctuation; a chunk that
+ * splits into more than one part also yields its joined lowercase form (`sub-agent` → sub, agent,
+ * subagent; `GitLog` → git, log, gitlog), so a query spelled either way meets a keyword spelled
+ * either way.
  */
 function searchWords(text: string): string[] {
   const words: string[] = [];
@@ -298,38 +299,49 @@ function searchWords(text: string): string[] {
       .filter(Boolean);
     words.push(...parts);
     const joined = chunk.toLowerCase().replace(/[_-]+/g, '');
-    if (parts.length > 1 && /[_-]/.test(chunk) && !words.includes(joined)) words.push(joined);
+    if (parts.length > 1 && !words.includes(joined)) words.push(joined);
   }
   return words;
 }
 
-/** True when one word is the other with a single letter dropped or doubled (`comit`/`commit`). */
-function oneEditApart(token: string, word: string): boolean {
-  if (Math.abs(token.length - word.length) > 1) return false;
-  const [short, long] = token.length <= word.length ? [token, word] : [word, token];
-  let matched = 0;
-  let edits = 0;
-  for (const letter of long) {
-    if (matched < short.length && short[matched] === letter) {
-      matched++;
-      continue;
+/**
+ * True when one word is the other with one letter dropped, doubled, substituted, or two adjacent
+ * letters swapped. Callers pass the shorter word first.
+ */
+function oneEditApart(short: string, long: string): boolean {
+  if (long.length - short.length > 1) return false;
+  if (short.length === long.length) {
+    const differ: number[] = [];
+    for (let index = 0; index < short.length; index++) {
+      if (short[index] !== long[index]) differ.push(index);
+      if (differ.length > 2) return false;
     }
-    // One mismatch is a substitution or a letter the longer word carries alone; a
-    // second one means these are different words.
-    if (++edits > 1) return false;
+    if (differ.length === 1) return true;
+    // An adjacent transposition: `commti` for `commit`.
+    return (
+      differ.length === 2 &&
+      differ[1] === differ[0] + 1 &&
+      short[differ[0]] === long[differ[1]] &&
+      short[differ[1]] === long[differ[0]]
+    );
   }
-  return edits + (short.length - matched) <= 1;
+  let index = 0;
+  while (index < short.length && short[index] === long[index]) index++;
+  return short.slice(index) === long.slice(index + 1);
 }
 
 /**
  * True when a query token names the same word: equal, a plural/verb-form of it, or one typo. A
- * typo counts only from five letters: four-letter words one edit apart are too often different
- * words (`lint`/`list`, `test`/`text`, `read`/`head`).
+ * plain plural counts from three letters (`logs` meets `log`, `urls` meets `url`): nothing else
+ * that short is a different word often enough to be worth matching. A typo counts only from five
+ * letters: four-letter words one edit apart are too often different words (`lint`/`list`,
+ * `test`/`text`, `read`/`head`).
  */
 function sameWord(token: string, word: string): boolean {
   if (token === word) return true;
-  if (token.length < 4 || word.length < 4) return false;
   const [short, long] = token.length <= word.length ? [token, word] : [word, token];
+  if (short.length >= 3 && (long === `${short}s` || long === `${short}es`)) return true;
+  if (token.length < 4 || word.length < 4) return false;
   if (long.startsWith(short) && long.length - short.length <= 3) return true;
   return short.length >= 5 && oneEditApart(short, long);
 }
@@ -362,6 +374,24 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     ? { clock: 0, loaded: new Map() }
     : (context.runtime?.toolDiscoveryState ?? { clock: 0, loaded: new Map() });
   let activeSnapshot = new Set<string>();
+  // A definition's word lists are fixed once normalized, and every search ranks the whole
+  // catalog, so they are built on the first ranking and read from here after.
+  const wordsByDefinition = new WeakMap<ToolDefinition, Array<[number, string[]]>>();
+
+  const fieldsFor = (definition: ToolDefinition): Array<[number, string[]]> => {
+    const cached = wordsByDefinition.get(definition);
+    if (cached) return cached;
+    const fields: Array<[number, string[]]> = [
+      [SEARCH_FIELD_WEIGHTS.name, searchWords(definition.name)],
+      [SEARCH_FIELD_WEIGHTS.alias, (definition.catalog?.aliases ?? []).flatMap(searchWords)],
+      [SEARCH_FIELD_WEIGHTS.keyword, (definition.catalog?.keywords ?? []).flatMap(searchWords)],
+      [SEARCH_FIELD_WEIGHTS.namespace, searchWords(definition.catalog?.namespace ?? '')],
+      [SEARCH_FIELD_WEIGHTS.description, searchWords(definition.description)],
+      [SEARCH_FIELD_WEIGHTS.category, [definition.catalog?.category ?? 'other']],
+    ];
+    wordsByDefinition.set(definition, fields);
+    return fields;
+  };
 
   const authorized = (additionalRules?: CapabilityRule[]): ToolDefinition[] =>
     definitions.filter((definition) => {
@@ -445,14 +475,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     if (tokens.length === 0) return [];
     const scored: Array<{ definition: ToolDefinition; score: number; index: number }> = [];
     candidates.forEach((definition, index) => {
-      const fields: Array<[number, string[]]> = [
-        [SEARCH_FIELD_WEIGHTS.name, searchWords(definition.name)],
-        [SEARCH_FIELD_WEIGHTS.alias, (definition.catalog?.aliases ?? []).flatMap(searchWords)],
-        [SEARCH_FIELD_WEIGHTS.keyword, (definition.catalog?.keywords ?? []).flatMap(searchWords)],
-        [SEARCH_FIELD_WEIGHTS.namespace, searchWords(definition.catalog?.namespace ?? '')],
-        [SEARCH_FIELD_WEIGHTS.description, searchWords(definition.description)],
-        [SEARCH_FIELD_WEIGHTS.category, [definition.catalog?.category ?? 'other']],
-      ];
+      const fields = fieldsFor(definition);
       let score = 0;
       let strongHits = 0;
       let descriptionHits = 0;
@@ -471,6 +494,33 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     return scored
       .sort((a, b) => b.score - a.score || a.index - b.index)
       .map((entry) => entry.definition);
+  };
+
+  /**
+   * The Fuse fallback for a query no word of which names anything, which is mostly a name whose
+   * letters are all wrong (`Webfetch` spelled `Wibfetch`). The index is built here rather than
+   * once per search: ranking answers nearly every query, and indexing the whole catalog to throw
+   * it away costs every ToolSearch call.
+   */
+  const fuseFallback = (
+    records: SearchRecord[],
+    query: string,
+    count: number,
+  ): ToolDefinition[] => {
+    const fuse = new Fuse(records, {
+      includeScore: true,
+      threshold: 0.42,
+      ignoreLocation: true,
+      keys: [
+        { name: 'name', weight: 4 },
+        { name: 'aliases', weight: 3 },
+        { name: 'keywords', weight: 2 },
+        { name: 'description', weight: 1.5 },
+        { name: 'category', weight: 1 },
+        { name: 'namespace', weight: 1 },
+      ],
+    });
+    return fuse.search(query, { limit: count }).map((result) => result.item.definition);
   };
 
   const search = (
@@ -497,19 +547,6 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
         namespace: definition.catalog?.namespace ?? '',
       }));
 
-    const fuse = new Fuse(records, {
-      includeScore: true,
-      threshold: 0.42,
-      ignoreLocation: true,
-      keys: [
-        { name: 'name', weight: 4 },
-        { name: 'aliases', weight: 3 },
-        { name: 'keywords', weight: 2 },
-        { name: 'description', weight: 1.5 },
-        { name: 'category', weight: 1 },
-        { name: 'namespace', weight: 1 },
-      ],
-    });
     const count = Math.max(1, Math.min(5, limit));
     const ranked = query.trim()
       ? rankByWords(
@@ -517,12 +554,10 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
           records.map((record) => record.definition),
         )
       : records.map((record) => record.definition);
-    // Fuse stays as the fallback for a query no word of which names anything, which is
-    // mostly a name whose letters are all wrong (`Webfetch` spelled `Wibfetch`).
     const matchedDefinitions =
       ranked.length > 0 || !query.trim()
         ? ranked.slice(0, count)
-        : fuse.search(query, { limit: count }).map((result) => result.item.definition);
+        : fuseFallback(records, query, count);
     return matchedDefinitions.map((definition) => ({
       name: definition.name,
       description: definition.description,
@@ -533,12 +568,27 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     }));
   };
 
-  const activeMatches = (query: string, limit = 5): string[] =>
+  /**
+   * Names of the tools already active this turn that match a query, filtered exactly as `search`
+   * filters its records: a category or namespace the call carried narrows the answer the same way
+   * there, instead of naming tools the model excluded.
+   */
+  const activeMatches = (
+    query: string,
+    filter?: { category?: ToolCategory; namespace?: string; limit?: number },
+  ): string[] =>
     rankByWords(
       query,
-      activeDefinitions().filter((definition) => definition.name !== 'ToolSearch'),
+      activeDefinitions()
+        .filter((definition) => definition.name !== 'ToolSearch')
+        .filter(
+          (definition) => !filter?.category || definition.catalog?.category === filter.category,
+        )
+        .filter(
+          (definition) => !filter?.namespace || definition.catalog?.namespace === filter.namespace,
+        ),
     )
-      .slice(0, Math.max(1, Math.min(5, limit)))
+      .slice(0, Math.max(1, Math.min(5, filter?.limit ?? 5)))
       .map((definition) => definition.name);
 
   const activate = (names: string[]): string[] => {
@@ -588,7 +638,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     // has it (always: `authorized()` admits it unconditionally), even in eager mode where it is
     // left off the provider's tool list. Refusing it as `tool_not_active` told the model to
     // "call ToolSearch" about ToolSearch.
-    return canonical === 'ToolSearch' ? byName.has('ToolSearch') : activeSnapshot.has(canonical);
+    return canonical === 'ToolSearch' || activeSnapshot.has(canonical);
   };
 
   const canExecute = (call: ToolCall): boolean => {

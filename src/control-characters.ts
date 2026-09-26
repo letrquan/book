@@ -14,6 +14,20 @@ export function foldControlCharacters(text: string): string {
 }
 
 /**
+ * Replace every control character except newline and tab with a space, for multi-line text shown
+ * as is (tool output under a screen reader): a bidi override or an escape sequence must not
+ * rewrite the terminal, but the line structure stays. A CRLF becomes a newline first.
+ */
+export function stripTerminalControls(text: string): string {
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(
+      /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g,
+      ' ',
+    );
+}
+
+/**
  * Characters a reader cannot see or cannot tell from a plain space: the controls above, NBSP,
  * soft hyphen, the Unicode spaces U+2000-U+200A, zero-width characters, word joiners, the
  * ideographic space and the BOM.

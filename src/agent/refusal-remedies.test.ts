@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   REFUSAL_KIND_ORDER,
   REFUSAL_REMEDIES,
+  isRefusal,
   refusalKind,
   type RefusalKind,
 } from './refusal-remedies.js';
@@ -20,20 +21,39 @@ describe('refusalKind', () => {
     expect(refusalKind(blocked('hook_blocked'))).toBe('hook');
     expect(refusalKind(blocked('tool_not_active'))).toBe('inactive');
     expect(refusalKind(blocked('capability_denied'))).toBe('capability');
-    expect(refusalKind(blocked('cross_origin_redirect'))).toBe('redirect');
+    expect(refusalKind(blocked('child_agent_unavailable'))).toBe('capability');
+    expect(refusalKind(blocked('skill_execution_denied'))).toBe('skill');
+    expect(refusalKind(blocked('skill_tool_intersection_empty'))).toBe('skill');
+    expect(refusalKind(blocked('user_questions_disabled'))).toBe('question');
+    expect(refusalKind(blocked('user_declined'))).toBe('question');
+    expect(refusalKind(blocked('invalid_json_arguments'))).toBe('malformed');
   });
 
-  it('counts a plain permission refusal, and an unrecognised one, as a permission', () => {
+  it('counts a plain permission refusal as a permission', () => {
     expect(refusalKind(blocked('permission_denied'))).toBe('permission');
-    // A gate Book does not know yet still has to get advice, and permission advice is the
-    // one that applies.
-    expect(refusalKind(blocked('some_future_gate'))).toBe('permission');
-    expect(refusalKind(undefined)).toBe('permission');
+  });
+
+  it('counts an unrecognised gate as other, not as a permission nobody can grant', () => {
+    // A gate Book does not know yet still has to get advice, and "grant the
+    // permission" is advice for a gate that was never the one that refused.
+    expect(refusalKind(blocked('some_future_gate'))).toBe('other');
+    expect(refusalKind(blocked('plan_mode_blocked'))).toBe('other');
+    expect(refusalKind(undefined)).toBe('other');
   });
 
   it('leaves the web network policy to its own two kinds', () => {
     expect(refusalKind(blocked('private_network_forbidden'))).toBe('fetch');
     expect(refusalKind(blocked('search_all_providers_failed'))).toBe('search');
+  });
+});
+
+describe('isRefusal', () => {
+  it('lets a cross-origin redirect through, because it hands the model the next URL', () => {
+    // A model following a redirect chain one hop per turn is making progress; a
+    // streak of these would stop a run that was never stuck.
+    expect(isRefusal(blocked('cross_origin_redirect'))).toBe(false);
+    expect(isRefusal(blocked('permission_denied'))).toBe(true);
+    expect(isRefusal(undefined)).toBe(false);
   });
 });
 
@@ -58,5 +78,10 @@ describe('the remedy catalog', () => {
     expect(REFUSAL_REMEDIES.inactive).toContain('ToolSearch');
     expect(REFUSAL_REMEDIES.inactive).not.toContain('grant the permission');
     expect(kinds).toContain('inactive');
+  });
+
+  it('points a streak of unparsed arguments at the route, not at a permission', () => {
+    expect(REFUSAL_REMEDIES.malformed).toContain('never parsed as JSON');
+    expect(REFUSAL_REMEDIES.malformed).not.toContain('grant the permission');
   });
 });

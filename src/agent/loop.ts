@@ -59,9 +59,11 @@ import {
 } from '../reasoning-tags.js';
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
+import { PRE_EXECUTION_ERROR_CODES } from '../tools/pre-execution-codes.js';
 import {
   REFUSAL_KIND_ORDER,
   REFUSAL_REMEDIES,
+  isRefusal,
   refusalKind,
   type RefusalKind,
 } from './refusal-remedies.js';
@@ -1899,13 +1901,14 @@ export async function runAgentLoop(
           return undefined;
         }
 
-        // Arguments that never parsed can never run, so the call is refused before PreToolUse
-        // hooks and the permission check see it: a hook would judge the `{__raw}` wrapper, and in
-        // default mode the user would be asked to approve a call that cannot run - and "Always"
-        // would save a rule built from it.
-        const unparsed = registry.rejectUnparsedArguments(originalCall, toolContext);
-        if (unparsed) {
-          toolResults[callIndex] = unparsed;
+        // A call that can never run however it is approved — an unknown tool, or arguments that
+        // never parsed — is refused before PreToolUse hooks and the permission check see it, so a
+        // hook never judges it and the user is never asked to approve one (an 'Always' would save
+        // a rule for it). A tool that is merely not active is refused just before the permission
+        // prompt instead, once the mode-specific refusals below have named their mode.
+        const unrunnable = registry.rejectBeforeGates(originalCall, toolContext);
+        if (unrunnable) {
+          toolResults[callIndex] = unrunnable;
           return undefined;
         }
 
@@ -2048,6 +2051,20 @@ export async function runAgentLoop(
             content: permissionDeniedError(canonName, verdict.matchedRule),
           });
           return undefined;
+        }
+
+        // A tool that is not active this turn can never run, so the user is not asked to approve
+        // it (an 'Always' would save a rule for it). Plan mode hides its mutating tools too, and
+        // its own refusal below names the mode, which "call ToolSearch" would not.
+        if (effectiveMode !== 'plan' || READ_ONLY_PLAN_TOOLS.has(canonName)) {
+          const inactive = registry.rejectInactive(call, toolContext);
+          if (inactive) {
+            if (forceSkillPermission && invokedSkillName && skillActivationReason) {
+              skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'tool_not_active');
+            }
+            toolResults[callIndex] = inactive;
+            return undefined;
+          }
         }
 
         const toolPermissionRequired = requiresToolPermission(
@@ -2538,21 +2555,28 @@ export async function runAgentLoop(
       // policy or user decision and `cancelled` is an abort; neither ran, so neither
       // counts toward the witness. Everything that did run counts, including errors —
       // an error-spin is caught by the witness freezing on identical file hashes.
+      /** Whether a result feeds the refusal brake. */
+      const countsAsRefusal = (result: ToolResult | undefined): boolean =>
+        isRefusal(result) || result?.structuredError?.code === 'invalid_json_arguments';
       let refusedThisTurn = 0;
       for (let index = 0; index < toolCalls.length; index++) {
-        const status = orderedToolResults[index]?.status;
-        // Neither a refusal nor an abort ran, so neither counts as progress. Only a
-        // refusal feeds the spin streak though: an abort already ends the run by
-        // its own path, and counting it would attribute a user's Ctrl-C to policy.
-        if (status === 'blocked') refusedThisTurn++;
-        if (status === 'blocked' || status === 'cancelled') continue;
+        const result = orderedToolResults[index];
+        const status = result?.status;
+        // Arguments that never parsed are refused as surely as a denied permission. Before they
+        // were refused ahead of the permission check they reached the prompt, which an unattended
+        // run answers `deny`, so a route that kept mangling calls fed this brake; it still must.
+        // A cross-origin redirect stop is not a refusal: it hands the model the next URL.
+        if (countsAsRefusal(result)) refusedThisTurn++;
+        // A call refused before it started ran nothing, whatever its status: it is not progress.
+        const neverRan = PRE_EXECUTION_ERROR_CODES.has(result?.structuredError?.code ?? '');
+        if (status === 'blocked' || status === 'cancelled' || neverRan) continue;
         executedToolCalls++;
       }
       if (toolCalls.length > 0 && refusedThisTurn === toolCalls.length) {
         blockedTurnStreak++;
         for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
         for (const result of orderedToolResults) {
-          blockedStreakCauses.add(refusalKind(result));
+          if (countsAsRefusal(result)) blockedStreakCauses.add(refusalKind(result));
         }
       } else {
         blockedTurnStreak = 0;

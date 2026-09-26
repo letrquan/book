@@ -1119,6 +1119,55 @@ describe('unparsed tool-call arguments', () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  it('refuses a call to an inactive deferred tool before the permission prompt', async () => {
+    // NotebookEdit is registered but never activated this turn, so it can never run
+    // however it is approved. Approving it would save a rule for a call that cannot
+    // execute; the refusal has to be the inactive one.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-inactive-'));
+    try {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'notebook-1',
+                name: 'NotebookEdit',
+                arguments: { notebook_path: 'a.ipynb', new_source: 'x' },
+              },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const onPermissionRequired = vi.fn(async () => 'allow' as const);
+      const results: ToolResult[] = [];
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'edit the notebook',
+        [],
+        noopCallbacks({
+          onPermissionRequired,
+          onToolResult: (result) => results.push(result),
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+      expect(results[0]?.structuredError?.code).toBe('tool_not_active');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('runAgentLoop streaming render callbacks', () => {
@@ -3068,10 +3117,20 @@ describe('runAgentLoop error handling', () => {
       }),
     );
 
+    const registry = createRegistry();
+    // Registered: a call to a tool this registry does not have is refused as unknown
+    // before the permission gate, which is a different refusal than the one under test.
+    registry.register({
+      name: 'Read',
+      description: 'read a file',
+      parameters: { type: 'object', properties: { filePath: { type: 'string' } } },
+      execute: async () => toolSuccess('x'),
+    });
+
     const results: string[] = [];
     await runAgentLoop(
       defaultConfig({ maxTurns: 1 }),
-      createRegistry(),
+      registry,
       'hi',
       [],
       noopCallbacks({
