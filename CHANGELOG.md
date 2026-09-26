@@ -21,11 +21,13 @@ All notable changes to this project are documented in this file.
     reported only as not an integer.
   - **The model sees the new wording** in `AskUserQuestion` validation errors and in the one
     repair prompt the compaction reducer gets for an invalid checkpoint.
-  - **Integer settings reject values above 2^53** (`Number.MAX_SAFE_INTEGER`), which Zod 3
-    accepted. Only settings with no upper bound could hold one (`maxTurns`, `maxTokens`,
-    `continuation.maxWallClockMs`, `agents.minFreeDiskBytes`, a model's `contextWindow`, …), and
-    such a value cannot be represented exactly anyway. A settings file holding one now fails to
-    load, naming the field.
+  - **Integer settings with no upper bound** (`maxTurns`, `maxTokens`,
+    `continuation.maxWallClockMs`, `agents.minFreeDiskBytes`, a model's `contextWindow`, …) still
+    accept integers beyond `Number.MAX_SAFE_INTEGER`, which Zod 4's `.int()` would reject, so a
+    file holding an "effectively unlimited" value keeps loading. Their non-integer message is
+    `Invalid input: expected int, received number`, as for the other integer settings.
+  - **`memory.extraction.idleHours: 1e999`** (which JSON reads as `Infinity`) is now rejected; Zod
+    3 accepted it. Set `memory.extraction.enabled: false` to turn extraction off.
   - **A `__proto__` key inside a record setting** (`env`, `provider`, `agents.checks`, …) is now
     dropped. Zod 3 rejected it inside `env` and `agents.checks`, and let a `provider.__proto__`
     entry through to the resolved providers.

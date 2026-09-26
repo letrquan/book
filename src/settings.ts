@@ -11,6 +11,20 @@ export const permissionRuleSchema = z.string().min(1);
 // Records and arrays keep `.default({})` / `.default([])`, whose values are already final.
 
 /**
+ * An integer setting with no ceiling of its own.
+ *
+ * Zod 4's `.int()` also rejects anything above `Number.MAX_SAFE_INTEGER`, which Zod 3 accepted. A
+ * settings file that loaded before the upgrade, such as one holding an "effectively unlimited"
+ * `maxTurns`, must keep loading: an invalid document stops Book from starting. So these settings
+ * check integrality themselves. Bounded ones keep `.int()`, since their `.max()` is far lower.
+ */
+export function unboundedInt() {
+  return z.number().refine(Number.isInteger, {
+    message: 'Invalid input: expected int, received number',
+  });
+}
+
+/**
  * Bash sandbox configuration (matches CC's sandbox.* keys).
  */
 export const sandboxSchema = z.object({
@@ -176,8 +190,8 @@ export const effortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max'
 
 export const providerModelSchema = z.object({
   label: z.string().optional(),
-  contextWindow: z.number().int().positive().optional(),
-  maxOutputTokens: z.number().int().positive().optional(),
+  contextWindow: unboundedInt().positive().optional(),
+  maxOutputTokens: unboundedInt().positive().optional(),
   /** Whether this model accepts image input. Unknown models remain optimistic. */
   vision: z.boolean().optional(),
   /**
@@ -247,7 +261,7 @@ export const continuationSettingsSchema = z.object({
   /** Turns between host-authored work-state messages; 0 disables them. */
   planRefreshTurns: z.number().int().min(0).max(500).default(25),
   /** Wall-clock ceiling for one continued run; 0 means no ceiling. */
-  maxWallClockMs: z.number().int().min(0).default(0),
+  maxWallClockMs: unboundedInt().min(0).default(0),
 });
 
 export type ContinuationSettings = z.infer<typeof continuationSettingsSchema>;
@@ -262,7 +276,7 @@ export const memorySettingsSchema = z.object({
     .object({
       enabled: z.boolean().default(true),
       idleHours: z.number().min(0).default(3),
-      minMessages: z.number().int().min(1).default(10),
+      minMessages: unboundedInt().min(1).default(10),
       maxPerSession: z.number().int().min(1).max(20).default(5),
       maxSessionsPerRun: z.number().int().min(1).max(20).default(3),
     })
@@ -289,7 +303,7 @@ export const agentSettingsSchema = z.object({
    */
   checkTimeoutMs: z.number().int().min(1_000).max(7_200_000).default(120_000),
   /** Ceiling on a foreground delegation via the Task tool; overrides the 1800s default. */
-  taskTimeoutMs: z.number().int().min(1000).optional(),
+  taskTimeoutMs: unboundedInt().min(1000).optional(),
   /**
    * Simultaneous agent worktrees per repository; 0 disables the check.
    *
@@ -315,9 +329,7 @@ export const agentSettingsSchema = z.object({
    * Worktrees share the filesystem with the workspace, so exhausting it breaks
    * the root agent's own Edit and Bash, not just the child's.
    */
-  minFreeDiskBytes: z
-    .number()
-    .int()
+  minFreeDiskBytes: unboundedInt()
     .min(0)
     .default(2 * 1024 * 1024 * 1024),
   profiles: z
@@ -326,7 +338,7 @@ export const agentSettingsSchema = z.object({
       z.object({
         model: z.string().min(1).optional(),
         effort: effortLevelSchema.optional(),
-        maxTurns: z.number().int().min(1).optional(),
+        maxTurns: unboundedInt().min(1).optional(),
         color: z.string().optional(),
       }),
     )
@@ -456,8 +468,8 @@ export const bookSettingsSchema = z.object({
   /** Reasoning effort for the compaction reducer; defaults to the session effort capped at medium. */
   compactEffort: effortLevelSchema.optional(),
   /** Max agent turns per user message. Omit for unlimited. */
-  maxTurns: z.number().int().min(1).optional(),
-  maxTokens: z.number().int().min(1000).optional(),
+  maxTurns: unboundedInt().min(1).optional(),
+  maxTokens: unboundedInt().min(1000).optional(),
   effort: effortLevelSchema.optional(),
   /** TUI color theme: rubric (default), folio, apple, or a custom theme filename. */
   theme: z.string().min(1).optional(),

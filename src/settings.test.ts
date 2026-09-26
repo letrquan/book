@@ -87,35 +87,54 @@ describe('settings schema defaults', () => {
     // Zod 4's `.default(value)` returns `value` without parsing it, so an object defaulted to `{}`
     // would come back bare. Object schemas take `.prefault({})` instead; this walks every schema
     // reachable from the settings root so a new section cannot reintroduce the mistake.
+    type Def = Record<string, unknown> & { type: string };
+    const defOf = (schema: z.ZodType) => schema.def as unknown as Def;
+    // Wrappers that pass `undefined` through to a default unchanged, so `.optional().default({})`
+    // on an object is the same trap as `.default({})`.
+    const WRAPPERS = new Set(['optional', 'nullable', 'readonly', 'nonoptional']);
+    const unwrap = (schema: z.ZodType): z.ZodType => {
+      const def = defOf(schema);
+      return WRAPPERS.has(def.type) ? unwrap(def.innerType as z.ZodType) : schema;
+    };
+    const LEAVES = new Set(['string', 'number', 'boolean', 'literal', 'enum', 'unknown', 'any']);
+
     const offenders: string[] = [];
     const walk = (schema: z.ZodType, path: string): void => {
-      const def = schema.def as unknown as Record<string, unknown> & { type: string };
+      const def = defOf(schema);
       switch (def.type) {
         case 'object':
           for (const [key, value] of Object.entries(def.shape as Record<string, z.ZodType>)) {
             walk(value, `${path}.${key}`);
           }
-          break;
+          return;
         case 'default': {
           const inner = def.innerType as z.ZodType;
-          if ((inner.def as { type: string }).type === 'object') offenders.push(path);
+          if (defOf(unwrap(inner)).type === 'object') offenders.push(path);
           walk(inner, path);
-          break;
+          return;
         }
         case 'prefault':
-        case 'optional':
-        case 'nullable':
+        case 'catch':
           walk(def.innerType as z.ZodType, path);
-          break;
+          return;
         case 'record':
           walk(def.valueType as z.ZodType, `${path}.*`);
-          break;
+          return;
         case 'array':
           walk(def.element as z.ZodType, `${path}[]`);
-          break;
+          return;
         case 'union':
           (def.options as z.ZodType[]).forEach((option) => walk(option, path));
-          break;
+          return;
+        case 'pipe':
+          walk(def.in as z.ZodType, path);
+          walk(def.out as z.ZodType, path);
+          return;
+        default:
+          if (WRAPPERS.has(def.type)) return walk(def.innerType as z.ZodType, path);
+          // A schema kind this walk does not know could hide a defaulted object beneath it.
+          if (!LEAVES.has(def.type))
+            throw new Error(`unhandled schema type ${def.type} at ${path}`);
       }
     };
 
@@ -153,6 +172,16 @@ describe('settings schema rejection', () => {
       issuePaths({ skills: { overrides: { review: 'auto' }, execution: { review: 'ask' } } }),
     ).toEqual([]);
     expect(issuePaths({ provider: { a: { type: 'gemini' } } })).toEqual(['provider.a.type']);
+  });
+
+  it('accepts an unbounded integer setting beyond the safe-integer range, as Zod 3 did', () => {
+    // A settings file that loaded before the Zod 4 upgrade must keep loading.
+    expect(issuePaths({ maxTurns: 2 ** 60, continuation: { maxWallClockMs: 1e18 } })).toEqual([]);
+    expect(
+      issuePaths({ agents: { minFreeDiskBytes: 1e16, profiles: { p: { maxTurns: 1e17 } } } }),
+    ).toEqual([]);
+    expect(issuePaths({ maxTurns: 1.5 })).toEqual(['maxTurns']);
+    expect(issuePaths({ maxTurns: 0.5 })).toEqual(['maxTurns', 'maxTurns']);
   });
 
   it('strips unknown keys instead of rejecting them', () => {

@@ -10,7 +10,12 @@ import {
 } from './settings-loader.js';
 import { hadRemovedAuthConfiguration } from './settings-removed.js';
 import type { SettingsResolutionPaths } from './settings-loader.js';
-import { DEFAULT_SETTINGS, type CompactStrategy, type ResolvedSettings } from './settings.js';
+import {
+  DEFAULT_SETTINGS,
+  unboundedInt,
+  type CompactStrategy,
+  type ResolvedSettings,
+} from './settings.js';
 import { loadMemoryContext } from './memory-store.js';
 import { EFFORT_LEVELS, getAvailableEffortLevels, isEffortLevel } from './commands/effort.js';
 import { createModelWindowStore, type ModelWindowStore } from './model-window-store.js';
@@ -24,8 +29,8 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 64_000;
 const legacyConfigSchema = z.object({
   model: z.string().optional(),
   baseUrl: z.url().optional(),
-  maxTurns: z.number().int().min(1).optional(),
-  maxTokens: z.number().int().min(1000).optional(),
+  maxTurns: unboundedInt().min(1).optional(),
+  maxTokens: unboundedInt().min(1000).optional(),
   autoCompactEnabled: z.boolean().optional(),
   animation: z
     .object({
