@@ -547,7 +547,7 @@ describe('idle Ctrl+C exit confirmation', () => {
     press(view, '/status');
     await waitForFrame(view, '> /status');
     press(view, '\r');
-    await waitForFrame(view, 'Session Status');
+    await waitForFrame(view, '§ Session');
 
     expect(frameOf(view)).not.toContain('Editing queued input');
     await armExit(view);
@@ -564,7 +564,7 @@ describe('idle Ctrl+C exit confirmation', () => {
     press(view, '/status');
     await waitForFrame(view, '> /status');
     press(view, '\r');
-    await waitForFrame(view, 'Session Status');
+    await waitForFrame(view, '§ Session');
     await waitForFrame(view, 'Queue paused');
     rerenderWith({ isThinking: false });
 
@@ -774,5 +774,27 @@ describe('idle Ctrl+C exit confirmation', () => {
     await waitForFrame(view, CTRL_C_EXIT_HINT_TEXT);
     expect(state.cancel).not.toHaveBeenCalled();
     expect(state.endCurrentSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('queued follow-up notice', () => {
+  // `send` resolves when the whole turn ends. The notice used to clear only
+  // then, so "Sending queued follow-up..." sat under a reply that had been
+  // streaming for minutes, reading as a queue that had stuck.
+  it('clears once the queued turn starts, not when it finishes', async () => {
+    const send = vi.fn(() => new Promise(() => {}));
+    const { view, rerenderWith } = await startIdleApp({ isThinking: true, send });
+
+    press(view, 'follow up');
+    await waitForFrame(view, '> follow up');
+    press(view, '\r');
+    await waitForFrame(view, 'Queued follow-up inputs (1)');
+
+    rerenderWith({ isThinking: false, send });
+    await waitForFrame(view, 'Sending queued follow-up...');
+    expect(send).toHaveBeenCalledWith('follow up');
+
+    rerenderWith({ isThinking: true, send });
+    await waitForFrameWithout(view, 'Sending queued follow-up...');
   });
 });

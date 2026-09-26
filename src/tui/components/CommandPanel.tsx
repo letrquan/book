@@ -12,7 +12,10 @@ import type {
   UsageCommandDisplay,
 } from '../../types/messages.js';
 import { useStaggeredReveal } from '../hooks/useAnimation.js';
+import { panelGrid } from '../layout.js';
+import { SECTION_SIGN } from '../marks.js';
 import { useTheme } from '../theme.js';
+import { SheetRule } from './chrome.js';
 import { failureTotal, formatFailureCounts } from '../../pricing.js';
 import { sourceLabel } from '../../context-report.js';
 import { padDisplay, truncateDisplay, wordWrap } from './word-wrap.js';
@@ -120,22 +123,6 @@ function revealProgress(step: number, startAt = 1): number {
   return clamp((step - startAt) / Math.max(1, REVEAL_STEPS - startAt), 0, 1);
 }
 
-function ScanRail({ width, progress }: { width: number; progress: number }) {
-  const theme = useTheme();
-  const safeWidth = Math.max(8, width);
-  const head = Math.min(safeWidth - 1, Math.floor(progress * (safeWidth - 1)));
-
-  return (
-    <Box flexWrap="nowrap">
-      <Text color={theme.brand}>{'─'.repeat(head)}</Text>
-      <Text color={progress >= 1 ? theme.success : theme.brandShimmer}>•</Text>
-      <Text color={theme.subtle} dimColor>
-        {'─'.repeat(Math.max(0, safeWidth - head - 1))}
-      </Text>
-    </Box>
-  );
-}
-
 function PanelHeader({
   command,
   title,
@@ -151,21 +138,21 @@ function PanelHeader({
 }) {
   const theme = useTheme();
   const ready = step >= REVEAL_STEPS;
-
+  // The same head as every other reference panel: a rule led by a section sign.
+  // The note names the command that printed it (this is a transcript entry, not
+  // an overlay Esc could close) once the figures have finished arriving.
   return (
     <Box flexDirection="column">
-      <Box justifyContent="space-between" flexWrap="nowrap">
-        <Text bold color={theme.brand}>
-          {command} <Text color={theme.toolRail}>·</Text> <Text color={theme.text}>{title}</Text>
-        </Text>
-        <Text color={ready ? theme.success : theme.brandShimmer}>
-          {ready ? 'ready' : 'reading'}
-        </Text>
+      <SheetRule
+        mark={SECTION_SIGN}
+        label={title}
+        tone={theme.text}
+        meta={ready ? command : 'reading…'}
+        width={contentWidth + 4}
+      />
+      <Box paddingX={2}>
+        <Text color={theme.inactive}>{truncateDisplay(subtitle, contentWidth)}</Text>
       </Box>
-      <Text color={theme.subtle} dimColor>
-        {truncateDisplay(subtitle, contentWidth)}
-      </Text>
-      <ScanRail width={contentWidth} progress={revealProgress(step, 0)} />
     </Box>
   );
 }
@@ -272,7 +259,7 @@ function StackedUsageMeter({
 
   return (
     <Box flexWrap="nowrap">
-      <Text color={theme.brand}>{'•'.repeat(promptFilled)}</Text>
+      <Text color={theme.usageMeter}>{'•'.repeat(promptFilled)}</Text>
       <Text color={theme.success}>{'•'.repeat(completionFilled)}</Text>
       <Text color={theme.subtle} dimColor>
         {'·'.repeat(remainder)}
@@ -323,7 +310,7 @@ function ConfigPanelBody({
   const barWidth = Math.max(8, Math.min(narrow ? 16 : 28, contentWidth - 18));
   const progress = revealProgress(step, 2);
   const metrics: Metric[] = [
-    { label: 'Model', value: data.runtime.model, color: theme.brand },
+    { label: 'Model', value: data.runtime.model, color: theme.usageMeter },
     { label: 'Provider', value: data.runtime.provider },
     { label: 'Mode', value: data.runtime.mode },
     { label: 'Budget', value: compactNumber(data.runtime.maxTokens) },
@@ -349,7 +336,7 @@ function ConfigPanelBody({
               fraction={count / maxGroup}
               width={barWidth}
               progress={progress}
-              color={index === 0 ? theme.brand : theme.brandShimmer}
+              color={index === 0 ? theme.usageMeter : theme.subtle}
             />
             <Text color={theme.subtle}> {count}</Text>
           </Box>
@@ -401,7 +388,7 @@ function ContextPanelBody({
   const theme = useTheme();
   const usageFraction = data.maxTokens > 0 ? data.estimatedTokens / data.maxTokens : 0;
   const percent = Math.round(clamp(usageFraction, 0, 1) * 100);
-  const meterColor = percent >= 95 ? theme.error : percent >= 80 ? theme.warning : theme.brand;
+  const meterColor = percent >= 95 ? theme.error : percent >= 80 ? theme.warning : theme.usageMeter;
   const roleTotal = Math.max(1, data.userTokens + data.assistantTokens);
   const meterWidth = Math.max(8, contentWidth - (narrow ? 18 : 24));
   const windowSource = sourceLabel(data.windowSource, data.windowDeclared);
@@ -412,7 +399,7 @@ function ContextPanelBody({
         windowSource && windowSource !== 'declared'
           ? `${compactNumber(data.maxTokens)} (${windowSource})`
           : compactNumber(data.maxTokens),
-      color: theme.brand,
+      color: theme.usageMeter,
     },
     { label: 'Estimate', value: compactNumber(data.estimatedTokens) },
     { label: 'Messages', value: String(data.totalMessages) },
@@ -459,7 +446,7 @@ function ContextPanelBody({
             fraction={data.userTokens / roleTotal}
             width={meterWidth}
             progress={revealProgress(step, 4)}
-            color={theme.brandShimmer}
+            color={theme.subtle}
           />
           <Text color={theme.subtle}> {compactNumber(data.userTokens)}</Text>
         </Box>
@@ -499,7 +486,7 @@ function UsagePanelBody({
   const theme = useTheme();
   const usage = data.usage;
   const metrics: Metric[] = [
-    { label: 'Turn', value: String(data.currentTurn), color: theme.brand },
+    { label: 'Turn', value: String(data.currentTurn), color: theme.usageMeter },
     { label: 'Messages', value: String(data.messageCount) },
     { label: 'Latency', value: formatDuration(data.turnDurationMs) },
     {
@@ -522,7 +509,7 @@ function UsagePanelBody({
           <Box flexDirection="column">
             <Box justifyContent="space-between">
               <SectionLabel>token traffic</SectionLabel>
-              <Text bold color={theme.brand}>
+              <Text bold color={theme.usageMeter}>
                 {usage.totalTokens.toLocaleString()}
               </Text>
             </Box>
@@ -534,7 +521,7 @@ function UsagePanelBody({
               progress={revealProgress(step, 2)}
             />
             <Box flexDirection={narrow ? 'column' : 'row'} justifyContent="space-between">
-              <Text color={theme.brand}>• input {usage.promptTokens.toLocaleString()}</Text>
+              <Text color={theme.usageMeter}>• input {usage.promptTokens.toLocaleString()}</Text>
               <Text color={theme.success}>• output {usage.completionTokens.toLocaleString()}</Text>
               {usage.cacheReadInputTokens ? (
                 <Text color={theme.subtle}>
@@ -556,7 +543,7 @@ function UsagePanelBody({
       ) : (
         <Box flexDirection="column">
           <SectionLabel>token traffic</SectionLabel>
-          <Meter fraction={0} width={contentWidth} progress={1} color={theme.brand} />
+          <Meter fraction={0} width={contentWidth} progress={1} color={theme.usageMeter} />
           <Text color={theme.subtle}>No model response recorded in this session yet.</Text>
         </Box>
       )}
@@ -606,7 +593,6 @@ export function CommandPanel({
   reducedMotion = false,
   screenReader = false,
 }: CommandPanelProps) {
-  const theme = useTheme();
   const motionDisabled = reducedMotion || screenReader;
   const step = useStaggeredReveal(REVEAL_STEPS, true, 55, motionDisabled);
 
@@ -618,7 +604,9 @@ export function CommandPanel({
     );
   }
 
-  const panelWidth = clamp(Math.floor(terminalWidth) - 2, 28, 96);
+  // The sheet sits on the panel grid like /help and /status; its rule spans the
+  // sheet and the figures sit two columns in from either end.
+  const panelWidth = Math.max(28, Math.min(100, panelGrid(terminalWidth).width));
   const contentWidth = Math.max(18, panelWidth - 4);
   const narrow = panelWidth < 58;
   const header =
@@ -631,32 +619,32 @@ export function CommandPanel({
       : display.kind === 'context'
         ? {
             command: '/context',
-            title: 'Window map',
+            title: 'Context',
             subtitle: `${display.model} · estimated conversation load before ambient injection`,
           }
         : {
             command: '/usage',
-            title: 'Session telemetry',
+            title: 'Usage',
             subtitle: `${display.model} · cumulative provider-reported activity`,
           };
 
   return (
-    <Box
-      marginLeft={2}
-      width={panelWidth}
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={theme.border}
-      paddingX={1}
-    >
+    <Box width={panelWidth} flexDirection="column" marginTop={1}>
       <PanelHeader {...header} contentWidth={contentWidth} step={step} />
-      {display.kind === 'config' ? (
-        <ConfigPanelBody data={display} contentWidth={contentWidth} narrow={narrow} step={step} />
-      ) : display.kind === 'context' ? (
-        <ContextPanelBody data={display} contentWidth={contentWidth} narrow={narrow} step={step} />
-      ) : (
-        <UsagePanelBody data={display} contentWidth={contentWidth} narrow={narrow} step={step} />
-      )}
+      <Box flexDirection="column" paddingX={2} marginTop={1}>
+        {display.kind === 'config' ? (
+          <ConfigPanelBody data={display} contentWidth={contentWidth} narrow={narrow} step={step} />
+        ) : display.kind === 'context' ? (
+          <ContextPanelBody
+            data={display}
+            contentWidth={contentWidth}
+            narrow={narrow}
+            step={step}
+          />
+        ) : (
+          <UsagePanelBody data={display} contentWidth={contentWidth} narrow={narrow} step={step} />
+        )}
+      </Box>
     </Box>
   );
 }

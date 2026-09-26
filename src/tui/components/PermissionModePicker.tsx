@@ -8,6 +8,8 @@ export interface PermissionModeSelectionResult {
 }
 
 interface PermissionModePickerProps {
+  /** Sheet width, from the panel grid; without it the head falls back to a plain title. */
+  width?: number;
   current: PermissionMode;
   availableModes: readonly PermissionMode[];
   onSelect: (mode: PermissionMode) => PermissionModeSelectionResult;
@@ -28,6 +30,7 @@ export function PermissionModePicker({
   availableModes,
   onSelect,
   onCancel,
+  width,
 }: PermissionModePickerProps) {
   const [error, setError] = useState<string>();
 
@@ -44,7 +47,8 @@ export function PermissionModePicker({
 
   return (
     <ListPicker
-      title="Default permission mode"
+      title="Default permissions"
+      width={width}
       subtitle="Choose the mode used when a run does not specify one."
       items={items}
       initialIndex={Math.max(0, availableModes.indexOf(current))}

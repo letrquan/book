@@ -401,8 +401,10 @@ export function ChatPanelInner({
                   followsToolCall ||
                   (density !== 'tight' &&
                     previous &&
-                    'role' in previous &&
-                    previous.role === 'user')
+                    // A slash command's output answers no prompt row of its
+                    // own, so without this a run of them read as one block
+                    // glued to the reply above.
+                    (message.kind === 'local' || ('role' in previous && previous.role === 'user')))
                     ? 1
                     : 0
                 }

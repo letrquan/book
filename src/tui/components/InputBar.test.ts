@@ -163,8 +163,9 @@ describe('InputBar editor box', () => {
     view.rerender(inputBar(() => {}, { terminalWidth: 28, commands, compact: true }));
 
     const lines = stripAnsi(view.lastFrame()).split('\n').filter(Boolean);
-    // The menu's hairline, then the composer's two.
-    expect(lines.filter((line) => /^─+$/.test(line))).toHaveLength(3);
+    // The menu's titled rule, then the composer's two hairlines.
+    expect(lines.filter((line) => /^─ § /.test(line))).toHaveLength(1);
+    expect(lines.filter((line) => /^─+$/.test(line))).toHaveLength(2);
     expect(lines.some((line) => line.includes('/clear'))).toBe(true);
     expectFrameWithinWidth(view.lastFrame(), 28);
   });

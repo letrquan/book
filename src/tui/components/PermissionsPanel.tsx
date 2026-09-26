@@ -4,7 +4,6 @@ import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import type { PermissionMode } from '../../types/runtime.js';
 import { panelContentWidth } from '../layout.js';
-import { SelectionRow } from './chrome.js';
 import { truncateDisplay } from './word-wrap.js';
 
 export type PermissionList = 'allow' | 'ask' | 'deny';
@@ -105,52 +104,72 @@ export function PermissionsPanel({
     { isActive: canEdit },
   );
 
+  // One key column for the mode rows and the rule lists, so every value on the
+  // sheet starts at the same place.
+  const keyWidth = 8;
+  const valueWidth = Math.max(8, width - keyWidth);
+  const keyCell = (key: string) => (
+    <Box width={keyWidth} flexShrink={0}>
+      <Text color={theme.inactive}>{key}</Text>
+    </Box>
+  );
+
   return (
     <Box flexDirection="column">
-      <Box flexDirection="column">
-        <Text color={theme.subtle} dimColor>
-          Current mode — {mode}
-        </Text>
-        <Text color={theme.subtle} dimColor>
-          Modes — default, auto, plan, accept-edits, dontAsk, bypassPermissions
-        </Text>
-        <Text color={theme.subtle} dimColor>
-          Switch — Alt+M or Shift+Tab
+      <Box>
+        {keyCell('mode')}
+        <Text color={theme.text} bold>
+          {truncateDisplay(mode, valueWidth)}
         </Text>
       </Box>
-      <Box flexDirection="column">
-        <Text color={theme.subtle} dimColor>
-          {entries.length === 0
-            ? 'No rules yet. "Always allow" at a tool prompt adds one.'
-            : canEdit
-              ? 'Rules — ↑↓ select, x remove'
-              : 'Rules'}
+      <Box>
+        {keyCell('modes')}
+        <Text color={theme.subtle}>
+          {truncateDisplay(
+            'default · auto · plan · accept-edits · dontAsk · bypassPermissions',
+            valueWidth,
+          )}
         </Text>
+      </Box>
+      <Box>
+        {keyCell('switch')}
+        <Text color={theme.subtle}>Alt+M or Shift+Tab</Text>
+      </Box>
+      <Box flexDirection="column" marginTop={1}>
         {LISTS.map((list) => (
-          <Box key={list} flexDirection="column">
-            <Text color={theme.subtle} dimColor>
-              {' '}
-              {list}:
-            </Text>
-            {permissions[list].length === 0 ? (
-              <Text color={theme.subtle} dimColor>
-                {'  (none)'}
-              </Text>
-            ) : (
-              permissions[list].map((rule) => {
-                const index = entries.findIndex(
-                  (entry) => entry.list === list && entry.rule === rule,
-                );
-                const isSelected = canEdit && index === selected;
-                return (
-                  <SelectionRow key={`${list}-${rule}`} selected={isSelected} width={width}>
-                    {truncateDisplay(`${isSelected ? ' › ' : '   '}${rule}`, width)}
-                  </SelectionRow>
-                );
-              })
-            )}
+          <Box key={list}>
+            {keyCell(list)}
+            <Box flexDirection="column">
+              {permissions[list].length === 0 ? (
+                <Text color={theme.inactive}>none</Text>
+              ) : (
+                permissions[list].map((rule) => {
+                  const index = entries.findIndex(
+                    (entry) => entry.list === list && entry.rule === rule,
+                  );
+                  const isSelected = canEdit && index === selected;
+                  return (
+                    <Text key={`${list}-${rule}`}>
+                      <Text color={theme.brand}>{isSelected ? '› ' : '  '}</Text>
+                      <Text color={isSelected ? theme.selectionText : theme.text} bold={isSelected}>
+                        {truncateDisplay(rule, Math.max(4, valueWidth - 2))}
+                      </Text>
+                    </Text>
+                  );
+                })
+              )}
+            </Box>
           </Box>
         ))}
+      </Box>
+      <Box marginTop={1} flexDirection="column">
+        {entries.length === 0 ? (
+          <Text color={theme.inactive}>
+            {truncateDisplay('No rules yet. "Always allow" at a tool prompt adds one.', width)}
+          </Text>
+        ) : canEdit ? (
+          <Text color={theme.inactive}>↑↓ select · x remove</Text>
+        ) : null}
         {notice ? <Text color={theme.warning}>{truncateDisplay(notice, width)}</Text> : null}
       </Box>
     </Box>

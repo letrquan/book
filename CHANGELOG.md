@@ -35,6 +35,27 @@ All notable changes to this project are documented in this file.
   - **Transcript rows** for AskUserQuestion and ExitPlanMode read `Ask  Fallback, Scope   2
     questions` and `Plan  Fix the timeout fallback   3 steps` instead of a bare tool name and raw
     markdown.
+- **Menus, reference panels and pickers are set as sheets.** The command, `@file` and skill
+  menus, `/help`, `/status`, `/permissions`, the shortcuts panel, `/config`, `/model`,
+  `/providers`, `/effort`, `/resume`, `/rewind`, `/skills`, the task list, the background-task
+  panel, and the `/usage`, `/context` and `/config` cards drop their boxes and highlight bars. Each
+  opens with a rule, `─ § Commands ───── 32 commands · type to filter ─`: the section sign marks
+  reference, as the pilcrow marks a decision, and the note at the right end holds the count or the
+  way out. Red is kept for marks and cursors; values are ink, and descriptions and hints are grey.
+  - **`/help` is generated from the command registry.** The hand-written list had fallen five
+    commands behind. Commands sit in groups (Conversation, Model, Context, Code, Agents, Setup,
+    Book, then your custom commands), with visible aliases folded in (`/clear, /new`). At 92
+    columns or more the groups flow into two columns, so the list fits on one screen.
+  - **Columns line up.** The command menu, `/config`, `/status` and `/permissions` align their
+    values down the sheet. `/status` no longer cuts `workspace` to `Workspac`.
+  - **The command menu's cursor holds still** instead of shimmering. Hidden rows are counted in
+    the rule's note instead of a "… N more" row.
+  - **The `/usage` and `/context` cards name their command** at the end of the rule. They are
+    transcript entries, and the note used to be a "ready" indicator beside a scanning rail.
+  - **Slash-command output has air around it.** A run of `/cost`, `/mcp` and `/memory` output
+    used to read as one block glued to the reply above.
+  - **`/model` breaks its key hints between chords.** The terminal wrapped `Alt+M add model` in
+    the middle.
 - **The compact transcript folds the agent's reading into one row.** A run of read-only calls
   (`Read`, `Glob`, `Grep`, git read tools, `ToolSearch`, task lookups, `BashOutput`, session
   history) collapses into one grey summary row, such as `✓ Read config.ts, loader.ts   2 files · 3 searches`.
@@ -206,6 +227,13 @@ All notable changes to this project are documented in this file.
   platform-specific.
 
 ### Fixed
+
+- **"Sending queued follow-up..." now clears when the follow-up is sent.** It was cleared only
+  when `send` resolved, and `send` resolves when the whole turn ends, so the notice stayed under a
+  reply that had been streaming for minutes. It now clears as soon as the queued turn starts. A
+  notice set by something else in the meantime is left alone.
+- **`/cost` no longer tells you to edit `src/pricing.ts`.** For a model Book has no price for, it
+  now says that tokens are counted and dollars are not.
 
 - **Esc now closes the command, `@file` and skill menus.** Ink reports a lone Esc with `meta`
   set, and the composer's filter for Alt shortcuts returned before the menu handlers ran, so every

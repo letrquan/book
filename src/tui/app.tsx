@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
-import { panelGrid } from './layout.js';
+import { PANEL_CHROME, panelGrid } from './layout.js';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { QueuedInputPreview } from './components/QueuedInputPreview.js';
@@ -29,6 +29,8 @@ import { SessionPicker } from './components/SessionPicker.js';
 import { RewindPicker } from './components/RewindPicker.js';
 import { TranscriptView } from './components/TranscriptView.js';
 import { PermissionButtons } from './components/PermissionButtons.js';
+import { HelpPanel } from './components/HelpPanel.js';
+import { KeyValueList, SoftPanel } from './components/chrome.js';
 import { PlanApprovalActions, PlanApprovalDetails } from './components/PlanApprovalButtons.js';
 import { AskUserQuestionWizard } from './components/AskUserQuestionWizard.js';
 import { McpElicitationForm } from './components/McpElicitationForm.js';
@@ -274,6 +276,8 @@ interface AppProps {
  *   Shift+Tab — cycle permission mode
  *   Ctrl+/   — toggle keyboard shortcuts reference
  */
+const QUEUED_SEND_NOTICE = 'Sending queued follow-up...';
+
 export function App({
   config,
   permissionMode,
@@ -469,6 +473,10 @@ export function App({
   const [queuedInputs, setQueuedInputs] = useState<QueuedInput[]>([]);
   const [editingQueuedInput, setEditingQueuedInput] = useState<QueuedInput | undefined>(undefined);
   const [queueNotice, setQueueNotice] = useState<string | undefined>(undefined);
+  /** Drops the "Sending…" notice without wiping a notice something else set since. */
+  const clearQueuedSendNotice = useCallback(() => {
+    setQueueNotice((current) => (current === QUEUED_SEND_NOTICE ? undefined : current));
+  }, []);
   const [copyNotice, setCopyNotice] = useState<string | undefined>(undefined);
   const copyNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleCopiedNotice = useCallback((message: string) => {
@@ -1216,7 +1224,7 @@ export function App({
     dispatchingQueuedIdRef.current = item.id;
     const interruptEpoch = queueInterruptEpochRef.current;
     replaceQueuedInputs(queuedInputsRef.current.slice(1));
-    setQueueNotice('Sending queued follow-up...');
+    setQueueNotice(QUEUED_SEND_NOTICE);
 
     void (async () => {
       try {
@@ -1243,7 +1251,7 @@ export function App({
           queueDrainPausedRef.current = true;
           setQueueNotice('Queued send failed. Automatic queue dispatch is paused.');
         } else {
-          setQueueNotice(undefined);
+          clearQueuedSendNotice();
         }
       } catch (sendError) {
         replaceQueuedInputs([item, ...queuedInputsRef.current]);
@@ -1259,7 +1267,22 @@ export function App({
         setQueueDrainTick((tick) => tick + 1);
       }
     })();
-  }, [dispatchAgentSend, queueDrainBlocked, queuedInputs.length, replaceQueuedInputs, sessionId]);
+  }, [
+    clearQueuedSendNotice,
+    dispatchAgentSend,
+    queueDrainBlocked,
+    queuedInputs.length,
+    replaceQueuedInputs,
+    sessionId,
+  ]);
+
+  // `send` resolves when the whole turn ends, so a notice cleared only there said
+  // "Sending…" under a reply that had been running for a minute. The follow-up
+  // has been sent once it is on screen, which is the moment the turn starts
+  // thinking; before that (a pre-turn compaction) the notice still holds.
+  useEffect(() => {
+    if (isThinking) clearQueuedSendNotice();
+  }, [clearQueuedSendNotice, isThinking]);
 
   useDebugMount(uiLog, {
     workspace: config.workspace,
@@ -2382,192 +2405,50 @@ export function App({
               )}
               {showAgentPlan && <AgentTodoList todos={agentTodos} terminalWidth={termWidth} />}
               {showTasks && (
-                <TaskList tasks={tasks} onUpdateStatus={updateTaskStatus} onRemove={removeTask} />
+                <TaskList
+                  tasks={tasks}
+                  width={panelGrid(termWidth).width}
+                  onUpdateStatus={updateTaskStatus}
+                  onRemove={removeTask}
+                />
               )}
               {showHelp && (
-                <Box
-                  flexDirection="column"
-                  borderStyle="round"
-                  borderColor={theme.border}
-                  paddingX={1}
-                  width={panelGrid(termWidth).width}
-                >
-                  <PanelHeading title="Slash Commands" theme={theme} />
-                  <Box flexDirection="column">
-                    <HelpRow label="/help" description="Toggle this help" theme={theme} />
-                    <HelpRow label="/exit" description="Exit book" theme={theme} />
-                    <HelpRow
-                      label="/clear [name]"
-                      description="Start new; save previous (/new, /reset)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/resume [id|name]"
-                      description="Resume a saved conversation"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/compact [focus]"
-                      description="Summarize conversation (optional focus)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/rewind"
-                      description="Restore conversation, code, or both"
-                      theme={theme}
-                    />
-                    <HelpRow label="/task <subject>" description="Add a task" theme={theme} />
-                    <HelpRow
-                      label="/tasks"
-                      description="Manage background subagents"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/agents"
-                      description="Show subagent configuration guidance"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/model [name]"
-                      description="Switch models and manage BYOK providers"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/providers"
-                      description="Add providers; Alt+D removes selected local BYOK"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/effort [low|medium|high|xhigh|max]"
-                      description="Set thinking effort"
-                      theme={theme}
-                    />
-                    <HelpRow label="/config" description="Show configuration" theme={theme} />
-                    <HelpRow label="/diff" description="Show git diff" theme={theme} />
-                    <HelpRow label="/status" description="Session status" theme={theme} />
-                    <HelpRow label="/memory" description="Manage memory" theme={theme} />
-                    <HelpRow label="/permissions" description="Permission rules" theme={theme} />
-                    <HelpRow label="/cost" description="Token usage/cost" theme={theme} />
-                    <HelpRow label="/skills" description="Manage skills" theme={theme} />
-                    <HelpRow label="/init" description="Initialize CLAUDE.md" theme={theme} />
-                    <HelpRow
-                      label="/reload-skills"
-                      description="Reload commands and skills"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/export [file]"
-                      description="Export conversation"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/usage"
-                      description="Session cost & tokens (/stats)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/context"
-                      description="What fills the context window"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/review [scope]"
-                      description="Review current git diff"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/security-review [scope]"
-                      description="Security audit of the diff"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/release-notes"
-                      description="Version + changelog"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/feedback [note]"
-                      description="Save a bug-report snapshot"
-                      theme={theme}
-                    />
-                    {commands.length > 0 && (
-                      <>
-                        <Text color={theme.subtle} dimColor>
-                          ─── Custom (.book/commands/) ───
-                        </Text>
-                        {commands.map((cmd) => (
-                          <HelpRow
-                            key={cmd.name}
-                            label={`/${cmd.name}${cmd.argumentHint ? ` ${cmd.argumentHint}` : ''}`}
-                            description={cmd.description}
-                            theme={theme}
-                          />
-                        ))}
-                      </>
-                    )}
-                  </Box>
-                </Box>
+                <HelpPanel width={panelGrid(termWidth).width} customCommands={commands} />
               )}
               {showStatus && (
-                <Box
-                  flexDirection="column"
-                  borderStyle="round"
-                  borderColor={theme.border}
-                  paddingX={1}
-                  width={panelGrid(termWidth).width}
-                >
-                  <PanelHeading title="Session Status" theme={theme} />
-                  <Box flexDirection="column">
-                    <HelpRow
-                      label="Model"
-                      description={liveConfig.modelSelection ?? liveConfig.model}
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Auth"
-                      description={liveConfig.apiKey ? 'API key' : 'none'}
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Session"
-                      description={displaySessionName(sessionName)}
-                      theme={theme}
-                    />
-                    <HelpRow label="Workspace" description={config.workspace} theme={theme} />
-                    <HelpRow
-                      label="Max Tokens"
-                      description={String(config.maxTokens)}
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Max Turns"
-                      description={
-                        config.maxTurns == null || config.maxTurns <= 0
-                          ? 'unlimited'
-                          : String(config.maxTurns)
-                      }
-                      theme={theme}
-                    />
-                    <HelpRow label="Mode" description={mode} theme={theme} />
-                    <HelpRow label="Tokens Used" description={`${tokenCount}`} theme={theme} />
-                    <HelpRow label="Turn" description={`${currentTurn}`} theme={theme} />
-                    <HelpRow
-                      label="Tasks"
-                      description={`${tasks.length} (${tasks.filter((t) => t.status === 'in_progress').length} active)`}
-                      theme={theme}
-                    />
-                  </Box>
-                </Box>
+                <SoftPanel title="Session" meta="Esc to close" width={panelGrid(termWidth).width}>
+                  <KeyValueList
+                    width={panelGrid(termWidth).width - PANEL_CHROME}
+                    rows={[
+                      { key: 'model', value: liveConfig.modelSelection ?? liveConfig.model },
+                      { key: 'auth', value: liveConfig.apiKey ? 'API key' : 'none' },
+                      { key: 'session', value: displaySessionName(sessionName) },
+                      { key: 'workspace', value: config.workspace },
+                      { key: 'mode', value: mode },
+                      { key: 'turn', value: `${currentTurn}` },
+                      { key: 'tokens used', value: `${tokenCount}` },
+                      { key: 'max tokens', value: String(config.maxTokens) },
+                      {
+                        key: 'max turns',
+                        value:
+                          config.maxTurns == null || config.maxTurns <= 0
+                            ? 'unlimited'
+                            : String(config.maxTurns),
+                      },
+                      {
+                        key: 'tasks',
+                        value: `${tasks.length} (${tasks.filter((t) => t.status === 'in_progress').length} active)`,
+                      },
+                    ]}
+                  />
+                </SoftPanel>
               )}
               {showPermissions && (
-                <Box
-                  flexDirection="column"
-                  borderStyle="round"
-                  borderColor={theme.border}
-                  paddingX={1}
+                <SoftPanel
+                  title="Permissions"
+                  meta="Esc to close"
                   width={panelGrid(termWidth).width}
                 >
-                  <PanelHeading title="Permission Mode" theme={theme} />
                   <PermissionsPanel
                     mode={mode}
                     permissions={liveConfig.settings.permissions}
@@ -2576,7 +2457,7 @@ export function App({
                     terminalWidth={termWidth}
                     screenReader={screenReader}
                   />
-                </Box>
+                </SoftPanel>
               )}
               {pendingPlanApproval ? (
                 <PlanApprovalDetails
@@ -2586,14 +2467,11 @@ export function App({
                 />
               ) : null}
               {showShortcuts && (
-                <Box
-                  flexDirection="column"
-                  borderStyle="round"
-                  borderColor={theme.border}
-                  paddingX={1}
+                <SoftPanel
+                  title="Keyboard shortcuts"
+                  meta="Esc to close"
                   width={panelGrid(termWidth).width}
                 >
-                  <PanelHeading title="Keyboard Shortcuts" theme={theme} />
                   <Box flexDirection="column">
                     <HelpRow
                       label="Esc"
@@ -2686,7 +2564,7 @@ export function App({
                     <HelpRow label="@path" description="Expand file contents" theme={theme} />
                     <HelpRow label="!cmd" description="Run shell command" theme={theme} />
                   </Box>
-                </Box>
+                </SoftPanel>
               )}
             </Box>
           </TranscriptView>
@@ -2772,6 +2650,7 @@ export function App({
             ) : null}
             {showSessionPicker ? (
               <SessionPicker
+                width={panelGrid(termWidth).width}
                 sessions={listSessions()}
                 currentSessionId={sessionId}
                 onPick={(selected) => {
@@ -2786,6 +2665,7 @@ export function App({
             ) : null}
             {showRewindPicker ? (
               <RewindPicker
+                terminalWidth={termWidth}
                 targets={getRewindTargets()}
                 isRewinding={isRewinding}
                 onAction={async (target, action) => {
@@ -2966,6 +2846,7 @@ export function App({
             ) : null}
             {showModelPicker ? (
               <ModelPicker
+                terminalWidth={termWidth}
                 title={selectingCompactModel ? 'Choose compact model' : undefined}
                 options={modelOptions}
                 currentModel={modelPickerSelection}
@@ -3057,6 +2938,7 @@ export function App({
             ) : null}
             {showEffortPicker && effortLevels ? (
               <EffortPicker
+                width={panelGrid(termWidth).width}
                 current={liveConfig.effort}
                 availableLevels={effortLevels}
                 onSelect={(level) => {
@@ -3075,6 +2957,7 @@ export function App({
             ) : null}
             {showPermissionModePicker ? (
               <PermissionModePicker
+                width={panelGrid(termWidth).width}
                 current={resolvePermissionMode(liveConfig.settings)}
                 availableModes={
                   [
@@ -3383,25 +3266,10 @@ function AppProviders({
  * terminal, and a panel that has to scroll to reveal how to close it is no
  * better than one that never says.
  */
-function PanelHeading({
-  title,
-  theme,
-}: {
-  title: string;
-  theme: { brand: string; subtle: string };
-}) {
-  return (
-    <Box>
-      <Text bold color={theme.brand}>
-        {title}
-      </Text>
-      <Text color={theme.subtle} dimColor>
-        {'  Esc to close'}
-      </Text>
-    </Box>
-  );
-}
-
+/**
+ * One row of the shortcuts reference: the key in ink, in a column wide enough
+ * for every key, and what it does in a quieter grey.
+ */
 function HelpRow({
   label,
   description,
@@ -3409,12 +3277,18 @@ function HelpRow({
 }: {
   label: string;
   description: string;
-  theme: { brand: string; text: string; subtle: string };
+  theme: { text: string; subtle: string };
 }) {
   return (
     <Box>
-      <Text color={theme.brand}>{label}</Text>
-      <Text color={theme.subtle}> — {description}</Text>
+      <Box width={24} flexShrink={0}>
+        <Text bold color={theme.text}>
+          {label}
+        </Text>
+      </Box>
+      <Text color={theme.subtle} wrap="wrap">
+        {description}
+      </Text>
     </Box>
   );
 }

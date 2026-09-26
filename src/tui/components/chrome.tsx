@@ -2,7 +2,7 @@ import { Box, Text } from 'ink';
 import type { ReactNode } from 'react';
 import { useTheme } from '../theme.js';
 import { panelGrid } from '../layout.js';
-import { PILCROW } from '../marks.js';
+import { PILCROW, SECTION_SIGN } from '../marks.js';
 import { displayWidth, padDisplay, truncateDisplay } from './word-wrap.js';
 
 export type PanelTone = 'neutral' | 'brand' | 'permission' | 'plan' | 'error';
@@ -22,6 +22,21 @@ function toneColor(tone: PanelTone, theme: ReturnType<typeof useTheme>): string 
   }
 }
 
+/**
+ * A reference surface (a picker, a settings list, a panel of facts), set under
+ * a rule instead of inside a box.
+ *
+ *   `─ § Settings ───────────────────────────────── Esc to close ─`
+ *
+ * The section sign marks it as something to consult; the pilcrow of a
+ * {@link DecisionSheet} marks something that waits on you. With no `title` the
+ * rule is a bare hairline. Either way there are no walls: one extra column of
+ * padding stands in for each, so callers that size rows as `width - 4` keep the
+ * geometry they had inside the box.
+ *
+ * `attached` draws the panel as part of the composer right below it (the
+ * command and mention menus), so it takes no row of air above.
+ */
 export function SoftPanel({
   children,
   tone = 'neutral',
@@ -29,67 +44,76 @@ export function SoftPanel({
   marginX = 0,
   paddingX = 1,
   attached = false,
+  title,
+  meta,
 }: {
   children: ReactNode;
   tone?: PanelTone;
   width?: number;
   marginX?: number;
   paddingX?: number;
-  /**
-   * Draw the panel as part of the composer below it: a hairline across the top
-   * and no walls, the same way the composer itself is drawn. The interior keeps
-   * the boxed geometry (one extra column of padding stands in for each wall), so
-   * callers that size rows as `width - 4` need no change.
-   */
   attached?: boolean;
+  /** Set in the rule after a section sign. */
+  title?: string;
+  /** A short note at the rule's right end. */
+  meta?: string;
 }) {
   const theme = useTheme();
-  if (attached) {
+  const labelTone = tone === 'neutral' || tone === 'brand' ? theme.text : toneColor(tone, theme);
+  if (title && width !== undefined) {
     return (
-      <Box
-        flexDirection="column"
-        borderStyle="single"
-        borderLeft={false}
-        borderRight={false}
-        borderBottom={false}
-        borderColor={toneColor(tone, theme)}
-        paddingX={paddingX + 1}
-        width={width}
-        marginX={marginX}
-      >
-        {children}
+      <Box flexDirection="column" width={width} marginX={marginX} marginTop={attached ? 0 : 1}>
+        <SheetRule mark={SECTION_SIGN} label={title} tone={labelTone} meta={meta} width={width} />
+        <Box flexDirection="column" paddingX={paddingX + 1}>
+          {children}
+        </Box>
       </Box>
     );
   }
   return (
     <Box
       flexDirection="column"
-      borderStyle="round"
-      borderColor={toneColor(tone, theme)}
-      paddingX={paddingX}
+      borderStyle="single"
+      borderLeft={false}
+      borderRight={false}
+      borderBottom={false}
+      borderColor={theme.border}
+      paddingX={paddingX + 1}
       width={width}
       marginX={marginX}
+      marginTop={attached ? 0 : 1}
     >
+      {title ? (
+        <Text bold color={labelTone}>
+          {title}
+        </Text>
+      ) : null}
       {children}
     </Box>
   );
 }
 
+/** A title set inside a panel's body. Bold ink: the accent is for marks, not headings. */
 export function PanelTitle({
   children,
-  tone = 'brand',
+  tone = 'neutral',
 }: {
   children: ReactNode;
   tone?: PanelTone;
 }) {
   const theme = useTheme();
   return (
-    <Text bold color={toneColor(tone, theme)}>
+    <Text bold color={tone === 'neutral' || tone === 'brand' ? theme.text : toneColor(tone, theme)}>
       {children}
     </Text>
   );
 }
 
+/**
+ * One row of a list the cursor moves through. The selected row is bold and
+ * bright, and the caller's own `›` marks it; there is no highlight bar behind
+ * it, which made every picker look like a menu from another program.
+ */
 export function SelectionRow({
   selected,
   children,
@@ -101,7 +125,7 @@ export function SelectionRow({
 }) {
   const theme = useTheme();
   return (
-    <Box width={width} backgroundColor={selected ? theme.surfaceActive : undefined}>
+    <Box width={width}>
       <Text color={selected ? theme.selectionText : theme.text} bold={selected}>
         {children}
       </Text>
@@ -132,13 +156,7 @@ export function floatingFrameMetrics(terminalWidth: number): { width: number; ma
  * rose for a shell command); the line itself stays a quiet hairline, so the
  * tone reads as a word, not as a frame.
  */
-export function DecisionRule({
-  label,
-  tone,
-  width,
-  meta = '',
-  lineTone,
-}: {
+export function DecisionRule(props: {
   label: string;
   tone: string;
   width: number;
@@ -147,10 +165,29 @@ export function DecisionRule({
   /** The line's own colour; a hairline grey unless a caller asks otherwise. */
   lineTone?: string;
 }) {
+  return <SheetRule mark={PILCROW} {...props} />;
+}
+
+/** A rule led by a rubricated mark and a label: the head of every sheet. */
+export function SheetRule({
+  mark: markGlyph,
+  label,
+  tone,
+  width,
+  meta = '',
+  lineTone,
+}: {
+  mark: string;
+  label: string;
+  tone: string;
+  width: number;
+  meta?: string;
+  lineTone?: string;
+}) {
   const theme = useTheme();
   const line = lineTone ?? theme.border;
   const lead = '─ ';
-  const mark = `${PILCROW} `;
+  const mark = `${markGlyph} `;
   // The note gives way first when the row is tight, then the label shortens.
   const room = (tail: string) => width - displayWidth(lead + mark + tail) - 2;
   const tail = meta && room(` ${meta} ─`) >= displayWidth(label) ? ` ${meta} ─` : '';
@@ -295,6 +332,51 @@ export function ChoiceList({
           </Box>
         );
       })}
+    </Box>
+  );
+}
+
+/**
+ * Facts set as two columns: a quiet key, then its value.
+ *
+ *   `model      mock-model`
+ *   `workspace  C:\Users\zain\…\ws`
+ *
+ * Keys share one column sized to the widest; a long value wraps under itself,
+ * never back under the keys. `ink` keys are for rows where the key is the thing
+ * you press or type (shortcuts), and read louder than their explanation.
+ */
+export function KeyValueList({
+  rows,
+  width,
+  keys = 'quiet',
+}: {
+  rows: ReadonlyArray<{ key: string; value: string }>;
+  width: number;
+  keys?: 'quiet' | 'ink';
+}) {
+  const theme = useTheme();
+  const keyWidth = Math.min(
+    Math.max(...rows.map((row) => displayWidth(row.key)), 1),
+    Math.max(6, Math.floor(width * 0.4)),
+  );
+  const valueWidth = Math.max(8, width - keyWidth - 2);
+  return (
+    <Box flexDirection="column">
+      {rows.map((row, index) => (
+        <Box key={`${index}-${row.key}`}>
+          <Box width={keyWidth + 2} flexShrink={0}>
+            <Text color={keys === 'ink' ? theme.text : theme.inactive} bold={keys === 'ink'}>
+              {truncateDisplay(row.key, keyWidth)}
+            </Text>
+          </Box>
+          <Box width={valueWidth}>
+            <Text color={keys === 'ink' ? theme.subtle : theme.text} wrap="wrap">
+              {row.value}
+            </Text>
+          </Box>
+        </Box>
+      ))}
     </Box>
   );
 }

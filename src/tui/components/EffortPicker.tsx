@@ -11,13 +11,21 @@ const DESCRIPTIONS: Record<EffortLevel, string> = {
 };
 
 interface EffortPickerProps {
+  /** Sheet width, from the panel grid; without it the head falls back to a plain title. */
+  width?: number;
   current?: EffortLevel;
   availableLevels: readonly EffortLevel[];
   onSelect: (level: EffortLevel) => EffortResult;
   onCancel: () => void;
 }
 
-export function EffortPicker({ current, availableLevels, onSelect, onCancel }: EffortPickerProps) {
+export function EffortPicker({
+  current,
+  availableLevels,
+  onSelect,
+  onCancel,
+  width,
+}: EffortPickerProps) {
   const [error, setError] = useState<string>();
 
   const items = useMemo(
@@ -33,7 +41,8 @@ export function EffortPicker({ current, availableLevels, onSelect, onCancel }: E
 
   return (
     <ListPicker
-      title="Set effort level"
+      title="Effort"
+      width={width}
       subtitle="Choose how much reasoning Book uses on future requests."
       items={items}
       initialIndex={Math.max(0, current ? availableLevels.indexOf(current) : 0)}

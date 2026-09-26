@@ -1,7 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
-import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
+import { floatingFrameMetrics, SoftPanel } from './chrome.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 export type ConfigSection =
@@ -177,27 +177,40 @@ export function ConfigMenu({
   };
 
   return (
-    <SoftPanel tone="brand" width={frame.width} marginX={frame.marginX}>
-      <PanelTitle>Settings</PanelTitle>
+    <SoftPanel title="Settings" meta="Esc to close" width={frame.width} marginX={frame.marginX}>
       <Text color={theme.subtle}>Choose a setting to change.</Text>
       <Box flexDirection="column" marginTop={1}>
         {ROWS.map((entry, index) => {
           const item = details[entry.row];
-          const prefix = rowPrefix(index === selected, 'key' in entry ? entry.key : undefined);
+          const current = index === selected;
+          const prefix = rowPrefix(current, 'key' in entry ? entry.key : undefined);
+          const label = item.label.padEnd(22);
+          const valueRoom = Math.max(4, contentWidth - displayWidth(prefix) - displayWidth(label));
+          const value = truncateDisplay(item.value, Math.min(valueRoom, 24));
+          const descRoom = Math.max(0, valueRoom - displayWidth(value) - 3);
+          // Cursor and letter in rubric, the setting in ink, its value, then what
+          // it does in a quieter grey: columns, not one run of text.
           return (
-            <SelectionRow key={entry.row} selected={index === selected} width={contentWidth}>
-              {prefix}
-              {truncateDisplay(
-                `${item.label.padEnd(22)} ${item.value} — ${item.description}`,
-                contentWidth - displayWidth(prefix),
-              )}
-            </SelectionRow>
+            <Box key={entry.row} width={contentWidth}>
+              <Text color={theme.brand}>{prefix}</Text>
+              <Text bold={current} color={current ? theme.selectionText : theme.text}>
+                {label}
+              </Text>
+              <Text color={theme.text}>{value}</Text>
+              {descRoom >= 8 ? (
+                <Text
+                  color={theme.inactive}
+                >{`   ${truncateDisplay(item.description, descRoom)}`}</Text>
+              ) : null}
+            </Box>
           );
         })}
       </Box>
-      <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter choose · or press the letter · Esc close
-      </Text>
+      <Box marginTop={1}>
+        <Text color={theme.inactive}>
+          ↑↓ select · Enter choose · or press the letter · Esc close
+        </Text>
+      </Box>
     </SoftPanel>
   );
 }

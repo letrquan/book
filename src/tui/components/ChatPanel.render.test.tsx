@@ -1515,7 +1515,7 @@ describe('ChatPanel Ink rendering', () => {
     );
     const output = frame(view.lastFrame);
 
-    expect(output).toContain('/usage · Session telemetry');
+    expect(output).toContain('─ § Usage ─');
     expect(output).toContain('input 1,000');
     expect(output).not.toContain('Session usage plain fallback');
   });

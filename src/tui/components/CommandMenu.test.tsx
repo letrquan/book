@@ -51,7 +51,9 @@ describe('CommandMenu', () => {
     const output = stripAnsi(view.lastFrame());
     expect(output).toContain('Commands');
     expect(output).toContain('cost');
-    expect(output).toContain('… 3 more, type to filter');
+    // The hidden rows are counted in the rule's note rather than a footer row.
+    expect(output).toContain('6 commands · type to filter');
+    expect(output).not.toContain('more');
   });
 
   it('keeps rendered lines within the requested width', () => {
@@ -99,7 +101,7 @@ describe('composeCommandRow', () => {
     const row = composeCommandRow(item, base);
     expect(row.name).toBe('/agent');
     expect(row.hint).toBe('');
-    expect(row.desc).toBe(' — Inspect or steer a managed agent');
+    expect(row.desc).toBe('  Inspect or steer a managed agent');
   });
 
   it('shows the syntax only on the row the user has landed on', () => {
@@ -130,7 +132,8 @@ describe('composeCommandRow', () => {
 
   it('marks the selected row and indents the rest to the same column', () => {
     expect(composeCommandRow(item, { ...base, selected: true }).marker).toBe('› ');
-    expect(composeCommandRow(item, { ...base, selected: true, shimmer: true }).marker).toBe('▸ ');
+    // The cursor holds still: a shimmering marker drew the eye away from the row.
+    expect(composeCommandRow(item, { ...base, selected: true, shimmer: true }).marker).toBe('› ');
     expect(composeCommandRow(item, base).marker).toBe('  ');
   });
 });

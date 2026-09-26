@@ -85,4 +85,20 @@ describe('modelPickerHints', () => {
       expect(line.length).toBeLessThanOrEqual(66);
     }
   });
+
+  it('breaks a line between chords when a width is given', () => {
+    const lines = modelPickerHints({
+      allowProviderManagement: true,
+      hasRemovableProviders: true,
+      canSetEffort: true,
+      editableProviderId: 'gateway',
+      filterable: true,
+      compact: false,
+      width: 60,
+    });
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(60);
+    // No chord is cut in two: each one survives whole on some line.
+    expect(lines.some((line) => line.includes('Alt+M add model'))).toBe(true);
+    expect(lines.some((line) => line.includes('Alt+R refresh gateway'))).toBe(true);
+  });
 });

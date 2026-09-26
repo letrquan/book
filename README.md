@@ -1412,11 +1412,12 @@ controls (`/agents`, `/agent`), config (`/model`, `/providers`,
 (`/status`, `/mcp`, `/cost`, `/usage` with `/stats` as an alias, `/context`, `/diff`, `/skills`,
 `/memory`), local output and reload (`/export`, `/reload-skills`), release/support
 (`/release-notes`, `/feedback`), agent prompts (`/init`, `/security-review`), and code review
-(`/review`, see below).
+(`/review`, see below). `/help` is generated from the command registry: every visible built-in, in
+groups, with its visible aliases, followed by your custom commands.
 `/model` switches models, while `/providers` opens the same picker for provider management. BYOK
 providers you add - their credentials, model catalog, and active model selection - are saved to the
 user-global `~/.book/settings.json` so they are shared across projects; such providers are labeled
-`[BYOK]`, and selecting one of their models and pressing `Alt+D` removes it. `/effort` opens a
+`BYOK`, and selecting one of their models and pressing `Alt+D` removes it. `/effort` opens a
 picker when called without an argument and saves successful selections to
 `.book/settings.local.json`.
 

@@ -5,7 +5,7 @@ import { useTheme } from '../theme.js';
 import type { FileMentionCandidate } from '../../input/file-mentions.js';
 import { truncateDisplay } from './word-wrap.js';
 import { getCommandMenuWindow } from './CommandMenu.js';
-import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
+import { floatingFrameMetrics, SelectionRow, SoftPanel } from './chrome.js';
 import { frameGrid } from '../layout.js';
 
 interface FileMentionMenuProps {
@@ -72,15 +72,17 @@ export function FileMentionMenu({
 
   if (!visible) return null;
 
-  const title = filterText
-    ? truncateDisplay(`Files matching “${filterText}”`, contentWidth)
-    : 'Files';
+  const title = filterText ? `Files matching “${filterText}”` : 'Files';
 
   // The hairline spans the terminal like the composer's; rows keep the panel measure.
   return (
-    <SoftPanel width={frameGrid(width).width} marginX={frame.marginX} attached>
-      <PanelTitle>{title}</PanelTitle>
-
+    <SoftPanel
+      width={frameGrid(width).width}
+      marginX={frame.marginX}
+      attached
+      title={title}
+      meta={`${items.length} ${items.length === 1 ? 'file' : 'files'}`}
+    >
       {items.length === 0 ? (
         <Text color={theme.subtle} dimColor>
           No matching files

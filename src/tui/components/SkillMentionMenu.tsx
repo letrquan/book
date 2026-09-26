@@ -5,7 +5,7 @@ import { useTheme } from '../theme.js';
 import type { SkillMentionCandidate } from '../../input/skill-mentions.js';
 import { truncateDisplay } from './word-wrap.js';
 import { getCommandMenuWindow } from './CommandMenu.js';
-import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
+import { floatingFrameMetrics, SelectionRow, SoftPanel } from './chrome.js';
 import { frameGrid } from '../layout.js';
 
 interface SkillMentionMenuProps {
@@ -71,10 +71,13 @@ export function SkillMentionMenu({
 
   // The hairline spans the terminal like the composer's; rows keep the panel measure.
   return (
-    <SoftPanel width={frameGrid(width).width} marginX={frame.marginX} attached>
-      <PanelTitle>
-        {filterText ? truncateDisplay(`Skills matching “${filterText}”`, contentWidth) : 'Skills'}
-      </PanelTitle>
+    <SoftPanel
+      width={frameGrid(width).width}
+      marginX={frame.marginX}
+      attached
+      title={filterText ? `Skills matching “${filterText}”` : 'Skills'}
+      meta={`${items.length} ${items.length === 1 ? 'skill' : 'skills'}`}
+    >
       {items.length === 0 ? (
         <Text color={theme.subtle} dimColor>
           No matching skills

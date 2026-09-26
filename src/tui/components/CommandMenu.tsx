@@ -1,11 +1,10 @@
-import { Text } from 'ink';
+import { Box, Text } from 'ink';
 import { useMemo } from 'react';
-import { usePulse } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import type { CommandItem } from '../../commands/filter.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
-import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
+import { floatingFrameMetrics, SoftPanel } from './chrome.js';
 import { frameGrid } from '../layout.js';
 import { useDebugRender } from '../debug.js';
 
@@ -35,7 +34,8 @@ interface CommandMenuProps {
 /** Narrower than this and a description is a stub, not a description. */
 const MIN_DESC_WIDTH = 12;
 
-const DESC_SEPARATOR = ' — ';
+/** Columns between the name column and the description. */
+const DESC_SEPARATOR = '  ';
 
 const CATEGORY_LABELS: Record<CommandItem['category'], string> = {
   recent: 'Recent',
@@ -71,6 +71,8 @@ export function getCommandMenuWindow(
 export interface CommandRow {
   marker: string;
   name: string;
+  /** Spaces after the name (and hint, and badge) that bring the description to its column. */
+  pad: string;
   /** Argument syntax. Empty except on the selected row. */
   hint: string;
   /** Category badge. Empty when every visible row shares one category. */
@@ -86,6 +88,12 @@ export interface CommandRowOptions {
   screenReader: boolean;
   /** False when the visible rows are all one category, making a badge noise. */
   showBadge: boolean;
+  /**
+   * Width of the name column: the widest visible name. Every description then
+   * starts on the same column, so the list reads as two columns instead of a
+   * ragged run of `name — description` rows.
+   */
+  nameWidth?: number;
 }
 
 /**
@@ -106,16 +114,10 @@ export interface CommandRowOptions {
  * can lose a tail of and still recognize.
  */
 export function composeCommandRow(item: CommandItem, options: CommandRowOptions): CommandRow {
-  const { selected, width, compact, shimmer, screenReader, showBadge } = options;
-  const marker = screenReader
-    ? selected
-      ? 'selected '
-      : ''
-    : selected
-      ? shimmer
-        ? '▸ '
-        : '› '
-      : '  ';
+  const { selected, width, compact, screenReader, showBadge, nameWidth = 0 } = options;
+  // One steady mark. It used to pulse between `›` and `▸`, a blink that drew
+  // the eye to the list's chrome instead of to the command.
+  const marker = screenReader ? (selected ? 'selected ' : '') : selected ? '› ' : '  ';
   const name = `/${item.name}`;
   const badge =
     showBadge && !screenReader
@@ -128,13 +130,15 @@ export function composeCommandRow(item: CommandItem, options: CommandRowOptions)
   // read as a row; below that the name and what it does win.
   const hintFits = hint && fixed + displayWidth(hint) + MIN_DESC_WIDTH <= width;
   const keptHint = hintFits ? hint : '';
-  const descBudget = width - fixed - displayWidth(keptHint) - DESC_SEPARATOR.length;
+  const lead = displayWidth(name) + displayWidth(keptHint) + displayWidth(badge);
+  const padWidth = compact || screenReader ? 0 : Math.max(0, nameWidth - lead);
+  const descBudget = width - fixed - displayWidth(keptHint) - padWidth - DESC_SEPARATOR.length;
   const desc =
     item.desc && !compact && descBudget >= MIN_DESC_WIDTH
       ? `${DESC_SEPARATOR}${truncateDisplay(item.desc, descBudget)}`
       : '';
 
-  return { marker, name, hint: keptHint, badge, desc };
+  return { marker, name, pad: desc ? ' '.repeat(padWidth) : '', hint: keptHint, badge, desc };
 }
 
 /** Slash-command palette. Filtering/ranking lives in commands/filter.ts. */
@@ -150,7 +154,7 @@ export function CommandMenu({
   screenReader = false,
 }: CommandMenuProps) {
   const theme = useTheme();
-  const shimmer = usePulse(visible && !reducedMotion && !screenReader, 360);
+  void reducedMotion;
 
   const width = Math.max(20, Math.floor(terminalWidth));
   const frame = floatingFrameMetrics(width);
@@ -183,15 +187,24 @@ export function CommandMenu({
 
   if (!visible) return null;
 
-  const title = filterText
-    ? truncateDisplay(`Commands matching “${filterText}”`, contentWidth)
-    : 'Commands';
+  const title = filterText ? `Commands matching “${filterText}”` : 'Commands';
+  const count = `${items.length} ${items.length === 1 ? 'command' : 'commands'}`;
+  // The name column: the widest visible name, capped so a long custom command
+  // cannot squeeze every description away.
+  const nameWidth = Math.min(
+    Math.max(...visibleItems.map((item) => displayWidth(`/${item.name}`)), 0),
+    Math.floor(contentWidth * 0.4),
+  );
 
   // The hairline spans the terminal like the composer's; rows keep the panel measure.
   return (
-    <SoftPanel width={frameGrid(width).width} marginX={frame.marginX} attached>
-      <PanelTitle>{title}</PanelTitle>
-
+    <SoftPanel
+      width={frameGrid(width).width}
+      marginX={frame.marginX}
+      attached
+      title={title}
+      meta={hiddenTotal > 0 ? `${count} · type to filter` : count}
+    >
       {items.length === 0 ? (
         <Text color={theme.subtle} dimColor>
           No matching commands
@@ -204,42 +217,27 @@ export function CommandMenu({
             selected: isSelected,
             width: contentWidth,
             compact,
-            shimmer,
+            shimmer: false,
             screenReader,
             showBadge,
+            nameWidth,
           });
-          // A selected row is a single highlighted block, so its runs inherit
-          // one colour; an unselected one uses colour to separate the name from
-          // what it does.
+          // The name in ink, the syntax and badge quiet, the description a step
+          // quieter still; the selected row is marked and bold, never barred.
           return (
-            <SelectionRow
-              key={`${item.category}-${item.name}-${globalIndex}`}
-              selected={isSelected}
-              width={contentWidth}
-            >
-              {isSelected ? (
-                `${row.marker}${row.name}${row.hint}${row.badge}${row.desc}`
-              ) : (
-                <>
-                  <Text>{row.marker}</Text>
-                  <Text color={theme.text}>{row.name}</Text>
-                  <Text color={theme.subtle}>{row.hint}</Text>
-                  <Text color={theme.subtle} dimColor>
-                    {row.badge}
-                  </Text>
-                  <Text color={theme.subtle}>{row.desc}</Text>
-                </>
-              )}
-            </SelectionRow>
+            <Box key={`${item.category}-${item.name}-${globalIndex}`} width={contentWidth}>
+              <Text color={theme.brand}>{row.marker}</Text>
+              <Text bold={isSelected} color={isSelected ? theme.selectionText : theme.text}>
+                {row.name}
+              </Text>
+              <Text color={theme.inactive}>{row.hint}</Text>
+              <Text color={theme.inactive}>{row.badge}</Text>
+              <Text>{row.pad}</Text>
+              <Text color={isSelected ? theme.text : theme.inactive}>{row.desc}</Text>
+            </Box>
           );
         })
       )}
-
-      {hiddenTotal > 0 ? (
-        <Text color={theme.subtle} dimColor>
-          {truncateDisplay(`… ${hiddenTotal} more, type to filter`, contentWidth)}
-        </Text>
-      ) : null}
     </SoftPanel>
   );
 }
