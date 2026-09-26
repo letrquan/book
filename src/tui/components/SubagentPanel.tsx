@@ -10,9 +10,12 @@ import { SheetRule } from './chrome.js';
 import { SubagentRow } from './SubagentRow.js';
 import { BackgroundShellRow } from './BackgroundShellRow.js';
 
+// A stable default: a fresh `[]` per render re-ran the selection-reset effect after every key.
+const NO_SHELLS: BackgroundShellRecord[] = [];
+
 export function SubagentPanel({
   agents,
-  shells = [],
+  shells = NO_SHELLS,
   selectedJobId,
   selectedAgentId,
   isActive = false,

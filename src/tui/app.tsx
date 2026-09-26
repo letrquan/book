@@ -255,6 +255,19 @@ function capitalize(word: string): string {
 const NO_RECENT_SESSIONS: readonly never[] = [];
 
 /**
+ * Subscribes the app's global key handler ahead of every other `useInput`. Ink 7 runs handlers in
+ * the order their effects subscribed, and commits each handler's updates before calling the next.
+ * Ink 6 re-subscribed every handler that re-rendered, which left this stable one first in
+ * practice. Rendered as the first child of the providers, outside the error boundary, its effect
+ * subscribes before any descendant's, so the app still decides Esc and Ctrl+C from the state the
+ * screen showed when the key was pressed.
+ */
+function GlobalKeyHandler({ onInput }: { onInput: (input: string, key: Key) => void }): null {
+  useInput(onInput);
+  return null;
+}
+
+/**
  * Full-screen interactive TUI with an application-owned transcript viewport.
  *
  * The transcript scrolls independently while approvals, input, and status stay
@@ -1371,7 +1384,6 @@ export function App({
     (input: string, key: Key) => handleInputRef.current(input, key),
     [],
   );
-  useInput(forwardInput);
   handleInputRef.current = (input: string, key: Key) => {
     // Once an exit has started, Ctrl+C has nothing left to do: SessionEnd is running and the
     // app unmounts when it finishes.
@@ -2354,6 +2366,7 @@ export function App({
   if (startupFireActive) {
     return (
       <AppProviders theme={currentTheme.tokens} density={density}>
+        <GlobalKeyHandler onInput={forwardInput} />
         <ErrorBoundary resumeCommand={resumeCommand} onExit={exitFromCrash}>
           <StartupFire
             width={termWidth}
@@ -2369,6 +2382,7 @@ export function App({
 
   return (
     <AppProviders theme={currentTheme.tokens} density={density}>
+      <GlobalKeyHandler onInput={forwardInput} />
       <ErrorBoundary resumeCommand={resumeCommand} onExit={exitFromCrash}>
         <Box
           flexDirection="column"

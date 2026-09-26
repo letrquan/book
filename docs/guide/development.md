@@ -41,12 +41,28 @@ npm run deadcode:json   # knip scan as JSON
 npm run eval:edit    # Edit reliability evaluation (configured provider)
 npm run eval:compact # Compaction paired evaluation (configured provider)
 npm run eval:skills  # Skill activation evaluation
-npm run verify:ink-patch
+npm run verify:ink     # Installed Ink matches the release the TUI was verified against
 npm run release:check # Version, audit, and package smoke checks
 ```
 
 Main-branch runtime work also follows the [stabilization gate](../stabilization.md): three
 consecutive green full CI runs and no open lifecycle or accounting regression issues.
+
+## Upgrading Ink
+
+Book pins `ink` to an exact version, and `src/cli/ink-renderer.ts` records the release the TUI was
+last verified against (`VERIFIED_INK_VERSION`). A bump, including a Dependabot one, fails the
+contract test `src/cli/ink-renderer.contract.test.ts` and `npm run verify:ink` until someone:
+
+1. reads the new release's changelog for input, renderer and `render()` option changes;
+2. runs `npm run check`, `npm run test:integration` and `npm run bench:ui`;
+3. drives the real TUI with the run-book skill's driver on Windows and on a Unix terminal
+   (streaming, the transcript grid, a permission sheet, the composer menus, Esc and Ctrl+C,
+   resize) and compares `shotpng` shots with the previous release;
+4. updates `VERIFIED_INK_VERSION`.
+
+The incremental renderer also needs Ink's trailing-newline fix (upstream issue 909, in Ink 7.0.0
+and later). Without it Book falls back to the full-frame renderer.
 
 ## Maintenance workflow
 

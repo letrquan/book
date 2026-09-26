@@ -282,7 +282,7 @@ describe('ByokWizard', () => {
   it('cancels from the first step with Escape', async () => {
     const { view, onCancel } = createWizard();
     await write(view, '\x1b');
-    expect(onCancel).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(onCancel).toHaveBeenCalledOnce());
   });
 
   it('toggles the model the arrow moved to, batched in one write', async () => {

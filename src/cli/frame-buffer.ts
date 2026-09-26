@@ -17,6 +17,7 @@ interface LogUpdateRenderer {
   (output: string): boolean | void;
   clear: () => void;
   done: () => void;
+  reset?: () => void;
   sync: (output: string) => void;
   setCursorPosition: (position: unknown) => void;
   isCursorDirty: () => boolean;
@@ -100,6 +101,11 @@ export function createFrameCapturingRenderer(
     latestFrame = '';
     lastCursorPosition = null;
     base.done();
+  };
+  // Ink 7 resets its renderer's memory of the last frame after handing the terminal to a child.
+  render.reset = () => {
+    latestFrame = '';
+    base.reset?.();
   };
   render.sync = (output: string) => {
     latestFrame = output;

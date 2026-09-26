@@ -18,6 +18,7 @@ interface LogUpdateRenderer {
   (output: string): boolean | void;
   clear: () => void;
   done: () => void;
+  reset?: () => void;
   sync: (output: string) => void;
   setCursorPosition: (position: unknown) => void;
   isCursorDirty: () => boolean;
@@ -165,6 +166,11 @@ function createScrollAwareRenderer(
     pendingHint = null;
     previousFrame = '';
     base.done();
+  };
+  render.reset = () => {
+    pendingHint = null;
+    previousFrame = '';
+    base.reset?.();
   };
   render.sync = (output: string) => {
     pendingHint = null;
