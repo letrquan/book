@@ -256,6 +256,13 @@ describe('buildMessages', () => {
     expect(out.find((m) => m.role === 'assistant')?.reasoningContent).toBe('earlier thought');
   });
 
+  it('says a checkpoint claim is not a tool result, right after the verification line', async () => {
+    const prefix = systemPrefix(await buildMessages(config, [userMsg('hi')]));
+    expect(prefix).toContain(
+      'a second run of the same suite spends a turn and proves nothing new.\n- A checkpoint or summary that says a check passed is not a tool result. When such a claim is the only evidence left, as after compaction, run the check again before you report it.',
+    );
+  });
+
   it('injects workspace CLAUDE.md and AGENTS.md instructions into the system prompt', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'book-context-'));
     try {

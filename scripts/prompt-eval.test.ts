@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { buildSystemPromptZones } from '../src/agent/context.js';
+import { defaultConfig } from '../src/test/fixtures.js';
 import type { Message } from '../src/types/messages.js';
 import type { ProviderMessage } from '../src/types/providers.js';
 import {
@@ -36,6 +38,11 @@ describe('prompt-eval arms', () => {
   it('adds the verify candidate line right after the kernel line', () => {
     const out = addVerifyCandidateLine([system(`a\n${VERIFY_KERNEL_LINE}\nb`)]);
     expect(prefixOf(out)).toBe(`a\n${VERIFY_KERNEL_LINE}\n${VERIFY_CANDIDATE_LINE}\nb`);
+  });
+
+  it('matches the lines the real system prompt carries', async () => {
+    const zones = await buildSystemPromptZones(defaultConfig());
+    expect(zones.cachedPrefix).toContain(`${VERIFY_KERNEL_LINE}\n${VERIFY_CANDIDATE_LINE}`);
   });
 
   it('refuses to measure a prompt that lost the kernel line', () => {

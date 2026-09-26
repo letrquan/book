@@ -112,7 +112,11 @@ export interface TrialResult {
 export const VERIFY_KERNEL_LINE =
   '- Report verification from the tool results already in the transcript. Do not re-run a command only to quote its output when nothing it reads has changed since it last ran; a second run of the same suite spends a turn and proves nothing new.';
 
-/** The candidate arm's added line: its own line, so it composes with other edits to the first. */
+/**
+ * The candidate arm's added line: its own line, so it composes with other edits
+ * to the first. It shipped in `book-system-prompt-v4`; the `current` arm removes
+ * it, so the comparison can still be run.
+ */
 export const VERIFY_CANDIDATE_LINE =
   '- A checkpoint or summary that says a check passed is not a tool result. When such a claim is the only evidence left, as after compaction, run the check again before you report it.';
 
