@@ -36,6 +36,7 @@ import {
   LEARNED_WINDOW_SAFETY_MARGIN,
   type ModelWindowStore,
 } from '../model-window-store.js';
+import { resolveBookHome } from '../book-home.js';
 import {
   ALWAYS_ALLOWED_TOOLS,
   evaluatePermissionDetail,
@@ -48,6 +49,7 @@ import {
 } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
+import { resolveWorkspacePath } from '../tools/path-utils.js';
 import {
   isToolDefinitionAllowed,
   parseCapabilityRules,
@@ -88,6 +90,7 @@ import {
   permissionDeniedError,
   unattendedRefusalNotice,
   type PermissionDenialCause,
+  type UnattendedRemedy,
 } from './actionable-errors.js';
 import {
   isContextOverflowError,
@@ -749,8 +752,12 @@ export async function runAgentLoop(
      * because each kind names a different remedy in the terminal message.
      */
     const blockedStreakCauses = new Set<NetworkPolicyRefusal | 'other'>();
-    /** Tools already named in an unattended-refusal notice this run: the operator hears once each. */
-    const unattendedRefusalNoticed = new Set<string>();
+    /**
+     * A workspace that holds Book's own home (a session started in the home directory) keeps
+     * prompting for reads: that home carries provider keys and the trust store (#264).
+     */
+    const workspaceHoldsBookHome =
+      resolveWorkspacePath(config.workspace, resolveBookHome()) !== null;
     // Monotonic, and never leaves this function as a stamp. Over a run measured
     // in days a wall-clock correction would silently rewrite how long the model
     // is told it has been working, in either direction.
@@ -2027,10 +2034,11 @@ export async function runAgentLoop(
         // whether the user is *asked*; they do not decide whether a rule the user
         // already wrote applies.
         const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings, {
-          readScope: {
-            workspace: toolContext.workspaceRoot,
-            additionalDirectories: config.settings.additionalDirectories,
-            autoAllow: WORKSPACE_READ_AUTO_ALLOW_MODES.has(effectiveMode),
+          workspace: {
+            root: toolContext.workspaceRoot,
+            readOnlyRoots: toolContext.readOnlyRoots,
+            autoAllowReads:
+              WORKSPACE_READ_AUTO_ALLOW_MODES.has(effectiveMode) && !workspaceHoldsBookHome,
           },
         });
         if (verdict.decision === 'deny') {
@@ -2098,17 +2106,30 @@ export async function runAgentLoop(
                 );
               }
               const askRule = verdict.source === 'ask' ? verdict.matchedRule : undefined;
+              // What would actually let this call through if nobody could approve it.
+              const remedy: UnattendedRemedy = persistentBackgroundShell
+                ? { kind: 'bypass_only' }
+                : askRule
+                  ? { kind: 'ask_rule', rule: askRule }
+                  : forceSkillPermission
+                    ? { kind: 'allow_rule_only', rule: permissionRuleForToolCall(call) }
+                    : verdict.outsideWorkspace
+                      ? { kind: 'outside_workspace' }
+                      : { kind: 'rule_or_auto', rule: permissionRuleForToolCall(call) };
               const cause: PermissionDenialCause =
                 effectiveMode === 'dontAsk'
                   ? { kind: 'dont_ask', askRule }
                   : noApprover
-                    ? { kind: 'no_approver', askRule }
+                    ? { kind: 'no_approver', remedy }
                     : { kind: 'user' };
-              if (cause.kind === 'no_approver' && !unattendedRefusalNoticed.has(canonName)) {
-                unattendedRefusalNoticed.add(canonName);
-                callbacks.onNotice?.(
-                  unattendedRefusalNotice(canonName, permissionRuleForToolCall(call)),
-                );
+              const noticeKey = `${canonName}:${remedy.kind}`;
+              if (
+                cause.kind === 'no_approver' &&
+                !runtime.unattendedRefusalNotices.has(noticeKey)
+              ) {
+                runtime.unattendedRefusalNotices.add(noticeKey);
+                const notice = unattendedRefusalNotice(canonName, remedy);
+                if (notice) callbacks.onNotice?.(notice);
               }
               toolResults[callIndex] = toolFailure('SKIPPED: Permission denied', {
                 toolCallId: call.id,

@@ -1,12 +1,17 @@
 import { realpathSync } from 'fs';
-import { isAbsolute, relative, resolve } from 'path';
+import { isAbsolute, join, relative } from 'path';
 import type { ResolvedSettings } from './settings.js';
-import type { PermissionDecision, PermissionResult, ToolCall } from './types/tools.js';
+import type {
+  PermissionDecision,
+  PermissionResult,
+  ReadOnlyRoot,
+  ToolCall,
+} from './types/tools.js';
 import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
-import { resolveWorkspacePath } from './tools/path-utils.js';
+import { resolveReadablePath, resolveWorkspacePath } from './tools/path-utils.js';
 import { sandboxCoverage } from './sandbox.js';
 
 /**
@@ -25,36 +30,52 @@ export interface PermissionVerdict {
   decision: 'allow' | 'deny' | 'ask';
   matchedRule?: string;
   source?: 'allow' | 'deny' | 'ask' | 'default' | 'sandbox' | 'workspace';
+  /**
+   * Set on the default ask for a Read, Glob or Grep whose target the tool itself refuses (outside
+   * the workspace, and for Read outside Book's memory directory too): no approval can make it
+   * work. Only judged where reads are auto-allowed.
+   */
+  outsideWorkspace?: boolean;
 }
 
-/**
- * Where the read-only file tools may reach without a prompt (#264): the workspace, and each
- * `additionalDirectories` entry resolved against it.
- */
-export interface ReadScope {
-  workspace: string;
-  additionalDirectories: readonly string[];
+/** The workspace a call's path arguments are judged against (#264). */
+export interface WorkspaceScope {
+  /** The workspace root, as the file tools resolve paths against it. */
+  root: string;
   /**
-   * Whether a Read, Glob or Grep inside the scope runs without a prompt. True only in the modes
-   * that would otherwise prompt for it: `default` and `accept-edits`
-   * (`WORKSPACE_READ_AUTO_ALLOW_MODES`). The scope is passed in every mode, because path
-   * rules are matched against every spelling of a Read's target whatever the mode.
+   * Directories outside the workspace that the Read tool may open (Book's memory directory),
+   * exactly as `ToolContext.readOnlyRoots`, so a Read is judged by the rule the tool applies.
    */
-  autoAllow: boolean;
+  readOnlyRoots?: readonly (string | ReadOnlyRoot)[];
+  /**
+   * Whether a Read, Glob or Grep the tool can serve runs without a prompt: true only in the modes
+   * that would otherwise prompt for it (`WORKSPACE_READ_AUTO_ALLOW_MODES`), and false for a
+   * workspace that holds Book's own home directory.
+   */
+  autoAllowReads: boolean;
 }
 
 /**
  * Seams for permission evaluation. `sandboxBackendAvailable` exists so tests can
  * exercise the missing-bwrap branch on a host that has bwrap installed; nothing
- * in production passes it.
+ * in production passes it. `workspace` is the scope a call's paths are judged in.
  */
 export interface PermissionEvaluationOptions {
   sandboxBackendAvailable?: () => boolean;
-  readScope?: ReadScope;
+  workspace?: WorkspaceScope;
 }
 
-/** Read-only file tools whose targets inside the read scope need no prompt (#264). */
-export const WORKSPACE_READ_TOOLS: ReadonlySet<string> = new Set(['Read', 'Glob', 'Grep']);
+/** Read-only file tools whose targets inside the workspace need no prompt (#264). */
+const WORKSPACE_READ_TOOLS: ReadonlySet<string> = new Set(['Read', 'Glob', 'Grep']);
+
+/** Tools whose rules name one file path, so a rule must match the file however it is spelled. */
+const PATH_RULE_TOOLS: ReadonlySet<string> = new Set([
+  'Read',
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+]);
 
 /** Permission modes in which a workspace read runs without a prompt (#264). */
 export const WORKSPACE_READ_AUTO_ALLOW_MODES: ReadonlySet<string> = new Set([
@@ -296,88 +317,137 @@ function sandboxAutoAllows(
   return sandboxCoverage(command, settings.sandbox, options.sandboxBackendAvailable).sandboxed;
 }
 
-interface ScopeMatch {
-  root: string;
-  filePath: string;
-  canonicalPath: string;
-  relativePath: string;
-}
+const toPosix = (value: string) => value.replace(/\\/g, '/');
 
-/**
- * Resolve a path the way the file tools do (`resolveWorkspacePath`: `..` applied, symlinks and
- * junctions followed), against the workspace and then, for an absolute path only, each
- * `additionalDirectories` entry. A relative path stays workspace-anchored, as the Read tool
- * anchors it. `null` when the path is inside none of them.
- */
-function resolveInReadScope(raw: string, scope: ReadScope): ScopeMatch | null {
-  const inWorkspace = resolveWorkspacePath(scope.workspace, raw);
-  if (inWorkspace) return { root: scope.workspace, ...inWorkspace };
-  if (!isAbsolute(raw)) return null;
-  for (const entry of scope.additionalDirectories) {
-    const root = resolve(scope.workspace, entry);
-    const match = resolveWorkspacePath(root, raw);
-    if (match) return { root, ...match };
+/** The file path a path-rule tool acts on, read through the tool's own argument aliases. */
+function pathArgument(toolName: string, args: Record<string, unknown>): string | undefined {
+  const keys =
+    toolName === 'NotebookEdit'
+      ? ['notebook_path']
+      : toolName === 'Read'
+        ? ['filePath', 'file_path', 'path']
+        : ['filePath', 'file_path'];
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === 'string' && value.trim() !== '') return value;
   }
-  return null;
+  return undefined;
 }
 
 /**
- * The other ways a path rule could spell a Read's target: workspace-relative (as written and
- * after following links) and absolute, with forward slashes. Relative spellings only for a target
- * in the workspace itself: a relative rule is workspace-relative, so `Read(src/**)` must not match
- * `src/` inside an additional directory.
+ * Does any rule name this tool? Only then is a call's path worth resolving to its other
+ * spellings: resolving touches the file system, and most calls meet no rule at all.
  */
-function pathSpellings(raw: string, match: ScopeMatch, scope: ReadScope): string[] {
-  const posix = (value: string) => value.replace(/\\/g, '/');
-  const spellings = [posix(match.filePath), posix(match.canonicalPath)];
-  if (match.root === scope.workspace) {
-    spellings.push(match.relativePath);
+function rulesName(settings: ResolvedSettings, toolName: string): boolean {
+  const { deny, ask, allow } = settings.permissions;
+  return [...deny, ...ask, ...allow].some((rule) => parseRule(rule).toolName === toolName);
+}
+
+/**
+ * The other spellings of a path-rule tool's target that a rule may have been written against:
+ * relative to the workspace (as written and after following links) and absolute, with forward
+ * slashes. Outside the workspace only a Read of Book's memory directory gets spellings, absolute
+ * ones: the tools refuse everything else there.
+ */
+function pathRuleSpellings(
+  toolName: string,
+  args: Record<string, unknown>,
+  scope: WorkspaceScope,
+): string[] {
+  const raw = pathArgument(toolName, args);
+  if (!raw) return [];
+  const spellings: string[] = [];
+  const inWorkspace = resolveWorkspacePath(scope.root, raw);
+  if (inWorkspace) {
+    spellings.push(
+      inWorkspace.relativePath,
+      toPosix(inWorkspace.filePath),
+      toPosix(inWorkspace.canonicalPath),
+    );
     try {
-      spellings.push(posix(relative(realpathSync.native(match.root), match.canonicalPath)));
+      spellings.push(toPosix(relative(realpathSync.native(scope.root), inWorkspace.canonicalPath)));
     } catch {
       // The workspace vanished mid-call; the lexical relative path above still counts.
     }
+  } else if (toolName === 'Read') {
+    const readable = resolveReadablePath(
+      { workspaceRoot: scope.root, readOnlyRoots: scope.readOnlyRoots },
+      raw,
+    );
+    if (readable) spellings.push(toPosix(readable.filePath), toPosix(readable.canonicalPath));
   }
   return [...new Set(spellings)].filter((spelling) => spelling !== '' && spelling !== raw);
 }
 
 /**
- * The target of a Read, Glob or Grep call inside the read scope, with the other spellings of a
- * Read's path; `null` for any other tool, or for a target outside the scope.
- *
- * Glob has no path argument and always searches the workspace, so a pattern is inside unless it
- * climbs out (`..` anywhere) or starts at an absolute path, a drive letter or `~`. A Grep (or a
- * Glob that carries a `path`) with no path, or `.`, searches the workspace.
+ * Whether a Glob pattern climbs out of the workspace: a `..` path segment, also as a brace
+ * alternative (`{..,src}`), or a start at an absolute path, a drive letter or `~`. Two dots inside
+ * a file name (`*..orig`, `v1..v2`) do not climb.
  */
-function readScopeTarget(
+function globClimbsOut(pattern: string): boolean {
+  if (pattern.startsWith('~') || isAbsolute(pattern) || /^[A-Za-z]:/.test(pattern)) return true;
+  return pattern.split(/[\\/]/).some((segment) => segment.split(/[{},]/).includes('..'));
+}
+
+/**
+ * Book's project-local settings file can carry an API key, and the `.book` directory holds it: a
+ * Read or Grep aimed at either keeps asking. Compared on the canonical path, case-folded where the
+ * file system folds case.
+ */
+function isBookLocalSettings(canonicalPath: string, root: string): boolean {
+  let realRoot: string;
+  try {
+    realRoot = realpathSync.native(root);
+  } catch {
+    return false;
+  }
+  const fold = (value: string) => (process.platform === 'linux' ? value : value.toLowerCase());
+  const target = fold(canonicalPath);
+  const bookDir = join(realRoot, '.book');
+  return target === fold(bookDir) || target === fold(join(bookDir, 'settings.local.json'));
+}
+
+/**
+ * What a Read, Glob or Grep call reaches, judged the way the tool judges it: `servable` (the tool
+ * can serve it), `outside` (the tool refuses it), `guarded` (Book's own local settings, which keep
+ * asking), or `none` (no target to judge; the tool rejects the call itself).
+ */
+function readToolTarget(
   toolName: string,
   args: Record<string, unknown>,
-  scope: ReadScope,
-): { spellings: string[] } | null {
-  if (!WORKSPACE_READ_TOOLS.has(toolName)) return null;
+  scope: WorkspaceScope,
+): 'servable' | 'outside' | 'guarded' | 'none' {
   if (toolName === 'Read') {
-    const raw = [args.filePath, args.file_path, args.path].find(
-      (value): value is string => typeof value === 'string' && value.trim() !== '',
+    const raw = pathArgument(toolName, args);
+    if (!raw) return 'none';
+    const match = resolveReadablePath(
+      { workspaceRoot: scope.root, readOnlyRoots: scope.readOnlyRoots },
+      raw,
     );
-    if (!raw) return null;
-    const match = resolveInReadScope(raw, scope);
-    return match ? { spellings: pathSpellings(raw, match, scope) } : null;
+    if (!match) return 'outside';
+    return isBookLocalSettings(match.canonicalPath, scope.root) ? 'guarded' : 'servable';
   }
   if (toolName === 'Glob') {
     const pattern = typeof args.pattern === 'string' ? args.pattern.trim() : '';
-    if (
-      !pattern ||
-      pattern.includes('..') ||
-      pattern.startsWith('~') ||
-      isAbsolute(pattern) ||
-      /^[A-Za-z]:/.test(pattern)
-    ) {
-      return null;
-    }
+    if (!pattern) return 'none';
+    return globClimbsOut(pattern) ? 'outside' : 'servable';
   }
+  // Grep: no path, or `.`, searches the workspace. Grep never reads Book's memory directory.
   const raw = typeof args.path === 'string' ? args.path.trim() : '';
-  if (raw === '' || raw === '.') return { spellings: [] };
-  return resolveInReadScope(raw, scope) ? { spellings: [] } : null;
+  if (raw === '' || raw === '.') return 'servable';
+  const match = resolveWorkspacePath(scope.root, raw);
+  if (!match) return 'outside';
+  return isBookLocalSettings(match.canonicalPath, scope.root) ? 'guarded' : 'servable';
+}
+
+/**
+ * Has the user written a deny or ask rule about reading? A Grep or Glob reads files a `Read` rule
+ * cannot see (`Grep` with `path: ".env"` returns every line), so while one exists they keep the
+ * default prompt, the way `sandboxAutoAllows` steps aside for any adjudication policy.
+ */
+function hasReadAdjudication(settings: ResolvedSettings): boolean {
+  const { deny, ask } = settings.permissions;
+  return [...deny, ...ask].some((rule) => WORKSPACE_READ_TOOLS.has(parseRule(rule).toolName));
 }
 
 /**
@@ -445,16 +515,19 @@ export function evaluatePermissionDetail(
     return { decision: 'ask', source: 'default' };
   }
 
+  const tool = canonicalToolName(toolName);
+  const scope = options.workspace;
   const call: ToolCall = { id: 'permission-evaluation', name: toolName, arguments: args };
-  const readTarget = options.readScope
-    ? readScopeTarget(canonicalToolName(toolName), args, options.readScope)
-    : null;
   // A rule about a file applies however the call spells its path: `Read(.env)` must also stop
-  // `D:/ws/.env` and `src/../.env`, which the glob on the raw argument misses.
-  const respelled = (readTarget?.spellings ?? []).map((spelling): ToolCall => ({
-    ...call,
-    arguments: { ...args, filePath: spelling },
-  }));
+  // `D:/ws/.env` and `src/../.env`, which the glob on the raw argument misses. Resolved only when
+  // a rule names the tool, since resolving touches the file system.
+  const respelled =
+    scope && PATH_RULE_TOOLS.has(tool) && rulesName(settings, tool)
+      ? pathRuleSpellings(tool, args, scope).map((spelling): ToolCall => ({
+          ...call,
+          arguments: { ...args, filePath: spelling },
+        }))
+      : [];
   const ruleMatches = (ruleStr: string) =>
     permissionRuleMatchesCall(ruleStr, call) ||
     respelled.some((candidate) => permissionRuleMatchesCall(ruleStr, candidate));
@@ -492,10 +565,16 @@ export function evaluatePermissionDetail(
     return { decision: 'allow', source: 'sandbox' };
   }
 
-  // Reading or searching inside the workspace needs no prompt in the modes that would otherwise
-  // ask (#264). Every user-written rule outranks it: deny and ask have returned above.
-  if (options.readScope?.autoAllow && readTarget) {
-    return { decision: 'allow', source: 'workspace' };
+  // Reading or searching what the tool can serve needs no prompt in the modes that would
+  // otherwise ask (#264). Every user-written rule outranks it: deny and ask returned above.
+  if (scope?.autoAllowReads && WORKSPACE_READ_TOOLS.has(tool)) {
+    const target = readToolTarget(tool, args, scope);
+    if (target === 'servable' && (tool === 'Read' || !hasReadAdjudication(settings))) {
+      return { decision: 'allow', source: 'workspace' };
+    }
+    if (target === 'outside') {
+      return { decision: 'ask', source: 'default', outsideWorkspace: true };
+    }
   }
 
   if (ALWAYS_ALLOWED_TOOLS.has(canonicalToolName(toolName))) {

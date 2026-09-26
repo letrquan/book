@@ -2,7 +2,7 @@ import { createInterface } from 'node:readline/promises';
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { Message } from '../types/messages.js';
-import type { ToolCall, ToolResult } from '../types/tools.js';
+import type { PermissionDecision, PermissionResult, ToolCall, ToolResult } from '../types/tools.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { createDefaultRegistry, type ToolRegistry } from '../tools/registry.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
@@ -117,11 +117,14 @@ async function askPermission(
   call: ToolCall,
   read: (prompt?: string) => Promise<string | null>,
   output: { write: (s: string) => boolean | void },
-): Promise<'allow' | 'deny' | 'always'> {
+): Promise<PermissionResult | PermissionDecision> {
   output.write(
     `[permission] ${call.name}${getPrimaryArg(call.arguments) ? ` ${getPrimaryArg(call.arguments)}` : ''}\nAllow? [y]es/[n]o/[a]lways: `,
   );
-  const answer = (await read(''))?.trim().toLowerCase();
+  const line = await read('');
+  // The input closed: nobody is left to answer, which is not a person saying no (#264).
+  if (line === null) return { result: 'deny', reason: 'no_approver' };
+  const answer = line.trim().toLowerCase();
   if (answer === 'a' || answer === 'always') return 'always';
   if (answer === 'y' || answer === 'yes') return 'allow';
   return 'deny';

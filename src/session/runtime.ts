@@ -106,6 +106,11 @@ export class SessionRuntime {
   private readonly skillChangeListeners = new Set<() => void>();
   /** Advisory memory of recent identical tool failures (registry circuit breaker). */
   readonly recentToolFailures = new Map<string, number>();
+  /**
+   * Unattended refusals already reported to the operator this session, keyed by tool and remedy,
+   * so print mode names each once however many loop runs the session makes (#264).
+   */
+  readonly unattendedRefusalNotices = new Set<string>();
   /** Per-session tool call/failure counters keyed by canonical tool name. */
   readonly toolCallStats = new Map<string, { calls: number; failures: Record<string, number> }>();
   /**

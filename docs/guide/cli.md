@@ -141,10 +141,10 @@ split content.
 Four things behave differently in print mode, because there is nobody to ask.
 
 **Permission prompts.** Print mode cannot show one, so in `default` and `acceptEdits` a call that
-would prompt in the TUI is refused. Reading and searching inside the workspace never prompts, so
-those calls run. For anything else, the model is told that nothing in the run can approve the call,
-and the first refusal of each tool prints a line like this on stderr (a `notice` event in
-`stream-json`):
+would prompt in the TUI is refused. Reading and searching inside the workspace does not prompt
+unless a rule says so, so those calls run. For anything else, the model is told that nothing in the
+run can approve the call, and the first refusal of each tool in the session prints a line like this
+on stderr (a `notice` event in `stream-json`):
 
 ```text
 Bash needs approval, and nothing in this run can answer a permission prompt, so the call was refused. To allow it, add a permissions.allow rule such as "Bash(npm test)" to your settings, or run with --permission-mode auto.

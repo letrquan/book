@@ -2101,14 +2101,30 @@ describe('runHeadless — permission prompts it cannot show (#264)', () => {
       .map((line) => JSON.parse(line) as StreamEvent);
   }
 
-  function readThenDone(filePath: string) {
+  function callThenDone(name: string, args: Record<string, unknown>) {
     let requests = 0;
     return vi.fn(async () => {
       requests += 1;
-      return requests === 1
-        ? sse([toolDelta('read-1', 'Read', { filePath })])
-        : sse([textDelta('DONE')]);
+      return requests === 1 ? sse([toolDelta('call-1', name, args)]) : sse([textDelta('DONE')]);
     });
+  }
+
+  function readThenDone(filePath: string) {
+    return callThenDone('Read', { filePath });
+  }
+
+  async function runDefault(workspace: string): Promise<StreamEvent[]> {
+    const writes: string[] = [];
+    await runHeadless(freshConfig({ workspace }), createDefaultRegistry(), {
+      prompt: 'do it',
+      inputFormat: 'text',
+      outputFormat: 'stream-json',
+      history: [],
+      mode: 'default',
+      maxTurns: 3,
+      stdout: { write: (value) => (writes.push(value), true) },
+    });
+    return streamEvents(writes);
   }
 
   for (const mode of ['default', 'accept-edits'] as const) {
@@ -2136,22 +2152,10 @@ describe('runHeadless — permission prompts it cannot show (#264)', () => {
 
   it('refuses a call it would have to ask about, and says why', async () => {
     const workspace = makeWorkspace();
-    const outside = makeWorkspace();
-    writeFileSync(join(outside, 'secret.txt'), 'secret\n');
-    vi.stubGlobal('fetch', readThenDone(join(outside, 'secret.txt')));
-    const writes: string[] = [];
+    vi.stubGlobal('fetch', callThenDone('Bash', { command: 'echo hi' }));
 
-    await runHeadless(freshConfig({ workspace }), createDefaultRegistry(), {
-      prompt: 'read the secret',
-      inputFormat: 'text',
-      outputFormat: 'stream-json',
-      history: [],
-      mode: 'default',
-      maxTurns: 3,
-      stdout: { write: (value) => (writes.push(value), true) },
-    });
+    const events = await runDefault(workspace);
 
-    const events = streamEvents(writes);
     const result = events.find((event) => event.type === 'tool_result');
     expect(result?.tool_result?.status).toBe('blocked');
     expect(result?.tool_result?.content).toContain('print mode');
@@ -2160,8 +2164,26 @@ describe('runHeadless — permission prompts it cannot show (#264)', () => {
     expect(events).toContainEqual(
       expect.objectContaining({
         type: 'notice',
-        message: expect.stringContaining('--permission-mode auto'),
+        message: expect.stringContaining('"Bash(echo hi)"'),
       }),
     );
+  });
+
+  it('says a read outside the workspace cannot be allowed, and prints no remedy', async () => {
+    const workspace = makeWorkspace();
+    const outside = makeWorkspace();
+    writeFileSync(join(outside, 'secret.txt'), 'secret\n');
+    vi.stubGlobal('fetch', readThenDone(join(outside, 'secret.txt')));
+
+    const events = await runDefault(workspace);
+
+    const result = events.find((event) => event.type === 'tool_result');
+    expect(result?.tool_result?.status).toBe('blocked');
+    expect(result?.tool_result?.content).toContain('outside the workspace');
+    expect(
+      events.filter(
+        (event) => event.type === 'notice' && event.message?.includes('needs approval'),
+      ),
+    ).toEqual([]);
   });
 });
