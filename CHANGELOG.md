@@ -6,6 +6,30 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **The TUI runs on Ink 7.1.1** (#89). The Ink 6.8.0 renderer patch is gone: the trailing-newline
+  fix it backported ships in Ink 7. `package.json` pins the exact version, and
+  `src/cli/ink-renderer.contract.test.ts` plus `npm run verify:ink` fail on any other version until
+  the TUI is re-verified (`docs/guide/development.md`, "Upgrading Ink"). `patch-package` and the
+  `postinstall` step are gone. What changes for users:
+  - **npm installs get the incremental renderer.** A published install never applied the patch, so
+    it fell back to the full-frame renderer everywhere. Outside Windows it now uses the incremental
+    renderer, as a source checkout always did.
+  - **Backspace on an empty composer removes the last attachment**, one per press. Holding Backspace
+    to clear a draft removes none, and holding it on an empty composer removes one. Ink 6 reported
+    Backspace as Delete, so this only worked with Ctrl+H.
+  - **Delete and Alt+Delete delete forward**, the character or the word after the cursor. Ink 6
+    could not tell Delete from Backspace, so both deleted backwards.
+  - **Ctrl+L and resizing repaint the whole screen.** Ink skips writing a frame identical to the last
+    one, so after Ctrl+L the screen stayed blank until something changed, and a resize left blank the
+    rows the new frame shared with the old. This predates Ink 7, but Ink 7 brings the incremental
+    renderer to npm installs, where it showed most. Book now redraws through Ink's
+    `suspendTerminal()`.
+  - **Esc takes effect about 20 ms later.** Ink 7 waits that long before treating a lone Esc as a
+    key, so an escape sequence split across reads is not misread. An Esc followed by another key
+    within those 20 ms reads as Alt plus that key, which is how terminals encode Alt.
+  - **Key handling is unchanged otherwise.** Ink 7 dispatches keys to handlers in mount order; Book
+    now subscribes its global handler first, so Esc and Ctrl+C keep deciding from what the screen
+    showed. A lone Esc no longer counts as Alt, so the composer returns on it explicitly.
 - **Settings validation runs on Zod 4** (#88). Book moves from Zod 3.25 to Zod 4.6. Defaults, and
   which fields a rejected document names, are unchanged; `src/settings.test.ts` now pins them,
   including a check that no object schema is defaulted in the way Zod 4 would leave bare. What

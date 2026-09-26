@@ -1,30 +1,13 @@
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import {
+  wrapInkLogUpdate,
+  type CreateLogUpdate,
+  type InkStream,
+  type LogUpdateRenderer,
+} from './ink-renderer.js';
 
 export interface FrameCursorPosition {
   x: number;
   y: number;
-}
-
-interface InkStream {
-  isTTY?: boolean;
-  rows?: number;
-  write: (data: string) => unknown;
-}
-
-interface LogUpdateRenderer {
-  (output: string): boolean | void;
-  clear: () => void;
-  done: () => void;
-  sync: (output: string) => void;
-  setCursorPosition: (position: unknown) => void;
-  isCursorDirty: () => boolean;
-  willRender: (output: string) => boolean;
-}
-
-interface LogUpdateModule {
-  create: (stream: InkStream, options?: { incremental?: boolean }) => LogUpdateRenderer;
 }
 
 let latestFrame = '';
@@ -81,7 +64,7 @@ export function setFrameSnapshotForTesting(
 export function createFrameCapturingRenderer(
   stream: InkStream,
   options: { incremental?: boolean } | undefined,
-  createBase: LogUpdateModule['create'],
+  createBase: CreateLogUpdate,
 ): LogUpdateRenderer {
   const base = createBase(stream, options);
 
@@ -100,6 +83,11 @@ export function createFrameCapturingRenderer(
     latestFrame = '';
     lastCursorPosition = null;
     base.done();
+  };
+  // Ink 7 resets its renderer's memory of the last frame after handing the terminal to a child.
+  render.reset = () => {
+    latestFrame = '';
+    base.reset?.();
   };
   render.sync = (output: string) => {
     latestFrame = output;
@@ -120,16 +108,9 @@ export async function installFrameCapture(): Promise<void> {
   if (captureInstalled) return;
   captureInstalled = true;
 
-  try {
-    const require = createRequire(import.meta.url);
-    const inkEntry = require.resolve('ink');
-    const logUpdateUrl = pathToFileURL(join(dirname(inkEntry), 'log-update.js')).href;
-    const module = (await import(logUpdateUrl)) as { default: LogUpdateModule };
-    const logUpdate = module.default;
-    const createBase = logUpdate.create;
-    logUpdate.create = (stream, options) =>
-      createFrameCapturingRenderer(stream, options, createBase);
-  } catch {
-    // Keep the TUI usable if Ink changes its private renderer layout.
-  }
+  // Keep the TUI usable if Ink changes its private renderer layout: wrapInkLogUpdate reports
+  // false and leaves Ink's own renderer in place.
+  await wrapInkLogUpdate(
+    (createBase) => (stream, options) => createFrameCapturingRenderer(stream, options, createBase),
+  );
 }

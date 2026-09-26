@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveTuiRendererMode } from './tui-renderer-mode.js';
+import { isCiEnvironment, resolveTuiRendererMode } from './tui-renderer-mode.js';
 
 describe('TUI renderer mode', () => {
   it('defaults to safe rendering on Windows and incremental rendering elsewhere', () => {
@@ -22,12 +22,20 @@ describe('TUI renderer mode', () => {
     expect(resolveTuiRendererMode('incremental', { screenReader: true })).toBe('safe');
   });
 
-  it('falls back to safe rendering when the Ink patch is unavailable', () => {
-    expect(resolveTuiRendererMode('incremental', { incrementalRendererPatched: false })).toBe(
+  it('falls back to safe rendering when the renderer fix is unavailable', () => {
+    expect(resolveTuiRendererMode('incremental', { incrementalRendererFixed: false })).toBe('safe');
+    expect(resolveTuiRendererMode('experimental-scroll', { incrementalRendererFixed: false })).toBe(
       'safe',
     );
-    expect(
-      resolveTuiRendererMode('experimental-scroll', { incrementalRendererPatched: false }),
-    ).toBe('safe');
+  });
+
+  it('detects CI the way Ink does', () => {
+    expect(isCiEnvironment({})).toBe(false);
+    expect(isCiEnvironment({ CI: 'true' })).toBe(true);
+    expect(isCiEnvironment({ CI: '1' })).toBe(true);
+    expect(isCiEnvironment({ CI: '' })).toBe(true);
+    expect(isCiEnvironment({ CI: 'false' })).toBe(false);
+    expect(isCiEnvironment({ CI: '0' })).toBe(false);
+    expect(isCiEnvironment({ CONTINUOUS_INTEGRATION: 'yes' })).toBe(true);
   });
 });

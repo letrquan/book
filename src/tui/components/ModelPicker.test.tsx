@@ -62,9 +62,9 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof ModelPicker
   return { view, onPick, onSaveProvider, onRemoveProvider, props };
 }
 
-async function write(view: ReturnType<typeof render>, value: string) {
+async function write(view: ReturnType<typeof render>, value: string, delayMs = 20) {
   view.stdin.write(value);
-  await wait(20);
+  await wait(delayMs);
 }
 
 afterEach(cleanup);
@@ -213,7 +213,8 @@ describe('ModelPicker', () => {
     await write(view, '\x1b[B');
     await write(view, '\x1bm');
     await write(view, 'hidden-a');
-    await write(view, '\x1b');
+    // Ink 7 flushes a lone Esc only after 20 ms, so a 20 ms wait is a coin flip.
+    await write(view, '\x1b', 60);
 
     expect(onSaveProvider).not.toHaveBeenCalled();
     expect(view.lastFrame()).toContain('§ Models');
@@ -330,7 +331,7 @@ describe('ModelPicker', () => {
     const { view, onRemoveProvider } = renderPicker();
     await write(view, '\x1b[B');
     await write(view, '\x1bd');
-    await write(view, key);
+    await write(view, key, key === '\x1b' ? 60 : 20);
 
     expect(onRemoveProvider).not.toHaveBeenCalled();
     expect(view.lastFrame()).toContain('§ Models');

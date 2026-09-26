@@ -26,9 +26,9 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof EffortPicke
   return { view, onSelect, onCancel };
 }
 
-async function write(view: ReturnType<typeof render>, value: string) {
+async function write(view: ReturnType<typeof render>, value: string, delayMs = 20) {
   view.stdin.write(value);
-  await wait(20);
+  await wait(delayMs);
 }
 
 afterEach(cleanup);
@@ -80,7 +80,8 @@ describe('EffortPicker', () => {
 
   it('cancels with Esc', async () => {
     const { view, onCancel } = renderPicker();
-    await write(view, '\x1b');
+    // Ink 7 flushes a lone Esc only after 20 ms, so a 20 ms wait is a coin flip.
+    await write(view, '\x1b', 60);
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 

@@ -3,6 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  VERIFIED_INK_VERSION,
+  hasInkTrailingNewlineFix,
+  installedInkVersion,
+} from '../src/cli/ink-renderer.js';
 
 interface PackResult {
   filename: string;
@@ -23,14 +28,7 @@ try {
   const dryRun = runNpm(['pack', '--dry-run', '--json'], root);
   const dryRunResult = parsePackResult(dryRun);
   const packagedFiles = new Set(dryRunResult.files.map((file) => file.path.replace(/\\/g, '/')));
-  for (const required of [
-    'dist/index.js',
-    'dist/sdk.js',
-    'dist/sdk.d.ts',
-    'README.md',
-    'patches/ink+6.8.0.patch',
-    'scripts/apply-ink-patch.mjs',
-  ]) {
+  for (const required of ['dist/index.js', 'dist/sdk.js', 'dist/sdk.d.ts', 'README.md']) {
     if (!packagedFiles.has(required)) throw new Error(`Packed artifact is missing ${required}.`);
   }
 
@@ -78,6 +76,19 @@ try {
   const sdkPath = join(installedRoot, 'dist', 'sdk.js');
   const sdk = (await import(pathToFileURL(sdkPath).href)) as Record<string, unknown>;
   if (typeof sdk.query !== 'function') throw new Error('Installed SDK does not export query().');
+
+  // The installed CLI picks the incremental renderer only when the Ink it resolves carries the
+  // trailing-newline fix, so resolve Ink the way the installed dist does, not from this checkout.
+  const installedEntry = join(installedRoot, 'dist', 'index.js');
+  const installedInk = installedInkVersion(installedEntry);
+  if (installedInk !== VERIFIED_INK_VERSION) {
+    throw new Error(
+      `Installed package resolves ink@${installedInk ?? 'missing'}; the TUI was verified against ink@${VERIFIED_INK_VERSION}.`,
+    );
+  }
+  if (!hasInkTrailingNewlineFix(installedEntry)) {
+    throw new Error("Installed Ink's renderer lacks the trailing-newline fix.");
+  }
 
   console.log(
     `Packed and installed ${packageName}@${installedPackage.version}; CLI and SDK smoke tests passed.`,

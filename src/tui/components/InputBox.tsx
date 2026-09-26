@@ -1,5 +1,5 @@
 import { Text, useInput, type Key } from 'ink';
-import { useReducer, useRef } from 'react';
+import { useEffect, useReducer, useRef } from 'react';
 
 interface InputBoxProps {
   value: string;
@@ -11,8 +11,6 @@ interface InputBoxProps {
    * and Up then Enter submitted nothing. Each key starts from this copy when it differs.
    */
   liveValueRef?: { readonly current: string };
-  /** Backspace or Delete arrived with an empty draft, so there is no text left for it to edit. */
-  onEmptyBackspace?: () => void;
   /**
    * An edit chord arrived with an empty draft. The editor knows the draft was empty before the key
    * and has already declined to apply it, so the key belongs to the transcript.
@@ -20,6 +18,8 @@ interface InputBoxProps {
   onEmptyChord?: (input: string, key: Key) => void;
   onChange: (value: string) => void;
   onSubmit?: (value: string) => void;
+  /** Backspace pressed while the composer is empty; the key edits nothing here. */
+  onBackspaceWhenEmpty?: () => void;
   placeholder?: string;
   focus?: boolean;
 }
@@ -37,6 +37,17 @@ interface EditState {
 export const COMPOSER_EDIT_KEYS = new Set(['a', 'e', 'w', 'u', 'k', 'y']);
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+/**
+ * A Backspace this soon after the previous one is key repeat, not a new press. Repeats come every
+ * 30-90 ms once a held key starts repeating (Windows ~33 ms, GNOME/X11 ~30-40 ms, macOS ~90 ms);
+ * deliberate taps are slower. The first repeat comes later, after the 250-660 ms repeat delay, and
+ * only the second one tells a hold from a tap, so a Backspace on an empty composer removes an
+ * attachment this long after the press unless a repeat cancels it. Ink 7 hands each repeated byte
+ * over as its own key; without this, holding Backspace to clear a draft went on to delete every
+ * attached image.
+ */
+const HELD_REPEAT_MS = 120;
 
 function previousGraphemeBoundary(value: string, offset: number): number {
   let previous = 0;
@@ -68,6 +79,14 @@ function previousWordBoundary(value: string, offset: number): number {
   return index;
 }
 
+/** Offset of the end of the word after `offset`: readline's `kill-word`, what Alt+Delete means. */
+function nextWordBoundary(value: string, offset: number): number {
+  let index = offset;
+  while (index < value.length && /\s/.test(value[index]!)) index += 1;
+  while (index < value.length && !/\s/.test(value[index]!)) index += 1;
+  return index;
+}
+
 /** Remove `[start, end)` and leave the cursor where the text was. */
 function cut(value: string, start: number, end: number): { edit: EditState; killed: string } {
   return {
@@ -90,6 +109,12 @@ function deletePreviousGrapheme(value: string, cursorOffset: number): EditState 
     value: value.slice(0, previousOffset) + value.slice(cursorOffset),
     cursorOffset: previousOffset,
   };
+}
+
+function deleteNextGrapheme(value: string, cursorOffset: number): EditState {
+  if (cursorOffset >= value.length) return { value, cursorOffset };
+  const nextOffset = nextGraphemeBoundary(value, cursorOffset);
+  return { value: value.slice(0, cursorOffset) + value.slice(nextOffset), cursorOffset };
 }
 
 /** Apply a raw terminal input chunk, including IME backspace/replacement sequences. */
@@ -122,10 +147,10 @@ export function applyInputSequence(value: string, cursorOffset: number, input: s
 export function InputBox({
   value,
   liveValueRef,
-  onEmptyBackspace,
   onEmptyChord,
   onChange,
   onSubmit,
+  onBackspaceWhenEmpty,
   placeholder = '',
   focus = true,
 }: InputBoxProps) {
@@ -135,6 +160,15 @@ export function InputBox({
   // long prompt in one keystroke, and Ctrl+U in particular used to scroll the
   // transcript instead — so the recovery key ships with them, not after them.
   const killRingRef = useRef('');
+  const lastBackspaceAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const pendingRemovalRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const onBackspaceWhenEmptyRef = useRef(onBackspaceWhenEmpty);
+  onBackspaceWhenEmptyRef.current = onBackspaceWhenEmpty;
+  const cancelPendingRemoval = () => {
+    clearTimeout(pendingRemovalRef.current);
+    pendingRemovalRef.current = undefined;
+  };
+  useEffect(() => () => clearTimeout(pendingRemovalRef.current), []);
   const [, rerender] = useReducer((version: number) => version + 1, 0);
 
   // Parent-driven changes such as history navigation and autocomplete own the cursor.
@@ -165,11 +199,24 @@ export function InputBox({
         valueRef.current = parentValue;
         cursorOffsetRef.current = parentValue.length;
       }
-      // Alt+Backspace deletes the previous word, as it does in every other
-      // terminal composer.
-      if (key.meta && (key.backspace || key.delete)) {
+      // Any other key ends a Backspace run, so the next Backspace is a fresh press.
+      if (!key.backspace || key.meta) lastBackspaceAtRef.current = Number.NEGATIVE_INFINITY;
+
+      // Alt+Backspace deletes the previous word and Alt+Delete the next one, as
+      // they do in every other terminal composer.
+      if (key.meta && key.backspace) {
         const cursor = cursorOffsetRef.current;
         killTo(previousWordBoundary(valueRef.current, cursor), cursor);
+        return;
+      }
+      if (key.meta && key.delete) {
+        const cursor = cursorOffsetRef.current;
+        killTo(cursor, nextWordBoundary(valueRef.current, cursor));
+        return;
+      }
+      if (key.meta && key.delete) {
+        const cursor = cursorOffsetRef.current;
+        killTo(cursor, nextWordBoundary(valueRef.current, cursor));
         return;
       }
 
@@ -250,12 +297,29 @@ export function InputBox({
         return;
       }
 
-      if (key.backspace || key.delete) {
-        if (!valueRef.current) {
-          onEmptyBackspace?.();
+      if (key.backspace) {
+        const now = performance.now();
+        const repeat = now - lastBackspaceAtRef.current < HELD_REPEAT_MS;
+        lastBackspaceAtRef.current = now;
+        // The key is held, so the press that scheduled a removal only started the hold.
+        if (repeat) cancelPendingRemoval();
+        if (valueRef.current !== '') {
+          commit(deletePreviousGrapheme(valueRef.current, cursorOffsetRef.current));
           return;
         }
-        commit(deletePreviousGrapheme(valueRef.current, cursorOffsetRef.current));
+        if (!repeat) {
+          cancelPendingRemoval();
+          pendingRemovalRef.current = setTimeout(() => {
+            pendingRemovalRef.current = undefined;
+            onBackspaceWhenEmptyRef.current?.();
+          }, HELD_REPEAT_MS);
+        }
+        return;
+      }
+
+      // Ink 7 reports the Delete key (ESC [3~) apart from Backspace; Ink 6 could not tell them apart.
+      if (key.delete) {
+        commit(deleteNextGrapheme(valueRef.current, cursorOffsetRef.current));
         return;
       }
 
