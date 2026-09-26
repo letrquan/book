@@ -25,7 +25,8 @@ fi
 # Probe the port before touching anything, so a port another process holds (another
 # smoke run, a mock left behind) stops this run with a message and no side effects,
 # before the `rm -rf` of a BOOK_SMOKE_WS below. (The driver would also fail fast, but
-# only after that.)
+# only after that.) Two runs started within a second or two can both pass the probe;
+# the one whose mock loses the bind then fails in the driver, in its own run dir.
 probe=0
 node -e "const s = require('net').createServer();
   s.once('error', (e) => { console.error(e.code || e.message); process.exit(e.code === 'EADDRINUSE' ? 3 : 2); });
@@ -33,8 +34,11 @@ node -e "const s = require('net').createServer();
 if [ "$probe" -eq 3 ]; then
   echo "smoke: port $PORT is in use by another process; set BOOK_SMOKE_PORT" >&2
   exit 1
+elif [ "$probe" -eq 127 ]; then
+  echo "smoke: node is not on PATH" >&2
+  exit 1
 elif [ "$probe" -ne 0 ]; then
-  echo "smoke: cannot probe port $PORT (node exited $probe); is node on PATH?" >&2
+  echo "smoke: cannot bind port $PORT (the error is above); set BOOK_SMOKE_PORT" >&2
   exit 1
 fi
 

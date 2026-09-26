@@ -32,7 +32,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
@@ -110,7 +110,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ---------------------------------------------------------------------------
 
 let mockProc = null;
-// Set just before cleanup() kills the mock, so only an unexpected exit is reported.
+// Resolves once the mock has exited and its stderr pipe has drained.
+let mockClosed = Promise.resolve();
+// Set before the driver stops the mock (or a signal reaches it too), so only an unexpected
+// exit is reported.
 let mockStopping = false;
 async function startMock() {
   const args = [join(HERE, 'mock-provider.mjs'), '--port', String(MOCK_PORT)];
@@ -119,6 +122,7 @@ async function startMock() {
   if (process.argv.includes('--mock-usage-from-estimate')) args.push('--usage-from-estimate');
   if (CHUNK_DELAY_MS) args.push('--chunk-delay-ms', CHUNK_DELAY_MS);
   mockProc = procSpawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  mockClosed = new Promise((resolveClosed) => mockProc.on('close', resolveClosed));
   // Keep the mock's stderr visible, and its tail for the error below.
   let mockStderr = '';
   mockProc.stderr.on('data', (d) => {
@@ -179,45 +183,63 @@ const extraArgs = (() => {
 })();
 
 // --bin <path> drives a different executable (e.g. the Go build, bin/book.exe)
-// instead of node dist/index.js; the same flags are passed through.
-const BIN = opt('bin', null);
+// instead of node dist/index.js; the same flags are passed through. A path is made
+// absolute (on POSIX node-pty enters the workspace before exec); a bare name uses PATH.
+const BIN = (() => {
+  const bin = opt('bin', null);
+  return bin && /[\\/]/.test(bin) ? resolve(bin) : bin;
+})();
 
 // The startup fire animation delays the first render past short waits, so the driver
 // turns it off, and `--startup-animation` turns it on, for driving the splash itself.
 // Either way the value goes in a `--settings` layer the driver owns, which outranks every
 // settings file: the workspace's own `.book/settings.json` is never written, and a value
 // an older driver left there cannot win. A `--settings` of your own after `--` (a relative
-// path is taken from the driver's cwd) is merged into that layer, its keys winning; one the
-// driver cannot read fails the run here, since Book would ignore a missing file and the
-// splash would then hide the input bar. (Book takes one `--settings` layer, hence the
-// merge.) `--no-settings` skips every layer, this one too. The Go build (`--bin`) reads a
-// flat `startupAnimation` key and gets no layer.
+// path is taken from the driver's cwd) is merged into that layer, its keys winning except
+// `ui.startupAnimation`, which the driver sets. One the driver cannot read fails the run
+// here, since Book would ignore a missing file and the splash would then hide the input bar.
+// (Book takes one `--settings` layer, hence the merge.) `--no-settings` skips every layer,
+// this one too. The Go build (`--bin`) reads a flat `startupAnimation` key and gets no layer.
 let settingsLayerDir = null;
+// Kept when the run fails after a merge: Book's settings errors name this file.
+let keepSettingsLayer = false;
+// Set by fail() and the crash path (declared here: removeOwnedDirs() reads it on early exits).
+let runFailed = false;
 const isObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+function settingsUsageError(message) {
+  console.error(`[driver] ${message}`);
+  removeOwnedDirs();
+  process.exit(1);
+}
 const settingsArgs = (() => {
+  const isSettings = (a) => a === '--settings' || a.startsWith('--settings=');
+  const count = extraArgs.filter(isSettings).length;
+  if (count > 1) settingsUsageError('pass --settings at most once (Book reads only the last)');
+  if (count === 1 && extraArgs.includes('--no-settings')) {
+    settingsUsageError('--settings and --no-settings contradict each other');
+  }
   if (BIN || extraArgs.includes('--no-settings')) return [];
   const layer = { ui: { startupAnimation: STARTUP_ANIMATION } };
   let merged = '';
-  const i = extraArgs.findIndex((a) => a === '--settings' || a.startsWith('--settings='));
+  const i = extraArgs.findIndex(isSettings);
   if (i !== -1) {
     const eq = extraArgs[i].startsWith('--settings=');
     const path = eq ? extraArgs[i].slice('--settings='.length) : extraArgs[i + 1];
     const file = path ? resolve(path) : '';
     let own;
     try {
-      const text = readFileSync(file, 'utf8');
-      own = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
+      // Parsed as Book parses it (no BOM, no comments), so the two agree on what is valid.
+      own = JSON.parse(readFileSync(file, 'utf8'));
       if (!isObject(own) || (own.ui !== undefined && !isObject(own.ui))) {
         throw new Error('expected a JSON object (with an object `ui`, if any)');
       }
     } catch (error) {
-      console.error(`[driver] cannot read --settings ${path ?? '(no path)'}: ${error.message}`);
-      removeOwnedDirs();
-      process.exit(1);
+      settingsUsageError(`cannot read --settings ${path ?? '(no path)'}: ${error.message}`);
     }
-    Object.assign(layer, own, { ui: { ...layer.ui, ...(own.ui ?? {}) } });
+    Object.assign(layer, own, { ui: { ...(own.ui ?? {}), ...layer.ui } });
     extraArgs.splice(i, eq ? 1 : 2);
     merged = ` merged from ${file}`;
+    keepSettingsLayer = true;
   }
   settingsLayerDir = mkdtempSync(join(tmpdir(), 'book-drive-settings-'));
   const file = join(settingsLayerDir, 'settings.json');
@@ -541,6 +563,7 @@ const halt = () => new Promise(() => {});
 
 async function fail(msg) {
   if (stopping) return halt();
+  runFailed = true;
   console.error(`\n[driver] FAIL: ${msg}`);
   console.error('[driver] last screen:\n' + (await screen()).join('\n'));
   await cleanup();
@@ -569,9 +592,16 @@ function cleanup() {
     releasePty();
     mockStopping = true;
     mockProc?.kill();
+    // Let the mock's piped stderr drain before the driver exits, or its last lines are lost.
+    await Promise.race([mockClosed, sleep(1000)]);
     if (RECORD_FILE) {
-      writeFileSync(RECORD_FILE, JSON.stringify({ cols, rows, chunks: recorded }));
-      console.log(`[driver] record -> ${RECORD_FILE}`);
+      try {
+        writeFileSync(RECORD_FILE, JSON.stringify({ cols, rows, chunks: recorded }));
+        console.log(`[driver] record -> ${RECORD_FILE}`);
+      } catch (error) {
+        runFailed = true;
+        console.error(`[driver] could not write the record ${RECORD_FILE}: ${error.message}`);
+      }
     }
     removeOwnedDirs();
   })();
@@ -590,10 +620,14 @@ function removeOwnedDirs() {
   // home; an agent worktree is registered in the workspace's repository. Deleting either
   // would orphan the job (or pull its files out from under it) or leave a dangling
   // `git worktree` entry, so both dirs stay while such state exists.
-  const outlives = stateOutlivingBook(BOOK_HOME);
+  const outlives = stateOutlivingBook();
   const kept = outlives.length > 0 ? [ownedBookHome, scratch].filter(Boolean) : [];
   if (kept.length > 0) {
     console.error(`[driver] kept ${kept.join(' and ')}: the home holds ${outlives.join(' and ')}`);
+  }
+  if (runFailed && keepSettingsLayer && settingsLayerDir) {
+    kept.push(settingsLayerDir);
+    console.error(`[driver] kept the merged settings layer ${settingsLayerDir} for a look`);
   }
   for (const dir of [scratch, ownedBookHome, settingsLayerDir]) {
     if (!dir || kept.includes(dir)) continue;
@@ -614,24 +648,48 @@ function entries(dir) {
   }
 }
 
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+}
+
+function isInside(path, dir) {
+  const fold = (p) => (process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p));
+  const rel = relative(fold(dir), fold(path));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
 /**
- * Agent worktrees (`<home>/.book/worktrees/<repo>/<agent>`) and background jobs whose record
- * says they are still live (`<home>/.book/jobs/<repo>/records/*.json`). Book creates the
- * empty `jobs/<repo>/…` tree on every start, so only a live record counts.
+ * This run's state that outlives Book: agent worktrees in a home the driver made (so they
+ * are this run's), and background jobs running in this workspace — a record under
+ * `<home>/.book/jobs/<repo>/records/` whose status is live and whose runner is still alive.
+ * Book creates the empty `jobs/<repo>/…` tree on every start, so the tree alone counts for
+ * nothing, and a given home's jobs from other workspaces are not this run's.
  */
-function stateOutlivingBook(home) {
+function stateOutlivingBook() {
   const LIVE_JOB_STATUSES = new Set(['starting', 'running', 'stopping']);
-  const book = join(home, '.book');
+  const book = join(BOOK_HOME, '.book');
   const kinds = [];
   const worktrees = join(book, 'worktrees');
-  if (entries(worktrees).some((repo) => entries(join(worktrees, repo)).length > 0)) {
+  if (ownedBookHome && entries(worktrees).some((repo) => entries(join(worktrees, repo)).length > 0)) {
     kinds.push('agent worktrees');
   }
   const live = entries(join(book, 'jobs')).some((repo) => {
     const records = join(book, 'jobs', repo, 'records');
     return entries(records).some((name) => {
       try {
-        return LIVE_JOB_STATUSES.has(JSON.parse(readFileSync(join(records, name), 'utf8')).status);
+        const record = JSON.parse(readFileSync(join(records, name), 'utf8'));
+        return (
+          LIVE_JOB_STATUSES.has(record.status) &&
+          pidAlive(record.runnerPid) &&
+          typeof record.workdir === 'string' &&
+          isInside(record.workdir, WORKSPACE)
+        );
       } catch {
         return false;
       }
@@ -645,10 +703,13 @@ function stateOutlivingBook(home) {
 // cleanup() kills that one child — the only mock this driver may kill; others belong to
 // other runs — after giving Book its two seconds to exit, so the dirs it holds open can go.
 // (On Windows only a console Ctrl-C arrives as SIGINT; a kill there is TerminateProcess.)
+// A second signal during that cleanup exits at once.
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, async () => {
-    if (stopping) return;
+    if (stopping) process.exit(1);
     stopping = true;
+    // A console Ctrl-C reaches the mock too; its exit is expected, not a mid-run crash.
+    mockStopping = true;
     await cleanup();
     process.exit(1);
   });
@@ -778,6 +839,8 @@ async function run() {
 
   await cleanup();
   if (stopping) return halt();
+  // cleanup() could not write the --record the script asked for.
+  if (runFailed) return flushAndExit(1);
   console.log('[driver] OK');
 }
 
@@ -785,6 +848,7 @@ run()
   .then(() => flushAndExit(0))
   .catch(async (e) => {
     if (stopping) return halt();
+    runFailed = true;
     console.error('[driver] crashed:', e);
     await cleanup();
     await flushAndExit(1);
