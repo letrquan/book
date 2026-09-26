@@ -7,6 +7,7 @@ import type {
 import type { ToolDefinition } from '../types/tools.js';
 import type { Usage } from '../types/messages.js';
 import { createDebugLogger } from '../debug-log.js';
+import { escapeInvisibleCharacters } from '../control-characters.js';
 import {
   classifyApiError,
   classifyProviderError,
@@ -226,10 +227,10 @@ export async function* chatCompletionStream(
         log.warn('tool call arguments are not valid JSON', {
           index: part.index,
           id: part.id,
-          name: part.name,
+          name: escapeInvisibleCharacters(part.name),
           fragments: part.fragments,
           length: part.arguments.length,
-          head: part.arguments.slice(0, 120),
+          head: escapeInvisibleCharacters(part.arguments.slice(0, 120)),
         });
       }
       yield {
@@ -331,13 +332,14 @@ export async function* chatCompletionStream(
           }
 
           // The head of every fragment, not a count: a call that arrives missing its
-          // opening `{"filePath": ` is visible here (#260) and nowhere else.
+          // opening `{"filePath": ` is visible here (#260) and nowhere else. Escaped, because the
+          // text is the model's and a debug log on stderr may be a terminal.
           log.debug('stream tool_call delta', {
             index,
             id: tc.id,
-            name: tc.function?.name,
+            name: escapeInvisibleCharacters(tc.function?.name ?? ''),
             argumentsLength: tc.function?.arguments?.length ?? 0,
-            argumentsHead: tc.function?.arguments?.slice(0, 120),
+            argumentsHead: escapeInvisibleCharacters(tc.function?.arguments?.slice(0, 120) ?? ''),
           });
 
           if (tc.id) part.id = tc.id;

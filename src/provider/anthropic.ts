@@ -7,6 +7,7 @@ import type {
 import type { ToolDefinition } from '../types/tools.js';
 import type { Usage } from '../types/messages.js';
 import { createDebugLogger } from '../debug-log.js';
+import { escapeInvisibleCharacters } from '../control-characters.js';
 import {
   classifyApiError,
   classifyProviderError,
@@ -652,7 +653,7 @@ export async function* chatCompletionStream(
               log.debug('stream tool input delta', {
                 id: currentToolId,
                 length: String(delta.partial_json).length,
-                head: String(delta.partial_json).slice(0, 120),
+                head: escapeInvisibleCharacters(String(delta.partial_json).slice(0, 120)),
               });
             }
             break;
@@ -669,9 +670,9 @@ export async function* chatCompletionStream(
               if ('__raw' in parsedInput) {
                 log.warn('tool call arguments are not valid JSON', {
                   id: currentToolId,
-                  name: currentToolName,
+                  name: escapeInvisibleCharacters(currentToolName),
                   length: currentToolArgs.length,
-                  head: currentToolArgs.slice(0, 120),
+                  head: escapeInvisibleCharacters(currentToolArgs.slice(0, 120)),
                 });
               }
               const toolCall = {
