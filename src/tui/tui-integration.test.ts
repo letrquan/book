@@ -176,13 +176,12 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
       // following \r arrives in its own chunk and parses as Enter.
       const echoStart = output.length;
       pty.write(text);
-      // `¶ ` opens the composer's draft; `› ` marks the command menu's
-      // highlighted row, which is the whole row repainted even when the
-      // incremental renderer only redraws the changed cells of the composer.
-      const echoed = () => {
-        const fresh = stripAnsi(output.slice(echoStart));
-        return fresh.includes('¶ ' + text) || fresh.includes('› ' + text);
-      };
+      // A slash command is proven read by the command menu's highlighted row
+      // (`› /help`): it only appears once the menu has filtered to it, which is
+      // the state Enter resolves against. Other text shows after the composer's
+      // pilcrow (`¶ `).
+      const echo = text.startsWith('/') ? '› ' + text : '¶ ' + text;
+      const echoed = () => stripAnsi(output.slice(echoStart)).includes(echo);
       const start = Date.now();
       while (!echoed()) {
         if (Date.now() - start >= 10_000) {
@@ -266,6 +265,14 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
 
 const CTRL_U = String.fromCharCode(0x15);
 
+/**
+ * The /help sheet's head. The command menu that opens while `/help` is typed
+ * has a `§ Commands` rule of its own, so waiting for that text alone returned
+ * before Enter had been handled, and the next write was read in the same chunk
+ * as the Enter, which Ink then dropped.
+ */
+const HELP_PANEL = /§ Commands ─+ \d+ · Esc to close/;
+
 // ANSI escape sequences for common keys.
 const keys = {
   up: '\x1b[A',
@@ -311,7 +318,7 @@ describe('TUI slash commands', () => {
     await submitInteractive(session, '/help');
     await sleep(300);
     session.sendKey(keys.ctrlHome);
-    const output = await session.waitFor('§ Commands');
+    const output = await session.waitFor(HELP_PANEL);
     expect(output).toContain('§ Commands');
     expect(output).toContain('/help');
     expect(output).toContain('/clear');
@@ -337,7 +344,7 @@ describe('TUI slash commands', () => {
     // Full-frame rendering makes the post-toggle terminal state directly assertable.
     const live = (session = await startAndWait({ BOOK_TUI_RENDERER: 'safe' }));
     await submitInteractive(live, '/help');
-    await live.waitFor('§ Commands');
+    await live.waitFor(HELP_PANEL);
     await submitInteractive(live, '/help');
     // Read the replayed screen, not the byte stream: the panel's rows are still
     // in the stream's history after the redraw that removed them.
@@ -504,7 +511,7 @@ describe('TUI keyboard input', () => {
     async () => {
       session = await startAndWait();
       await submitInteractive(session, '/help');
-      await session.waitFor('§ Commands');
+      await session.waitFor(HELP_PANEL);
 
       const startedAt = performance.now();
       session.sendKey(keys.ctrlU);
@@ -525,7 +532,7 @@ describe('TUI keyboard input', () => {
     async () => {
       session = await startAndWait({ BOOK_TUI_RENDERER: 'safe' });
       await submitInteractive(session, '/help');
-      await session.waitFor('§ Commands');
+      await session.waitFor(HELP_PANEL);
 
       session.sendKey('INPUT_FOOTER_SENTINEL');
       await session.waitFor('INPUT_FOOTER_SENTINEL');
