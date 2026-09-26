@@ -1271,16 +1271,48 @@ describe('parseCompatibleUsage', () => {
     });
   });
 
-  it('counts Anthropic top-level cache on top when the details object carries no count', () => {
+  it('counts Anthropic top-level cache on top only when no OpenAI-style cache field is present', () => {
+    // An empty details object says nothing about the cache: counted on top.
     expect(
       parseCompatibleUsage({
         prompt_tokens: 1000,
         completion_tokens: 2,
         total_tokens: 1002,
-        prompt_tokens_details: { cached_tokens: 0 },
+        prompt_tokens_details: {},
         cache_read_input_tokens: 400,
       }),
     ).toMatchObject({ promptTokens: 1000, cacheReadInputTokens: 400, contextTokens: 1400 });
+    // LiteLLM's cold turn: `cached_tokens: 0` beside the write says prompt_tokens includes it.
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 60000,
+        completion_tokens: 20,
+        total_tokens: 60020,
+        prompt_tokens_details: { cached_tokens: 0 },
+        cache_creation_input_tokens: 58000,
+      }),
+    ).toEqual({
+      promptTokens: 2000,
+      completionTokens: 20,
+      totalTokens: 60020,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 58000,
+    });
+  });
+
+  it('derives total_tokens when a provider omits it', () => {
+    expect(parseCompatibleUsage({ prompt_tokens: 10, completion_tokens: 5 })).toEqual({
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+    });
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 150000,
+        completion_tokens: 300,
+        prompt_tokens_details: { cached_tokens: 150000 },
+      }),
+    ).toMatchObject({ promptTokens: 0, totalTokens: 150300, cacheReadInputTokens: 150000 });
   });
 
   it("reads Moonshot's top-level cached_tokens and DashScope's cache writes as included", () => {

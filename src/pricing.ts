@@ -160,13 +160,12 @@ export function promptSizeTokens(usage: CostedUsage): number {
 }
 
 /**
- * The token count a report shows as its total. With cache tokens it is every input and output
- * token, because `totalTokens` means different things by provider: the Anthropic path counts
- * uncached input plus output, OpenAI-style usage counts the cache too.
+ * The token count a report shows as its total: every input and output token. `totalTokens` means
+ * different things by provider (the Anthropic path counts uncached input plus output, OpenAI-style
+ * usage counts the cache and sometimes hidden reasoning too), so the larger reading wins.
  */
 export function trafficTokens(usage: CostedUsage & { totalTokens: number }): number {
-  const cache = (usage.cacheReadInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0);
-  return cache > 0 ? promptSizeTokens(usage) + usage.completionTokens : usage.totalTokens;
+  return Math.max(usage.totalTokens, promptSizeTokens(usage) + usage.completionTokens);
 }
 
 /** The rate and USD cost of a usage on `model`, or undefined for a model with no rate. */
@@ -329,6 +328,15 @@ export function modelBreakdownLines(
   const actual = rows.reduce((sum, row) => sum + (row.usd ?? 0), 0);
   lines.push(`  Total - $${actual.toFixed(4)}`);
 
+  // A cache rate the lead does not list would be priced at its upper bound, and the "saving"
+  // would then be an artifact of that bound, not a comparison.
+  const leadRate = resolveModelPricing(leadModel)?.rate;
+  const boundedOnLead = rows.some(
+    (row) =>
+      (row.cacheReadInputTokens > 0 && leadRate?.cacheRead === undefined) ||
+      (row.cacheCreationInputTokens > 0 && leadRate?.cacheCreation === undefined),
+  );
+  if (boundedOnLead) return lines;
   const allOnLead = rows.reduce((sum, row) => sum + (usdFor(leadModel, row) ?? Number.NaN), 0);
   if (!Number.isFinite(allOnLead)) return lines;
   const delta = allOnLead - actual;
@@ -353,13 +361,16 @@ function unpricedLine(model: string): string {
   return `Est. cost: pricing unknown for "${model}"; tokens are counted, dollars are not`;
 }
 
-/** `, 9,000 cached` (and `, 1,200 cache writes`) for a token summary; empty with no cache tokens. */
-function cacheTokenNote(usage: CostedUsage): string {
+/**
+ * The cache counts of a usage as report fragments, each prefixed by `separator`: `, 9,000 cached`
+ * (and `, 1,200 cache writes`); empty with no cache tokens.
+ */
+function cacheTokenNote(usage: CostedUsage, separator = ', '): string {
   const read = usage.cacheReadInputTokens ?? 0;
   const write = usage.cacheCreationInputTokens ?? 0;
   return (
-    (read > 0 ? `, ${read.toLocaleString()} cached` : '') +
-    (write > 0 ? `, ${write.toLocaleString()} cache writes` : '')
+    (read > 0 ? `${separator}${read.toLocaleString()} cached` : '') +
+    (write > 0 ? `${separator}${write.toLocaleString()} cache writes` : '')
   );
 }
 
@@ -422,7 +433,7 @@ export function usageReport(
     return lines.join('\n');
   }
   lines.push(
-    `Tokens: prompt ${usage.promptTokens.toLocaleString()}  •  completion ${usage.completionTokens.toLocaleString()}  •  total ${trafficTokens(usage).toLocaleString()}${cacheTokenNote(usage).replace(/, /g, '  •  ')}`,
+    `Tokens: prompt ${usage.promptTokens.toLocaleString()}  •  completion ${usage.completionTokens.toLocaleString()}  •  total ${trafficTokens(usage).toLocaleString()}${cacheTokenNote(usage, '  •  ')}`,
   );
   const priced = usageCostForModel(model, usage);
   if (priced) {

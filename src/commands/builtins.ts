@@ -524,10 +524,11 @@ function agentCommandEffect(
 function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffect {
   // The same rate resolution as /cost and the /usage text, so a dated or aliased model id
   // prices here too.
-  const rate = resolveModelPricing(context.runtimeConfig.model)?.rate;
-  const estimatedCostUsd = context.usage
-    ? usageCostForModel(context.runtimeConfig.model, context.usage)?.costUsd
+  const priced = context.usage
+    ? usageCostForModel(context.runtimeConfig.model, context.usage)
     : undefined;
+  const rate = priced?.rate ?? resolveModelPricing(context.runtimeConfig.model)?.rate;
+  const estimatedCostUsd = priced?.costUsd;
   const toolCallStats =
     context.toolCallStats && context.toolCallStats.size > 0
       ? [...context.toolCallStats.entries()]

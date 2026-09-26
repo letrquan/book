@@ -103,9 +103,9 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
  * - Anthropic's own top-level names (`cache_read_input_tokens`, `cache_creation_input_tokens`)
  *   from a proxy that sends no `prompt_tokens_details` are Anthropic's numbers passed through,
  *   where the input count excludes the cache: they are added on top, and `contextTokens` carries
- *   the whole prompt. A proxy that reports an OpenAI-style count
- *   beside them (LiteLLM's `prompt_tokens_details.cached_tokens`) has normalised `prompt_tokens` to
- *   include them; with no such count the cache is counted on top, the side that overstates.
+ *   the whole prompt. A proxy that reports an OpenAI-style cache field beside
+ *   them, even at zero (LiteLLM's `prompt_tokens_details.cached_tokens`), has normalised
+ *   `prompt_tokens` to include them.
  *
  * Counts that cannot fit inside `prompt_tokens` are treated as on top of it whatever their
  * source. A usage with no cache tokens maps exactly as before, with no cache fields.
@@ -130,7 +130,8 @@ export function parseCompatibleUsage(raw: unknown): Usage | null {
   const base: Usage = {
     promptTokens: prompt,
     completionTokens: tokens(usage.completion_tokens),
-    totalTokens: tokens(usage.total_tokens),
+    // A provider that omits `total_tokens` would otherwise read as zero context pressure.
+    totalTokens: tokens(usage.total_tokens) || prompt + tokens(usage.completion_tokens),
   };
   const topRead = tokens(usage.cache_read_input_tokens);
   const topWrite = tokens(usage.cache_creation_input_tokens);
@@ -149,11 +150,19 @@ export function parseCompatibleUsage(raw: unknown): Usage | null {
   const read = normalisedRead || topRead;
   const write = normalisedWrite || topWrite;
   if (read === 0 && write === 0) return base;
-  // Anthropic's top-level names with no OpenAI-style count beside them are Anthropic's numbers
-  // passed through, where the input count excludes the cache. The reading is ambiguous for a proxy
-  // that normalises `prompt_tokens` without saying so, and counting the cache on top is the safe
-  // side of it: cost and context pressure are overstated, never understated.
-  const anthropicPassThrough = normalisedRead + normalisedWrite === 0 && topRead + topWrite > 0;
+  // Anthropic's top-level names with no OpenAI-style cache field beside them (not even a zero)
+  // are Anthropic's numbers passed through, where the input count excludes the cache. A field
+  // beside them, even `cached_tokens: 0` on LiteLLM's cold turn, says `prompt_tokens` was
+  // normalised to include them.
+  const reportsOpenAiCacheField = [
+    details.cached_tokens,
+    details.cache_creation_tokens,
+    details.cache_write_tokens,
+    details.cache_creation_input_tokens,
+    usage.prompt_cache_hit_tokens,
+    usage.cached_tokens,
+  ].some((value) => typeof value === 'number');
+  const anthropicPassThrough = !reportsOpenAiCacheField && topRead + topWrite > 0;
   if (!anthropicPassThrough && read + write <= prompt) {
     return {
       ...base,

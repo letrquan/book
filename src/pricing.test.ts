@@ -258,6 +258,37 @@ describe('costReport (unchanged)', () => {
     expect(trafficTokens(usage)).toBe(10_700);
     expect(trafficTokens({ promptTokens: 10, completionTokens: 5, totalTokens: 15 })).toBe(15);
   });
+
+  it('shows the larger of the provider total and the counted tokens', () => {
+    // total_tokens counting hidden reasoning beyond completion_tokens
+    expect(
+      trafficTokens({
+        promptTokens: 200,
+        completionTokens: 50,
+        totalTokens: 1400,
+        cacheReadInputTokens: 800,
+      }),
+    ).toBe(1400);
+    // no total_tokens at all
+    expect(trafficTokens({ promptTokens: 1000, completionTokens: 50, totalTokens: 0 })).toBe(1050);
+  });
+
+  it('skips the lead counterfactual when the lead has no rate for the cache tokens', () => {
+    const lines = modelBreakdownLines('gpt-5', { promptTokens: 1000, completionTokens: 100 }, [
+      {
+        label: 'explorer',
+        model: 'claude-haiku-4-5-20251001',
+        usage: {
+          promptTokens: 50_000,
+          completionTokens: 10_000,
+          totalTokens: 60_000,
+          cacheReadInputTokens: 2_000_000,
+        },
+      },
+    ]).join('\n');
+    expect(lines).toContain('Total - $');
+    expect(lines).not.toContain('Same tokens entirely on gpt-5');
+  });
 });
 
 describe('prefix pricing must not price a sibling model', () => {
