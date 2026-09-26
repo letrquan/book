@@ -301,6 +301,13 @@ export function InputBar({
   const menuVisibleRef = useRef(false);
   const menuFilterRef = useRef('');
   const menuSelectedRef = useRef(0);
+  // Written with the state, as `valueRef` is: Down then Enter in one read must run the item Down
+  // moved to, and the ref assigned at render is a render behind until then.
+  const selectMenuItem = useCallback((update: number | ((current: number) => number)) => {
+    const next = typeof update === 'function' ? update(menuSelectedRef.current) : update;
+    menuSelectedRef.current = next;
+    setMenuSelected(next);
+  }, []);
 
   // File mention menu state
   const [fileMenuVisible, setFileMenuVisible] = useState(false);
@@ -416,7 +423,7 @@ export function InputBar({
     setAttachments(draftRestore.attachments ?? []);
     setHistoryIndex(-1);
     setMenuVisible(false);
-    setMenuSelected(0);
+    selectMenuItem(0);
     setFileMenuVisible(false);
     setFileMention(null);
     setFileCandidates([]);
@@ -429,10 +436,13 @@ export function InputBar({
   const acceptSelectedFileMention = useCallback(
     (currentValue: string, trigger: 'Tab' | 'Enter'): boolean => {
       // The refs hold offsets from the last render, and splicing them into a draft typed since
-      // left stray characters, so the mention is read from the draft as it stands.
+      // left stray characters, so the mention is read from the draft as it stands. The candidates,
+      // though, are the ones loaded for the render's query: splicing a candidate for an older
+      // query replaced what was typed since, so a new query waits for its own candidates.
       const mention = findActiveFileMention(currentValue);
       const selected = getSelectedFileMention(fileCandidatesRef.current, fileSelectedRef.current);
       if (!mention || !selected) return false;
+      if (mention.query !== fileMentionRef.current?.query) return false;
 
       const nextValue = replaceActiveFileMention(currentValue, mention, selected.path);
       setValue(nextValue);
@@ -455,6 +465,7 @@ export function InputBar({
         skillSelectedRef.current,
       );
       if (!mention || !selected) return false;
+      if (mention.query !== skillMentionRef.current?.query) return false;
 
       const nextValue = replaceActiveSkillMention(currentValue, mention, selected.name);
       setValue(nextValue);
@@ -491,7 +502,8 @@ export function InputBar({
     // every Esc before the menu handlers below could dismiss a menu with it.
     // Only an open menu takes Esc here; every other Esc still belongs to the
     // app (cancel the turn, drop a recalled queued input, close a panel).
-    const menuOpen = menuVisible || skillMenuVisible || fileMenuVisible;
+    const menuOpen =
+      menuVisibleRef.current || skillMenuVisibleRef.current || fileMenuVisibleRef.current;
     if (key.meta && !(key.escape && menuOpen)) {
       const preservedValue = valueRef.current;
       queueMicrotask(() => setValue(preservedValue));
@@ -505,40 +517,44 @@ export function InputBar({
     }
 
     // ---- Command menu keyboard handling ----
-    if (menuVisible) {
+    // The refs, not the state: Ink hands every key of one stdin read to the handler this hook
+    // subscribed at the last effect flush, so a Down that opened the menu, or one that arrives in
+    // the same read as an Enter, sees the menus as they were a render ago.
+    if (menuVisibleRef.current) {
+      const items = getFilteredCommands(commands, menuFilterRef.current);
       // Escape: dismiss menu
       if (key.escape) {
         setMenuVisible(false);
-        setMenuSelected(0);
+        selectMenuItem(0);
         uiLog.event('input:Escape', { action: 'dismiss-menu' });
         return;
       }
       // Tab: auto-fill selected command
       if (key.tab) {
-        if (filteredCmds.length > 0) {
-          const sel = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
-          const cmd = filteredCmds[sel];
+        if (items.length > 0) {
+          const sel = Math.max(0, Math.min(menuSelectedRef.current, items.length - 1));
+          const cmd = items[sel];
           setValue('/' + cmd.name + ' ');
           setMenuVisible(false);
-          setMenuSelected(0);
+          selectMenuItem(0);
           uiLog.event('input:Tab', { action: 'autofill-command', command: cmd.name });
         }
         return;
       }
       // Down arrow: next item
       if (key.downArrow) {
-        setMenuSelected((prev) => {
+        selectMenuItem((prev) => {
           const next = prev + 1;
-          return next >= filteredCmds.length ? 0 : next;
+          return next >= items.length ? 0 : next;
         });
         uiLog.event('input:Down', { action: 'menu-next-item' });
         return;
       }
       // Up arrow: previous item
       if (key.upArrow) {
-        setMenuSelected((prev) => {
+        selectMenuItem((prev) => {
           const next = prev - 1;
-          return next < 0 ? Math.max(0, filteredCmds.length - 1) : next;
+          return next < 0 ? Math.max(0, items.length - 1) : next;
         });
         uiLog.event('input:Up', { action: 'menu-prev-item' });
         return;
@@ -639,7 +655,7 @@ export function InputBar({
     if ((key.ctrl && (_input === 'j' || _input === '\n')) || (key.shift && key.return)) {
       setValue(valueRef.current + '\n');
       setMenuVisible(false);
-      setMenuSelected(0);
+      selectMenuItem(0);
       setFileMenuVisible(false);
       setFileMention(null);
       setFileCandidates([]);
@@ -717,8 +733,9 @@ export function InputBar({
         uiLog.event('menu:visible', { filter: clean.slice(1) });
       }
       setMenuVisible(true);
+      menuFilterRef.current = clean.slice(1);
       setMenuFilter(clean.slice(1));
-      setMenuSelected(0);
+      selectMenuItem(0);
       setFileMenuVisible(false);
       setFileMention(null);
       setFileCandidates([]);
@@ -783,13 +800,14 @@ export function InputBar({
           menuSelectedRef.current,
         );
         setMenuVisible(false);
-        setMenuSelected(0);
+        selectMenuItem(0);
         setFileMenuVisible(false);
         setFileMention(null);
         setFileCandidates([]);
         if (!commandValue) {
           // Nothing in the menu matches: keep the text for fixing rather than clear it. It is not
-          // sent either, since an unknown command would reach the model as a prompt.
+          // sent on this Enter either, since an unknown command would reach the model as a prompt;
+          // a second Enter, with the menu closed, sends it as typed text.
           uiLog.event('submit:menu', { result: 'no-command-value' });
           return;
         }
@@ -832,7 +850,7 @@ export function InputBar({
 
       // Dismiss menus on submit.
       setMenuVisible(false);
-      setMenuSelected(0);
+      selectMenuItem(0);
       setFileMenuVisible(false);
       setFileMention(null);
       setFileCandidates([]);

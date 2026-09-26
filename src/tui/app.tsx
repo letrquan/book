@@ -709,11 +709,19 @@ export function App({
       const input = createQueuedInput(value, sessionId, attachments, edited);
       const result = enqueueQueuedInput(queuedInputsRef.current, input);
       if (!result.accepted) {
-        announceQueueEvent(
-          'Queue is full. Edit or clear a queued message before adding another.',
-          'warning',
-          5_000,
-        );
+        if (edited) {
+          // Still out for editing, so say what to do about it rather than announcing a refusal
+          // about a message that is not being added: Esc removes it, /queue clear empties the queue.
+          setQueueNotice(
+            'Queue is full, so this input stays here. Esc removes it; /queue clear empties the queue.',
+          );
+        } else {
+          announceQueueEvent(
+            'Queue is full. Edit or clear a queued message before adding another.',
+            'warning',
+            5_000,
+          );
+        }
         return false;
       }
       replaceQueuedInputs(result.queue);
@@ -1391,6 +1399,18 @@ export function App({
     [],
   );
   useInput(forwardInput);
+  /**
+   * Cancels a `/compact` still running its reducer, once. The follow-up queue behind it stays as it
+   * was; a saved compaction's PostCompact hooks are left to finish; a second press is a user who
+   * is waiting, so it falls through (Ctrl+C then arms the exit window as usual).
+   */
+  const cancelCompaction = (via: 'Escape' | 'Ctrl+C'): boolean => {
+    if (!isCompacting || isCompactCommitted || compactCancelSentRef.current) return false;
+    uiLog.event(`input:${via}`, { action: 'cancel-compaction' });
+    compactCancelSentRef.current = true;
+    cancel();
+    return true;
+  };
   handleInputRef.current = (input: string, key: Key) => {
     // Once an exit has started, Ctrl+C has nothing left to do: SessionEnd is running and the
     // app unmounts when it finishes.
@@ -1517,15 +1537,7 @@ export function App({
         interrupt();
         return;
       }
-      if (isCompacting && !isCompactCommitted && !compactCancelSentRef.current) {
-        // Cancelling a /compact stops the reducer and nothing else: the follow-up queue behind it
-        // stays as it was. Once the compaction is saved only its PostCompact hooks are left, and
-        // those are not cancelled.
-        uiLog.event('input:Escape', { action: 'cancel-compaction' });
-        compactCancelSentRef.current = true;
-        cancel();
-        return;
-      }
+      if (cancelCompaction('Escape')) return;
       if (cancelReview()) {
         uiLog.event('input:Escape', { action: 'cancel-review' });
         return;
@@ -1551,14 +1563,8 @@ export function App({
         interrupt();
         return;
       }
-      if (isCompacting && !isCompactCommitted && !compactCancelSentRef.current) {
-        // Cancelling a /compact stops the reducer and nothing else: the follow-up queue behind it
-        // stays as it was. Once the compaction is saved only its PostCompact hooks are left, and
-        // those are not cancelled.
-        uiLog.event('input:Ctrl+C', { action: 'cancel-compaction' });
-        compactCancelSentRef.current = true;
+      if (cancelCompaction('Ctrl+C')) {
         disarmCtrlCExit();
-        cancel();
         return;
       }
       // A review is in-flight work too, so Ctrl+C cancels it without exiting.
@@ -1804,16 +1810,13 @@ export function App({
             setFollowRequestKey((key) => key + 1);
           } else {
             // The queue filled up while this input was out for editing. The composer has already
-            // cleared it, so put it back, still recalled, and keep saying what Enter and Esc do:
-            // the queue-full warning replaced the editing notice.
+            // cleared it, so put it back, still recalled, rather than drop it; the notice the
+            // rejection left says what Enter and Esc do with it.
             setDraftRestore((current) => ({
               key: (current?.key ?? 0) + 1,
               value,
               attachments,
             }));
-            setQueueNotice(
-              'Queue is full. Enter resubmits this input once there is room; Esc removes it.',
-            );
           }
           return;
         }

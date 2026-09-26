@@ -12,6 +12,7 @@ import { displayWidth } from './word-wrap.js';
 import { PILCROW } from '../marks.js';
 import type { ImageAttachment } from '../../types/messages.js';
 import type { Skill } from '../../skills.js';
+import { getCommandsForQuery } from '../../commands/filter.js';
 
 /**
  * Tests for InputBar: responsive editor box, bottom-pinning layout,
@@ -1249,6 +1250,21 @@ describe('keys judged against the draft the key arrived to (#268)', () => {
   // With the command menu open, Enter runs the selected command, and when nothing matched it
   // cleared the composer without a word. A typo is kept for fixing instead; it is not sent
   // either, since an unknown command goes to the model as a prompt.
+  // The menu's selection reached the Enter handler only through a ref written at render, so
+  // Down then Enter in one read (a busy event loop batches them) ran the item Down had left.
+  it('Enter in the same read as Down runs the command Down moved to', async () => {
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value)));
+    await tick();
+    view.stdin.write('/co');
+    await tick(20);
+
+    view.stdin.write('\x1b[B\r');
+    await tick(20);
+
+    expect(submitted).toEqual([`/${getCommandsForQuery([], 'co')[1]!.name}`]);
+  });
+
   it('Enter on a slash command the menu does not list keeps it in the composer', async () => {
     const submitted: string[] = [];
     const view = render(inputBar((value) => submitted.push(value)));

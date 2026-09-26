@@ -744,6 +744,32 @@ describe('AgentSession', () => {
     expect(records).toEqual([]);
   });
 
+  // A saved compaction cannot be taken back, so a cancel (Esc during the row's last moments,
+  // or the exit) has nothing left to stop but the user's PostCompact hooks. They run to their
+  // own timeouts instead of under the compaction's abort signal.
+  it('runs PostCompact hooks outside the compaction abort signal', async () => {
+    const postCompactCalls: Array<{ signal?: AbortSignal }> = [];
+    const controller = new AbortController();
+    const session = new AgentSession({
+      compactRunner: async () => compactedResult(),
+      postCompactHooksRunner: async (_config, options) => {
+        postCompactCalls.push(options);
+      },
+    });
+
+    await session.compact({
+      config: defaultConfig(),
+      history: [],
+      sessionId: 'session-1',
+      transcriptOrdinal: 0,
+      options: { trigger: 'manual', signal: controller.signal },
+      timelineStore: { append: () => {} },
+    });
+
+    expect(postCompactCalls).toHaveLength(1);
+    expect(postCompactCalls[0]?.signal).toBeUndefined();
+  });
+
   it('owns compaction boundary persistence and post-compact hooks', async () => {
     const result = compactedResult();
     const records: SessionRecord[] = [];

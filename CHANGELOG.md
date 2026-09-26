@@ -287,18 +287,21 @@ All notable changes to this project are documented in this file.
   (`abc`, Up, `x` gave `abcx`), and Up then Enter submitted nothing, because the editor kept its
   own copy of the draft until the next render. Every key now starts from the draft as the key
   ahead of it left it. `/queue` is now in the command menu, so typing it and pressing Enter runs
-  it; a slash command the menu does not match stays in the composer on Enter instead of being
-  cleared. Backspace from an empty composer removes an attached image on terminals that send it as
-  DEL, without taking the image along with a draft's last character, and Tab on a file or skill
-  mention splices into the draft as typed.
+  it (print mode and the SDK treat the name as before); a slash command the menu does not match
+  stays in the composer on Enter instead of being cleared. Backspace from an empty composer removes
+  an attached image on terminals that send it as DEL, without taking the image along with a draft's
+  last character, and Tab on a file or skill mention splices into the draft as typed. Down or Up
+  then Enter in one read runs the item the arrow moved to.
 - **Esc and Ctrl+C cancel a `/compact`** (#268). The cancel branch checked only a turn, a send and a
   command resolution, so two presses during a compaction armed the exit window and then exited
   halfway through it, and Esc did nothing although the row said "Esc to cancel". Now either key
   stops the reducer, the card says `Compaction cancelled.`, and the follow-up queue behind it is
-  left as it was. Once the compaction is saved the row reads "Compacted" and its PostCompact hooks
-  are left to finish. A press after the cancel arms the exit window as usual, so a compaction that
-  does not stop cannot trap you. The pre-turn auto-compaction now stops on Esc too: it ran without
-  the turn's abort signal, so the reducer kept calling the model after the send was cancelled.
+  left as it was. Once a compaction is saved, its PostCompact hooks run to their own timeouts
+  rather than under the cancel, whatever ends it: Esc, an exit, or a cancelled turn. A press after
+  the cancel arms the exit window as usual, so a compaction that does not stop cannot trap you.
+  Auto-compaction before and during a turn now stops with the turn: it ran without the turn's abort
+  signal, so the reducer kept calling the model after Esc, and a cancelled pre-turn compaction is
+  tried again on the next send.
 - **An exit in progress says so, and ends the work under it** (#268). While SessionEnd ran, the
   composer still took text and silently dropped it on Enter, and the paused-queue notice kept
   offering actions that did nothing. The composer now shows "Exiting…" (or "Exiting: running
@@ -312,8 +315,9 @@ All notable changes to this project are documented in this file.
   the queue was waiting. It now says both.
 - **A recalled input resubmitted into a full queue stays in the composer** (#268). If the queue
   filled up while an input was out for editing, Enter warned that the queue was full and dropped
-  the text. It is now put back, still recalled, and the notice keeps saying that Esc removes it. A
-  resubmission that fits follows the transcript to the bottom as any other does.
+  the text. It is now put back, still recalled, and the notice says that Esc removes it and
+  `/queue clear` empties the queue, whether Book was busy or idle. A resubmission that fits follows
+  the transcript to the bottom as any other does.
 - **A failed interactive launch exits through the exit code** (#268). The TUI branch still called
   `exit(1)` directly, for a reason (Ink holding stdin) that no longer held; it now marks the exit
   code and lets Node exit once its handles close, as print mode does since #243.

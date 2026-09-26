@@ -648,6 +648,56 @@ describe('useAgent manual compaction', () => {
     expect(options?.signal).toBeInstanceOf(AbortSignal);
   });
 
+  // The pre-turn compaction remembers the pressure it last tried at, so it is not retried on
+  // every send. A cancelled attempt is not an attempt: the next send must try again, or the
+  // oversized history goes to the provider.
+  it('tries the pre-turn auto-compaction again after it was cancelled', async () => {
+    const { config, timeline, sessionId } = fixture();
+    vi.mocked(runCompact).mockClear();
+    let finishReducer: (result: unknown) => void = () => {};
+    compactMockState.results.push(
+      new Promise((resolve) => {
+        finishReducer = resolve;
+      }),
+      { status: 'skipped', reason: 'small', message: 'small' },
+    );
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    const first = latest!.send('first');
+    await tick();
+    latest!.cancel();
+    finishReducer({ status: 'failed', error: 'Checkpoint stream ended without completion.' });
+    await first;
+    await tick();
+
+    await latest!.send('second');
+    await tick();
+
+    expect(vi.mocked(runCompact)).toHaveBeenCalledTimes(2);
+  });
+
+  // The loop's own compaction mid-turn ran without the turn's signal too, so Esc cancelled the
+  // turn while its reducer went on calling the model.
+  it("gives the loop's mid-turn compaction the turn's abort signal", async () => {
+    const { config, timeline, sessionId } = fixture();
+    vi.mocked(runCompact).mockClear();
+    compactMockState.results.push(
+      { status: 'skipped', reason: 'small', message: 'small' },
+      { status: 'skipped', reason: 'small', message: 'small' },
+    );
+    agentLoopState.compactDuringRun = true;
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    await latest!.send('keep going');
+    await tick();
+
+    const midTurn = vi.mocked(runCompact).mock.calls[1]?.[2] as
+      { signal?: AbortSignal } | undefined;
+    expect(midTurn?.signal).toBeInstanceOf(AbortSignal);
+  });
+
   // Once the compaction record is written only the PostCompact hooks are left, and cancelling
   // then would kill the hooks without undoing anything. The hook says when that point is passed.
   it('marks a /compact committed once it is saved, while its PostCompact hooks still run', async () => {

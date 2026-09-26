@@ -926,12 +926,14 @@ export class AgentSession {
       } satisfies SessionRecord);
     }
     request.onCommitted?.(result, boundary);
+    // No signal: a saved compaction cannot be taken back, so a cancel here (Esc in the row's last
+    // moments, an exit, a cancelled turn around an auto-compaction) would stop nothing but the
+    // user's hooks. They run to their own timeouts.
     await this.postCompactHooksRunner(request.config, {
       trigger: result.trigger,
       sessionId: request.sessionId,
       focus: request.options.focus,
       onHookEvent: request.options.onHookEvent,
-      signal: request.options.signal,
     });
     return { result, boundary };
   }
