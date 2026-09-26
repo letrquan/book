@@ -1,8 +1,8 @@
 # Book Current State
 
-This is the implementation-backed product snapshot for Book as of 2026-09-07. Update this file
-when a user-facing surface changes; the README is the usage guide and this page is the status
-reference for roadmap and design documents.
+This is the implementation-backed product snapshot for Book as of 2026-09-07. Update this file when
+a user-facing surface changes; the README and [docs/guide/](guide/README.md) are the usage guide and
+this page is the status reference for roadmap and design documents.
 
 The last independent surface re-verification was 2026-08-26 and covered the interactive transcript
 and terminal interaction path, reasoning/retry propagation, and headless/stream-JSON framing only
@@ -351,7 +351,8 @@ Work aimed at running an objective unattended for days rather than hours. All of
   is kept as the answer rather than discarded. A reasoning-only/empty response receives at most
   one same-turn retry, and already-emitted attempt text is marked `attempt_discarded` rather than
   persisted as the replacement turn. Print mode's exit code does not change with the terminal
-  outcome (see README, "Exit codes"): a failed outcome still exits 0.
+  outcome (see "Exit codes" in [docs/guide/cli.md](guide/cli.md#print-mode)): a failed outcome
+  still exits 0.
 - Print/headless and SDK hosts run only the built-ins marked non-interactive — `/init`,
   `/security-review`, and `/review` — plus any `.book/commands/*.md` file. Every other built-in
   (session controls, pickers, panels, `/config`, `/export`, `/memory`) is refused before its own

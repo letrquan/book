@@ -259,6 +259,17 @@ All notable changes to this project are documented in this file.
   floor and 24.x legs. There is no Windows counterpart, because the dispatcher behaviour is not
   platform-specific.
 
+- **The README is a short tour, and the reference moved to `docs/guide/`.** The README now covers
+  what Book is, installing it, connecting a model, a first session, the everyday commands,
+  scripting, and customizing, with a recorded session and screenshots of the real TUI. Its 1,700
+  lines of reference moved into nine topic pages under `docs/guide/` with an index. The prose is
+  as it was; each page gained a title and a one-line intro, a few headings were renamed to fit
+  their page ("Quick Start" is "Command examples", the configuration intro is "Settings files"),
+  the developer page gained a "Working from a checkout" section, and the SDK example now imports
+  from `@letrquan/book`, the published package name, instead of `book`. `bash .claude/skills/run-book/readme-media.sh` regenerates the GIF and screenshots from
+  the real TUI against the mock provider, using the driver's new `--record` flag, the mock's
+  `thinkMs`, and `record-gif.mjs`.
+
 ### Fixed
 
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff

@@ -8,7 +8,7 @@ Book is a proprietary, provider-agnostic alternative to Claude Code. It provides
 
 **Tech stack**: TypeScript (ES2022/ESM, `moduleResolution: bundler`), React 19 via Ink 6.8.0 for the TUI, tsup for building, Vitest 4 for testing, Zod 3 for config validation. Node.js 22.19+.
 
-**Version**: `0.1.0` plus the unreleased changes in `CHANGELOG.md`. `docs/current-state.md` is the authoritative status snapshot, `README.md` is the usage reference, and `MILESTONES.md` tracks remaining work.
+**Version**: `0.1.0` plus the unreleased changes in `CHANGELOG.md`. `docs/current-state.md` is the authoritative status snapshot, `README.md` is the front door, `docs/guide/` is the usage reference, and `MILESTONES.md` tracks remaining work.
 
 ## Architecture
 
@@ -148,7 +148,7 @@ Other conventions:
 - **Shared utilities live in dedicated files**: `frontmatter.ts`, `tools/aliases.ts`, `tools/primary-arg.ts`, `tools/glob-regex.ts`, `tui/status-indicators.ts`, `tui/mode-style.ts`.
 - **Module-level mutable state is eliminated**: state flows through `ToolContext`, `AgentConfig`, or explicit parameters (session task/shell maps live on config for continuity).
 - **Tool names**: PascalCase (Read, Write, GitStatus, WebFetch, TaskCreate, ApplyPatch, EnterPlanMode, …). Legacy snake_case names (e.g. `apply_patch`) map to canonical names via `tools/aliases.ts` for execution only — not exposed as model-facing tools.
-- **Mutation-tool preference is model-conditional**: the system prompt steers GPT/Codex-family models to `ApplyPatch` (Codex-style `*** Begin Patch` envelope) and all other models to `Edit`/`MultiEdit` (`editFormatFor()` in `src/models.ts`; per-model `editFormat` override in settings). `Write` is for full-file replacement. Edit/MultiEdit/Write-to-existing require a prior Read/mention (`file_not_observed`). See README "File mutations".
+- **Mutation-tool preference is model-conditional**: the system prompt steers GPT/Codex-family models to `ApplyPatch` (Codex-style `*** Begin Patch` envelope) and all other models to `Edit`/`MultiEdit` (`editFormatFor()` in `src/models.ts`; per-model `editFormat` override in settings). `Write` is for full-file replacement. Edit/MultiEdit/Write-to-existing require a prior Read/mention (`file_not_observed`). See "File mutations" in `docs/guide/tools-and-safety.md`.
 - **Tool discovery**: a practical core stays loaded; `ToolSearch` activates up to five authorized tools on the next turn, always within the current command/skill/agent-role/permission-mode/state capability intersection (`tools/capability-rules.ts`).
 - **Tool execution is serial by default**; only an explicitly reviewed parallel-safe set (`Read`, `Glob`, `Grep`, `GitStatus`, `GitDiff`, `GitLog`, `GitBranch`) runs in bounded ordered waves via `tools/execution-scheduler.ts`.
 - **Permission modes** (internal): `default` | `auto` | `plan` | `accept-edits` | `dontAsk` | `bypassPermissions`. CLI/settings accept `acceptEdits` and normalize to `accept-edits`.
@@ -222,15 +222,18 @@ Env overrides commonly used in development: `BOOK_API_KEY`, `BOOK_BASE_URL`, `BO
 
 ## Notable product surfaces (keep docs in sync)
 
-When changing these, update `README.md` / `CHANGELOG.md` / `MILESTONES.md` as appropriate:
+When changing these, update the matching `docs/guide/` page / `CHANGELOG.md` / `MILESTONES.md` as appropriate,
+and `README.md` when the change is one a newcomer meets. A change to how the title page, a permission
+prompt, or the add-provider wizard looks also means regenerating the README media in `docs/media/` with
+`bash .claude/skills/run-book/readme-media.sh`:
 
 - CLI flags and subcommands in `src/index.ts` + `src/cli/`
 - Built-in slash commands in `src/commands/builtins.ts` (+ dispatch in `src/tui/app.tsx`)
 - Default tool set in `src/tools/registry.ts` `createDefaultRegistry()`
 - Permission modes: `PermissionMode` in `src/types/runtime.ts`
 - Memory paths and approval flow in `src/memory-store.ts` / `src/tools/memory-save.ts`
-- Managed-agent behavior in `src/agents/` (README "Managed agents" is the detailed spec)
-- `/review` pipeline behavior in `src/review/` (README "Code review" is the detailed spec). The
+- Managed-agent behavior in `src/agents/` ("Managed agents" in `docs/guide/agents-and-review.md` is the detailed spec)
+- `/review` pipeline behavior in `src/review/` ("Code review" in `docs/guide/agents-and-review.md` is the detailed spec). The
   review target is resolved by the host, never by the reviewer — reviewer agents have no diff tool,
   so prompt builders require a `ReviewTarget`.
 - Background shell behavior in `src/jobs/` and `src/job-runner.ts`

@@ -149,5 +149,6 @@ See [plans/security-assessment.md](plans/security-assessment.md) for the current
 ## Documentation Rule
 
 When a product surface changes, update the implementation, focused tests, `CHANGELOG.md`, the
-relevant README section, and [docs/current-state.md](docs/current-state.md) in the same change. Plans
-must identify whether they are proposed, partially implemented, complete, or historical.
+relevant `docs/guide/` page (and the README when a newcomer meets the change), and
+[docs/current-state.md](docs/current-state.md) in the same change. Plans must identify whether they
+are proposed, partially implemented, complete, or historical.
