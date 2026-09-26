@@ -89,6 +89,23 @@ export interface PatchCandidate {
   agentId: string;
 }
 
+/**
+ * The runs a spawning host keeps for itself: the spawn task's run, and each follow-up run that
+ * starts while the host is still waiting on it (a follow-up that reached the agent mid-run is
+ * queued behind it without a finished status in between, so the host's `wait` receives its
+ * result). Every other run (a follow-up to the finished agent, the re-queue after a failure, a
+ * restart's re-drive) is numbered past the claim and follows the ordinary rules: its completion
+ * is delivered to the parent, and a restart may re-run it.
+ */
+export interface SpawnerClaim {
+  /** The last `runSequence` the host keeps. */
+  throughRunSequence: number;
+  /** The host consumes these runs' results itself: no completion notification to the parent. */
+  notifyParent?: false;
+  /** These runs' receiver dies with the process: a restart does not re-run them. */
+  resumeAfterRestart?: false;
+}
+
 export interface AgentRecord {
   id: string;
   profile?: string;
@@ -118,10 +135,11 @@ export interface AgentRecord {
   parentRunId?: string;
   /** See {@link AgentSpawnRequest.parentToolCallId}. */
   parentToolCallId?: string;
-  /** See {@link AgentSpawnRequest.notifyParentOnCompletion}. Defaults to true. */
-  notifyParentOnCompletion?: boolean;
-  /** See {@link AgentSpawnRequest.resumeAfterRestart}. Defaults to true. */
-  resumeAfterRestart?: boolean;
+  /**
+   * The spawning host's claim on this agent's runs, present when its spawn request set
+   * `notifyParentOnCompletion` or `resumeAfterRestart` to false. See {@link SpawnerClaim}.
+   */
+  spawnerClaim?: SpawnerClaim;
   runId?: string;
   planId?: string;
   status: AgentStatus;
@@ -159,7 +177,10 @@ export interface AgentRecord {
   completionSequence?: number;
   /** Latest completion generation durably accepted by the parent host. */
   completionDeliveredSequence?: number;
-  /** Monotonic execution generation for resumed/follow-up runs. */
+  /**
+   * Monotonic run generation, advanced as each run is queued (the spawn task is run 1), so a
+   * queued run is numbered before it starts. {@link SpawnerClaim} is a range of these.
+   */
   runSequence?: number;
   /** Start and usage for the current execution generation. */
   runStartedAt?: number;
@@ -309,7 +330,8 @@ export interface AgentSpawnRequest {
   parentToolCallId?: string;
   /**
    * Whether this agent's terminal result is delivered to `parentSessionId` as a
-   * completion notification. Defaults to true.
+   * completion notification. Defaults to true. It covers the runs the host waits on, the spawn
+   * task and any follow-up folded into it (see {@link SpawnerClaim}); later runs are delivered.
    *
    * Set false by a host that owns the agent's output itself — `/review` renders
    * its own report, so re-delivering each reviewer's completion would bill an
@@ -321,7 +343,8 @@ export interface AgentSpawnRequest {
   notifyParentOnCompletion?: boolean;
   /**
    * Whether `agents.resumeInterrupted` may re-run this agent after the process
-   * died mid-run. Defaults to true.
+   * died mid-run. Defaults to true. Like `notifyParentOnCompletion`, it covers only the runs the
+   * host waits on.
    *
    * Set false by a host whose receiver dies with the process: `/review` renders
    * its agents' output into its own report, so a re-run on the next start would

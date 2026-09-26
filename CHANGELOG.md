@@ -383,12 +383,28 @@ All notable changes to this project are documented in this file.
   - **The record:** `effort` on the agent record was the unclamped level (`max` for a child whose
     model lists nothing above `high`). It is now the child's level clamped to its model's catalog,
     from the spawn on. On an OpenAI-compatible route it is still sent only when chosen or listed.
-- **A restart says when it drops a follow-up sent to a `/review` agent** (#245). With
-  `agents.resumeInterrupted` on, a restart leaves the review's own run interrupted, and silently
-  dropped the `AgentSend` follow-ups sent to it: one queued behind that run, or one already running
-  after it. They are still not run, because a follow-up would start with none of the review's
-  context and whose result it is was never recorded per run, but the agent's error now says how
-  many were dropped and to send them again.
+- **Delivery belongs to a run, not to the agent record** (#245). A host that consumes an agent's
+  result itself (`Task`, `/review`) marked the whole record with `notifyParentOnCompletion` and
+  `resumeAfterRestart`, and every path that started a run nobody was waiting on had to clear both
+  by hand: a follow-up to a finished agent, the follow-up queued behind a failed run, and a
+  restart's re-drive. A path that missed it lost the parent's completion for good. The record now
+  carries a `spawnerClaim` over a range of run numbers, and runs are numbered as they are queued.
+  The spawner keeps its first run and any follow-up it still waits on; every other run reports to
+  the parent with nothing to clear. Records written before this read their flags as a claim on the
+  run they were on, and a record still writes both old flags for as long as the claim covers the run
+  it is on, so an older Book sharing the store keeps reading a claimed agent as the host's.
+  - **A restart does not re-run the follow-ups sent to a `/review` agent; it tells the parent how
+    many went unrun.** Mid-run the transcript holds the interrupted run's answers but not the task
+    that opened it, which is written only when the run ends, so re-running a follow-up answered
+    with the review missing from its own context. The review's task is still not re-run, since its
+    report died with the process. The follow-ups were the parent's runs, so the parent is told how
+    many were not run — in a completion of its own, which it receives even though the review's own
+    run never was.
+  - **The parent is told the same way everywhere else a run is not resumed.** Nothing re-drives an
+    interrupted agent with `agents.resumeInterrupted` off, or one that was interrupted while waiting
+    for an answer or an approval, and in both cases its error now says how many follow-ups were not
+    run. The parent sees that in the interrupted completion when it has not had that one yet, and
+    otherwise in a new completion the record opens past its claim.
 - **Memory extraction keeps its lock, and keeps a whole answer that reached the output limit**
   (#245). On the session's retry policy one session's provider call can take far longer than the
   extraction lock's 30-minute lifetime, and a second Book session then took the lock over and
