@@ -82,6 +82,10 @@ function parsePatchUnsafe(patch: unknown): ParsedPatch | ToolResult {
   if (lines[0] !== '*** Begin Patch' || lines.at(-1) !== '*** End Patch')
     return invalid('Patch must start with *** Begin Patch and end with *** End Patch');
 
+  // A model sometimes repeats an envelope marker; the extra copy carries nothing.
+  while (lines.length > 2 && lines[1] === '*** Begin Patch') lines.splice(1, 1);
+  while (lines.length > 2 && lines.at(-2) === '*** End Patch') lines.splice(-2, 1);
+
   const operations: PatchOperation[] = [];
   let index = 1;
   let hunkCount = 0;
@@ -545,7 +549,7 @@ export const patchTools: ToolDefinition[] = [
     name: 'ApplyPatch',
     argumentAliases: { input: 'patch' },
     description:
-      "Apply a Codex-style patch (*** Begin Patch … *** End Patch) with Update File, Add File, or Delete File operations across one or more files atomically. Read the targets first. Start each Update File hunk with a bare @@ line; anchor text such as @@ def foo is rejected, and unified-diff line numbers are ignored. Hunks apply in order, and a hunk's context and removed lines must occur exactly once in the file, or exactly once after the previous hunk; when they could repeat (a closing return or brace, a test's last lines), include more surrounding lines. After a context mismatch, reread and regenerate the patch instead of resending it unchanged.",
+      "Apply a Codex-style patch with Update File, Add File, or Delete File operations across one or more files atomically. Read the targets first. Start each Update File hunk with a bare @@ line; anchor text such as @@ def foo is rejected, and unified-diff line numbers are ignored. Hunks apply in order, and a hunk's context and removed lines must occur exactly once in the file, or exactly once after the previous hunk; when they could repeat (a closing return or brace, a test's last lines), include more surrounding lines. After a context mismatch, reread and regenerate the patch instead of resending it unchanged.",
     parameters: {
       type: 'object',
       properties: {

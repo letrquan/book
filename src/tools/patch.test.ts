@@ -389,4 +389,19 @@ describe('ApplyPatch hunk matching', () => {
     expect(result.structuredError).toBeUndefined();
     expect(await readFile(file, 'utf8')).toBe('X\ny\nZ\n');
   });
+
+  it('accepts an envelope whose Begin or End marker is repeated', async () => {
+    const { root, context } = await fixture();
+    const file = join(root, 'twice.txt');
+    await writeFile(file, 'old\n');
+    const result = await execute(
+      {
+        patch:
+          '*** Begin Patch\n*** Begin Patch\n*** Update File: twice.txt\n@@\n-old\n+new\n*** End Patch\n*** End Patch',
+      },
+      context,
+    );
+    expect(result.structuredError).toBeUndefined();
+    expect(await readFile(file, 'utf8')).toBe('new\n');
+  });
 });

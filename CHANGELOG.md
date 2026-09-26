@@ -20,7 +20,9 @@ All notable changes to this project are documented in this file.
   chose where that could be checked; the other 12 still have several candidates after the previous
   hunk and are still refused, since Book never picks between candidates. The ambiguous error now
   reports `matchesAfterPreviousHunk` and asks for the enclosing function signature, and the tool
-  description states the matching rule and that `@@` takes no anchor text.
+  description states the matching rule and that `@@` takes no anchor text. A patch that repeats its
+  `*** Begin Patch` or `*** End Patch` marker, a model glitch seen in real sessions and in
+  `eval:edit`, is now accepted instead of failing with `invalid_patch_syntax`.
 - **Settings validation runs on Zod 4** (#88). Book moves from Zod 3.25 to Zod 4.6. Defaults, and
   which fields a rejected document names, are unchanged; `src/settings.test.ts` now pins them,
   including a check that no object schema is defaulted in the way Zod 4 would leave bare. What
