@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { defaultConfig } from '../test/fixtures.js';
+import type { Provider } from '../provider/index.js';
+import type { ToolResult } from '../types/tools.js';
 import { createRegistry } from '../tools/registry.js';
+import { webTools } from '../tools/web.js';
 import { runAgentLoop } from './loop.js';
 import { toolSuccess } from '../tools/result.js';
 
@@ -150,5 +153,53 @@ describe('agent tool discovery', () => {
     expect(requestTools[0]).toContain('ToolSearch');
     expect(requestTools[0]).not.toContain('GitDiff');
     expect(requestTools[1]).toContain('GitDiff');
+  });
+
+  it('answers a ToolSearch call in eager mode with the tools already active (#270)', async () => {
+    const results: ToolResult[] = [];
+    let turn = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        turn++;
+        if (turn === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: {
+              id: 'search-bare',
+              name: 'ToolSearch',
+              arguments: { query: 'search the web' },
+            },
+          };
+        } else {
+          yield { type: 'text', content: 'done' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    registry.registerAll(webTools);
+
+    await runAgentLoop(
+      defaultConfig({ workspace: process.cwd(), maxTurns: 2 }),
+      registry,
+      'Find the web tools.',
+      [],
+      {
+        onText: () => {},
+        onToolCall: () => {},
+        onToolResult: (result) => results.push(result),
+        onError: () => {},
+        onTurnStart: () => {},
+        onDone: () => {},
+        onPermissionRequired: async () => 'allow',
+      },
+      'bypassPermissions',
+      { provider, isNewSession: false },
+    );
+
+    expect(results[0]?.status).toBe('success');
+    expect(results[0]?.content).toContain('Already active');
+    expect(results[0]?.content).toContain('WebSearch');
   });
 });

@@ -83,10 +83,19 @@ export const toolSearchTools: ToolDefinition[] = [
       }));
       const loadedMatches = resolvedMatches.filter((match) => match.loaded);
       if (matches.length === 0) {
-        return toolSuccess(`No authorized deferred tools matched: ${query}`, {
-          data: { query, matches: [] },
-          presentation: { kind: 'search', summary: 'No deferred tools matched' },
-        });
+        const active = context.toolDiscovery.activeMatches?.(query) ?? [];
+        return toolSuccess(
+          active.length > 0
+            ? `No deferred tools matched: ${query}. Already active this turn, so call them directly: ${active.join(', ')}.`
+            : `No authorized deferred tools matched: ${query}`,
+          {
+            data: { query, matches: [], active },
+            presentation: {
+              kind: 'search',
+              summary: active.length > 0 ? 'Already active' : 'No deferred tools matched',
+            },
+          },
+        );
       }
       if (loadedMatches.length === 0) {
         return toolFailure(

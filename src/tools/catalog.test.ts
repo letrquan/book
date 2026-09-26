@@ -4,6 +4,7 @@ import type { ToolContext, ToolDefinition } from '../types/tools.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
 import { createToolSurface, normalizeToolDefinition } from './catalog.js';
 import { createDefaultRegistry, createRegistry } from './registry.js';
+import { webTools } from './web.js';
 import { toolSuccess } from './result.js';
 import { SessionRuntime } from '../session/runtime.js';
 
@@ -477,5 +478,100 @@ describe('discovery gate and invalid JSON arguments', () => {
 
     expect(malformed.structuredError?.code).toBe('invalid_json_arguments');
     expect(refused.structuredError?.code).toBe('tool_not_active');
+  });
+});
+
+describe('ToolSearch query matching', () => {
+  const surface = () =>
+    createToolSurface({
+      config: config(),
+      context: context(),
+      definitions: createDefaultRegistry({
+        sessionHistory: { search: async () => [], read: async () => ({}) } as never,
+      }).getDefinitions(),
+    });
+
+  it.each([
+    ['fetch url page', 'WebFetch'],
+    ['download a web page', 'WebFetch'],
+    ['WebFetch', 'WebFetch'],
+    ['webfetch', 'WebFetch'],
+    ['search the web', 'WebSearch'],
+    ['git commit', 'GitCommit'],
+    ['git history', 'GitLog'],
+    ['working tree status', 'GitStatus'],
+    ['edit a jupyter notebook cell', 'NotebookEdit'],
+    ['run the project tests', 'Check'],
+    ['GitComit', 'GitCommit'],
+  ])('ranks %s first as %s', (query, expected) => {
+    expect(surface().search(query)[0]?.name).toBe(expected);
+  });
+
+  it.each([
+    ['Task delegate subagent', ['Task', 'AgentSpawn']],
+    ['delegate to a subagent', ['Task', 'AgentSpawn']],
+    ['delegate to a sub-agent', ['Task', 'AgentSpawn']],
+    ['search past conversation transcript', ['SessionHistorySearch']],
+  ])('finds %s', (query, expected) => {
+    const names = surface()
+      .search(query)
+      .map((match) => match.name);
+    for (const name of expected) expect(names).toContain(name);
+  });
+
+  it('matches nothing for a query that names nothing', () => {
+    expect(surface().search('zzqx')).toEqual([]);
+  });
+});
+
+describe('ToolSearch in a bare registry (#270)', () => {
+  const bareSurface = (mode: 'auto' | 'deferred') => {
+    const runtimeConfig = config();
+    runtimeConfig.settings.toolDiscovery.mode = mode;
+    const registry = createRegistry();
+    registry.registerAll(webTools);
+    return createToolSurface({
+      config: runtimeConfig,
+      context: context(),
+      definitions: registry.getDefinitions(),
+    });
+  };
+
+  it('keeps ToolSearch callable in eager mode and names the tools already active', () => {
+    const surface = bareSurface('auto');
+    const active = surface.activeDefinitions().map((tool) => tool.name);
+    expect(active).toEqual(expect.arrayContaining(['WebFetch', 'WebSearch']));
+    expect(active).not.toContain('ToolSearch');
+    expect(surface.isActive?.('ToolSearch')).toBe(true);
+    expect(surface.canExecute({ id: 's', name: 'ToolSearch', arguments: { query: 'web' } })).toBe(
+      true,
+    );
+    expect(surface.search('search the web')).toEqual([]);
+    expect(surface.activeMatches?.('search the web')[0]).toBe('WebSearch');
+  });
+
+  it('refuses a deferred tool until ToolSearch activates it in deferred mode', () => {
+    const surface = bareSurface('deferred');
+    expect(surface.activeDefinitions().map((tool) => tool.name)).toEqual(['ToolSearch']);
+    const call = { id: 'w', name: 'WebSearch', arguments: { query: 'x' } };
+    expect(surface.canExecute(call)).toBe(false);
+    surface.activate(surface.search('search the web').map((match) => match.name));
+    surface.activeDefinitions();
+    expect(surface.canExecute(call)).toBe(true);
+  });
+
+  it('lets ToolSearch run under capability rules that do not name it', () => {
+    const registry = createRegistry();
+    registry.registerAll(webTools);
+    const surface = createToolSurface({
+      config: config(),
+      context: context(),
+      definitions: registry.getDefinitions(),
+      capabilityRules: ['WebSearch'],
+    });
+    surface.activeDefinitions();
+    expect(surface.canExecute({ id: 's', name: 'ToolSearch', arguments: { query: 'x' } })).toBe(
+      true,
+    );
   });
 });

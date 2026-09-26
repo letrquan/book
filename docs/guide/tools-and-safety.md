@@ -177,6 +177,13 @@ npm run eval:memory -- --only poison-web,poison-readme --concurrency 3
 `Write` remains appropriate for generated or intentional full-file replacement. The
 `apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not silently reinterpreted.
 
+## Tool discovery
+
+`ToolSearch` matches a query by its words — tool names, aliases, intent keywords, and at least two
+description words — and falls back to fuzzy matching for a misspelled name. It is callable whenever
+deferred discovery exists, including eager mode, where it names the matching tools that are already
+active instead of being refused.
+
 ## Permission rules and modes
 
 `permissions.allow`, `permissions.ask`, and `permissions.deny` are matched against every tool call.

@@ -276,6 +276,20 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **`ToolSearch` is always callable** (#270). In eager mode the surface activates every authorized
+  tool and leaves `ToolSearch` off the provider's tool list, but a call to it was still refused as
+  `tool_not_active` — a refusal whose own remediation said to call `ToolSearch` to discover it. The
+  same refusal hit the moment a session flipped from deferred to eager (plan mode shrinking the
+  tool list) and under `--allowedTools` rules that never name it. `ToolSearch` is now active
+  whenever the surface has it, and capability rules no longer gate it. When nothing deferred
+  matches a query, the result names the tools already active this turn instead of a bare miss.
+- **Tool search understands natural queries** (#265). Search ran the whole query as one fuzzy
+  string, so `fetch url page` matched nothing and `Task delegate subagent` found only `AgentSpawn`.
+  The query is now scored word by word against tool names, aliases, intent keywords and
+  descriptions, so a multi-word request ranks the tool that names the most of it, and CamelCase,
+  `sub-agent`/`subagent` and plural spellings meet each other. Fuzzy matching stays the fallback
+  for a misspelled name (`GitComit`), and the intent keywords were filled out for the git,
+  session, agent, evidence, check and notebook tools.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller
