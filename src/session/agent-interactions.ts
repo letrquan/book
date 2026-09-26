@@ -142,7 +142,7 @@ export class AgentInteractionController {
     this.pendingPermission = null;
     this.pendingPermissionQueue = [];
     this.publish();
-    for (const request of pending) request.resolve('deny');
+    for (const request of pending) request.resolve({ result: 'deny', reason: 'dismissed' });
     log.event('permission:cancelled-all', { via, count: pending.length });
     return true;
   }

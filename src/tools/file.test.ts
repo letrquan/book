@@ -987,6 +987,30 @@ describe('grep', () => {
     expect(JSON.stringify(result.data)).not.toContain('native.dll');
   });
 
+  it("never searches Book's project-local settings, which can hold an API key (#264)", async () => {
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(join(dir, '.book', 'settings.local.json'), '{"apiKey":"sk-local-marker"}');
+    writeFileSync(join(dir, 'a.ts'), 'const note = "sk-visible-marker";');
+    // A link to .book is another way in; a junction needs no symlink privilege on Windows.
+    symlinkSync(join(dir, '.book'), join(dir, 'cfgdir'), 'junction');
+    for (const env of [{}, { BOOK_GREP_BACKEND: 'typescript' }] as Record<string, string>[]) {
+      const context = { ...ctx, env };
+      for (const args of [
+        { pattern: 'sk-' },
+        { pattern: 'sk-', include: '.book/settings.local.json' },
+        { pattern: 'sk-', path: '.book' },
+        { pattern: 'sk-', path: '.book/settings.local.json' },
+        { pattern: 'sk-', path: 'cfgdir' },
+      ]) {
+        const result = await grep.execute(args, context);
+        expect(JSON.stringify(result)).not.toContain('sk-local-marker');
+      }
+      expect((await grep.execute({ pattern: 'sk-' }, context)).content).toContain(
+        'sk-visible-marker',
+      );
+    }
+  });
+
   it('searches supported project files under .book', async () => {
     mkdirSync(join(dir, '.book', 'commands'), { recursive: true });
     writeFileSync(join(dir, '.book', 'commands', 'review.md'), 'project-command-marker');
@@ -1589,12 +1613,6 @@ const OUTLINE_CONTRACT: Array<{ shape: string; file: string; lines: string[]; ou
       outline: ['1: int main(void)'],
     },
     {
-      shape: 'JSON: a file that opens with a brace keeps it',
-      file: 'package.json',
-      lines: ['{', '  "name": "x"', '}'],
-      outline: ['1: {'],
-    },
-    {
       shape: 'Makefile: # starts a comment',
       file: 'Makefile',
       lines: ['# build rules', 'CC = gcc', '', 'all: main', '\t$(CC) -o main main.c'],
@@ -1805,16 +1823,736 @@ const OUTLINE_CONTRACT: Array<{ shape: string; file: string; lines: string[]; ou
       ],
     },
     {
-      shape: 'TypeScript: a scan that ends inside a template masks nothing',
-      file: 'continued.ts',
-      lines: ["const s = 'a \\", "`';", 'export function later() {', '  return s;', '}'],
-      outline: ["1: const s = 'a \\", "2: `';", '3: export function later() {'],
-    },
-    {
       shape: 'Markdown: a heading after a blank line inside a --- block is a heading',
       file: 'intro.md',
       lines: ['---', 'Title: something', '', '# Intro', '', '---', '', 'Body text.', '', '## Next'],
       outline: ['4: # Intro', '10: ## Next'],
+    },
+    {
+      shape: 'Java: one-line methods, same-line annotations, inner-class members and records',
+      file: 'Outer.java',
+      lines: [
+        'public class Outer {',
+        '    public int get() { return n; }',
+        '    @Override public String toString() { return "o"; }',
+        '    @Override',
+        '    public int hashCode() {',
+        '        return 1;',
+        '    }',
+        '    private static class Inner {',
+        '        void run() {',
+        '            if (ready) {',
+        '            }',
+        '        }',
+        '        int size() { return 0; }',
+        '    }',
+        '    record Point(int x, int y) {}',
+        '    interface Callback {',
+        '        void call(int x);',
+        '    }',
+        '}',
+      ],
+      outline: [
+        '1: public class Outer {',
+        '2:     public int get() { return n; }',
+        '3:     @Override public String toString() { return "o"; }',
+        '5:     public int hashCode() {',
+        '8:     private static class Inner {',
+        '9:         void run() {',
+        '13:         int size() { return 0; }',
+        '15:     record Point(int x, int y) {}',
+        '16:     interface Callback {',
+        '17:         void call(int x);',
+      ],
+    },
+    {
+      shape: 'C#: same-line attributes, one-line bodies and nested-class members',
+      file: 'Api.cs',
+      lines: [
+        'public class Api',
+        '{',
+        '    [HttpGet] public IActionResult Get() { return Ok(); }',
+        '    [Obsolete]',
+        '    public void Old()',
+        '    {',
+        '    }',
+        '    public int Twice(int x) { return x * 2; }',
+        '    private class Nested',
+        '    {',
+        '        public void Run()',
+        '        {',
+        '            foreach (var a in args)',
+        '            {',
+        '            }',
+        '        }',
+        '    }',
+        '}',
+      ],
+      outline: [
+        '1: public class Api',
+        '3:     [HttpGet] public IActionResult Get() { return Ok(); }',
+        '5:     public void Old()',
+        '8:     public int Twice(int x) { return x * 2; }',
+        '9:     private class Nested',
+        '11:         public void Run()',
+      ],
+    },
+    {
+      shape: 'C++: class members, constructors, destructors, operators and qualified definitions',
+      file: 'foo.hpp',
+      lines: [
+        'class Foo {',
+        'public:',
+        '    Foo(int n);',
+        '    virtual ~Foo();',
+        '    int get() const { return n_; }',
+        '    void set(int v);',
+        '    static std::string name();',
+        '    const std::vector<int>& items() const;',
+        '    virtual void draw() = 0;',
+        '    bool operator==(const Foo& other) const;',
+        '    int code() const NOEXCEPT_MACRO {',
+        '        return n_;',
+        '    }',
+        '    void flush() NOEXCEPT_MACRO;',
+        'private:',
+        '    int n_;',
+        '};',
+        '',
+        'namespace app {',
+        '    std::string Foo::name() {',
+        '        return "foo";',
+        '    }',
+        '}',
+        '',
+        'int main() {',
+        '    int x(5);',
+        '    Foo f(1);',
+        '    std::sort(v.begin(), v.end());',
+        '    for (int i = 0; i < x; ++i) {',
+        '    }',
+        '    return x;',
+        '}',
+      ],
+      outline: [
+        '1: class Foo {',
+        '2: public:',
+        '3:     Foo(int n);',
+        '4:     virtual ~Foo();',
+        '5:     int get() const { return n_; }',
+        '6:     void set(int v);',
+        '7:     static std::string name();',
+        '8:     const std::vector<int>& items() const;',
+        '9:     virtual void draw() = 0;',
+        '10:     bool operator==(const Foo& other) const;',
+        '11:     int code() const NOEXCEPT_MACRO {',
+        '14:     void flush() NOEXCEPT_MACRO;',
+        '15: private:',
+        '19: namespace app {',
+        '20:     std::string Foo::name() {',
+        '25: int main() {',
+      ],
+    },
+    {
+      shape: 'TypeScript: decorators on the method line, generator methods, parentheses in strings',
+      file: 'widget.ts',
+      lines: [
+        'export class Widget {',
+        "  @HostListener('click') onClick(): void {",
+        '  }',
+        '  *values(): Generator<number> {',
+        '    yield 1;',
+        '  }',
+        '  static *range(n: number) {',
+        '  }',
+        "  paren(s = '(') {",
+        '  }',
+        '  quote(s = ")"): string {',
+        '    return s;',
+        '  }',
+        '}',
+      ],
+      outline: [
+        '1: export class Widget {',
+        "2:   @HostListener('click') onClick(): void {",
+        '4:   *values(): Generator<number> {',
+        '7:   static *range(n: number) {',
+        "9:   paren(s = '(') {",
+        '11:   quote(s = ")"): string {',
+      ],
+    },
+    {
+      shape: 'TypeScript: property access on keyword-named objects and two statements on a line',
+      file: 'bodies.ts',
+      lines: [
+        'export function f() {',
+        '  set.add(1);',
+        '  it.skip;',
+        '  get.value;',
+        "  it.skip('later', () => {",
+        '  });',
+        "  describe.only('x', () => {",
+        '  });',
+        "  it.each<[number, string]>([[1, 'a']])('case %i', (n) => {",
+        '  });',
+        '  foo(x); if (y) {',
+        '  }',
+        '}',
+      ],
+      outline: [
+        '1: export function f() {',
+        "5:   it.skip('later', () => {",
+        "7:   describe.only('x', () => {",
+        "9:   it.each<[number, string]>([[1, 'a']])('case %i', (n) => {",
+      ],
+    },
+    {
+      shape: 'TypeScript: a regex after a control-flow condition does not open a template',
+      file: 'regex.ts',
+      lines: [
+        'if (a) /`/.test(x);',
+        'export function hidden() {',
+        '}',
+        'while (b) /`/.test(y);',
+        'export const after = 1;',
+      ],
+      outline: [
+        '1: if (a) /`/.test(x);',
+        '2: export function hidden() {',
+        '4: while (b) /`/.test(y);',
+        '5: export const after = 1;',
+      ],
+    },
+    {
+      shape: 'TypeScript: a string continued with a backslash is text, and opens no template',
+      file: 'continued.ts',
+      lines: [
+        "const s = 'a \\",
+        "`';",
+        'export function hidden() {',
+        '}',
+        "const t = 'b \\",
+        "`';",
+        'export const after = 1;',
+      ],
+      outline: [
+        "1: const s = 'a \\",
+        '3: export function hidden() {',
+        "5: const t = 'b \\",
+        '7: export const after = 1;',
+      ],
+    },
+    {
+      shape: 'TypeScript: a scan that ends inside a template masks nothing',
+      file: 'unclosed.ts',
+      lines: ['const a = 1;', 'const t = `', 'export function later() {', '  return t;', '}'],
+      outline: ['1: const a = 1;', '2: const t = `', '3: export function later() {'],
+    },
+    {
+      shape: 'JSON: an object outlines to its top-level keys',
+      file: 'package.json',
+      lines: [
+        '{',
+        '  "name": "x",',
+        '  "glob": "src/**/{a,b}[0]",',
+        '  "scripts": {',
+        '    "build": "tsc"',
+        '  },',
+        '  "private": true',
+        '}',
+      ],
+      outline: [
+        '1: {',
+        '2:   "name": "x",',
+        '3:   "glob": "src/**/{a,b}[0]",',
+        '4:   "scripts": {',
+        '7:   "private": true',
+      ],
+    },
+    {
+      shape: 'JSON: an array of objects outlines to each element by its first key',
+      file: 'list.json',
+      lines: [
+        '[',
+        '  {',
+        '    "name": "a",',
+        '    "v": 1',
+        '  },',
+        '  { "name": "inline" },',
+        '  {',
+        '    "name": "b"',
+        '  }',
+        ']',
+      ],
+      outline: ['1: [', '3:     "name": "a",', '6:   { "name": "inline" },', '8:     "name": "b"'],
+    },
+    {
+      shape: 'JSON: elements written at column 0 are found by depth, not indentation',
+      file: 'flat.json',
+      lines: ['[', '{', '"name": "a"', '},', '{', '"name": "b"', '}', ']'],
+      outline: ['1: [', '3: "name": "a"', '6: "name": "b"'],
+    },
+    {
+      shape: 'Markdown: front matter that opens with a # comment is skipped',
+      file: 'commented.md',
+      lines: ['---', '# comment', 'title: x', 'body: y', '---', '# Heading'],
+      outline: ['6: # Heading'],
+    },
+    {
+      shape: 'Markdown: a # comment beside keys after a blank line stays in front matter',
+      file: 'sections.md',
+      lines: ['---', 'title: x', '', '# section', 'key: y', '---', '# Heading'],
+      outline: ['7: # Heading'],
+    },
+    {
+      shape:
+        'C++: trailing comments, attributes, qualifier macros, preprocessor lines and access specifiers inside a class',
+      file: 'cache.h',
+      lines: [
+        'class Cache {',
+        ' public:',
+        '  void Evict() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);  // Drops the oldest entry.',
+        '  int size() const;  ///< Returns it.',
+        '  [[nodiscard]] bool empty() const;',
+        '#ifdef DEBUG',
+        '  void dump() const;',
+        '#endif',
+        '  int n() const { return n_; }  // inline',
+        '};',
+      ],
+      outline: [
+        '1: class Cache {',
+        '3:   void Evict() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);  // Drops the oldest entry.',
+        '4:   int size() const;  ///< Returns it.',
+        '5:   [[nodiscard]] bool empty() const;',
+        '6: #ifdef DEBUG',
+        '7:   void dump() const;',
+        '8: #endif',
+        '9:   int n() const { return n_; }  // inline',
+      ],
+    },
+    {
+      shape:
+        'C++: a class inside a namespace, and free functions whose body opens below a qualifier',
+      file: 'app.hpp',
+      lines: [
+        'namespace app {',
+        '    class Foo {',
+        '    public:',
+        '        Foo(int n);',
+        '        int get() const;',
+        '    };',
+        '    int helper(int x) noexcept',
+        '    {',
+        '        return x;',
+        '    }',
+        '    auto twice(int x) -> int',
+        '    {',
+        '        return x * 2;',
+        '    }',
+        '}',
+      ],
+      outline: [
+        '1: namespace app {',
+        '2:     class Foo {',
+        '4:         Foo(int n);',
+        '5:         int get() const;',
+        '7:     int helper(int x) noexcept',
+        '11:     auto twice(int x) -> int',
+      ],
+    },
+    {
+      shape: 'C: a function returning a struct pointer does not open a class body',
+      file: 'list.h',
+      lines: [
+        'struct node *node_new(int v) {',
+        '    n = alloc(sizeof *n);',
+        '    init(n);',
+        '    set_value(n, v);',
+        '    return n;',
+        '}',
+      ],
+      outline: ['1: struct node *node_new(int v) {'],
+    },
+    {
+      shape: 'C++: pimpl access is not an impl block',
+      file: 'widget.cpp',
+      lines: [
+        'Widget::Widget() {',
+        '    impl->value = compute(',
+        '        impl->a,',
+        '        impl->b);',
+        '}',
+      ],
+      outline: ['1: Widget::Widget() {'],
+    },
+    {
+      shape: 'TypeScript: methods named return, do and try after a modifier',
+      file: 'iter.ts',
+      lines: [
+        'export class Iter {',
+        '  async return(value?: unknown) {',
+        '  }',
+        '  public do(): void {',
+        '  }',
+        '  static try(fn: () => void) {',
+        '  }',
+        '}',
+      ],
+      outline: [
+        '1: export class Iter {',
+        '2:   async return(value?: unknown) {',
+        '4:   public do(): void {',
+        '6:   static try(fn: () => void) {',
+      ],
+    },
+    {
+      shape: 'TypeScript: Jest table tests are listed; calls on objects named it or test are not',
+      file: 'each.test.ts',
+      lines: [
+        "describe('math', () => {",
+        '  it.each`',
+        '    a    | b',
+        '    ${1} | ${2}',
+        "  `('adds $a', ({ a, b }) => {",
+        '  });',
+        "  describe.each`x`('group', () => {",
+        '  });',
+        '  it.push(1);',
+        '  test.context.onTestFailed(handler);',
+        '  it.next();',
+        '});',
+      ],
+      outline: [
+        "1: describe('math', () => {",
+        '2:   it.each`',
+        "7:   describe.each`x`('group', () => {",
+      ],
+    },
+    {
+      shape: 'JavaScript: a column-0 line of a block comment is not a declaration',
+      file: 'banner.js',
+      lines: ['/*', '*Author: someone', '*-----------', '*/', 'function main() {}'],
+      outline: ['5: function main() {}'],
+    },
+    {
+      shape: 'JSON: an element opened on the line that closes the one before',
+      file: 'cuddled.json',
+      lines: ['[', '  {', '    "name": "a"', '  }, {', '    "name": "b"', '  }', ']'],
+      outline: ['1: [', '3:     "name": "a"', '5:     "name": "b"'],
+    },
+    {
+      shape: 'JSON: block and line comments hold no brackets and no root',
+      file: 'tsconfig.json',
+      lines: [
+        '/*',
+        ' * see {docs} [below',
+        ' */',
+        '{',
+        '  "compilerOptions": {',
+        '    "strict": true',
+        '  },',
+        '  // a comment',
+        '  "include": ["src"]',
+        '}',
+      ],
+      outline: ['4: {', '5:   "compilerOptions": {', '9:   "include": ["src"]'],
+    },
+    {
+      shape: 'A YAML .prettierrc is outlined as code, not JSON',
+      file: '.prettierrc',
+      lines: ['semi: false', 'singleQuote: true', 'printWidth: 100'],
+      outline: ['1: semi: false', '2: singleQuote: true', '3: printWidth: 100'],
+    },
+    {
+      shape:
+        'Markdown: a heading beside a prose "Label: text" line after a blank is not front matter',
+      file: 'notes.md',
+      lines: [
+        '---',
+        'Author: Jane',
+        '',
+        '# Introduction',
+        'Summary: what this covers',
+        '---',
+        '',
+        '## Next',
+      ],
+      outline: ['4: # Introduction', '5: Summary: what this covers', '8: ## Next'],
+    },
+    {
+      shape: 'Markdown: a leading heading beside a capitalized label is not a front-matter comment',
+      file: 'release.md',
+      lines: ['---', '# Release notes', 'Version: 1.2', '---', '', '## Body'],
+      outline: ['2: # Release notes', '3: Version: 1.2', '6: ## Body'],
+    },
+    {
+      shape: 'C++: class heads and access specifiers with comments, export macros and alignas',
+      file: 'heads.hpp',
+      lines: [
+        'class Foo {  // the foo',
+        ' public:  // accessors',
+        '  void set(int v);',
+        '};',
+        'class __declspec(dllexport) Bar {',
+        ' public:',
+        '  int get() const;',
+        '};',
+        'class alignas(16) Vec {',
+        ' public:',
+        '  float x() const;',
+        '};',
+      ],
+      outline: [
+        '1: class Foo {  // the foo',
+        '3:   void set(int v);',
+        '5: class __declspec(dllexport) Bar {',
+        '7:   int get() const;',
+        '9: class alignas(16) Vec {',
+        '11:   float x() const;',
+      ],
+    },
+    {
+      shape:
+        'C++: macro invocations in a class body are not members, and a closed class stays closed',
+      file: 'macros.h',
+      lines: [
+        'class Foo {',
+        ' public:',
+        '  Q_PROPERTY(int x READ x)',
+        '  Q_DISABLE_COPY(Foo)',
+        '  DISALLOW_COPY_AND_ASSIGN(Foo);',
+        '  Foo();',
+        '};',
+        '#define LIST(x) \\',
+        '  visit(x)     \\',
+        '  done(x)',
+      ],
+      outline: ['1: class Foo {', '6:   Foo();', '8: #define LIST(x) \\'],
+    },
+    {
+      shape: 'C++: members of a nested class',
+      file: 'nested.hpp',
+      lines: [
+        'class Outer {',
+        'public:',
+        '    class Inner {',
+        '    public:',
+        '        void f();',
+        '        int g() const { return 1; }',
+        '    };',
+        '};',
+      ],
+      outline: [
+        '1: class Outer {',
+        '2: public:',
+        '3:     class Inner {',
+        '5:         void f();',
+        '6:         int g() const { return 1; }',
+      ],
+    },
+    {
+      shape: 'C# verbatim strings and C++ digit separators do not unbalance a signature',
+      file: 'Paths.cs',
+      lines: [
+        'public class Paths',
+        '{',
+        '    public void Load(string p = @"C:\\") {',
+        '    }',
+        '}',
+      ],
+      outline: ['1: public class Paths', '3:     public void Load(string p = @"C:\\") {'],
+    },
+    {
+      shape: 'C++: a digit separator in a default value',
+      file: 'scale.cpp',
+      lines: [
+        'namespace app {',
+        "    int scale(int n = 1'000) {",
+        '        return n;',
+        '    }',
+        '}',
+      ],
+      outline: ['1: namespace app {', "2:     int scale(int n = 1'000) {"],
+    },
+    {
+      shape:
+        'TypeScript: test chains through for, extend and shuffle, and chains called with a title',
+      file: 'm.test.ts',
+      lines: [
+        "describe('m', () => {",
+        "  it.for([1, 2])('case %i', (n) => {",
+        '  });',
+        "  describe.shuffle('y', () => {",
+        '  });',
+        "  test.extend({})('z', () => {",
+        '  });',
+        "  it.custom('titled', () => {",
+        '  });',
+        '  it.next();',
+        '});',
+      ],
+      outline: [
+        "1: describe('m', () => {",
+        "2:   it.for([1, 2])('case %i', (n) => {",
+        "4:   describe.shuffle('y', () => {",
+        "6:   test.extend({})('z', () => {",
+        "8:   it.custom('titled', () => {",
+      ],
+    },
+    {
+      shape: 'Makefile and SCSS: an @ prefix is not an annotation outside languages that have them',
+      file: 'Makefile',
+      lines: ['deps:', '\t@go get -u ./...', 'all: deps'],
+      outline: ['1: deps:', '3: all: deps'],
+    },
+    {
+      shape: 'SCSS: an @include in a rule is not a declaration',
+      file: 'c.scss',
+      lines: ['.card {', '  @include mq(tablet) {', '    width: 50%;', '  }', '}'],
+      outline: ['1: .card {'],
+    },
+    {
+      shape: 'JSON5: unquoted keys and single-quoted strings',
+      file: 'a.json5',
+      lines: [
+        '{',
+        "  name: 'x',",
+        "  note: 'has { brace',",
+        '  scripts: {',
+        "    build: 'tsc',",
+        '  },',
+        "  'quoted-key': true,",
+        '}',
+      ],
+      outline: [
+        '1: {',
+        "2:   name: 'x',",
+        "3:   note: 'has { brace',",
+        '4:   scripts: {',
+        "7:   'quoted-key': true,",
+      ],
+    },
+    {
+      shape: 'JSON: one record per line, each its own root',
+      file: 'records.json',
+      lines: ['{"id":1}', '{"id":2}', '{"id":3}'],
+      outline: ['1: {"id":1}', '2: {"id":2}', '3: {"id":3}'],
+    },
+    {
+      shape: 'JSON: a root that follows a comment on its line',
+      file: 'list.jsonc',
+      lines: ['/* header */ [', '  {', '    "name": "a"', '  }', ']'],
+      outline: ['1: /* header */ [', '3:     "name": "a"'],
+    },
+    {
+      shape: 'An rc file whose JSON starts after a comment line',
+      file: '.eslintrc',
+      lines: ['// lint settings', '{', '  "root": true,', '  "rules": {}', '}'],
+      outline: ['2: {', '3:   "root": true,', '4:   "rules": {}'],
+    },
+    {
+      shape: 'Markdown: a heading alone in its run stays a heading, even beside identifier keys',
+      file: 'rule.md',
+      lines: ['---', '# API', '', 'usage: run it', '---', '## Next'],
+      outline: ['2: # API', '4: usage: run it', '6: ## Next'],
+    },
+    {
+      shape: 'Java and C++: a block comment that closes before the body brace',
+      file: 'Runner.java',
+      lines: ['public class Runner {', '    public void run() /* entry */ {', '    }', '}'],
+      outline: ['1: public class Runner {', '2:     public void run() /* entry */ {'],
+    },
+    {
+      shape: 'C++: guarded and attributed data members are not functions',
+      file: 'guarded.h',
+      lines: [
+        'class Cache {',
+        ' public:',
+        '  int count_ ABSL_GUARDED_BY(mu_);',
+        '  std::vector<int> items_ GUARDED_BY(mu_);',
+        '  uint32_t flags __attribute__((aligned(8)));',
+        '  static_assert(sizeof(int) == 4, "int");',
+        '  void Clear();',
+        '};',
+      ],
+      outline: ['1: class Cache {', '7:   void Clear();'],
+    },
+    {
+      shape: 'C++: an Allman brace or a closing brace with a comment',
+      file: 'nolint.hpp',
+      lines: [
+        'class Foo',
+        '{  // NOLINT',
+        'public:',
+        '    void f();',
+        '    int g() const;',
+        '};  // class Foo',
+      ],
+      outline: ['1: class Foo', '3: public:', '4:     void f();', '5:     int g() const;'],
+    },
+    {
+      shape: 'C++: all-caps constructors and test macros with a body are listed',
+      file: 'rgb.cpp',
+      lines: [
+        'class RGB {',
+        'public:',
+        '    RGB(int r, int g, int b);',
+        '    A();',
+        '};',
+        'namespace t {',
+        '    TEST(Suite, Name) {',
+        '    }',
+        '    BOOST_AUTO_TEST_CASE(works) {',
+        '    }',
+        '}',
+      ],
+      outline: [
+        '1: class RGB {',
+        '2: public:',
+        '3:     RGB(int r, int g, int b);',
+        '4:     A();',
+        '6: namespace t {',
+        '7:     TEST(Suite, Name) {',
+        '9:     BOOST_AUTO_TEST_CASE(works) {',
+      ],
+    },
+    {
+      shape: 'A trailing comment holding an apostrophe after a parenthesis',
+      file: 'caller.ts',
+      lines: ['export class C {', "  bar(x: number) { // (the caller's value)", '  }', '}'],
+      outline: ['1: export class C {', "2:   bar(x: number) { // (the caller's value)"],
+    },
+    {
+      shape: 'JSON: a key after a block comment, a key after a cuddled close, and an empty element',
+      file: 'mixed.json',
+      lines: [
+        '{',
+        '  /* c */ "a": 1,',
+        '  "b": {',
+        '    "x": 1',
+        '  }, "c": 2,',
+        '  "list": [',
+        '    {',
+        '    },',
+        '    {"k": 1,',
+        '     "l": 2}',
+        '  ]',
+        '}',
+      ],
+      outline: ['1: {', '2:   /* c */ "a": 1,', '3:   "b": {', '5:   }, "c": 2,', '6:   "list": ['],
+    },
+    {
+      shape: 'JSON: an empty element does not make the next element list its second key',
+      file: 'empty.json',
+      lines: ['[', '  {', '  },', '  {"a": 1,', '   "b": 2}', ']'],
+      outline: ['1: [', '4:   {"a": 1,'],
+    },
+    {
+      shape: 'Kotlin and Groovy: a call on the implicit `it` is not a test',
+      file: 'List.kt',
+      lines: ['fun top() = xs.map {', '    it.split(",")', '}'],
+      outline: ['1: fun top() = xs.map {'],
     },
   ];
 
@@ -1831,6 +2569,46 @@ describe('Read outline contract', () => {
     writeFileSync(join(dir, 'counted.ts'), 'export const a = 1;\nexport const b = 2;\n');
     const outlined = await read.execute({ filePath: 'counted.ts', outline: true }, ctx);
     expect(outlined.content.split('\n')[0]).toMatch(/^Outline of counted\.ts: 2 lines, 2 shown\./);
+  });
+
+  it('cuts an oversized entry instead of showing none', async () => {
+    writeFileSync(join(dir, 'min.js'), `var a=${'1+'.repeat(30_000)}1;\nfunction b() {}\n`);
+    const outlined = await read.execute({ filePath: 'min.js', outline: true }, ctx);
+    const lines = outlined.content.split('\n');
+    expect(lines[0]).toMatch(/^Outline of min\.js: 2 lines, 2 shown\./);
+    expect(lines[1].startsWith('1: var a=1+1+')).toBe(true);
+    expect(lines[1].endsWith('…')).toBe(true);
+    expect(Buffer.byteLength(lines[1])).toBeLessThanOrEqual(3 + 512);
+    expect(lines[2]).toBe('2: function b() {}');
+    expect(lines).toHaveLength(3);
+  });
+
+  it('keeps the header and the truncation note inside the clip for a long path', async () => {
+    const declarations = Array.from(
+      { length: 3000 },
+      (_, index) => `export const value${index} = '${'x'.repeat(40)}';`,
+    );
+    writeFileSync(join(dir, 'many.ts'), declarations.join('\n'));
+    const filePath = `${'./'.repeat(200)}many.ts`;
+    const outlined = await read.execute({ filePath, outline: true }, ctx);
+    expect(Buffer.byteLength(outlined.content)).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
+    expect(outlined.content.split('\n').at(-1)).toMatch(
+      /^\[Outline truncated at \d+ of 3000 entries/,
+    );
+    const bounded = await boundToolResultOutput(outlined, dir, undefined, join(dir, 'tool-output'));
+    expect(bounded.content).toBe(outlined.content);
+  });
+
+  it('reads a long C++ qualifier macro in linear time', async () => {
+    const macro = 'A'.repeat(40);
+    writeFileSync(
+      join(dir, 'slow.h'),
+      ['class Cache {', ' public:', `  void Evict() ${macro} ~;`, '};'].join('\n'),
+    );
+    const started = performance.now();
+    const outlined = await read.execute({ filePath: 'slow.h', outline: true }, ctx);
+    expect(performance.now() - started).toBeLessThan(5000);
+    expect(outlined.content.split('\n').slice(1)).toEqual(['1: class Cache {']);
   });
 });
 

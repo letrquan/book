@@ -112,3 +112,32 @@ export function pathOutsideWorkspaceResult(inputPath: unknown): ToolResult {
     code: 'path_outside_workspace',
   });
 }
+
+/** The workspace root after following links, or the root as given when it cannot be resolved. */
+export function realWorkspaceRoot(root: string): string {
+  try {
+    return realpathSync.native(root);
+  } catch {
+    return resolve(root);
+  }
+}
+
+/**
+ * Whether a canonical path (after links) is Book's project-local settings file,
+ * `<workspace>/.book/settings.local.json`, which can hold an API key; with `directory`, also the
+ * `.book` directory that holds it. Compared case-insensitively on every platform: on a
+ * case-sensitive file system that only makes the check stricter, while a case-insensitive Linux
+ * mount (WSL on /mnt/c) serves any spelling from the same file.
+ */
+export function isBookLocalSettingsPath(
+  canonicalPath: string,
+  realRoot: string,
+  options: { directory?: boolean } = {},
+): boolean {
+  const target = canonicalPath.toLowerCase();
+  const bookDir = join(realRoot, '.book').toLowerCase();
+  return (
+    target === join(bookDir, 'settings.local.json') ||
+    (options.directory === true && target === bookDir)
+  );
+}

@@ -72,6 +72,31 @@ learned, and `/context` and the status line mark which source the current window
 (`declared`, `learned`, `family`, or `default`). To discard one, delete its entry from
 `model-windows.json`, or delete the file to forget them all — it is rebuilt on demand.
 
+### Prompt caching on OpenAI-compatible providers
+
+On the Anthropic Messages API, Book places its own cache breakpoints: the last tool, the cached
+system block, and the last message. On an OpenAI-compatible endpoint it sends no cache markers.
+OpenAI and DeepSeek cache without them, and 9router's Claude routes place their own; a router that
+needs a client's markers before it caches an Anthropic model (OpenRouter documents this) caches
+nothing for Book today. What Book does on that path is read the cache counts a provider reports:
+`prompt_tokens_details.cached_tokens`, DeepSeek's `prompt_cache_hit_tokens`, Moonshot's top-level
+`cached_tokens`, OpenRouter's `cache_write_tokens`, 9router's `cache_creation_tokens`, DashScope's
+`prompt_tokens_details.cache_creation_input_tokens`, and LiteLLM's top-level
+`cache_read_input_tokens` / `cache_creation_input_tokens`. `/cost`, `/usage` and
+`--max-budget-usd` then price cached input at the model's cache rates. A cache read on a model with
+no listed cache-read rate is priced at its input rate, and a cache write with no listed rate at
+twice it, the highest write premium a provider charges: both are upper bounds, so
+`--max-budget-usd` keeps working.
+
+**9router** (checked against 0.5.91): its Claude routes (`cc/claude-*`) do cache. 9router adds its
+own breakpoints on the system prompt, the last tool and the last message, and drops the ones a
+client sends. In a five-turn Book session on `cc/claude-opus-5`, all but about 1,000 of the
+roughly 60,000 input tokens were read from or written to the cache upstream. 9router's streamed
+usage reports neither count, though, and adds about 2,000 tokens to `prompt_tokens` on every
+request. So Book shows every input token as uncached on those routes, and its dollar estimate runs
+about three times the real cost. The real counts are on 9router's own usage dashboard. The `cmc/`
+and `ag/` routes report no caching at all, and `prompt_cache_key` changes nothing on them.
+
 ## Example `.book/settings.json`
 
 ```json
