@@ -261,6 +261,12 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Queue notices about something that happened once now fade.** "Queued inputs restored to the
+  composer after interrupt." and its siblings (an input removed or restored, the queue cleared,
+  the `/queue` count, a full queue) were queue notices, and a queue notice cleared only on the
+  next queue event, which might never come. They are now notes above the composer that fade after
+  a few seconds. Notices that describe a state, such as editing a queued input or a paused queue,
+  stay until that state ends.
 - **Misc Symbols are measured the way the terminal draws them.** Book counted every character
   from U+2600 to U+26FF as two columns wide, while the terminal and Ink's layout draw all but the
   emoji-by-default ones (`☔`, `⚡`) in one. A line holding `☆`, `♠` or `☙` came out a column short

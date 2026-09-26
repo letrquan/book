@@ -502,6 +502,19 @@ export function App({
     },
     [],
   );
+  // A queue event that happened once (inputs restored, removed, cleared) is a
+  // fading note. As a queue notice it stayed on screen until the next queue
+  // event, which may never come: "Queued inputs restored to the composer after
+  // interrupt." sat above an empty composer for the rest of the session. The
+  // state notices (editing a queued input, a paused queue) stay put, since they
+  // describe something still true.
+  const announceQueueEvent = useCallback(
+    (text: string, tone: FlashNotice['tone'] = 'info', ms = 4_000) => {
+      setQueueNotice((current) => (current === QUEUED_SEND_NOTICE ? current : undefined));
+      flashNotice(text, tone, ms);
+    },
+    [flashNotice],
+  );
   const handleCopiedNotice = useCallback(
     (message: string) => flashNotice(message, 'done', 2_000),
     [flashNotice],
@@ -678,7 +691,11 @@ export function App({
       const input = createQueuedInput(value, sessionId, attachments, edited);
       const result = enqueueQueuedInput(queuedInputsRef.current, input);
       if (!result.accepted) {
-        setQueueNotice('Queue is full. Edit or clear a queued message before adding another.');
+        announceQueueEvent(
+          'Queue is full. Edit or clear a queued message before adding another.',
+          'warning',
+          5_000,
+        );
         return false;
       }
       replaceQueuedInputs(result.queue);
@@ -700,7 +717,7 @@ export function App({
   }, [replaceEditingQueuedInput, replaceQueuedInputs]);
   const cancelQueuedEdit = useCallback(() => {
     endQueuedEdit();
-    setQueueNotice('Queued input removed.');
+    announceQueueEvent('Queued input removed.', 'done');
     setDraftRestore((current) => ({
       key: (current?.key ?? 0) + 1,
       value: '',
@@ -740,7 +757,7 @@ export function App({
         value: restored,
         attachments: restoreQueuedInputAttachments(pending, draftAttachmentsRef.current),
       }));
-      setQueueNotice('Queued inputs restored to the composer after interrupt.');
+      announceQueueEvent('Queued inputs restored to the composer after interrupt.');
     }
     replaceEditingQueuedInput(undefined);
     queueDrainPausedRef.current = true;
@@ -1249,7 +1266,7 @@ export function App({
     if (!item) return;
     if (item.sessionId !== sessionId) {
       replaceQueuedInputs(queuedInputsRef.current.slice(1));
-      setQueueNotice('Discarded a queued input from a previous session.');
+      announceQueueEvent('Discarded a queued input from a previous session.');
       return;
     }
 
@@ -1270,7 +1287,7 @@ export function App({
               value: restored,
               attachments: restoreQueuedInputAttachments([item], draftAttachmentsRef.current),
             }));
-            setQueueNotice('Interrupted queued input restored to the composer.');
+            announceQueueEvent('Interrupted queued input restored to the composer.');
           }
           return;
         }
@@ -1792,13 +1809,15 @@ export function App({
         if (operation === 'clear') {
           replaceQueuedInputs([]);
           endQueuedEdit();
-          setQueueNotice('Queued follow-up inputs cleared.');
+          announceQueueEvent('Queued follow-up inputs cleared.', 'done');
         } else {
           const count = queuedInputsRef.current.length;
-          setQueueNotice(
+          announceQueueEvent(
             count === 0
               ? 'The follow-up queue is empty.'
               : `${count} follow-up input${count === 1 ? '' : 's'} queued. Up edits the newest.`,
+            'info',
+            6_000,
           );
         }
         return;

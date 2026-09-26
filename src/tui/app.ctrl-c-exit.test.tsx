@@ -868,3 +868,33 @@ describe('title page contents', () => {
     await waitForFrame(view, 'Ask for a change in your own words');
   });
 });
+
+describe('queue notices for one-off events', () => {
+  // "Queued inputs restored to the composer after interrupt." was a queue
+  // notice, and queue notices cleared only on the next queue event, so it sat
+  // above an empty composer for the rest of the session.
+  it('fades the interrupt-restore notice on its own', async () => {
+    const { view, state } = await startIdleApp({ isThinking: true });
+    press(view, 'later');
+    await waitForFrame(view, '> later');
+    press(view, '\r');
+    await waitForFrame(view, 'Queued follow-up inputs (1)');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    press(view, '\u001b');
+    await waitForFrame(view, 'Queued inputs restored to the composer after interrupt.');
+    expect(state.cancel).toHaveBeenCalled();
+
+    vi.advanceTimersByTime(4_100);
+    await waitForFrameWithout(view, 'Queued inputs restored');
+  });
+
+  it('keeps a notice that describes a state, such as editing a queued input', async () => {
+    const { view } = await startIdleApp({ isThinking: true });
+    await queueAndRecallNewest(view, ['draft to edit']);
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.advanceTimersByTime(10_000);
+    expect(frameOf(view)).toContain('Editing queued input');
+  });
+});

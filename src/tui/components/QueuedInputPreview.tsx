@@ -14,7 +14,7 @@ export type NoticeTone = 'warning' | 'done' | 'info';
 /** A note that fades on its own after a few seconds. */
 export interface FlashNotice {
   text: string;
-  tone: Exclude<NoticeTone, 'warning'>;
+  tone: NoticeTone;
 }
 
 interface QueuedInputPreviewProps {
