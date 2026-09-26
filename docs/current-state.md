@@ -21,7 +21,8 @@ fresh verification pass.
 - License: PolyForm Small Business 1.0.0 — source-available, commercial use limited to companies
   under 100 people and 1,000,000 USD (2019) revenue. See `LICENSE`.
 - Runtime: Node.js 22.19 or newer; CI exercises Node.js 22 and 24 on Ubuntu and Windows.
-- Build: `tsup` emits ESM CLI, SDK, and job-runner bundles plus declarations into `dist/`.
+- Build: `tsup` emits ESM CLI, SDK, job-runner and job-supervisor bundles plus declarations into
+  `dist/`.
 
 ## Shipped Surfaces
 

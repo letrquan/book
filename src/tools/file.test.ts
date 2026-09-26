@@ -533,13 +533,9 @@ describe('readOnlyRoots', () => {
     expect(direct.status, candidate).toBe('error');
 
     const throughLink = join(memory, 'in');
-    try {
-      symlinkSync(join(memory, '.inbox'), throughLink);
-    } catch {
-      // Symlink creation needs a privilege Windows withholds by default; the direct
-      // path above is still covered there.
-      return;
-    }
+    // A junction needs no privilege on Windows, where a directory symlink does; elsewhere the type
+    // is ignored and this is an ordinary symlink.
+    symlinkSync(join(memory, '.inbox'), throughLink, 'junction');
     const linked = await read.execute({ filePath: join(throughLink, 'x.md') }, ctx);
     expect(linked.status, join(throughLink, 'x.md')).toBe('error');
   });
