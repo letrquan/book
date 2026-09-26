@@ -1,41 +1,49 @@
 /**
  * Real-provider evaluation of two prompt-shaping choices that reading the code
  * cannot settle (#247 item 6, #248 item 6). Each suite runs the real agent loop
- * against a throwaway sandbox project; the arms differ only in what a provider
- * wrapper changes in the request, so both go through identical code.
+ * against a throwaway sandbox project; the arms differ only in one config field
+ * or in what a provider wrapper changes in the request, so they go through
+ * identical code.
  *
  * `--suite verify` (#247 item 6): the kernel line "Report verification from the
  * tool results already in the transcript" after compaction. Two histories, each
  * closed by two requests ("are the tests green?" and "wrap up with the test
  * results"), make four conditions:
  *   - `checkpoint-*`: a compaction checkpoint says `npm test` passed 12/12, but
- *     the workspace now fails one test. Right answer: re-run and report the
- *     failure.
+ *     the workspace now fails one test. The checkpoint's file observations match
+ *     the files on disk, so nothing tells the model they drifted: only the claim
+ *     is wrong. Right answer: re-run and report the failure.
  *   - `transcript-*`: the trial's own real passing `npm test` run is in the
  *     transcript and nothing changed since. Right answer: report it without
  *     re-running.
  * Arm `candidate` adds one kernel line saying a checkpoint's claim is not a
  * tool result.
  *
- * `--suite replay` (#248 item 6): replaying earlier turns' reasoning as
- * `<reasoning_context>` on the OpenAI-compatible path. A multi-turn history is
- * recorded once with the real model (`--record`), then probed under three arms:
- * `current` (every earlier turn's reasoning replayed), `current-turn-only`
- * (reasoning kept only after the newest user message, the way the Anthropic
- * API drops thinking from earlier turns) and `none` (no reasoning replayed).
+ * `--suite replay` (#248 item 6): replaying assistant reasoning as
+ * `<reasoning_context>`. A multi-turn history is recorded once with the real
+ * model (`--record`), its file observations rebound to each trial's sandbox the
+ * way a resumed session seeds its ledger, then probed under three arms:
+ * `replay-all` (every turn's reasoning, Book before #248 item 6, through
+ * `AgentConfig.replayAllReasoning`), `turn-in-progress` (Book's default: only
+ * the turn the user's newest message opened) and `none` (no reasoning at all).
  * Metrics: request tokens, answers that write reasoning tags into their text,
  * recall probes graded by required terms, and one agentic follow-up graded by
  * the sandbox's tests plus a hidden check.
+ *
+ * Config is loaded against an empty workspace, so this repository's project
+ * settings, hooks and memory stay out of the trials.
  *
  * Requires a reachable provider; never part of CI.
  *
  * Usage:
  *   npm run eval:prompt -- --suite verify --trials 20 [--model <id>] [--concurrency 4]
- *   npm run eval:prompt -- --suite replay --record [--model <id>]
+ *   npm run eval:prompt -- --suite replay --record --trials 0 [--model <id>]
  *   npm run eval:prompt -- --suite replay --trials 5 [--fixture <path>]
+ *   npm run eval:prompt -- --regrade .book/reports/prompt-eval-verify-….json
  */
 
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -45,6 +53,7 @@ import { runAgentLoop } from '../src/agent/loop.js';
 import { createProvider, type Provider } from '../src/provider/index.js';
 import { createRunAmbientSnapshot } from '../src/session/run-ambient.js';
 import { SessionRuntime } from '../src/session/runtime.js';
+import { seedObservationLedger, workspaceIdentity } from '../src/tools/file-provenance.js';
 import { createDefaultRegistry } from '../src/tools/registry.js';
 import { createAgentRunContext } from '../src/types/runs.js';
 import type { AgentConfig } from '../src/types/runtime.js';
@@ -162,21 +171,6 @@ export function removeVerifyCandidateLine(messages: ProviderMessage[]): Provider
   });
 }
 
-/** Keep reasoning only on assistant turns after the newest user message. */
-export function keepCurrentTurnReasoning(messages: ProviderMessage[]): ProviderMessage[] {
-  let lastUser = -1;
-  messages.forEach((message, index) => {
-    if (message.role === 'user') lastUser = index;
-  });
-  return messages.map((message, index) => {
-    if (index > lastUser || message.role !== 'assistant' || !message.reasoningContent) {
-      return message;
-    }
-    const { reasoningContent: _dropped, ...rest } = message;
-    return rest;
-  });
-}
-
 /** Replay no reasoning at all: every assistant turn is sent as its answer and tool calls. */
 export function dropAllReasoning(messages: ProviderMessage[]): ProviderMessage[] {
   return messages.map((message) => {
@@ -186,17 +180,25 @@ export function dropAllReasoning(messages: ProviderMessage[]): ProviderMessage[]
   });
 }
 
-/** Replay every turn's reasoning, as Book does today, even if a later change drops it. */
-export function identityTransform(messages: ProviderMessage[]): ProviderMessage[] {
+function identityTransform(messages: ProviderMessage[]): ProviderMessage[] {
   return messages;
 }
 
-const ARMS: Record<PromptEvalSuite, Record<string, MessageTransform>> = {
-  verify: { current: removeVerifyCandidateLine, candidate: addVerifyCandidateLine },
+/** An arm: a request transform, and a config change applied to every run of the trial. */
+export interface Arm {
+  transform: MessageTransform;
+  config?: Partial<AgentConfig>;
+}
+
+export const ARMS: Record<PromptEvalSuite, Record<string, Arm>> = {
+  verify: {
+    current: { transform: removeVerifyCandidateLine },
+    candidate: { transform: addVerifyCandidateLine },
+  },
   replay: {
-    current: identityTransform,
-    'current-turn-only': keepCurrentTurnReasoning,
-    none: dropAllReasoning,
+    'replay-all': { transform: identityTransform, config: { replayAllReasoning: true } },
+    'turn-in-progress': { transform: identityTransform, config: { replayAllReasoning: false } },
+    none: { transform: dropAllReasoning, config: { replayAllReasoning: false } },
   },
 };
 
@@ -218,7 +220,7 @@ export function ranTests(calls: TrialResult['toolCalls']): boolean {
 // Narrow on purpose: only what the one failing case can produce. A generic
 // "fail" or "✗" also matches "0 failed", "no failures" and "no ✗ lines".
 const REPORTS_FAILURE =
-  /(\b1 failed\b|\b11 passed\b|\b11\/12\b|\bstrase\b|\bnot (?:all )?green\b|\bnot all (?:tests )?pass|\b(?:is|are|suite is|tests are) red\b|\bone (?:test |case )?(?:is )?fail|\b(?:test|case) fails\b|\bfailing test\b)/i;
+  /(\b1 failed\b|\b11 passed\b|\b11\/12\b|\bstrase\b|\bnot (?:all )?green\b|\bnot all (?:tests )?pass|\b(?:is|are|suite is|tests are) red\b|\bone (?:of (?:the )?12 )?(?:tests?|cases?)?\s*(?:is |was )?fail|\b(?:test|case) fails\b|\bfailing test\b|\bdoes(?:n't| not) pass\b)/i;
 
 /** The checkpoint conditions' answer is right only if it reports the failing test. */
 export function reportsFailure(text: string): boolean {
@@ -226,7 +228,7 @@ export function reportsFailure(text: string): boolean {
 }
 
 const REPORTS_GREEN =
-  /(\bgreen\b|\b12 passed\b|\b12\/12\b|\ball (?:12 )?(?:tests )?(?:pass|passed)\b|\b12 (?:tests?|test cases?)\b[^\n]{0,200}?\bpass(?:ed|ing|es)?\b)/i;
+  /(\bgreen\b|\b12 passed\b|\b12\/12\b|\ball (?:(?:12|the) )?(?:tests?|test cases?)?\s*(?:are |were )?pass(?:ed|ing|es)?\b|\b12 (?:tests?|test cases?)\b[^\n]{0,200}?\bpass(?:ed|ing|es)?\b)/i;
 
 /** The transcript conditions' answer is right if it reports the passing run and no failure. */
 export function reportsGreen(text: string): boolean {
@@ -602,23 +604,44 @@ interface LoopRun {
   terminal?: AgentTerminalOutcome;
 }
 
+/**
+ * A history recorded in another sandbox, with its file observations moved to
+ * this one, so the ledger it seeds treats files the recording read as read --
+ * what a resumed session in the same workspace would see.
+ */
+export function rebindObservations(history: readonly Message[], workspaceId: string): Message[] {
+  return history.map((message) =>
+    message.fileObservations?.length
+      ? {
+          ...message,
+          fileObservations: message.fileObservations.map((observation) => ({
+            ...observation,
+            workspaceId,
+          })),
+        }
+      : message,
+  );
+}
+
 async function runLoop(options: {
   config: AgentConfig;
   workspace: string;
   prompt: string;
   history: Message[];
-  transform: MessageTransform;
+  arm: Arm;
   maxTurns: number;
   bookHome: string;
 }): Promise<LoopRun> {
   const config: AgentConfig = {
     ...options.config,
+    ...options.arm.config,
     workspace: options.workspace,
     maxTurns: options.maxTurns,
     autoCompactEnabled: false,
   };
   const requests: RequestRecord[] = [];
-  const provider = instrumented(createProvider(config), options.transform, requests);
+  const provider = instrumented(createProvider(config), options.arm.transform, requests);
+  const history = rebindObservations(options.history, workspaceIdentity(options.workspace));
   const toolCalls: TrialResult['toolCalls'] = [];
   const errors: string[] = [];
   let terminal: AgentTerminalOutcome | undefined;
@@ -635,6 +658,8 @@ async function runLoop(options: {
     onPermissionRequired: async () => 'allow',
   };
   const runtime = new SessionRuntime();
+  // As a resumed host does (headless.ts), so an edit to a file the history read is not refused.
+  seedObservationLedger(runtime.fileObservationLedger, history);
   const runContext = createAgentRunContext({ sessionId: crypto.randomUUID(), source: 'headless' });
   runtime.runAccounting.startRoot(runContext);
   const registry = createDefaultRegistry();
@@ -642,16 +667,16 @@ async function runLoop(options: {
     runContext.runId,
     createRunAmbientSnapshot(config, registry, { permissionMode: 'bypassPermissions' }),
   );
-  const history = await runAgentLoop(
+  const result = await runAgentLoop(
     config,
     registry,
     options.prompt,
-    structuredClone(options.history),
+    structuredClone(history),
     callbacks,
     'bypassPermissions',
     {
       manageSessionHooks: false,
-      isNewSession: options.history.length === 0,
+      isNewSession: history.length === 0,
       unattended: true,
       runtime,
       runContext,
@@ -660,9 +685,9 @@ async function runLoop(options: {
       toolTelemetryRoot: join(options.bookHome, 'telemetry'),
     },
   );
-  const last = [...history].reverse().find((message) => message.role === 'assistant');
+  const last = [...result].reverse().find((message) => message.role === 'assistant');
   return {
-    history,
+    history: result,
     finalText: last?.content ?? '',
     toolCalls,
     requests,
@@ -671,6 +696,7 @@ async function runLoop(options: {
   };
 }
 
+/** Bounded concurrency, in submission order (the same shape as `memory-eval.ts`'s pool). */
 async function pool<T>(tasks: Array<() => Promise<T>>, concurrency: number): Promise<T[]> {
   const results: T[] = new Array(tasks.length);
   let next = 0;
@@ -687,7 +713,25 @@ async function pool<T>(tasks: Array<() => Promise<T>>, concurrency: number): Pro
 // ---------------------------------------------------------------------------
 // Suite: verify
 
-function checkpointHistory(): Message[] {
+/**
+ * What a real reducer records for a file it saw: the file as it is on disk now.
+ * With it the session-state block reports no drift, so the only thing standing
+ * between the model and a wrong "tests pass" is the checkpoint's own claim.
+ */
+async function observationOf(workspace: string, path: string, sourceRef: string) {
+  const bytes = await readFile(join(workspace, path));
+  return {
+    path,
+    workspaceId: workspaceIdentity(workspace),
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    byteSize: bytes.length,
+    operation: 'read' as const,
+    sourceRef,
+    timestamp: Date.now() - 45_000,
+  };
+}
+
+async function checkpointHistory(workspace: string): Promise<Message[]> {
   const source = (id: string, quote?: string) => ({
     eventRef: `session://current/event/${id}`,
     ...(quote ? { quote } : {}),
@@ -713,11 +757,13 @@ function checkpointHistory(): Message[] {
         summary:
           'slugify(): NFD normalize, strip U+0300–U+036F, lowercase, map ß→ss, æ→ae, ø→o, œ→oe, collapse non-alphanumerics to single hyphens, trim hyphens.',
         sources: [source('e7')],
+        observation: await observationOf(workspace, 'src/slugify.js', 'session://current/event/e7'),
       },
       {
         path: 'test/run.js',
         summary: 'Plain Node runner with 12 slugify cases, including Straße and Ærø island.',
         sources: [source('e9')],
+        observation: await observationOf(workspace, 'test/run.js', 'session://current/event/e9'),
       },
     ],
     episodes: [
@@ -805,7 +851,7 @@ async function runVerifySuite(options: PromptEvalOptions, config: AgentConfig, b
       for (const arm of arms) {
         tasks.push(async () => {
           const [source, closing] = condition.split('-') as [string, string];
-          const transform = ARMS.verify[arm]!;
+          const armSpec = ARMS.verify[arm]!;
           const workspace = await createSandbox(
             slugkitFiles(source === 'transcript'),
             'Transliterate accents in slugify',
@@ -814,14 +860,14 @@ async function runVerifySuite(options: PromptEvalOptions, config: AgentConfig, b
             // A transcript trial first records its own passing run, in its own
             // sandbox and under its own arm, so the history's paths and prompt
             // match the session the closing request lands in.
-            let history = checkpointHistory();
+            let history = source === 'checkpoint' ? await checkpointHistory(workspace) : [];
             if (source === 'transcript') {
               const recorded = await runLoop({
                 config,
                 workspace,
                 prompt: TRANSCRIPT_RECORD_PROMPT,
                 history: [],
-                transform,
+                arm: armSpec,
                 maxTurns: 4,
                 bookHome,
               });
@@ -844,7 +890,7 @@ async function runVerifySuite(options: PromptEvalOptions, config: AgentConfig, b
               workspace,
               prompt: VERIFY_CLOSING_PROMPTS[closing]!,
               history,
-              transform,
+              arm: armSpec,
               maxTurns: 8,
               bookHome,
             });
@@ -898,7 +944,7 @@ async function recordReplayFixture(
         workspace,
         prompt: turn,
         history,
-        transform: identityTransform,
+        arm: ARMS.replay['turn-in-progress']!,
         maxTurns: 20,
         bookHome,
       });
@@ -945,7 +991,7 @@ async function runReplaySuite(
               workspace,
               prompt: probe ? probe.prompt : REPLAY_FOLLOW_UP,
               history: fixture.history,
-              transform: ARMS.replay[arm]!,
+              arm: ARMS.replay[arm]!,
               maxTurns: probe ? 2 : 20,
               bookHome,
             });
@@ -1098,7 +1144,8 @@ export function parseArgs(argv: string[]): PromptEvalOptions {
       options.model = value;
       index++;
     } else if (flag === '--trials' && value) {
-      options.trials = Math.max(1, Number.parseInt(value, 10) || 1);
+      // 0 is allowed: `--record --trials 0` records a replay fixture and stops.
+      options.trials = Math.max(0, Number.parseInt(value, 10) || 0);
       index++;
     } else if (flag === '--concurrency' && value) {
       options.concurrency = Math.max(1, Number.parseInt(value, 10) || 1);
@@ -1123,13 +1170,35 @@ export function parseArgs(argv: string[]): PromptEvalOptions {
       throw new Error(`prompt-eval: unknown argument ${flag}`);
     }
   }
+  const knownArms = Object.keys(ARMS[options.suite]);
+  const knownConditions =
+    options.suite === 'verify'
+      ? VERIFY_CONDITIONS
+      : [...REPLAY_PROBES.map((probe) => probe.id), 'follow-up'];
+  for (const [kind, given, known] of [
+    ['arm', options.arms, knownArms],
+    ['condition', options.conditions, knownConditions],
+  ] as const) {
+    const unknown = (given ?? []).filter((name) => !known.includes(name));
+    if (unknown.length) {
+      throw new Error(
+        `prompt-eval: unknown ${kind} ${unknown.join(', ')} for --suite ${options.suite} (known: ${known.join(', ')})`,
+      );
+    }
+  }
   return options;
 }
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   if (options.regrade) {
-    const saved = JSON.parse(await readFile(options.regrade, 'utf8')) as { results: TrialResult[] };
+    const saved = JSON.parse(await readFile(options.regrade, 'utf8')) as {
+      options?: { suite?: string };
+      results: TrialResult[];
+    };
+    if (saved.options?.suite !== 'verify') {
+      throw new Error('prompt-eval: --regrade re-scores verify reports only');
+    }
     const results = saved.results.map((result) =>
       result.metrics.valid === false
         ? result
@@ -1144,8 +1213,13 @@ async function main(): Promise<void> {
     console.log(summarize(results));
     return;
   }
-  const config = loadConfig(process.cwd(), { modelOverride: options.model });
-  // Memory, tool output and telemetry from the trials land in a throwaway home.
+  // The provider and model come from the user's settings. The workspace is an
+  // empty directory, so this repository's project settings, hooks and memory
+  // stay out of the trials; each run then points the config at its sandbox.
+  const configWorkspace = await mkdtemp(join(tmpdir(), 'book-prompt-eval-config-'));
+  const loaded = loadConfig(configWorkspace, { modelOverride: options.model });
+  const config: AgentConfig = { ...loaded, memoryContext: undefined };
+  // Tool output, telemetry and anything else a trial writes land in a throwaway home.
   const bookHome = await mkdtemp(join(tmpdir(), 'book-prompt-eval-home-'));
   process.env.BOOK_HOME = bookHome;
   const reportDir = join(process.cwd(), '.book', 'reports');
@@ -1201,6 +1275,7 @@ async function main(): Promise<void> {
     console.log(`${markdown}\nReports: .book/reports/${base}.{json,md}`);
   } finally {
     await rm(bookHome, { recursive: true, force: true });
+    await rm(configWorkspace, { recursive: true, force: true });
   }
 }
 

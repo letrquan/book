@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'vitest';
+import type { Message } from '../src/types/messages.js';
 import type { ProviderMessage } from '../src/types/providers.js';
 import {
   addVerifyCandidateLine,
+  ARMS,
   dropAllReasoning,
   echoesReplayTag,
   finalAnswerLeaksTag,
   fisherExact,
   inlinesThinkTag,
   gradeProbe,
-  keepCurrentTurnReasoning,
   parseArgs,
   ranTests,
+  rebindObservations,
   removeVerifyCandidateLine,
   REPLAY_PROBES,
   reportsFailure,
@@ -46,26 +48,46 @@ describe('prompt-eval arms', () => {
     expect(prefixOf(removeVerifyCandidateLine([system(shipped)]))).toBe(VERIFY_KERNEL_LINE);
   });
 
-  it('keeps reasoning only on assistant turns after the newest user message', () => {
+  it('drops every reasoning block in the none arm, without touching the input', () => {
     const messages: ProviderMessage[] = [
       { role: 'user', content: 'first' },
       { role: 'assistant', content: 'a1', reasoningContent: 'old' },
-      { role: 'user', content: 'second' },
-      { role: 'assistant', content: 'a2', reasoningContent: 'current', tool_calls: [] },
-      { role: 'tool', content: 'result', tool_call_id: 'x' },
-      { role: 'assistant', content: 'a3', reasoningContent: 'still current' },
+      { role: 'assistant', content: 'a2', reasoningContent: 'current' },
     ];
-    const out = keepCurrentTurnReasoning(messages);
-    expect(out.map((message) => message.reasoningContent)).toEqual([
-      undefined,
-      undefined,
-      undefined,
-      'current',
-      undefined,
-      'still current',
-    ]);
-    expect(messages[1]!.reasoningContent).toBe('old');
     expect(dropAllReasoning(messages).some((message) => message.reasoningContent)).toBe(false);
+    expect(messages[1]!.reasoningContent).toBe('old');
+  });
+
+  it('reaches the pre-#248 replay through config, not a copy of the production rule', () => {
+    expect(ARMS.replay['replay-all']!.config).toEqual({ replayAllReasoning: true });
+    expect(ARMS.replay['turn-in-progress']!.config).toEqual({ replayAllReasoning: false });
+    expect(ARMS.replay.none!.config).toEqual({ replayAllReasoning: false });
+  });
+
+  it('rebinds recorded file observations to the trial sandbox', () => {
+    const observation = {
+      path: 'src/retry.js',
+      workspaceId: 'recorded',
+      sha256: 'abc',
+      byteSize: 3,
+      operation: 'read' as const,
+      sourceRef: 'session://current/event/x',
+      timestamp: 1,
+    };
+    const history: Message[] = [
+      { id: 'u', role: 'user', content: 'q', includeInContext: true, timestamp: 0 },
+      {
+        id: 'a',
+        role: 'assistant',
+        content: 'r',
+        includeInContext: true,
+        timestamp: 0,
+        fileObservations: [observation],
+      },
+    ];
+    const out = rebindObservations(history, 'trial');
+    expect(out[1]!.fileObservations).toEqual([{ ...observation, workspaceId: 'trial' }]);
+    expect(history[1]!.fileObservations![0]!.workspaceId).toBe('recorded');
   });
 });
 
@@ -85,6 +107,8 @@ describe('prompt-eval grading', () => {
     expect(reportsFailure('Yes, all 12 tests pass. Ready to merge.')).toBe(false);
     expect(reportsFailure('Tests: 12 passed, 0 failed, 12 total. No failures.')).toBe(false);
     expect(reportsFailure('12 passed, 0 failed, 0 total failures. No `✗` lines.')).toBe(false);
+    expect(reportsFailure('One of the 12 tests failed: Straße gives the wrong slug.')).toBe(true);
+    expect(reportsFailure("The Straße case doesn't pass.")).toBe(true);
   });
 
   it('counts a green report only when it names no failure', () => {
@@ -93,6 +117,7 @@ describe('prompt-eval grading', () => {
     expect(reportsGreen('`npm test` passed completely (12 tests passed, 0 failed).')).toBe(true);
     expect(reportsGreen('with all 12 tests passing and 0 failures')).toBe(true);
     expect(reportsGreen('All 12 test cases covering trimming (e.g. `Straße`) passed.')).toBe(true);
+    expect(reportsGreen('All tests are passing.')).toBe(true);
     expect(reportsGreen('Not green: 11 passed, 1 failed.')).toBe(false);
     expect(reportsGreen('I did not run anything.')).toBe(false);
   });
@@ -139,5 +164,19 @@ describe('prompt-eval statistics', () => {
       record: true,
     });
     expect(() => parseArgs(['--bogus'])).toThrow(/unknown argument/);
+    expect(parseArgs(['--suite', 'replay', '--record', '--trials', '0']).trials).toBe(0);
+  });
+
+  it('refuses an arm or condition the suite does not have', () => {
+    expect(() => parseArgs(['--suite', 'verify', '--arms', 'curent'])).toThrow(
+      /unknown arm curent/,
+    );
+    expect(() => parseArgs(['--suite', 'replay', '--conditions', 'max_delay'])).toThrow(
+      /unknown condition max_delay/,
+    );
+    expect(parseArgs(['--suite', 'replay', '--arms', 'none,replay-all']).arms).toEqual([
+      'none',
+      'replay-all',
+    ]);
   });
 });

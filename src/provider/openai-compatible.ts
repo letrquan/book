@@ -68,40 +68,25 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
   tool_calls?: ProviderMessage['tool_calls'];
   tool_call_id?: string;
 }> {
-  // Reasoning is replayed only for the turn in progress: the assistant steps after the newest
-  // user message, which a tool loop needs to keep its chain of thought. A turn a later user
-  // message closed is sent as its answer and tool calls, the way the Anthropic API drops earlier
-  // turns' thinking. Measured with `npm run eval:prompt -- --suite replay` (#248 item 6): fewer
-  // prompt tokens, the same answers, and fewer replies that imitate the block in their own text;
-  // dropping the turn in progress too cost extra requests.
-  let turnStart = -1;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i].role === 'user') {
-      turnStart = i;
-      break;
-    }
-  }
-  return messages.map(
-    ({ providerMetadata: _providerMetadata, reasoningContent, ...msg }, index) => ({
-      ...msg,
-      content: isSystemPromptZones(msg.content)
-        ? [msg.content.cachedPrefix, msg.content.dynamicSuffix].filter(Boolean).join('\n\n')
-        : Array.isArray(msg.content)
-          ? msg.content.map((part) =>
-              part.type === 'text'
-                ? part
-                : {
-                    type: 'image_url' as const,
-                    image_url: { url: `data:${part.mediaType};base64,${part.data}` },
-                  },
-            )
-          : reasoningContent && index > turnStart
-            ? ['<reasoning_context>', reasoningContent, '</reasoning_context>', msg.content ?? '']
-                .filter(Boolean)
-                .join('\n')
-            : msg.content,
-    }),
-  );
+  return messages.map(({ providerMetadata: _providerMetadata, reasoningContent, ...msg }) => ({
+    ...msg,
+    content: isSystemPromptZones(msg.content)
+      ? [msg.content.cachedPrefix, msg.content.dynamicSuffix].filter(Boolean).join('\n\n')
+      : Array.isArray(msg.content)
+        ? msg.content.map((part) =>
+            part.type === 'text'
+              ? part
+              : {
+                  type: 'image_url' as const,
+                  image_url: { url: `data:${part.mediaType};base64,${part.data}` },
+                },
+          )
+        : reasoningContent
+          ? ['<reasoning_context>', reasoningContent, '</reasoning_context>', msg.content ?? '']
+              .filter(Boolean)
+              .join('\n')
+          : msg.content,
+  }));
 }
 
 export function convertTools(tools: ToolDefinition[]): Array<{

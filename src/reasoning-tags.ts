@@ -288,7 +288,8 @@ function answerStart(content: string, rest: number): number {
 
 /**
  * Split the closed reasoning blocks a settled reply opens with out of it, so
- * they are stored and re-sent as reasoning rather than as answer text.
+ * they are stored as reasoning rather than as answer text, and re-sent as
+ * reasoning while their turn is in progress.
  *
  * Book renders the assistant steps of the turn in progress to OpenAI-compatible
  * providers as `<reasoning_context>…</reasoning_context>` followed by the
