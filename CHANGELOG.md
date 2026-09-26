@@ -456,9 +456,6 @@ All notable changes to this project are documented in this file.
   - **Pagination:** a Read that stops early also reports
     `pagination: { truncated: true, nextCursor }`, with the offset to continue from, as the shared
     clip's truncation did.
-  - **TUI:** the Read row still counts the notice as one more line (`5 lines` for 4 shown). The
-    row's line count comes from the shared result presentation, which counts the notice; only the
-    fallback path for results without a presentation strips it.
 - **`Read { outline: true }` lists Java, Kotlin, C# and Dart methods, and fewer lines that are not
   declarations (#247).**
   - **Methods that were missing:** a method written return-type-first (`public int getN() {`) or
