@@ -8,7 +8,8 @@ import {
   unsandboxedRefusalMessage,
   type SandboxSkipReason,
 } from '../sandbox.js';
-import { ShellJobManager, terminateForegroundProcess } from '../jobs/shell-manager.js';
+import { ShellJobManager } from '../jobs/shell-manager.js';
+import { terminateForegroundProcess } from '../jobs/process-tree.js';
 import { resolveWorkspacePath } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
 import {

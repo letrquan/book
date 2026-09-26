@@ -60,6 +60,9 @@ async function waitForWorkerToDisappear(workerPid: number): Promise<void> {
  */
 const ciBudgets = { runnerStartBudgetMs: 30_000, runnerStopBudgetMs: 30_000 };
 
+/** `ShellJobManager`'s default `runnerStopBudgetMs`: how long a real stop may take. */
+const PRODUCTION_STOP_BUDGET_MS = 5_000;
+
 afterEach(async () => {
   for (const manager of managers) {
     for (const shell of manager.list()) {
@@ -188,9 +191,94 @@ describe('ShellJobManager persistent jobs', () => {
     await waitFor(() => existsSync(pidPath), 'worker pid file', 30_000);
     const workerPid = Number(readFileSync(pidPath, 'utf8'));
 
+    const stopRequestedAt = Date.now();
     expect(await manager.stop(started.id)).toBe(true);
     expect(manager.get(started.id)?.status).toBe('killed');
+    // The manager's own stop budget is widened for contended CI runners, so it cannot notice a
+    // stop slower than production's. The runner stamps `finishedAt` when it has stopped the tree,
+    // and production gives up waiting after 5 s.
+    const finishedAt = manager.get(started.id)?.finishedAt ?? Number.POSITIVE_INFINITY;
+    expect(finishedAt - stopRequestedAt).toBeLessThan(PRODUCTION_STOP_BUDGET_MS);
     await waitForWorkerToDisappear(workerPid);
+  }, 60_000);
+
+  // The runner is the only thing that stops its command. When it died any other way than through
+  // a stop request, the command kept running with nothing left to stop it (#267).
+  it('ends the command when its runner dies', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
+    const persistentRoot = join(directory, 'jobs');
+    const script = join(directory, 'resistant.cjs');
+    const pidPath = join(directory, 'worker.pid');
+    writeFileSync(script, resistantWorker(pidPath));
+    const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+    // Not registered in `managers`: its runner is killed below, so the shared cleanup's stop
+    // request would wait out the whole budget for a runner that no longer exists.
+    const manager = new ShellJobManager(
+      { nextId: 1, shells: new Map() },
+      { persistentRoot, ...ciBudgets },
+    );
+    manager.configureWorkspace(directory);
+    let workerPid: number | undefined;
+    try {
+      const started = await manager.start({
+        command,
+        effectiveCommand: command,
+        workdir: directory,
+        env: process.env,
+        envOverrides: {},
+        sandboxed: false,
+        lifetime: 'persistent',
+        workspace: directory,
+      });
+      await waitFor(() => existsSync(pidPath), 'worker pid file', 30_000);
+      workerPid = Number(readFileSync(pidPath, 'utf8'));
+      const runnerPid = manager.get(started.id)?.runnerPid;
+      expect(runnerPid).toBeDefined();
+
+      // Kill the runner alone, the way a crash or Task Manager would, not its process tree.
+      process.kill(runnerPid!, 'SIGKILL');
+      await waitFor(() => !isProcessAlive(workerPid), 'the orphaned command to end', 15_000);
+    } finally {
+      manager.dispose();
+      if (workerPid !== undefined && isProcessAlive(workerPid)) process.kill(workerPid, 'SIGKILL');
+    }
+  }, 60_000);
+
+  it('refuses to run a command whose job record cannot be written, and says why', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
+    const persistentRoot = join(directory, 'jobs');
+    const script = join(directory, 'worker.cjs');
+    const pidPath = join(directory, 'worker.pid');
+    writeFileSync(script, resistantWorker(pidPath));
+    const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+    const manager = new ShellJobManager(
+      { nextId: 1, shells: new Map() },
+      { persistentRoot, ...ciBudgets },
+    );
+    managers.push(manager);
+    manager.configureWorkspace(directory);
+    // A file where the records directory should be makes every record write fail, on any platform.
+    const paths = persistentJobPaths(directory, persistentRoot);
+    rmSync(paths.records, { recursive: true, force: true });
+    writeFileSync(paths.records, 'not a directory');
+
+    const startedAt = Date.now();
+    await expect(
+      manager.start({
+        command,
+        effectiveCommand: command,
+        workdir: directory,
+        env: process.env,
+        envOverrides: {},
+        sandboxed: false,
+        lifetime: 'persistent',
+        workspace: directory,
+      }),
+    ).rejects.toThrow(/could not write its job record/);
+    // The runner said why and exited; the manager did not wait out its start budget.
+    expect(Date.now() - startedAt).toBeLessThan(ciBudgets.runnerStartBudgetMs);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(existsSync(pidPath)).toBe(false);
   }, 60_000);
 
   // On Windows a rename over a file that another process has open fails with EPERM, and the
@@ -237,17 +325,89 @@ describe('ShellJobManager persistent jobs', () => {
         process.execPath,
         [
           '-e',
-          `const fs = require('fs'); const end = Date.now() + 4000; while (Date.now() < end) { try { fs.readFileSync(${JSON.stringify(recordPath)}); } catch {} }`,
+          `const fs = require('fs'); const end = Date.now() + 4000; let reads = 0; while (Date.now() < end) { try { fs.readFileSync(${JSON.stringify(recordPath)}); reads++; } catch {} } process.exit(reads > 0 ? 0 : 3);`,
         ],
         { stdio: 'ignore' },
       );
-      await new Promise((resolve) => reader.once('exit', resolve));
+      // A reader that failed to start, or never managed a read, would leave nothing tested.
+      const readerExit = await new Promise<number | null | Error>((resolve) => {
+        reader.once('error', resolve);
+        reader.once('exit', resolve);
+      });
+      expect(readerExit).toBe(0);
 
       const runnerPid = manager.get(started.id)?.runnerPid;
       expect(runnerPid).toBeDefined();
       expect(isProcessAlive(runnerPid)).toBe(true);
       expect(await manager.stop(started.id)).toBe(true);
       expect(manager.get(started.id)?.status).toBe('killed');
+    },
+    60_000,
+  );
+
+  // A record write the runner cannot make is not the command's output. The notes used to go into
+  // the job's log, which the model reads through BashOutput; the record now counts them (#267).
+  it.skipIf(process.platform !== 'win32')(
+    'keeps record-write failures out of the command log',
+    async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
+      const persistentRoot = join(directory, 'jobs');
+      const script = join(directory, 'idle.cjs');
+      writeFileSync(
+        script,
+        'setInterval(() => {}, 1000);\nsetTimeout(() => process.exit(0), 60_000);\n',
+      );
+      const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+      const manager = new ShellJobManager(
+        { nextId: 1, shells: new Map() },
+        { persistentRoot, ...ciBudgets },
+      );
+      managers.push(manager);
+      manager.configureWorkspace(directory);
+      const started = await manager.start({
+        command,
+        effectiveCommand: command,
+        workdir: directory,
+        env: process.env,
+        envOverrides: {},
+        sandboxed: false,
+        lifetime: 'persistent',
+        workspace: directory,
+      });
+      const paths = persistentJobPaths(directory, persistentRoot);
+      const recordPath = join(paths.records, `${started.id}.json`);
+      const logPath = join(paths.logs, `${started.id}.log`);
+
+      // An open handle makes every rename over the record fail on Windows for three seconds.
+      const holder = spawn(
+        process.execPath,
+        [
+          '-e',
+          `const fs = require('fs'); const fd = fs.openSync(${JSON.stringify(recordPath)}, 'r'); setTimeout(() => fs.closeSync(fd), 3000);`,
+        ],
+        { stdio: 'ignore' },
+      );
+      const holderExit = await new Promise<number | null | Error>((resolve) => {
+        holder.once('error', resolve);
+        holder.once('exit', resolve);
+      });
+      expect(holderExit).toBe(0);
+
+      const readRecord = () =>
+        JSON.parse(readFileSync(recordPath, 'utf8')) as {
+          recordWriteFailures?: number;
+          lastRecordWriteError?: string;
+        };
+      await waitFor(
+        () => (readRecord().recordWriteFailures ?? 0) > 0,
+        'a record that counts the failed writes',
+        10_000,
+      );
+      expect(readRecord().lastRecordWriteError).toMatch(
+        /heartbeat write failed \((EPERM|EACCES|EBUSY)\)/,
+      );
+      expect(readFileSync(logPath, 'utf8')).not.toContain('[runner');
+      expect(await manager.stop(started.id)).toBe(true);
     },
     60_000,
   );

@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
+import { FILE_CONTENTION_CODES, sleepSync } from '../agents/atomic-json.js';
 import { repositoryHash } from '../agents/git-isolation.js';
 import { systemClock, type Clock } from '../clock.js';
 import type {
@@ -65,6 +66,13 @@ export interface PersistentShellState {
   /** Incremented whenever the bounded log is rewritten to its tail. */
   outputRotationSequence?: number;
   truncatedBytes?: number;
+  /**
+   * Non-terminal record writes the runner could not make. The next write that lands carries
+   * the count, so a lagging record can be diagnosed without the note landing in the job's log.
+   */
+  recordWriteFailures?: number;
+  /** The latest of those failures, such as `heartbeat write failed (EPERM)`. */
+  lastRecordWriteError?: string;
   timeoutMs?: number;
   deadlineAt?: number;
   exitCode?: number | null;
@@ -109,33 +117,20 @@ export function ensurePersistentJobPaths(paths: PersistentJobPaths): void {
 }
 
 /**
- * Windows fails a rename over a file that another process has open, even only for reading, with
- * EPERM, EACCES or EBUSY. Here that is routine rather than rare: the shell manager polls a job
- * record while the detached runner rewrites it, and scanners open freshly written files. A POSIX
- * rename never fails this way, so only win32 retries, and only for these codes.
- */
-const RENAME_CONTENTION_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
-const RENAME_RETRY_STEP_MS = 10;
-
-/**
  * How long a contended rename may block before it rethrows, unless the caller asks for longer.
  * The shell manager and memory extraction write from the TUI's own process, where a synchronous
  * wait freezes rendering, so the default is small. The detached runner has no UI and asks for
  * more.
  */
-export const DEFAULT_RENAME_RETRY_BUDGET_MS = 100;
+const DEFAULT_RENAME_RETRY_BUDGET_MS = 100;
+const RENAME_RETRY_STEP_MS = 10;
 
-export interface RenameRetryOptions {
+interface RenameRetryOptions {
   budgetMs?: number;
   platform?: NodeJS.Platform;
   clock?: Clock;
   rename?: (from: string, to: string) => void;
   sleep?: (milliseconds: number) => void;
-}
-
-function sleepSync(milliseconds: number): void {
-  if (milliseconds <= 0) return;
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
 /** `renameSync`, retried while Windows reports the target as in use, for at most `budgetMs`. */
@@ -156,7 +151,7 @@ export function renameWithContentionRetry(
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code ?? '';
       const remainingMs = deadline - clock.monotonicNowMs();
-      if (platform !== 'win32' || !RENAME_CONTENTION_CODES.has(code) || remainingMs <= 0) {
+      if (platform !== 'win32' || !FILE_CONTENTION_CODES.has(code) || remainingMs <= 0) {
         throw error;
       }
       sleep(Math.min(RENAME_RETRY_STEP_MS, remainingMs));
@@ -164,7 +159,7 @@ export function renameWithContentionRetry(
   }
 }
 
-export interface WriteJsonAtomicOptions {
+interface WriteJsonAtomicOptions {
   /** How long a contended rename may block; see `DEFAULT_RENAME_RETRY_BUDGET_MS`. */
   renameRetryBudgetMs?: number;
 }
@@ -176,14 +171,14 @@ export function writeJsonAtomic(
 ): void {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 });
   try {
+    writeFileSync(temporary, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 });
     renameWithContentionRetry(temporary, path, { budgetMs: options.renameRetryBudgetMs });
   } catch (error) {
     try {
       rmSync(temporary, { force: true });
     } catch {
-      // The rename's error is the one to report; a stray temp file is harmless.
+      // The write's own error is the one to report; a stray temp file is harmless.
     }
     throw error;
   }

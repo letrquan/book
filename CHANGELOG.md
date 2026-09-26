@@ -276,6 +276,31 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A hook that starts its own process no longer keeps Book alive (#263).** On a timeout or a
+  cancellation Book killed only the shell wrapping the hook (`cmd.exe` or `sh`), so a process
+  the hook had started kept the hook's pipes open and Book could not exit: after `/exit` a
+  `SessionEnd` hook like that left the process running with no UI until a second Ctrl+C.
+  Book now ends the hook's whole process tree (`taskkill /T` on Windows, the hook's own
+  process group elsewhere) and lets go of its pipes.
+- **A persistent background job's command no longer outlives its runner (#267).**
+  - **Orphans:** when the detached runner died other than through a stop (a crash, Task
+    Manager, `kill -9`), its command kept running with nothing left to stop it. The command now
+    runs under a small supervisor that holds a pipe from the runner and ends the command's
+    whole tree when that pipe closes, which the operating system does however the runner died.
+  - **The first record:** a runner that could not write its job's first record still ran the
+    command, while `start()` waited out its 3 s, failed with no cause, forgot the job and
+    deleted its files. The runner now writes that record before starting anything, exits if it
+    cannot, and `start()` fails at once with the cause.
+  - **Record-write failures** no longer write notes into the job's log, which is the command's
+    own output. They are counted on the record (`recordWriteFailures`,
+    `lastRecordWriteError`), and a heartbeat that finds the record locked gives up after 50 ms
+    instead of blocking the runner for a second.
+  - **The terminal record:** when every attempt to write it fails, the runner now says so at the
+    end of the job's log, with the job's real outcome, instead of exiting silently.
+  - **Book's own process:** a record write that still failed after its retry budget could throw
+    from the shell manager's 500 ms monitor and end Book. The lost-job write, an acknowledgement
+    and a stop request now fail softly: the first two are retried or kept in memory, and a stop
+    request that could not be written fails the stop and leaves the job `running`.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller
@@ -459,8 +484,7 @@ All notable changes to this project are documented in this file.
     EPERM/EACCES/EBUSY. The runner waits up to 1 s. Writers in the TUI's own process (the shell
     manager, memory extraction) wait up to 100 ms, so rendering never stalls for long.
   - **Non-terminal writes:** a heartbeat, child-pid or `stopping` write that still fails no longer
-    ends the runner. It leaves a note in the job's log, and the next heartbeat writes the same
-    state.
+    ends the runner. The next heartbeat writes the same state.
   - **Terminal record:** it is retried on a timer until written (20 attempts) rather than lost.
   - **Temp files:** a failed write no longer leaves its `.tmp` file beside the record.
   - **Before and after:** with a second process reading the record in a tight loop, the runner

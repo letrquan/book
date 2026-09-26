@@ -1,4 +1,4 @@
-import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { systemClock, type Clock } from '../clock.js';
 import { existsSync, readFileSync } from 'node:fs';
@@ -24,12 +24,10 @@ import {
   type PersistentShellSpec,
   type PersistentShellState,
 } from './persistent-store.js';
-import { isProcessAlive, signalProcessGroup, waitForProcessGroupExit } from './process-tree.js';
-import { system32Executable } from '../system32.js';
+import { isProcessAlive, terminateProcessTree, waitForProcessClose } from './process-tree.js';
 
 const MAX_BACKGROUND_BUFFER = 1024 * 1024 * 5;
 const MAX_OUTPUT_RESULT = 32_000;
-const TERMINATE_GRACE_MS = 1_500;
 const MAX_RETAINED_TERMINAL_SHELLS = 20;
 const TERMINAL_SHELL_TTL_MS = 15 * 60_000;
 const PERSISTENT_HEARTBEAT_STALE_MS = 10_000;
@@ -129,92 +127,9 @@ function waitForSpawn(proc: ChildProcess): Promise<Error | undefined> {
   });
 }
 
-function waitForProcessClose(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
-  if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      resolve(proc.exitCode !== null || proc.signalCode !== null);
-    }, timeoutMs);
-    const onClose = () => {
-      cleanup();
-      resolve(true);
-    };
-    const cleanup = () => {
-      clearTimeout(timer);
-      proc.off('close', onClose);
-    };
-    proc.once('close', onClose);
-  });
-}
-
 function waitForShellClose(shell: BackgroundShellRecord, timeoutMs: number): Promise<boolean> {
   if (shell.finishedAt !== undefined) return Promise.resolve(true);
   return shell.process ? waitForProcessClose(shell.process, timeoutMs) : Promise.resolve(true);
-}
-
-type WindowsTreeKill = (pid: number) => Promise<boolean>;
-
-async function runTaskkill(pid: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    execFile(
-      system32Executable('taskkill'),
-      ['/PID', String(pid), '/T', '/F'],
-      { windowsHide: true, timeout: TERMINATE_GRACE_MS },
-      (error) => resolve(!error),
-    );
-  });
-}
-
-export async function terminateWindowsProcessTree(
-  proc: ChildProcess,
-  pid: number,
-  signal: NodeJS.Signals,
-  treeKill: WindowsTreeKill = runTaskkill,
-): Promise<boolean> {
-  const alreadyExited = proc.exitCode !== null || proc.signalCode !== null;
-  if (alreadyExited) return true;
-  if (await treeKill(pid)) return true;
-  try {
-    proc.kill(signal);
-  } catch {
-    // The process may have exited between taskkill and the direct-child fallback.
-  }
-  return false;
-}
-
-/**
- * Escalate SIGTERM → SIGKILL across the whole tree and report whether it is really gone.
- *
- * On POSIX the direct child is the `sh -c` wrapper, which dies from SIGTERM even when the worker
- * it forked ignores it, so its exit says nothing about the tree — success is judged on whether
- * the process group still holds anything. On Windows `taskkill /T /F` covers the tree, so the
- * direct child's close speaks for the tree only when taskkill actually ran.
- */
-async function terminateProcessTree(
-  proc: ChildProcess | undefined,
-  pid: number | undefined,
-  hasClosed: (timeoutMs: number) => Promise<boolean>,
-): Promise<boolean> {
-  if (!proc || pid === undefined) return true;
-  if (process.platform !== 'win32') {
-    signalProcessGroup(proc, pid, 'SIGTERM');
-    if (await waitForProcessGroupExit(pid, TERMINATE_GRACE_MS)) return true;
-    signalProcessGroup(proc, pid, 'SIGKILL');
-    return waitForProcessGroupExit(pid, TERMINATE_GRACE_MS);
-  }
-  const confirmed = await terminateWindowsProcessTree(proc, pid, 'SIGTERM');
-  if (await hasClosed(TERMINATE_GRACE_MS)) return confirmed;
-  try {
-    proc.kill('SIGKILL');
-  } catch {
-    return false;
-  }
-  return (await hasClosed(TERMINATE_GRACE_MS)) && confirmed;
-}
-
-export async function terminateForegroundProcess(proc: ChildProcess): Promise<void> {
-  await terminateProcessTree(proc, proc.pid, (timeoutMs) => waitForProcessClose(proc, timeoutMs));
 }
 
 export class ShellJobManager {
@@ -258,7 +173,15 @@ export class ShellJobManager {
       else this.store.shells.set(state.id, this.recordFromPersistentState(state));
     }
     if (!this.monitor) {
-      this.monitor = setInterval(() => this.refreshPersistentJobs(), 500);
+      this.monitor = setInterval(() => {
+        // An exception thrown from this timer would be uncaught and end Book. Whatever failed is
+        // tried again on the next tick.
+        try {
+          this.refreshPersistentJobs();
+        } catch {
+          // Retried on the next tick.
+        }
+      }, 500);
       this.monitor.unref();
     }
   }
@@ -506,12 +429,17 @@ export class ShellJobManager {
     if (shell.lifetime !== 'persistent' || !shell.persistentRecordPath) return;
     const state = readJsonFile<PersistentShellState>(shell.persistentRecordPath);
     if (!state) return;
-    writeJsonAtomic(shell.persistentRecordPath, {
-      ...state,
-      revision: state.revision + 1,
-      completionDeliveredSequence: shell.completionDeliveredSequence ?? 0,
-      completionAcknowledgedSequence: shell.completionAcknowledgedSequence ?? 0,
-    });
+    try {
+      writeJsonAtomic(shell.persistentRecordPath, {
+        ...state,
+        revision: state.revision + 1,
+        completionDeliveredSequence: shell.completionDeliveredSequence ?? 0,
+        completionAcknowledgedSequence: shell.completionAcknowledgedSequence ?? 0,
+      });
+    } catch {
+      // The acknowledgement stands in memory. If its write still fails, a restarted Book offers
+      // this completion once more, which is the whole cost.
+    }
   }
 
   private async startPersistent(options: ShellStartOptions): Promise<BackgroundShellRecord> {
@@ -569,6 +497,10 @@ export class ShellJobManager {
     runner.on('error', (error) => {
       runnerError ||= error.message;
     });
+    let runnerExited = false;
+    runner.on('close', () => {
+      runnerExited = true;
+    });
     runner.unref();
     unrefStream(runner.stderr);
     const shell: BackgroundShellRecord = {
@@ -609,16 +541,21 @@ export class ShellJobManager {
       if (state) {
         this.applyPersistentState(shell, state);
         if (state.status !== 'starting') break;
-      }
+      } else if (runnerExited) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     if (shell.status === 'starting') {
       this.store.shells.delete(id);
-      removePersistentJobFiles(paths, id);
+      try {
+        removePersistentJobFiles(paths, id);
+      } catch {
+        // Cleanup is best effort; the start error is the one to report.
+      }
       const detail = runnerError.trim();
-      throw new Error(
-        `Persistent background runner did not start within ${startBudgetMs}ms${detail ? `: ${detail}` : '.'}`,
-      );
+      const what = runnerExited
+        ? 'exited before recording the job'
+        : `did not start within ${startBudgetMs}ms`;
+      throw new Error(`Persistent background runner ${what}${detail ? `: ${detail}` : '.'}`);
     }
     this.emit({ type: 'background_job_start', job: cloneRecord(shell) });
     return cloneRecord(shell);
@@ -640,14 +577,20 @@ export class ShellJobManager {
     reason: 'killed' | 'timed_out',
   ): Promise<boolean> {
     if (!shell.persistentControlPath || !shell.controlToken) return false;
+    try {
+      writeJsonAtomic(shell.persistentControlPath, {
+        token: shell.controlToken,
+        action: 'stop',
+        reason,
+        requestedAt: Date.now(),
+      });
+    } catch (error) {
+      // Nothing was asked of the runner, so the job is still running and says so.
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Could not request the stop of ${shell.id}: ${message}`);
+    }
     shell.status = 'stopping';
     this.emit({ type: 'background_job_update', job: cloneRecord(shell) });
-    writeJsonAtomic(shell.persistentControlPath, {
-      token: shell.controlToken,
-      action: 'stop',
-      reason,
-      requestedAt: Date.now(),
-    });
     const deadline = this.clock.monotonicNowMs() + (this.options.runnerStopBudgetMs ?? 5_000);
     while (this.clock.monotonicNowMs() < deadline) {
       this.refreshPersistentRecord(shell);
@@ -708,7 +651,14 @@ export class ShellJobManager {
       heartbeatAt: Date.now(),
       completionSequence: state.completionSequence + 1,
     };
-    writeJsonAtomic(recordPath, lost);
+    try {
+      writeJsonAtomic(recordPath, lost);
+    } catch {
+      // The write still failed after its retry budget (on Windows, a reader holds the record). The
+      // next refresh finds the same stale record and tries again; until then the job reads as lost
+      // and its runner files stay, since the record does not say so yet.
+      return lost;
+    }
     if (this.persistentPaths) removePersistentRunnerFiles(this.persistentPaths, state.id);
     return lost;
   }
@@ -736,8 +686,17 @@ export class ShellJobManager {
       rootRunId: state.rootRunId,
       parentRunId: state.parentRunId,
       completionSequence: state.completionSequence,
-      completionDeliveredSequence: state.completionDeliveredSequence,
-      completionAcknowledgedSequence: state.completionAcknowledgedSequence,
+      // Only this process raises these two, and it raises them after it has already offered the
+      // completion. A record that has not caught up — because the write failed, or because the
+      // runner's own write landed first — must not offer the same completion a second time.
+      completionDeliveredSequence: Math.max(
+        shell.completionDeliveredSequence ?? 0,
+        state.completionDeliveredSequence,
+      ),
+      completionAcknowledgedSequence: Math.max(
+        shell.completionAcknowledgedSequence ?? 0,
+        state.completionAcknowledgedSequence,
+      ),
       truncatedBytes: state.truncatedBytes ?? shell.truncatedBytes,
       persistentOutputPath: state.outputPath,
       persistentControlPath: state.controlPath,

@@ -295,7 +295,10 @@ describe('removeProviderLocal', () => {
     );
 
     expect(removeProviderLocal(dir, 'gateway').ok).toBe(true);
-    const restarted = resolveSettings(dir);
+    // An absent user layer, so the machine's own ~/.book/settings.json cannot take part.
+    const restarted = resolveSettings(dir, undefined, {
+      userSettingsPath: join(dir, 'no-user-settings.json'),
+    });
 
     expect(restarted.model).toBe('project-model');
     expect(restarted.provider.gateway.apiKey).toBe('project-key');
