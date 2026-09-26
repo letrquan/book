@@ -347,6 +347,40 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A request too large for the window compacts instead of ending the run** (#238). Resuming a long
+  session on a model with a smaller window (`--resume <id> --model <smaller>`) could end with
+  `Request is too large for <model> … Start a new session`: the preflight gate compacted first, but
+  when the reducer's request failed and the tool results were already too small for the clip to
+  help, it refused. A checkpoint built without the model is now the last resort: it needs no
+  provider call, so the request goes out. It is not tried after a failure every request would share
+  (a rejected key, an outage) or a budget refusal, and it is not committed unless it fits. The run
+  ends only when even that cannot be made, or when `autoCompactEnabled` is off, and the message says
+  which.
+- **Overflow recovery follow-ups** (#244).
+  - A 429 that states an oversized request (OpenAI's TPM limit) is no longer retried like a rate
+    limit; it compacts at once, and no longer lowers the model's learned window for good. A
+    transient `Rate limit reached` is still retried. It compacts under the limit the refusal states
+    and is not retried above it; a TPM refusal sent as a 413 or wrapped in a router's 503 counts
+    too, and no rate-limit error lowers the window.
+  - The recovery honours `autoCompactEnabled`: with it off, only the tool-result clip runs.
+  - When the recovery's reducer fails and the clip cannot bring the request under 80% of the
+    refused size, a checkpoint built without the model is used. A clip that is not retried no
+    longer rewrites the history.
+  - A 400 that comes back after a size-inferred recovery says it is either not about size or the
+    route's limit is below 200k. Any `bad_request` of 200k tokens or more still compacts once.
+  - The reducer's own plain 400 on a request of 200k tokens or more is read as an overflow and
+    halves its planning window, so a ~600k history on the antigravity route can recover.
+  - An overflow that OpenRouter forwards in an `error.metadata.raw` object, not only a string,
+    is read.
+  - Anthropic's mid-stream `authentication_error` and `permission_error` park the run as
+    `credentials_rejected`, `not_found_error` ends it, and `request_too_large` goes through the
+    overflow recovery. `rate_limit_error`, `billing_error` and `timeout_error` now read as a rate
+    limit, a billing refusal (which parks the run) and a timeout. All seven were re-sent before.
+  - A non-retryable error body is read for at most 5 s and 64 KB, like a retryable one.
+  - A non-retryable error body cut at 64 KB is read for its first `message` only, never for
+    wording in an echoed request.
+  - The error text shows the message the classifier reads: a top-level `message`, a string
+    `error`, or `detail`.
 - **A hook that starts its own process no longer keeps Book alive (#263).** On a timeout or a
   cancellation Book killed only the shell wrapping the hook (`cmd.exe` or `sh`), so a process
   the hook had started kept the hook's pipes open and Book could not exit: after `/exit` a
