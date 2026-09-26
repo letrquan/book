@@ -4,7 +4,11 @@ import {
   costReport,
   estimateUsageCost,
   hasKnownPricing,
+  modelBreakdownLines,
+  promptSizeTokens,
   resolveModelPricing,
+  trafficTokens,
+  usageCostUsd,
   PRICING,
 } from './pricing.js';
 
@@ -40,9 +44,21 @@ describe('estimateUsageCost with cache tokens', () => {
     }
   });
 
-  it('still refuses to guess a missing cache rate', () => {
+  it('prices cache reads at the input rate when the model has no cache-read rate', () => {
+    // OpenAI-compatible providers report automatic cache reads. Refusing them would
+    // make a USD budget refuse every gpt call; the input rate is an upper bound.
     const quote = estimateUsageCost('gpt-5', { ...NO_CACHE, cacheReadInputTokens: 10 });
+    expect(quote.status).toBe('known');
+    // (1000*5 + 500*15 + 10*5) / 1e6
+    expect(quote.costUsd).toBeCloseTo(0.01255, 8);
+  });
+
+  it('still refuses to guess a missing cache-write rate', () => {
+    const quote = estimateUsageCost('gpt-5', { ...NO_CACHE, cacheCreationInputTokens: 10 });
     expect(quote).toMatchObject({ status: 'unknown', reason: 'cache-pricing-unavailable' });
+    expect(
+      usageCostUsd(PRICING['gpt-5'], { ...NO_CACHE, cacheCreationInputTokens: 10 }),
+    ).toBeNull();
   });
 });
 
@@ -160,11 +176,82 @@ describe('usageReport', () => {
     expect(r).toContain('Grep: 8 (3 failed: invalid_arguments ×3)');
     expect(r).toContain('Read: 5');
   });
+
+  it('shows cached tokens and prices them at the cache-read rate', () => {
+    const r = usageReport(
+      'claude-sonnet-5',
+      {
+        promptTokens: 1000,
+        completionTokens: 500,
+        totalTokens: 1500,
+        cacheReadInputTokens: 9000,
+      },
+      { currentTurn: 1, messageCount: 2, turnDurationMs: 0 },
+    );
+    expect(r).toContain('•  9,000 cached');
+    // (1000*3 + 500*15 + 9000*0.3) / 1e6 = 0.0132
+    expect(r).toContain('$0.0132');
+  });
 });
 
 describe('costReport (unchanged)', () => {
   it('still reports no usage before first response', () => {
     expect(costReport('claude-sonnet-5', null)).toContain('No token usage recorded');
+  });
+
+  it('counts cached tokens in the summary and the price', () => {
+    const r = costReport('claude-sonnet-5', {
+      promptTokens: 1000,
+      completionTokens: 500,
+      totalTokens: 1500,
+      cacheReadInputTokens: 9000,
+    });
+    expect(r).toContain('(1,000 in, 9,000 cached, 500 out)');
+    expect(r).toContain('10,500 tokens (1,000 in, 9,000 cached, 500 out)');
+    expect(r).toContain('$0.0132 estimated');
+  });
+
+  it('prices cached tokens in the per-model breakdown', () => {
+    const lines = modelBreakdownLines(
+      'claude-sonnet-5',
+      { promptTokens: 1000, completionTokens: 500, cacheReadInputTokens: 9000 },
+      [
+        {
+          label: 'explorer',
+          model: 'claude-haiku-4-5-20251001',
+          usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+        },
+      ],
+    );
+    expect(lines.join('\n')).toContain(
+      'claude-sonnet-5 (session) - prompt 1,000, completion 500, cache read 9,000 - $0.0132',
+    );
+  });
+
+  it('names a missing cache-write price instead of calling a priced model unpriced', () => {
+    const usage = {
+      promptTokens: 1000,
+      completionTokens: 10,
+      totalTokens: 1010,
+      cacheCreationInputTokens: 500,
+    };
+    expect(costReport('gpt-5', usage)).toContain('gpt-5 has no cache-write price');
+    expect(
+      usageReport('gpt-5', usage, { currentTurn: 1, messageCount: 2, turnDurationMs: 0 }),
+    ).toContain('"gpt-5" has no cache-write rate');
+  });
+
+  it('counts prompt size and traffic across cache tokens', () => {
+    const usage = {
+      promptTokens: 1000,
+      completionTokens: 500,
+      totalTokens: 1500,
+      cacheReadInputTokens: 9000,
+      cacheCreationInputTokens: 200,
+    };
+    expect(promptSizeTokens(usage)).toBe(10_200);
+    expect(trafficTokens(usage)).toBe(10_700);
+    expect(trafficTokens({ promptTokens: 10, completionTokens: 5, totalTokens: 15 })).toBe(15);
   });
 });
 

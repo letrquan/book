@@ -16,7 +16,7 @@ import { panelGrid, sheetContentWidth } from '../layout.js';
 import { SECTION_SIGN } from '../marks.js';
 import { useTheme } from '../theme.js';
 import { SheetRule } from './chrome.js';
-import { failureTotal, formatFailureCounts } from '../../pricing.js';
+import { failureTotal, formatFailureCounts, trafficTokens } from '../../pricing.js';
 import { sourceLabel } from '../../context-report.js';
 import { padDisplay, truncateDisplay, wordWrap } from './word-wrap.js';
 
@@ -234,12 +234,14 @@ function Meter({
 
 function StackedUsageMeter({
   promptTokens,
+  cacheTokens,
   completionTokens,
   totalTokens,
   width,
   progress,
 }: {
   promptTokens: number;
+  cacheTokens: number;
   completionTokens: number;
   totalTokens: number;
   width: number;
@@ -247,19 +249,25 @@ function StackedUsageMeter({
 }) {
   const theme = useTheme();
   const safeWidth = Math.max(8, width);
-  const safeTotal = Math.max(1, totalTokens, promptTokens + completionTokens);
+  const safeTotal = Math.max(1, totalTokens, promptTokens + cacheTokens + completionTokens);
   const promptTarget = Math.round((promptTokens / safeTotal) * safeWidth);
-  const completionTarget = Math.min(
+  const cacheTarget = Math.min(
     safeWidth - promptTarget,
+    Math.round((cacheTokens / safeTotal) * safeWidth),
+  );
+  const completionTarget = Math.min(
+    safeWidth - promptTarget - cacheTarget,
     Math.round((completionTokens / safeTotal) * safeWidth),
   );
   const promptFilled = Math.round(promptTarget * progress);
+  const cacheFilled = Math.round(cacheTarget * progress);
   const completionFilled = Math.round(completionTarget * progress);
-  const remainder = Math.max(0, safeWidth - promptFilled - completionFilled);
+  const remainder = Math.max(0, safeWidth - promptFilled - cacheFilled - completionFilled);
 
   return (
     <Box flexWrap="nowrap">
       <Text color={theme.usageMeter}>{'•'.repeat(promptFilled)}</Text>
+      <Text color={theme.subtle}>{'•'.repeat(cacheFilled)}</Text>
       <Text color={theme.success}>{'•'.repeat(completionFilled)}</Text>
       <Text color={theme.subtle} dimColor>
         {'·'.repeat(remainder)}
@@ -485,6 +493,8 @@ function UsagePanelBody({
 }) {
   const theme = useTheme();
   const usage = data.usage;
+  const cacheRead = usage?.cacheReadInputTokens ?? 0;
+  const cacheWrite = usage?.cacheCreationInputTokens ?? 0;
   const metrics: Metric[] = [
     { label: 'Turn', value: String(data.currentTurn), color: theme.usageMeter },
     { label: 'Messages', value: String(data.messageCount) },
@@ -510,22 +520,24 @@ function UsagePanelBody({
             <Box justifyContent="space-between">
               <SectionLabel>token traffic</SectionLabel>
               <Text bold color={theme.usageMeter}>
-                {usage.totalTokens.toLocaleString()}
+                {trafficTokens(usage).toLocaleString()}
               </Text>
             </Box>
             <StackedUsageMeter
               promptTokens={usage.promptTokens}
+              cacheTokens={cacheRead + cacheWrite}
               completionTokens={usage.completionTokens}
-              totalTokens={usage.totalTokens}
+              totalTokens={trafficTokens(usage)}
               width={contentWidth}
               progress={revealProgress(step, 2)}
             />
             <Box flexDirection={narrow ? 'column' : 'row'} justifyContent="space-between">
               <Text color={theme.usageMeter}>• input {usage.promptTokens.toLocaleString()}</Text>
               <Text color={theme.success}>• output {usage.completionTokens.toLocaleString()}</Text>
-              {usage.cacheReadInputTokens ? (
+              {cacheRead + cacheWrite > 0 ? (
                 <Text color={theme.subtle}>
-                  cache {usage.cacheReadInputTokens.toLocaleString()}
+                  • cache {cacheRead.toLocaleString()}
+                  {cacheWrite > 0 ? ` · ${cacheWrite.toLocaleString()} written` : ''}
                 </Text>
               ) : null}
             </Box>

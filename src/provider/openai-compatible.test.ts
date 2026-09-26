@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { chatCompletionStream, convertTools } from './openai-compatible.js';
+import { chatCompletionStream, convertTools, parseCompatibleUsage } from './openai-compatible.js';
 import { patchTools } from '../tools/patch.js';
 import { defaultConfig } from '../test/fixtures.js';
 
@@ -1145,6 +1145,159 @@ describe('OpenAI-compatible tool contracts', () => {
       events.push(event);
     expect(events.find((event) => event.type === 'tool_call')?.toolCall?.arguments).toEqual({
       patch,
+    });
+  });
+});
+
+describe('parseCompatibleUsage', () => {
+  it('maps a usage without cache tokens exactly as before', () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        total_tokens: 15,
+        prompt_tokens_details: { cached_tokens: 0 },
+      }),
+    ).toEqual({ promptTokens: 10, completionTokens: 5, totalTokens: 15 });
+    expect(parseCompatibleUsage(undefined)).toBeNull();
+  });
+
+  it('splits OpenAI cached_tokens out of prompt_tokens', () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 5,
+        total_tokens: 1005,
+        prompt_tokens_details: { cached_tokens: 800 },
+      }),
+    ).toEqual({
+      promptTokens: 200,
+      completionTokens: 5,
+      totalTokens: 1005,
+      cacheReadInputTokens: 800,
+      cacheCreationInputTokens: 0,
+    });
+  });
+
+  it("reads 9router's cache_creation_tokens and OpenRouter's cache_write_tokens as writes", () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 1,
+        total_tokens: 1001,
+        prompt_tokens_details: { cache_creation_tokens: 700 },
+      }),
+    ).toMatchObject({ promptTokens: 300, cacheReadInputTokens: 0, cacheCreationInputTokens: 700 });
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 1,
+        total_tokens: 1001,
+        prompt_tokens_details: { cached_tokens: 100, cache_write_tokens: 600 },
+      }),
+    ).toMatchObject({
+      promptTokens: 300,
+      cacheReadInputTokens: 100,
+      cacheCreationInputTokens: 600,
+    });
+  });
+
+  it("reads DeepSeek's prompt_cache_hit_tokens", () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 2,
+        total_tokens: 1002,
+        prompt_cache_hit_tokens: 600,
+        prompt_cache_miss_tokens: 400,
+      }),
+    ).toMatchObject({ promptTokens: 400, cacheReadInputTokens: 600 });
+    expect(
+      parseCompatibleUsage({ prompt_tokens: 1000, prompt_cache_hit_tokens: 600 })?.contextTokens,
+    ).toBeUndefined();
+  });
+
+  it('adds Anthropic-shaped top-level cache counts on top of prompt_tokens', () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 50,
+        completion_tokens: 3,
+        total_tokens: 53,
+        cache_read_input_tokens: 900,
+        cache_creation_input_tokens: 100,
+      }),
+    ).toEqual({
+      promptTokens: 50,
+      completionTokens: 3,
+      totalTokens: 53,
+      cacheReadInputTokens: 900,
+      cacheCreationInputTokens: 100,
+      contextTokens: 1050,
+    });
+    // Smaller than the uncached input, still on top: the source decides, not the size.
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 3,
+        total_tokens: 1003,
+        cache_creation_input_tokens: 800,
+      }),
+    ).toEqual({
+      promptTokens: 1000,
+      completionTokens: 3,
+      totalTokens: 1003,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 800,
+      contextTokens: 1800,
+    });
+  });
+
+  it('reads LiteLLM top-level cache writes as part of a normalised prompt_tokens', () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 4,
+        total_tokens: 1004,
+        prompt_tokens_details: { cached_tokens: 600 },
+        cache_read_input_tokens: 600,
+        cache_creation_input_tokens: 300,
+      }),
+    ).toEqual({
+      promptTokens: 100,
+      completionTokens: 4,
+      totalTokens: 1004,
+      cacheReadInputTokens: 600,
+      cacheCreationInputTokens: 300,
+    });
+  });
+
+  it('carries cache tokens through the stream into the done event', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'));
+            c.enqueue(
+              enc.encode(
+                'data: {"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":5,"total_tokens":1005,"prompt_tokens_details":{"cached_tokens":800}}}\n\n',
+              ),
+            );
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+    const events = [];
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(e);
+    }
+    expect(events.find((e) => e.type === 'done')?.usage).toMatchObject({
+      promptTokens: 200,
+      cacheReadInputTokens: 800,
     });
   });
 });

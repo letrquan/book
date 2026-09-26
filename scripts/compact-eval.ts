@@ -57,7 +57,7 @@ import {
   type EvaluationComparisonEligibility,
   type EvaluationEligibility,
 } from './eval-eligibility.js';
-import { estimateUsageCost, PRICING_VERSION } from '../src/pricing.js';
+import { estimateUsageCost, PRICING_VERSION, promptSizeTokens } from '../src/pricing.js';
 import { createRunAmbientSnapshot } from '../src/session/run-ambient.js';
 import { createRegistry } from '../src/tools/registry.js';
 import { SessionRuntime } from '../src/session/runtime.js';
@@ -1000,11 +1000,12 @@ function aggregateRows(
       0,
     );
     const controlPromptTokens = groupedRuns.reduce(
-      (sum, run) => sum + run.control.usage.promptTokens,
+      (sum, run) => sum + promptSizeTokens(run.control.usage),
       0,
     );
     const treatmentProbePromptTokens = groupedRuns.reduce(
-      (sum, run) => sum + run.treatment.usage.promptTokens - run.compact.usage.promptTokens,
+      (sum, run) =>
+        sum + promptSizeTokens(run.treatment.usage) - promptSizeTokens(run.compact.usage),
       0,
     );
     const compactTokens = groupedRuns.reduce((sum, run) => sum + run.compact.usage.totalTokens, 0);

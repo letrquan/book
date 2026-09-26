@@ -288,6 +288,29 @@ describe('built-in command contract', () => {
     );
   });
 
+  it('prices /usage for a dated model id and counts its cached tokens', () => {
+    const registry = createBuiltinCommandRegistry();
+    const effect = registry.execute('usage', '', {
+      ...context(),
+      runtimeConfig: defaultConfig({ model: 'claude-sonnet-5-20260115' }),
+      usage: {
+        promptTokens: 1000,
+        completionTokens: 500,
+        totalTokens: 1500,
+        cacheReadInputTokens: 9000,
+      },
+    });
+    expect(effect).toEqual(
+      expect.objectContaining({
+        display: expect.objectContaining({
+          kind: 'usage',
+          rate: { inputPerMillion: 3, outputPerMillion: 15 },
+          estimatedCostUsd: expect.closeTo(0.0132, 6),
+        }),
+      }),
+    );
+  });
+
   it('normalizes settings command arguments before returning effects', () => {
     const registry = createBuiltinCommandRegistry();
     expect(registry.execute('model', 'openai/gpt-5', context())).toEqual({
