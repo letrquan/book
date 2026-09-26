@@ -14,11 +14,12 @@ All notable changes to this project are documented in this file.
   `Read`, `Glob` or `Grep` the tool can serve (inside the workspace, or for `Read` Book's memory
   directory) runs without a permission prompt. The target is resolved the way the tool resolves it
   (`..` applied, symlinks and junctions followed), so a link out of the workspace, a `Glob` pattern
-  with a `..` segment in any brace alternative, and any target outside still ask. Still asking too:
+  that would start walking outside the workspace, and any target outside still ask. Still asking too:
   anything an `ask` rule covers; every `Grep` and `Glob` while a `deny` or `ask` rule names `Read`,
   `Grep` or `Glob`, since a `Read` rule cannot see what they read; `.book/settings.local.json`, which
-  can hold an API key (and which `Grep` no longer searches at all); and everything in a workspace
-  that holds a home directory, the OS one or Book's `BOOK_HOME`. An unattended `acceptEdits`
+  can hold an API key (and which `Grep` no longer searches at all, through any path or link); and
+  everything in a workspace that holds a home directory, the OS one or Book's `BOOK_HOME`, also
+  through a link. An unattended `acceptEdits`
   run could edit a file it was refused to read; print mode and the SDK now read the workspace in
   both modes. `plan`, `dontAsk`, `auto` and `bypassPermissions` are unchanged.
 - **An empty session opens on a title page with a table of contents.** A five-row rubric drop cap

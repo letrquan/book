@@ -200,8 +200,8 @@ Modes differ only in what happens to calls that no `deny` rule matched:
 serve runs without a prompt: a target inside the workspace, or for `Read` inside Book's memory
 directory (but not its inbox). The target is resolved the way the tool resolves it: `..` is applied
 and symlinks and junctions are followed, so a link inside the workspace that points out of it still
-asks. A `Grep` with no `path` searches the workspace; a `Glob` pattern with a `..` segment (in any
-brace alternative), or one that starts at an absolute path outside the workspace, still asks. Other read-only tools (`GitStatus`, `GitDiff`, `WebFetch`, …) still ask.
+asks. A `Grep` with no `path` searches the workspace; a `Glob` that would start walking outside
+it (`../**`, `.{.,x}/*`, an absolute path elsewhere) still asks. Other read-only tools (`GitStatus`, `GitDiff`, `WebFetch`, …) still ask.
 
 What still asks:
 
@@ -210,9 +210,11 @@ What still asks:
   rule cannot see what they read (`Grep` with `path: ".env"` returns every line of it), so they
   fall back to the prompt.
 - Book's project-local settings, `.book/settings.local.json`, and the `.book` directory that holds
-  it, since that file can carry an API key. `Grep` never searches that file at all.
-- Everything, in a workspace that holds a home directory, yours or Book's own (`BOOK_HOME`): a
-  session started in your home directory. A home holds SSH and provider keys and the trust store.
+  it, since that file can carry an API key. `Grep` never searches that file at all, whatever path
+  or link leads to it.
+- Everything, in a workspace that holds a home directory, yours or Book's own (`BOOK_HOME`),
+  also when either is reached through a link: a session started in your home directory. A home
+  holds SSH and provider keys and the trust store.
 
 `additionalDirectories` does not widen this: no file tool reads there yet, and the setting may come
 from a checked-in project file.

@@ -641,7 +641,6 @@ describe('workspace reads need no prompt (#264)', () => {
       evaluatePermissionDetail('Grep', { pattern: 'x', path: '..' }, s, scope(workspace)),
     ).toMatchObject({ decision: 'ask', outsideWorkspace: true });
     expect(evaluatePermission('Glob', { pattern: '../**/*' }, s, scope(workspace))).toBe('ask');
-    expect(evaluatePermission('Glob', { pattern: '{..,src}/*' }, s, scope(workspace))).toBe('ask');
     expect(
       evaluatePermission(
         'Glob',
@@ -650,33 +649,33 @@ describe('workspace reads need no prompt (#264)', () => {
         scope(workspace),
       ),
     ).toBe('ask');
-    // No path at all is not "outside": the tool rejects the call itself.
+    // No path at all is not "outside": the call goes on to the tool, which rejects it with the
+    // real reason (a missing argument, or arguments that were not valid JSON).
     expect(evaluatePermissionDetail('Read', {}, s, scope(workspace))).toEqual({
-      decision: 'ask',
-      source: 'default',
+      decision: 'allow',
+      source: 'workspace',
     });
+    expect(
+      evaluatePermissionDetail('Read', { __raw: '{"filePath": "a.tx' }, s, scope(workspace)),
+    ).toEqual({ decision: 'allow', source: 'workspace' });
   });
 
-  it('judges an absolute Glob by where it starts, and expands braces before looking for ..', () => {
+  it('judges a Glob by where fast-glob would start walking', () => {
     const { workspace, outside } = setup();
     const s = settings();
     const posix = (path: string) => path.replace(/\\/g, '/');
-    expect(
-      evaluatePermission('Glob', { pattern: `${posix(workspace)}/src/*.ts` }, s, scope(workspace)),
-    ).toBe('allow');
-    expect(
-      evaluatePermission('Glob', { pattern: `${posix(outside)}/*.txt` }, s, scope(workspace)),
-    ).toBe('ask');
-    expect(evaluatePermission('Glob', { pattern: '.{.,x}/*' }, s, scope(workspace))).toBe('ask');
-    expect(evaluatePermission('Glob', { pattern: 'src/{a,{b,..}}/*' }, s, scope(workspace))).toBe(
-      'ask',
-    );
-    expect(evaluatePermission('Glob', { pattern: '**/*.{ts,tsx}' }, s, scope(workspace))).toBe(
-      'allow',
-    );
-    expect(evaluatePermission('Glob', { pattern: 'logs/{1..3}.txt' }, s, scope(workspace))).toBe(
-      'allow',
-    );
+    const glob = (pattern: string) => evaluatePermission('Glob', { pattern }, s, scope(workspace));
+    expect(glob(`${posix(workspace)}/src/*.ts`)).toBe('allow');
+    expect(glob(`${posix(outside)}/*.txt`)).toBe('ask');
+    expect(glob('.{.,x}/*')).toBe('ask');
+    expect(glob('src/{a,{b,../..}}/*')).toBe('ask');
+    // These never leave the workspace: fast-glob walks from inside it.
+    expect(glob('src/{a,{b,..}}/*')).toBe('allow');
+    expect(glob('{..,src}/*')).toBe('allow');
+    expect(glob('**/*.{ts,tsx}')).toBe('allow');
+    expect(glob('logs/{1..3}.txt')).toBe('allow');
+    expect(glob('{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}.txt')).toBe('allow');
+    expect(glob('~$*.docx')).toBe('allow');
   });
 
   it('marks an outside target even where reads keep asking, and under an ask rule', () => {
@@ -798,6 +797,11 @@ describe('workspace reads need no prompt (#264)', () => {
     expect(evaluatePermission('Grep', { pattern: 'x', path: '.book' }, s, scope(workspace))).toBe(
       'ask',
     );
+    // Compared case-insensitively everywhere: a case-insensitive Linux mount (WSL on /mnt/c)
+    // serves this spelling from the same file.
+    expect(
+      evaluatePermission('Read', { filePath: '.BOOK/SETTINGS.LOCAL.JSON' }, s, scope(workspace)),
+    ).toBe('ask');
   });
 
   it('keeps deny and ask rules in force, however the path is spelled', () => {
@@ -848,7 +852,7 @@ describe('workspace reads need no prompt (#264)', () => {
       expect(
         evaluatePermissionDetail(tool, { filePath: join(workspace, '.env') }, s, off),
       ).toMatchObject({ decision: 'deny', matchedRule: `${tool}(.env)` });
-      expect(evaluatePermissionDetail(tool, { file_path: 'src/../.env' }, s, off)).toMatchObject({
+      expect(evaluatePermissionDetail(tool, { filePath: 'src/../.env' }, s, off)).toMatchObject({
         decision: 'deny',
       });
     }

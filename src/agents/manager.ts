@@ -247,9 +247,10 @@ export class AgentManager {
     for (const record of this.agents.values()) {
       let changed = false;
       if (record.pendingPermission) {
+        // The host that could answer has gone; the agent runs on with no approver.
         this.permissionResolvers.get(record.pendingPermission.id)?.({
           result: 'deny',
-          reason: 'dismissed',
+          reason: 'no_approver',
         });
         this.permissionResolvers.delete(record.pendingPermission.id);
         this.permissionRules.delete(record.pendingPermission.id);

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runAgentLoop } from './loop.js';
@@ -186,6 +186,65 @@ describe('runAgentLoop workspace reads (#264)', () => {
     }
   });
 
+  it('keeps asking when the workspace reaches the home directory through a link', async () => {
+    const home = tempDir('book-loop-home-real-');
+    writeFileSync(join(home, 'notes.txt'), 'home notes\n');
+    const linked = join(tempDir('book-loop-home-link-'), 'ws');
+    // A junction needs no symlink privilege on Windows; elsewhere the type is ignored.
+    symlinkSync(home, linked, 'junction');
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const prompt = vi.fn(async () => 'allow' as const);
+      await runAgentLoop(
+        defaultConfig({ workspace: linked, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'read it',
+        [],
+        noopCallbacks({ onPermissionRequired: prompt }),
+        'default',
+        {
+          provider: toolsThenText([
+            { id: 'r1', name: 'Read', arguments: { filePath: 'notes.txt' } },
+          ]),
+          isNewSession: false,
+        },
+      );
+      expect(prompt).toHaveBeenCalledTimes(1);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it('lets a Read whose arguments were not valid JSON reach the tool, which names the problem', async () => {
+    const notices: string[] = [];
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2 }),
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({
+        onPermissionRequired: noApprover,
+        onToolResult: (r) => results.push(r),
+        onNotice: (notice) => notices.push(notice),
+      }),
+      'default',
+      {
+        provider: toolsThenText([
+          { id: 'r1', name: 'Read', arguments: { __raw: '{"filePath": "a.tx' } },
+        ]),
+        isNewSession: false,
+      },
+    );
+    expect(byId(results, 'r1')?.structuredError?.code).toBe('invalid_json_arguments');
+    expect(notices.filter((notice) => notice.includes('needs approval'))).toHaveLength(0);
+  });
+
   it('names an outside target as unreachable even where reads keep asking', async () => {
     process.env.BOOK_HOME = join(workspace, '.book-home');
     mkdirSync(process.env.BOOK_HOME);
@@ -272,6 +331,37 @@ describe('runAgentLoop workspace reads (#264)', () => {
     expect(refusals).toHaveLength(1);
     expect(refusals[0]).toContain('"InvokeSkill(review)"');
     expect(refusals[0]).toContain('--permission-mode auto still asks');
+  });
+
+  it('says an explicitly requested skill went unanswered when its prompt was dismissed', async () => {
+    writeLoopSkill(workspace, 'review');
+    const config = defaultConfig({ workspace, maxTurns: 1 });
+    config.settings.skills.execution.review = 'ask';
+    let requestText = '';
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        requestText = JSON.stringify(messages);
+        yield { type: 'text' as const, content: 'done' };
+        yield { type: 'done' as const };
+      },
+    };
+    await runAgentLoop(
+      config,
+      createDefaultRegistry(),
+      '$review inspect this change',
+      [],
+      noopCallbacks({
+        onPermissionRequired: async (): Promise<PermissionDecision> => ({
+          result: 'deny',
+          reason: 'dismissed',
+        }),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+    expect(requestText).toContain('was not answered');
+    expect(requestText).not.toContain('Explicit skill activation was denied');
   });
 
   it('prompts for a workspace read that an ask rule covers, however the path is spelled', async () => {

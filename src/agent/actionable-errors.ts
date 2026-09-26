@@ -51,15 +51,32 @@ function askRuleNote(askRule: string | undefined): string {
   return askRule ? ` The permissions.ask rule ${askRule} requires approval for it.` : '';
 }
 
+/** Longest rule a remedy quotes. */
+const RULE_TEXT_MAX = 120;
+
+/**
+ * A rule fit to print: its first line, with control characters (escape sequences, bidi
+ * overrides, line separators) turned into spaces, and its length capped. The rule is built from
+ * a model-chosen argument, and print mode writes the notice straight to the operator's terminal.
+ */
+function printableRule(rule: string): string {
+  const firstLine = rule.split(/\r\n|\r|\n/, 1)[0];
+  const flat = firstLine.replace(
+    /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g,
+    ' ',
+  );
+  return flat.length > RULE_TEXT_MAX ? `${flat.slice(0, RULE_TEXT_MAX - 1)}…` : flat;
+}
+
 /** The operator's way through, as a clause that follows "To allow it, ". */
 function remedyClause(remedy: UnattendedRemedy): string | undefined {
   switch (remedy.kind) {
     case 'rule_or_auto':
-      return `add a permissions.allow rule such as "${remedy.rule}" to your settings, or run with --permission-mode auto`;
+      return `add a permissions.allow rule such as "${printableRule(remedy.rule)}" to your settings, or run with --permission-mode auto`;
     case 'ask_rule':
-      return `narrow or remove the permissions.ask rule ${remedy.rule}, which asks for it and outranks any allow rule, or run with --permission-mode auto`;
+      return `narrow or remove the permissions.ask rule ${printableRule(remedy.rule)}, which asks for it and outranks any allow rule, or run with --permission-mode auto`;
     case 'allow_rule_only':
-      return `add a permissions.allow rule such as "${remedy.rule}" to your settings (--permission-mode auto still asks for it)`;
+      return `add a permissions.allow rule such as "${printableRule(remedy.rule)}" to your settings (--permission-mode auto still asks for it)`;
     case 'bypass_only':
       return 'run with --permission-mode bypassPermissions: a persistent background shell asks in every other mode, whatever the allow rules say';
     case 'outside_workspace':

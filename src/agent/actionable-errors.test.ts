@@ -88,4 +88,26 @@ describe('actionable tool errors', () => {
     expect(notice).toContain('--permission-mode auto');
     expect(unattendedRefusalNotice('Read', { kind: 'outside_workspace' })).toBeUndefined();
   });
+
+  it('keeps a model-chosen argument from writing control sequences to the terminal', () => {
+    const rule = `Bash(echo \u001b]0;owned\u0007 \u009b31m \u202eevil\nsecond line)`;
+    for (const text of [
+      unattendedRefusalNotice('Bash', { kind: 'rule_or_auto', rule })!,
+      permissionDeniedError('Bash', {
+        kind: 'no_approver',
+        remedy: { kind: 'rule_or_auto', rule },
+      }),
+    ]) {
+      expect(text).not.toMatch(
+        /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/,
+      );
+      expect(text).not.toContain('second line');
+    }
+    const long = unattendedRefusalNotice('Bash', {
+      kind: 'rule_or_auto',
+      rule: `Bash(${'x'.repeat(500)})`,
+    })!;
+    expect(long).toContain('…');
+    expect(long.length).toBeLessThan(400);
+  });
 });

@@ -1,8 +1,8 @@
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import { systemClock, type Clock } from '../clock.js';
 import { createHash } from 'node:crypto';
-import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { isAbsolute, relative, sep } from 'node:path';
 import type {
   ImageAttachment,
   Message,
@@ -51,7 +51,7 @@ import {
 } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
-import { resolveWorkspacePath } from '../tools/path-utils.js';
+import { realWorkspaceRoot, resolveWorkspacePath } from '../tools/path-utils.js';
 import {
   isToolDefinitionAllowed,
   parseCapabilityRules,
@@ -442,6 +442,7 @@ export async function runAgentLoop(
     const activationPolicy = skillRegistry.activationPolicy(skillName, 'user');
     let approved = activationPolicy !== 'deny';
     let noApprover = false;
+    let dismissed = false;
     if (activationPolicy === 'ask') {
       skillRegistry.requestConsent(skillName, 'user');
       const verdict = evaluatePermissionDetail(call.name, call.arguments, config.settings);
@@ -453,7 +454,9 @@ export async function runAgentLoop(
         const decision = await callbacks.onPermissionRequired(call);
         permission = permissionResultOf(decision);
         chosenRule = permissionRuleOf(decision);
-        noApprover = permissionReasonOf(decision) === 'no_approver';
+        const reason = permissionReasonOf(decision);
+        noApprover = reason === 'no_approver';
+        dismissed = reason === 'dismissed';
       }
       approved = permission === 'allow' || permission === 'always';
       if (permission === 'always' && callbacks.onPersistPermissionRule) {
@@ -468,9 +471,15 @@ export async function runAgentLoop(
           ? `Skill activation is denied: ${skillName}`
           : noApprover
             ? `Explicit skill activation needs approval, and nothing in this run can answer a permission prompt: ${skillName}`
-            : `Explicit skill activation was denied: ${skillName}`;
+            : dismissed
+              ? `Explicit skill activation was not answered before its prompt was dismissed: ${skillName}`
+              : `Explicit skill activation was denied: ${skillName}`;
       if (activationPolicy === 'ask') {
-        skillRegistry.denyConsent(skillName, 'user', noApprover ? 'no_approver' : 'user_denied');
+        skillRegistry.denyConsent(
+          skillName,
+          'user',
+          noApprover ? 'no_approver' : dismissed ? 'dismissed' : 'user_denied',
+        );
       }
       if (noApprover) {
         noteUnattendedRefusal('InvokeSkill', {
@@ -774,20 +783,19 @@ export async function runAgentLoop(
      * because each kind names a different remedy in the terminal message.
      */
     const blockedStreakCauses = new Set<NetworkPolicyRefusal | 'other'>();
+    /** The workspace root after following links, resolved once for the run. */
+    const workspaceRealRoot = realWorkspaceRoot(config.workspace);
     /**
      * A workspace that holds a home directory — the OS home, or Book's own (`BOOK_HOME`) — keeps
      * prompting for reads: a home carries SSH and provider keys and Book's trust store (#264).
+     * Compared as written and after following links, so a workspace that is a link to a home, or
+     * a home reached through a link, still counts.
      */
-    const workspaceHoldsHome = [resolveBookHome(), homedir()].some(
-      (home) => resolveWorkspacePath(config.workspace, home) !== null,
-    );
-    /** The workspace root after following links, resolved once for the run. */
-    let workspaceRealRoot: string | undefined;
-    try {
-      workspaceRealRoot = realpathSync.native(config.workspace);
-    } catch {
-      workspaceRealRoot = undefined;
-    }
+    const workspaceHoldsHome = [resolveBookHome(), homedir()].some((home) => {
+      if (resolveWorkspacePath(config.workspace, home) !== null) return true;
+      const fromRoot = relative(workspaceRealRoot, realWorkspaceRoot(home));
+      return !(fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot));
+    });
     // Monotonic, and never leaves this function as a stamp. Over a run measured
     // in days a wall-clock correction would silently rewrite how long the model
     // is told it has been working, in either direction.
@@ -2141,7 +2149,9 @@ export async function runAgentLoop(
                     ? 'dont_ask'
                     : noApprover
                       ? 'no_approver'
-                      : 'user_denied',
+                      : dismissed
+                        ? 'dismissed'
+                        : 'user_denied',
                 );
               }
               const askRule = verdict.source === 'ask' ? verdict.matchedRule : undefined;

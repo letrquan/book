@@ -995,12 +995,16 @@ describe('grep', () => {
     mkdirSync(join(dir, '.book'), { recursive: true });
     writeFileSync(join(dir, '.book', 'settings.local.json'), '{"apiKey":"sk-local-marker"}');
     writeFileSync(join(dir, 'a.ts'), 'const note = "sk-visible-marker";');
+    // A link to .book is another way in; a junction needs no symlink privilege on Windows.
+    symlinkSync(join(dir, '.book'), join(dir, 'cfgdir'), 'junction');
     for (const env of [{}, { BOOK_GREP_BACKEND: 'typescript' }] as Record<string, string>[]) {
       const context = { ...ctx, env };
       for (const args of [
         { pattern: 'sk-' },
         { pattern: 'sk-', include: '.book/settings.local.json' },
         { pattern: 'sk-', path: '.book' },
+        { pattern: 'sk-', path: '.book/settings.local.json' },
+        { pattern: 'sk-', path: 'cfgdir' },
       ]) {
         const result = await grep.execute(args, context);
         expect(JSON.stringify(result)).not.toContain('sk-local-marker');

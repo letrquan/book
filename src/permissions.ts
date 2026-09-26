@@ -1,5 +1,6 @@
 import { realpathSync } from 'fs';
-import { isAbsolute, join, relative } from 'path';
+import { relative } from 'path';
+import fg from 'fast-glob';
 import type { ResolvedSettings } from './settings.js';
 import type {
   PermissionDecision,
@@ -11,7 +12,11 @@ import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
-import { resolveReadablePath, resolveWorkspacePath } from './tools/path-utils.js';
+import {
+  isBookLocalSettingsPath,
+  resolveReadablePath,
+  resolveWorkspacePath,
+} from './tools/path-utils.js';
 import { sandboxCoverage } from './sandbox.js';
 
 /**
@@ -339,19 +344,10 @@ function realRootOf(scope: WorkspaceScope): string | undefined {
   }
 }
 
-/** The file path a path-rule tool acts on, read through the tool's own argument aliases. */
+/** The file path a path-rule tool acts on. The loop normalizes argument aliases beforehand. */
 function pathArgument(toolName: string, args: Record<string, unknown>): string | undefined {
-  const keys =
-    toolName === 'NotebookEdit'
-      ? ['notebook_path']
-      : toolName === 'Read'
-        ? ['filePath', 'file_path', 'path']
-        : ['filePath', 'file_path'];
-  for (const key of keys) {
-    const value = args[key];
-    if (typeof value === 'string' && value.trim() !== '') return value;
-  }
-  return undefined;
+  const value = toolName === 'NotebookEdit' ? args.notebook_path : args.filePath;
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }
 
 /**
@@ -400,108 +396,32 @@ function pathRuleSpellings(
   return raw ? spellingsOfPath(raw, scope, toolName === 'Read') : [];
 }
 
-/** Characters that make a path segment a glob rather than a fixed name (`\x40` is the at sign). */
-const GLOB_MAGIC = /[*?[\]{}()!+\x40]/;
-
-/** The first brace group with a top-level comma, skipping escapes and groups without one. */
-function firstBraceGroup(
-  text: string,
-): { start: number; end: number; alternatives: string[] } | undefined {
-  for (let start = 0; start < text.length; start++) {
-    if (text[start] === '\\') {
-      start++;
-      continue;
-    }
-    if (text[start] !== '{') continue;
-    let depth = 0;
-    let from = start + 1;
-    const alternatives: string[] = [];
-    for (let index = start; index < text.length; index++) {
-      const char = text[index];
-      if (char === '\\') {
-        index++;
-        continue;
-      }
-      if (char === '{') {
-        depth++;
-      } else if (char === '}') {
-        depth--;
-        if (depth === 0) {
-          // `{x}` and the range `{1..3}` have no top-level comma: keep scanning inside them.
-          if (alternatives.length === 0) break;
-          alternatives.push(text.slice(from, index));
-          return { start, end: index, alternatives };
-        }
-      } else if (char === ',' && depth === 1) {
-        alternatives.push(text.slice(from, index));
-        from = index + 1;
-      }
-    }
-  }
-  return undefined;
-}
-
 /**
- * The patterns a glob's brace groups expand to (`a{b,c}` becomes `ab` and `ac`), the way fast-glob
- * expands them before it walks; `undefined` when there would be more than `limit`.
- */
-function expandBraces(pattern: string, limit = 64): string[] | undefined {
-  const done: string[] = [];
-  const pending = [pattern];
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    const group = firstBraceGroup(current);
-    if (!group) {
-      done.push(current);
-      if (done.length > limit) return undefined;
-      continue;
-    }
-    for (const alternative of group.alternatives) {
-      pending.push(current.slice(0, group.start) + alternative + current.slice(group.end + 1));
-    }
-    if (pending.length > limit) return undefined;
-  }
-  return done;
-}
-
-/**
- * Where a Glob pattern reaches: `outside` when any brace alternative climbs out (a `..` path
- * segment), starts at `~`, or starts at an absolute path outside the workspace; `servable`
- * otherwise. An absolute pattern is judged by its fixed leading segments. Two dots inside a file
- * name (`*..orig`) do not climb.
+ * Where a Glob reaches: `outside` when fast-glob would start walking anywhere outside the
+ * workspace (`../**`, `.{.,x}/*`, an absolute path elsewhere), `servable` otherwise. It asks
+ * fast-glob for the directories it would walk rather than guessing from the pattern: `{..,src}/*`
+ * walks the workspace and never climbs, while `.{.,x}/*` walks its parent.
  */
 function globTarget(pattern: string, scope: WorkspaceScope): 'servable' | 'outside' {
-  const alternatives = expandBraces(pattern);
-  if (!alternatives) return 'outside';
-  for (const alternative of alternatives) {
-    const segments = alternative.split(/[\\/]/);
-    if (alternative.startsWith('~') || segments.includes('..')) return 'outside';
-    if (isAbsolute(alternative) || /^[A-Za-z]:/.test(alternative)) {
-      const fixed: string[] = [];
-      for (const segment of segments) {
-        if (GLOB_MAGIC.test(segment)) break;
-        fixed.push(segment);
-      }
-      let base = fixed.join('/');
-      if (base === '' || base.endsWith(':')) base += '/';
-      if (!resolveWorkspacePath(scope.root, base)) return 'outside';
-    }
+  let bases: string[];
+  try {
+    bases = fg.generateTasks([pattern]).map((task) => task.base);
+  } catch {
+    return 'outside';
   }
-  return 'servable';
+  return bases.every((base) => resolveWorkspacePath(scope.root, base) !== null)
+    ? 'servable'
+    : 'outside';
 }
 
 /**
  * Book's project-local settings file can carry an API key, and the `.book` directory holds it: a
- * Read or Grep aimed at either keeps asking. Compared on the canonical path, case-folded where the
- * file system folds case.
+ * Read or Grep aimed at either keeps asking. Compared on the canonical path, case-insensitively on
+ * every platform.
  */
 function isBookLocalSettings(canonicalPath: string, scope: WorkspaceScope): boolean {
   const realRoot = realRootOf(scope);
-  if (!realRoot) return false;
-  const fold = (value: string) => (process.platform === 'linux' ? value : value.toLowerCase());
-  const target = fold(canonicalPath);
-  const bookDir = join(realRoot, '.book');
-  return target === fold(bookDir) || target === fold(join(bookDir, 'settings.local.json'));
+  return realRoot ? isBookLocalSettingsPath(canonicalPath, realRoot, { directory: true }) : false;
 }
 
 /**
@@ -636,7 +556,7 @@ export function evaluatePermissionDetail(
           arguments: { ...args, filePath: spelling },
         }))
       : [];
-  const ruleMatches = (ruleStr: string) =>
+  const matchesRule = (ruleStr: string) =>
     permissionRuleMatchesCall(ruleStr, call) ||
     respelled.some((candidate) => permissionRuleMatchesCall(ruleStr, candidate));
   // What a Read, Glob or Grep reaches, judged only in the modes that prompt for them, so a
@@ -649,21 +569,21 @@ export function evaluatePermissionDetail(
 
   // Deny rules first.
   for (const ruleStr of deny) {
-    if (ruleMatches(ruleStr)) {
+    if (matchesRule(ruleStr)) {
       return { decision: 'deny', matchedRule: ruleStr, source: 'deny' };
     }
   }
 
   // Ask rules second.
   for (const ruleStr of ask) {
-    if (ruleMatches(ruleStr)) {
+    if (matchesRule(ruleStr)) {
       return { decision: 'ask', matchedRule: ruleStr, source: 'ask', ...outside };
     }
   }
 
   // Allow rules third.
   for (const ruleStr of allow) {
-    if (ruleMatches(ruleStr)) {
+    if (matchesRule(ruleStr)) {
       return { decision: 'allow', matchedRule: ruleStr, source: 'allow' };
     }
   }
@@ -681,11 +601,13 @@ export function evaluatePermissionDetail(
   }
 
   // Reading or searching what the tool can serve needs no prompt in the modes that would
-  // otherwise ask (#264). Every user-written rule outranks it: deny and ask returned above.
+  // otherwise ask (#264); nor does a call with no target at all, which the tool rejects itself
+  // with the real reason (a missing argument, or arguments that were not valid JSON). Every
+  // user-written rule outranks this: deny and ask returned above.
   if (
     scope?.autoAllowReads &&
-    readTarget === 'servable' &&
-    (tool === 'Read' || !hasReadAdjudication(settings))
+    (readTarget === 'none' ||
+      (readTarget === 'servable' && (tool === 'Read' || !hasReadAdjudication(settings))))
   ) {
     return { decision: 'allow', source: 'workspace' };
   }
