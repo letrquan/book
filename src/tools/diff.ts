@@ -121,7 +121,12 @@ function hunkBounds(ops: DiffOp[], context: number): Array<[number, number]> {
       e++;
       ctxAfter++;
     }
-    bounds.push([s + 1, e]);
+    // Two changes closer than twice the context share their context lines, so
+    // they are one hunk, as `diff -u` prints them. Walking back from the second
+    // would otherwise reach into the first hunk and print those lines twice.
+    const previous = bounds.at(-1);
+    if (previous && s + 1 <= previous[1]) previous[1] = e;
+    else bounds.push([s + 1, e]);
     k = e;
   }
   return bounds;

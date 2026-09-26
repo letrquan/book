@@ -97,6 +97,32 @@ describe('common affix trimming', () => {
     expect(shrink[0]).toMatchObject({ oldStart: 1, newStart: 1 });
   });
 
+  it('merges changes whose context overlaps into one hunk', () => {
+    const before = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', ''].join('\n');
+    const after = ['a', 'b', 'c', 'NEW', 'd', 'e', 'f', 'G', 'h', 'i', 'j', ''].join('\n');
+    const hunks = lineDiff(before, after);
+    expect(hunks).toHaveLength(1);
+    expect(hunks[0]).toMatchObject({ oldStart: 1, newStart: 1 });
+    expect(hunks[0].lines.map((line) => `${line.kind}:${line.text}`)).toEqual([
+      'ctx:a',
+      'ctx:b',
+      'ctx:c',
+      'add:NEW',
+      'ctx:d',
+      'ctx:e',
+      'ctx:f',
+      'del:g',
+      'add:G',
+      'ctx:h',
+      'ctx:i',
+      'ctx:j',
+    ]);
+    // Far enough apart, they stay two hunks and share no line.
+    const far = lineDiff('1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n', 'ONE\n2\n3\n4\n5\n6\n7\n8\n9\nTEN\n');
+    expect(far).toHaveLength(2);
+    expect(far.map((hunk) => hunk.lines.length)).toEqual([5, 5]);
+  });
+
   it('matches the async variant', async () => {
     const before = 'x\n'.repeat(500) + 'middle\n' + 'y\n'.repeat(500);
     const after = 'x\n'.repeat(500) + 'MIDDLE\nextra\n' + 'y\n'.repeat(500);

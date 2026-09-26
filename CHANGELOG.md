@@ -261,6 +261,10 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Diffs no longer print the same lines twice.** Two changes fewer than six lines apart came out
+  as two hunks whose context overlapped, so the lines between them were printed once under each,
+  numbered twice, in the permission prompt, the transcript and the diff the model reads back.
+  Changes whose context touches now share one hunk, as `diff -u` prints them.
 - **Queue notices about something that happened once now fade.** "Queued inputs restored to the
   composer after interrupt." and its siblings (an input removed or restored, the queue cleared,
   the `/queue` count, a full queue) were queue notices, and a queue notice cleared only on the
