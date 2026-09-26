@@ -4,6 +4,7 @@
     "src/index.ts",
     "src/sdk.ts",
     "src/job-runner.ts",
+    "src/job-supervisor.ts",
     "src/**/*.test.ts",
     "src/**/*.test.tsx",
     "src/tui/__benchmarks__/*.ts",

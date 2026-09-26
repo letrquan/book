@@ -181,7 +181,7 @@ async function announce(
     pendingUiCompletions: record ? [record] : [],
     pendingAgentCompletions: [],
     refresh: vi.fn(),
-    stopOrDismiss: vi.fn(async () => {}),
+    stopOrDismiss: vi.fn(async () => undefined),
     acknowledge: vi.fn(),
     acknowledgeAgentCompletion: vi.fn(),
   };
