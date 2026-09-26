@@ -323,7 +323,25 @@ describe('App session commands', () => {
     });
     const view = render(<App config={liveConfig} session={testSession} />);
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    // Tab reaches the child only once the manager's list has loaded it (the
+    // status line then counts it), and only through a key handler that has seen
+    // that list: Ink swaps handlers in an effect, and until the effects of the
+    // commit that loaded the child run, Tab reaches the old one, which finds no
+    // job to cycle to. A fixed 25ms guessed at both, and a loaded Windows runner
+    // lost the Tab: ten seconds later the title page was still up. Wait for the
+    // list, then re-render, which flushes the pending effects before it returns.
+    const deadline = Date.now() + 5000;
+    while (
+      Date.now() < deadline &&
+      !(
+        view.stdin.listenerCount('readable') > 0 &&
+        stripAnsi(view.lastFrame()).includes('agents 1/1')
+      )
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(stripAnsi(view.lastFrame())).toContain('agents 1/1');
+    view.rerender(<App config={liveConfig} session={testSession} />);
     view.stdin.write('\t');
     // Wait for the tool row itself: the child's heading can land a frame before
     // its transcript rows do, and a click aimed from that frame hits nothing.
