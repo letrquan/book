@@ -45,23 +45,22 @@ false**. It stops a run whose every tool call was refused on that many consecuti
 as `all_tools_blocked` and naming every tool refused over the streak and what lifts the refusal. Each
 kind of refusal gets its own remedy, because most of them cannot be lifted by a permission at all:
 
-| Refusal                                                                                                          | What lifts it                                                                                                                                                   |
-| ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A permission (including one made by a `permissions.deny` rule, which no other rule or mode lifts)                | A grant, an allow rule, or another permission mode — for a deny rule, changing that rule                                                                        |
-| A PreToolUse hook                                                                                                | Changing or removing that hook                                                                                                                                  |
-| A tool that was not active for the turn, or arguments the run's allowed tools do not cover                       | Activating a deferred tool with `ToolSearch`, and an allowed-tools list that covers the tool and its arguments                                                  |
-| A managed agent's tool policy (its profile or definition)                                                        | Giving the step to an agent whose policy allows it                                                                                                              |
-| A skill's activation policy or its allowed-tools                                                                 | Changing that skill's override under `skills.overrides`, or its allowed-tools                                                                                   |
-| A question the run cannot put to anyone (`dontAsk` mode, or a question the user declined)                        | Nothing — the model has to proceed without asking                                                                                                               |
-| Calls that could not run as sent (arguments that never parsed, failed the schema, or a tool that does not exist) | Nothing — the model has to correct them; if `book tool-stats` shows `invalid_json_arguments:truncated_start`, the route is dropping the first fragment of calls |
-| A private or special-use web destination                                                                         | `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment, which no rule or mode lifts, bypassPermissions included                                          |
-| A `WebSearch` whose every built-in provider resolved privately                                                   | Fixing the host's DNS or proxy; no setting relaxes the providers' strict validation                                                                             |
-| Any other refusal                                                                                                | Whatever that refused call's own message names as the cause                                                                                                     |
+| Refusal                                                                                                          | What lifts it                                                                                                                                                                                                                         |
+| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A permission (including one made by a `permissions.deny` rule, which no other rule or mode lifts)                | A grant, an allow rule, or another permission mode — for a deny rule, changing that rule                                                                                                                                              |
+| A PreToolUse hook                                                                                                | Changing or removing that hook                                                                                                                                                                                                        |
+| A tool that was not active for the turn, or arguments the run's allowed tools do not cover                       | Activating a deferred tool with `ToolSearch`, and an allowed-tools list that covers the tool and its arguments                                                                                                                        |
+| A managed agent's tool policy (its profile or definition)                                                        | Giving the step to an agent whose policy allows it                                                                                                                                                                                    |
+| A skill's activation policy or its allowed-tools                                                                 | Changing that skill's override under `skills.overrides`, or its allowed-tools                                                                                                                                                         |
+| A question the run cannot put to anyone (`dontAsk` mode, or a question the user declined)                        | Nothing — the model has to proceed without asking                                                                                                                                                                                     |
+| Calls that could not run as sent (arguments that never parsed, failed the schema, or a tool that does not exist) | Nothing — the model has to correct them; if `book tool-stats` shows `invalid_json_arguments:truncated_start`, the route is dropping the first fragment of calls                                                                       |
+| A private or special-use web destination                                                                         | `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment, which no rule or mode lifts, bypassPermissions included; the message names the refused destinations and warns that the variable lifts the policy for every destination |
+| A `WebSearch` whose every built-in provider resolved privately                                                   | Fixing the host's DNS or proxy; no setting relaxes the providers' strict validation. The message names the private addresses                                                                                                          |
+| A `WebFetch` stopped at a redirect to another origin                                                             | Nothing — the model has to fetch the target in its own `WebFetch` call, or stop fetching that page                                                                                                                                    |
+| Any other refusal                                                                                                | Whatever that refused call's own message names as the cause                                                                                                                                                                           |
 
-A `WebFetch` that stops at a cross-origin redirect is not a refusal: it hands the model the next URL
-to fetch, so a model following a redirect chain one hop per turn is making progress. A streak
-holding several kinds names each remedy. It is separate because a refusal spin never produces a
-tool-free turn, so the turn-end gate — and therefore every brake behind it — never fires:
+A streak holding several kinds names each remedy. It is separate because a refusal spin never
+produces a tool-free turn, so the turn-end gate — and therefore every brake behind it — never fires:
 a headless run in the default permission mode answers each prompt `deny` and would otherwise
 re-issue refused calls until the budget ran out. Set it to `0` to disable. `planRefreshTurns` restates the open plan periodically, which also keeps compaction from
 retaining an empty tail in a run that never stops on its own. Terminal outcomes gain
@@ -221,20 +220,29 @@ for long enough that the proxy dropped it, ten times over. Extraction answers in
 4,000-token limit that a reply at `max` could spend on reasoning alone. When the compact model's
 catalog lists effort levels and that level is not one of them, it is clamped down to the highest
 listed level below it, never back up to the session's effort. A catalog with no level at or below
-it, or one with `effort: false`, gets no effort at all. On the Anthropic path such a request
+it, or one with `effort: false`, gets no effort at all, except that an explicit `compactEffort`
+below every listed level takes the lowest listed one. On the Anthropic path such a request
 carries neither `thinking` nor `output_config`, so the model runs at its own default: no thinking
 at all on Opus 4.6–4.8 and Sonnet 4.6, and adaptive thinking at the model's default effort on
 Opus 5 and 5.5, Fable 5 and Sonnet 5. On an OpenAI-compatible route the request sends
 `reasoning_effort` only when a level was chosen (`compactEffort`, or `--effort`, `BOOK_EFFORT` or
-`settings.effort`) or its catalog lists levels. With neither, as on the default `gpt-4o`, it
-carries none, like the main agent's.
+`settings.effort`) or its catalog lists that level. With neither, as on the default `gpt-4o`, it
+carries none, like the main agent's. A level a managed child's catalog merely listed is not a
+choice, so a child's compaction does not carry it to the compact model. The judge's `low` is not a
+choice either: it is sent only where a level was chosen or the compact model's catalog lists
+`low`.
 
 The reducer's and the judge's requests are also retried at most twice, instead of the full
-`retry.maxAttempts`, and `retry.watchdog` does not lift that cap. Both have a fallback: the
-reducer falls back to the deterministic checkpoint, and a failed judge leaves the verdict
-inconclusive, so the checkpoint is committed anyway. Memory extraction keeps the session's retry
-policy, because it gives up on a session after three failed starts. An empty reply, or one cut
-off at the output limit, counts as a failed start rather than as the session read.
+`retry.maxAttempts`, and `retry.watchdog` does not lift that cap. Both have a fallback: the reducer
+falls back to the deterministic checkpoint, and a failed judge leaves the verdict inconclusive, so
+the checkpoint is committed anyway. Memory extraction keeps the session's retry policy, because it
+gives up on a session after three failed starts. A reply that ended at the output limit is kept when
+it is one JSON object and nothing else. An empty reply, or one cut off mid-answer, counts as a
+failed start rather than as the session read, and a session given up on is recorded as `truncated`
+when its last reply was cut off (`provider-failed` otherwise). On that retry policy one session's
+call can outlast the extraction lock's 30-minute lifetime, so a run keeps its lock fresh while it
+lasts, for at most two hours on any one session; a run whose lock another Book session took over
+writes nothing more.
 
 `toolDiscovery.mode` accepts `auto`, `eager`, or `deferred`. Auto mode sends all authorized definitions only when there are at most ten and their schemas fit the configured budget; otherwise the provider receives the practical core plus `ToolSearch`. Search never returns tools outside the current command, skill, agent-role, permission-mode, or runtime-state capability intersection.
 

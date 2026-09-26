@@ -4,7 +4,7 @@ import {
   REFUSAL_REMEDIES,
   isRefusal,
   refusalKind,
-  type RefusalKind,
+  type LocalRefusalKind,
 } from './refusal-remedies.js';
 import { toolFailure } from '../tools/result.js';
 import type { ToolResult } from '../types/tools.js';
@@ -48,18 +48,19 @@ describe('refusalKind', () => {
     expect(refusalKind(undefined)).toBe('other');
   });
 
-  it('leaves the web network policy to its own two kinds', () => {
+  it('leaves the web network policy to its own kinds', () => {
     expect(refusalKind(blocked('private_network_forbidden'))).toBe('fetch');
     expect(refusalKind(blocked('search_all_providers_failed'))).toBe('search');
+    expect(refusalKind(blocked('cross_origin_redirect'))).toBe('redirect');
   });
 });
 
 describe('isRefusal', () => {
-  it('lets a cross-origin redirect through, because it hands the model the next URL', () => {
-    // A model following a redirect chain one hop per turn is making progress; a
-    // streak of these would stop a run that was never stuck.
-    expect(isRefusal(blocked('cross_origin_redirect'))).toBe(false);
+  it('is any blocked result, a stopped cross-origin redirect included', () => {
+    // The web policy's redirect stop has its own remedy in the stop message.
+    expect(isRefusal(blocked('cross_origin_redirect'))).toBe(true);
     expect(isRefusal(blocked('permission_denied'))).toBe(true);
+    expect(isRefusal(toolFailure('x', { code: 'tool_error' }))).toBe(false);
     expect(isRefusal(undefined)).toBe(false);
   });
 });
@@ -73,15 +74,10 @@ describe('the remedy catalog', () => {
     expect([...REFUSAL_KIND_ORDER].sort()).toEqual(Object.keys(REFUSAL_REMEDIES).sort());
   });
 
-  it('reaches the host opt-in and the DNS, which the web refusals need', () => {
-    expect(REFUSAL_REMEDIES.fetch).toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
-    expect(REFUSAL_REMEDIES.search).toContain('DNS or proxy');
-  });
-
   it('does not offer the inactive remedy the wrong gate would name', () => {
     // Each remedy is worded to follow "Nothing can proceed: ", so it must be actionable on
     // its own; an inactive call is fixed by activating the tool, not by a permission.
-    const kinds: RefusalKind[] = [...REFUSAL_KIND_ORDER];
+    const kinds: LocalRefusalKind[] = [...REFUSAL_KIND_ORDER];
     expect(REFUSAL_REMEDIES.inactive).toContain('ToolSearch');
     expect(REFUSAL_REMEDIES.inactive).not.toContain('grant the permission');
     expect(kinds).toContain('inactive');
