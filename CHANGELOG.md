@@ -276,6 +276,12 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **An at-sign in a prompt expands only when it names a file** (#261). Print mode and the TUI
+  expanded every at-sign token, including inside fenced and inline code, so a spec quoting a JSDoc
+  `{@link Foo.bar}` reached the model as `[Could not include @link: file not found]`, and the model
+  wrote that marker into source. Tokens inside code are now left alone, and a token that names no
+  existing path stays exactly as written. A path that exists but cannot be included (a directory, a
+  binary file, a file outside the workspace) still gets its `[Could not include …]` note.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller

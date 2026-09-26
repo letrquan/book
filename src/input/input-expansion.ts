@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'fs';
 import { exec } from 'child_process';
 import { createHash } from 'crypto';
+import { isAbsolute, resolve } from 'path';
 import type { FileObservation } from '../types/tools.js';
 import { workspaceIdentity } from '../tools/file-provenance.js';
 import { resolveWorkspaceMentionPath } from './file-mentions.js';
@@ -26,12 +27,81 @@ function splitTrailingPunctuation(token: string): { path: string; trailing: stri
   return { path: token.slice(0, end), trailing: token.slice(end) };
 }
 
+/**
+ * Half-open offset ranges covered by code: fenced blocks, and inline code spans
+ * in the text between them. An at-sign inside one of these is code (#261), not
+ * a mention of a file.
+ */
+function codeRanges(input: string): Array<[number, number]> {
+  const fenced = fencedCodeRanges(input);
+  const inline: Array<[number, number]> = [];
+
+  let cursor = 0;
+  for (const [start, end] of fenced) {
+    collectInlineCodeSpans(input.slice(cursor, start), cursor, inline);
+    cursor = end;
+  }
+  collectInlineCodeSpans(input.slice(cursor), cursor, inline);
+
+  return [...fenced, ...inline];
+}
+
+/** A run of 3+ backticks or tildes opens a fence that runs to its closing line. */
+function fencedCodeRanges(input: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  let fence: { start: number; char: string; length: number } | null = null;
+  let offset = 0;
+
+  while (offset < input.length) {
+    const newline = input.indexOf('\n', offset);
+    const lineEnd = newline === -1 ? input.length : newline;
+    const rangeEnd = newline === -1 ? input.length : newline + 1;
+    const line = input.slice(offset, lineEnd).replace(/\r$/, '');
+
+    if (fence) {
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (close && close[1][0] === fence.char && close[1].length >= fence.length) {
+        ranges.push([fence.start, rangeEnd]);
+        fence = null;
+      }
+    } else {
+      const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+      if (open) fence = { start: offset, char: open[1][0], length: open[1].length };
+    }
+
+    offset = rangeEnd;
+  }
+
+  if (fence) ranges.push([fence.start, input.length]);
+
+  return ranges;
+}
+
+/** A backtick run opens a span that closes at the next run of the same length. */
+function collectInlineCodeSpans(text: string, base: number, ranges: Array<[number, number]>): void {
+  const runs = [...text.matchAll(/`+/g)];
+  for (let i = 0; i < runs.length; i++) {
+    const length = runs[i][0].length;
+    for (let j = i + 1; j < runs.length; j++) {
+      if (runs[j][0].length !== length) continue;
+      ranges.push([base + (runs[i].index ?? 0), base + (runs[j].index ?? 0) + length]);
+      i = j;
+      break;
+    }
+  }
+}
+
+function isInsideCode(ranges: Array<[number, number]>, index: number): boolean {
+  return ranges.some(([start, end]) => index >= start && index < end);
+}
+
 function findMentionTokens(input: string): MentionToken[] {
   const tokens: MentionToken[] = [];
+  const code = codeRanges(input);
   let i = 0;
 
   while (i < input.length) {
-    if (input[i] !== '@' || !isMentionBoundary(input, i)) {
+    if (input[i] !== '@' || !isMentionBoundary(input, i) || isInsideCode(code, i)) {
       i++;
       continue;
     }
@@ -92,10 +162,16 @@ function looksBinary(content: string): boolean {
   return content.includes('\0');
 }
 
-function expandMention(filePath: string, workspace: string): string {
+/** Returns null when the token names no existing path, so it stays as written. */
+function expandMention(filePath: string, workspace: string): string | null {
   const resolved = resolveWorkspaceMentionPath(workspace, filePath);
-  if (!resolved) return formatMentionError(filePath, 'path is outside the workspace');
-  if (!existsSync(resolved.filePath)) return formatMentionError(filePath, 'file not found');
+  if (!resolved) {
+    const outside = isAbsolute(filePath) ? filePath : resolve(workspace, filePath);
+    return existsSync(outside)
+      ? formatMentionError(filePath, 'path is outside the workspace')
+      : null;
+  }
+  if (!existsSync(resolved.filePath)) return null;
 
   try {
     const stat = statSync(resolved.filePath);
@@ -121,7 +197,9 @@ function expandMention(filePath: string, workspace: string): string {
 }
 
 /**
- * Expand @path references to file contents in user input.
+ * Expand @path references to file contents in user input. Only a token outside
+ * fenced and inline code that names an existing path is expanded; anything else
+ * is left exactly as the user wrote it (#261).
  */
 export function expandAtMentions(input: string, workspace: string): string {
   const tokens = findMentionTokens(input);
@@ -131,7 +209,7 @@ export function expandAtMentions(input: string, workspace: string): string {
   let cursor = 0;
   for (const token of tokens) {
     output += input.slice(cursor, token.start);
-    output += expandMention(token.path, workspace);
+    output += expandMention(token.path, workspace) ?? token.raw;
     output += token.trailing;
     cursor = token.end + token.trailing.length;
   }
