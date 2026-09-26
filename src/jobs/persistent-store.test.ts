@@ -1,9 +1,29 @@
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTestClock } from '../clock.js';
 import { renameWithContentionRetry, writeJsonAtomic } from './persistent-store.js';
+
+// A write that fails partway, as on a full disk, leaves a partial file behind it.
+const fsFailure = vi.hoisted(() => ({ partialWrite: false }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
+      const [path] = args;
+      if (fsFailure.partialWrite && String(path).endsWith('.tmp')) {
+        actual.writeFileSync(path, '{"status":');
+        throw Object.assign(new Error('ENOSPC: no space left on device, write'), {
+          code: 'ENOSPC',
+        });
+      }
+      return actual.writeFileSync(...args);
+    },
+  };
+});
 
 const temporaryRoots: string[] = [];
 
@@ -127,5 +147,20 @@ describe('writeJsonAtomic', () => {
     expect(() => writeJsonAtomic(target, { status: 'running' })).toThrow();
 
     expect(readdirSync(directory)).toEqual(['record.json']);
+  });
+
+  it('leaves no temp file beside the target when writing it fails', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'book-persistent-store-'));
+    temporaryRoots.push(directory);
+    const target = join(directory, 'record.json');
+
+    fsFailure.partialWrite = true;
+    try {
+      expect(() => writeJsonAtomic(target, { status: 'running' })).toThrow(/ENOSPC/);
+    } finally {
+      fsFailure.partialWrite = false;
+    }
+
+    expect(readdirSync(directory)).toEqual([]);
   });
 });

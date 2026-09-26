@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { runHooks } from './hooks.js';
 import type { HookEntry, HookEvent } from './settings.js';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { spawn } from 'child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { pathToFileURL } from 'url';
 
 let dir: string;
 const ctx = (overrides: Record<string, unknown> = {}) => ({
@@ -146,6 +148,106 @@ describe('runHooks — cancellation', () => {
       ),
     ).rejects.toThrow('cancelled before hooks');
   });
+});
+
+describe('runHooks — process tree', () => {
+  // A hook whose own child keeps running used to outlive the hook's timeout and its cancellation:
+  // `kill()` reached only the shell wrapper (cmd.exe or sh), and the grandchild kept the hook's
+  // stdout pipe open, so the host process could not exit until the grandchild did (#263).
+  function treeHook(pidPath: string): HookEntry {
+    const parent = join(dir, 'tree-parent.cjs');
+    writeFileSync(
+      parent,
+      [
+        "const { spawn } = require('child_process');",
+        "const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });",
+        `require('fs').writeFileSync(${JSON.stringify(pidPath)}, process.pid + ' ' + grandchild.pid);`,
+        'setInterval(() => {}, 1000);',
+      ].join('\n'),
+    );
+    return { command: `"${process.execPath}" "${parent}"`, env: {} };
+  }
+
+  function isAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'EPERM';
+    }
+  }
+
+  async function waitFor(predicate: () => boolean, what: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate()) {
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${what}.`);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
+  /** The hook's own process and its grandchild, once the hook has written both. */
+  function readPids(pidPath: string): { parent: number; grandchild: number } | undefined {
+    if (!existsSync(pidPath)) return undefined;
+    const [parent, grandchild] = readFileSync(pidPath, 'utf8').split(' ').map(Number);
+    return parent > 0 && grandchild > 0 ? { parent, grandchild } : undefined;
+  }
+
+  function killSurvivors(pids: { parent: number; grandchild: number } | undefined): void {
+    for (const pid of pids ? [pids.parent, pids.grandchild] : []) {
+      if (isAlive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  }
+
+  it('ends the whole process tree when a hook is cancelled', async () => {
+    const pidPath = join(dir, 'grandchild.pid');
+    const controller = new AbortController();
+    const pending = runHooks([treeHook(pidPath)], 'Stop', ctx({ event: 'Stop' as HookEvent }), {
+      signal: controller.signal,
+    });
+    await waitFor(() => readPids(pidPath) !== undefined, 'the hook pids', 10_000);
+    const pids = readPids(pidPath)!;
+    try {
+      controller.abort(new Error('hook cancelled'));
+      await expect(pending).rejects.toThrow('hook cancelled');
+      await waitFor(() => !isAlive(pids.grandchild), 'the grandchild to end', 5_000);
+    } finally {
+      killSurvivors(pids);
+    }
+  }, 20_000);
+
+  it('lets the host process exit after a timed-out hook leaves a grandchild', async () => {
+    const pidPath = join(dir, 'grandchild.pid');
+    const hooksModule = pathToFileURL(join(process.cwd(), 'src', 'hooks.ts')).href;
+    const script = [
+      `import { runHooks } from ${JSON.stringify(hooksModule)};`,
+      `const results = await runHooks([${JSON.stringify(treeHook(pidPath))}], 'SessionEnd', { workspace: ${JSON.stringify(dir)}, event: 'SessionEnd' }, { timeoutMs: 1000 });`,
+      "console.log('settled ' + results[0].action);",
+    ].join('\n');
+    const host = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    host.stdout.on('data', (data) => (stdout += String(data)));
+    host.stderr.resume();
+    const exitCode = await new Promise<number | null | 'lingered'>((resolve) => {
+      const timer = setTimeout(() => resolve('lingered'), 20_000);
+      host.once('exit', (code) => {
+        clearTimeout(timer);
+        resolve(code);
+      });
+    });
+    const pids = readPids(pidPath);
+    try {
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain('settled continue');
+      expect(pids).toBeDefined();
+      await waitFor(() => !isAlive(pids!.grandchild), 'the grandchild to end', 5_000);
+    } finally {
+      if (exitCode === 'lingered') host.kill('SIGKILL');
+      killSurvivors(pids);
+    }
+  }, 40_000);
 });
 
 describe('runHooks — matcher filtering', () => {
