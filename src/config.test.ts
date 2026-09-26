@@ -805,6 +805,56 @@ describe('loadConfig provider registry', () => {
     expect(clampEffortToCatalog(bare, 'max')).toBe('max');
   });
 
+  it('raises a chosen effort below every listed level to the lowest one, on request (#245)', () => {
+    const listed = defaultConfig({ modelInfo: { effort: { levels: ['medium', 'high'] } } });
+    expect(clampEffortToCatalog(listed, 'low')).toBeUndefined();
+    expect(clampEffortToCatalog(listed, 'low', { raiseToLowest: true })).toBe('medium');
+    expect(clampEffortToCatalog(listed, 'max', { raiseToLowest: true })).toBe('high');
+    // An empty `levels` list exposes no choices: nothing is raised into it.
+    const empty = defaultConfig({ modelInfo: { effort: { levels: [] } } });
+    expect(clampEffortToCatalog(empty, 'high')).toBeUndefined();
+    expect(clampEffortToCatalog(empty, 'low', { raiseToLowest: true })).toBeUndefined();
+    const none = defaultConfig({ modelInfo: { effort: false } });
+    expect(clampEffortToCatalog(none, 'low', { raiseToLowest: true })).toBeUndefined();
+  });
+
+  it('sends an effort for a catalog entry that names a default but no levels (#245)', () => {
+    // `getAvailableEffortLevels` reads a missing `levels` list as every level.
+    const defaultOnly = defaultConfig({ modelInfo: { effort: { default: 'medium' } } });
+    expect(resolveEffortExplicit(defaultOnly, 'medium', false)).toBe(true);
+    expect(resolveEffortExplicit(defaultOnly, 'high', false)).toBe(true);
+    const empty = defaultConfig({ modelInfo: { effort: { levels: [] } } });
+    expect(resolveEffortExplicit(empty, 'medium', false)).toBe(false);
+  });
+
+  it("does not carry a level the catalog merely listed into the compact model as chosen (#245)", () => {
+    const config = defaultConfig({
+      effort: 'high',
+      // Sent, because a managed child's catalog listed it -- but nobody chose it.
+      effortExplicit: true,
+      effortChosen: false,
+      compactModel: 'reducer/bare',
+      settings: {
+        ...defaultConfig().settings,
+        provider: {
+          reducer: {
+            type: 'openai',
+            baseURL: 'https://reducer.example/v1',
+            apiKey: 'reducer-key',
+            models: { bare: { maxOutputTokens: 4096 } },
+          },
+        },
+      },
+    });
+    const compact = resolveCompactModelConfig(config);
+    expect(compact).toMatchObject({ model: 'bare', effort: 'medium', effortExplicit: false });
+    expect(compact.effortChosen).toBe(false);
+
+    // A level that was chosen still counts on the uncatalogued compact model.
+    const chosen = resolveCompactModelConfig({ ...config, effortChosen: true });
+    expect(chosen).toMatchObject({ effort: 'medium', effortExplicit: true, effortChosen: true });
+  });
+
   it('sends an effort only when a level was chosen or the catalog lists it', () => {
     const bare = defaultConfig({ modelInfo: undefined });
     expect(resolveEffortExplicit(bare, 'high', false)).toBe(false);

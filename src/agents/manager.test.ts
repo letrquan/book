@@ -1542,7 +1542,117 @@ describe('AgentManager lifecycle', () => {
       effort: 'high',
       effortExplicit: true,
     });
+    // The record says what the child runs at, from the spawn on.
+    expect(record.effort).toBe('high');
+    expect((await manager.get(record.id))?.effort).toBe('high');
     manager.dispose();
+  });
+
+  describe('child effort against its model catalog (#245)', () => {
+    function gatewayConfig(models: Record<string, unknown>, overrides: Partial<AgentConfig> = {}) {
+      const config = defaultConfig({
+        workspace: tempRoot(),
+        effort: 'high',
+        defaultEffort: 'high',
+        effortExplicit: false,
+        ...overrides,
+      });
+      config.settings.agents.persist = false;
+      config.settings.provider = {
+        gateway: {
+          type: 'openai',
+          baseURL: 'https://gateway.example/v1',
+          apiKey: 'gateway-key',
+          models: models as never,
+        },
+      };
+      return config;
+    }
+
+    async function runChild(config: AgentConfig): Promise<{ child: AgentConfig; effort?: string }> {
+      let child: AgentConfig | undefined;
+      const manager = new AgentManager(config, [], {
+        storeRoot: tempRoot(),
+        findGitRoot: async () => undefined,
+        runLoop: async (nextConfig, _registry, _prompt, history) => {
+          child = nextConfig;
+          return history;
+        },
+      });
+      const record = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+      await manager.wait(record.id, 1000);
+      const effort = (await manager.get(record.id))?.effort;
+      manager.dispose();
+      return { child: child!, effort };
+    }
+
+    it("runs a child nobody chose an effort for at its model's catalog default (F3)", async () => {
+      const config = gatewayConfig({
+        tuned: { effort: { default: 'medium', levels: ['low', 'medium', 'high'] } },
+      });
+      config.settings.agents.profiles.explorer = { model: 'gateway/tuned' };
+      const { child, effort } = await runChild(config);
+      expect(child).toMatchObject({ model: 'tuned', effort: 'medium', effortExplicit: true });
+      expect(effort).toBe('medium');
+    });
+
+    it('sends the default of a catalog entry that lists no levels (F7)', async () => {
+      const config = gatewayConfig({ defaulted: { effort: { default: 'medium' } } });
+      config.settings.agents.profiles.explorer = { model: 'gateway/defaulted' };
+      const { child } = await runChild(config);
+      expect(child).toMatchObject({ model: 'defaulted', effort: 'medium', effortExplicit: true });
+    });
+
+    it("raises a chosen level below the catalog to its lowest listed level instead of dropping it", async () => {
+      const config = gatewayConfig({ upper: { effort: { levels: ['medium', 'high'] } } });
+      config.settings.agents.profiles.explorer = { model: 'gateway/upper', effort: 'low' };
+      const { child, effort } = await runChild(config);
+      expect(child).toMatchObject({ model: 'upper', effort: 'medium', effortExplicit: true });
+      expect(effort).toBe('medium');
+    });
+
+    it('keeps a level the catalog merely listed from counting as chosen in the child', async () => {
+      const config = gatewayConfig({ listed: { effort: { levels: ['low', 'medium', 'high'] } } });
+      config.settings.agents.profiles.explorer = { model: 'gateway/listed' };
+      const { child } = await runChild(config);
+      // Sent, because the catalog lists it; not chosen, so the child's own compaction on a
+      // compact model without a catalog entry does not send it.
+      expect(child).toMatchObject({ effort: 'high', effortExplicit: true, effortChosen: false });
+    });
+
+    it("re-resolves a queued child's effort when none was chosen at spawn (F4)", async () => {
+      const config = gatewayConfig({});
+      config.settings.agents.maxConcurrent = 1;
+      const childConfigs = new Map<string, AgentConfig>();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const manager = new AgentManager(config, [], {
+        storeRoot: tempRoot(),
+        findGitRoot: async () => undefined,
+        runLoop: async (nextConfig, _registry, prompt, history) => {
+          if (prompt === 'blocker') await gate;
+          childConfigs.set(prompt, nextConfig);
+          return history;
+        },
+      });
+      const blocker = await manager.spawn({ agent: 'explorer', prompt: 'blocker' });
+      await vi.waitFor(async () =>
+        expect((await manager.get(blocker.id))?.status).toBe('running'),
+      );
+      const queued = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+      // The session's default moves while the child waits in the queue; nothing chose `high`.
+      manager.updateConfig({ ...config, effort: 'medium', defaultEffort: 'medium' });
+      release();
+      await manager.wait(blocker.id, 1000);
+      await manager.wait(queued.id, 1000);
+      expect(childConfigs.get('inspect')).toMatchObject({
+        effort: 'medium',
+        effortExplicit: false,
+      });
+      manager.dispose();
+    });
   });
 
   it('keeps the no-resume mark on a follow-up the review still waits on, and drops it on one it does not (#245)', async () => {
@@ -1982,5 +2092,44 @@ describe('children re-driven after a restart', () => {
     expect(record).toMatchObject({ status: 'interrupted', resumable: false });
     expect(record?.error).toMatch(/not resumed/i);
     expect(completions).toHaveLength(0);
+  });
+
+  it("runs a follow-up queued on a /review agent after the restart, for the parent that sent it (#245)", async () => {
+    const { record, completions, requests, result } = await restartAndCollect(
+      undefined,
+      async (manager) => {
+        const spawned = await reviewRunnerFor(manager, { parentSessionId: 'parent-1' }).spawn(
+          'explorer',
+          'survey',
+        );
+        await vi.waitFor(async () =>
+          expect((await manager.get(spawned.id))?.status).toBe('running'),
+        );
+        // Queued behind the review's own run, which the restart does not re-run.
+        await manager.send(spawned.id, 'queued follow-up');
+        return spawned;
+      },
+    );
+    expect(requests).toBe(1);
+    expect(record).toMatchObject({ status: 'completed', prompt: 'queued follow-up' });
+    expect(record?.resumeAfterRestart).toBeUndefined();
+    expect(result).toBe('resumed answer');
+    // The review that would have received it died with the process; the parent sent it.
+    expect(completions).toHaveLength(1);
+  });
+
+  it('does not re-run a /review reviewer recorded before the no-resume mark existed (#245)', async () => {
+    const { record, requests } = await restartAndCollect(undefined, (manager) =>
+      // The shape a pre-#256 build wrote for `/review`: delivery suppressed, no mark.
+      manager.spawn({
+        agent: 'reviewer',
+        prompt: 'survey',
+        parentSessionId: 'parent-1',
+        notifyParentOnCompletion: false,
+      }),
+    );
+    expect(requests).toBe(0);
+    expect(record).toMatchObject({ status: 'interrupted', resumable: false });
+    expect(record?.error).toMatch(/not resumed/i);
   });
 });

@@ -502,4 +502,118 @@ describe('runMemoryExtraction', () => {
     // Still eligible, so the next start reads it.
     expect((await attempt(provider(SAVE))).processed).toEqual([{ id: 's1', written: 1 }]);
   });
+
+  it('keeps a reply that ended at its output limit when its JSON parses, and labels a session given up on for truncation (#245)', async () => {
+    const cutOff = (content: string): Provider =>
+      ({
+        id: 'scripted',
+        stream: async function* () {
+          if (content) yield { type: 'text', content };
+          yield { type: 'done', finishReasons: ['length'] };
+        },
+      }) as Provider;
+
+    // The whole answer arrived before the limit: the session is read.
+    const whole = source({ s1: { meta: meta('s1'), transcript: talk } });
+    expect(
+      (await runMemoryExtraction({ config: config(), sessions: whole, bookRoot, nowMs: NOW, provider: cutOff(SAVE) }))
+        .processed,
+    ).toEqual([{ id: 's1', written: 1 }]);
+
+    // A session whose every reply is cut off is given up on as truncated, not as a provider failure.
+    const cut = source({ s2: { meta: meta('s2'), transcript: talk } });
+    const attempt = () =>
+      runMemoryExtraction({
+        config: config(),
+        sessions: cut,
+        bookRoot,
+        nowMs: NOW,
+        provider: cutOff('{"memories": [{"action": "create"'),
+      });
+    expect((await attempt()).processed).toEqual([]);
+    expect((await attempt()).processed).toEqual([]);
+    expect((await attempt()).processed).toEqual([{ id: 's2', written: 0, skipped: 'truncated' }]);
+  });
+
+  describe('the lock', () => {
+    const MINUTE = 60_000;
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** A provider whose reply waits until `release` is called. */
+    function held() {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started: string[] = [];
+      const provider = {
+        id: 'held',
+        stream: async function* () {
+          started.push('stream');
+          await gate;
+          yield { type: 'text', content: SAVE };
+          yield { type: 'done' };
+        },
+      } as unknown as Provider;
+      return { provider, release, started };
+    }
+
+    it('is refreshed while a run lasts, so a second start does not take it over (#245)', async () => {
+      const start = Date.now();
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+      vi.setSystemTime(start);
+      const sessions = source({
+        s1: { meta: meta('s1', { updatedAt: start - 5 * HOUR }), transcript: talk },
+      });
+      const first = held();
+      const running = runMemoryExtraction({
+        config: config(),
+        sessions,
+        bookRoot,
+        provider: first.provider,
+      });
+      await vi.waitFor(() => expect(first.started).toEqual(['stream']));
+
+      // The provider's retries outlast the lock's 30-minute lifetime.
+      await vi.advanceTimersByTimeAsync(40 * MINUTE);
+      const second = await runMemoryExtraction({
+        config: config(),
+        sessions,
+        bookRoot,
+        provider: provider(SAVE),
+      });
+      expect(second.reason).toBe('locked');
+
+      first.release();
+      expect((await running).processed).toEqual([{ id: 's1', written: 1 }]);
+    });
+
+    it('stops without writing when another start took the lock over (#245)', async () => {
+      const sessions = source({ s1: { meta: meta('s1'), transcript: talk } });
+      const first = held();
+      const running = runMemoryExtraction({
+        config: config(),
+        sessions,
+        bookRoot,
+        nowMs: NOW,
+        provider: first.provider,
+      });
+      await vi.waitFor(() => expect(first.started).toEqual(['stream']));
+      // Another start found the lock stale and wrote its own.
+      writeFileSync(getMemoryExtractionLockPath(workspace, { bookRoot }), 'someone-else');
+
+      first.release();
+      const result = await running;
+      expect(result).toEqual({ processed: [], reason: 'lock-lost' });
+      expect(existsSync(getMemoryExtractionStatePath(workspace, { bookRoot }))).toBe(false);
+      const dir = getProjectMemoryDir(workspace, { bookRoot });
+      expect(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.md')) : []).toEqual([]);
+      // The other start's lock is left alone.
+      expect(readFileSync(getMemoryExtractionLockPath(workspace, { bookRoot }), 'utf-8')).toBe(
+        'someone-else',
+      );
+    });
+  });
 });
