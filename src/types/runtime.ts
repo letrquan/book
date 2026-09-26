@@ -171,8 +171,20 @@ export interface AgentConfig {
   maxTokensExplicit?: boolean;
   /** Default output-token limit to restore when selected model has no metadata. */
   defaultMaxTokens?: number;
-  /** True when effort came from user config/env or an explicit runtime choice. */
+  /**
+   * Whether requests send `effort`: the OpenAI-compatible path sends `reasoning_effort` only then.
+   * On the session's own config it means a human chose the level (flag, env var, settings,
+   * `/effort`). A managed child or a compact-model request also sends a level its model's catalog
+   * lists (`resolveEffortExplicit`), and keeps whether one was chosen in `effortChosen`.
+   */
   effortExplicit?: boolean;
+  /**
+   * Whether a human chose `effort` -- by flag, env var, settings, `/effort`, or a managed agent's
+   * profile or definition -- rather than a default or a catalog. Unset means the same as
+   * `effortExplicit`, as on the session's own config, where the two are one. Read it through
+   * `isEffortChosen`.
+   */
+  effortChosen?: boolean;
   /** Default effort to restore when selected model has no metadata. */
   defaultEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /** Plain-model fallback values used after provider/model switches. */

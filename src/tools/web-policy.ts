@@ -21,6 +21,8 @@ export class WebPolicyError extends Error {
       | 'url_credentials_forbidden'
       | 'private_network_forbidden'
       | 'dns_resolution_failed',
+    /** What the policy refused, for `private_network_forbidden`: see `refusedDestination`. */
+    readonly destination?: string,
   ) {
     super(message);
     this.name = 'WebPolicyError';
@@ -32,13 +34,16 @@ export class WebPolicyError extends Error {
  * mode lifts either, bypassPermissions included.
  *
  * - `fetch`: a WebFetch to a private or special-use destination (`private_network_forbidden`).
- *   The host's BOOK_WEB_ALLOW_PRIVATE_NETWORK lifts it.
+ *   The host's BOOK_WEB_ALLOW_PRIVATE_NETWORK lifts it, for every destination at once.
  * - `search`: a WebSearch whose every built-in provider resolved to such a destination
  *   (`search_all_providers_failed`, which web.ts marks `blocked` only then). The providers always
  *   validate with `allowPrivateNetwork: false`, so no setting lifts it; the host's DNS or proxy
  *   is sending them to a private address.
+ * - `redirect`: a WebFetch stopped at a redirect to another origin (`cross_origin_redirect`). A
+ *   WebFetch never follows one by itself, whatever the permissions, mode or settings: the model has
+ *   to fetch the target in its own call.
  */
-export type NetworkPolicyRefusal = 'fetch' | 'search';
+export type NetworkPolicyRefusal = 'fetch' | 'search' | 'redirect';
 
 /** Which kind of network-policy refusal a tool result is, or `undefined` when it is none. */
 export function networkPolicyRefusal(
@@ -48,16 +53,114 @@ export function networkPolicyRefusal(
   const code = result.structuredError?.code;
   if (code === 'private_network_forbidden') return 'fetch';
   if (code === 'search_all_providers_failed') return 'search';
+  if (code === 'cross_origin_redirect') return 'redirect';
   return undefined;
 }
 
-/** What lifts each kind of network-policy refusal, worded to follow "Nothing can proceed: ". */
-export const NETWORK_POLICY_REMEDIES: Readonly<Record<NetworkPolicyRefusal, string>> = {
-  fetch:
-    'the web network policy refused a private or special-use destination, which no permission rule or mode lifts; set BOOK_WEB_ALLOW_PRIVATE_NETWORK=true in the host environment to allow it',
-  search:
-    "every built-in search provider resolved to a private or special-use destination, which no setting, permission rule or mode lifts; check the host's DNS or proxy (a fake-IP DNS such as 198.18.0.0/15 causes this)",
-};
+/** At most this many refused destinations are named in a remedy; the rest are counted. */
+const MAX_NAMED_DESTINATIONS = 3;
+
+type RefusalResult = Pick<ToolResult, 'status' | 'structuredError'> | undefined;
+
+/** The destinations a network-policy refusal names in its details, in order. */
+function refusedDestinations(result: RefusalResult): string[] {
+  const details = result?.structuredError?.details;
+  if (!details) return [];
+  if (typeof details.destination === 'string') return [details.destination];
+  if (!Array.isArray(details.attempts)) return [];
+  return details.attempts.flatMap((attempt: unknown) => {
+    const destination = (attempt as { destination?: unknown } | null)?.destination;
+    return typeof destination === 'string' ? [destination] : [];
+  });
+}
+
+/** `a`, `a and b`, `a, b and c`, or `a, b, c and 2 more`, where `unnamed` counts the rest. */
+function namedList(names: string[], unnamed: number): string {
+  const shown = names.slice(0, MAX_NAMED_DESTINATIONS);
+  const hidden = names.length - shown.length + unnamed;
+  const items = hidden > 0 ? [...shown, `${hidden} more`] : shown;
+  return items.length === 1
+    ? items[0]
+    : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/** The host a refused destination is named by: what precedes its ` (address)` part. */
+function destinationHost(destination: string): string {
+  return destination.replace(/ \([^()]*\)$/, '');
+}
+
+/**
+ * What lifts each kind of network-policy refusal among `results`, worded to follow
+ * "Nothing can proceed: ": one remedy per kind present, the WebFetch one first, then the WebSearch
+ * one, then the redirect one, each naming the destinations it refused. Results that are not
+ * network-policy refusals are ignored.
+ */
+export function networkPolicyRemedies(results: readonly RefusalResult[]): string[] {
+  // Keyed by host, so one host that resolved to several addresses is named once: the operator
+  // acts on the host, and every address for it comes from the same DNS answer or the same prefix.
+  const destinations: Record<NetworkPolicyRefusal, Map<string, string>> = {
+    fetch: new Map(),
+    search: new Map(),
+    redirect: new Map(),
+  };
+  // Keyed by the message, so the several refusals one destination list left unnamed, or one
+  // attempt repeated, count once rather than as one more each.
+  const unnamed: Record<NetworkPolicyRefusal, Set<string>> = {
+    fetch: new Set(),
+    search: new Set(),
+    redirect: new Set(),
+  };
+  const kinds = new Set<NetworkPolicyRefusal>();
+  for (const result of results) {
+    const kind = networkPolicyRefusal(result);
+    if (!kind) continue;
+    kinds.add(kind);
+    // A redirect names no destination: its own remedy is about the model's next call, not a host
+    // to reach.
+    const named = kind === 'redirect' ? [] : refusedDestinations(result);
+    // A refusal that names no destination is still one more of its kind, so it is counted in the
+    // "2 more" rather than dropped.
+    if (named.length === 0) unnamed[kind].add(result?.structuredError?.message ?? '');
+    for (const destination of named) {
+      const host = destinationHost(destination);
+      if (!destinations[kind].has(host)) destinations[kind].set(host, destination);
+    }
+  }
+
+  const remedies: string[] = [];
+  if (kinds.has('fetch')) {
+    const names = [...destinations.fetch.values()];
+    const total = names.length + unnamed.fetch.size;
+    const refused =
+      names.length === 0
+        ? 'a private or special-use destination'
+        : `the private or special-use destination${total === 1 ? '' : 's'} ${namedList(names, unnamed.fetch.size)}`;
+    remedies.push(
+      `the web network policy refused ${refused}, which no permission rule or mode lifts; ` +
+        'BOOK_WEB_ALLOW_PRIVATE_NETWORK=true in the host environment lifts it, but for every ' +
+        'destination at once: it turns the private-network (SSRF) check off for every WebFetch, so ' +
+        'set it only where the model may safely reach anything this host can',
+    );
+  }
+  if (kinds.has('search')) {
+    const names = [...destinations.search.values()];
+    remedies.push(
+      (names.length === 0
+        ? 'every built-in search provider resolved to a private or special-use destination'
+        : `every built-in search provider resolved to a private or special-use destination, namely ${namedList(names, unnamed.search.size)}`) +
+        ", which no setting, permission rule or mode lifts; check the host's DNS or proxy (a fake-IP " +
+        'DNS such as 198.18.0.0/15 causes this)',
+    );
+  }
+  if (kinds.has('redirect')) {
+    remedies.push(
+      'a page redirected to another origin, which a WebFetch never follows by itself and which no ' +
+        'permission rule, mode or setting changes; the model has to fetch the target in its own ' +
+        'WebFetch call, or stop fetching that page',
+    );
+  }
+  return remedies;
+}
 
 function envFlag(value: string | undefined): boolean {
   return /^(1|true|yes|on)$/i.test(value?.trim() ?? '');
@@ -166,6 +269,11 @@ function ipv4FromGroups(high: number, low: number): string {
  * - 6to4 `2002::/16` (RFC 3056): bits 16-47.
  * - Teredo `2001::/32` (RFC 4380): the server in bits 32-63, and the client in the last 32 bits,
  *   obfuscated by XOR with 0xffffffff. Both are returned, and either one being forbidden blocks.
+ *
+ * SIIT's IPv4-translated range is not here: it is judged like the IPv4-mapped one, in
+ * `isBlockedIpv6`, because the whole prefix is fixed. ISATAP is not here either: it rides on an
+ * arbitrary prefix, so `isBlockedIpv6` adds it before this and the prefix in front stays judged
+ * here.
  */
 function embeddedIpv4Destinations(groups: number[]): string[] | undefined {
   // Group 2 is 0 in the well-known prefix and 1 in the local-use one.
@@ -185,6 +293,20 @@ function embeddedIpv4Destinations(groups: number[]): string[] | undefined {
   return undefined;
 }
 
+/**
+ * The IPv4 address in an ISATAP interface identifier (RFC 5214), or `undefined` when the address has
+ * none. The identifier is `0:5efe` (a private IPv4) or `200:5efe` (a global one) followed by the IPv4
+ * address, under any /64 prefix; only the two identifiers RFC 5214 defines are decoded, since a
+ * random global interface identifier can end in `5efe` too. An ISATAP router tunnels to that IPv4
+ * address, so the IPv4 policy has to decide it.
+ */
+function isatapIpv4(groups: number[]): string | undefined {
+  // Teredo 2001:0::/32 is not ISATAP: its last 32 bits are the obfuscated client, not an address.
+  if (groups[0] === 0x2001 && groups[1] === 0x0000) return undefined;
+  if ((groups[4] !== 0x0000 && groups[4] !== 0x0200) || groups[5] !== 0x5efe) return undefined;
+  return ipv4FromGroups(groups[6], groups[7]);
+}
+
 function isBlockedIpv6(address: string): boolean {
   const groups = expandIpv6(address);
   if (!groups) return true;
@@ -193,10 +315,20 @@ function isBlockedIpv6(address: string): boolean {
   const uniqueLocal = (groups[0] & 0xfe00) === 0xfc00;
   const linkLocal = (groups[0] & 0xffc0) === 0xfe80;
   const multicast = (groups[0] & 0xff00) === 0xff00;
-  const documentation = groups[0] === 0x2001 && groups[1] === 0x0db8;
+  // Documentation: 2001:db8::/32 (RFC 3849) and 3fff::/20 (RFC 9637).
+  const documentation =
+    (groups[0] === 0x2001 && groups[1] === 0x0db8) ||
+    (groups[0] === 0x3fff && (groups[1] & 0xf000) === 0);
   const ipv4Mapped = groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff;
+  // SIIT's IPv4-translated addresses (RFC 2765, RFC 6145): the mapped layout one group to the left.
+  const ipv4Translated =
+    groups.slice(0, 4).every((group) => group === 0) && groups[4] === 0xffff && groups[5] === 0;
   const ipv4Compatible = groups.slice(0, 6).every((group) => group === 0);
-  if (ipv4Mapped || ipv4Compatible) return isBlockedIpv4(ipv4FromGroups(groups[6], groups[7]));
+  if (ipv4Mapped || ipv4Translated || ipv4Compatible) {
+    return isBlockedIpv4(ipv4FromGroups(groups[6], groups[7]));
+  }
+  const isatap = isatapIpv4(groups);
+  if (isatap !== undefined && isBlockedIpv4(isatap)) return true;
   const embedded = embeddedIpv4Destinations(groups);
   if (embedded) return embedded.some(isBlockedIpv4);
   // RFC 8215 lets the operator of the local-use NAT64 prefix choose any RFC 6052 prefix length
@@ -238,11 +370,11 @@ export function isBlockedIpAddress(address: string): boolean {
  */
 const CONNECTION_BLOCKED = Symbol.for('book.web.connectionBlocked');
 
-/**
- * The policy's reason for refusing a connection, or `undefined` if this is any other failure.
- * Reads through one layer of `cause` because that is where undici puts it.
- */
-export function connectionBlockedReason(error: unknown): string | undefined {
+/** The refused destination, carried on the branded error beside the brand itself. */
+const BLOCKED_DESTINATION = Symbol.for('book.web.blockedDestination');
+
+/** The branded refusal among `error` and its `cause`, or `undefined`. */
+function blockedConnectionError(error: unknown): Error | undefined {
   const candidates = [error, (error as { cause?: unknown } | undefined)?.cause];
   for (const candidate of candidates) {
     if (
@@ -250,10 +382,26 @@ export function connectionBlockedReason(error: unknown): string | undefined {
       candidate !== null &&
       (candidate as Record<symbol, unknown>)[CONNECTION_BLOCKED] === true
     ) {
-      return (candidate as Error).message;
+      return candidate as Error;
     }
   }
   return undefined;
+}
+
+/**
+ * The policy's reason for refusing a connection, or `undefined` if this is any other failure.
+ * Reads through one layer of `cause` because that is where undici puts it.
+ */
+export function connectionBlockedReason(error: unknown): string | undefined {
+  return blockedConnectionError(error)?.message;
+}
+
+/** The destination the connect-time guard refused, or `undefined` for any other failure. */
+export function connectionBlockedDestination(error: unknown): string | undefined {
+  const destination = (blockedConnectionError(error) as Record<symbol, unknown> | undefined)?.[
+    BLOCKED_DESTINATION
+  ];
+  return typeof destination === 'string' ? destination : undefined;
 }
 
 /**
@@ -270,11 +418,12 @@ export const safeNetworkLookup: LookupFunction = (hostname, options, callback) =
     if (options.all) callback(error, []);
     else callback(error, '', 0);
   };
-  const refuse = (reason: string): void =>
+  const refuse = (reason: string, destination: string): void =>
     fail(
       Object.assign(new Error(reason), {
         code: 'EACCES',
         [CONNECTION_BLOCKED]: true,
+        [BLOCKED_DESTINATION]: destination,
       }) as NodeJS.ErrnoException,
     );
 
@@ -287,13 +436,20 @@ export const safeNetworkLookup: LookupFunction = (hostname, options, callback) =
     if (blocked) {
       refuse(
         `Connection blocked because ${hostname} resolved to private or special-use address ${blocked.address}.`,
+        refusedDestination(hostname, blocked.address),
       );
       return;
     }
-    // Refuse an empty result rather than reporting success: the single-address form would
-    // otherwise hand the connector '' as a destination it never validated.
+    // Fail an empty result rather than reporting success: the single-address form would otherwise
+    // hand the connector '' as a destination it never validated. It is a resolution failure, as
+    // `dns.lookup` reports one, not a policy refusal: nothing private was involved.
     if (addresses.length === 0) {
-      refuse(`Connection blocked because ${hostname} resolved to no usable address.`);
+      fail(
+        Object.assign(new Error(`${hostname} resolved to no usable address.`), {
+          code: 'ENOTFOUND',
+          hostname,
+        }) as NodeJS.ErrnoException,
+      );
       return;
     }
     if (options.all) callback(null, addresses);
@@ -301,11 +457,16 @@ export const safeNetworkLookup: LookupFunction = (hostname, options, callback) =
   });
 };
 
-function normalizedHostname(url: URL): string {
-  return url.hostname
+/** A hostname as the policy names it: no IPv6 brackets, no trailing dot, lowercase. */
+function normalizeHost(hostname: string): string {
+  return hostname
     .replace(/^\[|\]$/g, '')
     .replace(/\.$/, '')
     .toLowerCase();
+}
+
+function normalizedHostname(url: URL): string {
+  return normalizeHost(url.hostname);
 }
 
 function isBlockedHostname(hostname: string): boolean {
@@ -317,6 +478,62 @@ function isBlockedHostname(hostname: string): boolean {
     hostname === 'metadata.google.internal' ||
     (!isIP(hostname) && !hostname.includes('.'))
   );
+}
+
+/**
+ * How a refused destination is named to the operator: the host the model asked for, and the address
+ * it resolved to when that differs (`example.com (10.0.0.2)`). A literal address or a name refused
+ * before any lookup (`localhost`) is named once. The host is normalized by `normalizeHost`,
+ * lowercased and without a trailing dot, so the connect-time name matches the pre-flight one.
+ */
+function refusedDestination(hostname: string, address?: string): string {
+  const host = normalizeHost(hostname);
+  return address === undefined || address.toLowerCase() === host ? host : `${host} (${address})`;
+}
+
+/**
+ * The policy's refusal of `url` by the checks that need no DNS lookup: scheme, plain HTTP, embedded
+ * credentials, and (unless private destinations are allowed) a local hostname or a private or
+ * special-use address literal. `undefined` when those pass; a hostname can still resolve to a
+ * private address, which only `validateWebUrl` finds out.
+ */
+export function refusalWithoutLookup(
+  url: URL,
+  policy: WebUrlPolicy,
+  rawUrl = url.toString(),
+): WebPolicyError | undefined {
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return new WebPolicyError(`URL must use http or https scheme: ${rawUrl}`, 'invalid_url_scheme');
+  }
+  if (url.protocol === 'http:' && !policy.allowHttp) {
+    return new WebPolicyError(
+      'Plain HTTP web fetches are disabled. Set BOOK_WEB_ALLOW_HTTP=true in the host environment to opt in.',
+      'insecure_http_url',
+    );
+  }
+  if (url.username || url.password) {
+    return new WebPolicyError(
+      'Credentials embedded in web URLs are not allowed.',
+      'url_credentials_forbidden',
+    );
+  }
+  if (policy.allowPrivateNetwork) return undefined;
+  const hostname = normalizedHostname(url);
+  if (isBlockedHostname(hostname)) {
+    return new WebPolicyError(
+      `Web fetch blocked for local or private hostname: ${hostname}`,
+      'private_network_forbidden',
+      refusedDestination(hostname),
+    );
+  }
+  if (isIP(hostname) && isBlockedIpAddress(hostname)) {
+    return new WebPolicyError(
+      `Web fetch blocked for private or special-use address: ${hostname}`,
+      'private_network_forbidden',
+      refusedDestination(hostname),
+    );
+  }
+  return undefined;
 }
 
 export async function validateWebUrl(
@@ -331,41 +548,14 @@ export async function validateWebUrl(
     throw new WebPolicyError(`Invalid URL: ${rawUrl}`, 'invalid_url');
   }
 
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new WebPolicyError(`URL must use http or https scheme: ${rawUrl}`, 'invalid_url_scheme');
-  }
-  if (url.protocol === 'http:' && !policy.allowHttp) {
-    throw new WebPolicyError(
-      'Plain HTTP web fetches are disabled. Set BOOK_WEB_ALLOW_HTTP=true in the host environment to opt in.',
-      'insecure_http_url',
-    );
-  }
-  if (url.username || url.password) {
-    throw new WebPolicyError(
-      'Credentials embedded in web URLs are not allowed.',
-      'url_credentials_forbidden',
-    );
-  }
+  const refusal = refusalWithoutLookup(url, policy, rawUrl);
+  if (refusal) throw refusal;
 
   url.hash = '';
   if (policy.allowPrivateNetwork) return url;
 
   const hostname = normalizedHostname(url);
-  if (isBlockedHostname(hostname)) {
-    throw new WebPolicyError(
-      `Web fetch blocked for local or private hostname: ${hostname}`,
-      'private_network_forbidden',
-    );
-  }
-  if (isIP(hostname)) {
-    if (isBlockedIpAddress(hostname)) {
-      throw new WebPolicyError(
-        `Web fetch blocked for private or special-use address: ${hostname}`,
-        'private_network_forbidden',
-      );
-    }
-    return url;
-  }
+  if (isIP(hostname)) return url;
 
   let addresses: string[];
   try {
@@ -387,6 +577,7 @@ export async function validateWebUrl(
     throw new WebPolicyError(
       `Web fetch blocked because ${hostname} resolves to private or special-use address ${blocked}.`,
       'private_network_forbidden',
+      refusedDestination(hostname, blocked),
     );
   }
   return url;

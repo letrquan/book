@@ -35,6 +35,18 @@ All notable changes to this project are documented in this file.
   rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
   green, so every PR that touched them either reformatted unrelated lines or left them drifting.
   They are formatted once, and `npm run format` and `format:check` now include them.
+- **Reading and searching the workspace no longer asks** (#264). In `default` and `acceptEdits`, a
+  `Read`, `Glob` or `Grep` the tool can serve (inside the workspace, or for `Read` Book's memory
+  directory) runs without a permission prompt. The target is resolved the way the tool resolves it
+  (`..` applied, symlinks and junctions followed), so a link out of the workspace, a `Glob` pattern
+  that would start walking outside the workspace, and any target outside still ask. Still asking too:
+  anything an `ask` rule covers; every `Grep` and `Glob` while a `deny` or `ask` rule names `Read`,
+  `Grep` or `Glob`, since a `Read` rule cannot see what they read; `.book/settings.local.json`, which
+  can hold an API key (and which `Grep` no longer searches at all, through any path or link); and
+  everything in a workspace that holds a home directory, the OS one or Book's `BOOK_HOME`, also
+  through a link. An unattended `acceptEdits`
+  run could edit a file it was refused to read; print mode and the SDK now read the workspace in
+  both modes. `plan`, `dontAsk`, `auto` and `bypassPermissions` are unchanged.
 - **An empty session opens on a title page with a table of contents.** A five-row rubric drop cap
   B sits beside "O O K", a running head (workspace · model), a rule and a tagline. Below it, the
   contents list this workspace's five most recent sessions as chapters, with Roman numerals,
@@ -301,6 +313,75 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A refused permission prompt names its real cause** (#264). Every refusal told the model "The
+  configured permission policy blocks this call", including a person pressing Skip and a print-mode
+  run that had nobody to ask. The tool result now says which it was: a `permissions.deny` rule
+  (named), the user declining, `dontAsk` mode, or a run where nothing can answer a prompt (print
+  mode, the SDK, a background agent, a scrollback session whose input closed). The last names what
+  would let the call through: an allow rule or `--permission-mode auto` for most calls; the `ask`
+  rule for a call one covers, since no allow rule outranks it; an allow rule only for skill consent;
+  only `bypassPermissions` for a persistent background shell; and nothing for a `Read`, `Glob` or
+  `Grep` outside the workspace, which the tool cannot open. Print mode and the SDK also print that
+  remedy once per session for each tool, on stderr in `text` output and as a `notice` event in
+  `stream-json`. A prompt withdrawn before anyone answered it (an interrupt, a session change, a
+  stopped agent) is reported as dismissed rather than as a person declining.
+- **A path rule matches the file however the call spells it** (#264). `deny: ["Read(.env)"]` and
+  `deny: ["Write(.env)"]` were globs over the raw argument, so a call on
+  `/abs/path/to/workspace/.env` or `src/../.env` slipped past them, straight to the file in `auto`
+  and `bypassPermissions` (and for writes, in `acceptEdits`). Rules for `Read`, `Write`, `Edit`,
+  `MultiEdit` and `NotebookEdit` are now also matched against the target's workspace-relative and
+  absolute spellings, before and after following links, in every mode; `Write` and `Edit` rules
+  apply the same way to the paths an `ApplyPatch` touches.
+- **SIIT and ISATAP addresses are judged by the IPv4 address they carry** (#246). SIIT's
+  IPv4-translated `::ffff:0:0:0/96` and an ISATAP interface identifier (`0:5efe` or `200:5efe`
+  followed by an IPv4 address) passed both check sites, so `https://[::ffff:0:a00:1]/` reached
+  10.0.0.1. ISATAP only adds a refusal: the prefix in front of it is still judged on its own. A
+  NAT64 layout other than `64:ff9b::/96` and the /96 layout of `64:ff9b:1::/48` is still not
+  decoded; see `docs/guide/configuration.md`.
+- **A run stopped by refused web calls names what was refused** (#246). The `all_tools_blocked`
+  message names each refused destination (up to three, then a count) and, for `WebFetch`, warns that
+  `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` turns the private-network (SSRF) check off for every
+  destination rather than the one refused. The TUI and the stop message now read the list of policy
+  refusal codes from one place. A cross-origin redirect is now reported before its target is
+  resolved: a target the lookup-free checks refuse is marked not to be followed, its credentials or
+  a non-web URL are never echoed, the TUI row says why it stopped, and a streak of them gets its
+  own remedy rather than permission advice. A fetch that fails inside undici now reports undici's
+  cause; RFC 9637's documentation prefix `3fff::/20` is refused beside `2001:db8::/32`.
+- **A managed child's effort follows its model's catalog, and only a real choice sticks** (#245).
+  - **Catalog default:** with no level chosen, a child ran at the session's defaulted `high`
+    rather than its model's catalog `default`, and a catalog entry with a `default` but no
+    `levels` list never sent a level, although `/effort` offers such a model every level. The
+    default now applies, and such an entry takes any level; an entry that names neither
+    (`effort: {}`) still vouches for none.
+  - **A chosen level is kept:** a profile's `effort: low` on a model listing `[medium, high]` was
+    clamped to nothing. A chosen level below every listed one now takes the lowest listed level. So
+    does an explicit `compactEffort` on the compact model; the session's capped effort still never
+    goes back up.
+  - **Chosen and sent are separate:** a level sent only because the child's catalog listed it was
+    carried into the child's own compaction as chosen, and sent to a compact model with no catalog
+    entry, where a strict endpoint answers it with a 400. The same held for the deferred-compaction
+    judge's `low`. Both are now sent only where a level was chosen or the catalog lists it.
+  - **Later runs:** a queued, re-run or follow-up child kept its spawn-time level as if chosen. Only
+    a chosen level is kept now, as asked, and clamped again against the catalog in force when the
+    run starts; a defaulted one is resolved again.
+  - **The record:** `effort` on the agent record was the unclamped level (`max` for a child whose
+    model lists nothing above `high`). It is now the child's level clamped to its model's catalog,
+    from the spawn on. On an OpenAI-compatible route it is still sent only when chosen or listed.
+- **A restart says when it drops a follow-up sent to a `/review` agent** (#245). With
+  `agents.resumeInterrupted` on, a restart leaves the review's own run interrupted, and silently
+  dropped the `AgentSend` follow-ups sent to it: one queued behind that run, or one already running
+  after it. They are still not run, because a follow-up would start with none of the review's
+  context and whose result it is was never recorded per run, but the agent's error now says how
+  many were dropped and to send them again.
+- **Memory extraction keeps its lock, and keeps a whole answer that reached the output limit**
+  (#245). On the session's retry policy one session's provider call can take far longer than the
+  extraction lock's 30-minute lifetime, and a second Book session then took the lock over and
+  extracted the same sessions at the same time. A run now refreshes its lock while it lasts, for at
+  most two hours on any one session so that a call stuck in retries cannot hold it forever, and a
+  run whose lock another start took over writes nothing more. A reply that ended at the output limit
+  was always a failed start, even when its whole answer had arrived; it now counts when the reply is
+  one JSON object and nothing else. A session given up on is recorded as `truncated` when its last
+  reply was cut off, not `provider-failed`.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller
@@ -403,6 +484,52 @@ All notable changes to this project are documented in this file.
   timestamps, so it kept the outline, and an `Edit` after the resume was refused as "only
   outlined". A rebuilt ledger now lets a real observation replace an outline, and never the
   reverse, whatever the timestamps. A checkpoint's file observations follow the same rule.
+- **`Read { outline: true }` covers more of what #247's reviews found missing, and lists less
+  that is not a declaration (#247).**
+  - **Now listed:** Java and C# methods with their body on the same line
+    (`public int get() { return n; }`), declarations with an annotation or attribute on their own
+    line (`@Override public String toString() {`, `[HttpGet] public IActionResult Get() {`) in
+    languages that have them, plain `*values()` generator methods, the members of a Java inner
+    class or a nested C# or C++ class, Java `record`s, and C++ class members: declarations,
+    one-line definitions, constructors, destructors, operators and pure virtuals, with qualifier
+    macros and `[[attributes]]`, inside `#ifdef` blocks and namespaces, and under class heads that
+    carry a comment, an export macro, `__declspec` or `alignas`. A signature is no longer dropped
+    for a parenthesis in a quoted default value (`paren(s = '(') {`, a C# verbatim string, a C++
+    `1'000`), a trailing comment, or a block comment before its body (`run() /* entry */ {`).
+  - **JSON** outlines to its top-level keys, or for an array to each element's first key, instead
+    of its opening brace alone. Depth decides, so keys after a block comment or a closing brace
+    are found; JSON5's bare and single-quoted keys count; a file with one record per line lists
+    every record; and a `.prettierrc` or `.eslintrc` is JSON only when it holds JSON.
+  - **No longer listed:** property access on objects named like keywords (`set.add(1);`,
+    `it.skip;`, `it.next();`, `impl->value = f(`, Kotlin's `it.split(",")`), and a statement
+    followed by another on the same line (`foo(x); if (y) {`). In JavaScript and TypeScript,
+    `it.skip('x', () => {`, `it.each` tables and other test blocks reached through a modifier
+    still are. In C++, a capitalised call with an underscore (`Q_PROPERTY(…)`, `GENERATED_BODY()`,
+    a field's `ABSL_GUARDED_BY(mu_)`) or a builtin such as `__attribute__` is a macro, not a
+    member, unless a body follows it (`BOOST_AUTO_TEST_CASE(works) {`); `static_assert(…)` is
+    not a member; and after `};` the class is closed. An `@` prefix is read as an annotation only
+    in languages that have them, so a Makefile's `@go get` and SCSS's `@include mq(…) {` stay
+    out.
+  - **The template scanner keeps its place** through a string continued with a trailing
+    backslash, and through a regex right after a condition's `)` (`if (ok) /\d+/.test(s)`),
+    which it read as a division; two such misreads used to hide every line between them.
+  - **Front matter** may open with a `# comment`, and a `#` comment beside YAML identifier keys
+    (`title:`) after a blank line no longer ends it. A `#` line alone in its run, or beside a
+    label such as `Summary: …`, stays a heading. The Markdown front-matter detector moved to
+    `src/frontmatter.ts`, beside `parseFrontmatter`, which keeps its own exact-`---` rule.
+  - **Budget:** an entry is cut at 512 bytes and ends with `…`, so a minified first line no longer
+    leaves an outline with "0 shown", and the header and truncation note fit inside the 50 KB clip
+    whatever the path's length. A long C++ qualifier macro is read in linear time.
+  - **Code:** the three lists of statement words, which disagreed, are one table that says where
+    each word rules a line out.
+  - The `outline` parameter's description now says "up to 2000 of them or 50 KB". It is part of
+    the cached tool schema, so the first request after upgrading misses the prompt cache once.
+  - **Measured:** over this repository's 731 tracked files the outline gains 191 entries and loses
+    one. The gains are 184 JSON keys, `.prettierrc`'s six keys, and the constructor of a class
+    declared inside a test; the loss is `def.model ? …`, which had passed for a Python `def`. Over
+    winpty's 88 C++ files it gains 304 class members, constructors, destructors and operators, and
+    loses 36 lines: 18 `impl->field = …` statements that had passed for Rust `impl` blocks, and 18
+    `} // anonymous namespace` closing lines.
 - **A failed print run exits 1 on Windows, not 127.** Print mode ended a failed run with
   `exit(1)` straight after its last provider request, while libuv was still closing the pooled
   sockets. On Windows that aborted with

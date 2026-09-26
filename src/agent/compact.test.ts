@@ -2567,6 +2567,38 @@ describe('judgeCompaction', () => {
     expect(request).toMatchObject({ maxOutputTokens: 512 + 2_048 });
   });
 
+  it("sends the judge's low effort to an uncatalogued model only when a level was chosen (#245)", async () => {
+    const { applied: result, delta } = await applied();
+    judgeReply('{"sufficient": true}');
+    // The test config's model has no catalog entry: a strict endpoint answers an effort it
+    // was not told the model accepts with a 400, so nothing chosen means nothing sent.
+    await judgeCompaction(makeConfig({ effort: 'high' }), result, delta);
+    const [unchosen] = mockedStream.mock.calls.at(-1)!;
+    expect(unchosen).toMatchObject({ effort: 'low', effortExplicit: false });
+
+    judgeReply('{"sufficient": true}');
+    await judgeCompaction(makeConfig({ effort: 'high', effortExplicit: true }), result, delta);
+    const [chosen] = mockedStream.mock.calls.at(-1)!;
+    expect(chosen).toMatchObject({ effort: 'low', effortExplicit: true });
+
+    judgeReply('{"sufficient": true}');
+    const listed = makeConfig({
+      modelInfo: { contextWindow: 200_000, effort: { levels: ['low', 'medium'] } },
+    });
+    await judgeCompaction(listed, result, delta);
+    const [catalogued] = mockedStream.mock.calls.at(-1)!;
+    expect(catalogued).toMatchObject({ effort: 'low', effortExplicit: true });
+
+    // An entry that names a default but no levels takes any level, as `/effort` offers it.
+    judgeReply('{"sufficient": true}');
+    const defaulted = makeConfig({
+      modelInfo: { contextWindow: 200_000, effort: { default: 'high' } },
+    });
+    await judgeCompaction(defaulted, result, delta);
+    const [defaultOnly] = mockedStream.mock.calls.at(-1)!;
+    expect(defaultOnly).toMatchObject({ effort: 'low', effortExplicit: true });
+  });
+
   it("does not ask for an effort the compact model's catalog refuses", async () => {
     const { applied: result, delta } = await applied();
     judgeReply('{"sufficient": true}');
