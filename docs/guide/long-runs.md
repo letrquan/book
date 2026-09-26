@@ -107,11 +107,12 @@ A `bad_request` on a request of 200k estimated tokens or more, plain
 context overflow even when the body does not say so: the antigravity Gemini route refuses at ~300k
 without naming the length. A 429 whose message states an oversized request (OpenAI's
 `Request too large … on tokens per min (TPM)`) is recovered the same way. Such a 429 is not retried
-like other rate limits: waiting cannot make that request fit. The history is compacted and the turn
-retried once, provided a size-inferred retry is below 200k tokens. If that retry is refused with a
-400 again, the error says so: either the refusal is not about size, or the route's real limit is
-below 200k, which a declared `contextWindow` fixes. Only an error that states an overflow also
-lowers the learned context window: a 413 status, an `error.code` or `error.type` of
+like other rate limits, and one still refused after its compaction ends the run: waiting cannot make
+that request fit. A transient `Rate limit reached …` is retried as before. The history is compacted
+and the turn retried once, provided a size-inferred retry is below 200k tokens. If that retry is
+refused with a 400 again, the error says so: either the refusal is not about size, or the route's
+real limit is below 200k, which a declared `contextWindow` fixes. Only an error that states an
+overflow also lowers the learned context window: a 413 status, an `error.code` or `error.type` of
 `context_length_exceeded` or `request_too_large` (or llama.cpp's `exceed_context_size_error`), or
 overflow wording in the error message ("maximum context length", "prompt is too long", Gemini's
 "input token count (N) exceeds the maximum", …), including the upstream body OpenRouter forwards in

@@ -285,7 +285,8 @@ All notable changes to this project are documented in this file.
   made, or when `autoCompactEnabled` is off, and the message says which.
 - **Overflow recovery follow-ups** (#244).
   - A 429 that states an oversized request (OpenAI's TPM limit) is no longer retried like a rate
-    limit; it compacts at once, and no longer lowers the model's learned window for good.
+    limit; it compacts at once, and no longer lowers the model's learned window for good. A
+    transient `Rate limit reached` is still retried.
   - The recovery honours `autoCompactEnabled`: with it off, only the tool-result clip runs.
   - When the recovery's reducer fails and the clip cannot bring the request under 80% of the
     refused size, a checkpoint built without the model is used. A clip that is not retried no
@@ -298,7 +299,8 @@ All notable changes to this project are documented in this file.
     is read.
   - Anthropic's mid-stream `authentication_error` and `permission_error` park the run as
     `credentials_rejected`, `not_found_error` ends it, and `request_too_large` goes through the
-    overflow recovery. All four were re-sent before.
+    overflow recovery. `rate_limit_error`, `billing_error` and `timeout_error` now read as a rate
+    limit, a billing refusal (which parks the run) and a timeout. All seven were re-sent before.
   - A non-retryable error body is read for at most 5 s and 64 KB, like a retryable one.
   - A non-retryable error body cut at 64 KB is read for its first `message` only, never for
     wording in an echoed request.

@@ -7126,3 +7126,227 @@ describe('the last-resort compaction, review round 1 (#238, #244)', () => {
     expect(errors.at(-1)).toContain('autoCompactEnabled: false');
   });
 });
+
+describe('the last-resort compaction, review round 2 (#238, #244)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function resultHistory(count: number, size: number): Message[] {
+    const ids = Array.from({ length: count }, (_, index) => `r3-result-${index}`);
+    return [
+      { id: 'r3-user', role: 'user', content: 'build it', includeInContext: true, timestamp: 0 },
+      {
+        id: 'r3-assistant',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolResults: ids.map((id) => toolSuccess('r'.repeat(size), { toolCallId: id })),
+        timestamp: 0,
+      },
+    ];
+  }
+
+  const smallWindow = {
+    maxTurns: 1,
+    maxTokens: 4_000,
+    autoCompactEnabled: true,
+    modelInfo: { contextWindow: 40_000, maxOutputTokens: 4_000 },
+  };
+
+  function countingProvider(calls: { count: number }): Provider {
+    return {
+      id: 'scripted',
+      stream: async function* () {
+        calls.count++;
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done' };
+      },
+    };
+  }
+
+  const reducerRefused: CompactResult = {
+    status: 'failed',
+    reason: 'provider-error',
+    error: 'API Error: 400 reasoning_effort is not supported by this model',
+  };
+
+  const tpm = JSON.stringify({
+    error: {
+      message:
+        'Request too large for gpt-4o in organization org-x on tokens per min (TPM): Limit 30000, Requested 45000. The input or output tokens must be reduced in order to run successfully.',
+      type: 'tokens',
+      code: 'rate_limit_exceeded',
+    },
+  });
+
+  it('does not compact without the model when the run budget refused the reducer', async () => {
+    const calls = { count: 0 };
+    const compact = vi.fn(async (): Promise<CompactResult> => ({
+      status: 'failed',
+      reason: 'budget-overflow',
+      error: 'Run budget exhausted.',
+    }));
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      resultHistory(60, 6_000),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(calls.count).toBe(0);
+    expect(errors[0]).toContain('Request is too large for');
+  });
+
+  it('says the model-free checkpoint was still too large, not the reducer error', async () => {
+    const calls = { count: 0 };
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) =>
+        requestHints?.deterministic
+          ? { ...compactedForRetry(), replacementHistory: resultHistory(60, 6_000) }
+          : reducerRefused,
+    );
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      resultHistory(60, 6_000),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(errors[0]).toContain('built without the model');
+    expect(errors[0]).not.toContain('reasoning_effort');
+  });
+
+  it('hands the model-free compaction the history before the preflight clips', async () => {
+    // Its own selection keeps retained results at its own cap; the flat clip the
+    // gate applied on the way would otherwise cut the evidence it keeps.
+    const calls = { count: 0 };
+    const seen: Message[][] = [];
+    const compact = vi.fn(
+      async (history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) => {
+        if (!requestHints?.deterministic) return reducerRefused;
+        seen.push([...history]);
+        return compactedForRetry();
+      },
+    );
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      resultHistory(30, 12_000),
+      noopCallbacks({ onCompact: compact }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(seen).toHaveLength(1);
+    const assistant = seen[0].find((message) => message.id === 'r3-assistant');
+    expect(assistant?.toolResults?.[0]?.content).toHaveLength(12_000);
+    expect(calls.count).toBe(1);
+  });
+
+  it('ends a TPM-oversized request that is refused again without re-sending it', async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        return new Response(tpm, { status: 429 });
+      }),
+    );
+    const compact = vi.fn(async () => compactedForRetry());
+    const errors: string[] = [];
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        model: 'router/tpm-again-model',
+        autoCompactEnabled: true,
+        retry: { ...defaultConfig().retry, streamReissueAttempts: 2 },
+      }),
+      createRegistry(),
+      'hello',
+      [userMsg('x'.repeat(100_000))],
+      noopCallbacks({
+        onCompact: compact,
+        onError: (error) => errors.push(error),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(fetchCalls).toBe(2);
+    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'context_overflow' });
+    expect(errors.at(-1)).toContain('Request too large');
+    expect(errors.at(-1)).not.toContain('temporary');
+  });
+
+  it('says a size-inferred retry was clipped, not compacted, when only the clip ran', async () => {
+    const plainBadRequest = JSON.stringify({
+      error: {
+        message:
+          '[400]: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}',
+        code: 'bad_request',
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(plainBadRequest, { status: 400 })),
+    );
+    const ids = Array.from({ length: 8 }, (_, index) => `clip-only-${index}`);
+    const history: Message[] = [
+      {
+        id: 'clip-only-user',
+        role: 'user',
+        content: 'x'.repeat(600_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      {
+        id: 'clip-only-assistant',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolResults: ids.map((id) => toolSuccess('y'.repeat(40_000), { toolCallId: id })),
+        timestamp: 0,
+      },
+    ];
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        model: 'gemini-2.5-pro',
+        autoCompactEnabled: false,
+        modelInfo: { contextWindow: 1_000_000 },
+      }),
+      createRegistry(),
+      'hello',
+      history,
+      noopCallbacks({ onError: (error) => errors.push(error) }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(errors.at(-1)).toContain('after clipping');
+    expect(errors.at(-1)).not.toContain('after compacting');
+  });
+});

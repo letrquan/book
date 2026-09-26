@@ -738,3 +738,73 @@ describe('error bodies, review round 1 (#244)', () => {
     }
   });
 });
+
+describe('error bodies, review round 2 (#244)', () => {
+  const retryPolicy = { ...defaultConfig().retry, maxAttempts: 3 };
+
+  async function callsFor(body: string): Promise<number> {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return new Response(body, { status: 429 });
+      }),
+    );
+    try {
+      await fetchWithRetry('http://x/v1', {}, retryPolicy);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    return calls;
+  }
+
+  it('retries a transient per-minute limit that only mentions too many tokens', async () => {
+    const body = JSON.stringify({
+      error: { message: 'Rate limit reached: too many tokens per minute, retry in 20s' },
+    });
+    expect(await callsFor(body)).toBe(4);
+  });
+
+  it('retries a 429 whose oversize statement the loop cannot read', async () => {
+    // OpenRouter's own message is generic; the TPM statement sits in metadata.raw,
+    // which the formatted error the loop reads does not carry, so it cannot recover it.
+    const body = JSON.stringify({
+      error: {
+        message: 'Provider returned error',
+        code: 429,
+        metadata: {
+          raw: '{"error":{"message":"Request too large for gpt-4o on tokens per min (TPM): Limit 30000, Requested 45000."}}',
+        },
+      },
+    });
+    expect(await callsFor(body)).toBe(4);
+  });
+
+  it('does not call an oversized TPM request a temporary capacity issue', () => {
+    const body = JSON.stringify({
+      error: {
+        message:
+          'Request too large for gpt-4o in organization org-x on tokens per min (TPM): Limit 30000, Requested 45000.',
+        code: 'rate_limit_exceeded',
+      },
+    });
+    const text = formatApiError(429, body);
+    expect(text).toContain('Request too large');
+    expect(text).not.toContain('temporary');
+  });
+
+  it('reads the code of a JSON body cut at the read cap', () => {
+    const full = JSON.stringify({
+      error: { code: 'context_length_exceeded', message: 'Bad request' },
+      echo: 'filler text '.repeat(10_000),
+    });
+    expect(classifyApiError(400, full.slice(0, 65_536))).toBe('context_overflow');
+  });
+
+  it('reads a plain-text router body that starts with a bracket', () => {
+    expect(
+      classifyApiError(400, '[antigravity/gemini-x] [400]: maximum context length exceeded'),
+    ).toBe('context_overflow');
+  });
+});

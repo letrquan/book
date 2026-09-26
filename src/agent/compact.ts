@@ -925,15 +925,26 @@ export async function runCompact(
       return { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' };
     }
 
-    // A deterministic compaction spends no model calls, so it gets no slots: the
-    // empty selection below is its whole plan, and it takes the degraded fallback
-    // rather than a reducer request the caller has already been told will fail.
-    const generationSlots = options.deterministic
-      ? 0
-      : Math.max(
-          0,
-          Math.min(MAX_GENERATION_PASSES, MAX_MODEL_CALLS - modelCalls - (repairUsed ? 0 : 1)),
-        );
+    if (options.deterministic) {
+      // No reducer call, so no plan: serializing and chunking the span would be thrown away,
+      // and this path exists for histories far over the window, where that costs the most.
+      finalCheckpoint = makeDeterministicFallback(
+        seedCheckpoint,
+        DETERMINISTIC_COMPACTION_NOTE,
+        generation,
+        statistics,
+        checkpointBudget,
+      );
+      finalChunks = [];
+      fallbackUsed = true;
+      finalAttemptReasons = new Set(['pass-limit']);
+      break;
+    }
+
+    const generationSlots = Math.max(
+      0,
+      Math.min(MAX_GENERATION_PASSES, MAX_MODEL_CALLS - modelCalls - (repairUsed ? 0 : 1)),
+    );
     const plan = planReduction(
       selection.summarizedBundles,
       seedCheckpoint,
@@ -954,9 +965,7 @@ export async function runCompact(
     if (selectedChunks.length === 0) {
       finalCheckpoint = makeDeterministicFallback(
         seedCheckpoint,
-        // A deterministic compaction asked for none: the note must not blame a
-        // summarizer that was never called.
-        options.deterministic ? DETERMINISTIC_COMPACTION_NOTE : '',
+        '',
         generation,
         statistics,
         checkpointBudget,

@@ -88,11 +88,12 @@ const CONTEXT_OVERFLOW_ERROR_NAMES: ReadonlySet<string> = new Set([
  * message is `error.message` (or `error` itself when it is a string), else a
  * top-level `message` or `detail`; a body that is not JSON is its own message.
  * A body that starts like JSON but does not parse (cut at the read cap, or
- * malformed) is read for its first `"message"` string alone, never for the rest,
- * which may echo the request. `raw` is the upstream's own error body that
- * OpenRouter forwards in `error.metadata.raw`, as a string or as an object.
- * `parsed` says the body read as a JSON object, so a reader can tell a body with
- * no message of its own from a body that is not JSON at all.
+ * malformed) is read for its first `"message"`, `"code"` and `"type"` strings
+ * alone, never for the rest, which may echo the request. `raw` is the upstream's
+ * own error body that OpenRouter forwards in `error.metadata.raw`, as a string
+ * or as an object. `parsed` says the body read as a JSON object, so a reader
+ * can tell a body with no message of its own from a body that is not JSON at
+ * all.
  */
 function errorBodyParts(body: string): {
   message: string;
@@ -104,9 +105,11 @@ function errorBodyParts(body: string): {
   try {
     parsedJson = JSON.parse(body);
   } catch {
-    if (!/^\s*[{[]/.test(body)) return { message: body, names: [], parsed: false };
-    // JSON cut at the read cap, or malformed: only its first `"message"` string is read, never
-    // the rest, which may echo the request.
+    // A router's plain text can open with a bracket of its own (9router's
+    // `[antigravity/x] [400]: …`), so only a `{` or an array of objects counts as JSON.
+    if (!/^\s*(?:\{|\[\s*\{)/.test(body)) return { message: body, names: [], parsed: false };
+    // JSON cut at the read cap, or malformed: only its first `"message"`, `"code"` and
+    // `"type"` strings are read, never the rest, which may echo the request.
     const match = body.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
     let message = '';
     if (match) {
@@ -116,7 +119,10 @@ function errorBodyParts(body: string): {
         message = '';
       }
     }
-    return { message, names: [], parsed: true };
+    const names = [body.match(/"code"\s*:\s*"([^"]*)"/), body.match(/"type"\s*:\s*"([^"]*)"/)]
+      .filter((name): name is RegExpMatchArray => name !== null)
+      .map((name) => name[1]);
+    return { message, names, parsed: true };
   }
   const root: unknown = Array.isArray(parsedJson) ? parsedJson[0] : parsedJson;
   if (typeof root !== 'object' || root === null) {
@@ -190,7 +196,9 @@ export function formatApiError(status: number, body: string): string {
     case 'context_overflow':
       return `${base} ${detail || 'Input exceeds the model context window.'} Reduce the conversation or tool output and try again.`;
     case 'rate_limited':
-      return `${base} ${detail}. This may be a temporary capacity issue. Try again in a moment.`;
+      return isOversizedForRateLimit(detail)
+        ? `${base} ${detail}. The request is larger than the rate limit allows at once, so it has to shrink; waiting will not help.`
+        : `${base} ${detail}. This may be a temporary capacity issue. Try again in a moment.`;
     case 'overloaded':
       return `${base} Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment.`;
     case 'server_error':
@@ -236,6 +244,20 @@ export function isContextOverflowError(error: unknown): boolean {
     ) ||
     /too\s+many\s+(?:input\s+)?tokens|request\s+too\s+large.*token/.test(normalized)
   );
+}
+
+/**
+ * True when a rate-limit error says the request itself is larger than the limit allows at
+ * once, which no amount of waiting fixes: OpenAI's `Request too large for <model> … on tokens
+ * per min (TPM): Limit 30000, Requested 45000.` A transient per-minute limit reads `Rate limit
+ * reached …` and is not this, and neither is a bare "too many tokens". When the text gives
+ * both numbers, the request must exceed the limit.
+ */
+export function isOversizedForRateLimit(text: string): boolean {
+  if (!/\brequest too large\b/i.test(text)) return false;
+  const limit = text.match(/\blimit:?\s*(\d+)/i);
+  const requested = text.match(/\brequested:?\s*(\d+)/i);
+  return !limit || !requested || Number(requested[1]) > Number(limit[1]);
 }
 
 /**
@@ -423,8 +445,13 @@ export async function fetchWithRetry(
 
     // A 429 that states the request itself is too large (OpenAI's per-minute cap on one request
     // that can never fit under it) is refused the same way however long the retries wait: the
-    // loop's overflow recovery is what lets it through, so it gets the response now.
-    if (response.status === 429 && statesContextOverflow(bodyText)) {
+    // loop's overflow recovery is what lets it through, so it gets the response now. Tested on
+    // the same formatted text the loop reads, so a statement buried in `metadata.raw` — which
+    // that text does not carry — leaves the retries running.
+    if (
+      response.status === 429 &&
+      isOversizedForRateLimit(formatApiError(response.status, bodyText))
+    ) {
       logger?.warn('rate limit on a request too large to ever fit; not retrying', {
         status: response.status,
       });

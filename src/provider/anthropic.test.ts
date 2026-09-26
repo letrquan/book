@@ -684,6 +684,9 @@ describe('Anthropic error classification (#244 review)', () => {
     ['permission_error', 'auth'],
     ['not_found_error', 'not_found'],
     ['request_too_large', 'context_overflow'],
+    ['rate_limit_error', 'rate_limited'],
+    ['billing_error', 'quota'],
+    ['timeout_error', 'timeout'],
     ['invalid_request_error', 'invalid_request_error'],
     ['overloaded_error', 'overloaded_error'],
   ])('reads a mid-stream %s as %s', async (type, errorCode) => {
