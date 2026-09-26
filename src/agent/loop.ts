@@ -30,6 +30,7 @@ import {
   clipHistoryToolResults,
   estimateHistoryTokens,
   estimateProviderRequestTokens,
+  LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS,
   resolveCompactBudgets,
   shouldCompact,
   usagePressureTokens,
@@ -103,7 +104,9 @@ import {
 import {
   isContextOverflowError,
   isErrorEnvelopeShape,
+  isOversizedForRateLimit,
   isUpstreamErrorEnvelope,
+  statedRateLimit,
 } from '../provider/reliability.js';
 import {
   classifyAbortReason,
@@ -125,26 +128,18 @@ import {
 const log = createDebugLogger('agent');
 const SKILL_INFRASTRUCTURE_TOOLS = new Set(['InvokeSkill', 'ReadSkillResource', 'ToolSearch']);
 
-/**
- * A `bad_request` on a prompt this large is read as a context overflow even when
- * the body does not say so. The antigravity Gemini route behind 9router refuses a
- * ~330k-token request with `INVALID_ARGUMENT` and no mention of length (#221):
- * that is its practical window, not the 1M the model publishes. 9router used to
- * wrap the refusal as `503 … [400]:`; 0.5.86 answers a plain
- * `400 {"error":{"message":"[400]: …","code":"bad_request"}}`, so both count
- * (#244). The recovery is the compaction a stated overflow gets, and no more:
- *   - the learned window is ratcheted only when the error states an overflow: a
- *     413, an overflow `error.code` or `error.type`, or the overflow wording in
- *     the error message (`classifyApiError`, `isContextOverflowError`). An
- *     overflow inferred from size alone never lowers it: a 400 that was really
- *     about the request would shrink a 1M model's window for every later session;
- *   - the compacted request is retried only if it is below this floor. At or
- *     above it the same request would be refused the same way, so the run ends
- *     on the real error.
- * A repeat of the 400 right after compacting ends the run as well: the recovery
- * runs once per turn (`forcedCompactTurn`).
- */
-const LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS = 200_000;
+/** Provider error codes every request shares, so a model-free compaction cannot route around them. */
+const SHARED_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'auth',
+  'quota',
+  'network',
+  'timeout',
+  'rate_limited',
+  'overloaded',
+  'server_error',
+  'stream_stall',
+  'transport_interrupted',
+]);
 
 /**
  * Check whether a tool call should be evaluated against permission rules,
@@ -721,6 +716,39 @@ export async function runAgentLoop(
       log.info('deferred compaction started', { messages: snapshot.length });
     };
     /**
+     * Replace the history with a compacted one, and clear what the old size
+     * made stale. Every site that applies a compaction goes through this, so
+     * the three statements it takes cannot drift apart between them.
+     */
+    const applyCompaction = (
+      result: CompactResult,
+    ): result is Extract<CompactResult, { status: 'compacted' }> => {
+      if (result.status !== 'compacted') return false;
+      newHistory.length = 0;
+      newHistory.push(...result.replacementHistory);
+      lastUsage = null;
+      lastCompactAttemptKey = null;
+      return true;
+    };
+    /** What a compaction that did not compact says about why, for the gate's refusal. */
+    const shortfallOf = (result: CompactResult): string | undefined =>
+      result.status === 'failed'
+        ? result.error
+        : result.status === 'skipped'
+          ? (result.message ?? result.reason)
+          : undefined;
+    /**
+     * Whether a failed model compaction may be followed by one without the model. Only a failure
+     * of the reducer's own request qualifies: a cancel, a run budget that refuses any model call,
+     * or a failure the main request would share (a rejected key, an outage, a rate limit) leaves
+     * the history alone, since the request would fail after the degraded checkpoint anyway.
+     */
+    const modelFreeMayFollow = (result: CompactResult): boolean =>
+      result.status === 'failed' &&
+      result.reason !== 'aborted' &&
+      result.reason !== 'budget-overflow' &&
+      !(result.providerCode !== undefined && SHARED_FAILURE_CODES.has(result.providerCode));
+    /**
      * Commit a prepared compaction against the history as it stands. Returns
      * true when history was replaced; false when there was nothing prepared,
      * the judge rejected it, or it no longer applies -- the caller then falls
@@ -750,11 +778,7 @@ export async function runAgentLoop(
       }
       try {
         const result = await callbacks.commitCompact!(settled, [...newHistory], { signal });
-        if (result.status === 'compacted') {
-          newHistory.length = 0;
-          newHistory.push(...result.replacementHistory);
-          lastUsage = null;
-          lastCompactAttemptKey = null;
+        if (applyCompaction(result)) {
           log.info('deferred compaction committed', {
             verdict: result.judge?.verdict,
             delta: result.judge?.deltaMessages,
@@ -838,6 +862,8 @@ export async function runAgentLoop(
     let contentFilterRetryTurn = -1;
     let upstreamErrorRetryTurn = -1;
     let forcedCompactTurn: number | null = null;
+    /** The size-inferred retry awaiting its verdict: which turn, how large, and how it was shrunk. */
+    let sizeInferredRetry: { turn: number; tokens: number; compacted: boolean } | null = null;
     let effectiveMode = initialMode;
     /** Set when the user approves a plan with fresh context; ends the turn so the host can reseed. */
     let handoffRequested: { plan: string; mode: PermissionMode } | null = null;
@@ -924,12 +950,7 @@ export async function runAgentLoop(
             });
             try {
               const result = await callbacks.onCompact(newHistory, lastUsage, hints);
-              if (result.status === 'compacted') {
-                newHistory.length = 0;
-                newHistory.push(...result.replacementHistory);
-                lastUsage = null;
-                lastCompactAttemptKey = null;
-              }
+              applyCompaction(result);
               // skipped/failed: keep lastUsage so the host can still act; do not retry same snapshot
             } catch {
               // non-fatal: continue with full history this turn
@@ -1046,6 +1067,17 @@ export async function runAgentLoop(
         );
         requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
       };
+      /** An estimated usage record for a compaction the loop asks for before sending. */
+      const estimatedUsageFor = (tokens: number): Usage => ({
+        promptTokens: tokens,
+        completionTokens: 0,
+        totalTokens: tokens,
+        contextTokens: tokens,
+      });
+      /** Why the model compaction at this gate did not compact, for the refusal's message. */
+      let compactionShortfall: string | undefined;
+      /** The model compaction failed outright (not skipped, not cancelled): the last resort may run. */
+      let modelCompactionFailed = false;
       // Everything in the request that is not history: system prompt, tool schemas, session
       // state. Compaction sizes its target against the gate, which counts all of it.
       const requestOverheadTokens = Math.max(0, requestTokens - estimateHistoryTokens(newHistory));
@@ -1083,29 +1115,35 @@ export async function runAgentLoop(
         const attemptKey = `preflight:${requestTokens}:${newHistory.length}`;
         if (attemptKey !== lastCompactAttemptKey) {
           lastCompactAttemptKey = attemptKey;
-          const estimatedUsage: Usage = {
-            promptTokens: requestTokens,
-            completionTokens: 0,
-            totalTokens: requestTokens,
-            contextTokens: requestTokens,
-          };
           log.info('preflight compact triggered', { requestTokens, contextLimit });
           try {
-            const result = await callbacks.onCompact(newHistory, estimatedUsage, {
+            const result = await callbacks.onCompact(newHistory, estimatedUsageFor(requestTokens), {
               requestOverheadTokens,
             });
-            if (result.status === 'compacted') {
-              newHistory.length = 0;
-              newHistory.push(...result.replacementHistory);
-              lastUsage = null;
-              lastCompactAttemptKey = null;
+            if (applyCompaction(result)) {
               await rebuildRequest();
+            } else {
+              // The refusal below names this, so a run that ends here says why the
+              // compaction did not help.
+              compactionShortfall = shortfallOf(result);
+              modelCompactionFailed = modelFreeMayFollow(result);
             }
-          } catch {
+          } catch (error) {
             // Deterministic clipping below remains available if model-assisted compaction fails.
+            // A throw is not the reducer's own request failing, and this call would throw the
+            // same way, so it does not call for a model-free compaction either.
+            compactionShortfall = error instanceof Error ? error.message : String(error);
+            log.warn('preflight compaction failed', { error: compactionShortfall });
           }
         }
       }
+
+      // The model-free compaction below reads the history as it stood before these
+      // clips: its own selection keeps the results it retains at its own cap, where
+      // the flat cap applied here would have cut the evidence it keeps. A successful
+      // compaction replaces the history, so the clips go with it. Taken only when the
+      // clips can run, and handed back uncut when the gate refuses below.
+      const beforeClips = preflightEligible ? [...newHistory] : undefined;
 
       if (preflightEligible) {
         // The scaled cap keeps what compaction just retained intact.
@@ -1136,9 +1174,75 @@ export async function runAgentLoop(
         }
       }
 
-      if (requestTokens >= usableContextLimit && hasToolResultsNow) {
+      const autoCompactOn = config.autoCompactEnabled !== false;
+      /** Whether the last resort replaced the history, so the clips it discards do not need restoring. */
+      let lastResortCompacted = false;
+      // The last resort (#238). The model compaction above failed, and the clip cannot
+      // shrink a request that is still over the window: after resuming a long session on
+      // a model with a smaller window, the tool results are already small. A checkpoint
+      // built without the model needs no provider call, so it is made here rather than
+      // refusing a request compaction can always bring under the limit. A skipped or
+      // blocked model compaction does not get a second attempt: a PreCompact hook that
+      // blocked the first would run, and block, again.
+      if (
+        modelCompactionFailed &&
+        !signal?.aborted &&
+        requestTokens >= usableContextLimit &&
+        hasToolResultsNow &&
+        autoCompactOn &&
+        callbacks.onCompact
+      ) {
+        log.warn('preflight: compacting without the model', { requestTokens, usableContextLimit });
+        try {
+          // The history it compacts is the one before the clips, so the size recorded is that
+          // of the history, not of the request the gate was measuring.
+          const compactionHistory = beforeClips ?? newHistory;
+          const result = await callbacks.onCompact(
+            compactionHistory,
+            estimatedUsageFor(estimateHistoryTokens(compactionHistory) + requestOverheadTokens),
+            {
+              requestOverheadTokens,
+              deterministic: true,
+            },
+          );
+          if (applyCompaction(result)) {
+            lastResortCompacted = true;
+            await rebuildRequest();
+            // A checkpoint that did compact can still leave the request over the
+            // window; the reducer's own error is not why, so the refusal must not
+            // name it.
+            compactionShortfall = 'a checkpoint built without the model was still too large';
+          } else {
+            compactionShortfall = shortfallOf(result);
+          }
+        } catch (error) {
+          // The refusal below reports it.
+          compactionShortfall = error instanceof Error ? error.message : String(error);
+          log.warn('preflight compaction without the model failed', { error: compactionShortfall });
+        }
+      }
+
+      if (signal?.aborted) break;
+
+      // Recounted after compaction: the gate refuses requests that carry tool results,
+      // and a history the compaction turned into text no longer does.
+      const toolResultsRemain = newHistory.some(
+        (message) => (message.toolResults?.length ?? 0) > 0,
+      );
+      if (requestTokens >= usableContextLimit && toolResultsRemain) {
+        // Nothing is sent, so the clips bought nothing: hand back the history uncut.
+        if (beforeClips && !lastResortCompacted) {
+          newHistory.length = 0;
+          newHistory.push(...beforeClips);
+        }
+        const sizes = `${requestTokens} estimated input tokens, ${usableContextLimit} available input tokens after reserving output space`;
+        const shortfall = compactionShortfall ? ` (${compactionShortfall})` : '';
         callbacks.onError(
-          `Request is too large for ${effectiveConfig.model} (${requestTokens} estimated input tokens, ${usableContextLimit} available input tokens after reserving output space). Start a new session or reduce the current prompt.`,
+          !autoCompactOn
+            ? `Request is too large for ${effectiveConfig.model} (${sizes}), and auto-compaction is off (autoCompactEnabled: false). Turn it on, run /compact, or start a new session.`
+            : !callbacks.onCompact
+              ? `Request is too large for ${effectiveConfig.model} (${sizes}). Start a new session or reduce the current prompt.`
+              : `Request is too large for ${effectiveConfig.model} (${sizes}). Compaction could not bring it under the limit${shortfall}. Start a new session or reduce the current prompt.`,
         );
         finishTerminal(
           createTerminalOutcome('failed', 'context_overflow', {
@@ -1514,17 +1618,29 @@ export async function runAgentLoop(
       // any partial assistant text/tool call metadata in returned history so
       // callers that persist sessions do not lose what was already rendered.
       if (streamError && !signal?.aborted) {
+        // OpenAI's per-minute cap on one request that can never fit under it (`429 Request too
+        // large … tokens per min (TPM)`): compaction lets it through, but it says nothing about
+        // the model's window, so it must not lower the learned window for good — the same rule
+        // the retry layer applies, on the same text. It is read from the text whatever status
+        // carried it, since a route may answer it as a 413 or a 503, and no rate-limit error
+        // ever states an overflow of the model's window.
+        const rateLimitedBySize = isOversizedForRateLimit(streamError);
         const statedOverflow =
-          streamErrorCode === 'context_overflow' || isContextOverflowError(streamError);
+          !rateLimitedBySize &&
+          streamErrorCode !== 'rate_limited' &&
+          (streamErrorCode === 'context_overflow' || isContextOverflowError(streamError));
         const overflowBySize =
           !statedOverflow &&
+          !rateLimitedBySize &&
           streamErrorCode === 'bad_request' &&
           requestTokens >= LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS;
         const canRecoverContextOverflow =
           forcedCompactTurn !== turn &&
           assistantContent.length === 0 &&
           toolCalls.length === 0 &&
-          (statedOverflow || overflowBySize);
+          (statedOverflow || overflowBySize || rateLimitedBySize);
+        /** The recovery ended without a retry because auto-compaction was off, not on a verdict. */
+        let recoveryNeededCompaction = false;
         if (canRecoverContextOverflow) {
           forcedCompactTurn = turn;
           log.warn('provider context overflow; forcing compaction before retry', {
@@ -1532,6 +1648,7 @@ export async function runAgentLoop(
             historyLength: newHistory.length,
             error: streamError,
             inferredFromSize: overflowBySize,
+            rateLimitedBySize,
             requestTokens,
             upstreamStatus: streamUpstreamStatus,
           });
@@ -1571,45 +1688,46 @@ export async function runAgentLoop(
             }
           }
 
+          // Planned below the size just refused. A size-inferred overflow leaves the learned
+          // window alone, so without this the reducer's first request would be nearly as large
+          // as the refused one. A TPM refusal states a smaller per-request limit than the
+          // window ever showed, so the recovery plans under whichever is lower.
+          const rateLimitCeiling = rateLimitedBySize ? statedRateLimit(streamError) : undefined;
+          const planningWindowCap = Math.floor(
+            Math.min(requestTokens, rateLimitCeiling ?? requestTokens) *
+              LEARNED_WINDOW_SAFETY_MARGIN,
+          );
+          const recoveryUsage = estimatedUsageFor(requestTokens);
           let compactedTokens: number | undefined;
           let compacted = false;
-          if (callbacks.onCompact) {
+          let recoveryCompactionFailed = false;
+          const takeCompaction = (result: CompactResult): boolean => {
+            if (!applyCompaction(result)) return false;
+            beforeTokens = Math.max(
+              beforeTokens,
+              result.preContextTokens ?? result.checkpoint.statistics.preTokens,
+            );
+            compactedTokens = result.postContextTokens;
+            compacted = true;
+            return true;
+          };
+          // The recovery compacts only when auto-compaction is on, like every other site.
+          if (autoCompactOn && callbacks.onCompact) {
             // The recovery replaces history outright, so a reducer still running
             // on a snapshot could never be applied afterwards; stop it now rather
             // than let it finish and bill the run for a checkpoint nobody reads.
             abortPendingCompaction('overflow recovery');
-            const estimatedUsage: Usage = {
-              promptTokens: requestTokens,
-              completionTokens: 0,
-              totalTokens: requestTokens,
-              contextTokens: requestTokens,
-            };
             try {
               // The provider has refused the request the residual tail was sized for; the
               // compactor keeps the short tail so the one retry fits any real window.
-              const result = await callbacks.onCompact(newHistory, estimatedUsage, {
+              const result = await callbacks.onCompact(newHistory, recoveryUsage, {
                 recovery: true,
                 requestOverheadTokens: lastRequestEstimate?.overheadTokens,
-                // Planned below the size just refused. A size-inferred overflow leaves
-                // the learned window alone, so without this the reducer's first request
-                // would be nearly as large as the refused one.
-                planningWindowCap: Math.floor(requestTokens * LEARNED_WINDOW_SAFETY_MARGIN),
+                planningWindowCap,
               });
-              if (result.status === 'compacted') {
-                newHistory.length = 0;
-                newHistory.push(...result.replacementHistory);
-                lastUsage = null;
-                lastCompactAttemptKey = null;
-                beforeTokens = Math.max(
-                  beforeTokens,
-                  result.preContextTokens ?? result.checkpoint.statistics.preTokens,
-                );
-                compactedTokens = result.postContextTokens;
-                compacted = true;
-              } else {
-                log.warn('context-overflow compaction did not complete', {
-                  status: result.status,
-                });
+              if (!takeCompaction(result)) {
+                recoveryCompactionFailed = modelFreeMayFollow(result);
+                log.warn('context-overflow compaction did not complete', { status: result.status });
               }
             } catch (error) {
               log.warn('context-overflow compaction failed', {
@@ -1617,18 +1735,59 @@ export async function runAgentLoop(
               });
             }
           }
+          // A clip is committed only when the turn is retried with it: a recovery that ends
+          // here leaves the history as the provider refused it, not cut for nothing.
+          let clippedHistory: Message[] | undefined;
           if (!compacted) {
-            const clippedHistory = clipHistoryToolResults(newHistory);
-            newHistory.length = 0;
-            newHistory.push(...clippedHistory);
+            clippedHistory = clipHistoryToolResults(newHistory);
+            // A size-inferred retry must also get under the floor that inferred it.
+            const retryCeiling = overflowBySize
+              ? Math.min(planningWindowCap, LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS)
+              : planningWindowCap;
+            const clipFits =
+              estimateHistoryTokens(clippedHistory) + requestOverheadTokens < retryCeiling;
+            if (
+              !clipFits &&
+              recoveryCompactionFailed &&
+              !signal?.aborted &&
+              autoCompactOn &&
+              callbacks.onCompact
+            ) {
+              // The reducer failed and the clip cannot bring the request under the size just
+              // refused. A checkpoint built without the model needs no provider call.
+              try {
+                const result = await callbacks.onCompact(newHistory, recoveryUsage, {
+                  recovery: true,
+                  requestOverheadTokens: lastRequestEstimate?.overheadTokens,
+                  planningWindowCap,
+                  deterministic: true,
+                });
+                if (takeCompaction(result)) clippedHistory = undefined;
+              } catch (error) {
+                log.warn('context-overflow compaction without the model failed', {
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+            }
           }
-          const afterTokens = compactedTokens ?? estimateHistoryTokens(newHistory);
+          const afterTokens =
+            compactedTokens ?? estimateHistoryTokens(clippedHistory ?? newHistory);
           // A size-inferred overflow is retried only below the floor that inferred it: at
-          // or above it the same request would be refused the same way.
+          // or above it the same request would be refused the same way. A TPM refusal is
+          // retried only under the limit it states.
           const retryRequestTokens = afterTokens + requestOverheadTokens;
           const belowInferenceFloor =
             !overflowBySize || retryRequestTokens < LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS;
-          if (afterTokens < beforeTokens && belowInferenceFloor) {
+          const belowRateLimit =
+            rateLimitCeiling === undefined || retryRequestTokens < rateLimitCeiling;
+          if (afterTokens < beforeTokens && belowInferenceFloor && belowRateLimit) {
+            if (clippedHistory) {
+              newHistory.length = 0;
+              newHistory.push(...clippedHistory);
+            }
+            if (overflowBySize) {
+              sizeInferredRetry = { turn, tokens: retryRequestTokens, compacted };
+            }
             log.warn('context overflow recovered; retrying with reduced history', {
               beforeTokens,
               afterTokens,
@@ -1636,6 +1795,8 @@ export async function runAgentLoop(
             retrySameTurn = true;
             continue;
           }
+          // Nothing retried, and the only reason the recovery had was the size: say which.
+          recoveryNeededCompaction = !autoCompactOn;
           if (!belowInferenceFloor) {
             log.warn('size-inferred overflow is still above the floor after compaction', {
               afterTokens,
@@ -1643,6 +1804,18 @@ export async function runAgentLoop(
             });
           }
         }
+        // Any `bad_request` of 200k tokens or more compacts once (the owner's rule). When the same
+        // verdict comes back on the smaller retry, either it was never about size, or the route's
+        // real limit sits below the floor, which a declared window fixes.
+        if (sizeInferredRetry?.turn === turn && streamErrorCode === 'bad_request') {
+          streamError = `${streamError} The request was refused again after ${sizeInferredRetry.compacted ? 'compacting it' : 'clipping its tool results'} to about ${Math.round(sizeInferredRetry.tokens / 1000)}k tokens: either the refusal is not about size, or this route's limit is lower, and declaring contextWindow for the model makes Book compact below it.`;
+        }
+        if (recoveryNeededCompaction) {
+          streamError = `${streamError} Auto-compaction is off (autoCompactEnabled: false), so the recovery could only clip tool results.`;
+        }
+        // A request larger than the rate limit allows at once is refused the same way however
+        // often it is re-sent; with its one recovery spent, the run ends on it.
+        if (rateLimitedBySize) streamErrorCode = 'context_overflow';
         log.warn('stream error', {
           error: streamError,
           contentLen: assistantContent.length,

@@ -30,6 +30,12 @@ export interface CommandDefinition<Context, Effect> {
    * `printBuiltinContext` in `commands/print-dispatch.ts`.
    */
   nonInteractive?: boolean;
+  /**
+   * Handled by the interactive TUI itself, before this registry is consulted. It is listed in
+   * the TUI's menu and help, and nowhere else: print mode and the SDK resolve the name as if no
+   * built-in had it, and the model's command listing leaves it out.
+   */
+  tuiOnly?: boolean;
   execute(invocation: CommandInvocation, context: Context): Effect;
 }
 

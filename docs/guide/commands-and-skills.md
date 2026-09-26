@@ -42,7 +42,7 @@ the shell the body runs, in order, not the prose around it: rewording the instru
 ask again. Commands in `~/.book/commands/` are yours and are never gated, and a project command
 that substitutes no shell has nothing to approve.
 
-Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, `/exit`,
+Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, `/queue`, `/exit`,
 `/help`), task and job controls (`/task`, `/jobs`, with `/tasks` as an alias), managed-agent
 controls (`/agents`, `/agent`), config (`/model`, `/providers`,
 `/effort [low|medium|high|xhigh|max]`, `/config`, `/permissions`), inspection

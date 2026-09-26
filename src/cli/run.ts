@@ -9,7 +9,7 @@ import { McpSessionHost } from '../mcp-host.js';
 import { mcpServersToRecord, partitionMcpServersByApproval } from '../mcp-approvals.js';
 import { resolveMcpServerList } from '../mcp-config.js';
 import { collectWithheldProjectNotices } from '../project-approval-notices.js';
-import { exit, isExiting, setExitCode } from './exit.js';
+import { isExiting, setExitCode } from './exit.js';
 import { installPrintInterrupt, printExitCode, type PrintInterrupt } from './print-interrupt.js';
 import { parseNumericFlag } from './utils.js';
 import { parseEffortLevel } from '../commands/effort.js';
@@ -422,8 +422,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     if (isExiting()) throw e;
     console.error(e instanceof Error ? e.message : String(e));
     // A thrown print failure gets the same treatment as a returned one (#243): mark
-    // the exit code and let Node exit once its handles close. The TUI still exits at
-    // once, since Ink may still hold stdin.
+    // the exit code and let Node exit once its handles close.
     if (options.print !== undefined) {
       printInterrupt?.dispose();
       const code = printExitCode({
@@ -433,6 +432,10 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       if (code !== 0) setExitCode(code);
       return;
     }
-    exit(1);
+    // The TUI marks the exit code the same way (#268): `exit()` while a pooled provider
+    // socket is still closing aborts inside libuv on Windows, with exit code 127, and the
+    // reason it exited at once — Ink holding stdin — no longer holds; its `finally` has
+    // unmounted Ink and restored the screen by now.
+    setExitCode(1);
   }
 }

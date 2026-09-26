@@ -13,6 +13,7 @@ import {
   classifyProviderError,
   fetchWithRetry,
   formatApiError,
+  readErrorBody,
   readStreamChunk,
   wrappedUpstreamStatus,
 } from './reliability.js';
@@ -276,7 +277,7 @@ export async function* chatCompletionStream(
   log.debug('response received', { status: response.status, ok: response.ok });
 
   if (!response.ok) {
-    const errorText = await response.text();
+    const errorText = await readErrorBody(response, signal);
     yield {
       type: 'error',
       error: formatApiError(response.status, errorText),

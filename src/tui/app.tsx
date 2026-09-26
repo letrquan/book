@@ -246,6 +246,7 @@ interface AppProps {
 }
 
 const QUEUED_SEND_NOTICE = 'Sending queued follow-up...';
+const QUEUE_PAUSED_NOTICE = 'Queue paused. Up then Enter resumes it; /queue clear drops it.';
 
 function capitalize(word: string): string {
   return word ? word[0]!.toUpperCase() + word.slice(1) : word;
@@ -300,6 +301,7 @@ export function App({
     compactBoundaries,
     isThinking,
     isCompacting,
+    isCompactCommitted,
     isRewinding,
     compactUi,
     streamingMessageId,
@@ -569,6 +571,12 @@ export function App({
   );
   const [selectedShellId, setSelectedShellId] = useState<string>();
   const commandResolutionRef = useRef<AbortController | null>(null);
+  /** Ends a command resolution in flight and frees the composer it was blocking (#262). */
+  const abortCommandResolution = useCallback(() => {
+    commandResolutionRef.current?.abort();
+    commandResolutionRef.current = null;
+    setIsResolvingCommand(false);
+  }, [setIsResolvingCommand]);
   const queuedInputsRef = useRef<QueuedInput[]>([]);
   const editingQueuedInputRef = useRef<QueuedInput | undefined>(undefined);
   const dispatchingQueuedIdRef = useRef<string | undefined>(undefined);
@@ -581,6 +589,12 @@ export function App({
   const queueDrainPausedRef = useRef(false);
   const queueInterruptEpochRef = useRef(0);
   const queueSessionRef = useRef(sessionId);
+  // A `/compact` cancel is sent once per compaction: a second press is a user who is waiting, and
+  // it arms the exit window instead of cancelling again.
+  const compactCancelSentRef = useRef(false);
+  useEffect(() => {
+    if (!isCompacting) compactCancelSentRef.current = false;
+  }, [isCompacting]);
   const [currentTheme] = useState<ResolvedTheme>(
     () =>
       interactiveAssets?.initialTheme ??
@@ -624,9 +638,8 @@ export function App({
   const turnCount = useMemo(() => countWrittenTurns(messages), [messages]);
   const { exit: exitApp } = useApp();
   // Set once an exit starts. SessionEnd can take seconds, and a press meanwhile must neither
-  // arm the window again nor start a second exit: the session-end guard returns at once for a
-  // session that is already ending, so a second exit would unmount Ink before the first
-  // SessionEnd finished.
+  // arm the window again nor start a second exit, which would cancel and log a second time
+  // and show the hint over an exit already under way.
   const exitStartedRef = useRef(false);
   // The same fact as state, for what renders and effects gate on: nothing new is dispatched
   // while SessionEnd runs.
@@ -636,8 +649,13 @@ export function App({
     exitStartedRef.current = true;
     setExitStarted(true);
     disarmCtrlCExit();
+    // An exit ends the work under the UI as well as the UI: a turn still streaming, a command
+    // still resolving, a permission prompt that, approved while a slow SessionEnd ran, still
+    // ran its tool.
+    abortCommandResolution();
+    cancel();
     void endCurrentSession('exit').finally(exitApp);
-  }, [disarmCtrlCExit, endCurrentSession, exitApp]);
+  }, [abortCommandResolution, cancel, disarmCtrlCExit, endCurrentSession, exitApp]);
   /** The idle Ctrl+C decision: exit when the window is armed, otherwise arm it. True on exit. */
   const exitOrArmOnCtrlC = useCallback(
     (context: string): boolean => {
@@ -691,11 +709,19 @@ export function App({
       const input = createQueuedInput(value, sessionId, attachments, edited);
       const result = enqueueQueuedInput(queuedInputsRef.current, input);
       if (!result.accepted) {
-        announceQueueEvent(
-          'Queue is full. Edit or clear a queued message before adding another.',
-          'warning',
-          5_000,
-        );
+        if (edited) {
+          // Still out for editing, so say what to do about it rather than announcing a refusal
+          // about a message that is not being added: Esc removes it, /queue clear empties the queue.
+          setQueueNotice(
+            'Queue is full, so this input stays here. Esc removes it; /queue clear empties the queue.',
+          );
+        } else {
+          announceQueueEvent(
+            'Queue is full. Edit or clear a queued message before adding another.',
+            'warning',
+            5_000,
+          );
+        }
         return false;
       }
       replaceQueuedInputs(result.queue);
@@ -746,8 +772,9 @@ export function App({
   ]);
   const interrupt = useCallback(() => {
     queueInterruptEpochRef.current += 1;
-    commandResolutionRef.current?.abort();
-    commandResolutionRef.current = null;
+    // #262: clearing the handle before the resolution's own `finally` ran left "Resolving…" up
+    // and the composer blocked for the rest of the session.
+    abortCommandResolution();
     const pending = queuedInputsRef.current;
     if (pending.length > 0) {
       const restored = restoreQueuedInputText(pending, draftRef.current);
@@ -759,10 +786,9 @@ export function App({
       }));
       announceQueueEvent('Queued inputs restored to the composer after interrupt.');
     }
-    replaceEditingQueuedInput(undefined);
-    queueDrainPausedRef.current = true;
+    endQueuedEdit(true);
     cancel();
-  }, [cancel, replaceEditingQueuedInput, replaceQueuedInputs]);
+  }, [abortCommandResolution, cancel, endQueuedEdit, replaceQueuedInputs]);
 
   useEffect(() => {
     return () => commandResolutionRef.current?.abort();
@@ -864,13 +890,12 @@ export function App({
     queueSessionRef.current = sessionId;
     queueInterruptEpochRef.current += 1;
     replaceQueuedInputs([]);
-    replaceEditingQueuedInput(undefined);
+    endQueuedEdit();
     dispatchingQueuedIdRef.current = undefined;
     queueDrainRunningRef.current = false;
-    queueDrainPausedRef.current = false;
     setQueueNotice(undefined);
     draftRef.current = '';
-  }, [replaceEditingQueuedInput, replaceQueuedInputs, sessionId]);
+  }, [endQueuedEdit, replaceQueuedInputs, sessionId]);
 
   useAgentCompletionDelivery({
     pending: managedAgents.pendingCompletions,
@@ -1010,10 +1035,12 @@ export function App({
     reducedMotion || Boolean(pendingPlanApproval || pendingUserQuestion || pendingElicitation);
   const screenReader = Boolean(config.accessibility?.screenReader);
   const managedAgentUiEnabled = liveConfig.settings.agents.ui.enabled;
-  const childPermission = managedAgents.pendingPermissions.find(
-    (event) => event.type === 'agent_permission',
-  );
-  const childQuestion = managedAgents.pendingQuestions[0];
+  // Withdrawn while an exit runs: the session's cancel does not reach a child's prompt, so one
+  // approved during a slow SessionEnd still ran the child's tool.
+  const childPermission = exitStarted
+    ? undefined
+    : managedAgents.pendingPermissions.find((event) => event.type === 'agent_permission');
+  const childQuestion = exitStarted ? undefined : managedAgents.pendingQuestions[0];
 
   const subscribeMcp = useCallback(
     (listener: () => void) => mcp?.subscribe(listener) ?? (() => {}),
@@ -1388,6 +1415,18 @@ export function App({
     [],
   );
   useInput(forwardInput);
+  /**
+   * Cancels a `/compact` still running its reducer, once. The follow-up queue behind it stays as it
+   * was; a saved compaction's PostCompact hooks are left to finish; a second press is a user who
+   * is waiting, so it falls through (Ctrl+C then arms the exit window as usual).
+   */
+  const cancelCompaction = (via: 'Escape' | 'Ctrl+C'): boolean => {
+    if (!isCompacting || isCompactCommitted || compactCancelSentRef.current) return false;
+    uiLog.event(`input:${via}`, { action: 'cancel-compaction' });
+    compactCancelSentRef.current = true;
+    cancel();
+    return true;
+  };
   handleInputRef.current = (input: string, key: Key) => {
     // Once an exit has started, Ctrl+C has nothing left to do: SessionEnd is running and the
     // app unmounts when it finishes.
@@ -1448,8 +1487,8 @@ export function App({
         if (isCtrlCExitArmed()) {
           // The visible "press again to exit" hint is a promise, including over a modal
           // that took the keyboard after the first press (e.g. behind the startup splash).
-          uiLog.event('input:Ctrl+C', { action: 'exit', context: 'modal' });
-          exitOnce();
+          // Armed, this exits; a modal never arms the window itself.
+          exitOrArmOnCtrlC('modal');
         } else if (pendingUserQuestion || pendingElicitation) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
           interrupt();
@@ -1514,6 +1553,7 @@ export function App({
         interrupt();
         return;
       }
+      if (cancelCompaction('Escape')) return;
       if (cancelReview()) {
         uiLog.event('input:Escape', { action: 'cancel-review' });
         return;
@@ -1528,13 +1568,19 @@ export function App({
       }
       uiLog.event('input:Escape', { action: 'noop-idle' });
     }
-    // Ctrl+C cancels active work, drops a recalled queued input, clears a non-empty
-    // composer, or confirms idle exit.
+    // Ctrl+C cancels active work (a turn, a compaction, a command resolution), drops a
+    // recalled queued input, clears a non-empty composer, or confirms idle exit. A compaction
+    // that does not stop when asked must not trap the user, so a press after the cancel went
+    // out arms the exit window as usual.
     if (key.ctrl && input === 'c') {
       if (isThinking || sendInFlightRef.current || isResolvingCommandRef.current) {
         uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
         disarmCtrlCExit();
         interrupt();
+        return;
+      }
+      if (cancelCompaction('Ctrl+C')) {
+        disarmCtrlCExit();
         return;
       }
       // A review is in-flight work too, so Ctrl+C cancels it without exiting.
@@ -1775,17 +1821,25 @@ export function App({
         if (othersQueued && !value.startsWith('/') && managedAgents.surface === 'main') {
           // The edited text goes back to the end of the queue, where it was recalled from, so
           // the inputs queued before it are still sent first.
-          enqueueFollowUp(value, attachments);
+          if (enqueueFollowUp(value, attachments)) {
+            // It follows the transcript to the bottom as any other submission does.
+            setFollowRequestKey((key) => key + 1);
+          } else {
+            // The queue filled up while this input was out for editing. The composer has already
+            // cleared it, so put it back, still recalled, rather than drop it; the notice the
+            // rejection left says what Enter and Esc do with it.
+            setDraftRestore((current) => ({
+              key: (current?.key ?? 0) + 1,
+              value,
+              attachments,
+            }));
+          }
           return;
         }
         // Anything else, a slash command such as /exit included, leaves them waiting instead
         // of sending them behind it.
         endQueuedEdit(othersQueued);
-        setQueueNotice(
-          othersQueued
-            ? 'Queue paused. Up then Enter resumes it; /queue clear drops it.'
-            : undefined,
-        );
+        setQueueNotice(othersQueued ? QUEUE_PAUSED_NOTICE : undefined);
       }
       setFollowRequestKey((key) => key + 1);
       const selectedChild = managedAgents.selectedAgentId
@@ -1828,13 +1882,19 @@ export function App({
           announceQueueEvent('Queued follow-up inputs cleared.', 'done');
         } else {
           const count = queuedInputsRef.current.length;
-          announceQueueEvent(
-            count === 0
-              ? 'The follow-up queue is empty.'
-              : `${count} follow-up input${count === 1 ? '' : 's'} queued. Up edits the newest.`,
-            'info',
-            6_000,
-          );
+          const counted = `${count} follow-up input${count === 1 ? '' : 's'} queued.`;
+          if (count > 0 && queueDrainPausedRef.current) {
+            // A paused queue is a state, not an event: keep saying so where the paused notice
+            // was, rather than announce the count over it and leave nothing on screen to say
+            // the queue is waiting.
+            setQueueNotice(`${counted} ${QUEUE_PAUSED_NOTICE}`);
+          } else {
+            announceQueueEvent(
+              count === 0 ? 'The follow-up queue is empty.' : `${counted} Up edits the newest.`,
+              'info',
+              6_000,
+            );
+          }
         }
         return;
       }
@@ -2217,6 +2277,7 @@ export function App({
   );
 
   const canSubmitWhileParentBusy = useCallback((value: string) => {
+    if (exitStartedRef.current) return false;
     const name = parseSlashInput(value)?.name;
     return name === 'tasks' || name === 'jobs' || name === 'queue';
   }, []);
@@ -2382,6 +2443,14 @@ export function App({
   }
 
   const contextWindow = resolveContextWindow(liveConfig);
+
+  // Shown for as long as SessionEnd runs; the composer takes nothing meanwhile. Read only once
+  // an exit has started, so a host config without a hooks block renders as before.
+  const exitingNotice = !exitStarted
+    ? undefined
+    : liveConfig.settings.hooks?.SessionEnd?.length
+      ? 'Exiting: running SessionEnd hooks…'
+      : 'Exiting…';
 
   return (
     <AppProviders theme={currentTheme.tokens} density={density}>
@@ -3026,6 +3095,7 @@ export function App({
             <WorkingIndicator
               isThinking={isThinking}
               isCompacting={isCompacting}
+              compactComplete={isCompactCommitted}
               compactTrigger={compactUi?.trigger}
               messages={messages}
               streamingMessageId={streamingMessageId}
@@ -3054,8 +3124,18 @@ export function App({
               items={queuedInputs}
               terminalWidth={termWidth}
               // Keep the exit hint visible even when another transient notice remains.
-              notice={ctrlCExitHintVisible ? CTRL_C_EXIT_HINT_TEXT : (queueNotice ?? flash?.text)}
-              noticeTone={ctrlCExitHintVisible || queueNotice ? 'warning' : flash?.tone}
+              // An exit in progress outranks both: the queue's notices offer actions that no
+              // longer do anything.
+              notice={
+                exitStarted
+                  ? exitingNotice
+                  : ctrlCExitHintVisible
+                    ? CTRL_C_EXIT_HINT_TEXT
+                    : (queueNotice ?? flash?.text)
+              }
+              noticeTone={
+                exitStarted ? 'info' : ctrlCExitHintVisible || queueNotice ? 'warning' : flash?.tone
+              }
             />
             <InputBar
               key={sessionId}
@@ -3064,20 +3144,24 @@ export function App({
               onSubmit={handleSubmit}
               onPasteImage={pasteClipboardImage}
               submissionMode={
-                managedAgents.surface === 'detail'
-                  ? 'submit'
-                  : isThinking || sendInFlight
-                    ? 'queue'
-                    : isCompacting || isRewinding || isResolvingCommand
-                      ? 'blocked'
-                      : 'submit'
+                exitStarted
+                  ? 'blocked'
+                  : managedAgents.surface === 'detail'
+                    ? 'submit'
+                    : isThinking || sendInFlight
+                      ? 'queue'
+                      : isCompacting || isRewinding || isResolvingCommand
+                        ? 'blocked'
+                        : 'submit'
               }
               mode={mode}
               onCycleMode={cycleMode}
               canSubmitWhileBusy={canSubmitWhileParentBusy}
               canQueueWhileBusy={canQueueWhileParentBusy}
               onQueue={enqueueFollowUp}
-              onRecallQueued={managedAgents.surface === 'main' ? recallQueuedInput : undefined}
+              onRecallQueued={
+                managedAgents.surface === 'main' && !exitStarted ? recallQueuedInput : undefined
+              }
               onCancelQueuedEdit={cancelQueuedEdit}
               editingQueuedInput={Boolean(editingQueuedInput)}
               onDraftChange={(value, attachments) => {

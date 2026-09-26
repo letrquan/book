@@ -35,19 +35,11 @@ import {
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 import { stripSgrMouseSequences } from '../mouse.js';
-import { InputBox } from './InputBox.js';
+import { COMPOSER_EDIT_KEYS, InputBox } from './InputBox.js';
 import { displayWidth, wordWrap } from './word-wrap.js';
 
 const uiLog = createUiDebugLogger('tui:inputbar');
 const FILE_MENTION_DEBOUNCE_MS = 40;
-
-/**
- * Ctrl chords InputBox handles as text edits while the composer holds a draft.
- *
- * Kept here rather than imported from InputBox so the two lists cannot drift
- * apart silently: this is the routing half of the same decision.
- */
-const COMPOSER_EDIT_KEYS = new Set(['a', 'e', 'w', 'u', 'k', 'y']);
 
 /**
  * Rows the draft takes in the composer at `width`, soft wraps included. The
@@ -242,8 +234,8 @@ export function InputBar({
   // Ink hands a key to the handler subscribed at the last effect flush, and every key in one
   // stdin read to the same handler, so a key can see the closure from before the key ahead of
   // it: Up right after the Enter that queued an input still saw the typed text and walked the
-  // history instead of recalling the queued input. Each update writes these refs at once, and
-  // the arrow keys read them. The history is never rendered, so it lives in refs alone.
+  // history instead of recalling the queued input. Each update writes these refs at once, and the
+  // key handlers read them. The history is never rendered, so it lives in refs alone.
   const valueRef = useRef('');
   const historyRef = useRef<string[]>([]);
   const historyIndexRef = useRef(-1);
@@ -281,6 +273,24 @@ export function InputBar({
     },
     [reportDraft],
   );
+  // An attachment goes only on a Backspace into an empty draft, as the editor judged it before
+  // the key: a Backspace that deleted the draft's last character leaves the image attached.
+  const removeLastAttachment = useCallback(() => {
+    if (attachmentsRef.current.length === 0) return;
+    setAttachments((current) => current.slice(0, -1));
+    setAttachmentError(undefined);
+  }, [setAttachments]);
+  // An edit chord on an empty draft belongs to the transcript. As with other forwarded shortcuts,
+  // a consumed chord restores the draft the parent may have touched. A plain function: InputBox
+  // re-reads its props each render, and nothing else here needs it.
+  const forwardEmptyChord = (
+    input: string,
+    key: Parameters<NonNullable<typeof onGlobalShortcut>>[1],
+  ) => {
+    if (!onGlobalShortcut?.(input, key)) return;
+    const preservedValue = valueRef.current;
+    queueMicrotask(() => setValue(preservedValue));
+  };
   const [attachmentError, setAttachmentError] = useState<string | undefined>();
   const suggestion = compact ? 'Ask...' : 'Ask me anything...';
 
@@ -291,6 +301,13 @@ export function InputBar({
   const menuVisibleRef = useRef(false);
   const menuFilterRef = useRef('');
   const menuSelectedRef = useRef(0);
+  // Written with the state, as `valueRef` is: Down then Enter in one read must run the item Down
+  // moved to, and the ref assigned at render is a render behind until then.
+  const selectMenuItem = useCallback((update: number | ((current: number) => number)) => {
+    const next = typeof update === 'function' ? update(menuSelectedRef.current) : update;
+    menuSelectedRef.current = next;
+    setMenuSelected(next);
+  }, []);
 
   // File mention menu state
   const [fileMenuVisible, setFileMenuVisible] = useState(false);
@@ -397,13 +414,16 @@ export function InputBar({
   skillSelectedRef.current = skillSelected;
   skillCandidatesRef.current = skillCandidates;
 
-  useEffect(() => {
+  // A layout effect, not a passive one: a restore that follows a submission (the queue was
+  // full, the model cannot read images) has to land before Ink writes the frame, or the composer
+  // spends one painted frame empty — long enough, under load, to be the frame a test reads.
+  useLayoutEffect(() => {
     if (!draftRestore) return;
     setValue(normalizeInput(draftRestore.value));
     setAttachments(draftRestore.attachments ?? []);
     setHistoryIndex(-1);
     setMenuVisible(false);
-    setMenuSelected(0);
+    selectMenuItem(0);
     setFileMenuVisible(false);
     setFileMention(null);
     setFileCandidates([]);
@@ -415,9 +435,14 @@ export function InputBar({
 
   const acceptSelectedFileMention = useCallback(
     (currentValue: string, trigger: 'Tab' | 'Enter'): boolean => {
-      const mention = fileMentionRef.current;
+      // The refs hold offsets from the last render, and splicing them into a draft typed since
+      // left stray characters, so the mention is read from the draft as it stands. The candidates,
+      // though, are the ones loaded for the render's query: splicing a candidate for an older
+      // query replaced what was typed since, so a new query waits for its own candidates.
+      const mention = findActiveFileMention(currentValue);
       const selected = getSelectedFileMention(fileCandidatesRef.current, fileSelectedRef.current);
       if (!mention || !selected) return false;
+      if (mention.query !== fileMentionRef.current?.query) return false;
 
       const nextValue = replaceActiveFileMention(currentValue, mention, selected.path);
       setValue(nextValue);
@@ -434,12 +459,13 @@ export function InputBar({
 
   const acceptSelectedSkillMention = useCallback(
     (currentValue: string, trigger: 'Tab' | 'Enter'): boolean => {
-      const mention = skillMentionRef.current;
+      const mention = findActiveSkillMention(currentValue);
       const selected = getSelectedSkillMention(
         skillCandidatesRef.current,
         skillSelectedRef.current,
       );
       if (!mention || !selected) return false;
+      if (mention.query !== skillMentionRef.current?.query) return false;
 
       const nextValue = replaceActiveSkillMention(currentValue, mention, selected.name);
       setValue(nextValue);
@@ -476,16 +502,11 @@ export function InputBar({
     // every Esc before the menu handlers below could dismiss a menu with it.
     // Only an open menu takes Esc here; every other Esc still belongs to the
     // app (cancel the turn, drop a recalled queued input, close a panel).
-    const menuOpen = menuVisible || skillMenuVisible || fileMenuVisible;
+    const menuOpen =
+      menuVisibleRef.current || skillMenuVisibleRef.current || fileMenuVisibleRef.current;
     if (key.meta && !(key.escape && menuOpen)) {
       const preservedValue = valueRef.current;
       queueMicrotask(() => setValue(preservedValue));
-      return;
-    }
-
-    if (key.backspace && !value && attachments.length > 0) {
-      setAttachments((current) => current.slice(0, -1));
-      setAttachmentError(undefined);
       return;
     }
 
@@ -496,40 +517,44 @@ export function InputBar({
     }
 
     // ---- Command menu keyboard handling ----
-    if (menuVisible) {
+    // The refs, not the state: Ink hands every key of one stdin read to the handler this hook
+    // subscribed at the last effect flush, so a Down that opened the menu, or one that arrives in
+    // the same read as an Enter, sees the menus as they were a render ago.
+    if (menuVisibleRef.current) {
+      const items = getFilteredCommands(commands, menuFilterRef.current);
       // Escape: dismiss menu
       if (key.escape) {
         setMenuVisible(false);
-        setMenuSelected(0);
+        selectMenuItem(0);
         uiLog.event('input:Escape', { action: 'dismiss-menu' });
         return;
       }
       // Tab: auto-fill selected command
       if (key.tab) {
-        if (filteredCmds.length > 0) {
-          const sel = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
-          const cmd = filteredCmds[sel];
+        if (items.length > 0) {
+          const sel = Math.max(0, Math.min(menuSelectedRef.current, items.length - 1));
+          const cmd = items[sel];
           setValue('/' + cmd.name + ' ');
           setMenuVisible(false);
-          setMenuSelected(0);
+          selectMenuItem(0);
           uiLog.event('input:Tab', { action: 'autofill-command', command: cmd.name });
         }
         return;
       }
       // Down arrow: next item
       if (key.downArrow) {
-        setMenuSelected((prev) => {
+        selectMenuItem((prev) => {
           const next = prev + 1;
-          return next >= filteredCmds.length ? 0 : next;
+          return next >= items.length ? 0 : next;
         });
         uiLog.event('input:Down', { action: 'menu-next-item' });
         return;
       }
       // Up arrow: previous item
       if (key.upArrow) {
-        setMenuSelected((prev) => {
+        selectMenuItem((prev) => {
           const next = prev - 1;
-          return next < 0 ? Math.max(0, filteredCmds.length - 1) : next;
+          return next < 0 ? Math.max(0, items.length - 1) : next;
         });
         uiLog.event('input:Up', { action: 'menu-prev-item' });
         return;
@@ -551,7 +576,7 @@ export function InputBar({
         return;
       }
       if (key.tab) {
-        acceptSelectedSkillMention(value, 'Tab');
+        acceptSelectedSkillMention(valueRef.current, 'Tab');
         return;
       }
       if (key.downArrow) {
@@ -582,7 +607,7 @@ export function InputBar({
         return;
       }
       if (key.tab) {
-        acceptSelectedFileMention(value, 'Tab');
+        acceptSelectedFileMention(valueRef.current, 'Tab');
         return;
       }
       if (key.downArrow) {
@@ -616,7 +641,7 @@ export function InputBar({
     // Tab from an empty prompt cycles focus through main + spawned agents
     // (Claude-Code-style flat switching). Falls back to accepting the
     // placeholder suggestion when there are no agents to cycle.
-    if (key.tab && !value) {
+    if (key.tab && !valueRef.current) {
       if (onCycleAgentFocus?.()) {
         uiLog.event('input:Tab', { action: 'cycle-agent-focus' });
         return;
@@ -628,9 +653,9 @@ export function InputBar({
     // Ctrl+J / Shift+Enter insert a newline without submitting. InputBox does
     // not expose cursor position to the parent, so append at the end of the prompt.
     if ((key.ctrl && (_input === 'j' || _input === '\n')) || (key.shift && key.return)) {
-      setValue(value + '\n');
+      setValue(valueRef.current + '\n');
       setMenuVisible(false);
-      setMenuSelected(0);
+      selectMenuItem(0);
       setFileMenuVisible(false);
       setFileMention(null);
       setFileCandidates([]);
@@ -638,12 +663,9 @@ export function InputBar({
       uiLog.event(key.ctrl ? 'input:Ctrl+J' : 'input:Shift+Enter', { action: 'insert-newline' });
       return;
     }
-    // A draft in the composer claims the readline chords for editing; an empty
-    // one leaves them to the transcript, where Ctrl+E expands a tool and
-    // Ctrl+U scrolls. Forwarding them while there is text to edit would let the
-    // parent consume the key and then restore the pre-event value, undoing the
-    // edit InputBox just made.
-    if (key.ctrl && value.length > 0 && COMPOSER_EDIT_KEYS.has(_input.toLowerCase())) return;
+    // The readline chords are the editor's: it edits a draft with them, and hands them to
+    // `forwardEmptyChord` below when there is no draft to edit.
+    if (key.ctrl && COMPOSER_EDIT_KEYS.has(_input.toLowerCase())) return;
     // Forward Ctrl-based shortcuts to the parent App. As with Alt chords,
     // restore the pre-event value when consumed to keep shortcut routing defensive.
     // Ctrl+/ arrives as a bare US byte with no `ctrl` flag (see
@@ -711,8 +733,9 @@ export function InputBar({
         uiLog.event('menu:visible', { filter: clean.slice(1) });
       }
       setMenuVisible(true);
+      menuFilterRef.current = clean.slice(1);
       setMenuFilter(clean.slice(1));
-      setMenuSelected(0);
+      selectMenuItem(0);
       setFileMenuVisible(false);
       setFileMention(null);
       setFileCandidates([]);
@@ -777,12 +800,14 @@ export function InputBar({
           menuSelectedRef.current,
         );
         setMenuVisible(false);
-        setMenuSelected(0);
+        selectMenuItem(0);
         setFileMenuVisible(false);
         setFileMention(null);
         setFileCandidates([]);
         if (!commandValue) {
-          setValue('');
+          // Nothing in the menu matches: keep the text for fixing rather than clear it. It is not
+          // sent on this Enter either, since an unknown command would reach the model as a prompt;
+          // a second Enter, with the menu closed, sends it as typed text.
           uiLog.event('submit:menu', { result: 'no-command-value' });
           return;
         }
@@ -825,7 +850,7 @@ export function InputBar({
 
       // Dismiss menus on submit.
       setMenuVisible(false);
-      setMenuSelected(0);
+      selectMenuItem(0);
       setFileMenuVisible(false);
       setFileMention(null);
       setFileCandidates([]);
@@ -835,11 +860,11 @@ export function InputBar({
       setSkillSelected(0);
 
       const normalized = normalizeInput(val);
-      if (!normalized.trim() && attachments.length === 0) {
+      if (!normalized.trim() && attachmentsRef.current.length === 0) {
         uiLog.event('submit:text', { result: 'empty' });
         return;
       }
-      if (normalized.trimStart().startsWith('/') && attachments.length > 0) {
+      if (normalized.trimStart().startsWith('/') && attachmentsRef.current.length > 0) {
         setAttachmentError('Image attachments cannot be combined with slash commands.');
         return;
       }
@@ -850,8 +875,8 @@ export function InputBar({
       }
       if (action === 'queue') {
         const accepted =
-          attachments.length > 0
-            ? (onQueue?.(normalized, attachments) ?? false)
+          attachmentsRef.current.length > 0
+            ? (onQueue?.(normalized, attachmentsRef.current) ?? false)
             : (onQueue?.(normalized) ?? false);
         uiLog.event('submit:text', {
           result: accepted ? 'queued' : 'queue-full',
@@ -869,7 +894,7 @@ export function InputBar({
       if (cmdName) recordCommandUse(cmdName);
 
       if (action === 'submit') {
-        if (attachments.length > 0) onSubmit(normalized, attachments);
+        if (attachmentsRef.current.length > 0) onSubmit(normalized, attachmentsRef.current);
         else onSubmit(normalized);
       }
       setValue('');
@@ -884,7 +909,6 @@ export function InputBar({
       onSubmit,
       resolveSubmissionAction,
       submissionMode,
-      attachments,
       pasteImage,
     ],
   );
@@ -1019,6 +1043,9 @@ export function InputBar({
         <Box width={inputWidth} flexShrink={1}>
           <InputBox
             value={value}
+            liveValueRef={valueRef}
+            onEmptyBackspace={removeLastAttachment}
+            onEmptyChord={forwardEmptyChord}
             onChange={safeOnChange}
             onSubmit={handleSubmit}
             placeholder={placeholder}

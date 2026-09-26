@@ -398,6 +398,44 @@ function nonEmptyLines(content: string): number {
   return content.split('\n').filter((line) => line.trim()).length;
 }
 
+/** A Read row's line metadata: how many lines of the file, and their range when the read started partway in. */
+export function readLineMetadata(start: number, count: number): string[] {
+  // Read's offset is a number, so a model can send a fraction: a row counts whole lines.
+  const first = Math.max(1, Math.floor(start));
+  const lines = Math.max(0, Math.floor(count));
+  if (lines <= 0) return ['empty'];
+  const size = lines === 1 ? '1 line' : `${lines} lines`;
+  // `121 lines · 1-121` says the same thing twice. The range earns its place only when the read
+  // started partway into the file.
+  return first > 1 ? [size, `${first}-${first + lines - 1}`] : [size];
+}
+
+/**
+ * A Read row's metadata reconstructed from its text, for results that carry none (outlines, and
+ * results persisted before tool results had a presentation): the lines of the file it returned
+ * and their range, or how many declarations an outline listed. A read that stops early ends with
+ * a notice (`[Lines 3-6 of 20 shown. …]`, `[Line 1 (60000 bytes) was cut …]`), which is not a
+ * line of the file. Read's own results carry exact metadata (readLineMetadata). Without Read's
+ * own count, a read that ends exactly at the end of the file on a blank line reads like one past
+ * a final newline, and counts one line short.
+ */
+export function readResultMetadata(args: Record<string, unknown>, content: string): string[] {
+  // An outline lists declarations under a header, not lines of the file.
+  if (args.outline === true) {
+    const entries = content.split('\n').filter((line) => /^\d+: /.test(line)).length;
+    return ['outline', entries === 1 ? '1 entry' : `${entries} entries`];
+  }
+  let body = content.replace(/\n\[Lines? \d[^\n]*\]$/, '');
+  // A read that reaches the end of the file shows one more, empty, numbered line past its final
+  // newline (`1: ` for an empty file), which is not a line of the file. A page that stopped early
+  // ends with the notice instead, and its last line is real.
+  if (body === content) body = body.replace(/(?:^|\n)\d+: $/, '');
+  const lineCount = body ? body.split('\n').length : 0;
+  const offset = Number(args.offset ?? 0);
+  const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 1;
+  return readLineMetadata(start, lineCount);
+}
+
 /** Attach stable UI data while execution still has the tool name and arguments. */
 export function enrichToolResultPresentation(
   input: ToolResult,
@@ -435,8 +473,8 @@ export function enrichToolResultPresentation(
     }
   } else if (name === 'Read') {
     if (inferKind) kind = 'file';
-    const lines = content ? content.split('\n').length : 0;
-    if (inferMetadata) metadata.push(lines === 1 ? '1 line' : `${lines} lines`);
+    if (inferMetadata && result.status === 'success')
+      metadata.push(...readResultMetadata(args, content));
     if (inferSummary) summary = target ? `Read ${target}` : summary;
   } else if (name === 'Glob') {
     if (inferKind) kind = 'search';
