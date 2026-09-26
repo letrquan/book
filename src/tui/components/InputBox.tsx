@@ -3,6 +3,14 @@ import { useReducer, useRef } from 'react';
 
 interface InputBoxProps {
   value: string;
+  /**
+   * The parent's copy of the draft, written the moment the parent changes it (history,
+   * autocomplete, a restored draft). Ink hands every key of one stdin read to the handlers in
+   * turn before React renders, so the key after Up reached this editor while `value` still
+   * held the text Up had replaced: Up then a character gave the old text plus the character,
+   * and Up then Enter submitted nothing. Each key starts from this copy when it differs.
+   */
+  liveValueRef?: { readonly current: string };
   onChange: (value: string) => void;
   onSubmit?: (value: string) => void;
   placeholder?: string;
@@ -99,6 +107,7 @@ export function applyInputSequence(value: string, cursorOffset: number, input: s
  */
 export function InputBox({
   value,
+  liveValueRef,
   onChange,
   onSubmit,
   placeholder = '',
@@ -135,6 +144,11 @@ export function InputBox({
 
   useInput(
     (input, key) => {
+      const parentValue = liveValueRef?.current;
+      if (parentValue !== undefined && parentValue !== valueRef.current) {
+        valueRef.current = parentValue;
+        cursorOffsetRef.current = parentValue.length;
+      }
       // Alt+Backspace deletes the previous word, as it does in every other
       // terminal composer.
       if (key.meta && (key.backspace || key.delete)) {

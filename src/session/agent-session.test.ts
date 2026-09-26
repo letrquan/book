@@ -969,6 +969,35 @@ describe('AgentSession', () => {
     expect(hookEvents).toEqual(['SessionStart', 'SessionEnd']);
   });
 
+  // #268 item 3: a second end for a session already ending returned at once, so a caller
+  // that awaited it (a second exit, a /clear racing an exit) went on while SessionEnd ran.
+  it('a second end for a session already ending waits for the SessionEnd in flight', async () => {
+    let finishSessionEnd: () => void = () => {};
+    const ends: string[] = [];
+    const session = new AgentSession({
+      sessionEndRunner: (_config, sessionId) => {
+        ends.push(sessionId);
+        return new Promise<void>((resolve) => {
+          finishSessionEnd = resolve;
+        });
+      },
+    });
+    const config = defaultConfig();
+
+    const first = session.endLifecycle(config, 'session-1', 'exit');
+    let secondSettled = false;
+    const second = session.endLifecycle(config, 'session-1', 'exit').then(() => {
+      secondSettled = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(secondSettled).toBe(false);
+
+    finishSessionEnd();
+    await Promise.all([first, second]);
+    expect(secondSettled).toBe(true);
+    expect(ends).toEqual(['session-1']);
+  });
+
   it('owns clear transitions across lifecycle, persistence, cancellation, and projection', async () => {
     const persisted = createSessionFixture('book-agent-session-clear-');
     const timeline = createSessionFixture('book-agent-session-timeline-');

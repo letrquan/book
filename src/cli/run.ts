@@ -9,7 +9,7 @@ import { McpSessionHost } from '../mcp-host.js';
 import { mcpServersToRecord, partitionMcpServersByApproval } from '../mcp-approvals.js';
 import { resolveMcpServerList } from '../mcp-config.js';
 import { collectWithheldProjectNotices } from '../project-approval-notices.js';
-import { exit, isExiting, setExitCode } from './exit.js';
+import { isExiting, setExitCode } from './exit.js';
 import { parseNumericFlag } from './utils.js';
 import { parseEffortLevel } from '../commands/effort.js';
 import { join } from 'path';
@@ -406,13 +406,10 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
   } catch (e) {
     if (isExiting()) throw e;
     console.error(e instanceof Error ? e.message : String(e));
-    // A thrown print failure gets the same treatment as a returned one (#243): mark
-    // the exit code and let Node exit once its handles close. The TUI still exits at
-    // once, since Ink may still hold stdin.
-    if (options.print !== undefined) {
-      setExitCode(1);
-      return;
-    }
-    exit(1);
+    // A failure marks the exit code and returns, as a failed print run does (#243), and Node
+    // exits once its last handle closes: `exit()` while a pooled provider socket is still
+    // closing aborts inside libuv on Windows, with exit code 127. The TUI gets the same
+    // treatment, since its own `finally` has unmounted Ink and restored the screen by now.
+    setExitCode(1);
   }
 }

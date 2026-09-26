@@ -330,7 +330,9 @@ export class AgentSession {
   private readonly listeners = new Set<AgentSessionListener>();
   private runGeneration = 0;
   private lifecycleStartedSessionId?: string;
+  private lifecycleStart?: Promise<void>;
   private lifecycleEndedSessionId?: string;
+  private lifecycleEnd?: Promise<void>;
   private runtime: SessionRuntime;
   private readonly registryFactory?: AgentSessionDependencies['registryFactory'];
 
@@ -539,20 +541,31 @@ export class AgentSession {
     source: Parameters<typeof runSessionStart>[2],
     options?: SessionLifecycleOptions,
   ): Promise<void> {
-    if (this.lifecycleStartedSessionId === sessionId) return;
+    if (this.lifecycleStartedSessionId === sessionId) {
+      await this.lifecycleStart;
+      return;
+    }
     this.lifecycleStartedSessionId = sessionId;
-    await this.sessionStartRunner(config, sessionId, source, options);
+    this.lifecycleStart = this.sessionStartRunner(config, sessionId, source, options);
+    await this.lifecycleStart;
   }
 
+  // A second call for a session that is already ending waits for the SessionEnd in flight
+  // instead of returning at once, which let a second exit or a `/clear` racing an exit move on
+  // while the hooks were still running.
   async endLifecycle(
     config: AgentConfig,
     sessionId: string,
     reason: Parameters<typeof runSessionEnd>[2],
     options?: SessionLifecycleOptions,
   ): Promise<void> {
-    if (this.lifecycleEndedSessionId === sessionId) return;
+    if (this.lifecycleEndedSessionId === sessionId) {
+      await this.lifecycleEnd;
+      return;
+    }
     this.lifecycleEndedSessionId = sessionId;
-    await this.sessionEndRunner(config, sessionId, reason, options);
+    this.lifecycleEnd = this.sessionEndRunner(config, sessionId, reason, options);
+    await this.lifecycleEnd;
   }
 
   async clearSession(

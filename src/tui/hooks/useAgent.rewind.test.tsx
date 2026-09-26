@@ -601,3 +601,31 @@ describe('useAgent external context across session transitions', () => {
     expect(latest!.runtime.usedToolNames.has('WebFetch')).toBe(true);
   });
 });
+
+describe('useAgent manual compaction', () => {
+  // #268 item 4 made Esc and Ctrl+C cancel a /compact. The reducer then ends on its aborted
+  // stream, and the card reported that as a failure ("Checkpoint stream ended without
+  // completion.") for something the user asked for.
+  it('reports a /compact cancelled halfway as cancelled, not as a failure', async () => {
+    const { config, timeline, sessionId } = fixture();
+    let finishReducer: (result: unknown) => void = () => {};
+    compactMockState.results.push(
+      new Promise((resolve) => {
+        finishReducer = resolve;
+      }),
+    );
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    const compacting = latest!.compact();
+    await tick();
+    expect(latest!.isCompacting).toBe(true);
+    latest!.cancel();
+    finishReducer({ status: 'failed', error: 'Checkpoint stream ended without completion.' });
+    await compacting;
+    await tick();
+
+    expect(latest!.isCompacting).toBe(false);
+    expect(latest!.compactUi).toMatchObject({ phase: 'skipped', message: 'Compaction cancelled.' });
+  });
+});

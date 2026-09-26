@@ -242,9 +242,17 @@ export function InputBar({
   // Ink hands a key to the handler subscribed at the last effect flush, and every key in one
   // stdin read to the same handler, so a key can see the closure from before the key ahead of
   // it: Up right after the Enter that queued an input still saw the typed text and walked the
-  // history instead of recalling the queued input. Each update writes these refs at once, and
-  // the arrow keys read them. The history is never rendered, so it lives in refs alone.
+  // history instead of recalling the queued input. Each update writes these refs at once, and the
+  // key handlers read them. The history is never rendered, so it lives in refs alone.
   const valueRef = useRef('');
+  // The draft as the previous stdin read left it, which is what the readline-chord routing and the
+  // Backspace attachment check below have to judge: whether the composer was empty when the key
+  // arrived. `valueRef` cannot say, because InputBox's own handler runs first and has already
+  // applied the key to the draft, so a chord it edits destructively (Ctrl+U) or a Backspace on the
+  // last character leaves the ref empty by the time this handler sees the key. Ink dispatches
+  // every key of one read before any of these microtasks run, so an update leaves the draft behind
+  // for the next read rather than for the key that made it.
+  const readStartValueRef = useRef('');
   const historyRef = useRef<string[]>([]);
   const historyIndexRef = useRef(-1);
   const [attachments, setAttachmentsState] = useState<ImageAttachment[]>([]);
@@ -263,6 +271,9 @@ export function InputBar({
       valueRef.current = next;
       setValueState(next);
       reportDraft();
+      queueMicrotask(() => {
+        readStartValueRef.current = valueRef.current;
+      });
     },
     [reportDraft],
   );
@@ -397,7 +408,10 @@ export function InputBar({
   skillSelectedRef.current = skillSelected;
   skillCandidatesRef.current = skillCandidates;
 
-  useEffect(() => {
+  // A layout effect, not a passive one: a restore that follows a submission (the queue was
+  // full, the model cannot read images) has to land before Ink writes the frame, or the composer
+  // spends one painted frame empty — long enough, under load, to be the frame a test reads.
+  useLayoutEffect(() => {
     if (!draftRestore) return;
     setValue(normalizeInput(draftRestore.value));
     setAttachments(draftRestore.attachments ?? []);
@@ -483,7 +497,14 @@ export function InputBar({
       return;
     }
 
-    if (key.backspace && !value && attachments.length > 0) {
+    // An attachment goes only from a composer that was empty when the key arrived, because the
+    // editor has already applied this Backspace to the draft. Most terminals send Backspace as
+    // DEL, which Ink reports as `delete`.
+    if (
+      (key.backspace || key.delete) &&
+      !readStartValueRef.current &&
+      attachmentsRef.current.length > 0
+    ) {
       setAttachments((current) => current.slice(0, -1));
       setAttachmentError(undefined);
       return;
@@ -551,7 +572,7 @@ export function InputBar({
         return;
       }
       if (key.tab) {
-        acceptSelectedSkillMention(value, 'Tab');
+        acceptSelectedSkillMention(valueRef.current, 'Tab');
         return;
       }
       if (key.downArrow) {
@@ -582,7 +603,7 @@ export function InputBar({
         return;
       }
       if (key.tab) {
-        acceptSelectedFileMention(value, 'Tab');
+        acceptSelectedFileMention(valueRef.current, 'Tab');
         return;
       }
       if (key.downArrow) {
@@ -616,7 +637,7 @@ export function InputBar({
     // Tab from an empty prompt cycles focus through main + spawned agents
     // (Claude-Code-style flat switching). Falls back to accepting the
     // placeholder suggestion when there are no agents to cycle.
-    if (key.tab && !value) {
+    if (key.tab && !valueRef.current) {
       if (onCycleAgentFocus?.()) {
         uiLog.event('input:Tab', { action: 'cycle-agent-focus' });
         return;
@@ -628,7 +649,7 @@ export function InputBar({
     // Ctrl+J / Shift+Enter insert a newline without submitting. InputBox does
     // not expose cursor position to the parent, so append at the end of the prompt.
     if ((key.ctrl && (_input === 'j' || _input === '\n')) || (key.shift && key.return)) {
-      setValue(value + '\n');
+      setValue(valueRef.current + '\n');
       setMenuVisible(false);
       setMenuSelected(0);
       setFileMenuVisible(false);
@@ -642,8 +663,14 @@ export function InputBar({
     // one leaves them to the transcript, where Ctrl+E expands a tool and
     // Ctrl+U scrolls. Forwarding them while there is text to edit would let the
     // parent consume the key and then restore the pre-event value, undoing the
-    // edit InputBox just made.
-    if (key.ctrl && value.length > 0 && COMPOSER_EDIT_KEYS.has(_input.toLowerCase())) return;
+    // edit InputBox just made. The draft is judged as the read that carried the
+    // key left it, since the edit this very chord makes is already in `valueRef`.
+    if (
+      key.ctrl &&
+      readStartValueRef.current.length > 0 &&
+      COMPOSER_EDIT_KEYS.has(_input.toLowerCase())
+    )
+      return;
     // Forward Ctrl-based shortcuts to the parent App. As with Alt chords,
     // restore the pre-event value when consumed to keep shortcut routing defensive.
     // Ctrl+/ arrives as a bare US byte with no `ctrl` flag (see
@@ -782,37 +809,39 @@ export function InputBar({
         setFileMention(null);
         setFileCandidates([]);
         if (!commandValue) {
-          setValue('');
+          // Nothing in the menu matches what was typed: `/queue` is handled by the app and is not
+          // a catalog command, and a custom command may be misspelled. Submit the text as typed,
+          // as Enter does once a space has closed the menu, rather than clear it without a word.
           uiLog.event('submit:menu', { result: 'no-command-value' });
+        } else {
+          const action = resolveSubmissionAction(commandValue);
+          if (action === 'blocked') {
+            uiLog.event('submit:menu', {
+              result: 'blocked',
+              command: commandValue.slice(1),
+              submissionMode,
+            });
+            setValue(commandValue);
+          } else if (action === 'queue') {
+            const accepted = onQueue?.(commandValue) ?? false;
+            uiLog.event('submit:menu', {
+              result: accepted ? 'queued' : 'queue-full',
+              command: commandValue.slice(1),
+            });
+            setValue(accepted ? '' : commandValue);
+          } else {
+            uiLog.event('submit:menu', {
+              result: 'command',
+              command: commandValue.slice(1),
+            });
+            setHistory((h) => [commandValue, ...h].slice(0, 100));
+            setHistoryIndex(-1);
+            recordCommandUse(commandValue.slice(1));
+            onSubmit(commandValue);
+            setValue('');
+          }
           return;
         }
-        const action = resolveSubmissionAction(commandValue);
-        if (action === 'blocked') {
-          uiLog.event('submit:menu', {
-            result: 'blocked',
-            command: commandValue.slice(1),
-            submissionMode,
-          });
-          setValue(commandValue);
-        } else if (action === 'queue') {
-          const accepted = onQueue?.(commandValue) ?? false;
-          uiLog.event('submit:menu', {
-            result: accepted ? 'queued' : 'queue-full',
-            command: commandValue.slice(1),
-          });
-          setValue(accepted ? '' : commandValue);
-        } else {
-          uiLog.event('submit:menu', {
-            result: 'command',
-            command: commandValue.slice(1),
-          });
-          setHistory((h) => [commandValue, ...h].slice(0, 100));
-          setHistoryIndex(-1);
-          recordCommandUse(commandValue.slice(1));
-          onSubmit(commandValue);
-          setValue('');
-        }
-        return;
       }
 
       if (skillMenuVisibleRef.current && acceptSelectedSkillMention(val, 'Enter')) {
@@ -835,11 +864,11 @@ export function InputBar({
       setSkillSelected(0);
 
       const normalized = normalizeInput(val);
-      if (!normalized.trim() && attachments.length === 0) {
+      if (!normalized.trim() && attachmentsRef.current.length === 0) {
         uiLog.event('submit:text', { result: 'empty' });
         return;
       }
-      if (normalized.trimStart().startsWith('/') && attachments.length > 0) {
+      if (normalized.trimStart().startsWith('/') && attachmentsRef.current.length > 0) {
         setAttachmentError('Image attachments cannot be combined with slash commands.');
         return;
       }
@@ -850,8 +879,8 @@ export function InputBar({
       }
       if (action === 'queue') {
         const accepted =
-          attachments.length > 0
-            ? (onQueue?.(normalized, attachments) ?? false)
+          attachmentsRef.current.length > 0
+            ? (onQueue?.(normalized, attachmentsRef.current) ?? false)
             : (onQueue?.(normalized) ?? false);
         uiLog.event('submit:text', {
           result: accepted ? 'queued' : 'queue-full',
@@ -869,7 +898,7 @@ export function InputBar({
       if (cmdName) recordCommandUse(cmdName);
 
       if (action === 'submit') {
-        if (attachments.length > 0) onSubmit(normalized, attachments);
+        if (attachmentsRef.current.length > 0) onSubmit(normalized, attachmentsRef.current);
         else onSubmit(normalized);
       }
       setValue('');
@@ -884,7 +913,6 @@ export function InputBar({
       onSubmit,
       resolveSubmissionAction,
       submissionMode,
-      attachments,
       pasteImage,
     ],
   );
@@ -1019,6 +1047,7 @@ export function InputBar({
         <Box width={inputWidth} flexShrink={1}>
           <InputBox
             value={value}
+            liveValueRef={valueRef}
             onChange={safeOnChange}
             onSubmit={handleSubmit}
             placeholder={placeholder}
