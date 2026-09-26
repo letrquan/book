@@ -1,4 +1,4 @@
-import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import {
   appendFileSync,
   existsSync,
@@ -9,13 +9,15 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { dirname, extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   readJsonFile,
   writeJsonAtomic,
   type PersistentShellSpec,
   type PersistentShellState,
 } from './jobs/persistent-store.js';
-import { signalProcessGroup, waitForProcessGroupExit } from './jobs/process-tree.js';
+import { terminateProcessTree, waitForProcessClose } from './jobs/process-tree.js';
 import { system32Executable } from './system32.js';
 
 const specPath = process.argv[2];
@@ -45,13 +47,15 @@ if (loadedSpec.sandboxed && !loadedSpec.exec) {
   );
 }
 const spec: PersistentShellSpec = loadedSpec;
-const TERMINATE_GRACE_MS = 1_500;
 /**
- * The runner has no UI to freeze, so a contended record write may block this long waiting for
- * Windows to release the file before it counts as failed. The shell manager, which writes from
- * the TUI's process, keeps the small default.
+ * How long a contended record write may block before it counts as failed. The first record and
+ * the terminal record wait up to a second for Windows to release the file: the job cannot start
+ * without the first, and the manager waits on the second to call a stop complete. Every other
+ * write (the heartbeat, the child pid, `stopping`, a log rotation) is repeated by the next
+ * heartbeat, so it gives up almost at once instead of stalling the runner's timers.
  */
 const RECORD_RENAME_RETRY_BUDGET_MS = 1_000;
+const BEST_EFFORT_RENAME_RETRY_BUDGET_MS = 50;
 /** A terminal record that still failed to write is retried on a timer this often, this many times. */
 const TERMINAL_RECORD_RETRY_MS = 250;
 const TERMINAL_RECORD_ATTEMPTS = 20;
@@ -60,11 +64,8 @@ let child: ChildProcess | undefined;
 let terminal = false;
 let terminationInFlight = false;
 // These timers are assigned after the child is wired so startup failures can still call finish().
-// eslint-disable-next-line prefer-const
 let heartbeat: NodeJS.Timeout | undefined;
-// eslint-disable-next-line prefer-const
 let controlPoll: NodeJS.Timeout | undefined;
-// eslint-disable-next-line prefer-const
 let deadline: NodeJS.Timeout | undefined;
 const startedAt = Date.now();
 let state: PersistentShellState = {
@@ -95,28 +96,28 @@ let state: PersistentShellState = {
   completionAcknowledgedSequence: 0,
 };
 
-function persist(): void {
+function persist(budgetMs = RECORD_RENAME_RETRY_BUDGET_MS): void {
   state = { ...state, revision: state.revision + 1, heartbeatAt: Date.now() };
-  writeJsonAtomic(spec.recordPath, state, { renameRetryBudgetMs: RECORD_RENAME_RETRY_BUDGET_MS });
+  writeJsonAtomic(spec.recordPath, state, { renameRetryBudgetMs: budgetMs });
 }
 
 /**
- * A non-terminal write: the child's pid, the heartbeat, the switch to `stopping`. One that fails
- * even after the retry budget must not end the runner. An uncaught throw here used to kill it
- * while its job kept running, and the manager then called the job lost. The next heartbeat
- * writes the same state again, and the note in the job's log says why the record lagged.
+ * A non-terminal write: the child's pid, the heartbeat, the switch to `stopping`, a log
+ * rotation. One that fails must not end the runner, or its job would keep running with nothing
+ * left to stop it; the next heartbeat writes the same state again. The failure is counted on the
+ * record, which that next write carries, rather than noted in the job's log: the log is the
+ * command's own output, and the model reads it through BashOutput.
  */
 function persistBestEffort(what: string): void {
   try {
-    persist();
+    persist(BEST_EFFORT_RENAME_RETRY_BUDGET_MS);
   } catch (error) {
-    if (terminal) return;
     const code = (error as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
-    try {
-      appendBounded(`[runner: ${what} write failed (${code}); retrying on the next heartbeat]\n`);
-    } catch {
-      // The log is best effort too; the next heartbeat is what matters.
-    }
+    state = {
+      ...state,
+      recordWriteFailures: (state.recordWriteFailures ?? 0) + 1,
+      lastRecordWriteError: `${what} write failed (${code})`,
+    };
   }
 }
 
@@ -136,70 +137,16 @@ function appendBounded(data: unknown): void {
       outputRotationSequence: (state.outputRotationSequence ?? 0) + 1,
       truncatedBytes: (state.truncatedBytes ?? 0) + discarded,
     };
-    persist();
+    persistBestEffort('log rotation');
   } catch {
     // Output retention is best effort; lifecycle state remains authoritative.
   }
 }
 
-function waitForChildClose(timeoutMs: number): Promise<boolean> {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+function terminateTree(): Promise<boolean> {
   const proc = child;
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      resolve(proc.exitCode !== null || proc.signalCode !== null);
-    }, timeoutMs);
-    const onClose = () => {
-      cleanup();
-      resolve(true);
-    };
-    const cleanup = () => {
-      clearTimeout(timer);
-      proc.off('close', onClose);
-    };
-    proc.once('close', onClose);
-  });
-}
-
-async function terminateTree(): Promise<boolean> {
-  if (!child?.pid) return true;
-  const pid = child.pid;
-  if (process.platform !== 'win32') {
-    // The direct child is the `sh -c` wrapper, which dies from SIGTERM even when the worker it
-    // forked ignores it. Escalate on whether the group still holds processes, never on the
-    // wrapper's own exit, or the surviving worker is recorded as killed while it keeps running.
-    signalProcessGroup(child, pid, 'SIGTERM');
-    if (await waitForProcessGroupExit(pid, TERMINATE_GRACE_MS)) return true;
-    signalProcessGroup(child, pid, 'SIGKILL');
-    return waitForProcessGroupExit(pid, TERMINATE_GRACE_MS);
-  }
-  // `taskkill /T /F` covers the tree, so the direct child's close speaks for the tree only when
-  // taskkill actually ran.
-  const alreadyExited = child.exitCode !== null || child.signalCode !== null;
-  if (alreadyExited) return true;
-  const confirmed = await new Promise<boolean>((resolve) => {
-    execFile(
-      system32Executable('taskkill'),
-      ['/PID', String(pid), '/T', '/F'],
-      { windowsHide: true, timeout: TERMINATE_GRACE_MS },
-      (error) => resolve(!error),
-    );
-  });
-  if (!confirmed) {
-    try {
-      child.kill('SIGTERM');
-    } catch {
-      // The process may have exited between taskkill and the fallback.
-    }
-  }
-  if (await waitForChildClose(TERMINATE_GRACE_MS)) return confirmed;
-  try {
-    child.kill('SIGKILL');
-  } catch {
-    return false;
-  }
-  return (await waitForChildClose(TERMINATE_GRACE_MS)) && confirmed;
+  if (!proc) return Promise.resolve(true);
+  return terminateProcessTree(proc, proc.pid, (timeoutMs) => waitForProcessClose(proc, timeoutMs));
 }
 
 function finish(
@@ -248,55 +195,129 @@ function finish(
  * Write the terminal record, then exit. It is the one write the manager waits on to call a stop
  * complete, so a write that fails even after the retry budget is tried again on a timer rather
  * than ending the runner with its job still recorded as running. If every attempt fails, the
- * runner exits nonzero and the manager's heartbeat-staleness check reports the job lost.
+ * runner says at the end of the job's log what really happened, exits nonzero, and the manager's
+ * heartbeat-staleness check reports the job lost.
  */
 function publishTerminalRecord(attempt: number): void {
   try {
     persist();
-  } catch {
+  } catch (error) {
     if (attempt < TERMINAL_RECORD_ATTEMPTS) {
       setTimeout(() => publishTerminalRecord(attempt + 1), TERMINAL_RECORD_RETRY_MS);
-    } else {
-      process.exitCode = 1;
-      setTimeout(() => process.exit(1), 10).unref();
+      return;
     }
+    reportUnrecordedEnd(error);
+    process.exitCode = 1;
+    setTimeout(() => process.exit(1), 10).unref();
     return;
   }
-  setTimeout(() => process.exit(0), 10).unref();
+  setTimeout(() => process.exit(), 10).unref();
 }
 
-writeFileSync(spec.outputPath, '', { encoding: 'utf8', mode: 0o600 });
-try {
-  const spawnBase: SpawnOptions = {
-    cwd: spec.workdir,
-    env: { ...process.env, ...spec.env },
-    detached: process.platform !== 'win32',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  };
-  // Sandboxed specs carry an argv; only unsandboxed ones go through a shell.
-  child = spec.exec
-    ? spawn(spec.exec.file, spec.exec.args, { ...spawnBase, shell: false })
-    : spawn(spec.effectiveCommand, { ...spawnBase, shell: true });
-  state = { ...state, childPid: child.pid };
-  persistBestEffort('child pid');
-} catch (error) {
-  appendBounded(error instanceof Error ? `${error.message}\n` : `${String(error)}\n`);
-  finish('failed');
+/**
+ * Every attempt at the terminal record failed, so the manager will find a stale heartbeat and
+ * call the job lost. Say what really happened at the end of the job's log, the one place left
+ * that someone reads. The log is safe to write: the record never turned terminal, so the
+ * manager cannot have dismissed the job and deleted it.
+ */
+function reportUnrecordedEnd(error: unknown): void {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
+  const outcome =
+    state.exitCode === undefined || state.exitCode === null
+      ? state.status
+      : `${state.status}, exit code ${state.exitCode}`;
+  try {
+    appendFileSync(
+      spec.outputPath,
+      `[runner: the job ended (${outcome}) but its record could not be written (${code}); Book will report it as lost]\n`,
+    );
+  } catch {
+    // There is nowhere left to say it.
+  }
+}
+
+/** The supervisor built beside this file: `.js` in dist, `.ts` when run from source through tsx. */
+function supervisorPath(): string {
+  const self = fileURLToPath(import.meta.url);
+  return join(dirname(self), `job-supervisor${extname(self)}`);
+}
+
+function failStartup(what: string, error: unknown): never {
+  const reason = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`Persistent background runner could not ${what}: ${reason}\n`);
   process.exit(1);
 }
 
-child?.stdout?.on('data', appendBounded);
-child?.stderr?.on('data', appendBounded);
-child?.on('error', (error) => {
-  appendBounded(`${error.message}\n`);
-  if (state.status !== 'stopping') finish('failed');
-});
-child?.on('close', (code, signal) => {
-  if (terminal || state.status === 'stopping') return;
-  finish(code === 0 ? 'exited' : 'failed', code, signal);
-});
+/**
+ * Create the log, write the first record, then start the command under its supervisor. The
+ * first record is the one write that cannot be best effort: the manager waits for it to call
+ * the job started, and without it the manager gives up, forgets the job and deletes its files
+ * while the command runs on with nothing left to stop it. So until it has landed, a failure
+ * ends the runner before anything runs, and says why on stderr, which `start()` reports.
+ */
+function startRunner(): void {
+  try {
+    writeFileSync(spec.outputPath, '', { encoding: 'utf8', mode: 0o600 });
+  } catch (error) {
+    failStartup('create its job log', error);
+  }
+  try {
+    persist();
+  } catch (error) {
+    failStartup('write its job record', error);
+  }
+  let proc: ChildProcess;
+  try {
+    // `process.execArgv` carries tsx's loader when this runner itself runs from source.
+    proc = spawn(
+      process.execPath,
+      [...process.execArgv, supervisorPath(), specPath, system32Executable('taskkill')],
+      {
+        cwd: spec.workdir,
+        env: { ...process.env, ...spec.env },
+        detached: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
+  } catch (error) {
+    appendBounded(error instanceof Error ? `${error.message}\n` : `${String(error)}\n`);
+    process.exitCode = 1;
+    finish('failed');
+    return;
+  }
+  child = proc;
+  // The supervisor's stdin is its lifeline to this process: never written and never closed, it
+  // reaches end-of-file only when this process is gone. See job-supervisor.ts.
+  proc.stdin?.on('error', () => {});
+  state = { ...state, childPid: proc.pid };
+  persistBestEffort('child pid');
+  proc.stdout?.on('data', appendBounded);
+  proc.stderr?.on('data', appendBounded);
+  proc.on('error', (error) => {
+    appendBounded(`${error.message}\n`);
+    if (state.status !== 'stopping') finish('failed');
+  });
+  proc.on('close', (code, signal) => {
+    if (terminal || state.status === 'stopping') return;
+    finish(code === 0 ? 'exited' : 'failed', code, signal);
+  });
+  heartbeat = setInterval(() => persistBestEffort('heartbeat'), 1_000);
+  controlPoll = setInterval(() => {
+    if (!existsSync(spec.controlPath) || terminal) return;
+    const control = readJsonFile<{ token?: string; action?: string; reason?: string }>(
+      spec.controlPath,
+    );
+    if (control?.token !== spec.token || control.action !== 'stop') return;
+    void requestTermination('killed', control.reason ?? 'requested');
+  }, 250);
+  deadline = spec.timeoutMs
+    ? setTimeout(() => {
+        void requestTermination('timed_out', 'timeout');
+      }, spec.timeoutMs)
+    : undefined;
+}
 
-heartbeat = setInterval(() => persistBestEffort('heartbeat'), 1_000);
 async function requestTermination(status: 'killed' | 'timed_out', reason: string): Promise<void> {
   if (terminal || terminationInFlight) return;
   terminationInFlight = true;
@@ -315,18 +336,4 @@ async function requestTermination(status: 'killed' | 'timed_out', reason: string
   }
 }
 
-controlPoll = setInterval(() => {
-  if (!existsSync(spec.controlPath) || terminal) return;
-  const control = readJsonFile<{ token?: string; action?: string; reason?: string }>(
-    spec.controlPath,
-  );
-  if (control?.token !== spec.token || control.action !== 'stop') return;
-  void requestTermination('killed', control.reason ?? 'requested');
-}, 250);
-deadline = spec.timeoutMs
-  ? setTimeout(() => {
-      void requestTermination('timed_out', 'timeout');
-    }, spec.timeoutMs)
-  : undefined;
-
-persistBestEffort('startup');
+startRunner();

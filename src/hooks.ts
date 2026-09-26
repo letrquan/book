@@ -1,7 +1,8 @@
-import { exec } from 'child_process';
+import { spawn } from 'child_process';
 import type { HookEntry, HookEvent } from './settings.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { parsePatch } from './tools/patch.js';
+import { terminateForegroundProcess } from './jobs/process-tree.js';
 
 /** Context passed to every hook invocation. */
 export interface HookContext {
@@ -60,9 +61,13 @@ export interface HookResult {
 export interface HookRunOptions {
   onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
   signal?: AbortSignal;
+  /** How long one hook may run before it is killed with every process it started. Default 10 s. */
+  timeoutMs?: number;
 }
 
 const HOOK_TIMEOUT_MS = 10_000;
+/** A hook writing more than this is ended, the way a runaway log would be: its output is not read. */
+const HOOK_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 /**
  * Run a set of hooks for a given lifecycle event.
@@ -122,7 +127,13 @@ export async function runHooks(
       }
     }
 
-    const result = await runSingleHook(entry, event, ctx, opts?.signal);
+    const result = await runSingleHook(
+      entry,
+      event,
+      ctx,
+      opts?.signal,
+      opts?.timeoutMs ?? HOOK_TIMEOUT_MS,
+    );
     results.push(result);
 
     // On blocking events, stop after a block.
@@ -221,7 +232,8 @@ async function runSingleHook(
   entry: HookEntry,
   event: HookEvent,
   ctx: HookContext,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
 ): Promise<HookResult> {
   const inputPayload = JSON.stringify({
     hook: event,
@@ -249,79 +261,41 @@ async function runSingleHook(
 
   return new Promise<HookResult>((resolve, reject) => {
     let settled = false;
-    const child = exec(
-      entry.command,
-      {
-        env: {
-          ...process.env,
-          ...entry.env,
-          BOOK_WORKSPACE: ctx.workspace,
-          ...(ctx.sessionId ? { BOOK_SESSION_ID: ctx.sessionId } : {}),
-          ...(ctx.agentId ? { BOOK_AGENT_ID: ctx.agentId } : {}),
-        },
-        timeout: HOOK_TIMEOUT_MS,
-        maxBuffer: 1024 * 1024,
-        signal,
+    // Set once a timeout, a cancellation or an output overflow has begun ending the tree, so the
+    // 'close' that the kill itself causes is not mistaken for the hook's own result.
+    let ending = false;
+    let stdout = '';
+    let stderr = '';
+    let outputBytes = 0;
+    // Off Windows a hook runs in its own process group, so ending it reaches every process it
+    // started; on Windows taskkill walks the tree instead.
+    const child = spawn(entry.command, {
+      shell: true,
+      detached: process.platform !== 'win32',
+      env: {
+        ...process.env,
+        ...entry.env,
+        BOOK_WORKSPACE: ctx.workspace,
+        ...(ctx.sessionId ? { BOOK_SESSION_ID: ctx.sessionId } : {}),
+        ...(ctx.agentId ? { BOOK_AGENT_ID: ctx.agentId } : {}),
       },
-      (error, stdout, stderr) => {
-        if (settled) return;
-        if (signal?.aborted) {
-          fail(signal.reason ?? new DOMException('Hook execution aborted', 'AbortError'));
-          return;
-        }
-        if (error) {
-          // Exit code 2 = block per CC's hook contract.
-          if (error.code === 2) {
-            let message = stderr.trim();
-            if (!message) {
-              try {
-                const parsed = JSON.parse(stdout.trim());
-                message = parsed.message ?? stdout.trim();
-              } catch {
-                message = stdout.trim() || 'Blocked by hook';
-              }
-            }
-            settle({
-              entry,
-              action: 'block',
-              message,
-            });
-            return;
-          }
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
 
-          // Non-zero exit but not a block — treat as continue with warning.
-          console.warn(
-            `⚠  Hook exited with code ${error.code}: ${entry.command}\n${stderr || error.message}`,
-          );
-          settle({ entry, action: 'continue' });
-          return;
-        }
+    /**
+     * End the hook's whole process tree and let go of its pipes. A process the kill cannot reach
+     * (on Windows, one whose parent has already exited) would otherwise hold the pipes, and with
+     * them the host's event loop, open. Resolves once the kill has finished, because on Windows
+     * taskkill is a child of this process and would die with it if the host exited first.
+     */
+    const endTree = async (): Promise<void> => {
+      ending = true;
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      await terminateForegroundProcess(child);
+    };
 
-        // Success (exit code 0) — parse JSON response if available.
-        try {
-          const parsed = JSON.parse(stdout.trim());
-          if (parsed.action === 'block') {
-            settle({
-              entry,
-              action: 'block',
-              message: parsed.message,
-            });
-          } else if (parsed.action === 'modify') {
-            settle({
-              entry,
-              action: 'modify',
-              modifiedPrompt: parsed.message ?? parsed.prompt,
-              modifiedOutput: parsed.output,
-            });
-          } else {
-            settle({ entry, action: 'continue' });
-          }
-        } catch {
-          // stdout isn't JSON — just continue.
-          settle({ entry, action: 'continue' });
-        }
-      },
-    );
     const cleanup = () => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
@@ -338,15 +312,94 @@ async function runSingleHook(
       cleanup();
       reject(error);
     };
+
+    const collect = (stream: 'stdout' | 'stderr') => (chunk: Buffer) => {
+      outputBytes += chunk.length;
+      if (outputBytes > HOOK_MAX_OUTPUT_BYTES) {
+        if (settled || ending) return;
+        console.warn(`⚠  Hook output exceeded 1 MB: ${entry.command}`);
+        void endTree().finally(() => settle({ entry, action: 'continue' }));
+        return;
+      }
+      if (stream === 'stdout') stdout += chunk.toString('utf8');
+      else stderr += chunk.toString('utf8');
+    };
+    child.stdout?.on('data', collect('stdout'));
+    child.stderr?.on('data', collect('stderr'));
+
+    child.on('close', (code, exitSignal) => {
+      if (settled || ending) return;
+      if (signal?.aborted) {
+        fail(signal.reason ?? new DOMException('Hook execution aborted', 'AbortError'));
+        return;
+      }
+      if (code === 2) {
+        // Exit code 2 = block per CC's hook contract.
+        let message = stderr.trim();
+        if (!message) {
+          try {
+            const parsed = JSON.parse(stdout.trim());
+            message = parsed.message ?? stdout.trim();
+          } catch {
+            message = stdout.trim() || 'Blocked by hook';
+          }
+        }
+        settle({
+          entry,
+          action: 'block',
+          message,
+        });
+        return;
+      }
+
+      // Non-zero exit but not a block — treat as continue with warning.
+      if (code !== 0) {
+        const how = code === null ? `signal ${exitSignal}` : `code ${code}`;
+        console.warn(`⚠  Hook exited with ${how}: ${entry.command}\n${stderr}`);
+        settle({ entry, action: 'continue' });
+        return;
+      }
+
+      // Success (exit code 0) — parse JSON response if available.
+      try {
+        const parsed = JSON.parse(stdout.trim());
+        if (parsed.action === 'block') {
+          settle({
+            entry,
+            action: 'block',
+            message: parsed.message,
+          });
+        } else if (parsed.action === 'modify') {
+          settle({
+            entry,
+            action: 'modify',
+            modifiedPrompt: parsed.message ?? parsed.prompt,
+            modifiedOutput: parsed.output,
+          });
+        } else {
+          settle({ entry, action: 'continue' });
+        }
+      } catch {
+        // stdout isn't JSON — just continue.
+        settle({ entry, action: 'continue' });
+      }
+    });
+    child.on('error', (error) => {
+      if (settled || ending) return;
+      console.warn(`⚠  Hook failed to start: ${entry.command}\n${error.message}`);
+      settle({ entry, action: 'continue' });
+    });
+
     const onAbort = () => {
-      child?.kill();
-      fail(signal?.reason ?? new DOMException('Hook execution aborted', 'AbortError'));
+      if (settled || ending) return;
+      const reason = signal?.reason ?? new DOMException('Hook execution aborted', 'AbortError');
+      void endTree().finally(() => fail(reason));
     };
     const timer = setTimeout(() => {
-      console.warn(`⚠  Hook timed out after ${HOOK_TIMEOUT_MS / 1000}s: ${entry.command}`);
-      child?.kill();
-      settle({ entry, action: 'continue' });
-    }, HOOK_TIMEOUT_MS);
+      if (settled || ending) return;
+      console.warn(`⚠  Hook timed out after ${timeoutMs / 1000}s: ${entry.command}`);
+      void endTree().finally(() => settle({ entry, action: 'continue' }));
+    }, timeoutMs);
     signal?.addEventListener('abort', onAbort, { once: true });
 
     if (signal?.aborted) onAbort();

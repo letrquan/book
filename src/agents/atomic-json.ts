@@ -74,8 +74,9 @@ export interface AtomicJsonFileSystem {
   writeFileSync: typeof writeFileSync;
 }
 
-const CONTENTION_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
-const LOCK_CONTENTION_CODES = new Set(['EEXIST', ...CONTENTION_CODES]);
+/** Codes Windows returns while another process has a file open: retried, never fatal on first sight. */
+export const FILE_CONTENTION_CODES: ReadonlySet<string> = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const LOCK_CONTENTION_CODES = new Set(['EEXIST', ...FILE_CONTENTION_CODES]);
 const DEFAULT_DEADLINE_MS = 500;
 const DEFAULT_STALE_LOCK_MS = 30_000;
 const BACKOFF_MS = [5, 10, 20, 40, 80];
@@ -103,7 +104,8 @@ function safeMessage(error: unknown): string {
   return code ? `Agent state storage operation failed (${code}).` : 'Agent state storage failed.';
 }
 
-function defaultSleep(milliseconds: number): void {
+/** Block the calling thread for `milliseconds`. */
+export function sleepSync(milliseconds: number): void {
   if (milliseconds <= 0) return;
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
@@ -148,7 +150,7 @@ export class AtomicJsonWriter {
     this.staleLockMs = options.staleLockMs ?? DEFAULT_STALE_LOCK_MS;
     this.now = options.now ?? Date.now;
     this.randomId = options.randomId ?? randomUUID;
-    this.sleep = options.sleep ?? defaultSleep;
+    this.sleep = options.sleep ?? sleepSync;
     this.isLockOwnerAlive = options.isLockOwnerAlive;
     this.onStaleLock = options.onStaleLock;
   }
@@ -279,7 +281,7 @@ export class AtomicJsonWriter {
           };
         } catch (error) {
           const code = errorCode(error);
-          if (!CONTENTION_CODES.has(code ?? '')) {
+          if (!FILE_CONTENTION_CODES.has(code ?? '')) {
             return {
               status: 'unavailable',
               target,

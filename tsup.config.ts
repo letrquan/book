@@ -8,7 +8,7 @@ const packageJson = JSON.parse(
 };
 
 export default defineConfig({
-  entry: ['src/index.ts', 'src/sdk.ts', 'src/job-runner.ts'],
+  entry: ['src/index.ts', 'src/sdk.ts', 'src/job-runner.ts', 'src/job-supervisor.ts'],
   format: ['esm'],
   outDir: 'dist',
   dts: true,
