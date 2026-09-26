@@ -6,6 +6,33 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Settings validation runs on Zod 4** (#88). Book moves from Zod 3.25 to Zod 4.6. Defaults, and
+  which fields a rejected document names, are unchanged; `src/settings.test.ts` now pins them,
+  including a check that no object schema is defaulted in the way Zod 4 would leave bare. What
+  changes:
+  - **Validation messages** now come from Zod 4. `book config set retry.maxAttempts 99` reports
+    `Too big: expected number to be <=15` where it said `Number must be less than or equal to 15`,
+    a missing field reads `Invalid input: expected string, received undefined` instead of
+    `Required`, and an unknown enum value reads `Invalid option: expected one of "low"|"medium"|…`
+    without echoing the value. In the issue list printed for an invalid settings file,
+    `invalid_enum_value` and `invalid_literal` issues are now `invalid_value`, and an
+    `invalid_type` issue no longer carries a `received` field. A value that breaks two rules can
+    get one issue where it got two: `retry.baseDelayMs: 1.5` (an integer of at least 100) is
+    reported only as not an integer.
+  - **The model sees the new wording** in `AskUserQuestion` validation errors and in the one
+    repair prompt the compaction reducer gets for an invalid checkpoint.
+  - **Integer settings reject values above 2^53** (`Number.MAX_SAFE_INTEGER`), which Zod 3
+    accepted. Only settings with no upper bound could hold one (`maxTurns`, `maxTokens`,
+    `continuation.maxWallClockMs`, `agents.minFreeDiskBytes`, a model's `contextWindow`, …), and
+    such a value cannot be represented exactly anyway. A settings file holding one now fails to
+    load, naming the field.
+  - **A `__proto__` key inside a record setting** (`env`, `provider`, `agents.checks`, …) is now
+    dropped. Zod 3 rejected it inside `env` and `agents.checks`, and let a `provider.__proto__`
+    entry through to the resolved providers.
+  - **The legacy `.bookrc.json` `baseUrl`** is trimmed of surrounding whitespace; it accepts the
+    same URLs as before.
+  - **SDK types:** the schemas and settings types exported from `dist/sdk.d.ts` are Zod 4 types,
+    which need TypeScript 5.5 or later in a consuming project.
 - **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
   rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
   green, so every PR that touched them either reformatted unrelated lines or left them drifting.

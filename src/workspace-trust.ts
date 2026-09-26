@@ -51,13 +51,13 @@ export const TRUST_STORE_VERSION = 2;
 
 const workspaceTrustSchema = z.object({
   /** Keyed by the exact rule text the project layer declared. */
-  permissionAllowRules: z.record(projectAllowRuleChoiceSchema).default({}),
+  permissionAllowRules: z.record(z.string(), projectAllowRuleChoiceSchema).default({}),
   /** Keyed by server name, carrying the fingerprint the decision was made against. */
-  mcpServers: z.record(mcpProjectServerChoiceSchema).default({}),
+  mcpServers: z.record(z.string(), mcpProjectServerChoiceSchema).default({}),
   /** Keyed by a fingerprint of `{ event, matcher, command, env }`. */
-  hookEntries: z.record(projectHookChoiceSchema).default({}),
+  hookEntries: z.record(z.string(), projectHookChoiceSchema).default({}),
   /** Keyed by command name, carrying the fingerprint of the shell its body runs. */
-  projectCommands: z.record(projectCommandChoiceSchema).default({}),
+  projectCommands: z.record(z.string(), projectCommandChoiceSchema).default({}),
 });
 
 export type WorkspaceTrust = z.infer<typeof workspaceTrustSchema>;

@@ -63,7 +63,7 @@ const learnedModelWindowEntrySchema = z.object({
 
 const looseModelWindowStoreSchema = z.object({
   version: z.number().int().positive().default(MODEL_WINDOW_STORE_VERSION),
-  models: z.record(z.unknown()).default({}),
+  models: z.record(z.string(), z.unknown()).default({}),
 });
 
 function emptyStore(): ModelWindowStoreData {
