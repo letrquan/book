@@ -1,6 +1,6 @@
 import { Text, Box } from 'ink';
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { useGradientSpinner } from '../hooks/useAnimation.js';
+import { useGradientSpinner, type SpinnerStyle } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 
 export const SPINNER_TIPS = [
@@ -28,7 +28,7 @@ export const SPINNER_TIPS = [
 
 interface SpinnerProps {
   active?: boolean;
-  style?: 'braille' | 'dots';
+  style?: SpinnerStyle;
   color?: string;
   reducedMotion?: boolean;
   showTips?: boolean;
@@ -39,7 +39,7 @@ interface SpinnerProps {
 }
 
 /**
- * Claude Code-style spinner with rotating tips.
+ * Book's swinging hedera fleuron (`HEDERA_FRAMES` in useAnimation), with rotating tips.
  *
  * During long operations, the spinner cycles through a list of tips every 4
  * seconds, shown inline next to the spinner frame. The tip list is
@@ -47,7 +47,7 @@ interface SpinnerProps {
  */
 export function Spinner({
   active = true,
-  style = 'dots',
+  style = 'hedera',
   color,
   reducedMotion = false,
   showTips = false,
@@ -55,8 +55,8 @@ export function Spinner({
   excludeDefaultTips = false,
 }: SpinnerProps) {
   const theme = useTheme();
-  const { frame, color: gradientColor } = useGradientSpinner(active, style, reducedMotion);
-  const spinnerColor = color || gradientColor;
+  const { frame, markColor } = useGradientSpinner(active, style, reducedMotion);
+  const spinnerColor = color || markColor;
   const [tipIndex, setTipIndex] = useState(0);
   const tipTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 

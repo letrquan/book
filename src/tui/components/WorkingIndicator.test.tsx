@@ -48,12 +48,13 @@ describe('WorkingIndicator', () => {
     expect(output).toContain('Esc to cancel');
   });
 
-  it('paints the spinner and its wording in the agent colour, not body text', () => {
+  it('paints the fleuron as a mark and its wording in the agent colour, not body text', () => {
     const spinnerColor = DEFAULT_THEME.shimmerPair[0];
-    const live = activityPalette('normal', DEFAULT_THEME, spinnerColor);
+    const live = activityPalette('normal', DEFAULT_THEME, spinnerColor, DEFAULT_THEME.brand);
 
-    // Glyph and wording are one live element, and neither is body-text coloured.
-    expect(live.indicator).toBe(spinnerColor);
+    // The glyph takes the rubric like every other mark; the wording breathes
+    // in the agent's ink beside it, and neither is body-text coloured.
+    expect(live.indicator).toBe(DEFAULT_THEME.brand);
     expect(live.label).toBe(spinnerColor);
     expect(live.label).not.toBe(DEFAULT_THEME.text);
     // Duration and hint recede into metadata behind it.
@@ -244,12 +245,15 @@ describe('WorkingIndicator', () => {
 
     const initialFrame = view.lastFrame();
     const initialWriteCount = view.frames.length;
+    expect(stripAnsi(initialFrame).trimStart().startsWith('❦ ')).toBe(true);
 
+    // The fleuron holds upright for three ticks, then swings right.
     act(() => {
-      vi.advanceTimersByTime(100);
+      vi.advanceTimersByTime(300);
     });
 
     expect(view.lastFrame()).not.toBe(initialFrame);
+    expect(stripAnsi(view.lastFrame()).trimStart().startsWith('❧ ')).toBe(true);
     expect(view.frames.length).toBeGreaterThan(initialWriteCount);
   });
 

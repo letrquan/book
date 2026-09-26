@@ -10,6 +10,15 @@ const animLog = createRenderDebugLogger('tui:animation');
 const BRAILLE_FRAMES = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
 
 /**
+ * Book's own spinner: the hedera, the ivy-leaf fleuron printers set between the
+ * sections of a book, often in red. It swings like a pendulum (upright, turned
+ * right, upright, turned left) and holds the upright pose longest: ten frames at
+ * the 100ms clock, one swing a second. It replaced the braille dot circle nearly
+ * every terminal tool spins, which said nothing about whose it was.
+ */
+export const HEDERA_FRAMES = ['❦', '❦', '❦', '❧', '❧', '❦', '❦', '❦', '☙', '☙'];
+
+/**
  * Ten frames at the 100ms clock: one revolution per second, and one shimmer
  * breath per revolution.
  */
@@ -27,19 +36,26 @@ const DOT_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇
  */
 export function useGradientSpinner(
   active: boolean,
-  style: 'braille' | 'dots' = 'dots',
+  style: SpinnerStyle = 'hedera',
   reducedMotion = false,
-): { frame: string; color: string } {
+): { frame: string; color: string; markColor: string } {
   const theme = useTheme();
-  const frames = style === 'braille' ? BRAILLE_FRAMES : DOT_FRAMES;
+  const frames =
+    style === 'braille' ? BRAILLE_FRAMES : style === 'dots' ? DOT_FRAMES : HEDERA_FRAMES;
   const tick = useUiClock('fast', active && !reducedMotion);
   const animating = active && !reducedMotion;
 
   return {
-    frame: frames[animating ? tick % frames.length : 0],
+    frame: frames[animating ? tick % frames.length : 0]!,
+    // The wording beside the glyph breathes in ink.
     color: animating ? shimmerColor(theme.shimmerPair, tick) : theme.shimmerPair[0],
+    // The glyph itself is a mark, so it takes the rubric, breathing between
+    // the accent and its lighter shimmer.
+    markColor: animating ? shimmerColor([theme.brand, theme.brandShimmer], tick) : theme.brand,
   };
 }
+
+export type SpinnerStyle = 'hedera' | 'braille' | 'dots';
 
 export function useStaggeredReveal(
   count: number,
