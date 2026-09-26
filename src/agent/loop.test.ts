@@ -3293,7 +3293,8 @@ describe('runAgentLoop error handling', () => {
               const enc = new TextEncoder();
               c.enqueue(
                 enc.encode(
-                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"deny_1","function":{"name":"Read","arguments":"{\\"filePath\\":\\"x\\"}"}}]}}]}\n\n',
+                  // Bash, not a workspace Read: reading the workspace no longer asks (#264).
+                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"deny_1","function":{"name":"Bash","arguments":"{\\"command\\":\\"ls\\"}"}}]}}]}\n\n',
                 ),
               );
               c.enqueue(enc.encode('data: [DONE]\n\n'));
@@ -3309,9 +3310,9 @@ describe('runAgentLoop error handling', () => {
     // Registered: a call to a tool this registry does not have is refused as unknown
     // before the permission gate, which is a different refusal than the one under test.
     registry.register({
-      name: 'Read',
-      description: 'read a file',
-      parameters: { type: 'object', properties: { filePath: { type: 'string' } } },
+      name: 'Bash',
+      description: 'run a shell command',
+      parameters: { type: 'object', properties: { command: { type: 'string' } } },
       execute: async () => toolSuccess('x'),
     });
 

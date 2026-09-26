@@ -6,10 +6,47 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Only the turn in progress replays its reasoning** (#248 item 6). Every earlier assistant turn's
+  reasoning went back to the model as a `<reasoning_context>` block on every request. It now goes
+  back only for the assistant steps after the newest message the user wrote. The loop's own mid-run
+  prompts (`[continuation]`, the completion gate, `[work-state]`) do not end a turn, and a closed
+  turn's reply that was only reasoning keeps it. Otherwise a closed turn is sent as its answer and
+  tool calls, the way the Anthropic API drops earlier turns' thinking; this holds on both providers,
+  and Anthropic's signed thinking blocks are unchanged. Measured with the new
+  `npm run eval:prompt -- --suite replay` on `cmc/stealth/space-bunny-alpha` and
+  `ag/gemini-3.8-flash-high`, 12 trials per arm over two runs: every request of a later turn is
+  about 10% smaller on these histories (1.4k and 2.2k tokens), an agentic follow-up task cost the
+  same on the first model and 23% fewer prompt tokens on the second, request counts did not change
+  (8.3 against 8.5 on average), and every answer stayed correct (120 of 120 per arm). Replaying no
+  reasoning at all took 1.5 to 2 more requests per task, so the turn in progress keeps it. Neither
+  route reported cached prompt tokens, so rewriting a closed turn costs no cache hit today; a
+  provider that caches prefixes re-reads the closed turn once per new user message.
+- **A checkpoint's "tests passed" is no longer reported as a result** (#247 item 6). After a
+  compaction, a checkpoint claiming `npm test` passed over a suite that now fails one test, with
+  nothing else flagging the files as changed, was reported as a pass in 9 of 32 trials
+  (`npm run eval:prompt -- --suite verify`, both models above, 8 trials per cell). One kernel line
+  now says that a checkpoint or summary saying a check passed is not a tool result, and to run the
+  check again when that claim is the only evidence left: 32 of 32 trials re-ran it and reported the
+  failure (Fisher p = 0.002). With a real passing run in the transcript, neither prompt re-ran
+  anything (0 of 32) and both reported green (32 of 32). The system prompt changes, so
+  `SYSTEM_PROMPT_VERSION` is `book-system-prompt-v4` and the first request after upgrading misses the
+  prompt cache once.
 - **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
   rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
   green, so every PR that touched them either reformatted unrelated lines or left them drifting.
   They are formatted once, and `npm run format` and `format:check` now include them.
+- **Reading and searching the workspace no longer asks** (#264). In `default` and `acceptEdits`, a
+  `Read`, `Glob` or `Grep` the tool can serve (inside the workspace, or for `Read` Book's memory
+  directory) runs without a permission prompt. The target is resolved the way the tool resolves it
+  (`..` applied, symlinks and junctions followed), so a link out of the workspace, a `Glob` pattern
+  that would start walking outside the workspace, and any target outside still ask. Still asking too:
+  anything an `ask` rule covers; every `Grep` and `Glob` while a `deny` or `ask` rule names `Read`,
+  `Grep` or `Glob`, since a `Read` rule cannot see what they read; `.book/settings.local.json`, which
+  can hold an API key (and which `Grep` no longer searches at all, through any path or link); and
+  everything in a workspace that holds a home directory, the OS one or Book's `BOOK_HOME`, also
+  through a link. An unattended `acceptEdits`
+  run could edit a file it was refused to read; print mode and the SDK now read the workspace in
+  both modes. `plan`, `dontAsk`, `auto` and `bypassPermissions` are unchanged.
 - **An empty session opens on a title page with a table of contents.** A five-row rubric drop cap
   B sits beside "O O K", a running head (workspace · model), a rule and a tagline. Below it, the
   contents list this workspace's five most recent sessions as chapters, with Roman numerals,
@@ -320,6 +357,41 @@ All notable changes to this project are documented in this file.
   typo in a longer word (`GitComit`, `GitCommet`). Fuzzy matching is the fallback for a query none
   of whose words names anything, and the intent keywords were filled out for the git,
   session, agent, evidence, check and notebook tools.
+- **Cached prompt tokens are counted on OpenAI-compatible providers** (#235). The OpenAI-compatible
+  client read only `prompt_tokens`, so a provider that caches the prompt (OpenAI's automatic cache,
+  DeepSeek, OpenRouter, LiteLLM) was billed in `/cost`, `/usage` and the USD budget as if nothing
+  was cached. Book now reads `prompt_tokens_details.cached_tokens` and the other providers' fields,
+  keeps `promptTokens` as the uncached input as on the Anthropic path, and prices a cache read with
+  no listed rate at the input rate and a cache write at twice it, upper bounds instead of an
+  `unknown` that stops a USD-budgeted run. `/cost` and `/usage` now include cache tokens in their
+  dollar figure and show them (`9,000 cached`).
+  9router caches its Claude routes upstream too, but its streamed usage carries no cache counts,
+  so there Book still shows every input token as uncached; the configuration guide has the numbers.
+  In print-mode JSON and SDK results, `usage.promptTokens` is now the uncached input whenever a
+  provider reports cache counts, as it already was on the Anthropic path, with the cache counts in
+  `cacheReadInputTokens` and `cacheCreationInputTokens`. The token totals `/cost`, `/usage` and the
+  usage panel show now include cache tokens on every provider.
+  A provider that omits `total_tokens` no longer reads as zero context pressure, which kept
+  usage-driven compaction from ever firing: the total defaults to prompt plus completion.
+- **A refused permission prompt names its real cause** (#264). Every refusal told the model "The
+  configured permission policy blocks this call", including a person pressing Skip and a print-mode
+  run that had nobody to ask. The tool result now says which it was: a `permissions.deny` rule
+  (named), the user declining, `dontAsk` mode, or a run where nothing can answer a prompt (print
+  mode, the SDK, a background agent, a scrollback session whose input closed). The last names what
+  would let the call through: an allow rule or `--permission-mode auto` for most calls; the `ask`
+  rule for a call one covers, since no allow rule outranks it; an allow rule only for skill consent;
+  only `bypassPermissions` for a persistent background shell; and nothing for a `Read`, `Glob` or
+  `Grep` outside the workspace, which the tool cannot open. Print mode and the SDK also print that
+  remedy once per session for each tool, on stderr in `text` output and as a `notice` event in
+  `stream-json`. A prompt withdrawn before anyone answered it (an interrupt, a session change, a
+  stopped agent) is reported as dismissed rather than as a person declining.
+- **A path rule matches the file however the call spells it** (#264). `deny: ["Read(.env)"]` and
+  `deny: ["Write(.env)"]` were globs over the raw argument, so a call on
+  `/abs/path/to/workspace/.env` or `src/../.env` slipped past them, straight to the file in `auto`
+  and `bypassPermissions` (and for writes, in `acceptEdits`). Rules for `Read`, `Write`, `Edit`,
+  `MultiEdit` and `NotebookEdit` are now also matched against the target's workspace-relative and
+  absolute spellings, before and after following links, in every mode; `Write` and `Edit` rules
+  apply the same way to the paths an `ApplyPatch` touches.
 - **SIIT and ISATAP addresses are judged by the IPv4 address they carry** (#246). SIIT's
   IPv4-translated `::ffff:0:0:0/96` and an ISATAP interface identifier (`0:5efe` or `200:5efe`
   followed by an IPv4 address) passed both check sites, so `https://[::ffff:0:a00:1]/` reached
@@ -472,6 +544,52 @@ All notable changes to this project are documented in this file.
   timestamps, so it kept the outline, and an `Edit` after the resume was refused as "only
   outlined". A rebuilt ledger now lets a real observation replace an outline, and never the
   reverse, whatever the timestamps. A checkpoint's file observations follow the same rule.
+- **`Read { outline: true }` covers more of what #247's reviews found missing, and lists less
+  that is not a declaration (#247).**
+  - **Now listed:** Java and C# methods with their body on the same line
+    (`public int get() { return n; }`), declarations with an annotation or attribute on their own
+    line (`@Override public String toString() {`, `[HttpGet] public IActionResult Get() {`) in
+    languages that have them, plain `*values()` generator methods, the members of a Java inner
+    class or a nested C# or C++ class, Java `record`s, and C++ class members: declarations,
+    one-line definitions, constructors, destructors, operators and pure virtuals, with qualifier
+    macros and `[[attributes]]`, inside `#ifdef` blocks and namespaces, and under class heads that
+    carry a comment, an export macro, `__declspec` or `alignas`. A signature is no longer dropped
+    for a parenthesis in a quoted default value (`paren(s = '(') {`, a C# verbatim string, a C++
+    `1'000`), a trailing comment, or a block comment before its body (`run() /* entry */ {`).
+  - **JSON** outlines to its top-level keys, or for an array to each element's first key, instead
+    of its opening brace alone. Depth decides, so keys after a block comment or a closing brace
+    are found; JSON5's bare and single-quoted keys count; a file with one record per line lists
+    every record; and a `.prettierrc` or `.eslintrc` is JSON only when it holds JSON.
+  - **No longer listed:** property access on objects named like keywords (`set.add(1);`,
+    `it.skip;`, `it.next();`, `impl->value = f(`, Kotlin's `it.split(",")`), and a statement
+    followed by another on the same line (`foo(x); if (y) {`). In JavaScript and TypeScript,
+    `it.skip('x', () => {`, `it.each` tables and other test blocks reached through a modifier
+    still are. In C++, a capitalised call with an underscore (`Q_PROPERTY(…)`, `GENERATED_BODY()`,
+    a field's `ABSL_GUARDED_BY(mu_)`) or a builtin such as `__attribute__` is a macro, not a
+    member, unless a body follows it (`BOOST_AUTO_TEST_CASE(works) {`); `static_assert(…)` is
+    not a member; and after `};` the class is closed. An `@` prefix is read as an annotation only
+    in languages that have them, so a Makefile's `@go get` and SCSS's `@include mq(…) {` stay
+    out.
+  - **The template scanner keeps its place** through a string continued with a trailing
+    backslash, and through a regex right after a condition's `)` (`if (ok) /\d+/.test(s)`),
+    which it read as a division; two such misreads used to hide every line between them.
+  - **Front matter** may open with a `# comment`, and a `#` comment beside YAML identifier keys
+    (`title:`) after a blank line no longer ends it. A `#` line alone in its run, or beside a
+    label such as `Summary: …`, stays a heading. The Markdown front-matter detector moved to
+    `src/frontmatter.ts`, beside `parseFrontmatter`, which keeps its own exact-`---` rule.
+  - **Budget:** an entry is cut at 512 bytes and ends with `…`, so a minified first line no longer
+    leaves an outline with "0 shown", and the header and truncation note fit inside the 50 KB clip
+    whatever the path's length. A long C++ qualifier macro is read in linear time.
+  - **Code:** the three lists of statement words, which disagreed, are one table that says where
+    each word rules a line out.
+  - The `outline` parameter's description now says "up to 2000 of them or 50 KB". It is part of
+    the cached tool schema, so the first request after upgrading misses the prompt cache once.
+  - **Measured:** over this repository's 731 tracked files the outline gains 191 entries and loses
+    one. The gains are 184 JSON keys, `.prettierrc`'s six keys, and the constructor of a class
+    declared inside a test; the loss is `def.model ? …`, which had passed for a Python `def`. Over
+    winpty's 88 C++ files it gains 304 class members, constructors, destructors and operators, and
+    loses 36 lines: 18 `impl->field = …` statements that had passed for Rust `impl` blocks, and 18
+    `} // anonymous namespace` closing lines.
 - **A failed print run exits 1 on Windows, not 127.** Print mode ended a failed run with
   `exit(1)` straight after its last provider request, while libuv was still closing the pooled
   sockets. On Windows that aborted with
@@ -846,6 +964,12 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **`npm run eval:prompt`** measures prompt-shaping choices with the real agent loop in throwaway
+  git sandboxes, with config loaded against an empty workspace. `--suite verify` pits a checkpoint's
+  claim against a transcript's tool result across four conditions. `--suite replay` records a
+  session once per model (`--record --trials 0`), then runs recall probes and an agentic follow-up
+  graded by the sandbox's tests and a hidden check. Arms differ only in one config field or one
+  request transform, and `--regrade` re-scores a saved verify report.
 - **`Read` has an outline mode.** Before its first edit a run read 40–55 whole files, and each
   survey read cost the entire file on every turn afterwards; the context reached 200k tokens by
   turn 30 (#217). `Read { outline: true }` returns a file's declarations with their line numbers

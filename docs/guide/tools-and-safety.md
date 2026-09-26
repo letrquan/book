@@ -17,49 +17,88 @@ can decide what to read in full.
 - **Markdown** (`.md`, `.markdown`, `.mdx`): the `#`…`######` and setext headings, and nothing
   else. Fenced code blocks are skipped, so a `# comment` in a shell example is not taken for a
   heading. A leading `---` opens front matter, which is skipped, only when YAML runs up to a
-  closing `---`: a `key:` line first, then `key:` lines (any text up to a colon), indented or `- `
-  lines, and `#` comments. A `#` line after a blank line is a heading, so such a block is not
-  front matter. Otherwise it is a horizontal rule, and the headings after it count.
+  closing `---` (or `...`): the first line that is not a `#` comment is a `key:` line (any text
+  up to a colon), and each run of lines between blank lines holds `key:`, indented or `- ` lines.
+  `#` lines among the keys of the first run are comments, and so is a `#` line that opens the
+  block or sits in a later run beside YAML identifier keys (`title:`). A `#` line alone in its
+  run, or beside a label such as `Summary: …`, is a heading, so such a block is not front matter:
+  a horizontal rule, and the headings after it count.
+- **JSON** (`.json`, `.jsonc`, `.json5`, `.webmanifest`, and rc files such as `.babelrc` that hold
+  JSON): the line that opens the root (or each record of a file with one per line), then an
+  object root's top-level keys, or an array root's elements, each object element by its first
+  key. Nesting depth decides, not indentation, so a key after a block comment
+  (`/* c */ "a": 1,`) or after a closing brace (`}, "c": 2,`) is found, and an element opened on
+  the line that closes the one before (`}, {`) too. Brackets inside strings and comments do not
+  count, and JSON5's bare and single-quoted keys do.
 - **Everything else**: every line at indentation zero except blank lines, comments, lines of
-  closing punctuation alone (`}`, `});`, `]);`) and an Allman-style `{` line, plus lines indented
-  by up to four spaces that declare something:
-  - a `function`/`class`/`def`/`fn`/`fun`-style keyword line, unless the keyword is an object key
-    or an import-list member (`enum: [...]`, `describe,`);
+  closing punctuation alone (`}`, `});`, `]);`, a trailing comment allowed) and an Allman-style
+  `{` line, plus lines indented by up to four spaces that declare something:
+  - a `function`/`class`/`def`/`fn`/`fun`-style keyword line, unless the keyword is an object key,
+    an import-list member or a property access (`enum: [...]`, `describe,`, `set.add(x)`,
+    `it.skip;`); in JavaScript and TypeScript, also a test block reached through a modifier
+    (`it.skip('later', () => {`, `it.each` tables);
   - a method named first whose parameter list closes into a body, on the same line or a later one
-    (`async *entries() {`, `#secret(): string {`, `async send(` … `): Promise<void> {`, or
-    `}: Args): Promise<void> {` after a destructured parameter);
+    (`async *entries() {`, `*values() {`, `#secret(): string {`, `async send(` …
+    `): Promise<void> {`, or `}: Args): Promise<void> {` after a destructured parameter);
   - a method written return-type-first (`public int getN() {`, `Future<void> load() async {`),
-    with its `{` at the end of the line or alone on the next, or with an expression body
-    (`int Twice(int x) => x * 2;`); in Java and C#, also an interface or abstract method with no
-    body (`double area();`);
-  - an arrow-function member (`handle = (event) => {`).
+    with its `{` at the end of the line or alone on the next, with its whole body on the line
+    (`public int get() { return n; }`, and in Java and C# a constructor's too), or with an
+    expression body (`int Twice(int x) => x * 2;`); in Java and C#, also an interface or abstract
+    method with no body (`double area();`);
+  - an arrow-function member (`handle = (event) => {`);
+  - in C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx`, `.h` and the like), inside a class body
+    (under `class`, `struct` or an access specifier such as `public:`), every member function,
+    constructor, destructor and operator, declared (`void set(int v);`,
+    `virtual void draw() = 0;`) or defined (`int get() const { return n_; }`), with qualifier
+    macros and `[[attributes]]` allowed; elsewhere a function whose body is on its line or opens
+    below it, qualified names included (`std::string Foo::name() {`). `int x(5);` and
+    `Foo f(1);` outside a class are variables and stay out, and so does `static_assert(…)`. A
+    capitalised call with an underscore (`Q_PROPERTY(…)`, `GENERATED_BODY()`, a field's
+    `ABSL_GUARDED_BY(mu_)`) or a builtin such as `__attribute__((…))` is a macro, not a member,
+    unless a body follows it (`BOOST_AUTO_TEST_CASE(works) {`); `RGB(int r, int g, int b);` is a
+    constructor. A class head may carry an export macro, `__declspec(…)` or `alignas(…)`, and
+    preprocessor lines and access specifiers inside a class do not end it.
+
+  An annotation or attribute on the declaration's own line does not hide it
+  (`@Override public String toString() {`, `@HostListener('click') onClick() {`,
+  `[HttpGet] public IActionResult Get() {`) in languages that have them (Java, Kotlin, Scala,
+  Groovy, C#, Dart, Swift, TypeScript and JavaScript). A parenthesis inside a quoted default value
+  (`paren(s = '(') {`, a C# verbatim string, a C++ `1'000`) does not unbalance a signature, and
+  neither does a trailing comment (`void set(int v);  // Sets it.`) or a block comment before the
+  body (`run() /* entry */ {`). A line deeper than four spaces counts when it declares a member of
+  a type the outline lists: a Java inner class's methods, a nested C# or C++ class's, an `impl`
+  inside a Rust `mod`.
 
   Lines shaped like these that are not declarations stay out: control flow (`if (`, `else if (`,
   `for (`, `foreach (`, `using (`, `lock (`, `switch (`, `catch (`; in Java and C# also with no
   space, as in `foreach(` and `lock(`, which elsewhere may be method names), `assert x;`,
   `return foo(`, `new Foo(`, `go func() {`, `defer func() {`, a call that closes into a callback
-  (`useEffect(() => {`, `).then(() => {`), and a chained call (`foo(x).then(`). In `.ts`, `.mts`,
-  `.cts`, `.mjs` and `.cjs` files, the text of a multi-line template literal is skipped at any
-  indentation. `.tsx`, `.jsx` and `.js` files are not scanned for it, because JSX text may hold a
-  `/*` or a lone backtick that would open a comment or template that never closes, and a scan
-  that still ends inside one masks nothing. A `#` line is a
-  comment in Python, shell, YAML, TOML, Ruby and PowerShell files, Makefiles, Dockerfiles (unless
-  the name ends in a code extension, as `makefile.c` does), and extension-less scripts that start
-  with `#!`; elsewhere C preprocessor lines and Rust attributes stay in.
+  (`useEffect(() => {`, `).then(() => {`), a chained call (`foo(x).then(`), a call on an object
+  named like a keyword (`it.next()`, `impl->value = f(`, Kotlin's `it.split(",")`), and a
+  statement followed by another on the same line (`foo(x); if (y) {`). In `.ts`, `.mts`, `.cts`,
+  `.mjs` and `.cjs` files, the text of a multi-line template literal, and of a string continued
+  with a trailing backslash, is skipped at any indentation, and a `/` right after a condition's
+  `)` (`if (ok) /\d+/.test(s)`) opens a regex. `.tsx`, `.jsx` and `.js` files are not scanned for
+  it, because JSX text may hold a `/*` or a lone backtick that would open a comment or template
+  that never closes, and a scan that still ends inside one masks nothing. A `#` line is a comment
+  in Python, shell, YAML, TOML, Ruby and PowerShell files, Makefiles, Dockerfiles (unless the name
+  ends in a code extension, as `makefile.c` does), and extension-less scripts that start with
+  `#!`; elsewhere C preprocessor lines and Rust attributes stay in.
 
 - **What it covers:** these shapes fit TypeScript/JavaScript, Python, Go, Rust, Java, Kotlin
   (declarations with `fun`; a `name(args) {` line there is a call taking a trailing lambda), C#
-  (members at indentation 8 under a block-scoped `namespace X {`) and Dart. The supported shapes
-  are the `Read outline contract` table in `src/tools/file.test.ts`. Not covered: C++ in-class
-  members (`const std::string& name() const {`), Java inner-class members (indentation 8), a Dart
-  constructor with no body, a plain `*values()` generator method (only `async *` is listed), a
-  signature whose closing `)` shares a line with its last parameter, and PowerShell `<# … #>`
-  block comments.
+  (members at indentation 8 under a block-scoped `namespace X {`), Dart, C++ class members and
+  JSON. The supported shapes are the `Read outline contract` table in `src/tools/file.test.ts`.
+  Not covered: Kotlin `companion object` members, a Dart constructor with no body, a signature
+  whose closing `)` shares a line with its last parameter, and PowerShell `<# … #>` block
+  comments.
 
 What an outline saves depends on the file: `src/agent/loop.ts` goes from 2876 lines to 51, and
 this README goes to its 33 headings. A test file keeps its `describe`/`it` lines, and a JSON file
-outlines to its opening brace. The outline is capped at 2000 entries or 50 KB, with a note naming
-the line where the rest start. It takes no `offset` or `limit`, and passing either is an error.
+outlines to its top-level keys. Each entry is cut at 512 bytes and ends with `…`, so one minified
+line cannot crowd out the rest. The outline is capped at 2000 entries or 50 KB, with a note naming
+the line where the rest start, and the header and note fit inside that budget whatever the path's
+length. It takes no `offset` or `limit`, and passing either is an error.
 
 An outline is not a read. It is recorded as its own `outline` observation, which satisfies
 neither the observed-file check nor the freshness check. `Edit`, `MultiEdit` and a `Write` over an
@@ -226,12 +265,61 @@ Modes differ only in what happens to calls that no `deny` rule matched:
 
 | Mode                | Unmatched calls                                                                                                                              |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `default`           | Checked against `allow`/`ask`, then prompted                                                                                                 |
-| `acceptEdits`       | As `default`, but file mutations are approved without a prompt                                                                               |
+| `default`           | Checked against `allow`/`ask`, then prompted — except workspace reads, which run unless a rule covers them                                   |
+| `acceptEdits`       | As `default`, and file mutations are approved without a prompt too                                                                           |
 | `plan`              | Read-only tools only; mutations are refused until you approve a plan                                                                         |
 | `auto`              | Run without a prompt                                                                                                                         |
 | `dontAsk`           | Refused except for the built-in always-allowed tools (`MemorySave`) — the mode never prompts, and a user `allow` rule does not exempt a call |
 | `bypassPermissions` | Run without a prompt                                                                                                                         |
+
+**Workspace reads.** In `default` and `acceptEdits`, a `Read`, `Glob` or `Grep` that the tool can
+serve runs without a prompt: a target inside the workspace, or for `Read` inside Book's memory
+directory (but not its inbox). The target is resolved the way the tool resolves it: `..` is applied
+and symlinks and junctions are followed, so a link inside the workspace that points out of it still
+asks. A `Grep` with no `path` searches the workspace; a `Glob` that would start walking outside
+it (`../**`, `.{.,x}/*`, an absolute path elsewhere) still asks. Other read-only tools (`GitStatus`, `GitDiff`, `WebFetch`, …) still ask.
+
+What still asks:
+
+- A call an `ask` rule covers, and a call a `deny` rule blocks.
+- Any `Grep` or `Glob` while you have a `deny` or `ask` rule for `Read`, `Grep` or `Glob`. A `Read`
+  rule cannot see what they read (`Grep` with `path: ".env"` returns every line of it), so they
+  fall back to the prompt.
+- Book's project-local settings, `.book/settings.local.json`, and the `.book` directory that holds
+  it, since that file can carry an API key. `Grep` never searches that file at all, whatever path
+  or link leads to it.
+- Everything, in a workspace that holds a home directory, yours or Book's own (`BOOK_HOME`),
+  also when either is reached through a link: a session started in your home directory. A home
+  holds SSH and provider keys and the trust store.
+
+`additionalDirectories` does not widen this: no file tool reads there yet, and the setting may come
+from a checked-in project file.
+
+A path rule for `Read`, `Write`, `Edit`, `MultiEdit` or `NotebookEdit` is also matched against the
+other spellings of the target — relative to the workspace and absolute, before and after following
+links — in every mode. So `deny: ["Read(.env)"]` also stops a `Read` of
+`/abs/path/to/workspace/.env` or `src/../.env`, and `deny: ["Write(.env)"]` holds under `auto` and
+`bypassPermissions` whatever the call writes it as, `ApplyPatch` included.
+
+**When nobody can answer a prompt.** Print mode, the SDK, and a background agent with no
+interactive approver cannot show a prompt, so a call that would prompt is refused. The model is told
+that nothing in the run could approve it, not that a policy blocked it, and what would let the call
+through:
+
+| The call                                         | What lets it through                                           |
+| ------------------------------------------------ | -------------------------------------------------------------- |
+| Most calls                                       | A `permissions.allow` rule for it, or `--permission-mode auto` |
+| One an `ask` rule covers                         | Narrowing or removing that rule (it outranks allow), or `auto` |
+| A skill that asks for consent                    | A `permissions.allow` rule; `auto` still asks                  |
+| A persistent background shell                    | Only `--permission-mode bypassPermissions`                     |
+| A `Read`, `Glob` or `Grep` outside the workspace | Nothing: the tool cannot open it                               |
+
+In print mode and the SDK, the first such refusal of each tool in a session also prints the remedy
+for the operator (on stderr in `text` output, as a `notice` event in `stream-json`); a call nothing
+can help prints none. That covers the main agent's own calls: a managed agent's refusal goes to its
+own model, which reports it back. A refusal by a `deny` rule names that rule, a refusal in `dontAsk`
+says so, and a prompt withdrawn before anyone answered it (an interrupt, a session change, a
+stopped agent) is reported as dismissed rather than declined.
 
 `plan` mode needs a host that can approve the plan the agent submits through `ExitPlanMode`. The
 TUI prompts; print/headless and the SDK route the decision through `onUserQuestionRequired`, and a

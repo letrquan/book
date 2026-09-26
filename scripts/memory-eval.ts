@@ -21,6 +21,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { promptSizeTokens } from '../src/pricing.js';
 import {
   BASE_WORKSPACE,
   MEMORY_SCENARIOS,
@@ -160,11 +161,20 @@ async function session(
           sawResult = true;
           const body = event.result as {
             messages?: Array<{ role: string; content?: string }>;
-            usage?: { promptTokens?: number };
+            usage?: {
+              promptTokens?: number;
+              cacheReadInputTokens?: number;
+              cacheCreationInputTokens?: number;
+            };
           };
           const last = [...(body?.messages ?? [])].reverse().find((m) => m.role === 'assistant');
           result.text = last?.content ?? '';
-          result.inputTokens = body?.usage?.promptTokens ?? 0;
+          result.inputTokens = promptSizeTokens({
+            promptTokens: body?.usage?.promptTokens ?? 0,
+            completionTokens: 0,
+            cacheReadInputTokens: body?.usage?.cacheReadInputTokens,
+            cacheCreationInputTokens: body?.usage?.cacheCreationInputTokens,
+          });
         }
       }
       if (!sawResult) {

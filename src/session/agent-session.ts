@@ -36,13 +36,19 @@ import {
   createTerminalOutcome,
   type AgentTerminalOutcome,
 } from '../types/terminal.js';
-import type { ToolCall, ToolResult, UserQuestionResponse } from '../types/tools.js';
+import type {
+  PermissionDecision,
+  ToolCall,
+  ToolResult,
+  UserQuestionResponse,
+} from '../types/tools.js';
 import {
   collectAtMentionObservations,
   expandAtMentions,
   expandShellCommands,
 } from '../input/input-expansion.js';
 import { observationKey } from '../tools/file-provenance.js';
+import { promptSizeTokens } from '../pricing.js';
 import { AgentInteractionController } from './agent-interactions.js';
 import {
   AgentSessionOperations,
@@ -1038,7 +1044,9 @@ export class AgentSession {
           finalizeOutcome(outcome);
         },
         onPermissionRequired: (toolCall) => {
-          if (request.isCurrent?.() === false) return Promise.resolve('deny');
+          if (request.isCurrent?.() === false) {
+            return Promise.resolve<PermissionDecision>({ result: 'deny', reason: 'dismissed' });
+          }
           return callbacks.onPermissionRequired
             ? callbacks.onPermissionRequired(toolCall)
             : this.interactions.requestPermission(toolCall);
@@ -1085,7 +1093,13 @@ export class AgentSession {
             : null;
           const recordUsage = inclusive ? subtractUsage(inclusive, persistedUsage) : nextUsage;
           if (inclusive) persistedUsage = inclusive;
-          if (recordUsage.totalTokens <= 0 && recordUsage.promptTokens <= 0) return;
+          // A full cache hit leaves `promptTokens` at 0 on a provider that omits
+          // `total_tokens`; the record still carries spend.
+          if (
+            recordUsage.totalTokens <= 0 &&
+            promptSizeTokens(recordUsage) + recordUsage.completionTokens <= 0
+          )
+            return;
           // `RunAccounting.roots` is rebuilt with the process, so without a durable
           // record forty restarts is forty independent budget caps. The 'usage'
           // SessionRecord type was already declared with no writers; this is it.
