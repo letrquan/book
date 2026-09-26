@@ -19,6 +19,7 @@ import type {
 } from '../types/tools.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import { createProvider, type Provider } from '../provider/index.js';
+import { TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
 import { buildMessages } from './context.js';
 import type { PreparedToolCall, ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
@@ -1254,7 +1255,7 @@ export async function runAgentLoop(
         ].includes(reason),
       );
       if (!streamError && streamDone && finishReason) {
-        if (finishReason === 'length' || finishReason === 'max_tokens') {
+        if (TRUNCATION_FINISH_REASONS.has(finishReason)) {
           // Not a protocol error. On a migration or a generated file, hitting the
           // output cap is the shape of the work, not an anomaly — and classifying
           // it as a protocol error made it unrecoverable.

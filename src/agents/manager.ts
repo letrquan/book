@@ -430,14 +430,17 @@ export class AgentManager {
           // output into its own report) gets no re-run: it would bill a result nobody
           // receives. The agent stays interrupted and says why.
           if (record.resumeAfterRestart === false) {
-            // A follow-up queued behind the host's run is not run either: it would start with
-            // none of the host's context, and whether its result is the host's or the parent's
-            // is not recorded per run. It is named, so it is not lost without a word.
-            const queued = record.pendingMessages?.length ?? 0;
+            // Follow-ups sent to it are not run either: one would start with none of the host's
+            // context, and whether its result is the host's or the parent's is not recorded per
+            // run. They are counted, so none is lost without a word: the one that was running
+            // (the prompt is no longer the spawn task) and any queued behind it.
+            const dropped =
+              (record.pendingMessages?.length ?? 0) +
+              (record.purpose !== undefined && record.prompt !== record.purpose ? 1 : 0);
             record.error =
               'Not resumed after the restart: the host that spawned it handles its result and exited with the process.' +
-              (queued > 0
-                ? ` ${queued} follow-up${queued === 1 ? '' : 's'} queued behind its run ${queued === 1 ? 'was' : 'were'} not run either; send ${queued === 1 ? 'it' : 'them'} again.`
+              (dropped > 0
+                ? ` ${dropped} follow-up${dropped === 1 ? '' : 's'} sent to it ${dropped === 1 ? 'was' : 'were'} not run either; send ${dropped === 1 ? 'it' : 'them'} again.`
                 : '');
             this.persist(record);
             continue;

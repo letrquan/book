@@ -62,9 +62,10 @@ const LOCK_TTL_MS = 30 * 60 * 1000;
 /** How often a running extraction refreshes its lock: well inside the lock's lifetime. */
 const LOCK_REFRESH_MS = LOCK_TTL_MS / 3;
 /**
- * How long a run keeps its lock fresh. Past it the lock goes stale and another start may take it
- * over, so a provider call stuck in retries cannot hold off extraction for this workspace for as
- * long as its TUI stays open; the run that lost the lock then writes nothing more.
+ * How long a run keeps its lock fresh while it works on one session. Past it the lock goes stale
+ * and another start may take it over, so a provider call stuck in retries cannot hold off
+ * extraction for this workspace for as long as its TUI stays open; the run that lost the lock then
+ * writes nothing more. A run that moves on through many sessions keeps its lock.
  */
 const LOCK_MAX_HOLD_MS = 4 * LOCK_TTL_MS;
 const MAX_TRANSCRIPT_CHARS = 60_000;
@@ -410,11 +411,11 @@ export async function runMemoryExtraction(
     return { processed: [], reason: 'locked' };
   }
   // On the session's retry policy one provider call can outlast the lock's lifetime, and a start
-  // that finds a stale lock takes it over: keep it fresh while this run lasts, up to a ceiling.
-  const refreshUntil = Date.now() + LOCK_MAX_HOLD_MS;
+  // that finds a stale lock takes it over: keep it fresh while this run lasts, as long as no one
+  // session has been at it longer than the ceiling.
+  let sessionStartedAt = Date.now();
   const refresher = setInterval(() => {
-    if (Date.now() > refreshUntil) clearInterval(refresher);
-    else lock.refresh();
+    if (Date.now() - sessionStartedAt <= LOCK_MAX_HOLD_MS) lock.refresh();
   }, LOCK_REFRESH_MS);
   refresher.unref?.();
   const result: MemoryExtractionResult = { processed: [] };
@@ -434,6 +435,7 @@ export async function runMemoryExtraction(
     const modelConfig = resolveCompactModelConfig(config);
     const provider = opts.provider ?? createProvider(modelConfig);
     for (const meta of candidates) {
+      sessionStartedAt = Date.now();
       if (opts.signal?.aborted) break;
       // Every write below replaces the whole state file with this run's copy: once another start
       // has taken the lock over, this run must not write it again.

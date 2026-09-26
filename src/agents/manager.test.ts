@@ -2150,7 +2150,45 @@ describe('children re-driven after a restart', () => {
     expect(requests).toBe(0);
     expect(record).toMatchObject({ status: 'interrupted', resumable: false });
     expect(record?.error).toMatch(/not resumed/i);
-    expect(record?.error).toMatch(/1 follow-up queued behind its run was not run either/);
+    expect(record?.error).toMatch(/1 follow-up sent to it was not run either/);
     expect(completions).toHaveLength(0);
+  });
+
+  it('counts the follow-up that was running after the /review run among those dropped (#245)', async () => {
+    const { record, requests } = await restartAndCollect(undefined, async (manager) => {
+      // The review's own run answers once two follow-ups are queued behind it; the first of
+      // them is running, the second still queued, when the process dies.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let calls = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (_url: unknown, init?: RequestInit) => {
+          if (calls++ > 0) return held(init?.signal);
+          await gate;
+          return answered('review answer');
+        }),
+      );
+      const spawned = await reviewRunnerFor(manager, { parentSessionId: 'parent-1' }).spawn(
+        'explorer',
+        'survey',
+      );
+      await vi.waitFor(async () => expect((await manager.get(spawned.id))?.status).toBe('running'));
+      await manager.send(spawned.id, 'first follow-up');
+      await manager.send(spawned.id, 'second follow-up');
+      release();
+      await vi.waitFor(async () =>
+        expect(await manager.get(spawned.id)).toMatchObject({
+          status: 'running',
+          prompt: 'first follow-up',
+        }),
+      );
+      return spawned;
+    });
+    expect(requests).toBe(0);
+    expect(record).toMatchObject({ status: 'interrupted', resumable: false });
+    expect(record?.error).toMatch(/2 follow-ups sent to it were not run either/);
   });
 });
