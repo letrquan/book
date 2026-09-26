@@ -201,6 +201,11 @@ export interface AgentConfig {
   defaultBaseUrl?: string;
   defaultProvider?: 'anthropic' | 'openai' | 'auto';
   autoCompactEnabled: boolean;
+  /**
+   * Internal, for evaluations only: replay every earlier assistant turn's reasoning, as
+   * Book did before #248 item 6. Unset, only the turn in progress replays it.
+   */
+  replayAllReasoning?: boolean;
   workspace: string;
   animation: {
     typewriterSpeed: number;
