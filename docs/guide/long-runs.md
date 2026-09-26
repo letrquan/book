@@ -106,35 +106,38 @@ A `bad_request` on a request of 200k estimated tokens or more, plain
 (`400 {"error":{"message":"[400]: …","code":"bad_request"}}`) or quoted inside a 503, is read as a
 context overflow even when the body does not say so: the antigravity Gemini route refuses at ~300k
 without naming the length. A 429 whose message states an oversized request (OpenAI's
-`Request too large … on tokens per min (TPM)`) is recovered the same way. The history is compacted and the turn
+`Request too large … on tokens per min (TPM)`) is recovered the same way. Such a 429 is not retried
+like other rate limits: waiting cannot make that request fit. The history is compacted and the turn
 retried once, provided a size-inferred retry is below 200k tokens. If that retry is refused with a
-400 again, the error adds that the refusal was probably not about size. Only an error that states
-an overflow also lowers the learned context window: a 413 status, an `error.code` or `error.type`
-of `context_length_exceeded` or `request_too_large` (or llama.cpp's
-`exceed_context_size_error`), or overflow wording in the error message ("maximum context length",
-"prompt is too long", Gemini's "input token count (N) exceeds the maximum", …), including the
-upstream body OpenRouter forwards in `error.metadata.raw`, as a string or an object. A number
-elsewhere in the body, such as a `contents[413]` field path or a `req-413-x` request id, is not a
-statement about the window, and neither a TPM 429 nor an overflow inferred from size alone ever
-lowers it.
+400 again, the error says so: either the refusal is not about size, or the route's real limit is
+below 200k, which a declared `contextWindow` fixes. Only an error that states an overflow also
+lowers the learned context window: a 413 status, an `error.code` or `error.type` of
+`context_length_exceeded` or `request_too_large` (or llama.cpp's `exceed_context_size_error`), or
+overflow wording in the error message ("maximum context length", "prompt is too long", Gemini's
+"input token count (N) exceeds the maximum", …), including the upstream body OpenRouter forwards in
+`error.metadata.raw`, as a string or an object. A number elsewhere in the body, such as a
+`contents[413]` field path or a `req-413-x` request id, is not a statement about the window, and
+neither a TPM 429 nor an overflow inferred from size alone ever lowers it.
 
-Every recovery compaction plans the reducer's requests against at most 80% of the refused
-request's size, so its first request is never nearly as large as the refused one. The reducer's own
-request is read the same way as the turn's: a plain `bad_request` to a reducer request of 200k
-tokens or more halves the window its chunks are planned against. If the reducer still fails, large
-tool results are clipped, and when the clip cannot bring the request under that 80%, a checkpoint
-is built without the model: it is marked degraded, but it needs no provider call. A clip is kept
-only when the turn is retried with it. The recovery compacts only when `autoCompactEnabled` is on;
-with it off, only the clip runs. A 400 on a smaller request, or another overflow right after
-compacting, ends the run on the provider's error: the recovery runs once per turn.
+Every recovery compaction plans the reducer's requests against at most 80% of the refused request's
+size, so its first request is never nearly as large as the refused one. The reducer's own request is
+read the same way as the turn's: a plain `bad_request` to a reducer request of 200k tokens or more
+halves the window its chunks are planned against. If the reducer still fails, large tool results are
+clipped, and when the clip cannot bring the request under that 80% (and, for a size-inferred
+overflow, under 200k), a checkpoint is built without the model: it is marked degraded, but it needs
+no provider call. A clip is kept only when the turn is retried with it. The recovery compacts only
+when `autoCompactEnabled` is on; with it off, only the clip runs, and an error that ends the run
+says so. A 400 on a smaller request, or another overflow right after compacting, ends the run on the
+provider's error: the recovery runs once per turn.
 
 Before a request that carries tool results is sent, Book measures it against the model's usable
-window (the window minus the output reserve). At 80% of it the history is compacted, and a
-request still too large has its tool results clipped. When the reducer failed and the clip cannot
-help, which is what resuming a long session on a model with a smaller window looks like, a
-checkpoint is built without the model and the request is sent on that. The run ends with
-`Request is too large for <model>` only when even that cannot be made, or when `autoCompactEnabled` is off,
-and the message names the remedy.
+window (the window minus the output reserve). At 80% of it the history is compacted, and a request
+still too large has its tool results clipped. When the reducer failed (not when a `PreCompact` hook
+blocked it) and the clip cannot help, which is what resuming a long session on a model with a
+smaller window looks like, a checkpoint is built without the model and the request is sent on that.
+The run ends with `Request is too large for <model>` only when even that cannot be made, or when
+`autoCompactEnabled` is off, and the message names the remedy and why the compaction did not
+help.
 
 Two answers that are not answers get one re-issue each: a `content_filter` stop on a turn with no
 tool calls, and a 200 whose text is the upstream's error envelope. When a model may have written

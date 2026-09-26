@@ -2753,6 +2753,8 @@ describe('compaction a request cannot be sent without (#238, #244)', () => {
     });
     if (result.status === 'compacted') {
       expect(result.checkpoint.coverage?.reasons).toContain('pass-limit');
+      expect(result.checkpoint.state.summary).toContain('without a summarizer');
+      expect(result.checkpoint.state.summary).not.toContain('returned no usable');
     }
   });
 

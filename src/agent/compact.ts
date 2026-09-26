@@ -151,6 +151,10 @@ const RETRIEVAL_WARNING =
  */
 export const LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS = 200_000;
 
+/** What a model-free checkpoint says in place of a summary, since no reducer read the span. */
+const DETERMINISTIC_COMPACTION_NOTE =
+  'The conversation was compacted without a summarizer, so this checkpoint records no summary of the span.';
+
 /**
  * The checkpoint message's header.
  *
@@ -950,7 +954,9 @@ export async function runCompact(
     if (selectedChunks.length === 0) {
       finalCheckpoint = makeDeterministicFallback(
         seedCheckpoint,
-        '',
+        // A deterministic compaction asked for none: the note must not blame a
+        // summarizer that was never called.
+        options.deterministic ? DETERMINISTIC_COMPACTION_NOTE : '',
         generation,
         statistics,
         checkpointBudget,

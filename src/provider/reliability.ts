@@ -87,10 +87,12 @@ const CONTEXT_OVERFLOW_ERROR_NAMES: ReadonlySet<string> = new Set([
  * The message and the `code` / `type` names of a provider's error body. The
  * message is `error.message` (or `error` itself when it is a string), else a
  * top-level `message` or `detail`; a body that is not JSON is its own message.
- * `raw` is the upstream's own error body that OpenRouter forwards in
- * `error.metadata.raw`, as a string or as an object. `parsed` says the body
- * read as a JSON object, so a reader can tell a body with no message of its own
- * from a body that is not JSON at all.
+ * A body that starts like JSON but does not parse (cut at the read cap, or
+ * malformed) is read for its first `"message"` string alone, never for the rest,
+ * which may echo the request. `raw` is the upstream's own error body that
+ * OpenRouter forwards in `error.metadata.raw`, as a string or as an object.
+ * `parsed` says the body read as a JSON object, so a reader can tell a body with
+ * no message of its own from a body that is not JSON at all.
  */
 function errorBodyParts(body: string): {
   message: string;
@@ -102,7 +104,19 @@ function errorBodyParts(body: string): {
   try {
     parsedJson = JSON.parse(body);
   } catch {
-    return { message: body, names: [], parsed: false };
+    if (!/^\s*[{[]/.test(body)) return { message: body, names: [], parsed: false };
+    // JSON cut at the read cap, or malformed: only its first `"message"` string is read, never
+    // the rest, which may echo the request.
+    const match = body.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    let message = '';
+    if (match) {
+      try {
+        message = JSON.parse(`"${match[1]}"`) as string;
+      } catch {
+        message = '';
+      }
+    }
+    return { message, names: [], parsed: true };
   }
   const root: unknown = Array.isArray(parsedJson) ? parsedJson[0] : parsedJson;
   if (typeof root !== 'object' || root === null) {
@@ -399,6 +413,20 @@ export async function fetchWithRetry(
       logger?.warn('upstream error quoted in retryable status; not retrying', {
         status: response.status,
         upstreamStatus: quoted,
+      });
+      return new Response(bodyText, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }
+
+    // A 429 that states the request itself is too large (OpenAI's per-minute cap on one request
+    // that can never fit under it) is refused the same way however long the retries wait: the
+    // loop's overflow recovery is what lets it through, so it gets the response now.
+    if (response.status === 429 && statesContextOverflow(bodyText)) {
+      logger?.warn('rate limit on a request too large to ever fit; not retrying', {
+        status: response.status,
       });
       return new Response(bodyText, {
         status: response.status,

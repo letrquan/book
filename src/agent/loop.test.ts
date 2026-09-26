@@ -6698,6 +6698,7 @@ describe('requests the window cannot hold (#238, #244 review)', () => {
     expect(compact).toHaveBeenCalledTimes(2);
     expect(calls.count).toBe(0);
     expect(errors[0]).toContain('Compaction could not bring it under the limit');
+    expect(errors[0]).toContain('reasoning_effort is not supported by this model');
   });
 
   it('compacts on a TPM 429 without lowering the learned window', async () => {
@@ -6729,7 +6730,6 @@ describe('requests the window cannot hold (#238, #244 review)', () => {
         maxTurns: 1,
         model: 'router/tpm-model',
         autoCompactEnabled: true,
-        retry: { ...defaultConfig().retry, maxAttempts: 0 },
       }),
       createRegistry(),
       'hello',
@@ -6899,6 +6899,230 @@ describe('requests the window cannot hold (#238, #244 review)', () => {
     expect(compact).toHaveBeenCalledOnce();
     expect(fetchCalls).toBe(2);
     expect(errors.at(-1)).toContain('INVALID_ARGUMENT');
-    expect(errors.at(-1)).toContain('not about its size');
+    expect(errors.at(-1)).toContain('not about size');
+    expect(errors.at(-1)).toContain('contextWindow');
+  });
+});
+
+describe('the last-resort compaction, review round 1 (#238, #244)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function smallResultHistory(count: number): Message[] {
+    const ids = Array.from({ length: count }, (_, index) => `r2-result-${index}`);
+    return [
+      { id: 'r2-user', role: 'user', content: 'build it', includeInContext: true, timestamp: 0 },
+      {
+        id: 'r2-assistant',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolResults: ids.map((id) => toolSuccess('r'.repeat(6_000), { toolCallId: id })),
+        timestamp: 0,
+      },
+    ];
+  }
+
+  const smallWindow = {
+    maxTurns: 1,
+    maxTokens: 4_000,
+    autoCompactEnabled: true,
+    modelInfo: { contextWindow: 40_000, maxOutputTokens: 4_000 },
+  };
+
+  function countingProvider(calls: { count: number }): Provider {
+    return {
+      id: 'scripted',
+      stream: async function* () {
+        calls.count++;
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done' };
+      },
+    };
+  }
+
+  const reducerRefused: CompactResult = {
+    status: 'failed',
+    reason: 'provider-error',
+    error: 'API Error: 400 reasoning_effort is not supported by this model',
+  };
+
+  const plainBadRequest = JSON.stringify({
+    error: {
+      message:
+        '[400]: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}',
+      code: 'bad_request',
+    },
+  });
+
+  it('does not repeat a compaction a PreCompact hook blocked', async () => {
+    const calls = { count: 0 };
+    const compact = vi.fn(async (): Promise<CompactResult> => ({
+      status: 'skipped',
+      reason: 'blocked',
+      message: 'PreCompact hook blocked compaction.',
+    }));
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      smallResultHistory(60),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(calls.count).toBe(0);
+    expect(errors[0]).toContain('Request is too large for');
+  });
+
+  it('neither compacts again nor refuses once the run is cancelled', async () => {
+    const calls = { count: 0 };
+    const controller = new AbortController();
+    const compact = vi.fn(async (): Promise<CompactResult> => {
+      controller.abort();
+      return { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' };
+    });
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      smallResultHistory(60),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false, signal: controller.signal },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(calls.count).toBe(0);
+    expect(errors.some((error) => error.includes('Request is too large'))).toBe(false);
+  });
+
+  it('sends a compacted history that no longer carries tool results', async () => {
+    // The gate refuses only requests that carry tool results; one the compaction
+    // turned into text goes to the provider like any other text-only request.
+    const calls = { count: 0 };
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) =>
+        requestHints?.deterministic
+          ? {
+              ...compactedForRetry(),
+              replacementHistory: [userMsg('t'.repeat(200_000))],
+            }
+          : reducerRefused,
+    );
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      smallResultHistory(60),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(calls.count).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  it('compacts without the model when a clip leaves a size-inferred retry over the floor', async () => {
+    // The clip lands under 80% of the refused size but over the 200k floor a
+    // size-inferred retry must get under, so it is not enough on its own.
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) return new Response(plainBadRequest, { status: 400 });
+        return new Response(textStream('recovered'), { status: 200 });
+      }),
+    );
+    const hints: Array<CompactRequestHints | undefined> = [];
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) => {
+        hints.push(requestHints);
+        return requestHints?.deterministic ? compactedForRetry() : reducerRefused;
+      },
+    );
+    const ids = Array.from({ length: 8 }, (_, index) => `gap-tool-${index}`);
+    const history: Message[] = [
+      {
+        id: 'gap-user',
+        role: 'user',
+        content: 'x'.repeat(840_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      {
+        id: 'gap-assistant',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolResults: ids.map((id) => toolSuccess('y'.repeat(40_000), { toolCallId: id })),
+        timestamp: 0,
+      },
+    ];
+
+    const result = await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        model: 'gemini-2.5-pro',
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 1_000_000 },
+      }),
+      createRegistry(),
+      'hello',
+      history,
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(hints[1]?.deterministic).toBe(true);
+    expect(fetchCalls).toBe(2);
+    expect(result.at(-1)?.content).toBe('recovered');
+  });
+
+  it('names the setting when the recovery ends with auto-compaction off', async () => {
+    const statedOverflow = JSON.stringify({
+      error: {
+        message:
+          "This model's maximum context length is 128000 tokens. However, your messages resulted in 131072 tokens.",
+        type: 'invalid_request_error',
+        code: 'context_length_exceeded',
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(statedOverflow, { status: 400 })),
+    );
+    const compact = vi.fn(async () => compactedForRetry());
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1, model: 'router/off-text-model', autoCompactEnabled: false }),
+      createRegistry(),
+      'hello',
+      [userMsg('x'.repeat(100_000))],
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(errors.at(-1)).toContain('maximum context length');
+    expect(errors.at(-1)).toContain('autoCompactEnabled: false');
   });
 });

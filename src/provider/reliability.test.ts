@@ -695,3 +695,46 @@ describe('error bodies read one way (#244 review)', () => {
     ).toContain('nested problem');
   });
 });
+
+describe('error bodies, review round 1 (#244)', () => {
+  it('reads only the message of a JSON body cut at the read cap', () => {
+    // A 400 that echoes the request can pass 64 KB; the cut body no longer parses,
+    // and its echoed text must not be read as the provider stating an overflow.
+    const full = JSON.stringify({
+      error: {
+        message: 'Invalid parameter: tools[3].function.name',
+        type: 'invalid_request_error',
+      },
+      echo: 'the maximum context length of this model '.repeat(3_000),
+    });
+    const cut = full.slice(0, 65_536);
+    expect(classifyApiError(400, cut)).toBe('bad_request');
+    expect(formatApiError(400, cut)).toContain('Invalid parameter: tools[3].function.name');
+  });
+
+  it('does not retry a 429 that states the request can never fit', async () => {
+    const tpm = JSON.stringify({
+      error: {
+        message:
+          'Request too large for gpt-4o in organization org-x on tokens per min (TPM): Limit 30000, Requested 45000.',
+        type: 'tokens',
+        code: 'rate_limit_exceeded',
+      },
+    });
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return new Response(tpm, { status: 429 });
+      }),
+    );
+    try {
+      const response = await fetchWithRetry('http://x/v1', {}, defaultConfig().retry);
+      expect(response.status).toBe(429);
+      expect(calls).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

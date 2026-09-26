@@ -1108,10 +1108,8 @@ export class AgentSession {
         getMode: callbacks.getMode,
         onModeChange: callbacks.onModeChange,
         onPlanHandoff: callbacks.onPlanHandoff,
-        // Kept under Zero-Mem: `loopConfig` already sets `autoCompactEnabled:
-        // false`, which gates the loop's two routine compaction paths, and the
-        // context-overflow path at the bottom of the turn is deliberately not
-        // gated by it. Nulling the callback disabled that recovery too.
+        // Passed through as is: the loop gates every compaction site on
+        // `autoCompactEnabled`, the context-overflow recovery included.
         onCompact: callbacks.onCompact,
         prepareCompact: callbacks.prepareCompact,
         commitCompact: callbacks.commitCompact,
