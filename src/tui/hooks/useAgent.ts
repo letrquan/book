@@ -34,9 +34,12 @@ import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js'
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types/runtime.js';
 import {
+  compactionPlacement,
+  freshStreamOutput,
   makeMessage,
   removeTrailingEmptyAssistantPlaceholder,
   resetStreamedContent,
+  type StreamOutput,
 } from './streaming-state.js';
 import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-log.js';
 import { loadMemoryContext } from '../../memory-store.js';
@@ -315,6 +318,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // Callbacks read this ref (not state) so multi-turn updates always target
   // the latest in-progress message without stale-closure issues.
   const streamingIdRef = useRef<string | null>(null);
+  // What the streaming message holds (see StreamOutput), tracked as events arrive.
+  const streamOutputRef = useRef<StreamOutput>(freshStreamOutput());
   const messagesRef = useRef<Message[]>(initialTranscript);
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
@@ -670,6 +675,31 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const stillCurrent = () =>
         sessionGenerationRef.current === generation && operationIsCurrent();
       let activeAccumulator: MessageAccumulator | null = null;
+      // A fresh streaming message for the turn's next output: at each turn after the first, and
+      // after a compaction that committed behind output the same turn then continues.
+      const openStreamingMessage = (reason: 'new-turn' | 'after-compaction') => {
+        activeAccumulator?.stop();
+        uiLog.event('accumulator:stopped', { reason });
+        const next = makeMessage('assistant', '', undefined, true);
+        streamingIdRef.current = next.id;
+        streamOutputRef.current = freshStreamOutput();
+        setStreamingMessageId(next.id);
+        setMessages((prev) => {
+          const updated = [...prev, next];
+          messagesRef.current = updated;
+          return updated;
+        });
+        activeAccumulator = createMessageAccumulator(next.id, setMessages, messagesRef, 32);
+        accumulatorRef.current = activeAccumulator;
+        activeAccumulator.start();
+        uiLog.event('accumulator:started', { flushIntervalMs: 32, reason });
+      };
+      // Output of the streaming message: once a compaction committed behind it, it opens a new one.
+      const noteStreamOutput = (tool: boolean) => {
+        if (streamOutputRef.current.closed) openStreamingMessage('after-compaction');
+        streamOutputRef.current.any = true;
+        if (tool) streamOutputRef.current.tools = true;
+      };
       let activeUserMessage: Message | undefined;
       let placeholder: Message | undefined;
       let activeRunContext: AgentRunContext | undefined;
@@ -781,6 +811,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // Render the user's message immediately and stream into a fresh placeholder.
         placeholder = makeMessage('assistant', '', undefined, true);
         streamingIdRef.current = placeholder.id;
+        streamOutputRef.current = freshStreamOutput();
         setStreamingMessageId(placeholder.id);
         setIsThinking(true);
         setError(null);
@@ -855,15 +886,20 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (!stillCurrent()) return;
             switch (event.type) {
               case 'text':
+                if (event.content !== '') noteStreamOutput(false);
                 activeAccumulator?.addText(event.content);
                 break;
               case 'reasoning':
+                if (event.content !== '') noteStreamOutput(false);
                 activeAccumulator?.addReasoning(event.content);
                 break;
               case 'tool_use':
+                noteStreamOutput(true);
                 activeAccumulator?.addToolCall(event.toolCall);
                 break;
               case 'tool_result':
+                streamOutputRef.current.any = true;
+                streamOutputRef.current.tools = true;
                 activeAccumulator?.addToolResult(event.toolResult);
                 break;
               case 'notice':
@@ -873,13 +909,20 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 // Land anything still queued before clearing, or it would flush
                 // the abandoned attempt back in on top of the reset.
                 activeAccumulator?.flush();
-                const streamingId = streamingIdRef.current;
-                if (streamingId) {
-                  setMessages((prev) => {
-                    const next = resetStreamedContent(prev, streamingId);
-                    messagesRef.current = next;
-                    return next;
-                  });
+                // Since a compaction committed behind the streaming message, any output would
+                // have opened a new one: the discarded attempt streamed nothing, and what the
+                // message holds came before the row.
+                if (!streamOutputRef.current.closed) {
+                  const streamingId = streamingIdRef.current;
+                  // The reset clears the attempt's text and reasoning, not the turn's tool rows.
+                  streamOutputRef.current.any = streamOutputRef.current.tools;
+                  if (streamingId) {
+                    setMessages((prev) => {
+                      const next = resetStreamedContent(prev, streamingId);
+                      messagesRef.current = next;
+                      return next;
+                    });
+                  }
                 }
                 uiLog.event('attempt:discarded', { reason: event.reason });
                 break;
@@ -897,22 +940,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             log.debug('TUI turn start', { turn });
             setCurrentTurn(turn);
             turnStartRef.current = Date.now();
-            if (turn > 1) {
-              activeAccumulator?.stop();
-              uiLog.event('accumulator:stopped', { reason: 'new-turn', turn });
-              const next = makeMessage('assistant', '', undefined, true);
-              streamingIdRef.current = next.id;
-              setStreamingMessageId(next.id);
-              setMessages((prev) => {
-                const updated = [...prev, next];
-                messagesRef.current = updated;
-                return updated;
-              });
-              activeAccumulator = createMessageAccumulator(next.id, setMessages, messagesRef, 32);
-              accumulatorRef.current = activeAccumulator;
-              activeAccumulator.start();
-              uiLog.event('accumulator:started', { flushIntervalMs: 32, turn });
-            }
+            if (turn > 1) openStreamingMessage('new-turn');
           },
           onDone: () => {
             if (!stillCurrent()) return;
@@ -941,12 +969,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (!stillCurrent()) {
               return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
             }
+            const placement = compactionPlacement(
+              messagesRef.current,
+              streamingIdRef.current,
+              streamOutputRef.current.any,
+            );
             const outcome = await agentSession.compact({
               config: liveConfigRef.current,
               history,
               compactBoundaries,
               sessionId: activeSessionId,
-              transcriptOrdinal: messagesRef.current.length,
+              transcriptOrdinal: placement.ordinal,
               runContext: activeRunContext,
               runtime: agentSession.getRuntime(),
               timelineStore,
@@ -961,6 +994,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             const result = outcome.result;
             if (!stillCurrent()) return result;
             if (result.status === 'compacted' && outcome.boundary) {
+              // The row sits below this message; the turn's next output goes below the row.
+              if (placement.afterStreaming) streamOutputRef.current.closed = true;
               setCompactUi({
                 phase: 'diff',
                 trigger: 'auto',
@@ -1025,19 +1060,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (!stillCurrent()) {
               return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
             }
-            // The commit usually lands at the preflight gate, after the next
-            // turn's streaming placeholder has been appended; the boundary
-            // belongs before that placeholder, not after it.
-            const placeholderIndex = streamingIdRef.current
-              ? messagesRef.current.findIndex((message) => message.id === streamingIdRef.current)
-              : -1;
+            const placement = compactionPlacement(
+              messagesRef.current,
+              streamingIdRef.current,
+              streamOutputRef.current.any,
+            );
             const outcome = await agentSession.commitCompact({
               prepared,
               history,
               config: liveConfigRef.current,
               sessionId: activeSessionId,
-              transcriptOrdinal:
-                placeholderIndex >= 0 ? placeholderIndex : messagesRef.current.length,
+              transcriptOrdinal: placement.ordinal,
               runContext: activeRunContext,
               runtime: agentSession.getRuntime(),
               timelineStore,
@@ -1048,6 +1081,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             const result = outcome.result;
             if (!stillCurrent()) return result;
             if (result.status === 'compacted' && outcome.boundary) {
+              // The row sits below this message; the turn's next output goes below the row.
+              if (placement.afterStreaming) streamOutputRef.current.closed = true;
               setCompactUi({
                 phase: 'diff',
                 trigger: 'auto',

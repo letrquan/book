@@ -19,7 +19,13 @@ import {
   requireFreshObservation,
   requireObservationForMutation,
 } from './file-provenance.js';
-import { TOOL_RESULT_MAX_BYTES, toolFailure, toolSuccess, utf8Prefix } from './result.js';
+import {
+  readLineMetadata,
+  TOOL_RESULT_MAX_BYTES,
+  toolFailure,
+  toolSuccess,
+  utf8Prefix,
+} from './result.js';
 import {
   readTextSnapshot,
   restoreTextEncoding,
@@ -1264,6 +1270,13 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   return toolSuccess(page, {
     artifacts: { fileObservations: [observation] },
     pagination,
+    // Only Read knows how many lines of the file the page holds: its text shows one more, empty,
+    // numbered line past a final newline, and a notice when it stops early.
+    presentation: {
+      kind: 'file',
+      summary: `Read ${args.filePath}`,
+      metadata: readLineMetadata(offset, Math.min(last, lineCount) - offset + 1),
+    },
   });
 }
 

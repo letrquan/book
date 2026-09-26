@@ -462,6 +462,22 @@ All notable changes to this project are documented in this file.
   touched on disk. The TUI never accents an at-sign inside code. A `!` line runs only when the
   user typed it outside fenced code, never from a mentioned file's contents, and its output is never
   mention-expanded.
+- **The compaction row sits in the transcript grid, where the conversation was compacted** (#266):
+  its mark on the tool-row column with a blank row around it, and before the reply of a turn that
+  compacted at its preflight gate or retried after an overflow, instead of at column 0 below it. A
+  turn that streamed output and then compacted (an output-cap continuation, a re-sent request)
+  continues in a message of its own below the row, and the row shows while the turn streams. A
+  deferred compaction committed behind a finished turn now follows that turn.
+- **The live tail no longer jumps back once per code block** (#268): a fence that opens before the
+  next blank line starts the tail, instead of the tail skipping the block and bringing it back from
+  the cutoff. `fenceLineAt` scans the response once instead of twice.
+- **A foreground Task row re-renders when its child changes** (#245), so the "Tab to open" hint goes
+  when the child's Background-panel row does.
+- **A Read row counts the lines it returned, not its continue notice** (#247): `4 lines · 3-6`
+  instead of `5 lines`, the same as for a result without a presentation. Read now reports how many
+  lines of the file a page holds, so the empty numbered line it shows past a final newline is not
+  counted and an empty file shows `empty`; an outline shows `outline · N entries`; a failed read
+  shows no line count.
 - **A refused permission prompt names its real cause** (#264). Every refusal told the model "The
   configured permission policy blocks this call", including a person pressing Skip and a print-mode
   run that had nobody to ask. The tool result now says which it was: a `permissions.deny` rule
@@ -605,9 +621,6 @@ All notable changes to this project are documented in this file.
   - **Pagination:** a Read that stops early also reports
     `pagination: { truncated: true, nextCursor }`, with the offset to continue from, as the shared
     clip's truncation did.
-  - **TUI:** the Read row still counts the notice as one more line (`5 lines` for 4 shown). The
-    row's line count comes from the shared result presentation, which counts the notice; only the
-    fallback path for results without a presentation strips it.
 - **`Read { outline: true }` lists Java, Kotlin, C# and Dart methods, and fewer lines that are not
   declarations (#247).**
   - **Methods that were missing:** a method written return-type-first (`public int getN() {`) or
