@@ -56,14 +56,14 @@ export interface ModelWindowStore {
   all(): Record<string, LearnedModelWindowEntry>;
 }
 
-const learnedModelWindowEntrySchema = z.object({
+export const learnedModelWindowEntrySchema = z.object({
   contextWindow: z.number().int().positive(),
   learnedAt: z.number().int().nonnegative(),
 });
 
-const looseModelWindowStoreSchema = z.object({
+export const looseModelWindowStoreSchema = z.object({
   version: z.number().int().positive().default(MODEL_WINDOW_STORE_VERSION),
-  models: z.record(z.unknown()).default({}),
+  models: z.record(z.string(), z.unknown()).default({}),
 });
 
 function emptyStore(): ModelWindowStoreData {

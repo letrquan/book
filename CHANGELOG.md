@@ -6,6 +6,34 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Settings validation runs on Zod 4** (#88). Book moves from Zod 3.25 to Zod 4.6. Defaults, and
+  which fields a rejected document names, are unchanged; `src/settings.test.ts` now pins them,
+  including a check that no object schema is defaulted in the way Zod 4 would leave bare. What
+  changes:
+  - **Validation messages** now come from Zod 4. `book config set retry.maxAttempts 99` reports
+    `Too big: expected number to be <=15` where it said `Number must be less than or equal to 15`,
+    a missing field reads `Invalid input: expected string, received undefined` instead of
+    `Required`, and an unknown enum value reads `Invalid option: expected one of "low"|"medium"|…`
+    without echoing the value. In the issue list printed for an invalid settings file,
+    `invalid_enum_value` and `invalid_literal` issues are now `invalid_value`, and an
+    `invalid_type` issue no longer carries a `received` field. A value that breaks two rules can
+    get one issue where it got two: `retry.baseDelayMs: 1.5` (an integer of at least 100) is
+    reported only as not an integer.
+  - **The model sees the new wording** in `AskUserQuestion` validation errors and in the one
+    repair prompt the compaction reducer gets for an invalid checkpoint.
+  - **Integer settings with no upper bound** (`maxTurns`, `maxTokens`,
+    `continuation.maxWallClockMs`, `agents.minFreeDiskBytes`, a model's `contextWindow`, …) still
+    accept integers beyond `Number.MAX_SAFE_INTEGER`, which Zod 4's `.int()` would reject, so a
+    file holding an "effectively unlimited" value keeps loading. A non-integer gets the same
+    `invalid_type` issue (`Invalid input: expected int, received number`) as the other integer
+    settings.
+  - **`memory.extraction.idleHours: 1e999`** (which JSON reads as `Infinity`) is now rejected; Zod
+    3 accepted it. Set `memory.extraction.enabled: false` to turn extraction off.
+  - **A `__proto__` key** anywhere in a settings file is ignored; see the matching Fixed entry.
+    Inside a record setting Zod 3 had judged its value (rejecting `"env": {"__proto__": 1}`,
+    accepting `"agents": {"checks": {"__proto__": ["npm test"]}}` as a check named `0`).
+  - **SDK types:** the schemas and settings types exported from `dist/sdk.d.ts` are Zod 4 types,
+    which need TypeScript 5.5 or later in a consuming project.
 - **Only the turn in progress replays its reasoning** (#248 item 6). Every earlier assistant turn's
   reasoning went back to the model as a `<reasoning_context>` block on every request. It now goes
   back only for the assistant steps after the newest message the user wrote. The loop's own mid-run
@@ -346,6 +374,14 @@ All notable changes to this project are documented in this file.
     and a stop request now fail softly: the first two are retried or kept in memory, and a stop
     request that could not be written fails the stop (KillShell names why, the TUI shows a notice)
     and leaves the job `running`.
+- **A repository's settings file can no longer set `shell` or bypass mode through `__proto__`**
+  (#88). Workspace layers may not set `shell` or `defaultMode: "bypassPermissions"`, and the
+  sanitizer deletes those keys. But JSON keeps `"__proto__"` as an ordinary key, and merging
+  layers assigned it through the prototype setter, so a committed `.book/settings.json` holding
+  `{"__proto__": {"shell": "…", "defaultMode": "bypassPermissions"}}` gave the resolved settings
+  those values as inherited ones, which the sanitizer never saw: every Bash command then ran the
+  repository's binary with permission prompts off. The merge now skips a `__proto__` key. The same
+  path let `"provider": {"__proto__": {…}}` add a provider.
 - **Cached prompt tokens are counted on OpenAI-compatible providers** (#235). The OpenAI-compatible
   client read only `prompt_tokens`, so a provider that caches the prompt (OpenAI's automatic cache,
   DeepSeek, OpenRouter, LiteLLM) was billed in `/cost`, `/usage` and the USD budget as if nothing
@@ -416,12 +452,28 @@ All notable changes to this project are documented in this file.
   - **The record:** `effort` on the agent record was the unclamped level (`max` for a child whose
     model lists nothing above `high`). It is now the child's level clamped to its model's catalog,
     from the spawn on. On an OpenAI-compatible route it is still sent only when chosen or listed.
-- **A restart says when it drops a follow-up sent to a `/review` agent** (#245). With
-  `agents.resumeInterrupted` on, a restart leaves the review's own run interrupted, and silently
-  dropped the `AgentSend` follow-ups sent to it: one queued behind that run, or one already running
-  after it. They are still not run, because a follow-up would start with none of the review's
-  context and whose result it is was never recorded per run, but the agent's error now says how
-  many were dropped and to send them again.
+- **Delivery belongs to a run, not to the agent record** (#245). A host that consumes an agent's
+  result itself (`Task`, `/review`) marked the whole record with `notifyParentOnCompletion` and
+  `resumeAfterRestart`, and every path that started a run nobody was waiting on had to clear both
+  by hand: a follow-up to a finished agent, the follow-up queued behind a failed run, and a
+  restart's re-drive. A path that missed it lost the parent's completion for good. The record now
+  carries a `spawnerClaim` over a range of run numbers, and runs are numbered as they are queued.
+  The spawner keeps its first run and any follow-up it still waits on; every other run reports to
+  the parent with nothing to clear. Records written before this read their flags as a claim on the
+  run they were on, and a record still writes both old flags for as long as the claim covers the run
+  it is on, so an older Book sharing the store keeps reading a claimed agent as the host's.
+  - **A restart does not re-run the follow-ups sent to a `/review` agent; it tells the parent how
+    many went unrun.** Mid-run the transcript holds the interrupted run's answers but not the task
+    that opened it, which is written only when the run ends, so re-running a follow-up answered
+    with the review missing from its own context. The review's task is still not re-run, since its
+    report died with the process. The follow-ups were the parent's runs, so the parent is told how
+    many were not run — in a completion of its own, which it receives even though the review's own
+    run never was.
+  - **The parent is told the same way everywhere else a run is not resumed.** Nothing re-drives an
+    interrupted agent with `agents.resumeInterrupted` off, or one that was interrupted while waiting
+    for an answer or an approval, and in both cases its error now says how many follow-ups were not
+    run. The parent sees that in the interrupted completion when it has not had that one yet, and
+    otherwise in a new completion the record opens past its claim.
 - **Memory extraction keeps its lock, and keeps a whole answer that reached the output limit**
   (#245). On the session's retry policy one session's provider call can take far longer than the
   extraction lock's 30-minute lifetime, and a second Book session then took the lock over and
