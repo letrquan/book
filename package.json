@@ -31,11 +31,7 @@
     "dist",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE",
-    "patches/ink+6.8.0.patch",
-    "scripts/apply-ink-patch.mjs",
-    "scripts/ink-patch.mjs",
-    "scripts/verify-ink-patch.mjs"
+    "LICENSE"
   ],
   "publishConfig": {
     "access": "public"
@@ -58,7 +54,6 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsx src/index.ts",
-    "postinstall": "node scripts/apply-ink-patch.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json",
     "pretest": "npm run build",
     "test": "npm run test:unit && npm run test:contract && npm run test:integration",
@@ -68,14 +63,13 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage --config vitest.coverage.config.ts",
     "bench:ui": "node scripts/run-ui-benchmark.mjs",
-    "verify:ink-patch": "node scripts/verify-ink-patch.mjs",
+    "verify:ink": "tsx scripts/verify-ink.ts",
     "bench:runtime": "tsx src/tui/__benchmarks__/runtime.bench.ts",
     "eval:edit": "tsx scripts/edit-eval.ts",
     "eval:compact": "tsx scripts/compact-eval.ts",
     "eval:memory": "tsx scripts/memory-eval.ts",
     "eval:skills": "tsx scripts/skill-eval.ts",
     "eval:review": "tsx scripts/review-eval.ts",
-    "apply:ink-patch": "node scripts/apply-ink-patch.mjs",
     "lint": "eslint src/ --ext .ts,.tsx --max-warnings 0",
     "format": "prettier --write \"{src,scripts}/**/*.{ts,tsx}\" \"*.config.ts\" \"*.md\" \"docs/**/*.md\"",
     "format:check": "prettier --check \"{src,scripts}/**/*.{ts,tsx}\" \"*.config.ts\" \"*.md\" \"docs/**/*.md\"",
@@ -99,7 +93,7 @@
     "fuse.js": "^7.5.0",
     "htmlparser2": "^12.0.0",
     "ignore": "^7.0.6",
-    "ink": "6.8.0",
+    "ink": "7.1.1",
     "ink-text-input": "^6.0.0",
     "marked": "^18.0.9",
     "react": "^19.2.8",
@@ -123,7 +117,6 @@
     "ink-testing-library": "^4.0.0",
     "knip": "^6.32.2",
     "node-pty": "^1.1.0",
-    "patch-package": "^8.0.1",
     "prettier": "^3.9.6",
     "tinybench": "^6.1.3",
     "tsup": "^8.5.0",

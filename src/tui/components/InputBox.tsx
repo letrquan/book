@@ -5,6 +5,8 @@ interface InputBoxProps {
   value: string;
   onChange: (value: string) => void;
   onSubmit?: (value: string) => void;
+  /** Backspace pressed while the composer is empty; the key edits nothing here. */
+  onBackspaceWhenEmpty?: () => void;
   placeholder?: string;
   focus?: boolean;
 }
@@ -101,6 +103,7 @@ export function InputBox({
   value,
   onChange,
   onSubmit,
+  onBackspaceWhenEmpty,
   placeholder = '',
   focus = true,
 }: InputBoxProps) {
@@ -212,6 +215,11 @@ export function InputBox({
 
       if (key.end) {
         commit({ value: valueRef.current, cursorOffset: valueRef.current.length });
+        return;
+      }
+
+      if (key.backspace && valueRef.current === '') {
+        onBackspaceWhenEmpty?.();
         return;
       }
 

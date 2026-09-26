@@ -23,14 +23,7 @@ try {
   const dryRun = runNpm(['pack', '--dry-run', '--json'], root);
   const dryRunResult = parsePackResult(dryRun);
   const packagedFiles = new Set(dryRunResult.files.map((file) => file.path.replace(/\\/g, '/')));
-  for (const required of [
-    'dist/index.js',
-    'dist/sdk.js',
-    'dist/sdk.d.ts',
-    'README.md',
-    'patches/ink+6.8.0.patch',
-    'scripts/apply-ink-patch.mjs',
-  ]) {
+  for (const required of ['dist/index.js', 'dist/sdk.js', 'dist/sdk.d.ts', 'README.md']) {
     if (!packagedFiles.has(required)) throw new Error(`Packed artifact is missing ${required}.`);
   }
 

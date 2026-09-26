@@ -882,6 +882,8 @@ describe('queue notices for one-off events', () => {
 
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     press(view, '\u001b');
+    // Ink 7 flushes a lone Esc after 20 ms on setTimeout, which this test fakes.
+    vi.advanceTimersByTime(25);
     await waitForFrame(view, 'Queued inputs restored to the composer after interrupt.');
     expect(state.cancel).toHaveBeenCalled();
 

@@ -6,6 +6,21 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **The TUI runs on Ink 7.1.1** (#89). The Ink 6.8.0 renderer patch is gone: the trailing-newline
+  fix it backported ships in Ink 7. `package.json` pins the exact version, and
+  `src/cli/ink-renderer.contract.test.ts` plus `npm run verify:ink` fail on any other version until
+  the TUI is re-verified (`docs/guide/development.md`, "Upgrading Ink"). `patch-package` and the
+  `postinstall` step are gone. What changes for users:
+  - **npm installs get the incremental renderer.** A published install never applied the patch, so
+    it fell back to the full-frame renderer everywhere. Outside Windows it now uses the incremental
+    renderer, as a source checkout always did.
+  - **Backspace on an empty composer removes the last attachment.** Ink 6 reported Backspace as
+    Delete, so this only worked with Ctrl+H.
+  - **Esc takes effect about 20 ms later.** Ink 7 waits that long before treating a lone Esc as a
+    key, so an escape sequence split across reads is not misread.
+  - **Key handling is unchanged otherwise.** Ink 7 dispatches keys to handlers in mount order; Book
+    now subscribes its global handler first, so Esc and Ctrl+C keep deciding from what the screen
+    showed. A lone Esc no longer counts as Alt, so the composer returns on it explicitly.
 - **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
   rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
   green, so every PR that touched them either reformatted unrelated lines or left them drifting.

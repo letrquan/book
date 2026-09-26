@@ -22,9 +22,7 @@ describe('PlanApprovalButtons', () => {
     );
 
     view.stdin.write('\x1b');
-    await waitForImmediate();
-
-    expect(onResolve).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(onResolve).toHaveBeenCalledOnce());
     expect(onResolve).toHaveBeenCalledWith('reject');
   });
 

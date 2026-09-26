@@ -282,6 +282,13 @@ export function InputBar({
     [reportDraft],
   );
   const [attachmentError, setAttachmentError] = useState<string | undefined>();
+  // Backspace on an empty composer removes the last attachment. InputBox reports it, because it
+  // sees the key before its own edit: here, the composer already shows the edit's result.
+  const removeLastAttachment = useCallback(() => {
+    if (attachmentsRef.current.length === 0) return;
+    setAttachments((current) => current.slice(0, -1));
+    setAttachmentError(undefined);
+  }, [setAttachments]);
   const suggestion = compact ? 'Ask...' : 'Ask me anything...';
 
   // Command menu state
@@ -468,26 +475,13 @@ export function InputBar({
     // Alt+Backspace is a composer edit, not a shortcut: InputBox deletes the
     // previous word, and restoring the pre-event value here would undo it.
     if (key.meta && (key.backspace || key.delete)) return;
-    // Filter out Alt/Meta-modified keys — they're shortcuts, not text input.
-    // Preserve the editor value while the parent handles Alt/Meta shortcuts.
-    //
-    // Ink reports a lone Esc with `meta` set (`use-input.js`: `meta:
-    // keypress.meta || keypress.name === 'escape'`), so this filter used to eat
-    // every Esc before the menu handlers below could dismiss a menu with it.
-    // Only an open menu takes Esc here; every other Esc still belongs to the
-    // app (cancel the turn, drop a recalled queued input, close a panel).
+    // Only an open menu takes Esc here. Every other Esc belongs to the app (cancel the turn, drop a
+    // recalled queued input, close a panel), whose handler runs before this one. Ink 6 reported a
+    // lone Esc as `meta`, so the Alt/Meta filter below swallowed it; Ink 7 does not.
     const menuOpen = menuVisible || skillMenuVisible || fileMenuVisible;
-    if (key.meta && !(key.escape && menuOpen)) {
-      const preservedValue = valueRef.current;
-      queueMicrotask(() => setValue(preservedValue));
-      return;
-    }
-
-    if (key.backspace && !value && attachments.length > 0) {
-      setAttachments((current) => current.slice(0, -1));
-      setAttachmentError(undefined);
-      return;
-    }
+    if (key.escape && !menuOpen) return;
+    // Filter out Alt/Meta-modified keys — they're shortcuts, not text input.
+    if (key.meta && !key.escape) return;
 
     if (key.shift && key.tab) {
       onCycleMode();
@@ -644,16 +638,17 @@ export function InputBar({
     // parent consume the key and then restore the pre-event value, undoing the
     // edit InputBox just made.
     if (key.ctrl && value.length > 0 && COMPOSER_EDIT_KEYS.has(_input.toLowerCase())) return;
-    // Forward Ctrl-based shortcuts to the parent App. As with Alt chords,
-    // restore the pre-event value when consumed to keep shortcut routing defensive.
-    // Ctrl+/ arrives as a bare US byte with no `ctrl` flag (see
-    // `isShortcutsToggleKey`), so gating on `key.ctrl` alone would swallow it here.
+    // Forward Ctrl-based shortcuts to the parent App. Ctrl+/ arrives as a bare US
+    // byte with no `ctrl` flag (see `isShortcutsToggleKey`), so gating on
+    // `key.ctrl` alone would swallow it here.
+    //
+    // A consumed shortcut used to restore the value read here on a microtask.
+    // InputBox has already applied its own edit for this key by then, so the
+    // restore could only undo what the app did in response to it: Ctrl+C
+    // clearing the composer, or an interrupt restoring queued inputs into it.
+    // Ink 7 flushes the app's effects before that microtask, so it did.
     if ((key.ctrl || isShortcutsToggleKey(_input, key)) && onGlobalShortcut) {
-      if (onGlobalShortcut(_input, key)) {
-        const preservedValue = valueRef.current;
-        queueMicrotask(() => setValue(preservedValue));
-        return;
-      }
+      if (onGlobalShortcut(_input, key)) return;
     }
     // Claude Code-style task access: Down from a fresh, empty prompt moves
     // focus into the task list. Enter is then handled by SubagentPanel.
@@ -1021,6 +1016,7 @@ export function InputBar({
             value={value}
             onChange={safeOnChange}
             onSubmit={handleSubmit}
+            onBackspaceWhenEmpty={removeLastAttachment}
             placeholder={placeholder}
             // Stay focused while busy so Enter can queue a follow-up; only yield
             // to a modal (permission prompt). `focus` here maps
