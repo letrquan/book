@@ -30,7 +30,7 @@ const questionSchema = z
       const key = option.label.toLocaleLowerCase();
       if (labels.has(key)) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: 'custom',
           message: `option labels must be unique: ${option.label}`,
           path: ['options'],
         });
@@ -48,7 +48,7 @@ const requestSchema = z
       const key = question.question.toLocaleLowerCase();
       if (questions.has(key)) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: 'custom',
           message: 'question text must be unique',
           path: ['questions'],
         });

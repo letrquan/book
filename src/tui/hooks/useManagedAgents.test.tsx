@@ -403,7 +403,7 @@ describe('host-orchestrated agents in the session surface', () => {
       pendingQuestion: undefined,
       pendingQuestionCreatedAt: undefined,
       parentSessionId: 'current-session',
-      notifyParentOnCompletion: false,
+      spawnerClaim: { throughRunSequence: 1, notifyParent: false, resumeAfterRestart: false },
       // Suppression marks the generation delivered as it is produced.
       completionSequence: terminal ? 1 : 0,
       completionDeliveredSequence: terminal ? 1 : 0,
