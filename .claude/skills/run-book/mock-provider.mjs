@@ -378,6 +378,11 @@ const server = createServer((req, res) => {
 // A port someone else holds is the common failure: say so in one line and exit, so the
 // driver (which watches this process) fails at once with the reason.
 server.on('error', (error) => {
+  if (server.listening) {
+    // After READY (an accept failure such as EMFILE): the driver reports the exit.
+    console.error(`mock-provider: server error on 127.0.0.1:${port}: ${error.message}`);
+    process.exit(1);
+  }
   const reason =
     error.code === 'EADDRINUSE' ? `port ${port} is already in use (EADDRINUSE)` : error.message;
   console.error(`mock-provider: cannot listen on 127.0.0.1:${port}: ${reason}`);

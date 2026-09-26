@@ -77,9 +77,10 @@ EOF
 | `quit` | Ctrl-C twice and wait for exit. |
 
 Options: `--mock` (start the mock provider), `--mock-script <json>`, `--mock-port` (8919), `--sessions` (keep session persistence on, so sessions pre-seeded in `<book-home>/.book/sessions/*.jsonl` show on the title page and in `/resume`; a seeded file needs a `session_meta` line whose `cwd` is the workspace normalized as the store does it, lowercase on Windows, plus at least one `user` record, because the store recounts messages from the records),
-`--workspace <dir>`, `--book-home <dir>` (default: a fresh temp dir, removed when the driver exits
-unless it holds managed-agent worktrees or background jobs, which outlive Book; pass one to seed it
-or read it afterwards — the driver never removes a home it was given), `--shots <dir>`
+`--workspace <dir>`, `--book-home <dir>` (default: a fresh temp dir, removed when the driver exits;
+a home holding a managed-agent worktree or a still-running background job is kept, with the scratch
+workspace the job runs in, because both outlive Book; pass one to seed it or read it afterwards — the
+driver never removes a home it was given; both paths are made absolute), `--shots <dir>`
 (`/tmp/book-shots`), `--cols` (120), `--rows` (40), `--timeout` (20000), `--ready-settle` (2500),
 `--send-gap` (250), `--bin <exe>` (spawn another executable — the Go build's `bin/book.exe` — in
 place of `node dist/index.js`, with the same flags; under `--mock` the `BOOKGO_*` variables are set
@@ -100,8 +101,9 @@ The driver turns the startup splash off with a `--settings` layer of its own (a 
 `ui.startupAnimation`), which outranks every settings file; it never writes the workspace's
 `.book/settings.json`, and a value an older driver left there cannot win. `--startup-animation`
 sets the layer's value to `true`, so the splash can be driven. A `--settings <file>` of your own
-after `--` is merged into that layer, its keys winning (a file the driver cannot read fails the run
-at once; the driver prints which temp file holds the merge, since Book's settings errors name it);
+after `--` (a relative path is taken from the driver's cwd) is merged into that layer, its keys
+winning (a file the driver cannot read, or one that is not a JSON object, fails the run at once;
+the driver prints which temp file holds the merge, since Book's settings errors name it);
 `--no-settings` after `--` skips every layer, the driver's too; `--bin` gets no layer (the Go build
 reads a flat `startupAnimation` key).
 The splash replaces the input bar that `ready` waits for, so such a script starts with `sleep` (the
@@ -166,9 +168,10 @@ with an editor, not a shell heredoc, since a heredoc eats backslashes.
 flow — prompt, tool call, permission dialog, approval, file written on disk — and exits non-zero on
 any failure. Run it after changing anything on that path. It listens on `BOOK_SMOKE_PORT` (8919)
 and first checks the port is free, so a port another process holds (another smoke run included)
-stops it with a message before it touches anything. Each run gets a fresh `mktemp` workspace and
-scenario, removed when it passes and kept (the path is printed) when it fails; `BOOK_SMOKE_WS`
-names a workspace of your own instead, which is emptied first and kept. Screens go to
+stops it with a message before it touches anything. Each run gets a fresh `mktemp -d` directory
+for its workspace and scenario, removed when it passes and kept (the path is printed) when it fails;
+`BOOK_SMOKE_WS` names a workspace of your own instead, which is emptied first and kept, so never
+give two concurrent runs the same one. Screens go to
 `BOOK_SMOKE_SHOTS` (`/tmp/book-shots-<port>`). It kills no process itself: the driver kills the one
 mock it started whenever it exits, a console Ctrl-C included (and SIGTERM or SIGHUP on POSIX). A hard kill of the driver (on Windows, `kill` and `process.kill` are
 one) skips its handlers and orphans the mock; stop that one by its PID. Never clear a port with
@@ -219,7 +222,8 @@ it: a still is one frame, and a timing bug can land in it.
   `src/tui/terminal-screen.ts`, which is what `shot` already uses.
 - **Probes write real state.** A permission granted during a run lands in the
   `.book/settings.local.json` of whatever workspace you pointed at, so pass a throwaway
-  `--workspace`. `--book-home` already defaults to a temp dir, removed on exit.
+  `--workspace`. `--book-home` already defaults to a temp dir, removed on exit unless it holds an
+  agent worktree or a running background job.
 - **Two settings shapes make Book refuse to start**, and the PTY just times out: `provider.<id>.models`
   is an object keyed by model id, not an array, and a model's `effort` is `false | {default, levels}`,
   never `true`. The validation error is on the first frame — read the timeout's last-screen dump

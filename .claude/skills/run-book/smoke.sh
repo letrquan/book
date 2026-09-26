@@ -23,7 +23,9 @@ fi
 # mocks belong to other runs. Pick another port with BOOK_SMOKE_PORT.
 #
 # Probe the port before touching anything, so a port another process holds (another
-# smoke run, a mock left behind) stops this run with a message and no side effects.
+# smoke run, a mock left behind) stops this run with a message and no side effects,
+# before the `rm -rf` of a BOOK_SMOKE_WS below. (The driver would also fail fast, but
+# only after that.)
 probe=0
 node -e "const s = require('net').createServer();
   s.once('error', (e) => { console.error(e.code || e.message); process.exit(e.code === 'EADDRINUSE' ? 3 : 2); });
@@ -36,20 +38,20 @@ elif [ "$probe" -ne 0 ]; then
   exit 1
 fi
 
-# Every run gets a fresh workspace and scenario, so two runs never share files. A
-# BOOK_SMOKE_WS of your own is emptied first and kept afterwards; the fresh one is
-# removed when the run passes and kept, for a look, when it fails.
+# Every run gets a fresh directory for its workspace and scenario, so two runs never
+# share files; it is removed when the run passes and kept, for a look, when it fails.
+# A BOOK_SMOKE_WS of your own is used instead of the fresh workspace: it is emptied
+# first and kept, so do not give two concurrent runs the same one.
+RUN="$(mktemp -d /tmp/book-smoke-XXXXXX)"
+SCENARIO="$RUN/scenario.json"
 if [ -n "${BOOK_SMOKE_WS:-}" ]; then
   WS="$BOOK_SMOKE_WS"
   rm -rf "$WS"
   mkdir -p "$WS"
-  OWN_WS=0
 else
-  WS="$(mktemp -d /tmp/book-smoke-ws-XXXXXX)"
-  OWN_WS=1
+  WS="$RUN/ws"
+  mkdir "$WS"
 fi
-SCENARIO="$(mktemp /tmp/book-smoke-scenario-XXXXXX.json)"
-trap 'rm -f "$SCENARIO"' EXIT
 git -C "$WS" init -q .
 
 cat > "$SCENARIO" <<'JSON'
@@ -73,13 +75,13 @@ shot smoke-03-approved
 quit
 EOF
 then
-  echo "smoke: FAILED — workspace kept at $WS, screens in $SHOTS" >&2
+  echo "smoke: FAILED — workspace $WS and scenario kept in $RUN, screens in $SHOTS" >&2
   exit 1
 fi
 
 if ! grep -q 'written by the smoke test' "$WS/smoke.txt"; then
-  echo "smoke: FAILED — $WS/smoke.txt was not written; workspace kept, screens in $SHOTS" >&2
+  echo "smoke: FAILED — $WS/smoke.txt was not written; kept $RUN, screens in $SHOTS" >&2
   exit 1
 fi
-if [ "$OWN_WS" -eq 1 ]; then rm -rf "$WS"; fi
+rm -rf "$RUN"
 echo "smoke: OK — smoke.txt written, screens in $SHOTS"
