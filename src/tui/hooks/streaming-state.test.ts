@@ -5,6 +5,7 @@ import {
   appendNestedToolResultToMessage,
   appendToolCallToMessage,
   appendToolResultToMessage,
+  compactionTranscriptOrdinal,
   isTotallyEmptyAssistant,
   makeMessage,
   removeTrailingEmptyAssistantPlaceholder,
@@ -293,5 +294,31 @@ describe('streaming TUI message state helpers', () => {
     // Non-trailing empty must stay (only trailing is safe to drop).
     const nonTrailing = [empty, msg('u2', 'user', 'later')];
     expect(removeTrailingEmptyAssistantPlaceholder(nonTrailing)).toBe(nonTrailing);
+  });
+});
+
+describe('compactionTranscriptOrdinal', () => {
+  const messages = [
+    msg('u1', 'user', 'q'),
+    msg('a1', 'assistant', ''),
+    msg('a2', 'assistant', 'done'),
+  ];
+
+  it('lands after everything when no turn is streaming', () => {
+    expect(compactionTranscriptOrdinal(messages, null, false)).toBe(messages.length);
+    expect(compactionTranscriptOrdinal(messages, undefined, false)).toBe(messages.length);
+  });
+
+  it('lands after everything once the streaming turn has output', () => {
+    expect(compactionTranscriptOrdinal(messages, 'a2', true)).toBe(messages.length);
+  });
+
+  it('lands before the streaming message while it has streamed nothing', () => {
+    expect(compactionTranscriptOrdinal(messages, 'a1', false)).toBe(1);
+    expect(compactionTranscriptOrdinal(messages, 'a2', false)).toBe(2);
+  });
+
+  it('lands where a streaming message not in the list yet will land', () => {
+    expect(compactionTranscriptOrdinal(messages, 'a3', false)).toBe(messages.length);
   });
 });

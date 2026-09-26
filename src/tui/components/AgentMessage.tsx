@@ -838,6 +838,7 @@ function managedAgentTraceEqual(
     left.startedAt !== right.startedAt ||
     left.finishedAt !== right.finishedAt ||
     left.openable !== right.openable ||
+    left.blocking !== right.blocking ||
     left.toolUses.length !== right.toolUses.length
   ) {
     return false;
@@ -863,7 +864,7 @@ export function managedAgentTracesEqualForMessage(
 ): boolean {
   if (left === right) return true;
   for (const call of message.toolCalls ?? []) {
-    if (call.name !== 'AgentSpawn') continue;
+    // A background child is traced under its AgentSpawn call, a foreground one under its Task call.
     if (!managedAgentTraceEqual(left?.get(call.id), right?.get(call.id))) return false;
   }
   return true;

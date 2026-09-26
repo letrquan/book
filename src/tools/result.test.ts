@@ -258,6 +258,47 @@ describe('ToolResult V2', () => {
     });
   });
 
+  it.each([
+    {
+      name: 'a page that stops early',
+      args: { filePath: 'src/a.ts', offset: 3 },
+      content: '3: c\n4: d\n5: e\n6: f\n[Lines 3-6 of 20 shown. Continue with offset: 7.]',
+      metadata: ['4 lines', '3-6'],
+    },
+    {
+      name: 'a line cut to fit',
+      args: { filePath: 'src/a.ts' },
+      content: '1: aaaa\n[Line 1 (60000 bytes) was cut to fit one Read (50 KB).]',
+      metadata: ['1 line'],
+    },
+    {
+      name: 'a whole file',
+      args: { filePath: 'src/a.ts' },
+      content: '1: a\n2: b',
+      metadata: ['2 lines'],
+    },
+    { name: 'an empty file', args: { filePath: 'src/a.ts' }, content: '', metadata: ['empty'] },
+  ])(
+    'counts $name by its file lines, not its notice (#247)',
+    async ({ args, content, metadata }) => {
+      const registry = createRegistry();
+      registry.register({
+        name: 'Read',
+        description: 'Read a page',
+        parameters: {
+          type: 'object',
+          properties: { filePath: { type: 'string' }, offset: { type: 'number' } },
+          required: ['filePath'],
+        },
+        execute: async () => toolSuccess(content),
+      });
+
+      const result = await registry.execute({ id: 'page', name: 'Read', arguments: args }, context);
+
+      expect(result.presentation?.metadata).toEqual(metadata);
+    },
+  );
+
   it('upgrades persisted legacy results without retaining legacy projections', () => {
     const result = normalizeToolResult({
       toolCallId: 'legacy-call',

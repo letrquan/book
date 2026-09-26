@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '../theme.js';
-import { transcriptGrid } from '../layout.js';
+import { CONTENT_COLUMN, GUTTER_WIDTH, indentedGrid, transcriptGrid } from '../layout.js';
 import type { CompactBoundary } from '../../types/sessions.js';
 import type { Message } from '../../types/messages.js';
 import type { PermissionResult, PlanApprovalResult } from '../../types/tools.js';
@@ -89,7 +89,7 @@ function estimateTimelineRows(
   terminalWidth: number,
   quietTools?: QuietToolContext,
 ): number {
-  if ('transcriptOrdinal' in entry) return 1;
+  if ('transcriptOrdinal' in entry) return 2;
 
   // A user turn is its prompt and nothing else: it wraps by the same rules
   // UserMessage sets it with, so the estimate is its row count exactly.
@@ -356,7 +356,12 @@ export function ChatPanelInner({
       {virtualTimeline.entries.map(({ item: entry, index, key, measurementKey }) => {
         let row: React.ReactNode;
         if ('transcriptOrdinal' in entry) {
-          row = <CompactBoundaryRow terminalWidth={terminalWidth} />;
+          row = (
+            <CompactBoundaryRow
+              terminalWidth={terminalWidth}
+              spaced={index > 0 && density !== 'tight'}
+            />
+          );
         } else {
           const message = entry;
           const previous = visibleTimeline[index - 1];
@@ -407,6 +412,9 @@ export function ChatPanelInner({
                 flexDirection="column"
                 marginTop={
                   followsToolCall ||
+                  // A boundary takes a blank row above it, so the reply that
+                  // follows one keeps the blank row below it too.
+                  (previous && 'transcriptOrdinal' in previous && density !== 'tight') ||
                   (density !== 'tight' &&
                     previous &&
                     // A slash command's output answers no prompt row of its
@@ -604,14 +612,23 @@ function buildTimeline(
   return timeline;
 }
 
-function CompactBoundaryRow({ terminalWidth = 80 }: { terminalWidth?: number }) {
+/**
+ * The point the conversation was compacted, set like a tool row: its mark on the column every tool
+ * row's status mark uses, a blank row above and below it except in tight density.
+ */
+function CompactBoundaryRow({
+  terminalWidth = 80,
+  spaced,
+}: {
+  terminalWidth?: number;
+  spaced: boolean;
+}) {
   const theme = useTheme();
+  const text = indentedGrid(transcriptGrid(terminalWidth)).content;
   return (
-    <Box width={transcriptGrid(terminalWidth).width}>
+    <Box marginTop={spaced ? 1 : 0} marginLeft={CONTENT_COLUMN} width={GUTTER_WIDTH + text}>
       <Text color={theme.success}>✓ </Text>
-      <Text color={theme.text}>
-        {truncateDisplay('Compact conversation', transcriptGrid(terminalWidth).content)}
-      </Text>
+      <Text color={theme.text}>{truncateDisplay('Compact conversation', text)}</Text>
     </Box>
   );
 }

@@ -276,6 +276,18 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The compaction row sits in the transcript grid, where the conversation was compacted** (#266):
+  its mark on the tool-row column with a blank row around it, and before the reply of a turn that
+  compacted at its preflight gate or retried after an overflow, instead of at column 0 below it. A
+  deferred compaction committed behind a finished turn now follows that turn.
+- **The live tail no longer jumps back once per code block** (#268): a fence that opens before the
+  next blank line starts the tail, instead of the tail skipping the block and bringing it back from
+  the cutoff. The fence check scans the response once instead of twice.
+- **A foreground Task row re-renders when its child changes** (#245), so the "Tab to open" hint goes
+  when the child's Background-panel row does.
+- **A Read row counts the lines it returned, not its continue notice** (#247): `4 lines · 3-6`
+  instead of `5 lines`, the same as for a result without a presentation. An empty read shows
+  `empty`, and a failed one no longer shows a line count.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller

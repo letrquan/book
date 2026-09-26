@@ -34,6 +34,7 @@ import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js'
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types/runtime.js';
 import {
+  compactionTranscriptOrdinal,
   makeMessage,
   removeTrailingEmptyAssistantPlaceholder,
   resetStreamedContent,
@@ -315,6 +316,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // Callbacks read this ref (not state) so multi-turn updates always target
   // the latest in-progress message without stale-closure issues.
   const streamingIdRef = useRef<string | null>(null);
+  // Whether the streaming message has received output (text or a tool call)
+  // since it was created: set synchronously, since the accumulator applies it a flush later.
+  const streamStartedRef = useRef(false);
   const messagesRef = useRef<Message[]>(initialTranscript);
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
@@ -781,6 +785,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // Render the user's message immediately and stream into a fresh placeholder.
         placeholder = makeMessage('assistant', '', undefined, true);
         streamingIdRef.current = placeholder.id;
+        streamStartedRef.current = false;
         setStreamingMessageId(placeholder.id);
         setIsThinking(true);
         setError(null);
@@ -855,15 +860,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (!stillCurrent()) return;
             switch (event.type) {
               case 'text':
+                if (event.content !== '') streamStartedRef.current = true;
                 activeAccumulator?.addText(event.content);
                 break;
               case 'reasoning':
                 activeAccumulator?.addReasoning(event.content);
                 break;
               case 'tool_use':
+                streamStartedRef.current = true;
                 activeAccumulator?.addToolCall(event.toolCall);
                 break;
               case 'tool_result':
+                streamStartedRef.current = true;
                 activeAccumulator?.addToolResult(event.toolResult);
                 break;
               case 'notice':
@@ -874,6 +882,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 // the abandoned attempt back in on top of the reset.
                 activeAccumulator?.flush();
                 const streamingId = streamingIdRef.current;
+                streamStartedRef.current = false;
                 if (streamingId) {
                   setMessages((prev) => {
                     const next = resetStreamedContent(prev, streamingId);
@@ -902,6 +911,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               uiLog.event('accumulator:stopped', { reason: 'new-turn', turn });
               const next = makeMessage('assistant', '', undefined, true);
               streamingIdRef.current = next.id;
+              streamStartedRef.current = false;
               setStreamingMessageId(next.id);
               setMessages((prev) => {
                 const updated = [...prev, next];
@@ -946,7 +956,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               history,
               compactBoundaries,
               sessionId: activeSessionId,
-              transcriptOrdinal: messagesRef.current.length,
+              // Before a turn that has streamed nothing yet; after one that has
+              // (see compactionTranscriptOrdinal).
+              transcriptOrdinal: compactionTranscriptOrdinal(
+                messagesRef.current,
+                streamingIdRef.current,
+                streamStartedRef.current,
+              ),
               runContext: activeRunContext,
               runtime: agentSession.getRuntime(),
               timelineStore,
@@ -1025,19 +1041,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (!stillCurrent()) {
               return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
             }
-            // The commit usually lands at the preflight gate, after the next
-            // turn's streaming placeholder has been appended; the boundary
-            // belongs before that placeholder, not after it.
-            const placeholderIndex = streamingIdRef.current
-              ? messagesRef.current.findIndex((message) => message.id === streamingIdRef.current)
-              : -1;
             const outcome = await agentSession.commitCompact({
               prepared,
               history,
               config: liveConfigRef.current,
               sessionId: activeSessionId,
-              transcriptOrdinal:
-                placeholderIndex >= 0 ? placeholderIndex : messagesRef.current.length,
+              // Before a turn that has streamed nothing yet; after one that has.
+              transcriptOrdinal: compactionTranscriptOrdinal(
+                messagesRef.current,
+                streamingIdRef.current,
+                streamStartedRef.current,
+              ),
               runContext: activeRunContext,
               runtime: agentSession.getRuntime(),
               timelineStore,

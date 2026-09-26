@@ -207,3 +207,20 @@ export function appendNestedToolResultToMessage(
   next[index] = { ...message, nestedToolInvocations };
   return next;
 }
+
+/**
+ * Where a compaction's transcript row goes: before the streaming message while that turn has
+ * streamed nothing yet (a compaction at its preflight gate, or an overflow recovery that retries
+ * it), because its reply will stream into that message; after everything otherwise. A streaming
+ * message not in `messages` yet is being appended, and lands at `messages.length`, which the row
+ * then precedes.
+ */
+export function compactionTranscriptOrdinal(
+  messages: readonly Message[],
+  streamingId: string | null | undefined,
+  streamStarted: boolean,
+): number {
+  if (!streamingId || streamStarted) return messages.length;
+  const index = messages.findIndex((message) => message.id === streamingId);
+  return index >= 0 ? index : messages.length;
+}
