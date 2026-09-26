@@ -632,9 +632,9 @@ describe('AgentStore recovery of host-owned agents', () => {
    * run the record was on.
    */
   function legacyRecord(id: string, runSequence: number | undefined): AgentRecord {
-    const { spawnerClaim: _claim, ...rest } = reviewerRecord(id);
     return {
-      ...rest,
+      ...reviewerRecord(id),
+      spawnerClaim: undefined,
       runSequence,
       notifyParentOnCompletion: false,
       resumeAfterRestart: false,

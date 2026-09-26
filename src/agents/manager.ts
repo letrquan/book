@@ -37,6 +37,13 @@ import {
 import { deriveAgentDisplayName, uniqueAgentDisplayName } from './naming.js';
 import { projectAgentCompletion, projectAgentSummary } from './projections.js';
 import { beginTerminalGeneration } from './completion-notification.js';
+import {
+  advanceRun,
+  notifiesParent,
+  resumesAfterRestart,
+  spawnerClaimFor,
+  unrunFollowUps,
+} from './spawner-claim.js';
 import { projectToolResultForDisplay, redactToolCallForDisplay } from './activity.js';
 import { AgentStore, type AgentStoreWriteResult } from './store.js';
 import { permissionRuleForToolCall } from '../permissions.js';
@@ -426,37 +433,51 @@ export class AgentManager {
           if (record.stopReason !== 'process_exit') continue;
           if (!['queued', 'starting', 'running'].includes(record.resumedFromStatus ?? '')) continue;
           record.resumable = false;
-          // A host whose receiver died with the process (`/review` renders its agents'
-          // output into its own report) gets no re-run: it would bill a result nobody
-          // receives. The agent stays interrupted and says why.
-          if (record.resumeAfterRestart === false) {
-            // Follow-ups sent to it are not run either: one would start with none of the host's
-            // context, and whether its result is the host's or the parent's is not recorded per
-            // run. They are counted, so none is lost without a word: the one that was running
-            // (the prompt is no longer the spawn task) and any queued behind it.
-            const dropped =
-              (record.pendingMessages?.length ?? 0) +
-              (record.purpose !== undefined && record.prompt !== record.purpose ? 1 : 0);
-            record.error =
-              'Not resumed after the restart: the host that spawned it handles its result and exited with the process.' +
-              (dropped > 0
-                ? ` ${dropped} follow-up${dropped === 1 ? '' : 's'} sent to it ${dropped === 1 ? 'was' : 'were'} not run either; send ${dropped === 1 ? 'it' : 'them'} again.`
-                : '');
-            this.persist(record);
-            continue;
+          // A Task child's run is handed back by Task itself, which died with the process, so
+          // its re-run is the parent's. Any other host that suppresses delivery still owns its
+          // agents' output, and keeps its claim over the re-run.
+          let continuesSpawnerRun = record.parentToolCallId === undefined;
+          if (!resumesAfterRestart(record)) {
+            // The spawner's run is not re-run: its receiver (`/review` renders its agents'
+            // output into its own report) died with the process, so the result would reach
+            // nobody. Follow-ups sent to the agent are another matter: whoever sent them is the
+            // parent, which is still here, so they run, as a run of the parent's.
+            const followUps = unrunFollowUps(record);
+            if (followUps.length === 0) {
+              record.error =
+                'Not resumed after the restart: the host that spawned it handles its result and exited with the process.';
+              this.persist(record);
+              continue;
+            }
+            record.prompt = followUps[0]!;
+            record.pendingMessages = followUps.slice(1);
+            continuesSpawnerRun = false;
           }
+          advanceRun(record, continuesSpawnerRun);
           record.status = 'queued';
           record.stopReason = undefined;
           record.finishedAt = undefined;
-          // A Task child's first run is handed back by Task itself, which died with the process;
-          // nothing waits on this re-run, so it reports to the parent. Any other host that
-          // suppresses delivery still owns its agents' output.
-          if (record.parentToolCallId) record.notifyParentOnCompletion = undefined;
           this.persist(record);
           this.queue.push(record.id);
           this.emit({ type: 'agent_update', agent: clone(record) });
         }
         if (this.queue.length > 0) queueMicrotask(() => this.pump());
+      } else {
+        // Nothing re-drives an interrupted agent, so the follow-ups sent to it stay unrun. Say
+        // so on the record: its interrupted completion, if the parent has not had it yet, carries
+        // the error there.
+        for (const record of this.agents.values()) {
+          if (!record.resumable || record.stopReason !== 'process_exit') continue;
+          const unrun = unrunFollowUps(record).length;
+          if (unrun === 0) continue;
+          const error =
+            `Interrupted by a restart and not resumed: agents.resumeInterrupted is off. ` +
+            `${unrun} follow-up${unrun === 1 ? '' : 's'} sent to it ${unrun === 1 ? 'was' : 'were'} not run; ` +
+            `send ${unrun === 1 ? 'it' : 'them'} again.`;
+          if (record.error === error) continue;
+          record.error = error;
+          this.persist(record);
+        }
       }
       this.exitHandler = () => {
         for (const record of this.agents.values()) {
@@ -656,7 +677,7 @@ export class AgentManager {
       rootRunId: record.rootRunId,
       parentRunId: record.parentRunId,
     });
-    if (event === 'result' && record.notifyParentOnCompletion !== false) {
+    if (event === 'result' && notifiesParent(record)) {
       this.emit({
         type: 'agent_completion',
         notification: this.completionNotification(record),
@@ -863,9 +884,9 @@ export class AgentManager {
       rootRunId: request.rootRunId ?? plan.rootRunId ?? runId,
       parentRunId: request.parentRunId ?? plan.parentRunId,
       parentToolCallId: request.parentToolCallId,
-      notifyParentOnCompletion: request.notifyParentOnCompletion,
-      resumeAfterRestart: request.resumeAfterRestart,
+      spawnerClaim: spawnerClaimFor(request),
       runId,
+      runSequence: 1,
       planId: plan.id,
       status: 'queued',
       applicationStatus: 'not_applied',
@@ -1038,11 +1059,8 @@ export class AgentManager {
     }
 
     record.prompt = trimmed;
-    // A follow-up run is the parent's, not the spawner's: a Task child's first run is handed
-    // back by Task itself (notifyParentOnCompletion: false), but nothing is waiting on this one.
-    record.notifyParentOnCompletion = undefined;
-    // Nor does it die with the spawner: `/review`'s no-resume mark covered only its own run.
-    record.resumeAfterRestart = undefined;
+    // The spawner took its result when the agent finished, so this run is the parent's.
+    advanceRun(record, false);
     record.pendingMessages = [];
     record.error = undefined;
     record.result = undefined;
@@ -1336,7 +1354,8 @@ export class AgentManager {
   private async run(record: AgentRecord): Promise<void> {
     record.status = 'starting';
     record.startedAt ??= Date.now();
-    record.runSequence = (record.runSequence ?? 0) + 1;
+    // Numbered as it was queued (`advanceRun`); a record written before that has none yet.
+    record.runSequence ??= 1;
     record.runId = randomUUID();
     record.rootRunId ??= record.runId;
     record.runStartedAt = Date.now();
@@ -1803,11 +1822,11 @@ export class AgentManager {
         if (controller.signal.aborted || this.agents.get(record.id)?.status === 'stopped') return;
         if (record.pendingMessages.length > 0) {
           record.prompt = record.pendingMessages.shift()!;
+          // The run never reached a finished status, so the spawner's `wait` is still pending
+          // and receives this follow-up's result: the next run stays the spawner's.
+          advanceRun(record, true);
           record.status = 'queued';
           record.finishedAt = undefined;
-          // The run never reached a finished status, so the spawner's `wait` is still
-          // pending and receives this follow-up's result: it stays the spawner's, and
-          // keeps both `notifyParentOnCompletion` and `resumeAfterRestart` as they are.
           this.queue.push(record.id);
           this.persist(record);
         } else {
@@ -1874,9 +1893,9 @@ export class AgentManager {
         record.prompt = record.pendingMessages.shift()!;
         record.status = 'queued';
         record.finishedAt = undefined;
-        // The run that just ended was the spawner's to hand back; this follow-up is the parent's.
-        record.notifyParentOnCompletion = undefined;
-        record.resumeAfterRestart = undefined;
+        // The run that just ended was handed back with its own status; this follow-up is the
+        // parent's.
+        advanceRun(record, false);
         this.queue.push(record.id);
         this.persist(record);
       }

@@ -17,6 +17,7 @@ import { createDebugLogger } from '../debug-log.js';
 import { resolveBookHome } from '../book-home.js';
 import { deriveAgentDisplayName } from './naming.js';
 import { beginTerminalGeneration } from './completion-notification.js';
+import { migrateSpawnerClaim } from './spawner-claim.js';
 import {
   AtomicJsonWriter,
   type AtomicJsonWriterOptions,
@@ -417,7 +418,7 @@ export class AgentStore {
     const terminal = TERMINAL_STATUSES.has(record.status);
     const hasCompletionSequence = record.completionSequence !== undefined;
     const completionSequence = record.completionSequence ?? (terminal ? 1 : 0);
-    return {
+    return migrateSpawnerClaim({
       ...record,
       profile,
       displayName: record.displayName ?? deriveAgentDisplayName(purpose, record.name ?? profile),
@@ -432,7 +433,7 @@ export class AgentStore {
       completionSequence,
       completionDeliveredSequence:
         record.completionDeliveredSequence ?? (hasCompletionSequence ? 0 : completionSequence),
-    };
+    });
   }
 
   private agentPath(id: string): string {
