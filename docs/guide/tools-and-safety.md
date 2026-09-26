@@ -8,7 +8,8 @@ How Book reads and changes files, runs shell commands, and decides what it may d
 first; `offset`/`limit` are for files larger than that. A Read that stops before the end of the
 file ends with a notice naming where to continue, such as `[Lines 1-1163 of 1894 shown, the most
 one Read returns (50 KB). Continue with offset: 1164.]`, so the shared 50 KB clip on tool results,
-whose notice names a file `Read` cannot open, never cuts a Read. A line that fits under the clip on
+whose notice names a file in Book's `tool-output` directory that `Read` can open, never cuts a
+Read. A line that fits under the clip on
 its own is returned whole; a longer one is shown cut to fill it, and the notice gives the line's size
 and points past it. `Read { filePath, outline: true }` is the survey call:
 it returns only the lines that say what a file contains, each with its line number, so the model
@@ -230,8 +231,11 @@ reports one of these:
 | `aborted`    | Its signal aborted before it completed: a cancel, an `AbortSignal.timeout`, or a `stream-json` reader that went away |
 | `error`      | The run ended `failed`, or threw after `SessionStart` (for example on a missing prompt)                              |
 
-It runs at most once per session, and never under the cancelled run's own signal. Ctrl+C on
-`book -p` still ends the process without it, since print mode installs no SIGINT handler.
+It runs at most once per session, and never under the cancelled run's own signal. Print and SDK runs
+also pass `status` and `stop_reason`, the run's terminal outcome
+(`completed`/`normal_completion`, `timed_out`/`stream_stall`, `cancelled`/…), so a hook can tell a
+stall from success. Ctrl+C on `book -p` cancels the run and runs SessionEnd with reason `aborted`; a
+second Ctrl+C exits without waiting.
 
 **Awaited is the property that costs you latency**, and it is not the same as being able to veto.
 A slow `PostToolUse` hook cannot block anything, but it still delays _every tool call_ by up to its

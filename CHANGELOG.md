@@ -276,6 +276,20 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A refused prompt or a rejected tool batch is no longer printed as the answer** (#248). Both are
+  host-written assistant messages, and print mode printed them as the run's answer. stdout now stays
+  empty and the reason goes to stderr as an `error:` line.
+- **`book -p --continue "/review"` no longer reprints the previous process's answer** (#248). A run
+  of host-performed commands has no model turn, so the answer walk is not run at all.
+- **Print and SDK runs mark a resolved command body as derived, as the TUI does** (#248).
+- **SessionEnd gets `status` and `stop_reason`** (#248), the run's terminal outcome, and runs after
+  the run's children and shells are stopped rather than while they keep working.
+- **Ctrl+C in `book -p` cancels the run, runs SessionEnd and exits 130** (#248). An abort that lands
+  in a tool exits 0 like one that lands in the stream, since cancelling is not failing.
+- **Two managed children of one profile get distinct progress labels** (#248): `explorer` and
+  `explorer 2`.
+- **`Read` can open the file a clip notice names** (#248). The full output of a result clipped at
+  50 KB lives in Book's `tool-output` directory, which the loop now makes readable.
 - **An at-sign in a prompt expands only when it names a file** (#261). Print mode and the TUI
   expanded every at-sign token, including inside fenced and inline code, so a spec quoting a JSDoc
   `{@link Foo.bar}` reached the model as `[Could not include @link: file not found]`, and the model
@@ -758,6 +772,8 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **The SDK `result` event and `HeadlessResult` carry `answer`** (#248), exactly the text print mode
+  would print, so an SDK host need not rebuild one from `messages`.
 - **`Read` has an outline mode.** Before its first edit a run read 40–55 whole files, and each
   survey read cost the entire file on every turn afterwards; the context reached 200k tokens by
   turn 30 (#217). `Read { outline: true }` returns a file's declarations with their line numbers

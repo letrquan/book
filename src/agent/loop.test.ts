@@ -16,6 +16,7 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
 import type { Message, Usage } from '../types/messages.js';
 import { askUserQuestionTools } from '../tools/ask-user-question.js';
+import { fileTools } from '../tools/file.js';
 import { toolSuccess } from '../tools/result.js';
 import { readToolUseRecords } from '../tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
@@ -6530,5 +6531,62 @@ describe('runAgentLoop inline reasoning separation', () => {
     const assistant = history.find((m) => m.role === 'assistant');
     expect(assistant?.content).toBe(answer);
     expect(assistant?.reasoningContent ?? '').toBe('');
+  });
+});
+
+describe('runAgentLoop — the clip notice names a file Read can open (#248)', () => {
+  it('lets Read open the full output a clipped result was saved to', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-spill-'));
+    const toolOutputRoot = mkdtempSync(join(tmpdir(), 'book-loop-spill-out-'));
+    let providerTurn = 0;
+    let spillPath = '';
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        providerTurn++;
+        if (providerTurn === 1) {
+          yield { type: 'tool_call', toolCall: { id: 'big_1', name: 'Big', arguments: {} } };
+        } else if (providerTurn === 2) {
+          const clipped = String(messages.at(-1)?.content ?? '');
+          spillPath = /Full output: (\S+?)\]/.exec(clipped)?.[1] ?? '';
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'read_1', name: 'Read', arguments: { file_path: spillPath, limit: 5 } },
+          };
+        } else {
+          yield { type: 'text', content: 'read it' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    registry.registerAll(fileTools);
+    registry.register({
+      name: 'Big',
+      description: 'Return a large result',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => toolSuccess(`first line\n${'x'.repeat(100_000)}`),
+    });
+    const results: ToolResult[] = [];
+
+    try {
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 3, autoCompactEnabled: false }),
+        registry,
+        'inspect',
+        [],
+        noopCallbacks({ onToolResult: (result) => results.push(result) }),
+        'bypassPermissions',
+        { provider, isNewSession: false, toolOutputRoot },
+      );
+
+      expect(spillPath).not.toBe('');
+      const read = results.find((result) => result.toolCallId === 'read_1');
+      expect(read?.status).toBe('success');
+      expect(read?.content).toContain('first line');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+      rmSync(toolOutputRoot, { recursive: true, force: true });
+    }
   });
 });
