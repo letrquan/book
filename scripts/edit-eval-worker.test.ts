@@ -150,10 +150,15 @@ describe('runEditEvalWorker', () => {
     const result = await runEvaluationProcess({
       command: process.execPath,
       args: ['--import', import.meta.resolve('tsx'), worker, '--task', 'missing-task'],
-      timeoutMs: 5_000,
+      // The worker imports the whole SDK, and tsx transpiles it on the fly: about
+      // a second with a warm cache, but around eight when the cache is cold, as
+      // on a fresh Windows runner where this file runs before any other test has
+      // warmed it. Five seconds timed that case out. This asserts that the worker
+      // loads and refuses an unknown task, not how fast it transpiles.
+      timeoutMs: 30_000,
     });
 
     expect(result.status).toBe('failed');
     expect(result.stderr).toContain('Unknown edit evaluation task: missing-task');
-  });
+  }, 45_000);
 });
