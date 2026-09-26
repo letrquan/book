@@ -19,6 +19,7 @@ import type {
 } from '../types/tools.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import { createProvider, type Provider } from '../provider/index.js';
+import { TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
 import { buildMessages } from './context.js';
 import type { PreparedToolCall, ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
@@ -60,8 +61,8 @@ import {
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import {
-  NETWORK_POLICY_REMEDIES,
   networkPolicyRefusal,
+  networkPolicyRemedies,
   type NetworkPolicyRefusal,
 } from '../tools/web-policy.js';
 import {
@@ -743,6 +744,8 @@ export async function runAgentLoop(
      * because each kind names a different remedy in the terminal message.
      */
     const blockedStreakCauses = new Set<NetworkPolicyRefusal | 'other'>();
+    /** The network-policy refusals of the streak, so each remedy can name what was refused. */
+    const blockedStreakNetworkRefusals: ToolResult[] = [];
     // Monotonic, and never leaves this function as a stamp. Over a run measured
     // in days a wall-clock correction would silently rewrite how long the model
     // is told it has been working, in either direction.
@@ -1254,7 +1257,7 @@ export async function runAgentLoop(
         ].includes(reason),
       );
       if (!streamError && streamDone && finishReason) {
-        if (finishReason === 'length' || finishReason === 'max_tokens') {
+        if (TRUNCATION_FINISH_REASONS.has(finishReason)) {
           // Not a protocol error. On a migration or a generated file, hitting the
           // output cap is the shape of the work, not an anomaly — and classifying
           // it as a protocol error made it unrecoverable.
@@ -2537,12 +2540,15 @@ export async function runAgentLoop(
         blockedTurnStreak++;
         for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
         for (const result of orderedToolResults) {
-          blockedStreakCauses.add(networkPolicyRefusal(result) ?? 'other');
+          const kind = networkPolicyRefusal(result);
+          blockedStreakCauses.add(kind ?? 'other');
+          if (kind && result) blockedStreakNetworkRefusals.push(result);
         }
       } else {
         blockedTurnStreak = 0;
         blockedTurnTools.clear();
         blockedStreakCauses.clear();
+        blockedStreakNetworkRefusals.length = 0;
       }
 
       const toolStats = toolContext.runtime?.toolCallStats;
@@ -2673,13 +2679,14 @@ export async function runAgentLoop(
         // each one, because every refused call needs its own fix before anything can
         // proceed. A permission refusal is lifted by a rule or a mode. A network-policy
         // refusal is lifted by neither, bypassPermissions included: a refused WebFetch
-        // by the host's opt-in, a refused WebSearch only by fixing the host's DNS.
+        // by the host's opt-in, a refused WebSearch only by fixing the host's DNS. Each network
+        // remedy names the destinations the streak refused, and the WebFetch one warns that its
+        // opt-in lifts the policy for every destination, not only those.
         const remedies: string[] = [];
         if (blockedStreakCauses.has('other') || blockedStreakCauses.size === 0) {
           remedies.push('grant the permission, add an allow rule, or change the permission mode');
         }
-        if (blockedStreakCauses.has('fetch')) remedies.push(NETWORK_POLICY_REMEDIES.fetch);
-        if (blockedStreakCauses.has('search')) remedies.push(NETWORK_POLICY_REMEDIES.search);
+        remedies.push(...networkPolicyRemedies(blockedStreakNetworkRefusals));
         const detail =
           `Every tool call was refused on ${blockedTurnStreak} consecutive turns (${refused}). ` +
           `Nothing can proceed: ${remedies.join('. Separately, ')}.`;
