@@ -99,6 +99,7 @@ Press **Enter** to allow it once, **S** to skip it (Book is told no and carries 
 **Always allow** to stop being asked for that kind of call. `Alt+M` cycles the permission mode
 shown at the bottom left — for example _accept edits_, which lets file edits through but still asks
 before commands, or _plan_, where Book proposes a plan and changes nothing until you approve it.
+Reading and searching files inside the project never asks.
 
 ## Handy commands
 

@@ -189,12 +189,33 @@ Modes differ only in what happens to calls that no `deny` rule matched:
 
 | Mode                | Unmatched calls                                                                                                                              |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `default`           | Checked against `allow`/`ask`, then prompted                                                                                                 |
-| `acceptEdits`       | As `default`, but file mutations are approved without a prompt                                                                               |
+| `default`           | Workspace reads run; everything else is checked against `allow`/`ask`, then prompted                                                         |
+| `acceptEdits`       | As `default`, and file mutations are approved without a prompt too                                                                           |
 | `plan`              | Read-only tools only; mutations are refused until you approve a plan                                                                         |
 | `auto`              | Run without a prompt                                                                                                                         |
 | `dontAsk`           | Refused except for the built-in always-allowed tools (`MemorySave`) — the mode never prompts, and a user `allow` rule does not exempt a call |
 | `bypassPermissions` | Run without a prompt                                                                                                                         |
+
+**Workspace reads.** In `default` and `acceptEdits`, a `Read`, `Glob` or `Grep` whose target is
+inside the workspace or an `additionalDirectories` entry runs without a prompt. The target is
+resolved the way the tool resolves it: `..` is applied and symlinks and junctions are followed, so
+a link inside the workspace that points out of it still asks. A `Grep` with no `path` searches the
+workspace; a `Glob` pattern that climbs out with `..` or starts at an absolute path still asks. A
+`deny` rule still blocks and an `ask` rule still prompts. Other read-only tools (`GitStatus`,
+`GitDiff`, `WebFetch`, …) still ask. The file tools themselves open only the workspace and Book's
+memory directory, so an `additionalDirectories` entry does not yet widen what they can read.
+
+For `Read`, a path rule is also matched against the other spellings of the target — relative to
+the workspace and absolute, before and after following links — in every mode. So
+`deny: ["Read(.env)"]` also stops a `Read` of `/abs/path/to/workspace/.env` or `src/../.env`.
+
+**When nobody can answer a prompt.** Print mode, the SDK, and a background agent with no
+interactive approver cannot show a prompt, so a call that would prompt is refused. The model is told
+that nothing in the run could approve it, not that a policy blocked it. The first refusal of each
+tool also prints a notice for the operator (on stderr in `text` output, as a `notice` event in
+`stream-json`) naming the remedies: a `permissions.allow` rule for the call, or
+`--permission-mode auto`. A refusal by a `deny` rule names that rule, and a refusal in `dontAsk`
+says so.
 
 `plan` mode needs a host that can approve the plan the agent submits through `ExitPlanMode`. The
 TUI prompts; print/headless and the SDK route the decision through `onUserQuestionRequired`, and a

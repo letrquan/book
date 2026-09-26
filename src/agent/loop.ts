@@ -39,10 +39,12 @@ import {
 import {
   ALWAYS_ALLOWED_TOOLS,
   evaluatePermissionDetail,
+  permissionReasonOf,
   permissionResultOf,
   permissionRuleForToolCall,
   permissionRuleMatchesCall,
   permissionRuleOf,
+  WORKSPACE_READ_AUTO_ALLOW_MODES,
 } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
@@ -82,7 +84,11 @@ import { appendToolUseRecords } from '../tool-telemetry.js';
 import type { ToolUseRecord } from '../types/tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
-import { permissionDeniedError } from './actionable-errors.js';
+import {
+  permissionDeniedError,
+  unattendedRefusalNotice,
+  type PermissionDenialCause,
+} from './actionable-errors.js';
 import {
   isContextOverflowError,
   isErrorEnvelopeShape,
@@ -743,6 +749,8 @@ export async function runAgentLoop(
      * because each kind names a different remedy in the terminal message.
      */
     const blockedStreakCauses = new Set<NetworkPolicyRefusal | 'other'>();
+    /** Tools already named in an unattended-refusal notice this run: the operator hears once each. */
+    const unattendedRefusalNoticed = new Set<string>();
     // Monotonic, and never leaves this function as a stamp. Over a run measured
     // in days a wall-clock correction would silently rewrite how long the model
     // is told it has been working, in either direction.
@@ -2018,7 +2026,13 @@ export async function runAgentLoop(
         // while `deny: ["Write(.env)"]` in the same list held. Modes decide
         // whether the user is *asked*; they do not decide whether a rule the user
         // already wrote applies.
-        const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
+        const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings, {
+          readScope: {
+            workspace: toolContext.workspaceRoot,
+            additionalDirectories: config.settings.additionalDirectories,
+            autoAllow: WORKSPACE_READ_AUTO_ALLOW_MODES.has(effectiveMode),
+          },
+        });
         if (verdict.decision === 'deny') {
           // Consent was requested a few lines up; close it out, or the registry
           // keeps an activation request that never resolves. The later
@@ -2030,7 +2044,7 @@ export async function runAgentLoop(
             toolCallId: call.id,
             code: 'permission_denied',
             status: 'blocked',
-            content: permissionDeniedError(canonName, verdict.matchedRule),
+            content: permissionDeniedError(canonName, { kind: 'rule', rule: verdict.matchedRule }),
           });
           return undefined;
         }
@@ -2053,6 +2067,7 @@ export async function runAgentLoop(
           if (!autoApproved || userRuleAsked) {
             let permission: 'allow' | 'deny' | 'always' | undefined;
             let chosenRule: string | undefined;
+            let noApprover = false;
             // A tool on the always-allowed list is never prompted for in any
             // mode, so `dontAsk` — which refuses what it cannot ask about —
             // has nothing to refuse. A `deny` rule already returned above, and
@@ -2069,6 +2084,7 @@ export async function runAgentLoop(
               const decision = await callbacks.onPermissionRequired(call);
               permission = permissionResultOf(decision);
               chosenRule = permissionRuleOf(decision);
+              noApprover = permissionReasonOf(decision) === 'no_approver';
             }
             permission ??= 'deny';
 
@@ -2081,11 +2097,24 @@ export async function runAgentLoop(
                   effectiveMode === 'dontAsk' ? 'dont_ask' : 'user_denied',
                 );
               }
+              const askRule = verdict.source === 'ask' ? verdict.matchedRule : undefined;
+              const cause: PermissionDenialCause =
+                effectiveMode === 'dontAsk'
+                  ? { kind: 'dont_ask', askRule }
+                  : noApprover
+                    ? { kind: 'no_approver', askRule }
+                    : { kind: 'user' };
+              if (cause.kind === 'no_approver' && !unattendedRefusalNoticed.has(canonName)) {
+                unattendedRefusalNoticed.add(canonName);
+                callbacks.onNotice?.(
+                  unattendedRefusalNotice(canonName, permissionRuleForToolCall(call)),
+                );
+              }
               toolResults[callIndex] = toolFailure('SKIPPED: Permission denied', {
                 toolCallId: call.id,
                 code: 'permission_denied',
                 status: 'blocked',
-                content: permissionDeniedError(canonName, verdict.matchedRule),
+                content: permissionDeniedError(canonName, cause),
               });
               return undefined;
             }

@@ -1609,7 +1609,9 @@ export class AgentManager {
             record.runOutcome = outcome;
           },
           onPermissionRequired: async (toolCall: ToolCall) => {
-            if (!this.interactivePermissions) return 'deny';
+            if (!this.interactivePermissions) {
+              return { result: 'deny', reason: 'no_approver' } as const;
+            }
             const request: AgentPermissionRequest = {
               id: randomUUID(),
               agentId: record.id,
