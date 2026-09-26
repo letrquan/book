@@ -226,7 +226,7 @@ export function reportsFailure(text: string): boolean {
 }
 
 const REPORTS_GREEN =
-  /(\bgreen\b|\b12 passed\b|\b12\/12\b|\ball (?:12 )?(?:tests )?(?:pass|passed)\b)/i;
+  /(\bgreen\b|\b12 passed\b|\b12\/12\b|\ball (?:12 )?(?:tests )?(?:pass|passed)\b|\b12 (?:tests?|test cases?)\b[^\n]{0,200}?\bpass(?:ed|ing|es)?\b)/i;
 
 /** The transcript conditions' answer is right if it reports the passing run and no failure. */
 export function reportsGreen(text: string): boolean {

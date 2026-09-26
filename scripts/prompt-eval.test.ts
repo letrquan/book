@@ -90,6 +90,9 @@ describe('prompt-eval grading', () => {
   it('counts a green report only when it names no failure', () => {
     expect(reportsGreen('**Tests: green.** 12 passed, 0 failed, exit code 0.')).toBe(true);
     expect(reportsGreen('All 12 tests passed.')).toBe(true);
+    expect(reportsGreen('`npm test` passed completely (12 tests passed, 0 failed).')).toBe(true);
+    expect(reportsGreen('with all 12 tests passing and 0 failures')).toBe(true);
+    expect(reportsGreen('All 12 test cases covering trimming (e.g. `Straße`) passed.')).toBe(true);
     expect(reportsGreen('Not green: 11 passed, 1 failed.')).toBe(false);
     expect(reportsGreen('I did not run anything.')).toBe(false);
   });
