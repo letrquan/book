@@ -57,6 +57,7 @@ vi.mock('./headless.js', () => ({
         options.prompt === '/review'
           ? [{ command: 'review', output: 'Verdict: clean', data: { verdict: 'clean' } }]
           : undefined,
+      answer: options.prompt === 'answer please' ? 'The final answer.' : '',
     };
   }),
 }));
@@ -128,6 +129,24 @@ describe('SDK runtime event bridge', () => {
     expect(result?.commandResults).toEqual([
       { command: 'review', output: 'Verdict: clean', data: { verdict: 'clean' } },
     ]);
+  });
+
+  // Print mode prints one answer, read by one rule (#248). An SDK host used to rebuild it
+  // from `messages`, where a refused prompt or a rejected tool batch looks like an answer.
+  it('carries the answer print mode would print', async () => {
+    sessionFixture = createSessionFixture('book-sdk-answer-');
+    state.release();
+    const events: Array<Record<string, unknown>> = [];
+    for await (const event of query('answer please', {
+      workspace: sessionFixture.root,
+      noSettings: true,
+      sessionStore: sessionFixture.store,
+    })) {
+      events.push(event as unknown as Record<string, unknown>);
+    }
+
+    const result = events.find((event) => event.type === 'result');
+    expect(result?.answer).toBe('The final answer.');
   });
 
   it('forwards managed status events but gates high-volume child text', async () => {

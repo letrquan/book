@@ -21,7 +21,8 @@ const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'stopped', 'inter
 function lastAssistantText(transcript: Message[]): string {
   for (let index = transcript.length - 1; index >= 0; index--) {
     const message = transcript[index];
-    if (message.role === 'assistant' && message.content) {
+    // A host notice is what the host said, not what the child answered (#248).
+    if (message.role === 'assistant' && message.content && !message.hostNotice) {
       return message.content.trim().slice(0, 4000);
     }
   }

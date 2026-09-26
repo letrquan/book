@@ -59,6 +59,12 @@ All notable changes to this project are documented in this file.
   anything (0 of 32) and both reported green (32 of 32). The system prompt changes, so
   `SYSTEM_PROMPT_VERSION` is `book-system-prompt-v4` and the first request after upgrading misses the
   prompt cache once.
+- **The stream-json `retry` record tells a re-sent turn from an HTTP retry** (#244). A turn sent again
+  after its stream ended is now phase `reissue` with a `reason` (an output-cap continuation is phase
+  `continue`), where it was `transport` like an HTTP
+  retry inside one request; an unbounded watchdog retry reports `max: null` instead of `-1` (or
+  `9007199254740991` for a 503); the TUI says "Re-sending the turn". The TUI's retry label now
+  clears as soon as the retried stream answers, instead of staying up until the run ends.
 - **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
   rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
   green, so every PR that touched them either reformatted unrelated lines or left them drifting.
@@ -365,6 +371,30 @@ All notable changes to this project are documented in this file.
   usage panel show now include cache tokens on every provider.
   A provider that omits `total_tokens` no longer reads as zero context pressure, which kept
   usage-driven compaction from ever firing: the total defaults to prompt plus completion.
+- **A refused prompt or a rejected tool batch is no longer printed as the answer** (#248). Both are
+  host-written assistant messages, and print mode printed them as the run's answer. stdout now stays
+  empty and the reason goes to stderr as an `error:` line.
+- **`book -p --continue "/review"` no longer reprints the previous process's answer** (#248). A run
+  of host-performed commands has no model turn, so the answer walk is not run at all.
+- **Print and SDK runs mark a resolved command body as derived, as the TUI does** (#248).
+- **SessionEnd gets `status` and `stop_reason`** (#248), the run's terminal outcome, and runs after
+  the run's children and shells are stopped rather than while they keep working.
+- **Ctrl+C in `book -p` cancels the run, runs SessionEnd and exits 130** (#248). An abort that lands
+  in a tool exits 0 like one that lands in the stream, since cancelling is not failing.
+- **Two managed children of one profile get distinct progress labels** (#248): `explorer` and
+  `explorer 2`.
+- **`Read` can open the file a clip notice names** (#248): each file a result of this session was clipped
+  into, for the rest of the session, never the rest of the shared `tool-output` directory.
+- **An at-sign in a prompt expands only when it names a file** (#261). Print mode and the TUI
+  expanded every at-sign token, including inside fenced and inline code, so a spec quoting a JSDoc
+  `{@link Foo.bar}` reached the model as `[Could not include @link: file not found]`, and the model
+  wrote that marker into source. Tokens inside code are now left alone, and a token that names no
+  existing path stays exactly as written. A file that exists inside the workspace but cannot be
+  included (a binary file, an unreadable one) keeps its `[Could not include …]` note; a directory, a
+  missing path and a path outside the workspace are left as written, and a path outside it is never
+  touched on disk. The TUI never accents an at-sign inside code. A `!` line runs only when the
+  user typed it outside fenced code, never from a mentioned file's contents, and its output is never
+  mention-expanded.
 - **A refused permission prompt names its real cause** (#264). Every refusal told the model "The
   configured permission policy blocks this call", including a person pressing Skip and a print-mode
   run that had nobody to ask. The tool result now says which it was: a `permissions.deny` rule
@@ -978,6 +1008,9 @@ All notable changes to this project are documented in this file.
   session once per model (`--record --trials 0`), then runs recall probes and an agentic follow-up
   graded by the sandbox's tests and a hidden check. Arms differ only in one config field or one
   request transform, and `--regrade` re-scores a saved verify report.
+- **The SDK `result` event, `HeadlessResult`, and the `json` and `stream-json` result documents carry
+  `answer`** (#248), exactly the text print mode
+  would print, so an SDK host need not rebuild one from `messages`.
 - **`Read` has an outline mode.** Before its first edit a run read 40–55 whole files, and each
   survey read cost the entire file on every turn afterwards; the context reached 200k tokens by
   turn 30 (#217). `Read { outline: true }` returns a file's declarations with their line numbers
