@@ -88,19 +88,28 @@ const CONTEXT_OVERFLOW_ERROR_NAMES: ReadonlySet<string> = new Set([
  * message is `error.message` (or `error` itself when it is a string), else a
  * top-level `message` or `detail`; a body that is not JSON is its own message.
  * `raw` is the upstream's own error body that OpenRouter forwards in
- * `error.metadata.raw`.
+ * `error.metadata.raw`, as a string or as an object. `parsed` says the body
+ * read as a JSON object, so a reader can tell a body with no message of its own
+ * from a body that is not JSON at all.
  */
-function errorBodyParts(body: string): { message: string; names: string[]; raw?: string } {
-  let parsed: unknown;
+function errorBodyParts(body: string): {
+  message: string;
+  names: string[];
+  raw?: string;
+  parsed: boolean;
+} {
+  let parsedJson: unknown;
   try {
-    parsed = JSON.parse(body);
+    parsedJson = JSON.parse(body);
   } catch {
-    return { message: body, names: [] };
+    return { message: body, names: [], parsed: false };
   }
-  const root: unknown = Array.isArray(parsed) ? parsed[0] : parsed;
-  if (typeof root !== 'object' || root === null) return { message: body, names: [] };
+  const root: unknown = Array.isArray(parsedJson) ? parsedJson[0] : parsedJson;
+  if (typeof root !== 'object' || root === null) {
+    return { message: body, names: [], parsed: false };
+  }
   const error: unknown = (root as { error?: unknown }).error;
-  if (typeof error === 'string') return { message: error, names: [] };
+  if (typeof error === 'string') return { message: error, names: [], parsed: true };
   const source = (typeof error === 'object' && error !== null ? error : root) as Record<
     string,
     unknown
@@ -113,10 +122,17 @@ function errorBodyParts(body: string): { message: string; names: string[]; raw?:
         ? fallback
         : '';
   const metadata = source.metadata as { raw?: unknown } | null | undefined;
+  const raw = metadata?.raw;
   return {
     message,
     names: [source.code, source.type].filter((name): name is string => typeof name === 'string'),
-    raw: typeof metadata?.raw === 'string' ? metadata.raw : undefined,
+    raw:
+      typeof raw === 'string'
+        ? raw
+        : typeof raw === 'object' && raw !== null
+          ? JSON.stringify(raw)
+          : undefined,
+    parsed: true,
   };
 }
 
@@ -218,8 +234,9 @@ const ERROR_ENVELOPE_MAX_CHARS = 2_000;
 type EnvelopeUsage = { promptTokens: number; completionTokens: number } | null;
 
 /**
- * Zero tokens both ways: what a router reports for text it wrote itself, and what
- * a provider that does not report usage sends.
+ * A usage block that reports zero tokens both ways: what a router reports for
+ * text it wrote itself. A provider that sends no usage block at all gives
+ * `undefined`, which is not this.
  */
 function isZeroUsage(usage?: EnvelopeUsage): boolean {
   return usage != null && usage.promptTokens === 0 && usage.completionTokens === 0;
@@ -232,8 +249,8 @@ function isZeroUsage(usage?: EnvelopeUsage): boolean {
  * when it has no message) and ends the stream there. When a model may have
  * written the text, the envelope must be the whole answer: one `[Error] …` line.
  * An answer that quotes such a line and goes on to explain it is an answer. With
- * 0/0 usage any answer that opens with `[Error]` is read as the router's, however
- * many lines it runs to.
+ * a usage block that reports zero tokens both ways any answer that opens with
+ * `[Error]` is read as the router's, however many lines it runs to.
  */
 export function isErrorEnvelopeShape(text: string, usage?: EnvelopeUsage): boolean {
   if (isZeroUsage(usage)) return /^\s*\[Error\]/i.test(text);
@@ -255,7 +272,8 @@ export function isErrorEnvelopeShape(text: string, usage?: EnvelopeUsage): boole
  *     help.openai.com … Please include the request ID <id> in your message.`,
  *     whatever the usage says;
  *   - any other one-line server error that names its request ID;
- *   - with 0/0 usage, any answer that opens with `[Error]`, one line or many.
+ *   - with a usage block that reports zero tokens both ways, any answer that
+ *     opens with `[Error]`, one line or many.
  */
 export function isUpstreamErrorEnvelope(text: string, usage?: EnvelopeUsage): boolean {
   if (!isErrorEnvelopeShape(text, usage)) return false;
@@ -283,8 +301,12 @@ const ERROR_BODY_MAX_BYTES = 65_536;
  * Read at most ERROR_BODY_MAX_BYTES of an error body, for at most
  * ERROR_BODY_READ_TIMEOUT_MS. What arrived before the cap, the deadline, an
  * abort or a stream error is kept, and the rest of the body is cancelled.
+ *
+ * Every error body goes through here, retryable or not: a non-retryable one is
+ * what the classification and the text the user is shown are both read from, so
+ * an unbounded read there is a socket held for as long as the provider sends.
  */
-async function readErrorBody(response: Response, signal?: AbortSignal): Promise<string> {
+export async function readErrorBody(response: Response, signal?: AbortSignal): Promise<string> {
   if (signal?.aborted || !response.body) return '';
   let reader: ReadableStreamDefaultReader<Uint8Array>;
   try {
@@ -480,13 +502,14 @@ function abortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new Error('Aborted');
 }
 
+/**
+ * The message `errorBodyParts` reads, so the text shown and the text classified are the
+ * same. A body with no message of its own (a nested `error.error.message`) or that is not
+ * JSON shows its first characters instead.
+ */
 function safeErrorDetail(body: string): string {
-  try {
-    const parsed = JSON.parse(body) as { error?: { message?: unknown } };
-    if (typeof parsed.error?.message === 'string') return parsed.error.message.slice(0, 2000);
-  } catch {
-    // Non-JSON response bodies are still useful when kept bounded.
-  }
+  const { message, parsed } = errorBodyParts(body);
+  if (parsed && message) return message.slice(0, 2000);
   return body.slice(0, 200);
 }
 

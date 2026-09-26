@@ -660,3 +660,38 @@ describe('stated context overflow (#244)', () => {
     ).toBe(true);
   });
 });
+
+describe('error bodies read one way (#244 review)', () => {
+  it('reads an overflow stated in an OpenRouter metadata.raw object', () => {
+    // OpenRouter usually forwards the upstream body as a JSON string, but it can
+    // also send it as an object; both are the upstream's own words.
+    const body = JSON.stringify({
+      error: {
+        message: 'Provider returned error',
+        code: 400,
+        metadata: {
+          raw: { error: { message: "This model's maximum context length is 128000 tokens." } },
+          provider_name: 'Upstream',
+        },
+      },
+    });
+    expect(classifyApiError(400, body)).toBe('context_overflow');
+  });
+
+  it('shows the message the classifier reads, wherever the body puts it', () => {
+    const padding = 'p'.repeat(300);
+    expect(
+      formatApiError(400, JSON.stringify({ request_id: padding, message: 'top-level problem' })),
+    ).toContain('top-level problem');
+    expect(
+      formatApiError(400, JSON.stringify({ request_id: padding, error: 'plain string problem' })),
+    ).toContain('plain string problem');
+    expect(
+      formatApiError(400, JSON.stringify({ request_id: padding, detail: 'detail problem' })),
+    ).toContain('detail problem');
+    // A body with no message of its own still shows its first characters.
+    expect(
+      formatApiError(400, JSON.stringify({ error: { error: { message: 'nested problem' } } })),
+    ).toContain('nested problem');
+  });
+});

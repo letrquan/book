@@ -661,3 +661,76 @@ describe('stall tolerance while thinking', () => {
     }
   });
 });
+
+describe('Anthropic error classification (#244 review)', () => {
+  async function lastEvent(response: () => Response): Promise<unknown> {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => response()),
+    );
+    const events = [];
+    for await (const event of chatCompletionStream(
+      defaultConfig({ provider: 'anthropic', baseUrl: 'https://api.anthropic.com' }),
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      events.push(event);
+    }
+    return events.at(-1);
+  }
+
+  it.each([
+    ['authentication_error', 'auth'],
+    ['permission_error', 'auth'],
+    ['not_found_error', 'not_found'],
+    ['request_too_large', 'context_overflow'],
+    ['invalid_request_error', 'invalid_request_error'],
+    ['overloaded_error', 'overloaded_error'],
+  ])('reads a mid-stream %s as %s', async (type, errorCode) => {
+    const event = await lastEvent(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  [
+                    'data: {"type":"message_start","message":{"usage":{"input_tokens":2}}}',
+                    '',
+                    `data: {"type":"error","error":{"type":"${type}","message":"refused"}}`,
+                    '',
+                  ].join('\n'),
+                ),
+              );
+              controller.close();
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    expect(event).toEqual({ type: 'error', error: 'refused', errorCode });
+  });
+
+  it('reads at most 64 KB of a non-retryable error body', async () => {
+    let pulled = 0;
+    const event = await lastEvent(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (pulled >= 10 * 1024 * 1024) {
+                controller.close();
+                return;
+              }
+              const chunk = new TextEncoder().encode('x'.repeat(16_384));
+              pulled += chunk.byteLength;
+              controller.enqueue(chunk);
+            },
+          }),
+          { status: 400 },
+        ),
+    );
+    expect(event).toMatchObject({ type: 'error', errorCode: 'bad_request' });
+    expect(pulled).toBeLessThanOrEqual(64 * 1024 + 3 * 16_384);
+  });
+});

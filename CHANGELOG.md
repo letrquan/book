@@ -276,6 +276,32 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A request too large for the window compacts instead of ending the run** (#238). Resuming a
+  long session on a model with a smaller window (`--resume <id> --model <smaller>`) could end
+  with `Request is too large for <model> … Start a new session`: the preflight gate compacted
+  first, but when the reducer's request failed and the tool results were already too small for
+  the clip to help, it refused. A checkpoint built without the model is now the last resort: it
+  needs no provider call, so the request goes out. The run ends only when even that cannot be
+  made, or when `autoCompactEnabled` is off, and the message says which.
+- **Overflow recovery follow-ups** (#244).
+  - A 429 that states an oversized request (OpenAI's TPM limit) still compacts, but no longer
+    lowers the model's learned window for good.
+  - The recovery honours `autoCompactEnabled`: with it off, only the tool-result clip runs.
+  - When the recovery's reducer fails and the clip cannot bring the request under 80% of the
+    refused size, a checkpoint built without the model is used. A clip that is not retried no
+    longer rewrites the history.
+  - A 400 that comes back after a size-inferred recovery says the refusal was probably not
+    about size. Any `bad_request` of 200k tokens or more still compacts once.
+  - The reducer's own plain 400 on a request of 200k tokens or more is read as an overflow and
+    halves its planning window, so a ~600k history on the antigravity route can recover.
+  - An overflow that OpenRouter forwards in an `error.metadata.raw` object, not only a string,
+    is read.
+  - Anthropic's mid-stream `authentication_error` and `permission_error` park the run as
+    `credentials_rejected`, `not_found_error` ends it, and `request_too_large` goes through the
+    overflow recovery. All four were re-sent before.
+  - A non-retryable error body is read for at most 5 s and 64 KB, like a retryable one.
+  - The error text shows the message the classifier reads: a top-level `message`, a string
+    `error`, or `detail`.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller
