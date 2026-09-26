@@ -186,10 +186,12 @@ function looksBinary(content: string): boolean {
 }
 
 /**
- * Returns null when the token names no existing path inside the workspace, so it
- * stays as written. A path outside the workspace is never probed: a token like
- * `\\server\share` would otherwise make a network request for every prompt
- * that mentions one.
+ * Returns null when the token names nothing a file's contents could be read
+ * from, so it stays as written: a directory (a `@Test` annotation matches a
+ * `test/` directory case-insensitively on Windows and macOS), a missing path,
+ * and a path outside the workspace, which is never probed — a token like
+ * `\\server\share` would otherwise make a network request for every prompt that
+ * mentions one.
  */
 function expandMention(filePath: string, workspace: string): string | null {
   const resolved = resolveWorkspaceMentionPath(workspace, filePath);
@@ -198,7 +200,7 @@ function expandMention(filePath: string, workspace: string): string | null {
 
   try {
     const stat = statSync(resolved.filePath);
-    if (stat.isDirectory()) return formatMentionError(resolved.relativePath, 'path is a directory');
+    if (stat.isDirectory()) return null;
     if (!stat.isFile())
       return formatMentionError(resolved.relativePath, 'path is not a regular file');
 
@@ -220,9 +222,19 @@ function expandMention(filePath: string, workspace: string): string | null {
 }
 
 /**
+ * Offsets of the at-sign tokens that name a path, outside fenced and inline code:
+ * the same tokens `expandAtMentions` considers, without looking at the disk. The TUI
+ * accents these in a user turn.
+ */
+export function mentionTokenRanges(input: string): Array<[number, number]> {
+  return findMentionTokens(input).map((token) => [token.start, token.end]);
+}
+
+/**
  * Expand @path references to file contents in user input. Only a token outside
- * fenced and inline code that names an existing path is expanded; anything else
- * is left exactly as the user wrote it (#261).
+ * fenced and inline code that names a regular file inside the workspace is
+ * expanded; a directory, a missing path and a path outside the workspace stay
+ * exactly as the user wrote them (#261).
  */
 export function expandAtMentions(input: string, workspace: string): string {
   const tokens = findMentionTokens(input);

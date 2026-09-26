@@ -725,6 +725,14 @@ export async function runAgentLoop(
     let streamReissues = 0;
     /** Continuations after an output cap; budgeted separately from transport faults. */
     let outputCapContinues = 0;
+    /**
+     * Whether the host is currently showing a retry label. The TUI clears that
+     * label on `onStreamResume`, which no provider calls after a re-sent turn,
+     * so the loop reports the resume itself the first time the retried stream
+     * answers. Run-level: a turn that retries after another one has already
+     * spoken still owes the host the same single resume.
+     */
+    let retryLabelShown = false;
     /** Host-authored continuations spent, and the witnesses they were taken at. */
     let continuationCount = 0;
     const continuationWitnesses: string[] = [];
@@ -1138,9 +1146,11 @@ export async function runAgentLoop(
             );
           }
           callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
+          retryLabelShown = true;
         },
         onStreamStall: (countdownMs) => {
           callbacks.onStreamStall?.(countdownMs);
+          retryLabelShown = true;
         },
         onStreamResume: () => {
           callbacks.onStreamResume?.();
@@ -1154,6 +1164,16 @@ export async function runAgentLoop(
 
       try {
         for await (const event of stream) {
+          // The retry label a re-sent turn left up ends with the answer, not with
+          // the run: the host is told the stream resumed on the first content of
+          // the retried attempt.
+          if (
+            retryLabelShown &&
+            (event.type === 'text' || event.type === 'reasoning' || event.type === 'tool_call')
+          ) {
+            retryLabelShown = false;
+            callbacks.onStreamResume?.();
+          }
           if (event.type === 'reasoning' && event.reasoning) {
             reasoningContent += event.reasoning;
             if (reasoningStreamingStarted) callbacks.onReasoning?.(event.reasoning);
@@ -1689,6 +1709,7 @@ export async function runAgentLoop(
             reissueDelayMs,
             streamOutcome.reason,
           );
+          retryLabelShown = true;
           await delay(reissueDelayMs, signal);
           if (!signal?.aborted) {
             // Never re-send a request that ENDS with an assistant message.

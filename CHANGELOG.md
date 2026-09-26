@@ -10,7 +10,8 @@ All notable changes to this project are documented in this file.
   after its stream ended is now phase `reissue` with a `reason` (an output-cap continuation is phase
   `continue`), where it was `transport` like an HTTP
   retry inside one request; an unbounded watchdog retry reports `max: null` instead of `-1` (or
-  `9007199254740991` for a 503); the TUI says "Re-sending the turn".
+  `9007199254740991` for a 503); the TUI says "Re-sending the turn". The TUI's retry label now
+  clears as soon as the retried stream answers, instead of staying up until the run ends.
 - **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
   rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
   green, so every PR that touched them either reformatted unrelated lines or left them drifting.
@@ -299,10 +300,11 @@ All notable changes to this project are documented in this file.
   expanded every at-sign token, including inside fenced and inline code, so a spec quoting a JSDoc
   `{@link Foo.bar}` reached the model as `[Could not include @link: file not found]`, and the model
   wrote that marker into source. Tokens inside code are now left alone, and a token that names no
-  existing path stays exactly as written. A path that exists inside the workspace but cannot be
-  included (a directory, a binary file) keeps its `[Could not include …]` note; a path outside the
-  workspace is left as written and never touched on disk. A `!` line runs only when the user typed it
-  outside fenced code, never from a mentioned file's contents.
+  existing path stays exactly as written. A file that exists inside the workspace but cannot be
+  included (a binary file, an unreadable one) keeps its `[Could not include …]` note; a directory, a
+  missing path and a path outside the workspace are left as written, and a path outside it is never
+  touched on disk. The TUI accents exactly the mentions Book expands. A `!` line runs only when the
+  user typed it outside fenced code, never from a mentioned file's contents.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller

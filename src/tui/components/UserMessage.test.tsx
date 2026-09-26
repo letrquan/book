@@ -153,6 +153,12 @@ describe('user prompt wrapping', () => {
     expect(mention?.text).toBe('@"docs/my notes.md"');
   });
 
+  it('accents only the mentions Book expands, not an at-sign inside code', () => {
+    const rows = wrapUserPrompt('run `read @src/a.ts now` then @src/b.ts', 80);
+    const mentions = rows.flat().filter((piece) => piece.isMention);
+    expect(mentions.map((piece) => piece.text)).toEqual(['@src/b.ts']);
+  });
+
   it('keeps blank lines between paragraphs', () => {
     expect(text(wrapUserPrompt('first\n\nsecond', 20))).toEqual(['first', '', 'second']);
   });

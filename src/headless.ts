@@ -1136,8 +1136,11 @@ export async function runHeadless(
     // A failed run with no answer used to say nothing at all in text or json output when
     // the loop reported no error of its own: a prompt a UserPromptSubmit hook refused
     // exited 1 with empty stdout and stderr. stream-json carries the outcome in `result`.
+    // An SDK host is skipped: it gets the outcome on its `result` event and owns the
+    // stderr of the process it embedded Book in.
     if (
       opts.outputFormat !== 'stream-json' &&
+      opts.runSource !== 'sdk' &&
       outcome.status === 'failed' &&
       outcome.message &&
       !answer &&

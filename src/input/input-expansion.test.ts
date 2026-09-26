@@ -51,13 +51,15 @@ describe('expandAtMentions', () => {
     expect(result).toBe('Read @missing.ts');
   });
 
-  it('reports directories', () => {
+  it('leaves a directory mention as written', () => {
     const ws = workspace();
     mkdirSync(join(ws, 'src'));
+    mkdirSync(join(ws, 'test'));
 
-    const result = expandAtMentions('Read @src', ws);
-
-    expect(result).toContain('path is a directory');
+    expect(expandAtMentions('Read @src', ws)).toBe('Read @src');
+    // An annotation that happens to name a directory (case-insensitively on Windows and
+    // macOS) must not become a marker either (#261 review).
+    expect(expandAtMentions('Add a @Test annotation', ws)).toBe('Add a @Test annotation');
   });
 
   it('leaves a missing path outside the workspace as written', () => {

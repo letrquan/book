@@ -193,6 +193,36 @@ describe('runHeadless — the answer is only ever the model answering (#248)', (
   });
 });
 
+describe('runHeadless — an SDK host owns its stderr (#248)', () => {
+  it('does not write the failure line to the host process stderr', async () => {
+    const config = makeConfig();
+    const hook = join(config.workspace, 'block.cjs');
+    writeFileSync(
+      hook,
+      "process.stdout.write(JSON.stringify({ action: 'block', message: 'not today' }));",
+    );
+    config.settings.hooks.UserPromptSubmit = [{ command: `node "${hook}"`, env: {} }];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sse([textDelta('unused')])),
+    );
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'do it',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      quiet: true,
+      runSource: 'sdk',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout: capture().stdout,
+    });
+
+    expect(result.outcome.reason).toBe('blocked_by_policy');
+    expect(stderrWrites.join('')).not.toContain('error: not today');
+  });
+});
+
 describe('runHeadless — each prompt says why it failed (#248)', () => {
   it("reports a later prompt's refusal even after an earlier prompt reported an error", async () => {
     const config = makeConfig();

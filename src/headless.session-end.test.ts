@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { PassThrough, Readable } from 'stream';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runHeadless } from './headless.js';
 import { AgentSession } from './session/agent-session.js';
 import { createDefaultRegistry, createRegistry } from './tools/registry.js';
@@ -12,6 +12,22 @@ import type { AgentConfig } from './types/runtime.js';
 import type { AgentManager } from './agents/manager.js';
 
 let tempDirs: string[] = [];
+
+// Pin Book's home: a run writes its liveness file under it, and the real one is the
+// developer's own ~/.book.
+const previousBookHome = process.env.BOOK_HOME;
+let bookHome: string;
+
+beforeEach(() => {
+  bookHome = mkdtempSync(join(tmpdir(), 'book-home-'));
+  process.env.BOOK_HOME = bookHome;
+});
+
+afterEach(() => {
+  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
+  else process.env.BOOK_HOME = previousBookHome;
+  rmSync(bookHome, { recursive: true, force: true });
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();

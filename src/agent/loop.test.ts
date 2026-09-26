@@ -6600,3 +6600,53 @@ describe('runAgentLoop — the clip notice names a file Read can open (#248)', (
     }
   });
 });
+
+describe('runAgentLoop — a retry label ends when the retried stream speaks', () => {
+  it('reports the stream resumed once the re-sent turn starts answering', async () => {
+    let request = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        request++;
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(
+              enc.encode(
+                `data: ${JSON.stringify({ choices: [{ delta: { content: request === 1 ? 'Partial ' : 'Whole answer' } }] })}\n\n`,
+              ),
+            );
+            if (request === 1) {
+              c.error(new TypeError('terminated'));
+              return;
+            }
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+    const events: string[] = [];
+    const base = defaultConfig({ baseUrl: 'http://localhost/v1', maxTurns: 2 });
+
+    try {
+      await runAgentLoop(
+        { ...base, retry: { ...base.retry, streamReissueAttempts: 1 } },
+        createRegistry(),
+        'go',
+        [],
+        noopCallbacks({
+          onRetry: (phase) => events.push(`retry:${phase}`),
+          onStreamResume: () => events.push('resume'),
+        }),
+        'bypassPermissions',
+        { isNewSession: false },
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(events).toEqual(['retry:reissue', 'resume']);
+  });
+});
