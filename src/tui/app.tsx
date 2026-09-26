@@ -11,7 +11,7 @@ import {
 import { panelContentWidth, panelGrid } from './layout.js';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
-import { QueuedInputPreview } from './components/QueuedInputPreview.js';
+import { QueuedInputPreview, type FlashNotice } from './components/QueuedInputPreview.js';
 import { StatusLine } from './components/StatusLine.js';
 import { WorkingIndicator } from './components/WorkingIndicator.js';
 import { StartupFire } from './components/StartupFire.js';
@@ -97,7 +97,7 @@ import { PermissionsPanel } from './components/PermissionsPanel.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
 import type { InteractiveAssets } from './interactive-assets.js';
-import { resolveContextWindow } from '../models.js';
+import { resolveContextWindow, stripProvider } from '../models.js';
 import { wordWrap } from './components/word-wrap.js';
 import { countWrittenTurns } from './components/transcript-messages.js';
 import {
@@ -246,6 +246,10 @@ interface AppProps {
 }
 
 const QUEUED_SEND_NOTICE = 'Sending queued follow-up...';
+
+function capitalize(word: string): string {
+  return word ? word[0]!.toUpperCase() + word.slice(1) : word;
+}
 
 /** One empty list, so a pending title page does not hand ChatPanel a new array each render. */
 const NO_RECENT_SESSIONS: readonly never[] = [];
@@ -481,16 +485,27 @@ export function App({
   const clearQueuedSendNotice = useCallback(() => {
     setQueueNotice((current) => (current === QUEUED_SEND_NOTICE ? undefined : current));
   }, []);
-  const [copyNotice, setCopyNotice] = useState<string | undefined>(undefined);
-  const copyNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handleCopiedNotice = useCallback((message: string) => {
-    setCopyNotice(message);
-    if (copyNoticeTimerRef.current) clearTimeout(copyNoticeTimerRef.current);
-    copyNoticeTimerRef.current = setTimeout(() => {
-      copyNoticeTimerRef.current = null;
-      setCopyNotice(undefined);
-    }, 2_000);
-  }, []);
+  // A note above the composer that fades on its own: a setting saved, a server
+  // connected, text copied. Confirmations used to be written into the
+  // transcript as sentences, a permanent record of something the status line
+  // or the next screen already showed.
+  const [flash, setFlash] = useState<FlashNotice | undefined>(undefined);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashNotice = useCallback(
+    (text: string, tone: FlashNotice['tone'] = 'done', ms = 3_000) => {
+      setFlash({ text, tone });
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+      flashTimerRef.current = setTimeout(() => {
+        flashTimerRef.current = null;
+        setFlash(undefined);
+      }, ms);
+    },
+    [],
+  );
+  const handleCopiedNotice = useCallback(
+    (message: string) => flashNotice(message, 'done', 2_000),
+    [flashNotice],
+  );
   // The timestamp ref keeps the second-press check current before React rerenders.
   // The timer only controls the visible hint and is cleared on replacement or unmount.
   const [ctrlCExitHintVisible, setCtrlCExitHintVisible] = useState(false);
@@ -1026,19 +1041,22 @@ export function App({
     if (isThinking || sendInFlight) return;
     lastMcpEventIdRef.current = fresh[fresh.length - 1].id;
     for (const event of fresh) {
-      if (event.type === 'connected') {
-        addLocalMessage(
-          `MCP: connected to "${event.server}" (${event.toolCount} tool${event.toolCount === 1 ? '' : 's'}).`,
+      // A failure is kept in the transcript, since it explains the missing
+      // tools later. The routine events are a note that fades: a line per
+      // server at every launch buried the title page under connection chatter.
+      if (event.type === 'failed') {
+        addLocalMessage(`✕ MCP: failed to connect "${event.server}": ${event.error}`);
+      } else if (event.type === 'connected') {
+        flashNotice(
+          `MCP ${event.server} · ${event.toolCount} tool${event.toolCount === 1 ? '' : 's'}`,
         );
-      } else if (event.type === 'failed') {
-        addLocalMessage(`MCP: failed to connect "${event.server}": ${event.error}`);
       } else if (event.type === 'disconnected') {
-        addLocalMessage(`MCP: "${event.server}" disconnected.`);
+        flashNotice(`MCP ${event.server} disconnected`, 'info');
       } else {
-        addLocalMessage(`MCP: "${event.server}" tool list updated (${event.toolCount} tools).`);
+        flashNotice(`MCP ${event.server} · ${event.toolCount} tools`, 'info');
       }
     }
-  }, [mcpSnapshot, isThinking, sendInFlight, addLocalMessage]);
+  }, [mcpSnapshot, isThinking, sendInFlight, addLocalMessage, flashNotice]);
   const queueDrainBlocked = Boolean(
     exitStarted ||
     isThinking ||
@@ -1689,7 +1707,7 @@ export function App({
 
   useEffect(
     () => () => {
-      if (copyNoticeTimerRef.current) clearTimeout(copyNoticeTimerRef.current);
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
       if (ctrlCExitHintTimerRef.current) clearTimeout(ctrlCExitHintTimerRef.current);
     },
     [],
@@ -1906,69 +1924,58 @@ export function App({
             setShowModelPicker(true);
           } else if (effect.modal === 'rewind') setShowRewindPicker(true);
           else if (effect.modal === 'skills') setShowSkills(true);
+          else if (effect.modal === 'agents') setShowAgentProfilePicker(true);
           else setShowEffortPicker(true);
           return;
         }
         if (effect?.type === 'set-model') {
+          // The status line names the model; a switch needs no other word.
           const result = setModel(effect.selection);
-          addLocalMessage(
-            result.ok ? `Switched to ${effect.selection} (saved as default).` : `✕ ${result.error}`,
-          );
+          if (!result.ok) addLocalMessage(`✕ ${result.error}`);
           return;
         }
         if (effect?.type === 'set-effort') {
+          // Shown beside the model in the status line.
           const result = setEffort(effect.level);
-          addLocalMessage(
-            result.ok
-              ? `Set effort level to ${effect.level} (saved as default).`
-              : `✕ ${result.error}`,
-          );
+          if (!result.ok) addLocalMessage(`✕ ${result.error}`);
           return;
         }
         if (effect?.type === 'set-compact-model') {
           const result = setCompactModel(effect.model);
-          addLocalMessage(
-            result.ok
-              ? `Set compact model to ${effect.model} (saved as default).`
-              : `✕ ${result.error}`,
-          );
+          if (result.ok) flashNotice(`Compact model: ${stripProvider(effect.model)}`);
+          else addLocalMessage(`✕ ${result.error}`);
           return;
         }
         if (effect?.type === 'set-default-permission-mode') {
           const result = setDefaultPermissionMode(effect.mode);
-          addLocalMessage(
-            result.ok
-              ? `Default permission mode is now ${effect.mode} (saved as default).`
-              : `✕ ${result.error}`,
-          );
+          if (result.ok) flashNotice(`Default permissions: ${effect.mode}`);
+          else addLocalMessage(`✕ ${result.error}`);
           return;
         }
         if (effect?.type === 'set-show-thinking') {
           const result = toggleShowThinking(effect.enabled);
-          addLocalMessage(
-            result.ok
-              ? `Show thinking is now ${effect.enabled ? 'on' : 'off'} (saved as default).`
-              : `✕ ${result.error ?? 'Could not save thinking setting.'}`,
-          );
+          if (result.ok) flashNotice(effect.enabled ? 'Thinking shown' : 'Thinking hidden');
+          else addLocalMessage(`✕ ${result.error ?? 'Could not save thinking setting.'}`);
           return;
         }
         if (effect?.type === 'set-startup-animation') {
           const result = toggleStartupAnimation(effect.enabled);
-          addLocalMessage(
-            result.ok
-              ? `Startup fire is now ${effect.enabled ? 'on' : 'off'} (saved as default).`
-              : `✕ ${result.error ?? 'Could not save the startup animation setting.'}`,
-          );
+          if (result.ok) flashNotice(`Startup animation ${effect.enabled ? 'on' : 'off'}`);
+          else {
+            addLocalMessage(`✕ ${result.error ?? 'Could not save the startup animation setting.'}`);
+          }
           return;
         }
         if (effect?.type === 'set-memory-auto-save') {
           setMemoryAutoSave(effect.enabled);
-          addLocalMessage(
+          flashNotice(
             effect.enabled
               ? liveConfig.settings.memory.requireApproval
-                ? 'Model memory writes enabled. New memories go to /memory inbox for approval.'
-                : 'Model memory writes enabled. The model saves memories directly; sessions that read external content go to /memory inbox.'
-              : 'Model memory writes disabled. Existing approved memory still loads.',
+                ? 'Memory writes on · new memories wait in /memory inbox'
+                : 'Memory writes on · saved directly, external content to /memory inbox'
+              : 'Memory writes off · approved memory still loads',
+            'done',
+            5_000,
           );
           return;
         }
@@ -2008,7 +2015,7 @@ export function App({
           );
           setSkillWatcherError(runtime?.skillWatcherError);
           setAgentProfiles(withBuiltInAgents(discoverAgents(config.workspace)));
-          addLocalMessage('Commands and skills have been reloaded.');
+          flashNotice('Commands and skills reloaded');
           return;
         }
         if (effect?.type === 'review') {
@@ -2066,7 +2073,7 @@ export function App({
           } else if (effect.operation === 'stop') {
             void manager
               .stop(effect.agentId!)
-              .then((record) => addLocalMessage(`Stopped ${record.displayName ?? record.name}.`))
+              .then((record) => flashNotice(`Stopped ${record.displayName ?? record.name}`))
               .catch(reportError);
           } else if (effect.operation === 'apply') {
             void manager
@@ -2775,11 +2782,8 @@ export function App({
                 }}
                 onReset={(profile) => {
                   const result = setAgentProfileModel(profile);
-                  addLocalMessage(
-                    result.ok
-                      ? `${profile} now inherits the parent model.`
-                      : `✕ ${result.error ?? `Could not reset ${profile}.`}`,
-                  );
+                  if (result.ok) flashNotice(`${capitalize(profile)} inherits the main model`);
+                  else addLocalMessage(`✕ ${result.error ?? `Could not reset ${profile}.`}`);
                 }}
                 onCancel={() => {
                   setShowAgentProfilePicker(false);
@@ -2819,7 +2823,7 @@ export function App({
                   if (selectingCompactModel) {
                     const result = setCompactModel(model);
                     if (!result.ok) return result;
-                    addLocalMessage(`Set compact model to ${model}.`);
+                    flashNotice(`Compact model: ${stripProvider(model)}`);
                     setSelectingCompactModel(false);
                     setShowModelPicker(false);
                     returnToConfig();
@@ -2828,7 +2832,9 @@ export function App({
                   if (agentProfileForModel) {
                     const result = setAgentProfileModel(agentProfileForModel, model);
                     if (!result.ok) return result;
-                    addLocalMessage(`Set ${agentProfileForModel} subagent model to ${model}.`);
+                    flashNotice(
+                      `${capitalize(agentProfileForModel)} model: ${stripProvider(model)}`,
+                    );
                     setAgentProfileForModel(undefined);
                     setShowModelPicker(false);
                     setShowAgentProfilePicker(true);
@@ -2836,11 +2842,9 @@ export function App({
                   }
                   const result = setModel(model, { persist: saveDefault });
                   if (!result.ok) return result;
-                  addLocalMessage(
-                    saveDefault
-                      ? `Switched to ${model} (saved as default).`
-                      : `Switched to ${model} for this session only.`,
-                  );
+                  // The status line names the new model. Only a session-only switch
+                  // says anything, since nothing on screen tells it from a saved one.
+                  if (!saveDefault) flashNotice('For this session only', 'info');
                   setShowModelPicker(false);
                   returnToConfig();
                   return result;
@@ -2853,14 +2857,14 @@ export function App({
                 onRemoveProvider={(providerId) => {
                   const result = removeProvider(providerId);
                   if (!result.ok) return result;
-                  addLocalMessage(providerRemovalMessage(result));
+                  flashNotice(providerRemovalMessage(result), 'done', 4_000);
                   setShowModelPicker(false);
                   returnToConfig();
                   return result;
                 }}
                 onProviderSaved={(request) => {
-                  addLocalMessage(
-                    `Added ${request.providerId} with ${request.models.length} model${request.models.length === 1 ? '' : 's'}; using ${request.providerId}/${request.activeModelId}.`,
+                  flashNotice(
+                    `Added ${request.providerId} · ${request.models.length} model${request.models.length === 1 ? '' : 's'}`,
                   );
                   setShowModelPicker(false);
                   returnToConfig();
@@ -2887,7 +2891,7 @@ export function App({
                 onSelect={(level) => {
                   const result = setEffort(level);
                   if (!result.ok) return result;
-                  addLocalMessage(`Set effort level to ${level} (saved as default).`);
+                  // Shown beside the model in the status line.
                   setShowEffortPicker(false);
                   returnToConfig();
                   return result;
@@ -2917,7 +2921,7 @@ export function App({
                 onSelect={(nextMode) => {
                   const result = setDefaultPermissionMode(nextMode);
                   if (!result.ok) return result;
-                  addLocalMessage(`Default permission mode set to ${nextMode} globally.`);
+                  flashNotice(`Default permissions: ${nextMode}`);
                   setShowPermissionModePicker(false);
                   returnToConfig();
                   return result;
@@ -3013,7 +3017,8 @@ export function App({
               items={queuedInputs}
               terminalWidth={termWidth}
               // Keep the exit hint visible even when another transient notice remains.
-              notice={ctrlCExitHintVisible ? CTRL_C_EXIT_HINT_TEXT : (queueNotice ?? copyNotice)}
+              notice={ctrlCExitHintVisible ? CTRL_C_EXIT_HINT_TEXT : (queueNotice ?? flash?.text)}
+              noticeTone={ctrlCExitHintVisible || queueNotice ? 'warning' : flash?.tone}
             />
             <InputBar
               key={sessionId}
@@ -3147,6 +3152,7 @@ export function App({
               gitBranch={gitStatus.branch}
               gitStatus={gitStatus.status}
               model={liveConfig.modelSelection ?? liveConfig.model}
+              effort={effortLevels && effortLevels.length > 0 ? liveConfig.effort : undefined}
               tokenCount={tokenCount}
               maxTokens={contextWindow.window}
               maxTokensSource={contextWindow.source}

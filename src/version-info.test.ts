@@ -6,6 +6,7 @@ import {
   getPackageVersion,
   getChangelogTail,
   buildReleaseNotesReport,
+  releaseDigest,
   writeFeedbackReport,
 } from './version-info.js';
 
@@ -39,12 +40,85 @@ describe('getChangelogTail', () => {
 });
 
 describe('buildReleaseNotesReport', () => {
-  it('shows version and notes when no changelog', () => {
+  const changelog = [
+    '# Changelog',
+    '',
+    '## [Unreleased]',
+    '',
+    '- Something not shipped yet.',
+    '',
+    '## [9.9.9] - 2026-09-01',
+    '',
+    '### Added',
+    '',
+    '- **The feature this version shipped.** A long explanation that wraps',
+    '  onto a second line of the file.',
+    '- A plain change without a bold lead. And a second sentence.',
+    '',
+    '### Fixed',
+    '',
+    '- **A bug it fixed.** Details.',
+    '',
+    '## [9.9.8] - 2026-08-01',
+    '',
+    '- An older change.',
+  ].join('\n');
+
+  it("digests the installed version's entry to one line per change", () => {
+    const digest = releaseDigest(changelog, '9.9.9');
+    expect(digest?.heading).toBe('[9.9.9] - 2026-09-01');
+    expect(digest?.lines).toEqual([
+      '### Added',
+      '- The feature this version shipped.',
+      '- A plain change without a bold lead.',
+      '### Fixed',
+      '- A bug it fixed.',
+    ]);
+    expect(digest?.hidden).toBe(0);
+  });
+
+  it('joins a hard-wrapped first sentence and never cuts inside a code span', () => {
+    const wrapped = [
+      '## [2.0.0]',
+      '',
+      '- npm blocks install scripts by default, so the patch does not apply on a',
+      '  fresh install. More words follow.',
+      `- ${'word '.repeat(18)}then \`npm install -g @letrquan/book --with-a-long-flag\` and more.`,
+    ].join('\n');
+    const lines = releaseDigest(wrapped, '2.0.0')!.lines;
+    expect(lines[0]).toBe(
+      '- npm blocks install scripts by default, so the patch does not apply on a fresh install.',
+    );
+    expect(lines[1]!.endsWith('…')).toBe(true);
+    expect((lines[1]!.match(/`/g) ?? []).length % 2).toBe(0);
+  });
+
+  it('falls back to the newest entry for a build ahead of its last release', () => {
+    expect(releaseDigest(changelog, '10.0.0')?.heading).toBe('[Unreleased]');
+  });
+
+  it('lists the first changes and counts the rest', () => {
+    const long = ['## [1.0.0]', ...Array.from({ length: 30 }, (_, i) => `- change ${i}.`)].join(
+      '\n',
+    );
+    const digest = releaseDigest(long, '1.0.0', 10);
+    expect(digest?.lines).toHaveLength(10);
+    expect(digest?.hidden).toBe(20);
+  });
+
+  it("reads Book's own changelog, not the workspace's", () => {
+    // The repository root's CHANGELOG.md is Book's; a report built from it
+    // names a Book release.
+    const report = buildReleaseNotesReport();
+    expect(report).toMatch(/^Book v\S+ · \[/);
+  });
+
+  it('says so when a build ships no changelog', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'book-rel-'));
     try {
-      const r = buildReleaseNotesReport(tmp);
-      expect(r).toContain('Book v');
-      expect(r).toContain('No CHANGELOG.md');
+      const report = buildReleaseNotesReport(join(tmp, 'CHANGELOG.md'));
+      expect(report).toContain('Book v');
+      expect(report).toContain('No release notes ship with this build.');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

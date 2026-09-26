@@ -562,6 +562,30 @@ export function AgentMessageInner({
   );
   const selectedAutomaticToolId = automaticToolCallId ?? expandedToolCallId;
 
+  // A local note that opens with a status mark (`✕ Could not save…`, `✓
+  // Background shell … exited`) is an event, so it is set like a tool row: the
+  // mark in its colour, then the text in ink. As plain prose it read as a stray
+  // line of white text.
+  const localEvent =
+    message.kind === 'local' && !message.localCommand && !screenReader
+      ? /^([✕✓]) ([\s\S]+)$/.exec(displayContent)
+      : null;
+  if (localEvent) {
+    return (
+      <Box
+        marginLeft={CONTENT_COLUMN}
+        width={Math.max(8, (terminalWidth ?? 80) - CONTENT_COLUMN - 1)}
+      >
+        <Text color={localEvent[1] === '✕' ? theme.error : theme.success}>{localEvent[1]} </Text>
+        <Box flexGrow={1} flexShrink={1}>
+          <Text color={theme.text} wrap="wrap">
+            {localEvent[2]}
+          </Text>
+        </Box>
+      </Box>
+    );
+  }
+
   if (message.localCommand) {
     return (
       <CommandPanel

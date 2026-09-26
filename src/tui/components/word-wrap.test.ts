@@ -232,13 +232,36 @@ describe('status glyph widths agree with the renderer', () => {
   // on a different content column from the rest, and the padding we compute is
   // wrong by that much. Verified against Ink's own layout.
   it('measures every status glyph as one column', () => {
-    for (const glyph of ['✓', '✗', '×', '–', '?', '◌', '•', '└', '▸', '◆', '│', '─', '⠋']) {
+    // The hedera spinner's fleurons and the rubric marks included: ☙ sits in
+    // Misc Symbols, which used to be measured as wide throughout.
+    for (const glyph of [
+      '✓',
+      '✗',
+      '×',
+      '–',
+      '?',
+      '◌',
+      '•',
+      '└',
+      '▸',
+      '◆',
+      '│',
+      '─',
+      '⠋',
+      '❦',
+      '❧',
+      '☙',
+      '¶',
+      '§',
+      '☆',
+      '♠',
+    ]) {
       expect(displayWidth(glyph), `${glyph} (U+${glyph.codePointAt(0)!.toString(16)})`).toBe(1);
     }
   });
 
   it('still measures emoji-presentation characters as two columns', () => {
-    for (const glyph of ['✅', '❌', '✨', '🙂', '🚀']) {
+    for (const glyph of ['✅', '❌', '✨', '🙂', '🚀', '☔', '⚡', '⛔']) {
       expect(displayWidth(glyph), glyph).toBe(2);
     }
   });

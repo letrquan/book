@@ -32,6 +32,37 @@ describe('buildColoredSegments', () => {
 });
 
 describe('StatusLine', () => {
+  it('shows the effort beside the model, so a change needs no announcement', () => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="9router/oc/muse-spark"
+          effort="high"
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          terminalWidth={100}
+        />,
+      ),
+    );
+    expect(stripAnsi(view.lastFrame())).toMatch(/muse-spark {2}· {2}high effort/);
+  });
+
+  it('leaves the effort out for a model that takes none', () => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="gpt-4o"
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          terminalWidth={100}
+        />,
+      ),
+    );
+    expect(stripAnsi(view.lastFrame())).not.toContain('effort');
+  });
+
   it('strips provider prefix from the model name in footer', () => {
     const view = render(
       withTheme(

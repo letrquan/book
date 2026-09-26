@@ -119,6 +119,7 @@ export function activityPalette(
   tone: ActivityTone,
   theme: ThemeTokens,
   spinnerColor: string,
+  markColor: string = spinnerColor,
 ): ActivityPalette {
   if (tone === 'warning') {
     return { indicator: theme.warning, label: theme.warning, meta: theme.warning };
@@ -126,7 +127,9 @@ export function activityPalette(
   if (tone === 'waiting') {
     return { indicator: theme.permission, label: theme.permission, meta: theme.subtle };
   }
-  return { indicator: spinnerColor, label: spinnerColor, meta: theme.subtle };
+  // The fleuron is a mark and takes the rubric; the wording stays in the
+  // agent's breathing ink beside it.
+  return { indicator: markColor, label: spinnerColor, meta: theme.subtle };
 }
 
 export function WorkingIndicator({
@@ -186,7 +189,7 @@ export function WorkingIndicator({
   const compactProgress = useAnimatedProgress(isCompacting, 2_400, motionDisabled);
   const spinner = useGradientSpinner(
     Boolean(activity) && !showCompactProgress && !motionDisabled && !activity?.blocked,
-    'dots',
+    'hedera',
     motionDisabled,
   );
 
@@ -252,7 +255,7 @@ export function WorkingIndicator({
   const line = fitActivityLine(activity?.label ?? '', elapsed, hint, Math.max(1, contentWidth - 2));
   const indicator = activity?.blocked ? '◇' : spinner.frame;
   const tone = activity?.tone ?? 'normal';
-  const palette = activityPalette(tone, theme, spinner.color);
+  const palette = activityPalette(tone, theme, spinner.color, spinner.markColor);
 
   return (
     <Box width={width} flexWrap="nowrap">

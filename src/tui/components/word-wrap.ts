@@ -338,7 +338,6 @@ const WIDE_RANGES: [number, number][] = [
   [0x1f900, 0x1f9ff], // Supplemental Symbols and Pictographs
   [0x1fa00, 0x1fa6f], // Chess Symbols
   [0x1fa70, 0x1faff], // Symbols and Pictographs Extended-A
-  [0x2600, 0x26ff], // Misc symbols
   // Dingbats, emoji-presentation subset only. The block also holds
   // East-Asian *ambiguous* marks — U+2713 ✓, U+2717 ✗ and friends — which
   // terminals and Ink's own layout render one column wide. Measuring the whole
@@ -390,6 +389,16 @@ function mergeRanges(ranges: [number, number][]): [number, number][] {
 
 const SORTED_ZERO_WIDTH_RANGES = mergeRanges(ZERO_WIDTH_RANGES);
 const SORTED_WIDE_RANGES = mergeRanges(WIDE_RANGES);
+
+/**
+ * Misc Symbols (U+2600–U+26FF) is wide only where a character is emoji by
+ * default (☔, ⚡, ⛔). The rest (☙, ☆, ♠, ☐) render one column wide in the
+ * terminal and in Ink's own layout. Measuring the whole block as wide put this
+ * width math a column out from the renderer, as the Dingbats block once did
+ * for the check mark.
+ */
+const MISC_SYMBOLS: [number, number] = [0x2600, 0x26ff];
+const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u;
 const ASCII_PRINTABLE = /^[\x20-\x7e]*$/;
 
 /**
@@ -437,6 +446,8 @@ export function displayWidth(text: string): number {
     const cp = ch.codePointAt(0) ?? 0;
     if (inRanges(cp, SORTED_ZERO_WIDTH_RANGES)) {
       // width += 0
+    } else if (cp >= MISC_SYMBOLS[0] && cp <= MISC_SYMBOLS[1]) {
+      width += EMOJI_PRESENTATION.test(ch) ? 2 : 1;
     } else if (inRanges(cp, SORTED_WIDE_RANGES)) {
       width += 2;
     } else {

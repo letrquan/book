@@ -325,16 +325,15 @@ export function costReport(
   const usd = rate
     ? ((usage.promptTokens * rate.in + usage.completionTokens * rate.out) / 1e6).toFixed(4)
     : null;
-  const modelLine = `Model: ${model}`;
-  const tokenLine = `Tokens — prompt: ${usage.promptTokens}  completion: ${usage.completionTokens}  total: ${usage.totalTokens}`;
-  const usdLine =
+  // One line: what it cost, what it used, on which model. It used to take
+  // three labelled lines (Model, Tokens, Est. cost) to say the same thing.
+  const tokens = `${usage.totalTokens.toLocaleString()} tokens (${usage.promptTokens.toLocaleString()} in, ${usage.completionTokens.toLocaleString()} out)`;
+  const summary =
     usd !== null
-      ? `Est. cost: $${usd}  (estimate computed locally; may differ from your actual bill)`
-      : unpricedLine(model);
+      ? `$${usd} estimated · ${tokens} · ${model}`
+      : `${tokens} · ${model} has no price, so no dollar estimate`;
   const breakdown = modelBreakdownLines(model, usage, delegated);
-  return [modelLine, tokenLine, usdLine, ...(breakdown.length ? ['', ...breakdown] : [])].join(
-    '\n',
-  );
+  return [summary, ...(breakdown.length ? ['', ...breakdown] : [])].join('\n');
 }
 
 /**

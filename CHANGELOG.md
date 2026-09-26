@@ -37,6 +37,27 @@ All notable changes to this project are documented in this file.
   - **Transcript rows** for AskUserQuestion and ExitPlanMode read `Ask  Fallback, Scope   2
     questions` and `Plan  Fix the timeout fallback   3 steps` instead of a bare tool name and raw
     markdown.
+- **Book has its own spinner: a swinging hedera.** The activity row and the streaming spinner
+  used the braille dot circle nearly every terminal tool spins. They now show `❦`, the ivy-leaf
+  fleuron printers set between the sections of a book. It swings like a pendulum (`❦ ❧ ❦ ☙`),
+  holding the upright pose longest, one swing a second, and takes the rubric red like the other
+  marks while the wording beside it stays in ink. With reduced motion it stands still.
+- **Commands say only what the screen does not.** Confirmations used to be written into the
+  transcript as sentences, a permanent record of something already visible.
+  - **Switching the model or the effort writes nothing.** The status line names the model and now
+    shows the effort beside it (`high effort`). A session-only model switch still says so, since
+    nothing else on screen tells it from a saved one.
+  - **Other changes confirm with a note that fades.** Setting the compact model, a subagent's
+    model, the default permissions, thinking, the startup animation or memory writes, running
+    `/reload-skills`, adding or removing a provider, stopping an agent, and an MCP server
+    connecting show a line above the composer for a few seconds. An MCP server that fails to
+    connect is still recorded in the transcript.
+  - **Errors and background-shell results read as event rows:** a red `✕` or a green `✓`, then
+    the text, where they used to be a line of plain white prose.
+  - **`/cost` is one line:** `$0.0123 estimated · 1,200 tokens (1,000 in, 200 out) · model`.
+  - **`/memory` prints its directory once** and folds the Loading, Approval and Pending lines into
+    one Memory line and the Health line.
+  - **`/agents` opens the subagent profiles** instead of printing where to find them.
 - **Menus, reference panels and pickers are set as sheets.** The command, `@file` and skill
   menus, `/help`, `/status`, `/permissions`, the shortcuts panel, `/config`, `/model`,
   `/providers`, `/effort`, `/resume`, `/rewind`, `/skills`, the task list, the background-task
@@ -237,6 +258,14 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Misc Symbols are measured the way the terminal draws them.** Book counted every character
+  from U+2600 to U+26FF as two columns wide, while the terminal and Ink's layout draw all but the
+  emoji-by-default ones (`☔`, `⚡`) in one. A line holding `☆`, `♠` or `☙` came out a column short
+  in Book's width math. Only emoji-presentation characters in that block count as wide now.
+- **`/release-notes` shows Book's release notes.** It read the CHANGELOG.md of the current
+  workspace, which is the user's project, and printed its top under the heading "Book v…". It now
+  reads the changelog that ships with Book and lists the installed version's changes, one line
+  each, with a count of the rest.
 - **"Sending queued follow-up..." now clears when the follow-up is sent.** It was cleared only
   when `send` resolved, and `send` resolves when the whole turn ends, so the notice stayed under a
   reply that had been streaming for minutes. It now clears as soon as the queued turn starts. A
