@@ -16,11 +16,14 @@ export const permissionRuleSchema = z.string().min(1);
  * Zod 4's `.int()` also rejects anything above `Number.MAX_SAFE_INTEGER`, which Zod 3 accepted. A
  * settings file that loaded before the upgrade, such as one holding an "effectively unlimited"
  * `maxTurns`, must keep loading: an invalid document stops Book from starting. So these settings
- * check integrality themselves. Bounded ones keep `.int()`, since their `.max()` is far lower.
+ * check integrality themselves, reporting the same `invalid_type` issue `.int()` does. Bounded
+ * ones keep `.int()`, since their `.max()` is far lower.
  */
 export function unboundedInt() {
-  return z.number().refine(Number.isInteger, {
-    message: 'Invalid input: expected int, received number',
+  return z.number().check((ctx) => {
+    if (!Number.isInteger(ctx.value)) {
+      ctx.issues.push({ code: 'invalid_type', expected: 'int', input: ctx.value });
+    }
   });
 }
 

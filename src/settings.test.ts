@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import type { z } from 'zod';
+import { conversationCheckpointV2Schema } from './agent/compact.js';
+import { legacyConfigSchema } from './config.js';
+import {
+  learnedModelWindowEntrySchema,
+  looseModelWindowStoreSchema,
+} from './model-window-store.js';
 import { bookSettingsSchema, DEFAULT_SETTINGS } from './settings.js';
+import { workspaceTrustSchema } from './workspace-trust.js';
 
 describe('settings schema', () => {
   it('validates compactEffort with valid levels and rejects invalid levels', () => {
@@ -86,7 +93,7 @@ describe('settings schema defaults', () => {
   it('never defaults an object schema with .default(), which skips its field defaults', () => {
     // Zod 4's `.default(value)` returns `value` without parsing it, so an object defaulted to `{}`
     // would come back bare. Object schemas take `.prefault({})` instead; this walks every schema
-    // reachable from the settings root so a new section cannot reintroduce the mistake.
+    // Book parses a stored document with, so a new section cannot reintroduce the mistake.
     type Def = Record<string, unknown> & { type: string };
     const defOf = (schema: z.ZodType) => schema.def as unknown as Def;
     // Wrappers that pass `undefined` through to a default unchanged, so `.optional().default({})`
@@ -95,6 +102,12 @@ describe('settings schema defaults', () => {
     const unwrap = (schema: z.ZodType): z.ZodType => {
       const def = defOf(schema);
       return WRAPPERS.has(def.type) ? unwrap(def.innerType as z.ZodType) : schema;
+    };
+    // An object, or a union with an object among its options.
+    const holdsObject = (schema: z.ZodType): boolean => {
+      const def = defOf(unwrap(schema));
+      if (def.type === 'object') return true;
+      return def.type === 'union' && (def.options as z.ZodType[]).some(holdsObject);
     };
     const LEAVES = new Set(['string', 'number', 'boolean', 'literal', 'enum', 'unknown', 'any']);
 
@@ -109,7 +122,7 @@ describe('settings schema defaults', () => {
           return;
         case 'default': {
           const inner = def.innerType as z.ZodType;
-          if (defOf(unwrap(inner)).type === 'object') offenders.push(path);
+          if (holdsObject(inner)) offenders.push(path);
           walk(inner, path);
           return;
         }
@@ -139,6 +152,11 @@ describe('settings schema defaults', () => {
     };
 
     walk(bookSettingsSchema, 'settings');
+    walk(workspaceTrustSchema, 'trust');
+    walk(looseModelWindowStoreSchema, 'modelWindows');
+    walk(learnedModelWindowEntrySchema, 'modelWindows.*');
+    walk(legacyConfigSchema, 'bookrc');
+    walk(conversationCheckpointV2Schema, 'checkpoint');
 
     expect(offenders).toEqual([]);
   });
@@ -180,8 +198,19 @@ describe('settings schema rejection', () => {
     expect(
       issuePaths({ agents: { minFreeDiskBytes: 1e16, profiles: { p: { maxTurns: 1e17 } } } }),
     ).toEqual([]);
-    expect(issuePaths({ maxTurns: 1.5 })).toEqual(['maxTurns']);
-    expect(issuePaths({ maxTurns: 0.5 })).toEqual(['maxTurns', 'maxTurns']);
+    const notInteger = bookSettingsSchema.safeParse({ maxTurns: 1.5 });
+    expect(notInteger.success).toBe(false);
+    expect(notInteger.error?.issues).toMatchObject([
+      { code: 'invalid_type', expected: 'int', path: ['maxTurns'] },
+    ]);
+  });
+
+  it('keeps a legacy .bookrc.json baseUrl exactly as written', () => {
+    expect(legacyConfigSchema.parse({ baseUrl: ' http://x.com/v1 ' }).baseUrl).toBe(
+      ' http://x.com/v1 ',
+    );
+    expect(legacyConfigSchema.parse({ baseUrl: 'localhost:1234' }).baseUrl).toBe('localhost:1234');
+    expect(legacyConfigSchema.safeParse({ baseUrl: 'not a url' }).success).toBe(false);
   });
 
   it('strips unknown keys instead of rejecting them', () => {

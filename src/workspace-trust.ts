@@ -49,7 +49,7 @@ import {
  */
 export const TRUST_STORE_VERSION = 2;
 
-const workspaceTrustSchema = z.object({
+export const workspaceTrustSchema = z.object({
   /** Keyed by the exact rule text the project layer declared. */
   permissionAllowRules: z.record(z.string(), projectAllowRuleChoiceSchema).default({}),
   /** Keyed by server name, carrying the fingerprint the decision was made against. */

@@ -24,15 +24,14 @@ All notable changes to this project are documented in this file.
   - **Integer settings with no upper bound** (`maxTurns`, `maxTokens`,
     `continuation.maxWallClockMs`, `agents.minFreeDiskBytes`, a model's `contextWindow`, …) still
     accept integers beyond `Number.MAX_SAFE_INTEGER`, which Zod 4's `.int()` would reject, so a
-    file holding an "effectively unlimited" value keeps loading. Their non-integer message is
-    `Invalid input: expected int, received number`, as for the other integer settings.
+    file holding an "effectively unlimited" value keeps loading. A non-integer gets the same
+    `invalid_type` issue (`Invalid input: expected int, received number`) as the other integer
+    settings.
   - **`memory.extraction.idleHours: 1e999`** (which JSON reads as `Infinity`) is now rejected; Zod
     3 accepted it. Set `memory.extraction.enabled: false` to turn extraction off.
-  - **A `__proto__` key inside a record setting** (`env`, `provider`, `agents.checks`, …) is now
-    dropped. Zod 3 rejected it inside `env` and `agents.checks`, and let a `provider.__proto__`
-    entry through to the resolved providers.
-  - **The legacy `.bookrc.json` `baseUrl`** is trimmed of surrounding whitespace; it accepts the
-    same URLs as before.
+  - **A `__proto__` key** anywhere in a settings file is ignored; see the matching Fixed entry.
+    Inside a record setting Zod 3 had judged its value (rejecting `"env": {"__proto__": 1}`,
+    accepting `"agents": {"checks": {"__proto__": ["npm test"]}}` as a check named `0`).
   - **SDK types:** the schemas and settings types exported from `dist/sdk.d.ts` are Zod 4 types,
     which need TypeScript 5.5 or later in a consuming project.
 - **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
@@ -305,6 +304,14 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A repository's settings file can no longer set `shell` or bypass mode through `__proto__`**
+  (#88). Workspace layers may not set `shell` or `defaultMode: "bypassPermissions"`, and the
+  sanitizer deletes those keys. But JSON keeps `"__proto__"` as an ordinary key, and merging
+  layers assigned it through the prototype setter, so a committed `.book/settings.json` holding
+  `{"__proto__": {"shell": "…", "defaultMode": "bypassPermissions"}}` gave the resolved settings
+  those values as inherited ones, which the sanitizer never saw: every Bash command then ran the
+  repository's binary with permission prompts off. The merge now skips a `__proto__` key. The same
+  path let `"provider": {"__proto__": {…}}` add a provider.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller

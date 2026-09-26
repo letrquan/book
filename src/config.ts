@@ -26,9 +26,20 @@ const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 /** Conservative per-request output budget when a model provides no metadata. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 64_000;
 
-const legacyConfigSchema = z.object({
+/**
+ * Any string `new URL()` accepts, returned unchanged: what Zod 3's `.url()` checked. Zod 4's
+ * `z.url()` also trims the value and strips whitespace inside it, which would change the base URL
+ * a `.bookrc.json` names.
+ */
+const legacyUrlSchema = z.string().check((ctx) => {
+  if (!URL.canParse(ctx.value)) {
+    ctx.issues.push({ code: 'invalid_format', format: 'url', input: ctx.value });
+  }
+});
+
+export const legacyConfigSchema = z.object({
   model: z.string().optional(),
-  baseUrl: z.url().optional(),
+  baseUrl: legacyUrlSchema.optional(),
   maxTurns: unboundedInt().min(1).optional(),
   maxTokens: unboundedInt().min(1000).optional(),
   autoCompactEnabled: z.boolean().optional(),
