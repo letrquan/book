@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LookupAddress } from 'node:dns';
 import { Agent, fetch as undiciFetch } from 'undici';
 import {
+  connectionBlockedDestination,
   connectionBlockedReason,
   isBlockedIpAddress,
-  NETWORK_POLICY_REMEDIES,
   networkPolicyRefusal,
+  networkPolicyRemedies,
   safeNetworkLookup,
   validateWebUrl,
   webUrlPolicyFromEnv,
@@ -298,6 +299,119 @@ describe('web URL policy', () => {
       expect(result.address).toBe('64:ff9b::808:808');
       expect(result.family).toBe(6);
     });
+
+    // SIIT's IPv4-translated addresses `::ffff:0:0:0/96` (RFC 2765, RFC 6145) carry the IPv4
+    // address in their last 32 bits, like the IPv4-mapped `::ffff:0:0/96` one group to the right.
+    it.each([
+      ['::ffff:0:a00:1', '10.0.0.1'],
+      ['::ffff:0:10.0.0.1', '10.0.0.1'],
+      ['0:0:0:0:ffff:0:7f00:1', '127.0.0.1'],
+      ['0000:0000:0000:0000:ffff:0000:a9fe:a9fe', '169.254.169.254'],
+    ])('blocks %s, an SIIT IPv4-translated address that reaches %s', (address) => {
+      expect(isBlockedIpAddress(address)).toBe(true);
+    });
+
+    it.each(['::ffff:0:808:808', '::ffff:0:8.8.8.8'])(
+      'allows %s, an SIIT IPv4-translated address that reaches public 8.8.8.8',
+      (address) => {
+        expect(isBlockedIpAddress(address)).toBe(false);
+      },
+    );
+
+    // ISATAP (RFC 5214) puts the IPv4 address in the interface identifier, after `0:5efe` (a
+    // private IPv4) or `200:5efe` (a global one), under any /64 prefix. An ISATAP router tunnels
+    // to that IPv4 address, so the IPv4 policy decides it, whatever the prefix says.
+    it.each([
+      ['2606:4700:1:2:0:5efe:a00:1', '10.0.0.1'],
+      ['2606:4700:1:2::5efe:192.168.1.1', '192.168.1.1'],
+      ['2606:4700:1:2:200:5efe:7f00:1', '127.0.0.1'],
+      ['2606:4700:0001:0002:0200:5efe:a9fe:a9fe', '169.254.169.254'],
+      // A 6to4 prefix wrapping public 8.8.8.8, with an ISATAP identifier wrapping 10.0.0.1: every
+      // embedded destination is judged, and one forbidden address blocks the whole address.
+      ['2002:808:808:1:0:5efe:a00:1', '10.0.0.1 through the ISATAP identifier'],
+    ])('blocks %s, an ISATAP address that reaches %s', (address) => {
+      expect(isBlockedIpAddress(address)).toBe(true);
+    });
+
+    it.each([
+      '2606:4700:1:2:200:5efe:808:808',
+      '2606:4700:1:2:0:5efe:8.8.8.8',
+      '2002:808:808:1:200:5efe:101:101',
+    ])('allows %s, an ISATAP address that reaches only public IPv4 hosts', (address) => {
+      expect(isBlockedIpAddress(address)).toBe(false);
+    });
+
+    it('blocks SIIT and ISATAP literals at pre-flight without resolving them', async () => {
+      const resolver = vi.fn(async () => ['93.184.216.34']);
+
+      await expect(
+        validateWebUrl('https://[::ffff:0:a00:1]/', strictPolicy, resolver),
+      ).rejects.toMatchObject({ code: 'private_network_forbidden' });
+      await expect(
+        validateWebUrl('https://[2606:4700:1:2:0:5efe:a00:1]/', strictPolicy, resolver),
+      ).rejects.toMatchObject({ code: 'private_network_forbidden' });
+      expect(resolver).not.toHaveBeenCalled();
+    });
+
+    it('refuses SIIT and ISATAP addresses wrapping a private IPv4 at connect time', async () => {
+      const siit = await runSafeLookup('::ffff:0:a00:1', { all: true });
+      const isatap = await runSafeLookup('2606:4700:1:2:0:5efe:a00:1', { all: false });
+
+      expect(siit.error?.code).toBe('EACCES');
+      expect(isatap.error?.code).toBe('EACCES');
+    });
+  });
+
+  describe('the refused destination', () => {
+    // An operator deciding whether to lift the policy needs to see what it refused: the name the
+    // model asked for, and the address it turned out to be when that differs.
+    it('names a hostname refused by name alone', async () => {
+      await expect(
+        validateWebUrl(
+          'https://localhost/',
+          strictPolicy,
+          vi.fn(async () => []),
+        ),
+      ).rejects.toMatchObject({ code: 'private_network_forbidden', destination: 'localhost' });
+    });
+
+    it('names an address literal once', async () => {
+      await expect(
+        validateWebUrl(
+          'https://10.0.0.1/',
+          strictPolicy,
+          vi.fn(async () => []),
+        ),
+      ).rejects.toMatchObject({ code: 'private_network_forbidden', destination: '10.0.0.1' });
+      await expect(
+        validateWebUrl(
+          'https://[::ffff:0:a00:1]/',
+          strictPolicy,
+          vi.fn(async () => []),
+        ),
+      ).rejects.toMatchObject({ code: 'private_network_forbidden', destination: '::ffff:0:a00:1' });
+    });
+
+    it('names a resolved hostname together with the private address it resolved to', async () => {
+      const resolver = vi.fn(async () => ['93.184.216.34', '10.0.0.2']);
+
+      await expect(
+        validateWebUrl('https://example.com/', strictPolicy, resolver),
+      ).rejects.toMatchObject({
+        code: 'private_network_forbidden',
+        destination: 'example.com (10.0.0.2)',
+      });
+    });
+
+    it('carries the destination through the connect-time refusal and undici wrapping', async () => {
+      const refused = (await runSafeLookup('127.0.0.1', { all: true })).error;
+      const wrapped = Object.assign(new TypeError('fetch failed'), { cause: refused });
+
+      expect(connectionBlockedDestination(refused)).toBe('127.0.0.1');
+      expect(connectionBlockedDestination(wrapped)).toBe('127.0.0.1');
+      expect(connectionBlockedDestination(new Error('boom'))).toBeUndefined();
+      expect(connectionBlockedDestination(undefined)).toBeUndefined();
+    });
   });
 });
 
@@ -316,14 +430,93 @@ describe('network-policy refusals', () => {
     expect(networkPolicyRefusal(undefined)).toBeUndefined();
   });
 
+  const fetchRefusal = (destination?: string) => ({
+    status: 'blocked' as const,
+    structuredError: {
+      code: 'private_network_forbidden',
+      message: 'refused',
+      retryable: false,
+      ...(destination === undefined ? {} : { details: { destination } }),
+    },
+  });
+  const searchRefusal = (...destinations: string[]) => ({
+    status: 'blocked' as const,
+    structuredError: {
+      code: 'search_all_providers_failed',
+      message: 'refused',
+      retryable: false,
+      details: {
+        attempts: destinations.map((destination) => ({
+          provider: 'exa',
+          status: 'failed',
+          code: 'private_network_forbidden',
+          destination,
+        })),
+      },
+    },
+  });
+
   it('offers the host opt-in only for a WebFetch refusal', () => {
     // The built-in search providers validate with allowPrivateNetwork: false whatever the host
     // sets, so the opt-in would lift WebFetch's protection and still leave WebSearch refused.
-    expect(NETWORK_POLICY_REMEDIES.fetch).toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK=true');
-    expect(NETWORK_POLICY_REMEDIES.search).not.toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
-    expect(NETWORK_POLICY_REMEDIES.search).toContain('DNS or proxy');
+    const [fetch] = networkPolicyRemedies([fetchRefusal()]);
+    const [search] = networkPolicyRemedies([searchRefusal()]);
+    expect(fetch).toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK=true');
+    expect(search).not.toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
+    expect(search).toContain('DNS or proxy');
     // `localhost` and `*.local` are refused by name, before there is any address to speak of.
-    expect(NETWORK_POLICY_REMEDIES.fetch).toContain('private or special-use destination');
-    expect(NETWORK_POLICY_REMEDIES.fetch).not.toContain('address');
+    expect(fetch).toContain('private or special-use destination');
+    expect(fetch).not.toContain('address');
+  });
+
+  it('warns that the WebFetch opt-in lifts the policy for every destination', () => {
+    // BOOK_WEB_ALLOW_PRIVATE_NETWORK is a global switch: it turns the SSRF check off for every
+    // WebFetch, not only for the one destination that was refused.
+    const [fetch] = networkPolicyRemedies([fetchRefusal('intranet.example (10.1.2.3)')]);
+
+    expect(fetch).toContain('every destination');
+    expect(fetch).toContain('SSRF');
+  });
+
+  it('names the destinations it refused, once each, and caps a long list', () => {
+    const [one] = networkPolicyRemedies([
+      fetchRefusal('intranet.example (10.1.2.3)'),
+      fetchRefusal('intranet.example (10.1.2.3)'),
+    ]);
+    expect(one).toContain('intranet.example (10.1.2.3)');
+    expect(one.split('intranet.example').length).toBe(2);
+
+    const [many] = networkPolicyRemedies(
+      ['a.example (10.0.0.1)', 'localhost', '10.0.0.3', 'b.example (10.0.0.4)', '::1'].map(
+        (destination) => fetchRefusal(destination),
+      ),
+    );
+    expect(many).toContain('a.example (10.0.0.1)');
+    expect(many).toContain('localhost');
+    expect(many).toContain('10.0.0.3');
+    expect(many).not.toContain('b.example');
+    expect(many).toContain('2 more');
+  });
+
+  it("names the search providers' private destinations", () => {
+    const [search] = networkPolicyRemedies([searchRefusal('mcp.exa.ai (198.18.0.5)')]);
+
+    expect(search).toContain('mcp.exa.ai (198.18.0.5)');
+    expect(search).toContain('DNS or proxy');
+  });
+
+  it('gives one remedy per kind, WebFetch first, and none without a network refusal', () => {
+    const remedies = networkPolicyRemedies([
+      searchRefusal('mcp.exa.ai (198.18.0.5)'),
+      fetchRefusal('localhost'),
+      refusal('blocked', 'permission_denied'),
+      undefined,
+    ]);
+
+    expect(remedies).toHaveLength(2);
+    expect(remedies[0]).toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
+    expect(remedies[1]).toContain('DNS or proxy');
+    expect(networkPolicyRemedies([refusal('blocked', 'permission_denied')])).toEqual([]);
+    expect(networkPolicyRemedies([])).toEqual([]);
   });
 });

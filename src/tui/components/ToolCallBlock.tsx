@@ -28,16 +28,16 @@ import { formatElapsedDuration } from './SubagentRow.js';
 import { useToolRowInteractionRegistry } from './tool-row-interactions.js';
 import { useUiClock } from '../ui-clock.js';
 import type { ToolResult } from '../../types/tools.js';
+import { networkPolicyRefusal } from '../../tools/web-policy.js';
 
-/** Blocked results whose reason is still shown: a policy refusal the user needs to understand. */
-const BLOCKED_CODES_WITH_REASON = new Set([
-  'private_network_forbidden',
-  'search_all_providers_failed',
-]);
-
+/**
+ * A blocked result shows its reason only for a network-policy refusal, which the user needs to
+ * understand. `networkPolicyRefusal` owns the list of those codes, shared with the loop's stop
+ * message.
+ */
 function showsErrorMessage(result: ToolResult | undefined): boolean {
   if (!result?.structuredError) return false;
-  return result.status !== 'blocked' || BLOCKED_CODES_WITH_REASON.has(result.structuredError.code);
+  return result.status !== 'blocked' || networkPolicyRefusal(result) !== undefined;
 }
 
 interface ToolCallBlockProps {

@@ -9,6 +9,7 @@ import { resolveToolTimeoutMs } from './timeouts.js';
 import {
   type HostResolver,
   WebPolicyError,
+  connectionBlockedDestination,
   connectionBlockedReason,
   resolveHostname,
   safeNetworkLookup,
@@ -68,6 +69,8 @@ interface SearchProviderAttempt {
   status: 'failed' | 'cooldown';
   code?: string;
   message?: string;
+  /** What the policy refused, when it named one. */
+  destination?: string;
   retryable: boolean;
   retryAfterMs?: number;
 }
@@ -76,6 +79,8 @@ interface SearchProviderCooldown {
   until: number;
   /** Set when the provider was refused on policy grounds: the refusal outlives the cooldown's retry hint. */
   blockedReason?: string;
+  /** The destination the policy refused, carried through the cooldown to the next search. */
+  blockedDestination?: string;
 }
 
 const BUILTIN_SEARCH_PROVIDERS: readonly BuiltinSearchProvider[] = [
@@ -498,14 +503,23 @@ function privateNetworkBlocked(reason: string, details?: Record<string, unknown>
 function webPolicyFailure(error: unknown): ToolResult | undefined {
   if (error instanceof WebPolicyError) {
     return error.code === 'private_network_forbidden'
-      ? privateNetworkBlocked(error.message)
+      ? privateNetworkBlocked(
+          error.message,
+          error.destination === undefined ? undefined : { destination: error.destination },
+        )
       : toolFailure(error.message, { code: error.code });
   }
   // The connect-time guard refuses after pre-flight validation has already passed -- a rebinding
   // answer, or a redirect target that resolves privately. Report the policy's own reason instead
   // of the `fetch failed` undici wraps it in, and do not invite a retry that cannot succeed.
   const blockedReason = connectionBlockedReason(error);
-  if (blockedReason) return privateNetworkBlocked(blockedReason);
+  if (blockedReason) {
+    const destination = connectionBlockedDestination(error);
+    return privateNetworkBlocked(
+      blockedReason,
+      destination === undefined ? undefined : { destination },
+    );
+  }
   if (error instanceof CrossOriginRedirectError) {
     return toolFailure(error.message, {
       code: 'cross_origin_redirect',
@@ -758,7 +772,14 @@ function providerRequestFailure(
   // resolves to a private address is refused by the connect-time guard. Report that the same
   // way WebFetch does: it is a policy decision, not a transient network fault.
   const blockedReason = connectionBlockedReason(error);
-  if (blockedReason) return privateNetworkBlocked(blockedReason, { provider: provider.id, phase });
+  if (blockedReason) {
+    const destination = connectionBlockedDestination(error);
+    return privateNetworkBlocked(blockedReason, {
+      provider: provider.id,
+      phase,
+      ...(destination === undefined ? {} : { destination }),
+    });
+  }
   return toolFailure(
     `${provider.label} ${phase} failed: ${error instanceof Error ? error.message : String(error)}`,
     {
@@ -815,6 +836,7 @@ async function runBuiltinSearchProvider(
       return privateNetworkBlocked(error.message, {
         provider: provider.id,
         phase: 'endpoint_validation',
+        ...(error.destination === undefined ? {} : { destination: error.destination }),
       });
     }
     return toolFailure(
@@ -1013,6 +1035,9 @@ async function builtinWebSearch(
           : {
               code: 'private_network_forbidden',
               message: cooldown.blockedReason,
+              ...(cooldown.blockedDestination === undefined
+                ? {}
+                : { destination: cooldown.blockedDestination }),
               retryable: false,
             }),
         retryAfterMs: cooldown.until - currentTime,
@@ -1036,18 +1061,24 @@ async function builtinWebSearch(
 
     const cooldownMs = providerCooldownMs(result);
     if (cooldownMs !== undefined) {
+      const blockedDestination = result.structuredError?.details?.destination;
       cooldowns.set(provider.id, {
         until: now().getTime() + cooldownMs,
         ...(result.structuredError?.code === 'private_network_forbidden'
-          ? { blockedReason: result.structuredError.message }
+          ? {
+              blockedReason: result.structuredError.message,
+              ...(typeof blockedDestination === 'string' ? { blockedDestination } : {}),
+            }
           : {}),
       });
     }
+    const failedDestination = result.structuredError?.details?.destination;
     attempts.push({
       provider: provider.id,
       status: 'failed',
       code: result.structuredError?.code,
       message: result.structuredError?.message,
+      ...(typeof failedDestination === 'string' ? { destination: failedDestination } : {}),
       retryable: result.structuredError?.retryable ?? false,
       ...(cooldownMs === undefined ? {} : { retryAfterMs: cooldownMs }),
     });

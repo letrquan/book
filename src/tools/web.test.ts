@@ -881,4 +881,52 @@ describe('policy refusals are final and visible', () => {
     // cooldown keeps the refusal.
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
+
+  it('names the refused destination in the result details', async () => {
+    // The stop message an unattended run ends with reads the destination from here, so the
+    // operator sees what was refused before reaching for a switch that lifts the policy for all.
+    const preflight = toolsFor(
+      vi.fn(async () => new Response('never')),
+      vi.fn(async () => ['10.0.0.1']),
+    );
+    const refusedEarly = await preflight.fetchTool.execute(
+      { url: 'https://internal.example/' },
+      context(),
+    );
+    expect(refusedEarly.structuredError?.details?.destination).toBe('internal.example (10.0.0.1)');
+
+    const refused = await new Promise<unknown>((resolve) => {
+      safeNetworkLookup('127.0.0.1', { all: true }, (error) => resolve(error));
+    });
+    const connectTime = toolsFor(
+      vi.fn(async () => {
+        throw Object.assign(new TypeError('fetch failed'), { cause: refused });
+      }),
+    );
+    const refusedLate = await connectTime.fetchTool.execute(
+      { url: 'https://example.com/' },
+      context(),
+    );
+    expect(refusedLate.structuredError?.details?.destination).toBe('127.0.0.1');
+  });
+
+  it("names each search provider's refused destination, through its cooldown too", async () => {
+    // A fake-IP DNS answers every provider hostname inside 198.18.0.0/15.
+    const { searchTool } = toolsFor(
+      vi.fn(async () => new Response('never')),
+      vi.fn(async () => ['198.18.0.1']),
+    );
+
+    const first = await searchTool.execute({ query: 'anything' }, context());
+    const second = await searchTool.execute({ query: 'anything' }, context());
+
+    for (const result of [first, second]) {
+      expect(result.status).toBe('blocked');
+      const attempts = result.structuredError?.details?.attempts as Array<{
+        destination?: string;
+      }>;
+      expect(attempts.length).toBeGreaterThan(0);
+      for (const attempt of attempts) expect(attempt.destination).toMatch(/ \(198\.18\.0\.1\)$/);
+    }
+  });
 });

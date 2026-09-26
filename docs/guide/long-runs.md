@@ -47,10 +47,13 @@ refusal is lifted by a grant, an allow rule, or another permission mode, except 
 `permissions.deny` rule: deny rules are checked before allow rules and every mode, so only removing
 or narrowing that rule lifts it. A refusal by the web
 network policy (a private or special-use destination) is lifted by none of those, bypassPermissions
-included. For a refused `WebFetch` the message names `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the
-host environment. For a refused `WebSearch`, whose built-in providers resolved to a private
-destination, it points at the host's DNS or proxy instead: the providers always validate strictly,
-so that variable does nothing for them. A streak holding several kinds names each remedy. It is separate because a refusal spin never
+included. For a refused `WebFetch` the message names the destinations it refused (the host the
+model asked for, and the address it resolved to) and `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the
+host environment, warning that the variable lifts the policy for every destination rather than only
+those. For a refused `WebSearch`, whose built-in providers resolved to a private destination, it
+names the private addresses the providers resolved to and points at the host's DNS or proxy
+instead: the providers always validate strictly, so that variable does nothing for them. A streak
+holding several kinds names each remedy. It is separate because a refusal spin never
 produces a tool-free turn, so the turn-end gate — and therefore every brake behind it — never fires:
 a headless run in the default permission mode answers each prompt `deny` and would otherwise
 re-issue refused calls until the budget ran out. Set it to `0` to disable. `planRefreshTurns` restates the open plan periodically, which also keeps compaction from

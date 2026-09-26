@@ -276,6 +276,17 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **SIIT and ISATAP addresses are judged by the IPv4 address they carry** (#246). SIIT's
+  IPv4-translated `::ffff:0:0:0/96` and an ISATAP interface identifier (`0:5efe` or `200:5efe`
+  followed by an IPv4 address) passed both check sites, so `https://[::ffff:0:a00:1]/` reached
+  10.0.0.1. ISATAP only adds a refusal: the prefix in front of it is still judged on its own. A NAT64
+  layout other than `64:ff9b::/96` and the /96 layout of `64:ff9b:1::/48` is still not decoded; see
+  `docs/guide/configuration.md`.
+- **A run stopped by refused web calls names what was refused** (#246). The `all_tools_blocked`
+  message names each refused destination (up to three, then a count) and, for `WebFetch`, warns that
+  `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` turns the private-network (SSRF) check off for every
+  destination rather than the one refused. The TUI and the stop message now read the list of policy
+  refusal codes from one place.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller

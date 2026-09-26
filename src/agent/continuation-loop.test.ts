@@ -679,6 +679,10 @@ describe('the refusal brake names the cause it stopped on', () => {
     expect(outcome?.message).toContain('WebFetch');
     expect(outcome?.message).toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
     expect(outcome?.message).not.toContain('grant the permission');
+    // The operator sees what was refused, and that the opt-in is not scoped to it: it switches
+    // the private-network check off for every WebFetch.
+    expect(outcome?.message).toContain('127.0.0.1');
+    expect(outcome?.message).toContain('every destination');
   });
 
   it('names both remedies when the streak mixes network-policy and permission refusals', async () => {
@@ -716,6 +720,8 @@ describe('the refusal brake names the cause it stopped on', () => {
     expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
     expect(outcome?.message).toContain('WebSearch');
     expect(outcome?.message).toContain('DNS or proxy');
+    // The fake-IP answer is named, which is what points the operator at the DNS proxy.
+    expect(outcome?.message).toContain('198.18.0.1');
     expect(outcome?.message).not.toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
     expect(outcome?.message).not.toContain('grant the permission');
   });
