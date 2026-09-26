@@ -27,8 +27,9 @@ const FRONT_MATTER_STRICT_KEY = /^[a-z_][\w-]*:(?:\s|$)/;
  * lines between blank lines holds `key:`, indented and `- ` lines. `#` lines
  * are comments among the keys of the first run, as they always were. A `#`
  * line that opens the block, or sits in a later run, is a comment only beside
- * YAML identifier keys (`title:`); beside `Summary: what this covers`, or
- * alone, it is a heading, and the block is a rule followed by text.
+ * YAML identifier keys (`title:`); alone in its run it is a comment only when
+ * every key of the block is one; beside `Summary: what this covers` it is a
+ * heading, and the block is a rule followed by text.
  */
 export function markdownContentStart(lines: readonly string[]): number {
   const close = frontMatterClose(lines);
@@ -41,6 +42,16 @@ export function markdownContentStart(lines: readonly string[]): number {
     if (line.trim().length === 0) runs.push([]);
     else runs[runs.length - 1].push(line);
   }
+  // Beside YAML identifier keys a `#` line is a comment wherever it stands,
+  // even alone in its run: `# Skill metadata`, a blank line, then `name: deploy`.
+  const identifierKeys = block.every(
+    (line) =>
+      line.trim().length === 0 ||
+      line.startsWith('#') ||
+      /^\s+\S/.test(line) ||
+      /^-(?:\s|$)/.test(line) ||
+      FRONT_MATTER_STRICT_KEY.test(line),
+  );
   for (const [position, run] of runs.filter((lines) => lines.length > 0).entries()) {
     const comments = run.some((line) => line.startsWith('#'));
     const strict = comments && (position > 0 || run[0].startsWith('#'));
@@ -51,7 +62,7 @@ export function markdownContentStart(lines: readonly string[]): number {
       if (key.test(line)) keys++;
       else if (!/^\s+\S/.test(line) && !/^-(?:\s|$)/.test(line)) return 0;
     }
-    if (comments && keys === 0) return 0;
+    if (comments && keys === 0 && !identifierKeys) return 0;
   }
   return close + 1;
 }

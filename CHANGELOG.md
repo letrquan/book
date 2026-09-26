@@ -386,20 +386,27 @@ All notable changes to this project are documented in this file.
     `*values()` generator methods, the members of a Java inner class or a nested C# class, Java
     `record`s, and C++ class members: declarations, one-line definitions, constructors,
     destructors, operators and pure virtuals, with trailing comments, `[[attributes]]` and
-    qualifier macros, also inside `#ifdef` blocks and namespaces. A method whose default value
-    quotes a parenthesis (`paren(s = '(') {`) is no longer dropped.
+    qualifier macros, also inside `#ifdef` blocks and namespaces, under class heads with a comment,
+    an export macro, `__declspec` or `alignas`. A method whose default value
+    quotes a parenthesis (`paren(s = '(') {`) is no longer dropped, nor is one whose
+    default value is a C# verbatim string (`@"C:\"`) or holds a C++ digit separator (`1'000`).
   - **JSON** outlines to its top-level keys, or for an array to each element's first key, instead
     of its opening brace alone. Block comments are skipped, `}, {` elements are found, and a
-    `.prettierrc` or `.eslintrc` is JSON only when it holds JSON.
+    `.prettierrc` or `.eslintrc` is JSON only when it holds JSON. JSON5's bare and single-quoted
+    keys count, and a file with one record per line lists every record.
   - **No longer listed:** property access on objects named like keywords (`set.add(1);`,
     `it.skip;`, `it.next();`, `impl->value = f(`), and a statement followed by another on the same
     line (`foo(x); if (y) {`). `it.skip('x', () => {`, `it.each` tables and other test blocks
-    reached through a known modifier still are.
+    reached through a known modifier still are. In a C++ class body a call named in capitals with
+    no return type (`Q_PROPERTY(…)`, `GENERATED_BODY()`) is a macro, and after `};` the class is
+    closed. An `@` prefix is read as an annotation only in languages that have them, so a
+    Makefile's `@go get` and SCSS's `@include mq(…) {` stay out.
   - **The template scanner keeps its place** through a string continued with a trailing
     backslash, and through a regex right after a condition's `)` (`if (ok) /`/.test(s)`), which
     it read as a division; two such misreads used to hide every line between them.
   - **Front matter** may open with a `# comment`, and a `#` comment after a blank line no longer
-    ends it, when the keys beside it are YAML identifiers (`title:`); beside a label such as
+    ends it, when the keys beside it are YAML identifiers (`title:`) (alone in its run, when every
+    key of the block is one); beside a label such as
     `Summary: …` a `#` line stays a heading. The Markdown front matter detector moved to
     `src/frontmatter.ts`, beside `parseFrontmatter`.
   - **Budget:** an entry is cut at 512 bytes and ends with `…`, so a minified first line no longer
@@ -412,7 +419,7 @@ All notable changes to this project are documented in this file.
   - **Measured:** over this repository's 731 tracked files the outline gains 191 entries and loses
     one. The gains are 184 JSON keys, `.prettierrc`'s six keys, and the constructor of a class
     declared inside a test; the loss is `def.model ? …`, which had passed for a Python `def`. Over
-    winpty's 88 C++ files it gains 308 class members, constructors, destructors and operators, and
+    winpty's 88 C++ files it gains 304 class members, constructors, destructors and operators, and
     loses 18 `impl->field = …` statements that had passed for Rust `impl` blocks.
 - **A failed print run exits 1 on Windows, not 127.** Print mode ended a failed run with
   `exit(1)` straight after its last provider request, while libuv was still closing the pooled

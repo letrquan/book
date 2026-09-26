@@ -20,13 +20,16 @@ can decide what to read in full.
   closing `---` (or `...`): the first line that is not a `#` comment is a `key:` line (any text
   up to a colon), and each run of lines between blank lines holds `key:`, indented or `- ` lines.
   `#` lines among the keys of the first run are comments. A `#` line that opens the block or sits
-  in a later run is a comment only beside YAML identifier keys (`title:`); beside a label such as
-  `Summary: …`, or alone, it is a heading, so such a block is not front matter. Otherwise it is a
+  in a later run is a comment only beside YAML identifier keys (`title:`); alone in its run it is a
+  comment only when every key of the block is one, and beside a label such as
+  `Summary: …` it is a heading, so such a block is not front matter. Otherwise it is a
   horizontal rule, and the headings after it count.
 - **JSON** (`.json`, `.jsonc`, `.json5`, `.webmanifest`, and rc files such as `.babelrc` that hold
-  JSON): the line that opens the root, then an object root's top-level keys, or an array root's
+  JSON): the line that opens the root (or each record of a file with one per line), then an object
+  root's top-level keys, or an array root's
   elements, each object element by its first key. Nesting depth decides, not indentation, and
-  brackets inside strings do not count. Block and line comments are skipped, and an element opened
+  brackets inside strings do not count. Block and line comments are skipped, JSON5's bare and
+  single-quoted keys count, and an element opened
   on the line that closes the one before (`}, {`) is still found.
 - **Everything else**: every line at indentation zero except blank lines, comments, lines of
   closing punctuation alone (`}`, `});`, `]);`) and an Allman-style `{` line, plus lines indented
@@ -50,11 +53,15 @@ can decide what to read in full.
     macros, `[[attributes]]` and trailing comments allowed; elsewhere a function whose body is on
     its line or opens below it, qualified names included (`std::string Foo::name() {`).
     `int x(5);` and `Foo f(1);` outside a class are variables and stay out. Preprocessor lines and
-    access specifiers inside a class do not end it.
+    access specifiers inside a class do not end it. A class head may carry an export macro,
+    `__declspec(…)` or `alignas(…)`, and a call named in capitals with no
+    return type (`Q_PROPERTY(…)`, `GENERATED_BODY()`) is a macro, not a member.
 
   An annotation or attribute on the declaration's own line does not hide it
   (`@Override public String toString() {`, `@HostListener('click') onClick() {`,
-  `[HttpGet] public IActionResult Get() {`), and a parenthesis inside a quoted default value
+  `[HttpGet] public IActionResult Get() {`) in languages that have them (Java, Kotlin, Scala,
+  Groovy, C#, Dart, Swift, TypeScript and
+  JavaScript), and a parenthesis inside a quoted default value
   (`paren(s = '(') {`) does not unbalance it. A line deeper than four spaces counts when it
   declares a member of a type the outline lists: a Java inner class's methods, a nested C#
   class's, an `impl` inside a Rust `mod`. A trailing comment after a declaration
@@ -80,7 +87,7 @@ can decide what to read in full.
   (declarations with `fun`; a `name(args) {` line there is a call taking a trailing lambda), C#
   (members at indentation 8 under a block-scoped `namespace X {`), Dart, C++ class members and
   JSON. The supported shapes are the `Read outline contract` table in `src/tools/file.test.ts`.
-  Not covered: members of a nested C++ class, Kotlin `companion object` members, a Dart
+  Not covered: Kotlin `companion object` members, a Dart
   constructor with no body, a signature whose closing `)` shares a line with its last parameter,
   and PowerShell `<# … #>` block comments.
 

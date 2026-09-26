@@ -17,6 +17,7 @@ describe('frontMatterClose', () => {
 describe('markdownContentStart', () => {
   it('skips front matter with comments before and between its keys', () => {
     expect(markdownContentStart(['---', '# c', 'a: 1', '', '# d', 'b: 2', '---', '# H'])).toBe(7);
+    expect(markdownContentStart(['---', '# Skill metadata', '', 'name: deploy', '---'])).toBe(5);
   });
 
   it('treats a block whose # line stands alone as a rule and text', () => {
