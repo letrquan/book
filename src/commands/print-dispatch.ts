@@ -356,7 +356,9 @@ export async function resolvePrintCommand(
   const context = printBuiltinContext(env, commands);
 
   const resolved = builtins.resolve(parsed.name, context);
-  if (resolved) {
+  // A `tuiOnly` command is the TUI's own state, so a non-interactive host treats the name as one
+  // it has never heard of: a project command may claim it, and otherwise it passes through.
+  if (resolved && !resolved.definition.tuiOnly) {
     if (!resolved.definition.nonInteractive) {
       throw unsupported(
         parsed.name,

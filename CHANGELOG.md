@@ -371,6 +371,73 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A request too large for the window compacts instead of ending the run** (#238). Resuming a long
+  session on a model with a smaller window (`--resume <id> --model <smaller>`) could end with
+  `Request is too large for <model> … Start a new session`: the preflight gate compacted first, but
+  when the reducer's request failed and the tool results were already too small for the clip to
+  help, it refused. A checkpoint built without the model is now the last resort: it needs no
+  provider call, so the request goes out. It is not tried after a failure every request would share
+  (a rejected key, an outage) or a budget refusal, and it is not committed unless it fits. The run
+  ends only when even that cannot be made, or when `autoCompactEnabled` is off, and the message says
+  which.
+- **Overflow recovery follow-ups** (#244).
+  - A 429 that states an oversized request (OpenAI's TPM limit) is no longer retried like a rate
+    limit; it compacts at once, and no longer lowers the model's learned window for good. A
+    transient `Rate limit reached` is still retried. It compacts under the limit the refusal states
+    and is not retried above it; a TPM refusal sent as a 413 or wrapped in a router's 503 counts
+    too, and no rate-limit error lowers the window.
+  - The recovery honours `autoCompactEnabled`: with it off, only the tool-result clip runs.
+  - When the recovery's reducer fails and the clip cannot bring the request under 80% of the
+    refused size, a checkpoint built without the model is used. A clip that is not retried no
+    longer rewrites the history.
+  - A 400 that comes back after a size-inferred recovery says it is either not about size or the
+    route's limit is below 200k. Any `bad_request` of 200k tokens or more still compacts once.
+  - The reducer's own plain 400 on a request of 200k tokens or more is read as an overflow and
+    halves its planning window, so a ~600k history on the antigravity route can recover.
+  - An overflow that OpenRouter forwards in an `error.metadata.raw` object, not only a string,
+    is read.
+  - Anthropic's mid-stream `authentication_error` and `permission_error` park the run as
+    `credentials_rejected`, `not_found_error` ends it, and `request_too_large` goes through the
+    overflow recovery. `rate_limit_error`, `billing_error` and `timeout_error` now read as a rate
+    limit, a billing refusal (which parks the run) and a timeout. All seven were re-sent before.
+  - A non-retryable error body is read for at most 5 s and 64 KB, like a retryable one.
+  - A non-retryable error body cut at 64 KB is read for its first `message` only, never for
+    wording in an echoed request.
+  - The error text shows the message the classifier reads: a top-level `message`, a string
+    `error`, or `detail`.
+- **A hook that starts its own process no longer keeps Book alive (#263).** On a timeout or a
+  cancellation Book killed only the shell wrapping the hook (`cmd.exe` or `sh`), so a process
+  the hook had started kept the hook's pipes open and Book could not exit: after `/exit` a
+  `SessionEnd` hook like that left the process running with no UI until a second Ctrl+C.
+  Book now kills the hook's whole process tree outright — the whole group off Windows, and with
+  `taskkill /T /F` on Windows — and lets go of its pipes. A hook is also decided as soon as its own
+  process exits: a process it leaves running in the background no longer holds each event for the
+  full 10 s, and is left running.
+- **A persistent background job's command no longer outlives its runner (#267).**
+  - **Orphans:** when the detached runner died other than through a stop (a crash, Task
+    Manager, `kill -9`), its command kept running with nothing left to stop it. The command now
+    runs under a small supervisor that holds a pipe from the runner and ends the command's
+    whole tree when that pipe closes, which the operating system does however the runner died.
+    Processes the command leaves running after it exits are not covered.
+  - **The first record:** a runner that could not write its job's first record still ran the
+    command, while `start()` waited out its 3 s, failed with no cause, forgot the job and
+    deleted its files. The runner now writes that record before starting anything, exits if it
+    cannot, and `start()` fails at once with the cause. A `start()` that gives up now also ends
+    the runner it started.
+  - **Record-write failures** no longer write notes into the job's log, which is the command's
+    own output. They are counted on the record (`recordWriteFailures`,
+    `lastRecordWriteError`), and a heartbeat that finds the record locked gives up after 50 ms
+    instead of blocking the runner for a second.
+  - **The terminal record:** when every attempt to write it fails, the runner now says so at the
+    end of the job's log, with the job's real outcome, instead of exiting silently.
+  - **The pid:** a persistent job now counts as started only once its record carries a pid, so
+    `Bash` reports one. It is the supervisor's, and off Windows a signal sent to it is passed to
+    the whole job.
+  - **Book's own process:** a record write that still failed after its retry budget could throw
+    from the shell manager's 500 ms monitor and end Book. The lost-job write, an acknowledgement
+    and a stop request now fail softly: the first two are retried or kept in memory, and a stop
+    request that could not be written fails the stop (KillShell names why, the TUI shows a notice)
+    and leaves the job `running`.
 - **A repository's settings file can no longer set `shell` or bypass mode through `__proto__`**
   (#88). Workspace layers may not set `shell` or `defaultMode: "bypassPermissions"`, and the
   sanitizer deletes those keys. But JSON keeps `"__proto__"` as an ordinary key, and merging
@@ -419,6 +486,22 @@ All notable changes to this project are documented in this file.
   touched on disk. The TUI never accents an at-sign inside code. A `!` line runs only when the
   user typed it outside fenced code, never from a mentioned file's contents, and its output is never
   mention-expanded.
+- **The compaction row sits in the transcript grid, where the conversation was compacted** (#266):
+  its mark on the tool-row column with a blank row around it, and before the reply of a turn that
+  compacted at its preflight gate or retried after an overflow, instead of at column 0 below it. A
+  turn that streamed output and then compacted (an output-cap continuation, a re-sent request)
+  continues in a message of its own below the row, and the row shows while the turn streams. A
+  deferred compaction committed behind a finished turn now follows that turn.
+- **The live tail no longer jumps back once per code block** (#268): a fence that opens before the
+  next blank line starts the tail, instead of the tail skipping the block and bringing it back from
+  the cutoff. `fenceLineAt` scans the response once instead of twice.
+- **A foreground Task row re-renders when its child changes** (#245), so the "Tab to open" hint goes
+  when the child's Background-panel row does.
+- **A Read row counts the lines it returned, not its continue notice** (#247): `4 lines · 3-6`
+  instead of `5 lines`, the same as for a result without a presentation. Read now reports how many
+  lines of the file a page holds, so the empty numbered line it shows past a final newline is not
+  counted and an empty file shows `empty`; an outline shows `outline · N entries`; a failed read
+  shows no line count.
 - **A refused permission prompt names its real cause** (#264). Every refusal told the model "The
   configured permission policy blocks this call", including a person pressing Skip and a print-mode
   run that had nobody to ask. The tool result now says which it was: a `permissions.deny` rule
@@ -562,9 +645,6 @@ All notable changes to this project are documented in this file.
   - **Pagination:** a Read that stops early also reports
     `pagination: { truncated: true, nextCursor }`, with the offset to continue from, as the shared
     clip's truncation did.
-  - **TUI:** the Read row still counts the notice as one more line (`5 lines` for 4 shown). The
-    row's line count comes from the shared result presentation, which counts the notice; only the
-    fallback path for results without a presentation strips it.
 - **`Read { outline: true }` lists Java, Kotlin, C# and Dart methods, and fewer lines that are not
   declarations (#247).**
   - **Methods that were missing:** a method written return-type-first (`public int getN() {`) or
@@ -733,8 +813,7 @@ All notable changes to this project are documented in this file.
     EPERM/EACCES/EBUSY. The runner waits up to 1 s. Writers in the TUI's own process (the shell
     manager, memory extraction) wait up to 100 ms, so rendering never stalls for long.
   - **Non-terminal writes:** a heartbeat, child-pid or `stopping` write that still fails no longer
-    ends the runner. It leaves a note in the job's log, and the next heartbeat writes the same
-    state.
+    ends the runner. The next heartbeat writes the same state.
   - **Terminal record:** it is retried on a timer until written (20 attempts) rather than lost.
   - **Temp files:** a failed write no longer leaves its `.tmp` file beside the record.
   - **Before and after:** with a second process reading the record in a tight loop, the runner
@@ -1023,6 +1102,51 @@ All notable changes to this project are documented in this file.
   `http` from the URL, and a server that answers the Streamable HTTP handshake with 404 or 405 simply
   looked broken, with `--transport sse` as an undiscoverable fix. Book now retries once as SSE when
   that is what the server said, and reports the retry.
+- **Esc during a custom command's shell expansion no longer hangs the TUI** (#262). `interrupt()`
+  cleared the resolution's handle, and the resolution reset its "Resolving…" flag only while that
+  handle still pointed at it, so the flag stayed set: the line stayed on screen and the composer
+  refused everything, `/exit` included, until the process was killed. Esc and Ctrl+C now end the
+  resolution and free the composer at once.
+- **Keys act on the draft on screen, not the one a render before** (#268). Tab right after typing
+  replaced the draft with the placeholder suggestion, because it read the composer's value from
+  the render before. Up followed by a character in one read edited the text Up had just replaced
+  (`abc`, Up, `x` gave `abcx`), and Up then Enter submitted nothing, because the editor kept its
+  own copy of the draft until the next render. Every key now starts from the draft as the key
+  ahead of it left it. `/queue` is now in the command menu, so typing it and pressing Enter runs
+  it (print mode and the SDK treat the name as before); a slash command the menu does not match
+  stays in the composer on Enter instead of being cleared. Backspace from an empty composer removes
+  an attached image on terminals that send it as DEL, without taking the image along with a draft's
+  last character, and Tab on a file or skill mention splices into the draft as typed. Down or Up
+  then Enter in one read runs the item the arrow moved to.
+- **Esc and Ctrl+C cancel a `/compact`** (#268). The cancel branch checked only a turn, a send and a
+  command resolution, so two presses during a compaction armed the exit window and then exited
+  halfway through it, and Esc did nothing although the row said "Esc to cancel". Now either key
+  stops the reducer, the card says `Compaction cancelled.`, and the follow-up queue behind it is
+  left as it was. Once a compaction is saved, its PostCompact hooks run to their own timeouts
+  rather than under the cancel, whatever ends it: Esc, an exit, or a cancelled turn. A press after
+  the cancel arms the exit window as usual, so a compaction that does not stop cannot trap you.
+  Auto-compaction before and during a turn now stops with the turn: it ran without the turn's abort
+  signal, so the reducer kept calling the model after Esc, and a cancelled pre-turn compaction is
+  tried again on the next send.
+- **An exit in progress says so, and ends the work under it** (#268). While SessionEnd ran, the
+  composer still took text and silently dropped it on Enter, and the paused-queue notice kept
+  offering actions that did nothing. The composer now shows "Exiting…" (or "Exiting: running
+  SessionEnd hooks…"), keeps what you type, and stops recalling queued inputs. The exit also
+  cancels the running turn and any open prompt, so approving a permission prompt during a slow
+  SessionEnd no longer runs the tool. A managed child's pending prompt is withdrawn too. A second
+  exit, or a `/clear` racing one, now waits for the SessionEnd already running instead of
+  returning at once, without reporting its failure a second time.
+- **`/queue` no longer hides a paused queue** (#268). With the queue paused behind a replaced
+  edit, `/queue` announced the count over the "Queue paused" notice, and nothing on screen said
+  the queue was waiting. It now says both.
+- **A recalled input resubmitted into a full queue stays in the composer** (#268). If the queue
+  filled up while an input was out for editing, Enter warned that the queue was full and dropped
+  the text. It is now put back, still recalled, and the notice says that Esc removes it and
+  `/queue clear` empties the queue, whether Book was busy or idle. A resubmission that fits follows
+  the transcript to the bottom as any other does.
+- **A failed interactive launch exits through the exit code** (#268). The TUI branch still called
+  `exit(1)` directly, for a reason (Ink holding stdin) that no longer held; it now marks the exit
+  code and lets Node exit once its handles close, as print mode does since #243.
 
 ### Added
 

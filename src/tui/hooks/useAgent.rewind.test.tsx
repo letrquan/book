@@ -92,6 +92,7 @@ vi.mock('../../session/lifecycle.js', () => ({
   runSessionEnd: vi.fn(async () => {}),
 }));
 
+import { runCompact, runPostCompactHooks } from '../../agent/compact.js';
 import { useAgent } from './useAgent.js';
 
 const roots: string[] = [];
@@ -598,5 +599,162 @@ describe('useAgent external context across session transitions', () => {
 
     expect(result.ok).toBe(true);
     expect(latest!.runtime.usedToolNames.has('WebFetch')).toBe(true);
+  });
+});
+
+describe('useAgent manual compaction', () => {
+  // #268 item 4 made Esc and Ctrl+C cancel a /compact. The reducer then ends on its aborted
+  // stream, and the card reported that as a failure ("Checkpoint stream ended without
+  // completion.") for something the user asked for.
+  it('reports a /compact cancelled halfway as cancelled, not as a failure', async () => {
+    const { config, timeline, sessionId } = fixture();
+    let finishReducer: (result: unknown) => void = () => {};
+    compactMockState.results.push(
+      new Promise((resolve) => {
+        finishReducer = resolve;
+      }),
+    );
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    const compacting = latest!.compact();
+    await tick();
+    expect(latest!.isCompacting).toBe(true);
+    latest!.cancel();
+    finishReducer({ status: 'failed', error: 'Checkpoint stream ended without completion.' });
+    await compacting;
+    await tick();
+
+    expect(latest!.isCompacting).toBe(false);
+    expect(latest!.compactUi).toMatchObject({ phase: 'skipped', message: 'Compaction cancelled.' });
+  });
+
+  // The pre-turn auto-compaction ran without the turn's abort signal, so Esc on its
+  // "Esc to cancel" row stopped the send while the reducer kept calling the model.
+  it("gives the pre-turn auto-compaction the turn's abort signal", async () => {
+    const { config, timeline, sessionId } = fixture();
+    vi.mocked(runCompact).mockClear();
+    compactMockState.results.push({ status: 'skipped', reason: 'small', message: 'small' });
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    await latest!.send('go on');
+    await tick();
+
+    const options = vi.mocked(runCompact).mock.calls[0]?.[2] as
+      { trigger?: string; signal?: AbortSignal } | undefined;
+    expect(options?.trigger).toBe('auto');
+    expect(options?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  // The pre-turn compaction remembers the pressure it last tried at, so it is not retried on
+  // every send. A cancelled attempt is not an attempt: the next send must try again, or the
+  // oversized history goes to the provider.
+  it('tries the pre-turn auto-compaction again after it was cancelled', async () => {
+    const { config, timeline, sessionId } = fixture();
+    vi.mocked(runCompact).mockClear();
+    let finishReducer: (result: unknown) => void = () => {};
+    compactMockState.results.push(
+      new Promise((resolve) => {
+        finishReducer = resolve;
+      }),
+      { status: 'skipped', reason: 'small', message: 'small' },
+    );
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    const first = latest!.send('first');
+    await tick();
+    latest!.cancel();
+    finishReducer({ status: 'failed', error: 'Checkpoint stream ended without completion.' });
+    await first;
+    await tick();
+
+    await latest!.send('second');
+    await tick();
+
+    expect(vi.mocked(runCompact)).toHaveBeenCalledTimes(2);
+  });
+
+  // The loop's own compaction mid-turn ran without the turn's signal too, so Esc cancelled the
+  // turn while its reducer went on calling the model.
+  it("gives the loop's mid-turn compaction the turn's abort signal", async () => {
+    const { config, timeline, sessionId } = fixture();
+    vi.mocked(runCompact).mockClear();
+    compactMockState.results.push(
+      { status: 'skipped', reason: 'small', message: 'small' },
+      { status: 'skipped', reason: 'small', message: 'small' },
+    );
+    agentLoopState.compactDuringRun = true;
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    await latest!.send('keep going');
+    await tick();
+
+    const midTurn = vi.mocked(runCompact).mock.calls[1]?.[2] as
+      { signal?: AbortSignal } | undefined;
+    expect(midTurn?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  // Once the compaction record is written only the PostCompact hooks are left, and cancelling
+  // then would kill the hooks without undoing anything. The hook says when that point is passed.
+  it('marks a /compact committed once it is saved, while its PostCompact hooks still run', async () => {
+    const { config, timeline, sessionId } = fixture();
+    let finishHooks: () => void = () => {};
+    vi.mocked(runPostCompactHooks).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishHooks = resolve;
+        }),
+    );
+    compactMockState.results.push({
+      status: 'compacted',
+      trigger: 'manual',
+      replacementHistory: [
+        {
+          id: 'checkpoint-1',
+          role: 'assistant',
+          content: 'compact summary',
+          kind: 'checkpoint',
+          includeInContext: true,
+          timestamp: 1,
+        },
+      ],
+      summary: 'compact summary',
+      compactId: 'compact-1',
+      generation: 1,
+      checkpoint: {
+        version: 2,
+        generation: 1,
+        state: { summary: 'compact summary', status: 'active' },
+        constraints: [],
+        files: [],
+        episodes: [],
+        openThreads: [],
+        statistics: { summarizedMessages: 1, retainedMessages: 0, preTokens: 100, postTokens: 10 },
+      },
+      checkpointVersion: 2,
+      summarizedCount: 1,
+      retainedCount: 0,
+      preContextTokens: 100,
+      postContextTokens: 10,
+      preMessageCount: 2,
+      strategy: 'single-pass',
+      modelCalls: 1,
+    });
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    const compacting = latest!.compact();
+    await tick();
+    expect(latest!.isCompacting).toBe(true);
+    expect(latest!.isCompactCommitted).toBe(true);
+
+    finishHooks();
+    await compacting;
+    await tick();
+    expect(latest!.isCompacting).toBe(false);
+    expect(latest!.isCompactCommitted).toBe(false);
   });
 });

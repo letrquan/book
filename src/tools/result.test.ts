@@ -1,11 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ToolContext } from '../types/tools.js';
 import { createRegistry } from './registry.js';
+import { fileTools } from './file.js';
 import {
   normalizeToolResult,
+  readLineMetadata,
   boundToolResultOutput,
   replaceToolResult,
   toolFailure,
@@ -14,6 +16,13 @@ import {
 } from './result.js';
 
 const context: ToolContext = { workspaceRoot: process.cwd(), env: {} };
+const readRowWorkspaces: string[] = [];
+
+afterEach(() => {
+  for (const workspace of readRowWorkspaces.splice(0)) {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
 
 describe('ToolResult V2', () => {
   it('returns a V2 envelope from registered tools', async () => {
@@ -256,6 +265,107 @@ describe('ToolResult V2', () => {
       metadata: ['custom metadata'],
       target: 'custom target',
     });
+  });
+
+  it.each([
+    {
+      name: 'a page that stops early',
+      args: { filePath: 'src/a.ts', offset: 3 },
+      content: '3: c\n4: d\n5: e\n6: f\n[Lines 3-6 of 20 shown. Continue with offset: 7.]',
+      metadata: ['4 lines', '3-6'],
+    },
+    {
+      name: 'a line cut to fit',
+      args: { filePath: 'src/a.ts' },
+      content: '1: aaaa\n[Line 1 (60000 bytes) was cut to fit one Read (50 KB).]',
+      metadata: ['1 line'],
+    },
+    {
+      name: 'a whole file',
+      args: { filePath: 'src/a.ts' },
+      content: '1: a\n2: b',
+      metadata: ['2 lines'],
+    },
+    { name: 'an empty file', args: { filePath: 'src/a.ts' }, content: '', metadata: ['empty'] },
+  ])(
+    'counts $name by its file lines, not its notice (#247)',
+    async ({ args, content, metadata }) => {
+      const registry = createRegistry();
+      registry.register({
+        name: 'Read',
+        description: 'Read a page',
+        parameters: {
+          type: 'object',
+          properties: { filePath: { type: 'string' }, offset: { type: 'number' } },
+          required: ['filePath'],
+        },
+        execute: async () => toolSuccess(content),
+      });
+
+      const result = await registry.execute({ id: 'page', name: 'Read', arguments: args }, context);
+
+      expect(result.presentation?.metadata).toEqual(metadata);
+    },
+  );
+
+  it.each([
+    { name: 'a file that ends in a newline', file: 'a\nb\n', args: {}, metadata: ['2 lines'] },
+    { name: 'an empty file', file: '', args: {}, metadata: ['empty'] },
+    {
+      name: 'the end of a file from an offset',
+      file: 'a\nb\n',
+      args: { offset: 2 },
+      metadata: ['1 line', '2-2'],
+    },
+    {
+      name: 'a page that stops early',
+      file: 'a\nb\nc\nd\ne\nf\n',
+      args: { offset: 3, limit: 2 },
+      metadata: ['2 lines', '3-4'],
+    },
+    {
+      name: 'a blank last line, read to the end of the file',
+      file: 'a\n\n',
+      args: { offset: 2, limit: 1 },
+      metadata: ['1 line', '2-2'],
+    },
+    {
+      name: 'a file whose last line is blank',
+      file: 'a\n\n',
+      args: {},
+      metadata: ['2 lines'],
+    },
+    {
+      name: 'a page whose last line is blank',
+      file: 'a\nb\n\nd\n',
+      args: { limit: 3 },
+      metadata: ['3 lines'],
+    },
+    {
+      name: 'an outline',
+      file: 'export function a() {}\n\nexport function b() {}\n',
+      args: { outline: true },
+      metadata: ['outline', '2 entries'],
+    },
+  ])('describes a real Read of $name (#247)', async ({ file, args, metadata }) => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-read-row-'));
+    readRowWorkspaces.push(workspace);
+    writeFileSync(join(workspace, 'a.ts'), file);
+    const registry = createRegistry();
+    registry.register(fileTools.find((tool) => tool.name === 'Read')!);
+
+    const result = await registry.execute(
+      { id: 'read', name: 'Read', arguments: { filePath: 'a.ts', ...args } },
+      { workspaceRoot: workspace, env: {} },
+    );
+
+    expect(result.status).toBe('success');
+    expect(result.presentation?.metadata).toEqual(metadata);
+  });
+
+  it('keeps Read row counts whole for a fractional offset', () => {
+    expect(readLineMetadata(2.5, 3.5)).toEqual(['3 lines', '2-4']);
+    expect(readLineMetadata(1, 0.5)).toEqual(['empty']);
   });
 
   it('upgrades persisted legacy results without retaining legacy projections', () => {

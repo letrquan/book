@@ -2,6 +2,7 @@ import type { ToolResult } from '../types/tools.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
+import { readResultMetadata } from '../tools/result.js';
 import { displayWidth, truncateDisplay } from './components/word-wrap.js';
 import { LABEL_COLUMN_WIDTH, MIN_TARGET_WIDTH, type TranscriptGrid } from './layout.js';
 import { isRenderableFileMutationDiff } from './file-mutation-display.js';
@@ -262,18 +263,7 @@ function fileMutationPresentation(
 }
 
 function readMetadata(args: Record<string, unknown>, result: ToolResult | undefined): string[] {
-  if (result?.status !== 'success') return [];
-  // A Read that stops early ends with a notice (`[Lines 3-6 of 20 shown. …]`,
-  // `[Line 1 (60000 bytes) was cut …]`), which is not a line of the file.
-  const lineCount = countOutputLines(result.content.replace(/\n\[Lines? \d[^\n]*\]$/, ''));
-  const offset = Number(args.offset ?? 0);
-  const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 1;
-  const end = Math.max(start, start + Math.max(0, lineCount - 1));
-  if (lineCount === 0) return ['empty'];
-  const size = lineCount === 1 ? '1 line' : `${lineCount} lines`;
-  // `121 lines · 1-121` says the same thing twice. The range earns its place
-  // only when the read started partway into the file.
-  return start > 1 ? [size, `${start}-${end}`] : [size];
+  return result?.status === 'success' ? readResultMetadata(args, result.content) : [];
 }
 
 function domainFor(value: string | undefined): string | undefined {

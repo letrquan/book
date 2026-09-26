@@ -1,8 +1,21 @@
-import { Text, useInput } from 'ink';
+import { Text, useInput, type Key } from 'ink';
 import { useEffect, useReducer, useRef } from 'react';
 
 interface InputBoxProps {
   value: string;
+  /**
+   * The parent's copy of the draft, written the moment the parent changes it (history,
+   * autocomplete, a restored draft). Ink hands every key of one stdin read to the handlers in
+   * turn before React renders, so the key after Up reached this editor while `value` still
+   * held the text Up had replaced: Up then a character gave the old text plus the character,
+   * and Up then Enter submitted nothing. Each key starts from this copy when it differs.
+   */
+  liveValueRef?: { readonly current: string };
+  /**
+   * An edit chord arrived with an empty draft. The editor knows the draft was empty before the key
+   * and has already declined to apply it, so the key belongs to the transcript.
+   */
+  onEmptyChord?: (input: string, key: Key) => void;
   onChange: (value: string) => void;
   onSubmit?: (value: string) => void;
   /** Backspace pressed while the composer is empty; the key edits nothing here. */
@@ -15,6 +28,13 @@ interface EditState {
   value: string;
   cursorOffset: number;
 }
+
+/**
+ * Ctrl chords the editor handles as text edits. With an empty draft there is nothing for them to
+ * edit, so they belong to the transcript (Ctrl+E expands a tool, Ctrl+U scrolls) and are handed to
+ * `onEmptyChord`; Ctrl+Y still yanks into an empty draft when the kill ring holds text.
+ */
+export const COMPOSER_EDIT_KEYS = new Set(['a', 'e', 'w', 'u', 'k', 'y']);
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
@@ -126,6 +146,8 @@ export function applyInputSequence(value: string, cursorOffset: number, input: s
  */
 export function InputBox({
   value,
+  liveValueRef,
+  onEmptyChord,
   onChange,
   onSubmit,
   onBackspaceWhenEmpty,
@@ -172,6 +194,11 @@ export function InputBox({
 
   useInput(
     (input, key) => {
+      const parentValue = liveValueRef?.current;
+      if (parentValue !== undefined && parentValue !== valueRef.current) {
+        valueRef.current = parentValue;
+        cursorOffsetRef.current = parentValue.length;
+      }
       // Any other key ends a Backspace run, so the next Backspace is a fresh press.
       if (!key.backspace || key.meta) lastBackspaceAtRef.current = Number.NEGATIVE_INFINITY;
 
@@ -187,6 +214,11 @@ export function InputBox({
         killTo(cursor, nextWordBoundary(valueRef.current, cursor));
         return;
       }
+      if (key.meta && key.delete) {
+        const cursor = cursorOffsetRef.current;
+        killTo(cursor, nextWordBoundary(valueRef.current, cursor));
+        return;
+      }
 
       // Readline motions. The composer dropped every Ctrl chord, so fixing a
       // typo halfway through a long prompt meant holding Backspace — slower
@@ -195,7 +227,12 @@ export function InputBox({
       if (key.ctrl && !key.meta) {
         const cursor = cursorOffsetRef.current;
         const current = valueRef.current;
-        switch (input.toLowerCase()) {
+        const chord = input.toLowerCase();
+        if (COMPOSER_EDIT_KEYS.has(chord) && !current && !(chord === 'y' && killRingRef.current)) {
+          onEmptyChord?.(input, key);
+          return;
+        }
+        switch (chord) {
           case 'a':
             commit({ value: current, cursorOffset: 0 });
             return;

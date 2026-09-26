@@ -72,8 +72,8 @@ daily at 01:00 UTC and on every pull request:
 - **Dead-code report** — runs knip against the committed `knip.json` and writes the result to the
   job summary. Report-only: the repository carries a backlog of a few hundred unused exports and
   exported types, and deciding which are safe to remove is a judgment call rather than a gate.
-  `knip.json` lists `src/index.ts`, `src/sdk.ts`, and `src/job-runner.ts` as entry points, so the
-  published SDK surface is never flagged.
+  `knip.json` lists `src/index.ts`, `src/sdk.ts`, `src/job-runner.ts`, and `src/job-supervisor.ts`
+  as entry points, so the published SDK surface is never flagged.
 - **Security advisories** — runs `npm audit` on a schedule (not just when someone pushes) and keeps
   a single rolling `Dependency security advisories` issue in sync, opening it when an advisory at
   or above `high` appears, rewriting it as the set changes, and closing it once clear. A scan that
