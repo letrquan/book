@@ -27,6 +27,11 @@ interface WorkingActivityInput {
   retryMax: number;
   retryCountdownMs: number;
   elapsedSeconds: number;
+  /**
+   * The plan step in flight: its `activeForm`, or its wording when the model
+   * gave none. Absent when no step is in progress.
+   */
+  activeStep?: string;
 }
 
 /**
@@ -417,6 +422,7 @@ export function deriveWorkingActivity({
   retryMax,
   retryCountdownMs,
   elapsedSeconds,
+  activeStep,
 }: WorkingActivityInput): WorkingActivity | null {
   const retry = retryText(retryPhase, retryAttempt, retryMax, retryCountdownMs);
   if (retry) return { label: retry, tone: 'warning' };
@@ -438,6 +444,12 @@ export function deriveWorkingActivity({
   if (pendingPermission) {
     return { label: 'Waiting for permission', tone: 'waiting', blocked: true };
   }
+
+  // A plan step in flight names the work better than any phrase below. The
+  // running tool already has its own row in the transcript, and while the Steps
+  // sheet is closed the step is spelled out nowhere else. Only a retry, a
+  // compaction, or a wait on the reader outranks it.
+  if (activeStep) return { label: activeStep, tone: 'normal' };
 
   // The streaming message is at (or near) the end; scan backwards so this
   // per-render lookup stays O(1) on long transcripts.

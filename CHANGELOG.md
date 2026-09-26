@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **The agent's plan left the bottom of the transcript.** It was the last block drawn in the old
+  style: a red `Plan` label and meter, markers in the `¶` column, and a five-row window that listed
+  finished steps and hid the ones between. While a step is in flight the working line names it
+  (`Treating an empty value · 8s`) in place of a tool phrase or a reasoning quip, though a wait on
+  you, a retry or a compaction still take the line. The status line says `step 3/7` beside the
+  folio, the TodoWrite row in the transcript names the step it started and `2 of 7 done` (so
+  scrolling back shows how the plan moved), and Ctrl+T opens the whole list as a sheet,
+  `─ § Steps ──── 2 of 7 done ─`, which follows the step in flight and closes with Ctrl+T. Steps are
+  marked `◌` to do, `◔` in hand, `✓` done. A bare `/task` now shows your own task list, which no
+  longer shares Ctrl+T, and TodoWrite joins `MemorySave` as always allowed: it no longer asks
+  permission, and `dontAsk` no longer refuses it.
 - **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
   rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
   green, so every PR that touched them either reformatted unrelated lines or left them drifting.

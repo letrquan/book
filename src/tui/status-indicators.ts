@@ -1,22 +1,19 @@
 /**
- * Shared status glyphs and colour tokens for plan rows and task rows.
+ * Shared status glyphs and colour tokens for the agent's steps and the task list.
  *
- * The glyphs are chosen for *width* as much as for looks. `○` and `◉` are East
- * Asian **Ambiguous**: plenty of terminals draw them two cells wide even though
- * every width table the TUI consults calls them one. When that happens the
- * glyph swallows the space behind it, so the row's text lands a column left of
- * the transcript grid and butts straight against its own marker — the plan is
- * the one block in the transcript that visibly fails to line up.
+ * Every glyph here is East Asian **Neutral**, so every terminal draws it one cell
+ * wide. An Ambiguous glyph (`○`, and also `·` and `•`) is drawn two cells wide by
+ * some terminals, which swallows the space behind it and lands the row's text a
+ * column off the grid. Each is also in the common coding fonts (JetBrains Mono,
+ * Cascadia): a glyph the font lacks comes from a fallback font, often as a colour
+ * emoji wider than its cell, which is how `✎` failed.
  *
- * This set is the light vocabulary already proven elsewhere in the TUI: `✓` on
- * tool rows, `›` on managed-agent rows, `·` as the separator in every status
- * line. Each one renders one cell wide next to text.
- *
- * Colours keep the roles apart. Clay (`brand`) is product chrome and belongs to
- * the plan; sage stays with the spinner, which is the agent itself speaking.
+ * The set reads as a circle being filled: `◌` a step not yet begun, `◔` the one
+ * in hand, `✓` the ones finished. Only the step in hand takes the rubric; a
+ * finished step takes the same `✓` as a finished tool row.
  */
 export const STATUS_INDICATORS = {
-  pending: { icon: '·' as const, colorToken: 'inactive' as const },
-  in_progress: { icon: '›' as const, colorToken: 'brand' as const },
+  pending: { icon: '◌' as const, colorToken: 'inactive' as const },
+  in_progress: { icon: '◔' as const, colorToken: 'brand' as const },
   completed: { icon: '✓' as const, colorToken: 'success' as const },
 };

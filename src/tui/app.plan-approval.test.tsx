@@ -1025,7 +1025,7 @@ describe('provider removal transcript messages', () => {
 });
 
 describe('App agent plan visibility', () => {
-  it('reveals a completed agent plan together with the Ctrl+T task panel', async () => {
+  it('opens the agent steps sheet on Ctrl+T, finished steps included', async () => {
     const agentState = {
       ...pendingAgentState(),
       isThinking: false,
@@ -1048,7 +1048,8 @@ describe('App agent plan visibility', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(stripAnsi(view.lastFrame())).toContain('Completed plan marker');
-    expect(stripAnsi(view.lastFrame())).toMatch(/─ § Tasks ─+ 0 ─/);
+    expect(stripAnsi(view.lastFrame())).toMatch(/─ § Steps ─+ 1 of 1 done · Ctrl\+T to close ─/);
+    expect(stripAnsi(view.lastFrame())).not.toContain('§ Tasks');
   });
 });
 

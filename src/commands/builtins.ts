@@ -106,7 +106,7 @@ export type BuiltinCommandEffect =
   | { type: 'set-show-thinking'; enabled: boolean }
   | { type: 'set-startup-animation'; enabled: boolean }
   | { type: 'set-memory-auto-save'; enabled: boolean }
-  | { type: 'toggle-panel'; panel: 'help' | 'status' | 'permissions' }
+  | { type: 'toggle-panel'; panel: 'help' | 'status' | 'permissions' | 'tasks' }
   | { type: 'add-task'; subject: string }
   | { type: 'show-diff' }
   | { type: 'reload-assets' }
@@ -667,11 +667,12 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   },
   {
     name: 'task',
-    description: 'Add a task',
+    description: 'Add a task, or show your task list',
+    argumentHint: '[subject]',
     execute: ({ rawArguments }) =>
       rawArguments
         ? { type: 'add-task', subject: rawArguments }
-        : { type: 'local-message', content: 'Usage: /task <subject>' },
+        : { type: 'toggle-panel', panel: 'tasks' },
   },
   {
     name: 'agents',

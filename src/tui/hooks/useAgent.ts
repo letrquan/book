@@ -275,6 +275,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     resolvePermissionMode(config.settings, session.permissionMode),
   );
   const [agentTodos, setAgentTodos] = useState<Todo[]>([]);
+  // Whether the agent wrote its plan during the current prompt. The working
+  // line and the status line only name a step from a plan that is current: a
+  // step left in progress by an interrupted or finished turn is not the work a
+  // later prompt is doing.
+  const [agentPlanCurrent, setAgentPlanCurrent] = useState(false);
+  const agentTodosKeyRef = useRef('[]');
+  const planKeyAtSendRef = useRef('[]');
+  useEffect(() => {
+    agentTodosKeyRef.current = JSON.stringify(agentTodos);
+  }, [agentTodos]);
   // Set when the user approves a plan with "fresh context"; a post-send effect
   // starts a new conversation seeded with the approved plan.
   const [pendingHandoff, setPendingHandoff] = useState<{
@@ -488,6 +498,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       hostUsageRef.current = null;
       lastHostCompactAttemptRef.current = null;
       setAgentTodos([]);
+      setAgentPlanCurrent(false);
       setTurnDurationMs(0);
       setRetryPhase('none');
       setRetryAttempt(0);
@@ -663,6 +674,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       messageOptions?: SendMessageOptions,
     ): Promise<AgentSessionSendResult> => {
       setCompactUi(null);
+
+      planKeyAtSendRef.current = agentTodosKeyRef.current;
+      setAgentPlanCurrent(false);
 
       const generation = sessionGenerationRef.current;
       const activeSessionId = sessionIdRef.current;
@@ -890,7 +904,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             }
           },
           onTodos: (todos) => {
-            if (stillCurrent()) setAgentTodos(todos as Todo[]);
+            if (!stillCurrent()) return;
+            setAgentTodos(todos as Todo[]);
+            if (JSON.stringify(todos) !== planKeyAtSendRef.current) setAgentPlanCurrent(true);
           },
           onTurnStart: (turn) => {
             if (!stillCurrent()) return;
@@ -1636,6 +1652,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     hostUsageRef.current = null;
     lastHostCompactAttemptRef.current = null;
     setAgentTodos([]);
+    setAgentPlanCurrent(false);
     streamingIdRef.current = null;
     setStreamingMessageId(null);
     // The send lease is released by send()'s finally after abort.
@@ -2140,6 +2157,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     pendingElicitation: pendingElicitations[0] ?? null,
     pendingElicitationCount: pendingElicitations.length,
     agentTodos,
+    agentPlanCurrent,
     turnDurationMs,
     retryPhase,
     retryAttempt,

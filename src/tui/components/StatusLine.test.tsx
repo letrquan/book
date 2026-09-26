@@ -291,6 +291,42 @@ describe('StatusLine', () => {
     expect(output).not.toContain('Retrying');
   });
 
+  it('sets the plan’s step at the right edge, before the folio', () => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="gpt-4o"
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          turnCount={4}
+          stepLabel="step 3/7"
+          terminalWidth={100}
+        />,
+      ),
+    );
+    expect(stripAnsi(view.lastFrame())).toMatch(/step 3\/7 {3}iv\s*$/m);
+  });
+
+  it('gives up the folio before the step on a narrow row', () => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="gpt-4o"
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          turnCount={4}
+          stepLabel="step 3/7"
+          terminalWidth={50}
+        />,
+      ),
+    );
+    const frame = stripAnsi(view.lastFrame());
+    expect(frame).toMatch(/step 3\/7\s*$/m);
+    expect(frame).not.toMatch(/\biv\s*$/m);
+  });
+
   describe('mode color labels', () => {
     const modes: Array<{ mode: Parameters<typeof StatusLine>[0]['mode']; label: string }> = [
       { mode: 'default', label: 'default' },

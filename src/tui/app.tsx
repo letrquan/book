@@ -18,7 +18,8 @@ import { StartupFire } from './components/StartupFire.js';
 import { CompactDiffCard } from './components/CompactDiffCard.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
-import { AgentTodoList, shouldShowAgentPlan } from './components/AgentTodoList.js';
+import { StepsSheet } from './components/StepsSheet.js';
+import { statusStepLabel } from './steps.js';
 import { ModelPicker, type ProviderRemovalResult } from './components/ModelPicker.js';
 import { EffortPicker } from './components/EffortPicker.js';
 import { PermissionModePicker } from './components/PermissionModePicker.js';
@@ -98,7 +99,7 @@ import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
 import type { InteractiveAssets } from './interactive-assets.js';
 import { resolveContextWindow, stripProvider } from '../models.js';
-import { wordWrap } from './components/word-wrap.js';
+import { foldControlCharacters, wordWrap } from './components/word-wrap.js';
 import { countWrittenTurns } from './components/transcript-messages.js';
 import {
   createQueuedInput,
@@ -177,7 +178,7 @@ function containsDraftInput(input: string): boolean {
  * deliberately and expects Esc to close — so they share one slot rather than a
  * boolean each.
  */
-type ReferencePanel = 'help' | 'status' | 'permissions' | 'shortcuts';
+type ReferencePanel = 'help' | 'status' | 'permissions' | 'shortcuts' | 'steps' | 'tasks';
 
 export function providerRemovalMessage(
   result: Extract<ProviderRemovalResult, { ok: true }>,
@@ -270,7 +271,7 @@ const NO_RECENT_SESSIONS: readonly never[] = [];
  *   Esc      — cancel permission / abort stream
  *   Ctrl+C   — abort stream; when idle, clears a non-empty composer, or
  *              press twice within CTRL_C_EXIT_HINT_MS to exit
- *   Ctrl+T   — toggle task list
+ *   Ctrl+T   — toggle the agent's steps
  *   Ctrl+O   — toggle detailed transcript
  *   Ctrl+E   — expand the current tool output
  *   Ctrl+L   — redraw
@@ -317,6 +318,7 @@ export function App({
     resolveElicitation,
     elicitationHandler,
     agentTodos,
+    agentPlanCurrent,
     liveConfig,
     runtime,
     removableProviderIds,
@@ -392,7 +394,6 @@ export function App({
   // existed with no consumer before the status line was reworked.
   const gitStatus = useGitStatus(config.workspace);
 
-  const [showTasks, setShowTasks] = useState(false);
   const [startupFireActive, setStartupFireActive] = useState(() =>
     shouldPlayStartupFire(config, session),
   );
@@ -1348,7 +1349,7 @@ export function App({
   useDebugValueChange(uiLog, 'layout:width', termWidth);
   useDebugValueChange(uiLog, 'layout:height', termHeight);
   useDebugValueChange(uiLog, 'layout:compactStatus', compactStatus, (v) => String(v));
-  useDebugValueChange(uiLog, 'showTasks', showTasks, (v) => String(v));
+  useDebugValueChange(uiLog, 'referencePanel', referencePanel, (v) => String(v));
   useDebugValueChange(uiLog, 'showHelp', showHelp, (v) => String(v));
   useDebugValueChange(uiLog, 'showShortcuts', showShortcuts, (v) => String(v));
   useDebugValueChange(uiLog, 'showStatus', showStatus, (v) => String(v));
@@ -1551,10 +1552,10 @@ export function App({
       exitOrArmOnCtrlC('idle');
       return;
     }
-    // Ctrl+T — toggle task list
+    // Ctrl+T — the agent's steps, as a reference sheet Esc also closes
     if (key.ctrl && input === 't') {
-      uiLog.event('input:Ctrl+T', { action: 'toggle-tasks' });
-      setShowTasks((s) => !s);
+      uiLog.event('input:Ctrl+T', { action: 'toggle-steps' });
+      setReferencePanel((current) => (current === 'steps' ? null : 'steps'));
       return;
     }
     // Alt+M — cycle mode
@@ -1588,7 +1589,11 @@ export function App({
 
   // Active tools open automatically; completed file mutations use their own default policy.
   const expandedToolId = useMemo(() => selectExpandedToolId(messages), [messages]);
-  const showAgentPlan = shouldShowAgentPlan(agentTodos, showTasks);
+  // Only a plan the agent wrote during this prompt names the work in the
+  // footer; the Steps sheet (Ctrl+T) still lists whatever plan there is.
+  const activeStep = agentPlanCurrent
+    ? agentTodos.find((todo) => todo.status === 'in_progress')
+    : undefined;
   const selectedManagedAgentRecord = managedAgents.selectedAgentId
     ? managedAgents.records.get(managedAgents.selectedAgentId)
     : undefined;
@@ -1679,10 +1684,10 @@ export function App({
         selectedManagedAgentRecord?.status ?? '',
         selectedManagedAgentRecord?.referencedEvidenceIds.length ?? 0,
         selectedManagedAgentLiveRows,
-        showAgentPlan
+        referencePanel === 'steps'
           ? agentTodos.map((todo) => [todo.status, todo.content, todo.activeForm ?? ''])
           : [],
-        showTasks ? tasks.map((task) => [task.id, task.status, task.subject]) : [],
+        referencePanel === 'tasks' ? tasks.map((task) => [task.id, task.status, task.subject]) : [],
         showHelp,
         showStatus,
         showPermissions,
@@ -1705,9 +1710,8 @@ export function App({
       managedAgents.selectedAgentId,
       selectedManagedAgentRecord,
       selectedManagedAgentLiveRows,
-      showAgentPlan,
+      referencePanel,
       agentTodos,
-      showTasks,
       tasks,
       showHelp,
       showStatus,
@@ -2463,8 +2467,10 @@ export function App({
                   retryCountdownMs={retryCountdownMs}
                 />
               )}
-              {showAgentPlan && <AgentTodoList todos={agentTodos} terminalWidth={termWidth} />}
-              {showTasks && (
+              {referencePanel === 'steps' && (
+                <StepsSheet todos={agentTodos} width={panelGrid(termWidth).width} />
+              )}
+              {referencePanel === 'tasks' && (
                 <TaskList
                   tasks={tasks}
                   width={panelGrid(termWidth).width}
@@ -3028,6 +3034,11 @@ export function App({
               terminalWidth={termWidth}
               reducedMotion={motionDisabled}
               screenReader={screenReader}
+              activeStep={
+                activeStep
+                  ? foldControlCharacters(activeStep.activeForm || activeStep.content)
+                  : undefined
+              }
             />
           ) : null}
 
@@ -3184,6 +3195,7 @@ export function App({
               mode={mode}
               taskCount={tasks.length}
               activeTaskCount={tasks.filter((t) => t.status === 'in_progress').length}
+              stepLabel={agentPlanCurrent ? statusStepLabel(agentTodos) : undefined}
               agentCount={managedAgentUiEnabled ? managedAgents.summaries.length : 0}
               activeAgentCount={
                 managedAgentUiEnabled
@@ -3237,7 +3249,7 @@ const SHORTCUT_ROWS: ReadonlyArray<{ key: string; value: string }> = [
     key: 'Ctrl+C',
     value: 'Cancel current turn, clear the composer, or press twice idle to exit',
   },
-  { key: 'Ctrl+T', value: 'Toggle the main agent checklist (not background tasks)' },
+  { key: 'Ctrl+T', value: "Show or hide the agent's steps" },
   { key: '/tasks', value: 'Focus background tasks; ↑↓ select, Enter open, x stop' },
   { key: 'Ctrl+O', value: 'Toggle detailed transcript' },
   { key: 'Ctrl+E', value: 'Expand current tool output (empty prompt)' },

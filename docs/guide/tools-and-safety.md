@@ -187,14 +187,21 @@ Permission _modes_ decide whether you are prompted; they never relax a `deny` ru
 `bypassPermissions`, and it is evaluated before the prompt, so a denied call never reaches one.
 Modes differ only in what happens to calls that no `deny` rule matched:
 
-| Mode                | Unmatched calls                                                                                                                              |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `default`           | Checked against `allow`/`ask`, then prompted                                                                                                 |
-| `acceptEdits`       | As `default`, but file mutations are approved without a prompt                                                                               |
-| `plan`              | Read-only tools only; mutations are refused until you approve a plan                                                                         |
-| `auto`              | Run without a prompt                                                                                                                         |
-| `dontAsk`           | Refused except for the built-in always-allowed tools (`MemorySave`) — the mode never prompts, and a user `allow` rule does not exempt a call |
-| `bypassPermissions` | Run without a prompt                                                                                                                         |
+| Mode                | Unmatched calls                                                                                                               |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `default`           | Checked against `allow`/`ask`, then prompted                                                                                  |
+| `acceptEdits`       | As `default`, but file mutations are approved without a prompt                                                                |
+| `plan`              | Read-only tools only; mutations are refused until you approve a plan                                                          |
+| `auto`              | Run without a prompt                                                                                                          |
+| `dontAsk`           | Refused except for the tools below that never prompt — the mode never prompts, and a user `allow` rule does not exempt a call |
+| `bypassPermissions` | Run without a prompt                                                                                                          |
+
+Some tools never prompt. `MemorySave` and `TodoWrite` (the agent's checklist) are always allowed,
+and `ToolSearch`, `EnterPlanMode` and the managed-agent lifecycle tools (every `Agent*` tool except
+`AgentApply`) never reach a prompt; `dontAsk` does not refuse any of them. A `permissions.deny` rule
+still blocks them in every mode. A `permissions.ask` rule that names one prompts in `default` and
+`acceptEdits`, refuses the call in `dontAsk`, and, as for every tool, is not consulted in `auto` or
+`bypassPermissions`.
 
 `plan` mode needs a host that can approve the plan the agent submits through `ExitPlanMode`. The
 TUI prompts; print/headless and the SDK route the decision through `onUserQuestionRequired`, and a
