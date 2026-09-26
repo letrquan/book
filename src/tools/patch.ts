@@ -549,7 +549,7 @@ export const patchTools: ToolDefinition[] = [
     name: 'ApplyPatch',
     argumentAliases: { input: 'patch' },
     description:
-      "Apply a Codex-style patch with Update File, Add File, or Delete File operations across one or more files atomically. Read the targets first. Start each Update File hunk with a bare @@ line; anchor text such as @@ def foo is rejected, and unified-diff line numbers are ignored. Hunks apply in order, and a hunk's context and removed lines must occur exactly once in the file, or exactly once after the previous hunk; when they could repeat (a closing return or brace, a test's last lines), include more surrounding lines. After a context mismatch, reread and regenerate the patch instead of resending it unchanged.",
+      'Apply a Codex-style patch with Update File, Add File, or Delete File operations across one or more files atomically. Read the targets first; use exact contextual hunks, and regenerate the patch after a context mismatch instead of resending it unchanged.',
     parameters: {
       type: 'object',
       properties: {

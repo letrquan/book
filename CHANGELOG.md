@@ -19,8 +19,10 @@ All notable changes to this project are documented in this file.
   reconstructed from real sessions, 5 now apply, each at the location the model's successful retry
   chose where that could be checked; the other 12 still have several candidates after the previous
   hunk and are still refused, since Book never picks between candidates. The ambiguous error now
-  reports `matchesAfterPreviousHunk` and asks for the enclosing function signature, and the tool
-  description states the matching rule and that `@@` takes no anchor text. A patch that repeats its
+  reports `matchesAfterPreviousHunk` and asks for the enclosing function signature. The tool
+  description is deliberately unchanged: on `cx/gpt-5.6-luna` in `eval:edit`, rewrites that spelled
+  out the `@@` rule raised `invalid_patch_syntax` failures from 0 in 39 runs to 6 in 60, so the rule
+  is stated in the error a model gets when it needs it. A patch that repeats its
   `*** Begin Patch` or `*** End Patch` marker, a model glitch seen in real sessions and in
   `eval:edit`, is now accepted instead of failing with `invalid_patch_syntax`.
 - **Settings validation runs on Zod 4** (#88). Book moves from Zod 3.25 to Zod 4.6. Defaults, and
