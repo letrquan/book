@@ -1,4 +1,4 @@
-import { Box, Text, useInput, useStdout, useApp, type Key } from 'ink';
+import { Box, Text, useStdout, useApp, type Key } from 'ink';
 import {
   useState,
   useCallback,
@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { panelContentWidth, panelGrid } from './layout.js';
+import { GlobalKeyHandler } from './global-key-handler.js';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { QueuedInputPreview, type FlashNotice } from './components/QueuedInputPreview.js';
@@ -291,7 +292,7 @@ export function App({
   config,
   permissionMode,
   session,
-  redrawViewport,
+  redrawViewport: wipeViewport,
   interactiveAssets,
   mcp,
 }: AppProps) {
@@ -636,7 +637,27 @@ export function App({
   }, [listSessions, sessionId, transcriptEmpty]);
   // The status line's folio: one page per turn you have written.
   const turnCount = useMemo(() => countWrittenTurns(messages), [messages]);
-  const { exit: exitApp } = useApp();
+  const { exit: exitApp, suspendTerminal } = useApp();
+  const redrawInFlightRef = useRef(false);
+  /**
+   * Wipes the screen and has Ink paint the whole frame again. Ink skips a frame identical to the
+   * last one it wrote, so wiping alone left the screen blank after Ctrl+L, and left rows blank that
+   * a resized frame shared with the old one. suspendTerminal() erases Ink's frame, runs the wipe,
+   * then forgets the old frame and repaints.
+   */
+  const redrawViewport = useCallback(() => {
+    if (!wipeViewport || redrawInFlightRef.current) return;
+    redrawInFlightRef.current = true;
+    void suspendTerminal(wipeViewport)
+      .catch((error: unknown) =>
+        uiLog.event('redraw:failed', {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      )
+      .finally(() => {
+        redrawInFlightRef.current = false;
+      });
+  }, [wipeViewport, suspendTerminal]);
   // Set once an exit starts. SessionEnd can take seconds, and a press meanwhile must neither
   // arm the window again nor start a second exit, which would cancel and log a second time
   // and show the hint over an exit already under way.
@@ -1414,7 +1435,6 @@ export function App({
     (input: string, key: Key) => handleInputRef.current(input, key),
     [],
   );
-  useInput(forwardInput);
   /**
    * Cancels a `/compact` still running its reducer, once. The follow-up queue behind it stays as it
    * was; a saved compaction's PostCompact hooks are left to finish; a second press is a user who
@@ -2431,6 +2451,7 @@ export function App({
   if (startupFireActive) {
     return (
       <AppProviders theme={currentTheme.tokens} density={density}>
+        <GlobalKeyHandler onInput={forwardInput} />
         <ErrorBoundary resumeCommand={resumeCommand} onExit={exitFromCrash}>
           <StartupFire
             width={termWidth}
@@ -2454,6 +2475,7 @@ export function App({
 
   return (
     <AppProviders theme={currentTheme.tokens} density={density}>
+      <GlobalKeyHandler onInput={forwardInput} />
       <ErrorBoundary resumeCommand={resumeCommand} onExit={exitFromCrash}>
         <Box
           flexDirection="column"
@@ -3162,8 +3184,6 @@ export function App({
               onRecallQueued={
                 managedAgents.surface === 'main' && !exitStarted ? recallQueuedInput : undefined
               }
-              onCancelQueuedEdit={cancelQueuedEdit}
-              editingQueuedInput={Boolean(editingQueuedInput)}
               onDraftChange={(value, attachments) => {
                 draftRef.current = value;
                 draftAttachmentsRef.current = attachments ?? [];

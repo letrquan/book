@@ -15,6 +15,7 @@ function createFakeBase() {
     clear: vi.fn(),
     done: vi.fn(),
     sync: vi.fn(),
+    reset: vi.fn(),
     setCursorPosition: vi.fn(),
     isCursorDirty: vi.fn(() => false),
     willRender: vi.fn(() => true),
@@ -66,5 +67,16 @@ describe('frame buffer', () => {
   it('installs idempotently', async () => {
     await expect(installFrameCapture()).resolves.toBeUndefined();
     await expect(installFrameCapture()).resolves.toBeUndefined();
+  });
+
+  it('forwards reset to the base renderer and drops the captured frame', () => {
+    const base = createFakeBase();
+    const renderer = createFrameCapturingRenderer(stream, undefined, () => base);
+
+    renderer('kept\n');
+    expect(getFrameLines()).toEqual(['kept']);
+    renderer.reset?.();
+    expect(base.reset).toHaveBeenCalledOnce();
+    expect(getFrameLines()).toEqual([]);
   });
 });

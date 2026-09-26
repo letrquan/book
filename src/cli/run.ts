@@ -32,8 +32,8 @@ import {
 } from '../debug-log.js';
 import { installInkScrollRenderer } from './ink-scroll-renderer.js';
 import { installFrameCapture } from './frame-buffer.js';
-import { isInkIncrementalRendererPatched } from './ink-patch.js';
-import { resolveTuiRendererMode } from './tui-renderer-mode.js';
+import { hasInkTrailingNewlineFix } from './ink-renderer.js';
+import { isCiEnvironment, resolveTuiRendererMode } from './tui-renderer-mode.js';
 import { resolvePermissionMode } from '../permission-mode.js';
 import { spawn } from 'node:child_process';
 import { resolveBookHome } from '../book-home.js';
@@ -358,8 +358,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     const mcpHost = new McpSessionHost(config.workspace, config.settings);
     mcpHost.start();
     let app: ReturnType<typeof render> | undefined;
+    // App runs this inside Ink's suspendTerminal(), which erases Ink's frame before it and repaints
+    // the whole frame after it, so this only wipes whatever else is on the screen.
     const redrawViewport = () => {
-      app?.clear();
       process.stdout.write('\x1b[H\x1b[2J');
     };
     const extraction = new AbortController();
@@ -370,7 +371,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       const rendererMode = resolveTuiRendererMode(process.env.BOOK_TUI_RENDERER, {
         isTTY: process.stdout.isTTY === true,
         screenReader: config.accessibility.screenReader,
-        incrementalRendererPatched: isInkIncrementalRendererPatched(),
+        incrementalRendererFixed: hasInkTrailingNewlineFix(),
         platform: process.platform,
       });
       await installInkScrollRenderer(rendererMode === 'experimental-scroll');
@@ -389,6 +390,8 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           isScreenReaderEnabled: config.accessibility.screenReader,
           incrementalRendering: rendererMode !== 'safe',
           maxFps: 60,
+          // Ink 7 also turns live frames off for a non-TTY stdout, which the WSL bridge uses.
+          interactive: !isCiEnvironment(),
         },
       );
       // Phase 1b: read idle earlier sessions of this workspace for memories the model

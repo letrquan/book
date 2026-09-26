@@ -86,6 +86,26 @@ describe('SubagentPanel', () => {
     await vi.waitFor(() => expect(onSelect).toHaveBeenLastCalledWith('a1'));
   });
 
+  it('keeps the selection when the parent passes a fresh agents array', async () => {
+    const onOpen = vi.fn();
+    const panel = (agents: AgentSummary[]) => (
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <SubagentPanel agents={agents} width={80} reducedMotion isActive onOpen={onOpen} />
+      </ThemeContext.Provider>
+    );
+    const view = render(panel([agent]));
+    // `› ● main` is the main row's selected marker, so its absence is the agent row being on.
+    const agentSelected = () => expect(view.lastFrame()).not.toContain('› ● main');
+
+    view.stdin.write('\x1b[B');
+    await vi.waitFor(agentSelected);
+    view.rerender(panel([{ ...agent }]));
+    await vi.waitFor(agentSelected);
+
+    view.stdin.write('\r');
+    await vi.waitFor(() => expect(onOpen).toHaveBeenCalledWith('a1'));
+  });
+
   it('keeps the focused agent visible when the list overflows the window', () => {
     const many: AgentSummary[] = Array.from({ length: 8 }, (_, index) => ({
       ...agent,
