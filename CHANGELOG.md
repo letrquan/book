@@ -313,6 +313,22 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Cached prompt tokens are counted on OpenAI-compatible providers** (#235). The OpenAI-compatible
+  client read only `prompt_tokens`, so a provider that caches the prompt (OpenAI's automatic cache,
+  DeepSeek, OpenRouter, LiteLLM) was billed in `/cost`, `/usage` and the USD budget as if nothing
+  was cached. Book now reads `prompt_tokens_details.cached_tokens` and the other providers' fields,
+  keeps `promptTokens` as the uncached input as on the Anthropic path, and prices a cache read with
+  no listed rate at the input rate and a cache write at twice it, upper bounds instead of an
+  `unknown` that stops a USD-budgeted run. `/cost` and `/usage` now include cache tokens in their
+  dollar figure and show them (`9,000 cached`).
+  9router caches its Claude routes upstream too, but its streamed usage carries no cache counts,
+  so there Book still shows every input token as uncached; the configuration guide has the numbers.
+  In print-mode JSON and SDK results, `usage.promptTokens` is now the uncached input whenever a
+  provider reports cache counts, as it already was on the Anthropic path, with the cache counts in
+  `cacheReadInputTokens` and `cacheCreationInputTokens`. The token totals `/cost`, `/usage` and the
+  usage panel show now include cache tokens on every provider.
+  A provider that omits `total_tokens` no longer reads as zero context pressure, which kept
+  usage-driven compaction from ever firing: the total defaults to prompt plus completion.
 - **The compaction row sits in the transcript grid, where the conversation was compacted** (#266):
   its mark on the tool-row column with a blank row around it, and before the reply of a turn that
   compacted at its preflight gate or retried after an overflow, instead of at column 0 below it. A
