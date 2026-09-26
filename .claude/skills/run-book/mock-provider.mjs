@@ -117,20 +117,29 @@ const sequenceTurns = turns.filter((turn) => typeof turn.match !== 'string');
 let requestCount = 0;
 let sequencePosition = 0;
 
-// Truncate the request log so each server run starts from a clean slate.
-try {
-  writeFileSync(requestLog, '');
-} catch {
-  /* best-effort */
-}
-
 function sse(res, obj) {
   res.write(`data: ${JSON.stringify(obj)}\n\n`);
 }
 
-/** The pause before a paced delta (`--chunk-delay-ms`, or the turn's own `chunkDelayMs`). */
-function paceDelta(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** Thrown out of a turn whose client went away (Esc aborts Book's request). */
+class ClientGone extends Error {}
+
+/**
+ * A pause inside a turn (`thinkMs`, `holdMs`, a paced delta) that ends early when the client
+ * closes the response, so an aborted turn stops at once rather than after its whole script.
+ */
+function pause(res, ms) {
+  return new Promise((resolve) => {
+    const onClose = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      res.off('close', onClose);
+      resolve();
+    }, ms);
+    res.once('close', onClose);
+  });
 }
 
 /** The text of the request's last message when it is a user turn; '' for any other role. */
@@ -177,13 +186,33 @@ function substituteEvents(text, prompt) {
 }
 
 async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 100) {
+  let sent = 0;
+  try {
+    await writeTurn(res, turn, model, id, prompt, estimatedTokens, () => (sent += 1));
+  } catch (error) {
+    if (!(error instanceof ClientGone)) throw error;
+    // Book aborted the request (Esc, a timeout): stop writing to the closed response.
+    console.error(`mock-provider: ${id} closed by the client after ${sent} chunks; stopped`);
+  }
+}
+
+async function writeTurn(res, turn, model, id, prompt, estimatedTokens, onSent) {
   const base = { id, object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: {} }] };
   const delayMs = typeof turn.chunkDelayMs === 'number' ? turn.chunkDelayMs : chunkDelayMs;
+  const send = (obj) => {
+    if (res.destroyed || res.writableEnded) throw new ClientGone();
+    sse(res, obj);
+    onSent();
+  };
+  const wait = async (ms) => {
+    await pause(res, ms);
+    if (res.destroyed) throw new ClientGone();
+  };
 
-  sse(res, { ...base, choices: [{ index: 0, delta: { role: 'assistant' } }] });
+  send({ ...base, choices: [{ index: 0, delta: { role: 'assistant' } }] });
   // `thinkMs` holds the turn before its first delta, the way a real model pauses
   // to think, so the working spinner is on screen long enough to be seen.
-  if (turn.thinkMs) await new Promise((resolve) => setTimeout(resolve, turn.thinkMs));
+  if (turn.thinkMs) await wait(turn.thinkMs);
 
   // `tools: [...]` sends several calls in one turn, the way a model that
   // batches parallel reads does; `tool` is the one-call shorthand.
@@ -191,15 +220,15 @@ async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 1
   if (turnTools.length > 0) {
     if (turn.text) {
       for (const piece of turn.text.match(/.{1,12}/gs) ?? [turn.text]) {
-        if (delayMs > 0) await paceDelta(delayMs);
-        sse(res, { ...base, choices: [{ index: 0, delta: { content: piece } }] });
+        if (delayMs > 0) await wait(delayMs);
+        send({ ...base, choices: [{ index: 0, delta: { content: piece } }] });
       }
     }
-    if (turn.holdMs) await new Promise((resolve) => setTimeout(resolve, turn.holdMs));
+    if (turn.holdMs) await wait(turn.holdMs);
     for (const [index, tool] of turnTools.entries()) {
-      if (delayMs > 0) await paceDelta(delayMs);
+      if (delayMs > 0) await wait(delayMs);
       // Tool arguments are streamed as a JSON string, exactly like OpenAI does.
-      sse(res, {
+      send({
         ...base,
         choices: [
           {
@@ -224,24 +253,24 @@ async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 1
         ],
       });
     }
-    sse(res, { ...base, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
+    send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
   } else {
     // Chunk the text so the TUI exercises its streaming render path.
     const text = substituteEvents(turn.text ?? replyText, prompt);
     for (const piece of text.match(/.{1,12}/gs) ?? [text]) {
-      if (delayMs > 0) await paceDelta(delayMs);
-      sse(res, { ...base, choices: [{ index: 0, delta: { content: piece } }] });
+      if (delayMs > 0) await wait(delayMs);
+      send({ ...base, choices: [{ index: 0, delta: { content: piece } }] });
     }
-    if (turn.holdMs) await new Promise((resolve) => setTimeout(resolve, turn.holdMs));
+    if (turn.holdMs) await wait(turn.holdMs);
     // `finishReason` overrides the terminal reason of a text turn: `content_filter`
     // is what Gemini's safety filter answers on ordinary code-shaped prose.
-    sse(res, {
+    send({
       ...base,
       choices: [{ index: 0, delta: {}, finish_reason: turn.finishReason ?? 'stop' }],
     });
   }
 
-  sse(res, {
+  send({
     ...base,
     choices: [],
     // `usage` overrides the reported usage; `{prompt_tokens: 0, completion_tokens: 0}`
@@ -252,6 +281,7 @@ async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 1
         ? { prompt_tokens: estimatedTokens, completion_tokens: 20, total_tokens: estimatedTokens + 20 }
         : { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }),
   });
+  if (res.destroyed) throw new ClientGone();
   res.write('data: [DONE]\n\n');
   res.end();
 }
@@ -352,7 +382,23 @@ const server = createServer((req, res) => {
   });
 });
 
+// A port someone else holds is the common failure: say so in one line and exit, so the
+// driver (which watches this process) fails at once with the reason.
+server.on('error', (error) => {
+  const reason =
+    error.code === 'EADDRINUSE' ? `port ${port} is already in use (EADDRINUSE)` : error.message;
+  console.error(`mock-provider: cannot listen on 127.0.0.1:${port}: ${reason}`);
+  process.exit(1);
+});
+
 server.listen(port, '127.0.0.1', () => {
+  // Truncate the request log so each server run starts from a clean slate. Only once the
+  // port is ours: a second mock on a taken port must not wipe the first one's log.
+  try {
+    writeFileSync(requestLog, '');
+  } catch {
+    /* best-effort */
+  }
   // The driver polls for this exact line.
   console.log(`MOCK-PROVIDER-READY http://127.0.0.1:${port}/v1 (requests -> ${requestLog})`);
 });

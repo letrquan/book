@@ -23,8 +23,31 @@ fi
 
 # The driver starts the mock and kills that one PID on every exit path, signals
 # included. Nothing here kills a mock by name: on a shared machine the other
-# mocks belong to other runs. A port someone else holds fails the driver with
-# EADDRINUSE; pick another with BOOK_SMOKE_PORT.
+# mocks belong to other runs. Pick another port with BOOK_SMOKE_PORT.
+#
+# Nothing is deleted until this run owns the port: first a per-port lock (another
+# smoke run on the same port stops here, before touching its workspace), then a
+# probe that the port is free (a foreign holder stops us the same way).
+LOCK="/tmp/book-smoke-$PORT.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  holder="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+    rm -rf "$LOCK" # its run died without cleaning up
+    mkdir "$LOCK"
+  else
+    echo "smoke: another smoke run (pid ${holder:-?}) holds port $PORT; set BOOK_SMOKE_PORT" >&2
+    exit 1
+  fi
+fi
+echo $$ > "$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
+
+if ! node -e "const s = require('net').createServer();
+  s.once('error', () => process.exit(1));
+  s.listen($PORT, '127.0.0.1', () => s.close());"; then
+  echo "smoke: port $PORT is in use by another process; set BOOK_SMOKE_PORT" >&2
+  exit 1
+fi
 
 rm -rf "$WS"
 mkdir -p "$WS"

@@ -77,7 +77,8 @@ EOF
 | `quit` | Ctrl-C twice and wait for exit. |
 
 Options: `--mock` (start the mock provider), `--mock-script <json>`, `--mock-port` (8919), `--sessions` (keep session persistence on, so sessions pre-seeded in `<book-home>/.book/sessions/*.jsonl` show on the title page and in `/resume`; a seeded file needs a `session_meta` line whose `cwd` is the workspace normalized as the store does it, lowercase on Windows, plus at least one `user` record, because the store recounts messages from the records),
-`--workspace <dir>`, `--book-home <dir>` (default: a fresh temp dir), `--shots <dir>`
+`--workspace <dir>`, `--book-home <dir>` (default: a fresh temp dir, removed when the driver exits;
+pass one to seed it or read it afterwards — the driver never removes a home it was given), `--shots <dir>`
 (`/tmp/book-shots`), `--cols` (120), `--rows` (40), `--timeout` (20000), `--ready-settle` (2500),
 `--send-gap` (250), `--bin <exe>` (spawn another executable — the Go build's `bin/book.exe` — in
 place of `node dist/index.js`, with the same flags; under `--mock` the `BOOKGO_*` variables are set
@@ -92,10 +93,21 @@ to every turn, the reducer's matched checkpoint included, which is how a `/compa
 long enough to press keys during it. A scenario turn's own `"chunkDelayMs"` overrides it for that
 turn, so a long history can arrive at once while only the turn under test is paced. To freeze one
 frame of a stream, such as the live tail at an exact cutoff, end the turn's `text` there and add
-`holdMs`. `--startup-animation` skips the `.book/settings.json` the driver otherwise writes into the
-workspace to turn the startup splash off, so the splash can be driven without an extra `--settings`
-layer. The splash replaces the input bar that `ready` waits for, so such a script starts with
-`sleep` (the splash plays for about three seconds) and a key that dismisses it.
+`holdMs`.
+
+The driver turns the startup splash off with a `--settings` layer of its own (a temp file holding
+`ui.startupAnimation`), which outranks every settings file; it never writes the workspace's
+`.book/settings.json`, and a value an older driver left there cannot win. `--startup-animation`
+sets the layer's value to `true`, so the splash can be driven. A `--settings <file>` of your own
+after `--` is merged into that layer, its keys winning; `--no-settings` after `--` skips every
+layer, the driver's too; `--bin` gets no layer (the Go build reads a flat `startupAnimation` key).
+The splash replaces the input bar that `ready` waits for, so such a script starts with `sleep` (the
+splash plays for about three seconds) and a key that dismisses it.
+
+A mock that exits before it is ready (a port another process holds, a bad `--mock-script`) fails the
+driver at once with the mock's own error, instead of after a 10 s wait. The mock stops writing to a
+response Book has closed (Esc, a timeout) and says so on stderr:
+`mock-provider: chatcmpl-mock-3 closed by the client after 14 chunks; stopped`.
 
 `--record <file>` writes every PTY chunk with its arrival time, as JSON, when the driver exits: the
 input to `record-gif.mjs` below.
@@ -129,8 +141,8 @@ a `text` is how the fitter is exercised end to end; the deferred-compaction judg
 on `BEGIN CHECKPOINT UNDER REVIEW`). The mock reports `prompt_tokens: 100` on every reply, so Book's
 usage-triggered compaction never fires against it; pass `--mock-usage-from-estimate` to the driver
 (`--usage-from-estimate` to the mock) to report its own chars/4 estimate instead, then a model with
-a small `contextWindow` in the throwaway BOOK_HOME's `settings.json` and a couple of long replies put
-a request over the threshold.
+a small `contextWindow` in the `settings.json` of a `--book-home` you seed and a couple of long
+replies put a request over the threshold.
 
 Three provider failure shapes can be scripted, one per turn. `{ "status": 503, "body": "…" }` answers
 with that HTTP status and body instead of a stream (a router wrapping an upstream 4xx; the next
@@ -150,9 +162,11 @@ with an editor, not a shell heredoc, since a heredoc eats backslashes.
 flow — prompt, tool call, permission dialog, approval, file written on disk — and exits non-zero on
 any failure. Run it after changing anything on that path. It listens on `BOOK_SMOKE_PORT` (8919)
 and keeps its workspace, scenario and shots in per-port paths, so two runs on different ports
-share nothing. It kills no process itself: the driver kills the one mock it started whenever it exits,
-a console Ctrl-C included (and SIGTERM or SIGHUP on POSIX), and a port another process holds fails
-the run with `EADDRINUSE`. A hard kill of the driver (on Windows, `kill` and `process.kill` are
+share nothing. Before it deletes anything it takes a per-port lock (`/tmp/book-smoke-<port>.lock`,
+reclaimed if its holder died) and checks the port is free, so a second run on the same port, or a
+port another process holds, stops with a message and leaves the first run's workspace alone. It
+kills no process itself: the driver kills the one mock it started whenever it exits, a console
+Ctrl-C included (and SIGTERM or SIGHUP on POSIX). A hard kill of the driver (on Windows, `kill` and `process.kill` are
 one) skips its handlers and orphans the mock; stop that one by its PID. Never clear a port with
 `pkill -f mock-provider` or a `taskkill` by image name: on a shared machine the other mocks belong to
 other runs.
@@ -201,7 +215,7 @@ it: a still is one frame, and a timing bug can land in it.
   `src/tui/terminal-screen.ts`, which is what `shot` already uses.
 - **Probes write real state.** A permission granted during a run lands in the
   `.book/settings.local.json` of whatever workspace you pointed at, so pass a throwaway
-  `--workspace`. `--book-home` already defaults to a temp dir.
+  `--workspace`. `--book-home` already defaults to a temp dir, removed on exit.
 - **Two settings shapes make Book refuse to start**, and the PTY just times out: `provider.<id>.models`
   is an object keyed by model id, not an array, and a model's `effort` is `false | {default, levels}`,
   never `true`. The validation error is on the first frame — read the timeout's last-screen dump

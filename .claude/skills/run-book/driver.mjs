@@ -62,7 +62,7 @@ const SEND_GAP_MS = Number(opt('send-gap', '250'));
 const RECORD_FILE = opt('record', null);
 // Forwarded to the mock: the pause before each streamed delta (see mock-provider.mjs).
 const CHUNK_DELAY_MS = opt('chunk-delay-ms', null);
-// Leave the startup splash on: skip the workspace settings.json that turns it off.
+// Leave the startup splash on (the driver otherwise turns it off).
 const STARTUP_ANIMATION = flag('startup-animation');
 
 // A scratch workspace keeps the driver from touching the repo. Override with
@@ -70,8 +70,11 @@ const STARTUP_ANIMATION = flag('startup-animation');
 const explicitWorkspace = opt('workspace', null);
 const scratch = explicitWorkspace ? null : mkdtempSync(join(tmpdir(), 'book-drive-'));
 const WORKSPACE = explicitWorkspace ?? scratch;
-// BOOK_HOME must be writable and separate from the user's real ~/.book.
-const BOOK_HOME = opt('book-home', mkdtempSync(join(tmpdir(), 'book-home-')));
+// BOOK_HOME must be writable and separate from the user's real ~/.book. A home the
+// driver made is removed when it exits; pass --book-home to keep one.
+const explicitBookHome = opt('book-home', null);
+const ownedBookHome = explicitBookHome ? null : mkdtempSync(join(tmpdir(), 'book-home-'));
+const BOOK_HOME = explicitBookHome ?? ownedBookHome;
 
 mkdirSync(SHOT_DIR, { recursive: true });
 
@@ -88,20 +91,32 @@ async function startMock() {
   // Pass-through for the mock's own flags: `--mock-usage-from-estimate` etc.
   if (process.argv.includes('--mock-usage-from-estimate')) args.push('--usage-from-estimate');
   if (CHUNK_DELAY_MS) args.push('--chunk-delay-ms', CHUNK_DELAY_MS);
-  mockProc = procSpawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'] });
+  mockProc = procSpawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  // Keep the mock's stderr visible, and its tail for the error below.
+  let mockStderr = '';
+  mockProc.stderr.on('data', (d) => {
+    process.stderr.write(d);
+    mockStderr = (mockStderr + d).slice(-2000);
+  });
   await new Promise((res, rej) => {
+    const hint =
+      'pass --mock-port <other>, and never kill mocks by name: on a shared machine they ' +
+      'belong to other runs';
     const timer = setTimeout(
-      () =>
-        rej(
-          new Error(
-            `mock provider did not become ready on port ${MOCK_PORT} — ` +
-              `if it says EADDRINUSE above, another process holds the port — ` +
-              `pass --mock-port <other>, and never kill mocks by name: on a shared ` +
-              `machine they belong to other runs`,
-          ),
-        ),
+      () => rej(new Error(`mock provider did not become ready on port ${MOCK_PORT}; ${hint}`)),
       10000,
     );
+    // A mock that dies before READY (a port in use, a bad --mock-script) fails the run
+    // at once rather than after the full timeout.
+    mockProc.on('exit', (code, signal) => {
+      clearTimeout(timer);
+      rej(
+        new Error(
+          `mock provider exited before it was ready (${signal ?? `code ${code}`}) on port ` +
+            `${MOCK_PORT}${mockStderr ? `:\n${mockStderr.trimEnd()}` : ''}\n${hint}`,
+        ),
+      );
+    });
     mockProc.stdout.on('data', (d) => {
       if (String(d).includes('MOCK-PROVIDER-READY')) {
         clearTimeout(timer);
@@ -120,15 +135,46 @@ let raw = '';
 let exited = false;
 let exitCode = null;
 
-// The startup fire animation delays the first render past short waits.
-// `--startup-animation` keeps it, for driving the splash itself.
-if (!STARTUP_ANIMATION) {
-  mkdirSync(join(WORKSPACE, '.book'), { recursive: true });
-  writeFileSync(
-    join(WORKSPACE, '.book', 'settings.json'),
-    JSON.stringify({ ui: { startupAnimation: false } }, null, 2),
-  );
-}
+const extraArgs = (() => {
+  const i = argv.indexOf('--');
+  return i === -1 ? [] : argv.slice(i + 1);
+})();
+
+// --bin <path> drives a different executable (e.g. the Go build, bin/book.exe)
+// instead of node dist/index.js; the same flags are passed through.
+const BIN = opt('bin', null);
+
+// The startup fire animation delays the first render past short waits, so the driver
+// turns it off, and `--startup-animation` turns it on, for driving the splash itself.
+// Either way the value goes in a `--settings` layer the driver owns, which outranks every
+// settings file: the workspace's own `.book/settings.json` is never written, and a value
+// an older driver left there cannot win. A `--settings` of your own after `--` is merged
+// into that layer, its keys winning. `--no-settings` skips every layer, this one too.
+// The Go build (`--bin`) reads a flat `startupAnimation` key and gets no layer.
+let settingsLayerDir = null;
+const settingsArgs = (() => {
+  if (BIN || extraArgs.includes('--no-settings')) return [];
+  const layer = { ui: { startupAnimation: STARTUP_ANIMATION } };
+  const i = extraArgs.findIndex((a) => a === '--settings' || a.startsWith('--settings='));
+  if (i !== -1) {
+    const eq = extraArgs[i].startsWith('--settings=');
+    const path = eq ? extraArgs[i].slice('--settings='.length) : extraArgs[i + 1];
+    let own;
+    try {
+      // Book reads a relative path from its own cwd, the workspace.
+      own = JSON.parse(readFileSync(resolve(WORKSPACE, path), 'utf8'));
+    } catch (error) {
+      console.error(`[driver] cannot merge --settings ${path} (${error.message}); passing it as is`);
+      return [];
+    }
+    Object.assign(layer, own, { ui: { ...layer.ui, ...(own.ui ?? {}) } });
+    extraArgs.splice(i, eq ? 1 : 2);
+  }
+  settingsLayerDir = mkdtempSync(join(tmpdir(), 'book-drive-settings-'));
+  const file = join(settingsLayerDir, 'settings.json');
+  writeFileSync(file, JSON.stringify(layer, null, 2));
+  return ['--settings', file];
+})();
 
 const env = {
   ...process.env,
@@ -156,14 +202,6 @@ if (USE_MOCK) {
   env.BOOKGO_HOME = join(BOOK_HOME, '.bookgo');
 }
 
-const extraArgs = (() => {
-  const i = argv.indexOf('--');
-  return i === -1 ? [] : argv.slice(i + 1);
-})();
-
-// --bin <path> drives a different executable (e.g. the Go build, bin/book.exe)
-// instead of node dist/index.js; the same flags are passed through.
-const BIN = opt('bin', null);
 // `--sessions` keeps session persistence on, so a pre-seeded
 // `<book-home>/.book/sessions/*.jsonl` shows up in /resume and on the title page.
 const PERSISTENCE = flag('sessions') ? [] : ['--no-session-persistence'];
@@ -173,7 +211,7 @@ const pty = BIN
     })
   : ptySpawn(
       process.execPath,
-      [DIST_INDEX, '--workspace', WORKSPACE, ...PERSISTENCE, ...extraArgs],
+      [DIST_INDEX, '--workspace', WORKSPACE, ...PERSISTENCE, ...settingsArgs, ...extraArgs],
       { cwd: WORKSPACE, cols: COLS, rows: ROWS, env, name: 'xterm-256color' },
     );
 const recordStart = Date.now();
@@ -464,7 +502,21 @@ async function cleanup() {
     writeFileSync(RECORD_FILE, JSON.stringify({ cols, rows, chunks: recorded }));
     console.log(`[driver] record -> ${RECORD_FILE}`);
   }
-  if (scratch) rmSync(scratch, { recursive: true, force: true });
+  removeOwnedDirs();
+}
+
+// Only what this driver created: a scratch workspace, a BOOK_HOME it made (not one passed
+// with --book-home), and its settings layer. Windows can hold a file of the just-killed
+// child for a moment, hence the retries.
+function removeOwnedDirs() {
+  for (const dir of [scratch, ownedBookHome, settingsLayerDir]) {
+    if (!dir) continue;
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      console.error(`[driver] could not remove ${dir}: ${error.message}`);
+    }
+  }
 }
 
 // A signal skips cleanup(), and the mock would outlive the driver holding its port. Kill
@@ -474,13 +526,20 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => {
     releasePty();
     mockProc?.kill();
+    removeOwnedDirs();
     process.exit(1);
   });
 }
 
 async function run() {
-  if (USE_MOCK) await startMock();
-  console.log(`[driver] workspace=${WORKSPACE} shots=${SHOT_DIR}`);
+  if (USE_MOCK) {
+    try {
+      await startMock();
+    } catch (error) {
+      await fail(error.message);
+    }
+  }
+  console.log(`[driver] workspace=${WORKSPACE} home=${BOOK_HOME} shots=${SHOT_DIR}`);
 
   const commands = readCommands();
   for (const line of commands) {
