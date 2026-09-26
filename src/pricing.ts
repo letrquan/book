@@ -25,10 +25,10 @@ export interface ModelPricing {
  * derived so a provider changing the ratio stays expressible, but any edit to
  * `in` should carry them along.
  *
- * A model that reports cache tokens with no rate for them is priced `unknown`,
- * which makes `checkBeforeModelCall` refuse every call — so an omission here
- * disables the USD budget rather than merely blurring a report. Book caches on
- * every Anthropic request, so that is the normal path, not an edge case.
+ * A cache token with no rate for it is priced at an upper bound (see
+ * `usageCostUsd`) rather than `unknown`, because an unknown estimate makes
+ * `checkBeforeModelCall` refuse every call under a USD budget. Book caches on
+ * every Anthropic request, so list real cache rates for Anthropic models.
  */
 export const PRICING: Record<string, ModelPricing> = {
   // Anthropic
@@ -43,9 +43,9 @@ export const PRICING: Record<string, ModelPricing> = {
   'claude-opus-4-7': { in: 15, out: 75, cacheRead: 1.5, cacheCreation: 18.75 },
   'claude-haiku-4-5-20251001': { in: 1, out: 5, cacheRead: 0.1, cacheCreation: 1.25 },
   'claude-fable-5': { in: 3, out: 15, cacheRead: 0.3, cacheCreation: 3.75 },
-  // OpenAI — no cache rates: only the Anthropic client populates the cache token
-  // fields (`provider/anthropic.ts`), so these dimensions are never exercised
-  // here and a guessed number would be unverifiable noise.
+  // OpenAI — no cache rates. OpenAI-compatible providers report automatic cache
+  // reads (`prompt_tokens_details.cached_tokens`); without a `cacheRead` rate they
+  // price at `in`, an upper bound. Add a verified rate rather than a guessed one.
   'gpt-4o': { in: 2.5, out: 10 },
   'gpt-5': { in: 5, out: 15 },
   // GLM / z-ai
@@ -122,6 +122,61 @@ export function resolveModelPricing(
   return undefined;
 }
 
+/** The usage fields a cost needs; cache counts are optional because most callers lack them. */
+export type CostedUsage = Pick<Usage, 'promptTokens' | 'completionTokens'> &
+  Partial<Pick<Usage, 'cacheReadInputTokens' | 'cacheCreationInputTokens'>>;
+
+/**
+ * The highest cache-write premium a provider charges, as a multiple of the input rate:
+ * Anthropic's one-hour cache. A write on a model with no `cacheCreation` rate is priced at it.
+ */
+const MAX_CACHE_WRITE_MULTIPLIER = 2;
+
+/**
+ * USD for one usage figure at `rate`.
+ *
+ * A missing cache rate is priced at an upper bound rather than refused, because a refused
+ * (`unknown`) estimate makes a USD budget stop the run: a cache read never bills above the input
+ * rate, so it is priced at `in` (the figure Book reported before it could see cached tokens), and a
+ * cache write never above twice it (`MAX_CACHE_WRITE_MULTIPLIER`).
+ */
+export function usageCostUsd(rate: ModelPricing, usage: CostedUsage): number {
+  const cacheRead = usage.cacheReadInputTokens ?? 0;
+  const cacheCreation = usage.cacheCreationInputTokens ?? 0;
+  return (
+    (usage.promptTokens * rate.in +
+      usage.completionTokens * rate.out +
+      cacheRead * (rate.cacheRead ?? rate.in) +
+      cacheCreation * (rate.cacheCreation ?? rate.in * MAX_CACHE_WRITE_MULTIPLIER)) /
+    1_000_000
+  );
+}
+
+/** Every input token of a usage, cached or not: the prompt's size, whatever the provider cached. */
+export function promptSizeTokens(usage: CostedUsage): number {
+  return (
+    usage.promptTokens + (usage.cacheReadInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0)
+  );
+}
+
+/**
+ * The token count a report shows as its total: every input and output token. `totalTokens` means
+ * different things by provider (the Anthropic path counts uncached input plus output, OpenAI-style
+ * usage counts the cache and sometimes hidden reasoning too), so the larger reading wins.
+ */
+export function trafficTokens(usage: CostedUsage & { totalTokens: number }): number {
+  return Math.max(usage.totalTokens, promptSizeTokens(usage) + usage.completionTokens);
+}
+
+/** The rate and USD cost of a usage on `model`, or undefined for a model with no rate. */
+export function usageCostForModel(
+  model: string,
+  usage: CostedUsage,
+): { rate: ModelPricing; costUsd: number } | undefined {
+  const rate = resolveModelPricing(model)?.rate;
+  return rate ? { rate, costUsd: usageCostUsd(rate, usage) } : undefined;
+}
+
 export type UsageCostEstimate =
   | {
       status: 'known';
@@ -136,7 +191,7 @@ export type UsageCostEstimate =
       costUsd: null;
       model: string;
       pricingVersion: string;
-      reason: 'unknown-model' | 'cache-pricing-unavailable';
+      reason: 'unknown-model';
     };
 
 export function hasKnownPricing(
@@ -146,7 +201,10 @@ export function hasKnownPricing(
   return resolveModelPricing(model, overrides) !== undefined;
 }
 
-/** Estimate one provider-reported usage event without guessing missing price dimensions. */
+/**
+ * Estimate one provider-reported usage event. A missing cache rate is priced at an upper bound
+ * (see `usageCostUsd`), so only a model with no rate at all is `unknown`.
+ */
 export function estimateUsageCost(
   model: string,
   usage: Usage,
@@ -164,27 +222,7 @@ export function estimateUsageCost(
   }
   const { key, rate } = resolved;
 
-  const cacheRead = usage.cacheReadInputTokens ?? 0;
-  const cacheCreation = usage.cacheCreationInputTokens ?? 0;
-  if (
-    (cacheRead > 0 && rate.cacheRead === undefined) ||
-    (cacheCreation > 0 && rate.cacheCreation === undefined)
-  ) {
-    return {
-      status: 'unknown',
-      costUsd: null,
-      model,
-      pricingVersion: PRICING_VERSION,
-      reason: 'cache-pricing-unavailable',
-    };
-  }
-
-  const costUsd =
-    (usage.promptTokens * rate.in +
-      usage.completionTokens * rate.out +
-      cacheRead * (rate.cacheRead ?? 0) +
-      cacheCreation * (rate.cacheCreation ?? 0)) /
-    1_000_000;
+  const costUsd = usageCostUsd(rate, usage);
   return {
     status: 'known',
     costUsd,
@@ -205,24 +243,21 @@ export interface DelegatedUsage {
   /** Human label for the delegation, e.g. `explorer "map the auth module"`. */
   label: string;
   model: string;
-  usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+  usage: CostedUsage & { totalTokens: number };
 }
 
 interface ModelTotal {
   model: string;
   promptTokens: number;
   completionTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
   agents: number;
   usd: number | null;
 }
 
-function usdFor(
-  model: string,
-  usage: { promptTokens: number; completionTokens: number },
-): number | null {
-  const rate = resolveModelPricing(model)?.rate;
-  if (!rate) return null;
-  return (usage.promptTokens * rate.in + usage.completionTokens * rate.out) / 1e6;
+function usdFor(model: string, usage: CostedUsage): number | null {
+  return usageCostForModel(model, usage)?.costUsd ?? null;
 }
 
 /**
@@ -234,26 +269,30 @@ function usdFor(
  */
 function modelTotals(
   leadModel: string,
-  leadUsage: { promptTokens: number; completionTokens: number } | null,
+  leadUsage: CostedUsage | null,
   delegated: readonly DelegatedUsage[],
 ): ModelTotal[] {
   const byModel = new Map<string, ModelTotal>();
-  const bump = (model: string, prompt: number, completion: number, isAgent: boolean): void => {
+  const bump = (model: string, usage: CostedUsage, isAgent: boolean): void => {
     const row = byModel.get(model) ?? {
       model,
       promptTokens: 0,
       completionTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
       agents: 0,
       usd: null,
     };
-    row.promptTokens += prompt;
-    row.completionTokens += completion;
+    row.promptTokens += usage.promptTokens;
+    row.completionTokens += usage.completionTokens;
+    row.cacheReadInputTokens += usage.cacheReadInputTokens ?? 0;
+    row.cacheCreationInputTokens += usage.cacheCreationInputTokens ?? 0;
     if (isAgent) row.agents += 1;
     byModel.set(model, row);
   };
-  if (leadUsage) bump(leadModel, leadUsage.promptTokens, leadUsage.completionTokens, false);
+  if (leadUsage) bump(leadModel, leadUsage, false);
   for (const entry of delegated) {
-    bump(entry.model, entry.usage.promptTokens, entry.usage.completionTokens, true);
+    bump(entry.model, entry.usage, true);
   }
   return [...byModel.values()].map((row) => ({ ...row, usd: usdFor(row.model, row) }));
 }
@@ -270,7 +309,7 @@ function modelTotals(
  */
 export function modelBreakdownLines(
   leadModel: string,
-  leadUsage: { promptTokens: number; completionTokens: number } | null,
+  leadUsage: CostedUsage | null,
   delegated: readonly DelegatedUsage[],
 ): string[] {
   const rows = modelTotals(leadModel, leadUsage, delegated);
@@ -281,7 +320,7 @@ export function modelBreakdownLines(
     const who = row.agents > 0 ? `${row.agents} delegated` : 'session';
     const cost = row.usd === null ? 'pricing unknown' : `$${row.usd.toFixed(4)}`;
     lines.push(
-      `  ${row.model} (${who}) - prompt ${row.promptTokens.toLocaleString()}, completion ${row.completionTokens.toLocaleString()} - ${cost}`,
+      `  ${row.model} (${who}) - prompt ${row.promptTokens.toLocaleString()}, completion ${row.completionTokens.toLocaleString()}${row.cacheReadInputTokens > 0 ? `, cache read ${row.cacheReadInputTokens.toLocaleString()}` : ''}${row.cacheCreationInputTokens > 0 ? `, cache write ${row.cacheCreationInputTokens.toLocaleString()}` : ''} - ${cost}`,
     );
   }
 
@@ -289,6 +328,15 @@ export function modelBreakdownLines(
   const actual = rows.reduce((sum, row) => sum + (row.usd ?? 0), 0);
   lines.push(`  Total - $${actual.toFixed(4)}`);
 
+  // A cache rate the lead does not list would be priced at its upper bound, and the "saving"
+  // would then be an artifact of that bound, not a comparison.
+  const leadRate = resolveModelPricing(leadModel)?.rate;
+  const boundedOnLead = rows.some(
+    (row) =>
+      (row.cacheReadInputTokens > 0 && leadRate?.cacheRead === undefined) ||
+      (row.cacheCreationInputTokens > 0 && leadRate?.cacheCreation === undefined),
+  );
+  if (boundedOnLead) return lines;
   const allOnLead = rows.reduce((sum, row) => sum + (usdFor(leadModel, row) ?? Number.NaN), 0);
   if (!Number.isFinite(allOnLead)) return lines;
   const delta = allOnLead - actual;
@@ -313,21 +361,32 @@ function unpricedLine(model: string): string {
   return `Est. cost: pricing unknown for "${model}"; tokens are counted, dollars are not`;
 }
 
+/**
+ * The cache counts of a usage as report fragments, each prefixed by `separator`: `, 9,000 cached`
+ * (and `, 1,200 cache writes`); empty with no cache tokens.
+ */
+function cacheTokenNote(usage: CostedUsage, separator = ', '): string {
+  const read = usage.cacheReadInputTokens ?? 0;
+  const write = usage.cacheCreationInputTokens ?? 0;
+  return (
+    (read > 0 ? `${separator}${read.toLocaleString()} cached` : '') +
+    (write > 0 ? `${separator}${write.toLocaleString()} cache writes` : '')
+  );
+}
+
 export function costReport(
   model: string,
-  usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null,
+  usage: (CostedUsage & { totalTokens: number }) | null,
   delegated: readonly DelegatedUsage[] = [],
 ): string {
   if (!usage) {
     return 'No token usage recorded for this session yet.\n\n(USD estimate available after the first model response.)';
   }
-  const rate = resolveModelPricing(model)?.rate;
-  const usd = rate
-    ? ((usage.promptTokens * rate.in + usage.completionTokens * rate.out) / 1e6).toFixed(4)
-    : null;
+  const priced = usageCostForModel(model, usage);
+  const usd = priced ? priced.costUsd.toFixed(4) : null;
   // One line: what it cost, what it used, on which model. It used to take
   // three labelled lines (Model, Tokens, Est. cost) to say the same thing.
-  const tokens = `${usage.totalTokens.toLocaleString()} tokens (${usage.promptTokens.toLocaleString()} in, ${usage.completionTokens.toLocaleString()} out)`;
+  const tokens = `${trafficTokens(usage).toLocaleString()} tokens (${usage.promptTokens.toLocaleString()} in${cacheTokenNote(usage)}, ${usage.completionTokens.toLocaleString()} out)`;
   const summary =
     usd !== null
       ? `$${usd} estimated · ${tokens} · ${model}`
@@ -356,7 +415,7 @@ export function failureTotal(failures: Record<string, number>): number {
 
 export function usageReport(
   model: string,
-  usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null,
+  usage: (CostedUsage & { totalTokens: number }) | null,
   session: { currentTurn: number; messageCount: number; turnDurationMs: number },
   toolCallStats?: Array<{ tool: string; calls: number; failures: Record<string, number> }>,
 ): string {
@@ -374,14 +433,13 @@ export function usageReport(
     return lines.join('\n');
   }
   lines.push(
-    `Tokens: prompt ${usage.promptTokens.toLocaleString()}  •  completion ${usage.completionTokens.toLocaleString()}  •  total ${usage.totalTokens.toLocaleString()}`,
+    `Tokens: prompt ${usage.promptTokens.toLocaleString()}  •  completion ${usage.completionTokens.toLocaleString()}  •  total ${trafficTokens(usage).toLocaleString()}${cacheTokenNote(usage, '  •  ')}`,
   );
-  const rate = resolveModelPricing(model)?.rate;
-  if (rate) {
-    const usd = ((usage.promptTokens * rate.in + usage.completionTokens * rate.out) / 1e6).toFixed(
-      4,
+  const priced = usageCostForModel(model, usage);
+  if (priced) {
+    lines.push(
+      `Est. cost: $${priced.costUsd.toFixed(4)}  (local estimate — $${priced.rate.in}/M in, $${priced.rate.out}/M out)`,
     );
-    lines.push(`Est. cost: $${usd}  (local estimate — $${rate.in}/M in, $${rate.out}/M out)`);
   } else {
     lines.push(unpricedLine(model));
   }

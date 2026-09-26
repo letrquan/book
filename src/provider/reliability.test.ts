@@ -191,6 +191,19 @@ describe('provider reliability transport', () => {
     ).toBe(false);
   });
 
+  it('does not read a fully cached answer as a zero-usage router envelope', () => {
+    const text =
+      '[Error] the migration failed at step 3, so I rolled it back.\nHere is what I changed:';
+    expect(isUpstreamErrorEnvelope(text, { promptTokens: 0, completionTokens: 0 })).toBe(true);
+    expect(
+      isUpstreamErrorEnvelope(text, {
+        promptTokens: 0,
+        completionTokens: 0,
+        cacheReadInputTokens: 9000,
+      }),
+    ).toBe(false);
+  });
+
   it('reads a quoted status only from the router prefix or a JSON code field', () => {
     // 9router's own JSON error: its message carries `[<route>] [400]:` and the
     // upstream body with its quotes escaped (#194, #221).

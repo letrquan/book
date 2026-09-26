@@ -90,6 +90,96 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
   }));
 }
 
+/**
+ * Map an OpenAI-compatible `usage` object onto Book's `Usage`, prompt-cache tokens included.
+ *
+ * Book's `promptTokens` is the uncached input, as on the Anthropic path, with cache reads and
+ * writes counted separately. Where the cache counts sit depends on who reported them:
+ *
+ * - `prompt_tokens_details.cached_tokens` / `cache_creation_tokens` / `cache_write_tokens`
+ *   (OpenAI, xAI, 9router, OpenRouter) and DeepSeek's `prompt_cache_hit_tokens`, plus Moonshot's
+ *   top-level `cached_tokens` and DashScope's `prompt_tokens_details.cache_creation_input_tokens`,
+ *   are part of `prompt_tokens`, so they are subtracted from it. `total_tokens` already covers them,
+ *   so `contextTokens` stays unset and compaction pressure is `total_tokens`, as before.
+ * - Anthropic's own top-level names (`cache_read_input_tokens`, `cache_creation_input_tokens`)
+ *   from a proxy that sends no `prompt_tokens_details` are Anthropic's numbers passed through,
+ *   where the input count excludes the cache: they are added on top, and `contextTokens` carries
+ *   the whole prompt. A proxy that reports an OpenAI-style cache field beside
+ *   them, even at zero (LiteLLM's `prompt_tokens_details.cached_tokens`), has normalised
+ *   `prompt_tokens` to include them.
+ *
+ * Counts that cannot fit inside `prompt_tokens` are treated as on top of it whatever their
+ * source. A usage with no cache tokens maps exactly as before, with no cache fields.
+ */
+export function parseCompatibleUsage(raw: unknown): Usage | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const usage = raw as Record<string, unknown>;
+  const details =
+    usage.prompt_tokens_details && typeof usage.prompt_tokens_details === 'object'
+      ? (usage.prompt_tokens_details as Record<string, unknown>)
+      : {};
+  const tokens = (value: unknown): number =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+  const firstCount = (...values: unknown[]): number => {
+    for (const value of values) {
+      const count = tokens(value);
+      if (count > 0) return count;
+    }
+    return 0;
+  };
+  const prompt = tokens(usage.prompt_tokens);
+  const base: Usage = {
+    promptTokens: prompt,
+    completionTokens: tokens(usage.completion_tokens),
+    // A provider that omits `total_tokens` would otherwise read as zero context pressure.
+    totalTokens: tokens(usage.total_tokens) || prompt + tokens(usage.completion_tokens),
+  };
+  const topRead = tokens(usage.cache_read_input_tokens);
+  const topWrite = tokens(usage.cache_creation_input_tokens);
+  // Inside `prompt_tokens` by the OpenAI convention: OpenAI, xAI, 9router, OpenRouter, DeepSeek,
+  // Moonshot (top-level `cached_tokens`) and DashScope (`cache_creation_input_tokens` in details).
+  const normalisedRead = firstCount(
+    details.cached_tokens,
+    usage.prompt_cache_hit_tokens,
+    usage.cached_tokens,
+  );
+  const normalisedWrite = firstCount(
+    details.cache_creation_tokens,
+    details.cache_write_tokens,
+    details.cache_creation_input_tokens,
+  );
+  const read = normalisedRead || topRead;
+  const write = normalisedWrite || topWrite;
+  if (read === 0 && write === 0) return base;
+  // Anthropic's top-level names with no OpenAI-style cache field beside them (not even a zero)
+  // are Anthropic's numbers passed through, where the input count excludes the cache. A field
+  // beside them, even `cached_tokens: 0` on LiteLLM's cold turn, says `prompt_tokens` was
+  // normalised to include them.
+  const reportsOpenAiCacheField = [
+    details.cached_tokens,
+    details.cache_creation_tokens,
+    details.cache_write_tokens,
+    details.cache_creation_input_tokens,
+    usage.prompt_cache_hit_tokens,
+    usage.cached_tokens,
+  ].some((value) => typeof value === 'number');
+  const anthropicPassThrough = !reportsOpenAiCacheField && topRead + topWrite > 0;
+  if (!anthropicPassThrough && read + write <= prompt) {
+    return {
+      ...base,
+      promptTokens: prompt - read - write,
+      cacheReadInputTokens: read,
+      cacheCreationInputTokens: write,
+    };
+  }
+  return {
+    ...base,
+    cacheReadInputTokens: read,
+    cacheCreationInputTokens: write,
+    contextTokens: prompt + read + write,
+  };
+}
+
 export function convertTools(tools: ToolDefinition[]): Array<{
   type: 'function';
   function: { name: string; description: string; parameters: Record<string, unknown> };
@@ -233,6 +323,8 @@ export async function* chatCompletionStream(
       promptTokens: currentUsage?.promptTokens ?? 0,
       completionTokens: currentUsage?.completionTokens ?? 0,
       totalTokens: currentUsage?.totalTokens ?? 0,
+      cacheReadInputTokens: currentUsage?.cacheReadInputTokens ?? 0,
+      cacheCreationInputTokens: currentUsage?.cacheCreationInputTokens ?? 0,
     });
     yield {
       type: 'done',
@@ -258,13 +350,8 @@ export async function* chatCompletionStream(
       if (typeof parsed.model === 'string') responseModel = parsed.model;
       if (typeof parsed.id === 'string') responseId = parsed.id;
       // OpenAI sends usage on the final chunk when stream_options.include_usage is set.
-      if (parsed.usage) {
-        currentUsage = {
-          promptTokens: parsed.usage.prompt_tokens ?? 0,
-          completionTokens: parsed.usage.completion_tokens ?? 0,
-          totalTokens: parsed.usage.total_tokens ?? 0,
-        };
-      }
+      const usage = parseCompatibleUsage(parsed.usage);
+      if (usage) currentUsage = usage;
       const choice = parsed.choices?.[0];
       if (!choice) return false;
       const finishReason: unknown = choice.finish_reason;

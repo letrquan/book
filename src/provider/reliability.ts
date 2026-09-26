@@ -281,7 +281,12 @@ export function statedRateLimit(text: string): number | undefined {
  */
 const ERROR_ENVELOPE_MAX_CHARS = 2_000;
 
-type EnvelopeUsage = { promptTokens: number; completionTokens: number } | null;
+type EnvelopeUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+} | null;
 
 /**
  * A usage block that reports zero tokens both ways: what a router reports for
@@ -289,7 +294,14 @@ type EnvelopeUsage = { promptTokens: number; completionTokens: number } | null;
  * `undefined`, which is not this.
  */
 function isZeroUsage(usage?: EnvelopeUsage): boolean {
-  return usage != null && usage.promptTokens === 0 && usage.completionTokens === 0;
+  // A full cache hit leaves `promptTokens` at 0 on its own; the cache counts are usage too.
+  return (
+    usage != null &&
+    usage.promptTokens === 0 &&
+    usage.completionTokens === 0 &&
+    (usage.cacheReadInputTokens ?? 0) === 0 &&
+    (usage.cacheCreationInputTokens ?? 0) === 0
+  );
 }
 
 /**
