@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
-import { PANEL_CHROME, panelGrid } from './layout.js';
+import { panelContentWidth, panelGrid } from './layout.js';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { QueuedInputPreview } from './components/QueuedInputPreview.js';
@@ -99,6 +99,7 @@ import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands
 import type { InteractiveAssets } from './interactive-assets.js';
 import { resolveContextWindow } from '../models.js';
 import { wordWrap } from './components/word-wrap.js';
+import { countWrittenTurns } from './components/transcript-messages.js';
 import {
   createQueuedInput,
   enqueueQueuedInput,
@@ -244,6 +245,8 @@ interface AppProps {
   redrawViewport?: () => void;
 }
 
+const QUEUED_SEND_NOTICE = 'Sending queued follow-up...';
+
 /**
  * Full-screen interactive TUI with an application-owned transcript viewport.
  *
@@ -276,8 +279,6 @@ interface AppProps {
  *   Shift+Tab — cycle permission mode
  *   Ctrl+/   — toggle keyboard shortcuts reference
  */
-const QUEUED_SEND_NOTICE = 'Sending queued follow-up...';
-
 export function App({
   config,
   permissionMode,
@@ -564,21 +565,28 @@ export function App({
   // Only read while the transcript is empty, which is the only time the title
   // page shows; the listing comes from the store's in-memory index.
   const transcriptEmpty = messages.length === 0;
-  const recentSessions = useMemo(
-    () =>
-      transcriptEmpty
-        ? listSessions()
-            .filter((meta) => meta.id !== sessionId && meta.messageCount > 0)
-            .sort((left, right) => right.updatedAt - left.updatedAt)
-            .slice(0, 5)
-        : [],
-    [listSessions, sessionId, transcriptEmpty],
-  );
+  // The title page's contents. Listing reads the session index synchronously,
+  // and a stale index loads every session file, so it waits for the first
+  // paint: someone with hundreds of sessions sees the title page at once and
+  // its chapters a moment later, instead of a blank terminal until they load.
+  const [recentSessions, setRecentSessions] = useState<ReturnType<typeof listSessions>>([]);
+  useEffect(() => {
+    if (!transcriptEmpty) {
+      setRecentSessions((current) => (current.length === 0 ? current : []));
+      return;
+    }
+    const timer = setTimeout(() => {
+      setRecentSessions(
+        listSessions()
+          .filter((meta) => meta.id !== sessionId && meta.messageCount > 0)
+          .sort((left, right) => right.updatedAt - left.updatedAt)
+          .slice(0, 5),
+      );
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [listSessions, sessionId, transcriptEmpty]);
   // The status line's folio: one page per turn you have written.
-  const turnCount = useMemo(
-    () => messages.filter((message) => message.role === 'user').length,
-    [messages],
-  );
+  const turnCount = useMemo(() => countWrittenTurns(messages), [messages]);
   const { exit: exitApp } = useApp();
   // Set once an exit starts. SessionEnd can take seconds, and a press meanwhile must neither
   // arm the window again nor start a second exit: the session-end guard returns at once for a
@@ -1411,6 +1419,14 @@ export function App({
       }
     }
 
+    // An open composer menu owns Esc; InputBar closes it. Ink hands the same key
+    // to this handler too, and acting on it here as well cancelled the running
+    // turn, or dropped the queued input being edited, behind the menu.
+    if (key.escape && composerMenuOpenRef.current) {
+      uiLog.event('input:Escape', { action: 'close-composer-menu' });
+      return;
+    }
+
     if (key.escape && detailTaskPickerOpen) {
       setDetailTaskPickerOpen(false);
       setDetailTaskPickerAgentId(undefined);
@@ -1591,6 +1607,12 @@ export function App({
   // the transcript's viewport must be measured again.
   const [footerLayoutRevision, setFooterLayoutRevision] = useState(0);
   const bumpFooterLayout = useCallback(() => setFooterLayoutRevision((value) => value + 1), []);
+  // Whether a composer menu is open, as of the last commit. Read by the Esc
+  // handler below, which must not also act on the Esc that closes a menu.
+  const composerMenuOpenRef = useRef(false);
+  const trackComposerMenu = useCallback((open: boolean) => {
+    composerMenuOpenRef.current = open;
+  }, []);
   const transcriptLayoutRevision = useMemo(
     () =>
       JSON.stringify([
@@ -2418,7 +2440,7 @@ export function App({
               {showStatus && (
                 <SoftPanel title="Session" meta="Esc to close" width={panelGrid(termWidth).width}>
                   <KeyValueList
-                    width={panelGrid(termWidth).width - PANEL_CHROME}
+                    width={panelContentWidth(termWidth)}
                     rows={[
                       { key: 'model', value: liveConfig.modelSelection ?? liveConfig.model },
                       { key: 'auth', value: liveConfig.apiKey ? 'API key' : 'none' },
@@ -2472,98 +2494,11 @@ export function App({
                   meta="Esc to close"
                   width={panelGrid(termWidth).width}
                 >
-                  <Box flexDirection="column">
-                    <HelpRow
-                      label="Esc"
-                      description="Deny a prompt, cancel the turn, or close this panel"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+C"
-                      description="Cancel current turn, clear the composer, or press twice idle to exit"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+T"
-                      description="Toggle the main agent checklist (not background tasks)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="/tasks"
-                      description="Focus background tasks; ↑↓ select, Enter open, x stop"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+O"
-                      description="Toggle detailed transcript"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+E"
-                      description="Expand current tool output (empty prompt)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Click"
-                      description="Expand or collapse a tool summary"
-                      theme={theme}
-                    />
-                    <HelpRow label="Ctrl+L" description="Redraw screen" theme={theme} />
-                    <HelpRow label="Alt+M" description="Cycle permission mode" theme={theme} />
-                    <HelpRow label="Alt+P" description="Open model picker" theme={theme} />
-                    <HelpRow label="Alt+V" description="Attach clipboard image" theme={theme} />
-                    <HelpRow label="Up/Down" description="Navigate input history" theme={theme} />
-                    <HelpRow label="Wheel" description="Scroll transcript" theme={theme} />
-                    <HelpRow
-                      label="Drag"
-                      description="Select visible text and copy on release"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Shift+drag"
-                      description="Use terminal-native text selection"
-                      theme={theme}
-                    />
-                    <HelpRow label="PgUp/PgDn" description="Scroll transcript" theme={theme} />
-                    <HelpRow
-                      label="Ctrl+U/Ctrl+D"
-                      description="Scroll transcript half a page (empty prompt)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+Home/End"
-                      description="Jump to transcript start/latest"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+J / Shift+Enter"
-                      description="Insert newline (multiline)"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+A / Ctrl+E"
-                      description="Move to start / end of the prompt"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+W / Alt+Bksp"
-                      description="Delete the previous word"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+U / Ctrl+K"
-                      description="Delete to start / end of the prompt"
-                      theme={theme}
-                    />
-                    <HelpRow
-                      label="Ctrl+Y"
-                      description="Put back the last deletion"
-                      theme={theme}
-                    />
-                    <HelpRow label="Ctrl+/" description="Toggle this reference" theme={theme} />
-                    <HelpRow label="@path" description="Expand file contents" theme={theme} />
-                    <HelpRow label="!cmd" description="Run shell command" theme={theme} />
-                  </Box>
+                  <KeyValueList
+                    keys="ink"
+                    rows={SHORTCUT_ROWS}
+                    width={panelContentWidth(termWidth)}
+                  />
                 </SoftPanel>
               )}
             </Box>
@@ -3075,6 +3010,7 @@ export function App({
             <InputBar
               key={sessionId}
               onLayoutChange={bumpFooterLayout}
+              onMenuOpenChange={trackComposerMenu}
               onSubmit={handleSubmit}
               onPasteImage={pasteClipboardImage}
               submissionMode={
@@ -3130,7 +3066,6 @@ export function App({
               terminalWidth={termWidth}
               maxMenuRows={maxCommandMenuRows}
               compact={isNarrow || isTiny}
-              reducedMotion={motionDisabled}
               screenReader={screenReader}
               draftRestore={draftRestore}
             />
@@ -3256,39 +3191,35 @@ function AppProviders({
   );
 }
 
-/**
- * Title row for a reference sheet, carrying the way out.
- *
- * These panels are pinned above the composer until something dismisses them, so
- * the exit has to be written on the panel itself — a reader who does not
- * already know the toggle command has nothing else to go on. It rides the title
- * rather than a footer line because `/help` already runs taller than a short
- * terminal, and a panel that has to scroll to reveal how to close it is no
- * better than one that never says.
- */
-/**
- * One row of the shortcuts reference: the key in ink, in a column wide enough
- * for every key, and what it does in a quieter grey.
- */
-function HelpRow({
-  label,
-  description,
-  theme,
-}: {
-  label: string;
-  description: string;
-  theme: { text: string; subtle: string };
-}) {
-  return (
-    <Box>
-      <Box width={24} flexShrink={0}>
-        <Text bold color={theme.text}>
-          {label}
-        </Text>
-      </Box>
-      <Text color={theme.subtle} wrap="wrap">
-        {description}
-      </Text>
-    </Box>
-  );
-}
+/** The shortcuts reference (Ctrl+/): each key and what it does. */
+const SHORTCUT_ROWS: ReadonlyArray<{ key: string; value: string }> = [
+  { key: 'Esc', value: 'Deny a prompt, cancel the turn, or close this panel' },
+  {
+    key: 'Ctrl+C',
+    value: 'Cancel current turn, clear the composer, or press twice idle to exit',
+  },
+  { key: 'Ctrl+T', value: 'Toggle the main agent checklist (not background tasks)' },
+  { key: '/tasks', value: 'Focus background tasks; ↑↓ select, Enter open, x stop' },
+  { key: 'Ctrl+O', value: 'Toggle detailed transcript' },
+  { key: 'Ctrl+E', value: 'Expand current tool output (empty prompt)' },
+  { key: 'Click', value: 'Expand or collapse a tool summary' },
+  { key: 'Ctrl+L', value: 'Redraw screen' },
+  { key: 'Alt+M', value: 'Cycle permission mode' },
+  { key: 'Alt+P', value: 'Open model picker' },
+  { key: 'Alt+V', value: 'Attach clipboard image' },
+  { key: 'Up/Down', value: 'Navigate input history' },
+  { key: 'Wheel', value: 'Scroll transcript' },
+  { key: 'Drag', value: 'Select visible text and copy on release' },
+  { key: 'Shift+drag', value: 'Use terminal-native text selection' },
+  { key: 'PgUp/PgDn', value: 'Scroll transcript' },
+  { key: 'Ctrl+U/Ctrl+D', value: 'Scroll transcript half a page (empty prompt)' },
+  { key: 'Ctrl+Home/End', value: 'Jump to transcript start/latest' },
+  { key: 'Ctrl+J / Shift+Enter', value: 'Insert newline (multiline)' },
+  { key: 'Ctrl+A / Ctrl+E', value: 'Move to start / end of the prompt' },
+  { key: 'Ctrl+W / Alt+Bksp', value: 'Delete the previous word' },
+  { key: 'Ctrl+U / Ctrl+K', value: 'Delete to start / end of the prompt' },
+  { key: 'Ctrl+Y', value: 'Put back the last deletion' },
+  { key: 'Ctrl+/', value: 'Toggle this reference' },
+  { key: '@path', value: 'Expand file contents' },
+  { key: '!cmd', value: 'Run shell command' },
+];

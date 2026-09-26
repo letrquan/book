@@ -6,7 +6,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import chalk from 'chalk';
 import { APPLE_THEME, DEFAULT_THEME, ThemeContext } from '../theme.js';
-import { InputBar } from './InputBar.js';
+import { InputBar, draftRows } from './InputBar.js';
 import { MODE_COLOR_TOKENS } from '../mode-style.js';
 import { displayWidth } from './word-wrap.js';
 import { PILCROW } from '../marks.js';
@@ -46,7 +46,6 @@ function inputBar(
       mode: 'default',
       onCycleMode: () => {},
       commands: [],
-      reducedMotion: true,
       ...props,
     }),
   );
@@ -334,7 +333,6 @@ describe('InputBar mode border colors', () => {
             mode: 'default',
             onCycleMode: () => {},
             commands: [],
-            reducedMotion: true,
             terminalWidth: 40,
             ...props,
           }),
@@ -1187,5 +1185,32 @@ describe('keyboard shortcut filtering', () => {
     // \x1b (ESC) followed by something other than [< is not a mouse sequence
     // (this is how terminals send escape then a regular key)
     expect(simulateInputHandler('\x1b[A', { upArrow: true }, false)).toBe('passed-through');
+  });
+});
+
+describe('composer layout reporting', () => {
+  it('counts soft-wrapped rows, not just newlines', () => {
+    expect(draftRows('', 20)).toBe(1);
+    expect(draftRows('short', 20)).toBe(1);
+    expect(draftRows('one two three four five six seven', 10)).toBeGreaterThanOrEqual(4);
+    expect(draftRows('a\nb', 20)).toBe(2);
+    // The cursor takes the cell after a full last row.
+    expect(draftRows('x'.repeat(20), 20)).toBe(2);
+  });
+
+  it('reports a layout change when a long prompt wraps onto another row', async () => {
+    const onLayoutChange = vi.fn();
+    const view = render(inputBar(() => {}, { terminalWidth: 40, onLayoutChange }));
+    await tick();
+    const settled = onLayoutChange.mock.calls.length;
+
+    view.stdin.write('word '.repeat(4));
+    await tick(20);
+    expect(onLayoutChange.mock.calls.length).toBe(settled);
+
+    // No Enter: the draft only soft-wraps, and the composer grows all the same.
+    view.stdin.write('word '.repeat(12));
+    await tick(20);
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(settled);
   });
 });

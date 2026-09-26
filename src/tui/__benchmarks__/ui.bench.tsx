@@ -300,7 +300,6 @@ bench
           submissionMode="submit"
           mode="default"
           onCycleMode={() => {}}
-          reducedMotion
           terminalWidth={TERMINAL_WIDTH}
         />
       </ThemeContext.Provider>,

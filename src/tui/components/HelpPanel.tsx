@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink';
 import { useTheme } from '../theme.js';
+import { SHEET_COLUMN_GAP, sheetContentWidth } from '../layout.js';
 import { builtinHelpGroups, type HelpEntry, type HelpGroup } from '../help-catalog.js';
 import { SoftPanel } from './chrome.js';
 import { displayWidth, padDisplay, truncateDisplay } from './word-wrap.js';
@@ -105,9 +106,9 @@ export function HelpPanel({
     });
   }
   const count = groups.reduce((sum, group) => sum + group.entries.length, 0);
-  const contentWidth = Math.max(20, width - 4);
+  const contentWidth = sheetContentWidth(width, 20);
   const twoColumns = contentWidth >= TWO_COLUMN_MIN;
-  const columnWidth = twoColumns ? Math.floor((contentWidth - 4) / 2) : contentWidth;
+  const columnWidth = twoColumns ? Math.floor((contentWidth - SHEET_COLUMN_GAP) / 2) : contentWidth;
   // Split so both columns hold about the same number of rows.
   const rowsOf = (group: HelpGroup) => group.entries.length + 2;
   const total = groups.reduce((sum, group) => sum + rowsOf(group), 0);
@@ -136,12 +137,12 @@ export function HelpPanel({
   };
   return (
     <SoftPanel title="Commands" meta={`${count} · Esc to close`} width={width}>
-      <Box>
+      <Box columnGap={SHEET_COLUMN_GAP}>
         <Box flexDirection="column" width={columnWidth}>
           {column(left)}
         </Box>
         {twoColumns ? (
-          <Box flexDirection="column" width={columnWidth} marginLeft={4}>
+          <Box flexDirection="column" width={columnWidth}>
             {column(right)}
           </Box>
         ) : null}

@@ -41,10 +41,24 @@ describe('allocateTableColumns', () => {
   it('shrinks columns to fit terminal width', () => {
     const widths = allocateTableColumns([20, 20], 30);
     expect(widths).not.toBeNull();
-    // total = sum(w) + 3n + 1 = sum + 7 for n=2
-    const total = widths!.reduce((a, b) => a + b, 0) + 3 * 2 + 1;
-    expect(total).toBeLessThanOrEqual(30);
+    // total = sum(w) + 3n - 1 = sum + 5 for n=2: a gap between, air at the ends.
+    const total = widths!.reduce((a, b) => a + b, 0) + 3 * 2 - 1;
+    expect(total).toBe(30);
     expect(widths!.every((w) => w >= 1)).toBe(true);
+  });
+
+  it('keeps a table that exactly fits at its natural widths', () => {
+    // The budget still counted the boxed grid's two vertical borders, so a
+    // table two columns short of the edge was squeezed anyway.
+    expect(allocateTableColumns([10, 20], 35)).toEqual([10, 20]);
+    const layout = layoutTable({
+      header: [{ text: 'x'.repeat(10) }, { text: 'y'.repeat(20) }],
+      rows: [],
+      align: [null, null],
+      terminalWidth: 35,
+    });
+    expect(layout.mode).toBe('grid');
+    if (layout.mode === 'grid') expect(layout.totalWidth).toBe(35);
   });
 
   it('returns null when even minimum columns cannot fit', () => {

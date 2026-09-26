@@ -31,13 +31,24 @@ describe('DecisionRule', () => {
     }
   });
 
-  it('gives up the note before the label on a tight row', () => {
-    const [row] = frame(
+  it('moves the note under the label on a tight row instead of dropping it', () => {
+    // Some sheets keep their only copy of a fact in the note: the risk of a
+    // shell command, "2 of 3", the servers still waiting.
+    const [row, note] = frame(
       <DecisionRule label="Permission required" tone="red" meta="a rather long note" width={34} />,
     );
     expect(row).toContain('Permission required');
     expect(row).not.toContain('long note');
     expect(displayWidth(row!)).toBe(34);
+    expect(note).toBe('    a rather long note');
+  });
+
+  it('keeps the note on the rule when it fits', () => {
+    const rows = frame(
+      <DecisionRule label="Permission required" tone="red" meta="shell" width={60} />,
+    ).filter(Boolean);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatch(/ shell ─$/);
   });
 });
 

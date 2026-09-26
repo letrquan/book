@@ -93,22 +93,6 @@ export function SoftPanel({
   );
 }
 
-/** A title set inside a panel's body. Bold ink: the accent is for marks, not headings. */
-export function PanelTitle({
-  children,
-  tone = 'neutral',
-}: {
-  children: ReactNode;
-  tone?: PanelTone;
-}) {
-  const theme = useTheme();
-  return (
-    <Text bold color={tone === 'neutral' || tone === 'brand' ? theme.text : toneColor(tone, theme)}>
-      {children}
-    </Text>
-  );
-}
-
 /**
  * One row of a list the cursor moves through. The selected row is bold and
  * bright, and the caller's own `›` marks it; there is no highlight bar behind
@@ -129,6 +113,47 @@ export function SelectionRow({
       <Text color={selected ? theme.selectionText : theme.text} bold={selected}>
         {children}
       </Text>
+    </Box>
+  );
+}
+
+/**
+ * One row of a composer menu (`@file`, `$skill`): a steady rubric `›` on the
+ * selected row, the name in ink and bold when selected, a quiet badge, and the
+ * description a step quieter, cut to fit. The command menu composes its own
+ * rows, since it aligns a name column and shows syntax, but draws them alike.
+ */
+export function MenuRow({
+  selected,
+  name,
+  badge = '',
+  desc = '',
+  width,
+  screenReader = false,
+}: {
+  selected: boolean;
+  name: string;
+  badge?: string;
+  desc?: string;
+  width: number;
+  screenReader?: boolean;
+}) {
+  const theme = useTheme();
+  const marker = screenReader ? (selected ? 'selected ' : '') : selected ? '› ' : '  ';
+  const shownName = truncateDisplay(
+    name,
+    Math.max(1, width - displayWidth(marker) - displayWidth(badge)),
+  );
+  const room = width - displayWidth(marker + shownName + badge) - 2;
+  const tail = desc && room >= 8 ? `  ${truncateDisplay(desc, room)}` : '';
+  return (
+    <Box width={width}>
+      <Text color={theme.brand}>{marker}</Text>
+      <Text bold={selected} color={selected ? theme.selectionText : theme.text}>
+        {shownName}
+      </Text>
+      <Text color={theme.inactive}>{badge}</Text>
+      <Text color={selected ? theme.text : theme.inactive}>{tail}</Text>
     </Box>
   );
 }
@@ -188,24 +213,36 @@ export function SheetRule({
   const line = lineTone ?? theme.border;
   const lead = '─ ';
   const mark = `${markGlyph} `;
-  // The note gives way first when the row is tight, then the label shortens.
+  // When the row is tight the note leaves the rule for a row of its own under
+  // the label, rather than vanishing: some sheets keep their only copy of a
+  // fact there (the risk of a shell command, "2 of 3", servers still waiting).
   const room = (tail: string) => width - displayWidth(lead + mark + tail) - 2;
-  const tail = meta && room(` ${meta} ─`) >= displayWidth(label) ? ` ${meta} ─` : '';
+  const inline = Boolean(meta) && room(` ${meta} ─`) >= displayWidth(label);
+  const tail = inline ? ` ${meta} ─` : '';
   const text = truncateDisplay(label, Math.max(1, room(tail)));
   const fill = Math.max(1, width - displayWidth(lead + mark + text) - 1 - displayWidth(tail));
+  const indent = displayWidth(lead + mark);
   return (
-    <Box>
-      <Text color={line}>{lead}</Text>
-      <Text color={theme.brand}>{mark}</Text>
-      <Text color={tone} bold>
-        {text}
-      </Text>
-      <Text color={line}>{` ${'─'.repeat(fill)}`}</Text>
-      {tail ? (
-        <>
-          <Text color={theme.inactive}> {meta}</Text>
-          <Text color={line}> ─</Text>
-        </>
+    <Box flexDirection="column">
+      <Box>
+        <Text color={line}>{lead}</Text>
+        <Text color={theme.brand}>{mark}</Text>
+        <Text color={tone} bold>
+          {text}
+        </Text>
+        <Text color={line}>{` ${'─'.repeat(fill)}`}</Text>
+        {tail ? (
+          <>
+            <Text color={theme.inactive}> {meta}</Text>
+            <Text color={line}> ─</Text>
+          </>
+        ) : null}
+      </Box>
+      {meta && !inline ? (
+        <Text color={theme.inactive}>
+          {' '.repeat(indent)}
+          {truncateDisplay(meta, Math.max(1, width - indent))}
+        </Text>
       ) : null}
     </Box>
   );

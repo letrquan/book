@@ -1,9 +1,9 @@
 import chalk from 'chalk';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { displayWidth } from './word-wrap.js';
-import { UserMessage } from './UserMessage.js';
+import { UserMessage, userTurnRows, wrapUserPrompt } from './UserMessage.js';
 import { CONTENT_COLUMN } from '../layout.js';
 import { PILCROW } from '../marks.js';
 
@@ -19,7 +19,10 @@ function frameLines(value: string | undefined): string[] {
   return stripAnsi(value).split('\n');
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe('UserMessage', () => {
   it('opens the turn with a pilcrow and sets the prompt in italic', () => {
@@ -104,5 +107,78 @@ describe('UserMessage', () => {
 
     expect(output).toContain('compact request');
     expect(output).not.toContain(PILCROW);
+  });
+});
+
+describe('user prompt wrapping', () => {
+  const text = (rows: ReturnType<typeof wrapUserPrompt>) =>
+    rows.map((row) => row.map((piece) => piece.text).join(''));
+
+  it('keeps a pasted code block indented', () => {
+    // The shared word wrapper dropped leading whitespace, so `    return 1`
+    // landed in the transcript flush left.
+    const view = render(
+      withTheme(<UserMessage content={'def foo():\n    return 1'} terminalWidth={60} />),
+    );
+    const lines = frameLines(view.lastFrame());
+    expect(lines[1]).toBe('      return 1'.padEnd(lines[1]!.length));
+  });
+
+  it('keeps the indent on the rows a long indented line wraps onto', () => {
+    const rows = text(wrapUserPrompt('    alpha beta gamma delta epsilon', 16));
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) expect(row.startsWith('    ')).toBe(true);
+  });
+
+  it('never sets a row wider than its measure', () => {
+    const samples = [
+      'aaaa bbbb  cccc',
+      'one  two   three    four',
+      'x'.repeat(40),
+      '\tindented\twith\ttabs and words',
+      '  @"a quoted path/with spaces.ts" and more words after it',
+    ];
+    for (const sample of samples) {
+      for (const width of [8, 9, 12, 20]) {
+        for (const row of text(wrapUserPrompt(sample, width))) {
+          expect(displayWidth(row)).toBeLessThanOrEqual(width);
+        }
+      }
+    }
+  });
+
+  it('keeps a quoted mention whole and accented when it wraps', () => {
+    const rows = wrapUserPrompt('please read @"docs/my notes.md" today', 20);
+    const mention = rows.flat().find((piece) => piece.isMention);
+    expect(mention?.text).toBe('@"docs/my notes.md"');
+  });
+
+  it('keeps blank lines between paragraphs', () => {
+    expect(text(wrapUserPrompt('first\n\nsecond', 20))).toEqual(['first', '', 'second']);
+  });
+
+  it('keeps a locale-wide time on the first row', () => {
+    // fr-CA prints `19 h 13`, seven columns; a fixed five-column reservation
+    // pushed it onto a second row of every turn.
+    vi.spyOn(Date.prototype, 'toLocaleTimeString').mockReturnValue('19 h 13');
+    const view = render(
+      withTheme(<UserMessage content="hello there" terminalWidth={40} timestamp={1} />),
+    );
+    const lines = frameLines(view.lastFrame()).filter(Boolean);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.trimEnd().endsWith('19 h 13')).toBe(true);
+    expect(displayWidth(lines[0]!.trimEnd())).toBeLessThanOrEqual(38);
+  });
+
+  it('estimates exactly the rows it renders', () => {
+    const content = 'def foo():\n    return some_long_name + another_long_name\n\n@"x y.ts" end';
+    for (const width of [30, 48, 80]) {
+      const view = render(
+        withTheme(<UserMessage content={content} terminalWidth={width} timestamp={1} />),
+      );
+      const rendered = frameLines(view.lastFrame()).length;
+      expect(userTurnRows(content, width, 1)).toBe(rendered);
+      cleanup();
+    }
   });
 });

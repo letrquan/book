@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { ConfigMenu } from './ConfigMenu.js';
+import { displayWidth } from './word-wrap.js';
 
 afterEach(cleanup);
 
@@ -386,5 +387,39 @@ describe('ConfigMenu', () => {
 
     const lines = stripAnsi(view.lastFrame()).split('\n');
     expect(Math.max(...lines.map((line) => line.length))).toBeLessThanOrEqual(42);
+  });
+
+  it('keeps every settings row on one row of a narrow terminal', () => {
+    // The label was padded to 22 columns and never cut, so below about 36
+    // columns every row overflowed and Ink wrapped it onto a second row.
+    for (const width of [30, 36, 48]) {
+      const view = render(
+        <ThemeContext.Provider value={DEFAULT_THEME}>
+          <ConfigMenu
+            model="9router/qc/qwen3.7-max"
+            memoryAutoSave={false}
+            showThinking
+            agentCount={3}
+            skillCount={4}
+            defaultPermissionMode="default"
+            terminalWidth={width}
+            onOpen={() => {}}
+            onToggleMemory={() => {}}
+            onToggleThinking={() => {}}
+            onCancel={() => {}}
+          />
+        </ThemeContext.Provider>,
+      );
+      const lines = stripAnsi(view.lastFrame()).split('\n');
+      // Setting rows: cursor or blank, the accelerator letter or blank, then the label.
+      const rowPattern = /^ {2}[› ] [A-Z ] {2}\S/;
+      const rows = lines.filter((line) => rowPattern.test(line));
+      expect(rows).toHaveLength(9);
+      // Consecutive: an overflowing row wraps and puts its tail between two.
+      const first = lines.findIndex((line) => rowPattern.test(line));
+      expect(lines.slice(first, first + 9).every((line) => rowPattern.test(line))).toBe(true);
+      for (const row of rows) expect(displayWidth(row)).toBeLessThanOrEqual(width);
+      cleanup();
+    }
   });
 });

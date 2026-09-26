@@ -1,11 +1,9 @@
 import { Text } from 'ink';
 import { useMemo } from 'react';
-import { usePulse } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import type { FileMentionCandidate } from '../../input/file-mentions.js';
-import { truncateDisplay } from './word-wrap.js';
 import { getCommandMenuWindow } from './CommandMenu.js';
-import { floatingFrameMetrics, SelectionRow, SoftPanel } from './chrome.js';
+import { floatingFrameMetrics, MenuRow, SoftPanel } from './chrome.js';
 import { frameGrid } from '../layout.js';
 
 interface FileMentionMenuProps {
@@ -16,31 +14,12 @@ interface FileMentionMenuProps {
   terminalWidth?: number;
   maxRows?: number;
   compact?: boolean;
-  reducedMotion?: boolean;
   screenReader?: boolean;
 }
 
-function formatFileRow(
-  item: FileMentionCandidate,
-  selected: boolean,
-  width: number,
-  compact: boolean,
-  shimmer: boolean,
-  screenReader: boolean,
-): string {
-  const marker = screenReader
-    ? selected
-      ? 'selected '
-      : ''
-    : selected
-      ? shimmer
-        ? '▸ '
-        : '› '
-      : '  ';
-  const badge =
-    item.kind === 'directory' ? (compact ? ' [D]' : ' [Directory]') : compact ? ' [F]' : ' [File]';
-  const desc = item.desc && !compact ? ` — ${item.desc}` : '';
-  return truncateDisplay(`${marker}@${item.path}${badge}${desc}`, width);
+function fileBadge(item: FileMentionCandidate, compact: boolean): string {
+  if (item.kind === 'directory') return compact ? ' [D]' : ' [Directory]';
+  return compact ? ' [F]' : ' [File]';
 }
 
 /** Workspace file picker for @ mentions. */
@@ -52,11 +31,9 @@ export function FileMentionMenu({
   terminalWidth = 80,
   maxRows = 8,
   compact = false,
-  reducedMotion = false,
   screenReader = false,
 }: FileMentionMenuProps) {
   const theme = useTheme();
-  const shimmer = usePulse(visible && !reducedMotion && !screenReader, 360);
 
   const width = Math.max(20, Math.floor(terminalWidth));
   const frame = floatingFrameMetrics(width);
@@ -81,7 +58,7 @@ export function FileMentionMenu({
       marginX={frame.marginX}
       attached
       title={title}
-      meta={`${items.length} ${items.length === 1 ? 'file' : 'files'}`}
+      meta={`${items.length} ${items.length === 1 ? 'file' : 'files'}${hiddenTotal > 0 ? ' · type to filter' : ''}`}
     >
       {items.length === 0 ? (
         <Text color={theme.subtle} dimColor>
@@ -92,22 +69,18 @@ export function FileMentionMenu({
           const globalIndex = window.start + index;
           const isSelected = globalIndex === selIdx;
           return (
-            <SelectionRow
+            <MenuRow
               key={`${item.kind}-${item.path}-${globalIndex}`}
               selected={isSelected}
+              name={`@${item.path}`}
+              badge={fileBadge(item, compact)}
+              desc={compact ? '' : item.desc}
               width={contentWidth}
-            >
-              {formatFileRow(item, isSelected, contentWidth, compact, shimmer, screenReader)}
-            </SelectionRow>
+              screenReader={screenReader}
+            />
           );
         })
       )}
-
-      {hiddenTotal > 0 ? (
-        <Text color={theme.subtle} dimColor>
-          {truncateDisplay(`… ${hiddenTotal} more, type to filter`, contentWidth)}
-        </Text>
-      ) : null}
     </SoftPanel>
   );
 }

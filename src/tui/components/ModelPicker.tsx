@@ -3,6 +3,7 @@ import TextInput from './TextInputField.js';
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
+import { PILCROW } from '../marks.js';
 import type { AgentConfig } from '../../types/runtime.js';
 import type { ProviderConfig } from '../../settings.js';
 import { resolveSecret } from '../../config.js';
@@ -18,7 +19,7 @@ import { modelPickerHints } from './model-picker-hints.js';
 import { useDensityMetrics } from '../density.js';
 import { stripSgrMouseSequences } from '../mouse.js';
 import { SoftPanel } from './chrome.js';
-import { panelGrid } from '../layout.js';
+import { panelGrid, sheetContentWidth } from '../layout.js';
 
 export type ProviderRemovalResult =
   | {
@@ -440,7 +441,7 @@ export function ModelPicker({
           Model IDs
         </Text>
         <Box>
-          <Text color={theme.brand}>{'¶ '}</Text>
+          <Text color={theme.brand}>{`${PILCROW} `}</Text>
           <TextInput
             value={manualEntry.value}
             onChange={(value) => setManualEntry({ providerId: manualEntry.providerId, value })}
@@ -506,7 +507,7 @@ export function ModelPicker({
     >
       {/* Typing filters, the way the composer takes a prompt: after a pilcrow. */}
       <Text>
-        <Text color={theme.brand}>{'¶ '}</Text>
+        <Text color={theme.brand}>{`${PILCROW} `}</Text>
         <Text color={filter ? theme.text : theme.inactive}>{filter || 'type to filter'}</Text>
       </Text>
       <Box flexDirection="column" marginTop={1}>
@@ -553,7 +554,7 @@ export function ModelPicker({
           editableProviderId: refreshing ? undefined : editableProviderId,
           compact: compact || !density.showOptionalHelp,
           filterable: true,
-          width: sheetWidth - 4,
+          width: sheetContentWidth(sheetWidth),
         }).map((line) => (
           <Text key={line} color={theme.inactive}>
             {line}

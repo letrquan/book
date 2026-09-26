@@ -70,3 +70,15 @@ export function mergeAssistantMessages(
 
   return merged;
 }
+
+/**
+ * Turns you wrote: the status line's folio counts one page for each. Subagent
+ * and background-shell notifications arrive as user turns too
+ * (`kind: 'agent-notification'`), and checkpoints and the carried ledger are
+ * host text, so only conversation turns count.
+ */
+export function countWrittenTurns(messages: readonly Message[]): number {
+  return messages.filter(
+    (message) => message.role === 'user' && (message.kind ?? 'conversation') === 'conversation',
+  ).length;
+}

@@ -62,13 +62,12 @@ interface ButtonDef {
   label: string;
   value: PermissionResult;
   key: string;
-  colorKey: 'permission' | 'remember' | 'subtle';
 }
 
 const BUTTONS: ButtonDef[] = [
-  { label: 'Run once', value: 'allow', key: 'r', colorKey: 'permission' },
-  { label: 'Skip', value: 'deny', key: 's', colorKey: 'subtle' },
-  { label: 'Always allow', value: 'always', key: 'a', colorKey: 'remember' },
+  { label: 'Run once', value: 'allow', key: 'r' },
+  { label: 'Skip', value: 'deny', key: 's' },
+  { label: 'Always allow', value: 'always', key: 'a' },
 ];
 
 export function toolRiskLevel(toolCall: ToolCall): 'safe' | 'network' | 'write' | 'shell' {
@@ -290,7 +289,7 @@ export function PermissionButtons({
     shownFiles.some((file) => (diffRows.get(file.filePath) ?? 0) > diffRowsPerFile);
   const canExpand =
     expanded ||
-    wrappedPayload.hiddenRows > 0 ||
+    (files.length === 0 && wrappedPayload.hiddenRows > 0) ||
     (diffHasMore && expandedDiffRows > collapsedDiffRows);
 
   // Track previous selection for old→new logging without stale closure issues.
@@ -483,15 +482,31 @@ export function PermissionButtons({
     }),
     { added: 0, removed: 0 },
   );
+  const counts = files.length > 0 ? ` +${totals.added} −${totals.removed}` : '';
+  // A file's path is said once. It goes on the title row when it fits there;
+  // a longer one takes the rows below, whole, instead of showing cut short on
+  // the title row and again in full underneath.
+  const singlePath = files.length === 1 ? files[0]!.filePath : undefined;
+  const titleRoom = Math.max(8, contentWidth - displayWidth(title) - displayWidth(counts) - 1);
+  const pathOnTitle = singlePath !== undefined && displayWidth(singlePath) <= titleRoom;
   const titleTarget =
-    files.length === 1
-      ? files[0]!.filePath
+    singlePath !== undefined
+      ? pathOnTitle
+        ? singlePath
+        : ''
       : files.length > 1
         ? `${files.length} files`
         : payloadInline
           ? payload
           : '';
-  const counts = files.length > 0 ? ` +${totals.added} −${totals.removed}` : '';
+  // With a diff on the sheet the payload is the path again, or the patch the
+  // diff already draws, so only a path too long for the title row keeps rows.
+  const payloadRows =
+    files.length === 0
+      ? wrappedPayload.rows
+      : singlePath !== undefined && !pathOnTitle
+        ? wrapPayload(singlePath, contentWidth - 2, COLLAPSED_COMMAND_ROWS).rows
+        : [];
   const choices: Choice[] = BUTTONS.map((button) =>
     button.value === 'allow'
       ? { label: risk === 'shell' ? 'Run once' : 'Allow once', detail: 'this call only' }
@@ -513,13 +528,7 @@ export function PermissionButtons({
           {title}
         </Text>
         {titleTarget ? (
-          <Text color={theme.text}>
-            {' '}
-            {truncateDisplay(
-              titleTarget,
-              Math.max(8, contentWidth - displayWidth(title) - displayWidth(counts) - 1),
-            )}
-          </Text>
+          <Text color={theme.text}> {truncateDisplay(titleTarget, titleRoom)}</Text>
         ) : null}
         {counts ? (
           <Text>
@@ -528,17 +537,17 @@ export function PermissionButtons({
           </Text>
         ) : null}
       </Box>
-      {wrappedPayload.rows.length > 0 ? (
+      {payloadRows.length > 0 ? (
         // A command too long for the title row reads as code, not as prose.
         <Box flexDirection="column" backgroundColor={theme.mdCodeBackground} paddingX={1}>
-          {wrappedPayload.rows.map((row, index) => (
+          {payloadRows.map((row, index) => (
             <Text key={index} color={theme.mdCodeText}>
               {row}
             </Text>
           ))}
         </Box>
       ) : null}
-      {wrappedPayload.hiddenRows > 0 ? (
+      {files.length === 0 && wrappedPayload.hiddenRows > 0 ? (
         <Text color={theme.inactive}>
           {truncateDisplay(
             `… ${wrappedPayload.hiddenRows} more ${wrappedPayload.hiddenRows === 1 ? 'row' : 'rows'}${expanded ? '' : ' · D shows all'}`,

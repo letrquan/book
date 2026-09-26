@@ -25,8 +25,6 @@ interface CommandMenuProps {
   maxRows?: number;
   /** Compact rendering for narrow or short terminals. */
   compact?: boolean;
-  /** Disable motion for accessibility. */
-  reducedMotion?: boolean;
   /** Render plain, non-decorative output for screen readers. */
   screenReader?: boolean;
 }
@@ -84,14 +82,15 @@ export interface CommandRowOptions {
   selected: boolean;
   width: number;
   compact: boolean;
-  shimmer: boolean;
   screenReader: boolean;
   /** False when the visible rows are all one category, making a badge noise. */
   showBadge: boolean;
   /**
-   * Width of the name column: the widest visible name. Every description then
-   * starts on the same column, so the list reads as two columns instead of a
-   * ragged run of `name — description` rows.
+   * Width of the name column: the widest name and badge in the whole list
+   * (see {@link commandNameColumn}). Every description then starts on the same
+   * column, so the list reads as two columns instead of a ragged run of
+   * `name — description` rows. The selected row's syntax pushes only its own
+   * description along.
    */
   nameWidth?: number;
 }
@@ -119,10 +118,7 @@ export function composeCommandRow(item: CommandItem, options: CommandRowOptions)
   // the eye to the list's chrome instead of to the command.
   const marker = screenReader ? (selected ? 'selected ' : '') : selected ? '› ' : '  ';
   const name = `/${item.name}`;
-  const badge =
-    showBadge && !screenReader
-      ? ` [${compact ? COMPACT_CATEGORY_LABELS[item.category] : CATEGORY_LABELS[item.category]}]`
-      : '';
+  const badge = showBadge && !screenReader ? commandBadge(item, compact) : '';
   const hint = selected && item.hint ? ` ${item.hint}` : '';
 
   const fixed = displayWidth(marker) + displayWidth(name) + displayWidth(badge);
@@ -141,6 +137,34 @@ export function composeCommandRow(item: CommandItem, options: CommandRowOptions)
   return { marker, name, pad: desc ? ' '.repeat(padWidth) : '', hint: keptHint, badge, desc };
 }
 
+/** The badge a row prints when the list mixes categories. */
+function commandBadge(item: CommandItem, compact: boolean): string {
+  return ` [${compact ? COMPACT_CATEGORY_LABELS[item.category] : CATEGORY_LABELS[item.category]}]`;
+}
+
+/**
+ * The name column: the widest name, with its badge when badges show, across the
+ * whole filtered list, capped so a long custom command cannot squeeze every
+ * description away. Measured on the whole list, not the visible window, so the
+ * column holds still while the selection scrolls; and with the badge, so a
+ * mixed list of built-in and custom commands still lines up.
+ */
+export function commandNameColumn(
+  items: readonly CommandItem[],
+  showBadge: boolean,
+  compact: boolean,
+  contentWidth: number,
+): number {
+  const widest = Math.max(
+    0,
+    ...items.map(
+      (item) =>
+        displayWidth(`/${item.name}`) + (showBadge ? displayWidth(commandBadge(item, compact)) : 0),
+    ),
+  );
+  return Math.min(widest, Math.floor(contentWidth * 0.4));
+}
+
 /** Slash-command palette. Filtering/ranking lives in commands/filter.ts. */
 export function CommandMenu({
   items,
@@ -150,11 +174,9 @@ export function CommandMenu({
   terminalWidth = 80,
   maxRows = 8,
   compact = false,
-  reducedMotion = false,
   screenReader = false,
 }: CommandMenuProps) {
   const theme = useTheme();
-  void reducedMotion;
 
   const width = Math.max(20, Math.floor(terminalWidth));
   const frame = floatingFrameMetrics(width);
@@ -189,12 +211,7 @@ export function CommandMenu({
 
   const title = filterText ? `Commands matching “${filterText}”` : 'Commands';
   const count = `${items.length} ${items.length === 1 ? 'command' : 'commands'}`;
-  // The name column: the widest visible name, capped so a long custom command
-  // cannot squeeze every description away.
-  const nameWidth = Math.min(
-    Math.max(...visibleItems.map((item) => displayWidth(`/${item.name}`)), 0),
-    Math.floor(contentWidth * 0.4),
-  );
+  const nameWidth = commandNameColumn(items, showBadge, compact, contentWidth);
 
   // The hairline spans the terminal like the composer's; rows keep the panel measure.
   return (
@@ -217,7 +234,6 @@ export function CommandMenu({
             selected: isSelected,
             width: contentWidth,
             compact,
-            shimmer: false,
             screenReader,
             showBadge,
             nameWidth,

@@ -36,6 +36,7 @@ import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 import { stripSgrMouseSequences } from '../mouse.js';
 import { InputBox } from './InputBox.js';
+import { displayWidth, wordWrap } from './word-wrap.js';
 
 const uiLog = createUiDebugLogger('tui:inputbar');
 const FILE_MENTION_DEBOUNCE_MS = 40;
@@ -48,6 +49,21 @@ const FILE_MENTION_DEBOUNCE_MS = 40;
  */
 const COMPOSER_EDIT_KEYS = new Set(['a', 'e', 'w', 'u', 'k', 'y']);
 
+/**
+ * Rows the draft takes in the composer at `width`, soft wraps included. The
+ * cursor is one more cell at the end of the last line. Counting only hard
+ * newlines missed a long prompt growing from one row to three, so the
+ * transcript kept its old viewport and the composer covered its last rows.
+ */
+export function draftRows(value: string, width: number): number {
+  const lines = value.split('\n');
+  return lines.reduce((rows, line, index) => {
+    const cells = displayWidth(line) + (index === lines.length - 1 ? 1 : 0);
+    const wrapped = line ? wordWrap(line, width).split('\n').length : 1;
+    return rows + Math.max(1, wrapped, Math.ceil(cells / Math.max(1, width)));
+  }, 0);
+}
+
 interface InputBarProps {
   onSubmit: (value: string, attachments?: ImageAttachment[]) => void;
   /**
@@ -58,6 +74,12 @@ interface InputBarProps {
    * the transcript's last rows.
    */
   onLayoutChange?: () => void;
+  /**
+   * Called after a composer menu (commands, `@file`, `$skill`) opens or closes.
+   * Ink hands every key to every input handler, so the app needs this to leave
+   * an Esc alone that the open menu is already taking.
+   */
+  onMenuOpenChange?: (open: boolean) => void;
   onPasteImage?: () => Promise<ImageAttachment | null>;
   submissionMode: 'submit' | 'queue' | 'blocked';
   mode: PermissionMode;
@@ -65,7 +87,6 @@ interface InputBarProps {
   terminalWidth?: number;
   maxMenuRows?: number;
   compact?: boolean;
-  reducedMotion?: boolean;
   screenReader?: boolean;
   /**
    * True when a higher-priority modal (permission prompt) owns the keyboard.
@@ -190,6 +211,7 @@ function extractCommandName(value: string): string | null {
  */
 export function InputBar({
   onLayoutChange,
+  onMenuOpenChange,
   onSubmit,
   onPasteImage,
   submissionMode,
@@ -211,7 +233,6 @@ export function InputBar({
   terminalWidth = 80,
   maxMenuRows = 8,
   compact = false,
-  reducedMotion = false,
   screenReader = false,
   draftRestore,
 }: InputBarProps) {
@@ -913,13 +934,22 @@ export function InputBar({
     fileMenuVisible && !menuVisible && !skillMenuVisible
       ? Math.min(fileCandidates.length, maxMenuRows)
       : -1,
-    value.split('\n').length,
+    draftRows(value, inputWidth),
     attachments.length,
     Boolean(attachmentError),
   ].join(':');
   useLayoutEffect(() => {
     onLayoutChange?.();
   }, [layoutShape, onLayoutChange]);
+  // Reported after commit, so an Esc that is closing the menu right now still
+  // finds it open in the app's handler for that same key.
+  const anyMenuOpen = menuVisible || skillMenuVisible || fileMenuVisible;
+  useLayoutEffect(() => {
+    onMenuOpenChange?.(anyMenuOpen);
+    // A remounted composer (a new session) must not leave the app thinking a
+    // menu is still open.
+    return () => onMenuOpenChange?.(false);
+  }, [anyMenuOpen, onMenuOpenChange]);
 
   const selIdx = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
   const fileSelIdx = Math.max(0, Math.min(fileSelected, fileCandidates.length - 1));
@@ -935,7 +965,6 @@ export function InputBar({
         terminalWidth={outerWidth}
         maxRows={maxMenuRows}
         compact={compact}
-        reducedMotion={reducedMotion}
         screenReader={screenReader}
       />
       <SkillMentionMenu
@@ -946,7 +975,6 @@ export function InputBar({
         terminalWidth={outerWidth}
         maxRows={maxMenuRows}
         compact={compact}
-        reducedMotion={reducedMotion}
         screenReader={screenReader}
       />
       <FileMentionMenu
@@ -957,7 +985,6 @@ export function InputBar({
         terminalWidth={outerWidth}
         maxRows={maxMenuRows}
         compact={compact}
-        reducedMotion={reducedMotion}
         screenReader={screenReader}
       />
 

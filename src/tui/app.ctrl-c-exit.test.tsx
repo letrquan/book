@@ -798,3 +798,54 @@ describe('queued follow-up notice', () => {
     await waitForFrameWithout(view, 'Sending queued follow-up...');
   });
 });
+
+describe('Esc with a composer menu open', () => {
+  // Ink hands a key to every input handler. The composer closed its menu on
+  // Esc, and the app's handler, which knew nothing of the menu, cancelled the
+  // running turn behind it.
+  it('closes the menu without cancelling the running turn', async () => {
+    const { view, state } = await startIdleApp({ isThinking: true });
+
+    press(view, '/');
+    await waitForFrame(view, '§ Commands');
+    press(view, '\u001b');
+    await waitForFrameWithout(view, '§ Commands');
+    expect(state.cancel).not.toHaveBeenCalled();
+
+    // With the menu gone, Esc means "cancel the turn" again.
+    press(view, '\u001b');
+    await waitUntil(() => expect(state.cancel).toHaveBeenCalledTimes(1));
+  });
+
+  it('closes the menu without dropping the queued input being edited', async () => {
+    const { view, state } = await startIdleApp({ isThinking: true });
+    await queueAndRecallNewest(view, ['keep me']);
+
+    // Clear the recalled text (Ctrl+U) so a leading slash opens the menu.
+    press(view, '\x15');
+    await waitForFrameWithout(view, '> keep me');
+    press(view, '/');
+    await waitForFrame(view, '§ Commands');
+    press(view, '\u001b');
+    await waitForFrameWithout(view, '§ Commands');
+
+    expect(frameOf(view)).not.toContain('Queued input removed');
+    expect(state.cancel).not.toHaveBeenCalled();
+  });
+});
+
+describe('title page contents', () => {
+  // Listing reads the session index synchronously; on first render it held the
+  // first paint of every launch until every unindexed session file had loaded.
+  it('lists recent sessions after the first paint, not during it', async () => {
+    const listSessions = vi.fn(() => [
+      { id: 'earlier', name: 'Earlier chapter', updatedAt: Date.now() - 60_000, messageCount: 4 },
+    ]);
+    installAgentState(agentState({ listSessions }));
+    const view = render(<App config={config()} session={testSession} />);
+
+    expect(listSessions).not.toHaveBeenCalled();
+    await waitForFrame(view, 'Earlier chapter');
+    expect(listSessions).toHaveBeenCalledTimes(1);
+  });
+});

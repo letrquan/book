@@ -2,7 +2,7 @@ import { Box, Text, useInput } from 'ink';
 import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import { floatingFrameMetrics, SoftPanel } from './chrome.js';
-import { displayWidth, truncateDisplay } from './word-wrap.js';
+import { displayWidth, padDisplay, truncateDisplay } from './word-wrap.js';
 
 export type ConfigSection =
   'model' | 'compact-model' | 'effort' | 'agents' | 'skills' | 'permission-mode';
@@ -63,6 +63,12 @@ type Row = (typeof ROWS)[number]['row'];
  * the row actually prints. Measuring it beats a hand-kept column count: the
  * budget then cannot drift away from the prefix it is supposed to describe.
  */
+/** Columns of the setting names; the longest, "Model memory writes", fits. */
+const LABEL_WIDTH = 22;
+
+/** Columns the value keeps before the label column starts to shrink. */
+const MIN_VALUE_WIDTH = 6;
+
 function rowPrefix(selected: boolean, key?: string): string {
   return `${selected ? '›' : ' '} ${key ? key.toUpperCase() : ' '}  `;
 }
@@ -184,8 +190,14 @@ export function ConfigMenu({
           const item = details[entry.row];
           const current = index === selected;
           const prefix = rowPrefix(current, 'key' in entry ? entry.key : undefined);
-          const label = item.label.padEnd(22);
-          const valueRoom = Math.max(4, contentWidth - displayWidth(prefix) - displayWidth(label));
+          // The label column gives way before the row does: on a narrow panel it
+          // shrinks and cuts, so prefix, label and value still fit one row.
+          const labelWidth = Math.max(
+            4,
+            Math.min(LABEL_WIDTH, contentWidth - displayWidth(prefix) - MIN_VALUE_WIDTH),
+          );
+          const label = padDisplay(truncateDisplay(item.label, labelWidth - 1), labelWidth);
+          const valueRoom = Math.max(1, contentWidth - displayWidth(prefix) - labelWidth);
           const value = truncateDisplay(item.value, Math.min(valueRoom, 24));
           const descRoom = Math.max(0, valueRoom - displayWidth(value) - 3);
           // Cursor and letter in rubric, the setting in ink, its value, then what

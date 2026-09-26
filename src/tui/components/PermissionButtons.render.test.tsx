@@ -13,6 +13,17 @@ function withTheme(children: React.ReactElement): React.ReactElement {
   return <ThemeContext.Provider value={DEFAULT_THEME}>{children}</ThemeContext.Provider>;
 }
 
+/** How often `text` appears outside the "Always allow" row, which names the rule. */
+function mentions(frame: string, text: string): number {
+  return (
+    frame
+      .split('\n')
+      .filter((line) => !line.includes('Always allow'))
+      .join('\n')
+      .split(text).length - 1
+  );
+}
+
 const workspaces: string[] = [];
 function makeWorkspace(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), 'book-permission-preview-'));
@@ -324,6 +335,32 @@ describe('PermissionButtons payload', () => {
     expect(frame).toContain('- beta');
     // One file is named by the title row, which says what the change does.
     expect(frame).toContain('Edit notes.txt +1 −1');
+    // A short path is said there, and again only in the "Always allow" rule.
+    expect(mentions(frame, 'notes.txt')).toBe(1);
+  });
+
+  it('gives a path too long for the title row the rows below, and says it once', async () => {
+    // It used to show cut short on the title row and again in full underneath.
+    const name = 'the-permission-sheet-names-this-once.txt';
+    const root = makeWorkspace({ [name]: 'alpha\nbeta\n' });
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{
+            id: 'edit-long',
+            name: 'Edit',
+            arguments: { filePath: name, oldString: 'beta', newString: 'delta' },
+          }}
+          onResolve={vi.fn()}
+          terminalWidth={50}
+          workspaceRoot={root}
+        />,
+      ),
+    );
+    const frame = await frameContaining(view, '+ delta');
+    expect(mentions(frame, name)).toBe(1);
+    expect(frame).toMatch(/Edit \+1 −1/);
+    expect(frame).not.toContain('the-permission-sheet…');
   });
 
   it('says why a mutation cannot be previewed instead of hiding it', async () => {

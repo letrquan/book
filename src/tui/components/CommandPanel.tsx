@@ -12,7 +12,7 @@ import type {
   UsageCommandDisplay,
 } from '../../types/messages.js';
 import { useStaggeredReveal } from '../hooks/useAnimation.js';
-import { panelGrid } from '../layout.js';
+import { panelGrid, sheetContentWidth } from '../layout.js';
 import { SECTION_SIGN } from '../marks.js';
 import { useTheme } from '../theme.js';
 import { SheetRule } from './chrome.js';
@@ -127,13 +127,13 @@ function PanelHeader({
   command,
   title,
   subtitle,
-  contentWidth,
+  width,
   step,
 }: {
   command: string;
   title: string;
   subtitle: string;
-  contentWidth: number;
+  width: number;
   step: number;
 }) {
   const theme = useTheme();
@@ -148,10 +148,10 @@ function PanelHeader({
         label={title}
         tone={theme.text}
         meta={ready ? command : 'reading…'}
-        width={contentWidth + 4}
+        width={width}
       />
       <Box paddingX={2}>
-        <Text color={theme.inactive}>{truncateDisplay(subtitle, contentWidth)}</Text>
+        <Text color={theme.inactive}>{truncateDisplay(subtitle, sheetContentWidth(width))}</Text>
       </Box>
     </Box>
   );
@@ -607,7 +607,7 @@ export function CommandPanel({
   // The sheet sits on the panel grid like /help and /status; its rule spans the
   // sheet and the figures sit two columns in from either end.
   const panelWidth = Math.max(28, Math.min(100, panelGrid(terminalWidth).width));
-  const contentWidth = Math.max(18, panelWidth - 4);
+  const contentWidth = sheetContentWidth(panelWidth, 18);
   const narrow = panelWidth < 58;
   const header =
     display.kind === 'config'
@@ -631,7 +631,7 @@ export function CommandPanel({
   return (
     // No top margin of its own: ChatPanel spaces every slash-command entry.
     <Box width={panelWidth} flexDirection="column">
-      <PanelHeader {...header} contentWidth={contentWidth} step={step} />
+      <PanelHeader {...header} width={panelWidth} step={step} />
       <Box flexDirection="column" paddingX={2} marginTop={1}>
         {display.kind === 'config' ? (
           <ConfigPanelBody data={display} contentWidth={contentWidth} narrow={narrow} step={step} />

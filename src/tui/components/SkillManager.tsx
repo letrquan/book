@@ -5,6 +5,7 @@ import type { Skill } from '../../skills.js';
 import type { SkillLifecycleEvent } from '../../skill-registry.js';
 import type { SkillActivation, SkillExecution } from '../../settings.js';
 import { useTheme } from '../theme.js';
+import { PILCROW } from '../marks.js';
 import { stripSgrMouseSequences } from '../mouse.js';
 import { floatingFrameMetrics, SelectionRow, SoftPanel } from './chrome.js';
 import { truncateDisplay } from './word-wrap.js';
@@ -197,7 +198,7 @@ export function SkillManager({
       </Text>
       {searching ? (
         <Text>
-          <Text color={theme.brand}>{'¶ '}</Text>
+          <Text color={theme.brand}>{`${PILCROW} `}</Text>
           <Text color={query ? theme.text : theme.inactive}>{query || 'search skills'}</Text>
         </Text>
       ) : null}

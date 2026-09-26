@@ -11,7 +11,7 @@ import type {
   PendingPlanApprovalRequest,
 } from '../../session/agent-interactions.js';
 import { AgentMessage, managedAgentTracesEqualForMessage } from './AgentMessage.js';
-import { UserMessage, userTurnTextWidth } from './UserMessage.js';
+import { UserMessage, userTurnRows } from './UserMessage.js';
 import {
   createQuietCollapser,
   groupQuietInvocations,
@@ -91,13 +91,17 @@ function estimateTimelineRows(
 ): number {
   if ('transcriptOrdinal' in entry) return 1;
 
-  // A user turn is its prompt and nothing else: it wraps at its own measure, and
-  // there is no separate rule row above it.
-  const measure =
-    entry.role === 'user'
-      ? userTurnTextWidth(terminalWidth, Boolean(entry.timestamp))
-      : transcriptGrid(terminalWidth).content;
-  const textRows = estimateWrappedRows(entry.content, measure);
+  // A user turn is its prompt and nothing else: it wraps by the same rules
+  // UserMessage sets it with, so the estimate is its row count exactly.
+  if (entry.role === 'user') {
+    return userTurnRows(
+      entry.content,
+      terminalWidth,
+      entry.timestamp,
+      entry.attachments?.length ?? 0,
+    );
+  }
+  const textRows = estimateWrappedRows(entry.content, transcriptGrid(terminalWidth).content);
   const attachmentRows = entry.attachments?.length ? 1 : 0;
   const toolRows = estimateToolRows(entry, quietTools);
   return Math.max(1, textRows + attachmentRows + toolRows);

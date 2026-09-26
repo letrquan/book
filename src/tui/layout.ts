@@ -50,6 +50,19 @@ export const MAX_ROW_MEASURE = 120;
 /** Columns a bordered surface spends on its own border plus one of padding. */
 export const PANEL_CHROME = 4;
 
+/**
+ * Width inside a sheet: a surface headed by a rule, whose rule spans the sheet
+ * while its body sits two columns in from either end. The same
+ * {@link PANEL_CHROME} a bordered surface spent, so content widths did not move
+ * when the borders went.
+ */
+export function sheetContentWidth(sheetWidth: number, minimum = 1): number {
+  return Math.max(minimum, Math.floor(sheetWidth) - PANEL_CHROME);
+}
+
+/** Columns between two side-by-side columns of a sheet, such as /help's. */
+export const SHEET_COLUMN_GAP = 4;
+
 /** Column where content begins on every row, nested or not. */
 export const CONTENT_COLUMN = GUTTER_WIDTH;
 
