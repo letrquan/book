@@ -136,6 +136,12 @@ export interface Message {
    * that means "the user's own words" must check this too.
    */
   derivedContent?: boolean;
+  /**
+   * An assistant-role message the host wrote rather than the model: the notice for a
+   * prompt a `UserPromptSubmit` hook refused, or a tool batch rejected before it ran.
+   * Never the run's answer (`finalAnswerText`).
+   */
+  hostNotice?: boolean;
   /** Structured display data for automatically delivered child completions. */
   agentNotifications?: AgentNotificationDisplay[];
   toolCalls?: ToolCall[];

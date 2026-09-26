@@ -59,6 +59,11 @@ export type AgentEvent =
        * would otherwise have no way to read a `/review` they paid for.
        */
       commandResults?: HostCommandResult[];
+      /**
+       * The model's final answer. Empty when the model did not answer, and empty
+       * on a plan stop, where the plan is the deliverable (`plan`).
+       */
+      answer?: string;
     }
   | { type: 'terminal'; outcome: AgentTerminalOutcome; runContext?: AgentRunContext }
   | { type: 'done' };

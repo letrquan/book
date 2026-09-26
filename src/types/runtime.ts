@@ -47,8 +47,17 @@ export interface ResolvedShell {
   warning?: string;
 }
 
-/** What phase of retry is currently active (drives the TUI spinner label). */
-export type RetryPhase = 'none' | 'transport' | 'stalled' | 'tool' | 'watchdog';
+/**
+ * What phase of retry is currently active (drives the TUI spinner label).
+ *
+ * `transport` and `watchdog` are HTTP-level retries inside one request
+ * (`watchdog` when retries are unbounded); `reissue` is a turn sent again after
+ * its stream ended mid-turn; `continue` is a continuation after the output cap
+ * (nothing is re-sent; a `[continuation]` turn is appended); `stalled` and `tool`
+ * are waits, not retries.
+ */
+export type RetryPhase =
+  'none' | 'transport' | 'stalled' | 'tool' | 'watchdog' | 'reissue' | 'continue';
 
 /**
  * Retry configuration — all tunables live here.

@@ -193,6 +193,7 @@ export async function* query(
         // `stdout` above is a discard sink, so this is the only way an SDK
         // caller sees a slash command the host performed on its behalf.
         commandResults: result.commandResults,
+        answer: result.answer,
       });
     } catch (error) {
       if (!controller.signal.aborted) {

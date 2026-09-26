@@ -528,7 +528,7 @@ describe('AgentStore recovery of host-owned agents', () => {
       applicationStatus: 'not_applied',
       prompt: 'review the diff',
       parentSessionId: 'session-1',
-      notifyParentOnCompletion: false,
+      spawnerClaim: { throughRunSequence: 1, notifyParent: false, resumeAfterRestart: false },
       referencedEvidenceIds: [],
       transcript: [],
       pendingMessages: [],
@@ -600,12 +600,109 @@ describe('AgentStore recovery of host-owned agents', () => {
       hostname: 'test-host',
       now: () => 1,
     });
-    const ordinary = { ...reviewerRecord('explorer-1'), notifyParentOnCompletion: undefined };
+    const ordinary = { ...reviewerRecord('explorer-1'), spawnerClaim: undefined };
     store.saveAgent(ordinary);
 
     const recovered = restart(root).recoverAbandonedAgents()[0]!;
 
     expect(recovered.completionSequence).toBe(1);
     expect(recovered.completionDeliveredSequence ?? 0).toBe(0);
+  });
+
+  it('leaves the completion of a run past the claim outstanding', () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const store = new AgentStore('repo', root, true, {
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 12345,
+      hostname: 'test-host',
+      now: () => 1,
+    });
+    // A follow-up the parent sent after the review took its result: run 2, past the claim.
+    store.saveAgent({ ...reviewerRecord('reviewer-2'), runSequence: 2 });
+
+    const recovered = restart(root).recoverAbandonedAgents()[0]!;
+
+    expect(recovered.completionSequence).toBe(1);
+    expect(recovered.completionDeliveredSequence ?? 0).toBe(0);
+  });
+
+  /**
+   * Records written before per-run claims carried two record-level flags, which every path
+   * that started a run nobody was waiting on cleared by hand; while set, they described the
+   * run the record was on.
+   */
+  function legacyRecord(id: string, runSequence: number | undefined): AgentRecord {
+    return {
+      ...reviewerRecord(id),
+      spawnerClaim: undefined,
+      runSequence,
+      notifyParentOnCompletion: false,
+      resumeAfterRestart: false,
+    } as unknown as AgentRecord;
+  }
+
+  /**
+   * An older Book build shares this store and knows only the record-level pair, so a claimed
+   * agent has to keep reading as the host's to it for as long as the claim covers the run the
+   * record is on.
+   */
+  it('writes the legacy flag pair while the claim covers the run, and drops it past the claim', () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const recordPath = join(root, 'repo', 'records', 'reviewer-5.json');
+    const store = new AgentStore('repo', root, true, {
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 12345,
+      hostname: 'test-host',
+      now: () => 1,
+    });
+    store.saveAgent({ ...reviewerRecord('reviewer-5'), runSequence: 1 });
+
+    const claimed = JSON.parse(readFileSync(recordPath, 'utf8'));
+    expect(claimed.notifyParentOnCompletion).toBe(false);
+    expect(claimed.resumeAfterRestart).toBe(false);
+    // The in-memory record is the claim; the pair exists only for the build that reads it.
+    expect(store.loadAgent('reviewer-5')).not.toHaveProperty('notifyParentOnCompletion');
+    expect(store.loadAgent('reviewer-5')).not.toHaveProperty('resumeAfterRestart');
+
+    // A follow-up the parent sent after the review took its result: run 2, past the claim.
+    store.saveAgent({ ...reviewerRecord('reviewer-5'), runSequence: 2 });
+
+    const pastClaim = JSON.parse(readFileSync(recordPath, 'utf8'));
+    expect(pastClaim).not.toHaveProperty('notifyParentOnCompletion');
+    expect(pastClaim).not.toHaveProperty('resumeAfterRestart');
+    expect(store.loadAgent('reviewer-5')).not.toHaveProperty('notifyParentOnCompletion');
+    expect(store.loadAgent('reviewer-5')).not.toHaveProperty('resumeAfterRestart');
+    store.dispose();
+  });
+
+  it('reads a legacy flag pair as a claim on the run the record was on', () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const store = new AgentStore('repo', root, true, {
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 12345,
+      hostname: 'test-host',
+      now: () => 1,
+    });
+    store.saveAgent(legacyRecord('reviewer-3', 3));
+    store.saveAgent(legacyRecord('reviewer-4', undefined));
+
+    const reopened = restart(root);
+    const continued = reopened.loadAgent('reviewer-3')!;
+    expect(continued.spawnerClaim).toEqual({
+      throughRunSequence: 3,
+      notifyParent: false,
+      resumeAfterRestart: false,
+    });
+    expect(continued).not.toHaveProperty('notifyParentOnCompletion');
+    expect(continued).not.toHaveProperty('resumeAfterRestart');
+    // A record that never started claims its first run.
+    expect(reopened.loadAgent('reviewer-4')!.spawnerClaim).toMatchObject({
+      throughRunSequence: 1,
+    });
+
+    // And the recovery the next launch performs still keeps the host's run undelivered.
+    for (const recovered of reopened.recoverAbandonedAgents()) {
+      expect(recovered.completionDeliveredSequence).toBe(recovered.completionSequence);
+    }
   });
 });

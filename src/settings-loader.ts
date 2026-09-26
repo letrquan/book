@@ -49,7 +49,11 @@ function mergeObject(
   const result = structuredClone(base);
 
   for (const [key, value] of Object.entries(override)) {
-    if (value === undefined) continue;
+    // JSON.parse keeps `"__proto__"` as an ordinary own key, but `result[key] = …`
+    // below would go through the prototype setter: a repository layer could then
+    // supply inherited `shell` or `defaultMode` values that sanitizeLayer, which
+    // deletes own keys, never sees. No setting has that name, so drop it.
+    if (value === undefined || key === '__proto__') continue;
     const path = prefix ? `${prefix}.${key}` : key;
     const existing = result[key];
 
