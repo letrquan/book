@@ -89,6 +89,63 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
   }));
 }
 
+/**
+ * Map an OpenAI-compatible `usage` object onto Book's `Usage`, prompt-cache tokens included.
+ *
+ * Book's `promptTokens` is the uncached input, as on the Anthropic path: cache reads and writes
+ * are counted separately and `contextTokens` holds the whole prompt. OpenAI-style `prompt_tokens`
+ * already includes cached tokens, so they are subtracted from it; a provider whose cache counts
+ * exceed `prompt_tokens` evidently reports them on top of it, and they are added instead.
+ *
+ * Shapes read: `prompt_tokens_details.cached_tokens` (OpenAI, xAI, 9router),
+ * `prompt_tokens_details.cache_creation_tokens` (9router), `prompt_tokens_details.cache_write_tokens`
+ * (OpenRouter), `prompt_cache_hit_tokens` (DeepSeek), and top-level `cache_read_input_tokens` /
+ * `cache_creation_input_tokens` (LiteLLM and other Anthropic-shaped proxies). A usage with no cache
+ * tokens maps exactly as before, with no cache fields.
+ */
+export function parseCompatibleUsage(raw: unknown): Usage | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const usage = raw as Record<string, unknown>;
+  const details =
+    usage.prompt_tokens_details && typeof usage.prompt_tokens_details === 'object'
+      ? (usage.prompt_tokens_details as Record<string, unknown>)
+      : {};
+  const tokens = (value: unknown): number =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+  const firstCount = (...values: unknown[]): number => {
+    for (const value of values) {
+      const count = tokens(value);
+      if (count > 0) return count;
+    }
+    return 0;
+  };
+  const prompt = tokens(usage.prompt_tokens);
+  const base: Usage = {
+    promptTokens: prompt,
+    completionTokens: tokens(usage.completion_tokens),
+    totalTokens: tokens(usage.total_tokens),
+  };
+  const read = firstCount(
+    details.cached_tokens,
+    usage.prompt_cache_hit_tokens,
+    usage.cache_read_input_tokens,
+  );
+  const write = firstCount(
+    details.cache_creation_tokens,
+    details.cache_write_tokens,
+    usage.cache_creation_input_tokens,
+  );
+  if (read === 0 && write === 0) return base;
+  const inclusive = read + write <= prompt;
+  return {
+    ...base,
+    promptTokens: inclusive ? prompt - read - write : prompt,
+    cacheReadInputTokens: read,
+    cacheCreationInputTokens: write,
+    contextTokens: inclusive ? prompt : prompt + read + write,
+  };
+}
+
 export function convertTools(tools: ToolDefinition[]): Array<{
   type: 'function';
   function: { name: string; description: string; parameters: Record<string, unknown> };
@@ -232,6 +289,8 @@ export async function* chatCompletionStream(
       promptTokens: currentUsage?.promptTokens ?? 0,
       completionTokens: currentUsage?.completionTokens ?? 0,
       totalTokens: currentUsage?.totalTokens ?? 0,
+      cacheReadInputTokens: currentUsage?.cacheReadInputTokens ?? 0,
+      cacheCreationInputTokens: currentUsage?.cacheCreationInputTokens ?? 0,
     });
     yield {
       type: 'done',
@@ -257,13 +316,8 @@ export async function* chatCompletionStream(
       if (typeof parsed.model === 'string') responseModel = parsed.model;
       if (typeof parsed.id === 'string') responseId = parsed.id;
       // OpenAI sends usage on the final chunk when stream_options.include_usage is set.
-      if (parsed.usage) {
-        currentUsage = {
-          promptTokens: parsed.usage.prompt_tokens ?? 0,
-          completionTokens: parsed.usage.completion_tokens ?? 0,
-          totalTokens: parsed.usage.total_tokens ?? 0,
-        };
-      }
+      const usage = parseCompatibleUsage(parsed.usage);
+      if (usage) currentUsage = usage;
       const choice = parsed.choices?.[0];
       if (!choice) return false;
       const finishReason: unknown = choice.finish_reason;

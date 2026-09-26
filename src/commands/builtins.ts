@@ -22,7 +22,14 @@ import {
   listMemoryCandidates,
   type MemoryFileSummary,
 } from '../memory-store.js';
-import { costReport, failureTotal, PRICING, usageReport, type DelegatedUsage } from '../pricing.js';
+import {
+  costReport,
+  failureTotal,
+  PRICING,
+  usageCostUsd,
+  usageReport,
+  type DelegatedUsage,
+} from '../pricing.js';
 import { buildContextBreakdown, buildContextReport, sourceLabel } from '../context-report.js';
 import { resolveContextWindow } from '../models.js';
 import type { SkillRegistrySnapshot } from '../skill-registry.js';
@@ -517,10 +524,7 @@ function agentCommandEffect(
 function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffect {
   const rate = PRICING[context.runtimeConfig.model];
   const estimatedCostUsd =
-    context.usage && rate
-      ? (context.usage.promptTokens * rate.in + context.usage.completionTokens * rate.out) /
-        1_000_000
-      : undefined;
+    context.usage && rate ? (usageCostUsd(rate, context.usage) ?? undefined) : undefined;
   const toolCallStats =
     context.toolCallStats && context.toolCallStats.size > 0
       ? [...context.toolCallStats.entries()]
