@@ -457,19 +457,53 @@ describe('idle Ctrl+C exit confirmation', () => {
   });
 
   it.each(['isCompacting', 'isRewinding'])(
-    'the exit window is disarmed when %s starts, and one press while it runs only arms it',
+    'the exit window is disarmed when %s starts',
     async (flag) => {
-      const { view, state, rerenderWith } = await startIdleApp();
+      const { view, rerenderWith } = await startIdleApp();
       freezeExitWindow();
 
       await armExit(view);
       rerenderWith({ [flag]: true });
       await waitForFrameWithout(view, CTRL_C_EXIT_HINT_TEXT);
-
-      await armExit(view);
-      expect(state.endCurrentSession).not.toHaveBeenCalled();
     },
   );
+
+  // #268 item 4: the cancel branch checked only the turn, the send and the command resolution,
+  // so two presses during a /compact armed the window and then exited halfway through it.
+  it('Ctrl+C during a /compact cancels it, however often it is pressed, and never exits', async () => {
+    const { view, state, rerenderWith } = await startIdleApp({ isCompacting: true });
+
+    press(view, '\x03');
+    await waitUntil(() => expect(state.cancel).toHaveBeenCalledTimes(1));
+    press(view, '\x03');
+    await waitUntil(() => expect(state.cancel).toHaveBeenCalledTimes(2));
+    rerenderWith({ isCompacting: true });
+
+    expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
+    expect(state.endCurrentSession).not.toHaveBeenCalled();
+  });
+
+  // The working row says "Esc to cancel" during a /compact; Esc did nothing there.
+  it('Esc during a /compact cancels it', async () => {
+    const { view, state } = await startIdleApp({ isCompacting: true });
+
+    press(view, '\x1b');
+
+    await waitUntil(() => expect(state.cancel).toHaveBeenCalledTimes(1));
+  });
+
+  // A rewind cannot be cancelled halfway, and it is over in a moment: a press waits it out.
+  it('Ctrl+C during a rewind neither arms the exit window nor exits', async () => {
+    const { view, state, rerenderWith } = await startIdleApp({ isRewinding: true });
+
+    press(view, '\x03');
+    press(view, '\x03');
+    rerenderWith({ isRewinding: true });
+
+    expect(frameOf(view)).not.toContain(CTRL_C_EXIT_HINT_TEXT);
+    expect(state.endCurrentSession).not.toHaveBeenCalled();
+    expect(state.cancel).not.toHaveBeenCalled();
+  });
 
   it('the exit window is disarmed when command resolution starts', async () => {
     discoverCommandsMock.mockReturnValueOnce([
@@ -615,17 +649,53 @@ describe('idle Ctrl+C exit confirmation', () => {
     rerenderWith({ isThinking: false, endCurrentSession });
     expect(state.send).not.toHaveBeenCalled();
 
-    // While SessionEnd runs: a recalled input resubmitted, then another removed with Esc,
-    // which would otherwise resume the queue.
-    press(view, '\x1b[A');
-    await waitForFrame(view, '> second queued');
+    // #268 item 6: while SessionEnd runs the composer says why it takes nothing, instead of
+    // the paused-queue notice offering actions that no longer do anything.
+    await waitForFrame(view, 'Exiting');
+    expect(frameOf(view)).not.toContain('Queue paused');
+
+    // Text typed now stays in the composer rather than vanishing on Enter.
+    press(view, 'typed while exiting');
+    await waitForFrame(view, '> typed while exiting');
     press(view, '\r');
-    press(view, '\x1b');
-    await waitForFrame(view, 'Queued input removed.');
     rerenderWith({ isThinking: false, endCurrentSession });
+    expect(frameOf(view)).toContain('> typed while exiting');
+
+    // And the queue stays where it is: Up recalls nothing from it.
+    press(view, '\x15');
+    await waitForFrameWithout(view, '> typed while exiting');
+    press(view, '\x1b[A');
+    rerenderWith({ isThinking: false, endCurrentSession });
+    expect(frameOf(view)).not.toContain('Editing queued input');
 
     expect(state.send).not.toHaveBeenCalled();
     expect(endCurrentSession).toHaveBeenCalledTimes(1);
+  });
+
+  // #268 item 6: an exit ended the UI but not the work under it, so approving a permission
+  // prompt while a slow SessionEnd ran still ran the tool.
+  it('an exit cancels the work still running, such as a pending permission prompt', async () => {
+    const fireConfig = startupFireConfig();
+    const endCurrentSession = vi
+      .fn<(reason: string) => Promise<void>>()
+      .mockImplementationOnce(() => new Promise<void>(() => {}))
+      .mockResolvedValue(undefined);
+    const { view, state } = await startIdleApp(
+      {
+        liveConfig: fireConfig,
+        endCurrentSession,
+        pendingPermission: {
+          toolCall: { id: 'call-1', name: 'Bash', arguments: { command: 'ls' } },
+        },
+      },
+      fireConfig,
+    );
+
+    await armExit(view);
+    press(view, '\x03');
+
+    await waitUntil(() => expect(endCurrentSession).toHaveBeenCalledWith('exit'));
+    expect(state.cancel).toHaveBeenCalled();
   });
 
   it('the crash screen exits through the same latch', async () => {
@@ -896,5 +966,165 @@ describe('queue notices for one-off events', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     vi.advanceTimersByTime(10_000);
     expect(frameOf(view)).toContain('Editing queued input');
+  });
+});
+
+describe('command resolution interrupted (#262)', () => {
+  // `interrupt()` cleared the resolution's ref, and the resolution's `finally` reset the flag
+  // only while the ref still pointed at it, so after Esc "Resolving…" stayed up and the
+  // composer refused everything, /exit included, for the rest of the session.
+  it.each([
+    ['Esc', '\x1b'],
+    ['Ctrl+C', '\x03'],
+  ])('%s during a shell expansion ends it and frees the composer', async (_name, sequence) => {
+    discoverCommandsMock.mockReturnValueOnce([
+      { name: 'slow', description: 'Slow command', body: '!`slow command`', source: 'project' },
+    ]);
+    resolveCommandBodyMock.mockImplementationOnce(
+      (_command: unknown, _argument: unknown, _context: unknown, signal: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+    const { view, state } = await startIdleApp();
+    press(view, '/slow');
+    await waitForFrame(view, '> /slow');
+    press(view, '\r');
+    await waitForFrame(view, 'Resolving command shell expansions...');
+
+    press(view, sequence);
+    await waitForFrameWithout(view, 'Resolving command shell expansions...');
+
+    press(view, 'after the interrupt');
+    await waitForFrame(view, '> after the interrupt');
+    press(view, '\r');
+    await waitUntil(() => expect(state.send).toHaveBeenCalledWith('after the interrupt'));
+  });
+});
+
+describe('keys that reach a handler one render behind (#268)', () => {
+  async function typeUntilRendered(view: ReturnType<typeof render>, text: string) {
+    view.stdin.write(text);
+    for (let turn = 0; turn < 100 && !frameOf(view).includes(`> ${text}`); turn++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(frameOf(view)).toContain(`> ${text}`);
+  }
+
+  // Item 1: Tab read the composer's `value` from the render before, saw it empty, and
+  // replaced the typed text with the placeholder suggestion.
+  it('Tab right after a draft renders keeps the draft', async () => {
+    const { view, rerenderWith } = await startIdleApp();
+    await typeUntilRendered(view, 'typed draft');
+
+    view.stdin.write('\t');
+    for (let turn = 0; turn < 20; turn++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    rerenderWith({});
+
+    expect(frameOf(view)).toContain('> typed draft');
+    expect(frameOf(view)).not.toContain('Ask me anything');
+  });
+
+  /** Submit `text` idle, so it is the newest composer history entry. */
+  async function submitToHistory(
+    view: ReturnType<typeof render>,
+    state: ReturnType<typeof agentState>,
+    text: string,
+  ) {
+    press(view, text);
+    await waitForFrame(view, `> ${text}`);
+    press(view, '\r');
+    await waitUntil(() => expect(state.send).toHaveBeenCalledWith(text));
+    await waitForFrameWithout(view, `> ${text}`);
+  }
+
+  // Item 2: Up set the composer's value, but InputBox kept editing its own copy until the
+  // next render, so a key in the same read edited the text Up had just replaced.
+  it('a character in the same read as Up edits the recalled history entry', async () => {
+    const { view, state } = await startIdleApp();
+    await submitToHistory(view, state, 'recalled entry');
+    press(view, 'abc');
+    await waitForFrame(view, '> abc');
+
+    press(view, '\x1b[Ax');
+
+    await waitForFrame(view, '> recalled entryx');
+  });
+
+  it('Enter in the same read as Up submits the recalled history entry', async () => {
+    const { view, state } = await startIdleApp();
+    await submitToHistory(view, state, 'send me twice');
+
+    press(view, '\x1b[A\r');
+
+    await waitUntil(() => expect(state.send).toHaveBeenCalledTimes(2));
+    expect(state.send).toHaveBeenLastCalledWith('send me twice');
+  });
+});
+
+describe('queue edges (#268)', () => {
+  // Item 5: `/queue` replacing a recalled edit announced the count over the "Queue paused"
+  // notice, so nothing on screen said the rest of the queue was waiting.
+  it('/queue replacing a recalled edit still says the queue is paused', async () => {
+    const { view, rerenderWith } = await startIdleApp({ isThinking: true });
+    await queueAndRecallNewest(view, ['first queued', 'second queued']);
+    rerenderWith({ isThinking: false });
+
+    press(view, '\x15');
+    await waitForFrameWithout(view, '> second queued');
+    press(view, '/queue');
+    await waitForFrame(view, '> /queue');
+    // Close the command menu first: Enter on an open menu submits the selected command.
+    press(view, ' ');
+    press(view, '\r');
+
+    await waitForFrame(view, 'Queue paused');
+    expect(frameOf(view)).toContain('1 follow-up input queued');
+  });
+
+  // Item 7: resubmitting a recalled edit into a queue that filled up meanwhile dropped the
+  // text, because the rejected enqueue was ignored.
+  it('a recalled edit resubmitted into a full queue stays in the composer', async () => {
+    let finishFirstSend: (result: { status: 'rejected' }) => void = () => {};
+    const send = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishFirstSend = resolve;
+          }),
+      )
+      .mockResolvedValue({ status: 'completed', messages: [] });
+    const { view, rerenderWith } = await startIdleApp({ isThinking: true, send });
+    const texts = Array.from({ length: 10 }, (_, index) => `queued ${index + 1}`);
+    for (const [index, text] of texts.entries()) {
+      press(view, text);
+      await waitForFrame(view, `> ${text}`);
+      press(view, '\r');
+      await waitForFrame(view, `Queued follow-up inputs (${index + 1})`);
+    }
+
+    // The turn ends; the queue sends its first input, which is still in flight.
+    rerenderWith({ isThinking: false, send });
+    await waitUntil(() => expect(send).toHaveBeenCalledWith('queued 1'));
+    // Meanwhile a tenth input fills the queue again, and Up recalls it for editing.
+    press(view, 'late input');
+    await waitForFrame(view, '> late input');
+    press(view, '\r');
+    await waitForFrame(view, 'Queued follow-up inputs (10)');
+    press(view, '\x1b[A');
+    await waitForFrame(view, 'Editing queued input');
+    // The first send never started, so it goes back to the front: the queue is full again.
+    finishFirstSend({ status: 'rejected' });
+    await waitForFrame(view, 'Queued follow-up inputs (10)');
+
+    press(view, ' edited');
+    await waitForFrame(view, '> late input edited');
+    press(view, '\r');
+
+    await waitForFrame(view, 'Queue is full');
+    expect(frameOf(view)).toContain('> late input edited');
   });
 });

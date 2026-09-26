@@ -175,6 +175,37 @@ describe('runMainAction — slash commands in print mode', () => {
     expect(provider.requests.length).toBe(0);
   });
 
+  // #268 item 9: the interactive branch still called exit(1), for a reason that no longer
+  // held: the `finally` around the TUI has unmounted Ink and restored the screen by then.
+  it('fails an interactive launch through the exit code too, not exit()', async () => {
+    const workspace = printWorkspace();
+    const exits: number[] = [];
+    const exitCodes: number[] = [];
+    setExitFn(((code: number) => {
+      exits.push(code);
+      throw new Error(`unexpected exit(${code})`);
+    }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      exitCodes.push(code);
+    });
+    const errors: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+
+    // --resume with persistence off fails in the launch, before any TUI is drawn.
+    await runMainAction({
+      workspace,
+      settings: false,
+      sessionPersistence: false,
+      resume: 'no-such-session',
+    });
+
+    expect(exits).toEqual([]);
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('Session persistence is disabled');
+  });
+
   it('runs a resolved custom command body and exits normally', async () => {
     const workspace = printWorkspace();
     mkdirSync(join(workspace, '.book', 'commands'), { recursive: true });

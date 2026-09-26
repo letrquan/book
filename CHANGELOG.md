@@ -276,6 +276,42 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Esc during a custom command's shell expansion no longer hangs the TUI** (#262). `interrupt()`
+  cleared the resolution's handle, and the resolution reset its "Resolving…" flag only while that
+  handle still pointed at it, so the flag stayed set: the line stayed on screen and the composer
+  refused everything, `/exit` included, until the process was killed. Esc and Ctrl+C now end the
+  resolution and free the composer at once.
+- **Keys act on the draft on screen, not the one a render before** (#268). Tab right after typing
+  replaced the draft with the placeholder suggestion, because it read the composer's value from
+  the render before. Up followed by a character in one read edited the text Up had just replaced
+  (`abc`, Up, `x` gave `abcx`), and Up then Enter submitted nothing, because the editor kept its
+  own copy of the draft until the next render. Every key now starts from the draft as the key
+  ahead of it left it. Enter on a slash command the command menu does not list, such as `/queue`,
+  now submits it as typed instead of clearing the composer, and Backspace from an empty composer
+  removes an attached image on terminals that send it as DEL, without taking the image along with
+  a draft's last character.
+- **Ctrl+C during `/compact` cancels it; during a rewind it waits** (#268). The cancel branch
+  checked only a turn, a send and a command resolution, so two presses during a compaction or a
+  rewind armed the exit window and then exited halfway through it. Esc cancels a `/compact` too,
+  as its "Esc to cancel" hint always said. A cancelled compaction now says `Compaction cancelled.`
+  rather than reporting the aborted reducer stream as a failure.
+- **An exit in progress says so, and ends the work under it** (#268). While SessionEnd ran, the
+  composer still took text and silently dropped it on Enter, and the paused-queue notice kept
+  offering actions that did nothing. The composer now shows "Exiting…" (or "Exiting: running
+  SessionEnd hooks…"), keeps what you type, and stops recalling queued inputs. The exit also
+  cancels the running turn and any open prompt, so approving a permission prompt during a slow
+  SessionEnd no longer runs the tool. A second exit, or a `/clear` racing one, now waits for the
+  SessionEnd already running instead of returning at once.
+- **`/queue` no longer hides a paused queue** (#268). With the queue paused behind a replaced
+  edit, `/queue` announced the count over the "Queue paused" notice, and nothing on screen said
+  the queue was waiting. It now says both.
+- **A recalled input resubmitted into a full queue stays in the composer** (#268). If the queue
+  filled up while an input was out for editing, Enter warned that the queue was full and dropped
+  the text. It is now put back, still recalled, and the resubmission follows the transcript to
+  the bottom as any other does.
+- **A failed interactive launch exits through the exit code** (#268). The TUI branch still called
+  `exit(1)` directly, for a reason (Ink holding stdin) that no longer held; it now marks the exit
+  code and lets Node exit once its handles close, as print mode does since #243.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller

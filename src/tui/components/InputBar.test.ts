@@ -1214,3 +1214,51 @@ describe('composer layout reporting', () => {
     expect(onLayoutChange.mock.calls.length).toBeGreaterThan(settled);
   });
 });
+
+describe('keys judged against the draft the key arrived to (#268)', () => {
+  const attachment: ImageAttachment = {
+    id: 'img-1',
+    sha256: 'hash',
+    storageKey: 'hash.png',
+    mediaType: 'image/png',
+    byteSize: 2048,
+    displayName: 'clipboard.png',
+  };
+
+  // Backspace removes an attachment only from an empty composer. The editor deletes the draft's
+  // last character before this handler sees the key, so judged by the draft as the key left it,
+  // one Backspace took the last character and the image together.
+  it('Backspace on the last character of a draft keeps the attached image', async () => {
+    const view = render(inputBar(() => {}, { onPasteImage: async () => attachment }));
+    await tick();
+    view.stdin.write('\x1bv');
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).toContain('[image 1');
+    view.stdin.write('a');
+    await tick(20);
+
+    view.stdin.write('\x7f');
+    await tick(20);
+
+    expect(stripAnsi(view.lastFrame())).toContain('[image 1');
+    view.stdin.write('\x7f');
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).not.toContain('[image 1');
+  });
+
+  // With the command menu open, Enter ran the selected command, and when nothing matched it
+  // cleared the composer without a word. `/queue` is handled by the app rather than listed in
+  // the catalog, so typing it and pressing Enter did nothing at all.
+  it('Enter on a slash command the menu does not list submits it as typed', async () => {
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value)));
+    await tick();
+    view.stdin.write('/queue');
+    await tick(20);
+
+    view.stdin.write('\r');
+    await tick(20);
+
+    expect(submitted).toEqual(['/queue']);
+  });
+});

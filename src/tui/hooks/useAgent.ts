@@ -1445,13 +1445,19 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           });
           return;
         }
+        // A cancelled compaction (Esc or Ctrl+C) ends on its aborted reducer stream, which is
+        // not a failure to report.
         if (result.status === 'failed') {
-          setCompactUi({
-            phase: 'error',
-            trigger: 'manual',
-            preMessages,
-            message: result.error,
-          });
+          setCompactUi(
+            operation.signal?.aborted
+              ? {
+                  phase: 'skipped',
+                  trigger: 'manual',
+                  preMessages,
+                  message: 'Compaction cancelled.',
+                }
+              : { phase: 'error', trigger: 'manual', preMessages, message: result.error },
+          );
           return;
         }
 
@@ -1472,12 +1478,21 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         });
       } catch (e) {
         if (stillCurrent()) {
-          setCompactUi({
-            phase: 'error',
-            trigger: 'manual',
-            preMessages,
-            message: e instanceof Error ? e.message : String(e),
-          });
+          setCompactUi(
+            operation.signal?.aborted
+              ? {
+                  phase: 'skipped',
+                  trigger: 'manual',
+                  preMessages,
+                  message: 'Compaction cancelled.',
+                }
+              : {
+                  phase: 'error',
+                  trigger: 'manual',
+                  preMessages,
+                  message: e instanceof Error ? e.message : String(e),
+                },
+          );
         }
       } finally {
         if (stillCurrent()) setIsCompacting(false);
