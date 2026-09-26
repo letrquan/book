@@ -408,6 +408,15 @@ export interface ToolDiscoveryContext {
     namespace?: string,
     limit?: number,
   ): ToolSearchMatch[];
+  /**
+   * Names of tools already active this turn that match a query, best first, filtered by the
+   * category and namespace the caller searched with. Optional so a discovery object built without
+   * it keeps working; ToolSearch then only reports that nothing deferred matched.
+   */
+  activeMatches?(
+    query: string,
+    filter?: { category?: ToolCategory; namespace?: string; limit?: number },
+  ): string[];
   /** Activate selected definitions for the next provider request. */
   activate(names: string[]): string[];
   /** Intersect the current surface with an additional command/skill capability policy. */
@@ -423,6 +432,14 @@ export interface ToolDiscoveryContext {
    * registry then runs `canExecute` in its place.
    */
   isActive?(name: string): boolean;
+  /**
+   * Whether the run's capability rules admit this tool at all, ignoring activation:
+   * a name it refuses can never be activated by a search, so a refusal for it names
+   * the run's allowed tools rather than ToolSearch. Optional so a discovery object
+   * built without it keeps working; the registry then cannot tell "not active" from
+   * "not allowed" and reports the former.
+   */
+  isAuthorized?(name: string): boolean;
   /** Whether a tool is currently visible and executable for this turn. */
   canExecute(call: ToolCall): boolean;
   /** Definitions to send to the provider for the current request. */

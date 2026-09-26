@@ -455,6 +455,484 @@ describe('invalid JSON tool-call arguments', () => {
     expect(refused.status).toBe('blocked');
     expect(refused.structuredError?.code).toBe('tool_not_active');
   });
+
+  it('tells a call whose first fragment never arrived to resend unchanged', async () => {
+    // 9router's cmc/stealth route drops the opening `{"filePath": ` on the wire
+    // (#260). The model's JSON was fine, so "escape backslashes" is the wrong
+    // advice and only makes it resend a mangled call again.
+    const { registry, execute } = editLikeRegistry();
+    const runtime = new SessionRuntime();
+    const context: ToolContext = { workspaceRoot: dir, env: {}, runtime };
+    const dropped = '/tools/file.ts", "oldString": "a", "newString": "b"}';
+
+    const result = await registry.execute(
+      { id: 'cut-start', name: 'Edit', arguments: { __raw: dropped } },
+      context,
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(result.structuredError?.code).toBe('invalid_json_arguments');
+    const message = result.structuredError?.message ?? '';
+    expect(message).toContain('truncated at the start');
+    expect(message).toContain('"/tools/file.ts');
+    expect(result.structuredError?.details?.shape).toBe('truncated_start');
+    // The route dropped it, not the model: the same call resent is the fix, so the
+    // repeat breaker must not answer it with "do not retry it unchanged".
+    expect(result.structuredError?.retryable).toBe(true);
+    const remediation = result.structuredError?.remediation ?? '';
+    expect(remediation).toContain('dropped the first fragment');
+    expect(remediation).toContain('Resend the whole call');
+    expect(remediation).not.toContain('escape backslashes');
+
+    const second = await registry.execute(
+      { id: 'cut-start-2', name: 'Edit', arguments: { __raw: dropped } },
+      context,
+    );
+
+    expect(second.structuredError?.code).toBe('invalid_json_arguments');
+    expect(second.structuredError?.remediation ?? '').not.toContain('Do not retry it unchanged');
+    runtime.dispose();
+  });
+
+  it.each([
+    ['a one-argument call whose opening never arrived', 'ls -la"}'],
+    ['a bare path', 'src/a.ts"}'],
+    [
+      'a fragment that ends inside a string holding a brace',
+      'unction f() { return 1; }", "path": "x"}',
+    ],
+  ])('names %s truncated at the start', async (_label, raw) => {
+    // A dropped opening leaves no `":` separator for the old tail test to key on, and a
+    // fragment that ends inside a string reads as a whole object inside other text. Both
+    // are the same wire loss, so both must name the route that dropped the fragment.
+    const { registry } = editLikeRegistry();
+
+    const result = await registry.execute(
+      { id: 'tail', name: 'Edit', arguments: { __raw: raw } },
+      ctx,
+    );
+
+    expect(result.structuredError?.details?.shape).toBe('truncated_start');
+    expect(result.structuredError?.message).toContain('truncated at the start');
+    expect(result.structuredError?.remediation).toContain('dropped the first fragment');
+  });
+
+  it.each([
+    ['a code fence', ['```json', '{"filePath": "a"}', '```'].join('\n')],
+    ['a tag', '<args>{"filePath": "a"}</args>'],
+    ['text after the object', '{"filePath": "a"}garbage'],
+  ])('names %s as wrapped, not as cut off', async (_label, raw) => {
+    // A code fence is the model's own formatting mistake, and resending the same
+    // text unchanged would only reproduce it.
+    const { registry } = editLikeRegistry();
+
+    const result = await registry.execute(
+      { id: 'wrapped', name: 'Edit', arguments: { __raw: raw } },
+      ctx,
+    );
+
+    expect(result.structuredError?.details?.shape).toBe('wrapped');
+    expect(result.structuredError?.remediation).toContain('bare JSON object');
+  });
+
+  it('names a backslash that escapes the closing quote as a syntax error, not a cut-off', async () => {
+    // A Windows path ending in `\` makes V8 report an unterminated string at the very
+    // end, which read as "the output was cut off" and sent the model to resend the
+    // identical call; the fix is the escape.
+    const { registry } = editLikeRegistry();
+    const windowsPath = `{"path": "src${String.fromCharCode(92)}"}`;
+
+    const result = await registry.execute(
+      { id: 'escaped-quote', name: 'Edit', arguments: { __raw: windowsPath } },
+      ctx,
+    );
+
+    expect(result.structuredError?.details?.shape).toBe('syntax');
+    expect(result.structuredError?.remediation).toContain('escapes the quote');
+  });
+
+  it.each([
+    ['plain text', 'ls -la'],
+    // A well-formed array is not a parse failure, so the providers hand it over as a real
+    // object and it never reaches this shape test; an array that arrives as text does.
+    ['a JSON array', '[{"filePath": "a"},]'],
+    // Balanced braces, and no quoted key or value: a function body is text, not an object
+    // that lost its opening. "Resend the same call" would reproduce it exactly.
+    ['a function body', 'function f() { return 1; }'],
+  ])('names %s as not a JSON object at all', async (_label, raw) => {
+    const { registry } = editLikeRegistry();
+
+    const result = await registry.execute(
+      { id: 'no-object', name: 'Edit', arguments: { __raw: raw } },
+      ctx,
+    );
+
+    expect(result.structuredError?.details?.shape).toBe('not_object');
+  });
+
+  it.each([
+    // The router dropped `{"todos": [` and left the array's contents, so the closers
+    // outnumber the openers. V8 reads that as one complete object followed by text, and
+    // the advice was to strip the text around an object that is not whole.
+    [
+      'a nested array whose opening never arrived',
+      '{"content":"x","status":"pending"}, {"content":"y","status":"done"}]}',
+    ],
+  ])('names %s truncated at the start', async (_label, raw) => {
+    const { registry, execute } = editLikeRegistry();
+
+    const result = await registry.execute(
+      { id: 'dropped-array', name: 'Edit', arguments: { __raw: raw } },
+      ctx,
+    );
+
+    expect(result.structuredError?.code).toBe('invalid_json_arguments');
+    expect(result.structuredError?.details?.shape).toBe('truncated_start');
+    expect(result.structuredError?.retryable).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    // Cut off right after an escaped quote: the command was `echo "hi"` and the tail
+    // (`"}`) never arrived. The escaped quote used to read as a backslash the model must
+    // double, which would have rewritten the command it meant to run.
+    [`{"command": "echo ${backslash}"hi${backslash}""`],
+    [`{"command": "echo hi${backslash}"`],
+  ])('reads a call cut off after an escaped quote as cut off at the end', async (raw) => {
+    const { registry } = editLikeRegistry();
+
+    const result = await registry.execute(
+      { id: 'escaped-cut', name: 'Edit', arguments: { __raw: raw } },
+      ctx,
+    );
+
+    expect(result.structuredError?.details?.shape).toBe('truncated_end');
+    expect(result.structuredError?.remediation).not.toContain('escapes the quote');
+  });
+
+  it('reads leading whitespace before the object as cut off at the end, not the start', async () => {
+    const { registry } = editLikeRegistry();
+
+    const result = await registry.execute(
+      { id: 'ws-start', name: 'Edit', arguments: { __raw: '  {"filePath": "a"' } },
+      ctx,
+    );
+
+    expect(result.structuredError?.details?.shape).toBe('truncated_end');
+    expect(result.structuredError?.message).toContain('The text ends');
+  });
+
+  it('names two objects concatenated into one call', async () => {
+    const { registry } = editLikeRegistry();
+
+    const result = await registry.execute(
+      {
+        id: 'two-objects',
+        name: 'Edit',
+        arguments: { __raw: '{"filePath":"a"}{"oldString":"b"}' },
+      },
+      ctx,
+    );
+
+    expect(result.structuredError?.details?.shape).toBe('concatenated');
+    expect(result.structuredError?.remediation).toContain('one JSON object per call');
+  });
+
+  it('names single-quoted keys, which JSON does not have', async () => {
+    const { registry } = editLikeRegistry();
+
+    const result = await registry.execute(
+      { id: 'single-quotes', name: 'Edit', arguments: { __raw: "{'filePath': 'a'}" } },
+      ctx,
+    );
+
+    expect(result.structuredError?.details?.shape).toBe('single_quoted');
+    expect(result.structuredError?.remediation).toContain('double quotes');
+  });
+
+  it('quotes the text on both sides of the position, which the model cannot otherwise find', async () => {
+    const { registry } = editLikeRegistry();
+
+    const result = await registry.execute(
+      { id: 'around', name: 'Edit', arguments: { __raw: badEscape } },
+      ctx,
+    );
+
+    const message = result.structuredError?.message ?? '';
+    expect(message).toContain('The text before position');
+    expect(message).toContain('and the text from it starts');
+    // The raw text is never shown to the model again as such — its replayed call is
+    // `JSON.stringify({__raw})` — so the position only means something with the text
+    // quoted around it. The model's own backslash is JSON-escaped, not folded away.
+    const position = Number(/at position (\d+)/.exec(message)?.[1]);
+    expect(position).toBeGreaterThan(0);
+    expect(message).toContain(
+      JSON.stringify(badEscape.slice(Math.max(0, position - 30), position)),
+    );
+    expect(message).toContain(JSON.stringify(badEscape.slice(position, position + 30)));
+    expect(message).toContain(backslash + backslash);
+    expect(message).toContain('d+/');
+  });
+
+  it('shows an invisible offending character as an escape rather than folding it away', async () => {
+    const { registry } = editLikeRegistry();
+    const nul = String.fromCharCode(0);
+
+    const result = await registry.execute(
+      { id: 'nul', name: 'Edit', arguments: { __raw: `{"filePath": "a", ${nul}}` } },
+      ctx,
+    );
+
+    const message = result.structuredError?.message ?? '';
+    // V8 reports `Expected double-quoted property name … at position 18` and shows no
+    // character, so the quoted text around the position is the only place the NUL is
+    // visible — folded to a space it would read as ordinary JSON.
+    expect(message).toContain([backslash, 'u0000'].join(''));
+    expect(message).not.toContain(nul);
+  });
+});
+
+describe('rejectBeforeGates', () => {
+  function editLikeRegistry() {
+    const execute = vi.fn(async () => toolSuccess('ok'));
+    const registry = createRegistry();
+    registry.register({
+      name: 'Edit',
+      description: 'edit a file',
+      parameters: {
+        type: 'object',
+        properties: {
+          filePath: { type: 'string' },
+          oldString: { type: 'string' },
+          newString: { type: 'string' },
+        },
+        required: ['filePath', 'oldString', 'newString'],
+      },
+      execute,
+    });
+    return { registry, execute };
+  }
+
+  const badEscape = `{"filePath":"src/a.ts","oldString":"const re = /${String.fromCharCode(92)}d+/;","newString":"x"}`;
+  const inactiveDiscovery: ToolContext['toolDiscovery'] = {
+    search: () => [],
+    activate: () => [],
+    restrict: () => {},
+    pushRestriction: () => () => {},
+    previewRestriction: () => [],
+    isActive: () => false,
+    canExecute: () => true,
+    activeDefinitions: () => [],
+    catalogSummary: () => '',
+  };
+
+  it('says nothing for a visible tool whose arguments passed the schema', () => {
+    const { registry } = editLikeRegistry();
+
+    expect(
+      registry.rejectBeforeGates(
+        {
+          id: 'ok-1',
+          name: 'Edit',
+          arguments: { filePath: 'a.ts', oldString: 'a', newString: 'b' },
+        },
+        ctx,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('refuses a name no registered tool answers to', () => {
+    // A call the agent loop would have taken to a PreToolUse hook and the permission
+    // prompt, both of which can only judge it wrongly.
+    const { registry } = editLikeRegistry();
+
+    const result = registry.rejectBeforeGates(
+      { id: 'unknown-1', name: 'NoSuchTool', arguments: { __raw: badEscape } },
+      ctx,
+    );
+
+    expect(result?.structuredError?.code).toBe('unknown_tool');
+  });
+
+  it('returns the invalid-JSON rejection the registry would have produced', () => {
+    const { registry, execute } = editLikeRegistry();
+
+    const result = registry.rejectBeforeGates(
+      { id: 'unparsed-1', name: 'Edit', arguments: { __raw: badEscape } },
+      ctx,
+    );
+
+    expect(result?.structuredError?.code).toBe('invalid_json_arguments');
+    expect(result?.structuredError?.details?.shape).toBe('syntax');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses an inactive tool as inactive, before the JSON verdict', () => {
+    const { registry } = editLikeRegistry();
+
+    const result = registry.rejectBeforeGates(
+      { id: 'unparsed-2', name: 'Edit', arguments: { __raw: badEscape } },
+      { ...ctx, toolDiscovery: inactiveDiscovery },
+    );
+
+    expect(result?.status).toBe('blocked');
+    expect(result?.structuredError?.code).toBe('tool_not_active');
+  });
+
+  it('leaves an inactive tool whose arguments parsed to rejectBeforePrompt', () => {
+    // A mode hides tools as well (plan mode its mutating tools), and the loop's own refusal
+    // names the mode; refusing here would pre-empt it with "call ToolSearch".
+    const { registry, execute } = editLikeRegistry();
+    const call = { id: 'inactive-1', name: 'Edit', arguments: { filePath: 'a.ts' } };
+    const context = { ...ctx, toolDiscovery: inactiveDiscovery };
+
+    expect(registry.rejectBeforeGates(call, context)).toBeUndefined();
+    expect(registry.rejectBeforePrompt(call, context)?.structuredError?.code).toBe(
+      'tool_not_active',
+    );
+    expect(registry.rejectBeforePrompt(call, ctx)).toBeUndefined();
+    expect(
+      registry.rejectBeforePrompt({ id: 'unknown-2', name: 'NoSuchTool', arguments: {} }, context),
+    ).toBeUndefined();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses schema-invalid arguments before the prompt, not at it', () => {
+    // A Bash call with no `command` has no primary argument, so the permission prompt has
+    // nothing to scope an "Always" rule to: the rule it saved was a bare `Bash`, allowing
+    // every Bash call afterwards. It must be refused where the prompt cannot see it.
+    const { registry, execute } = editLikeRegistry();
+    registry.register({
+      name: 'Bash',
+      description: 'run a shell command',
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string' } },
+        required: ['command'],
+      },
+      execute,
+    });
+
+    const result = registry.rejectBeforeGates(
+      { id: 'schema-1', name: 'Bash', arguments: { __raw: '{"script": "x"}' } },
+      ctx,
+    );
+
+    expect(result?.structuredError?.code).toBe('invalid_arguments');
+    expect(result?.structuredError?.message).toContain('Allowed arguments: command');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses an active tool whose arguments the run does not allow, without naming a search', () => {
+    // `Bash(git *)` against `rm -rf x`: the tool is already active, so "call ToolSearch to
+    // discover it" names a tool the model has and a search that cannot lift the rule.
+    const { registry, execute } = editLikeRegistry();
+    const argumentRefused: ToolContext['toolDiscovery'] = {
+      search: () => [],
+      activate: () => [],
+      restrict: () => {},
+      pushRestriction: () => () => {},
+      previewRestriction: () => [],
+      isActive: () => true,
+      canExecute: () => false,
+      activeDefinitions: () => [],
+      catalogSummary: () => '',
+    };
+    const call = {
+      id: 'args-1',
+      name: 'Edit',
+      arguments: { filePath: 'a.ts', oldString: 'a', newString: 'b' },
+    };
+    const context = { ...ctx, toolDiscovery: argumentRefused };
+
+    const result = registry.rejectBeforePrompt(call, context);
+
+    expect(result?.status).toBe('blocked');
+    expect(result?.structuredError?.code).toBe('arguments_not_allowed');
+    expect(result?.structuredError?.remediation).toContain('allowed-tools');
+    expect(result?.structuredError?.remediation).not.toContain('ToolSearch');
+    // The early gates know nothing about the arguments' rules, so the call is left to the
+    // prompt-side check and to `prepare`.
+    expect(registry.rejectBeforeGates(call, context)).toBeUndefined();
+    const prepared = registry.prepare(call, context);
+    expect(prepared.status).toBe('rejected');
+    expect(prepared.status === 'rejected' && prepared.result.structuredError?.code).toBe(
+      'arguments_not_allowed',
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('tells a tool outside the run that no search can activate it', async () => {
+    // `--allowedTools Read,Grep` makes Bash inactive and unauthorized at once. "Call
+    // ToolSearch to discover it" sends the model after a search that cannot return it,
+    // and the repeat escalation used to repeat that advice.
+    const { registry, execute } = editLikeRegistry();
+    const unauthorized: ToolContext['toolDiscovery'] = {
+      search: () => [],
+      activate: () => [],
+      restrict: () => {},
+      pushRestriction: () => () => {},
+      previewRestriction: () => [],
+      isActive: () => false,
+      isAuthorized: () => false,
+      canExecute: () => false,
+      activeDefinitions: () => [],
+      catalogSummary: () => '',
+    };
+    const runtime = new SessionRuntime();
+    const context: ToolContext = {
+      workspaceRoot: dir,
+      env: {},
+      runtime,
+      toolDiscovery: unauthorized,
+    };
+    const call = {
+      id: 'unauthorized-1',
+      name: 'Edit',
+      arguments: { filePath: 'a.ts', oldString: 'a', newString: 'b' },
+    };
+
+    const first = await registry.execute(call, context);
+    const second = await registry.execute({ ...call, id: 'unauthorized-2' }, context);
+
+    for (const result of [first, second]) {
+      expect(result.structuredError?.code).toBe('tool_not_active');
+      const remediation = result.structuredError?.remediation ?? '';
+      expect(remediation).toContain('allowed tools');
+      expect(remediation).not.toContain('ToolSearch');
+    }
+    expect(execute).not.toHaveBeenCalled();
+    runtime.dispose();
+  });
+
+  it('keys an aliased inactive call on the canonical name, so a resend escalates', async () => {
+    // `apply_patch` and `ApplyPatch` are one call: the model must not learn the second
+    // spelling is a different one, and a remembered refusal of one is the refusal of both.
+    const { registry } = editLikeRegistry();
+    registry.register({
+      name: 'ApplyPatch',
+      description: 'apply a patch',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => toolSuccess('ok'),
+    });
+    const runtime = new SessionRuntime();
+    const context: ToolContext = {
+      workspaceRoot: dir,
+      env: {},
+      runtime,
+      toolDiscovery: inactiveDiscovery,
+    };
+
+    await registry.execute({ id: 'alias-1', name: 'apply_patch', arguments: {} }, context);
+    const second = await registry.execute(
+      { id: 'alias-2', name: 'apply_patch', arguments: {} },
+      context,
+    );
+
+    expect(second.structuredError?.code).toBe('tool_not_active');
+    expect(second.structuredError?.remediation).toContain('activate it with ToolSearch first');
+    runtime.dispose();
+  });
 });
 
 describe('repeated identical failure escalation', () => {
@@ -544,6 +1022,83 @@ describe('repeated identical failure escalation', () => {
     expect(first.structuredError?.remediation).toBeUndefined();
     expect(second.status).toBe('blocked');
     expect(second.structuredError?.remediation).toMatch(/Do not retry it unchanged/);
+    runtime.dispose();
+  });
+
+  it('escalates a repeated identical refusal for a tool that is not active', async () => {
+    // An inactive tool is refused before it ever runs, so the model gets the same rejection
+    // turn after turn. "Call ToolSearch" alone never says whether the call was refused before,
+    // which is how a model re-sends it unchanged until the run is stopped.
+    const registry = createRegistry();
+    registry.register({
+      name: 'Deferred',
+      description: 'never active',
+      parameters: { type: 'object', properties: { q: { type: 'string' } } },
+      execute: async () => toolSuccess('never reached'),
+    });
+    const runtime = new SessionRuntime();
+    const context: ToolContext = {
+      workspaceRoot: dir,
+      env: {},
+      runtime,
+      toolDiscovery: {
+        isActive: () => false,
+        canExecute: () => false,
+      } as unknown as ToolContext['toolDiscovery'],
+    };
+    const args = { q: 'x' };
+
+    const first = await registry.execute({ id: 'i1', name: 'Deferred', arguments: args }, context);
+    const second = await registry.execute({ id: 'i2', name: 'Deferred', arguments: args }, context);
+
+    expect(first.structuredError?.code).toBe('tool_not_active');
+    expect(second.structuredError?.code).toBe('tool_not_active');
+    expect(second.structuredError?.remediation).toContain('Do not retry it unchanged');
+    // A refusal is not a failure, and "already failed" would send the model hunting a broken
+    // tool instead of the turn that never activated it.
+    expect(second.structuredError?.remediation).toContain('was already refused');
+    runtime.dispose();
+  });
+
+  it('forgets a call earlier failures once the same call succeeds', async () => {
+    // A fail/succeed/fail sequence is not a model spinning on one call: the second failure is
+    // the first failure of a new attempt, and counting the one before the success would tell
+    // the model not to retry a call that has since worked.
+    let attempt = 0;
+    const registry = createRegistry();
+    registry.register({
+      name: 'Intermittent',
+      description: 'fails, works, fails again',
+      parameters: { type: 'object', properties: { a: { type: 'string' } } },
+      execute: async () => {
+        attempt++;
+        return attempt === 2
+          ? toolSuccess('recovered')
+          : toolFailure('nope', { code: 'tool_error' });
+      },
+    });
+    const runtime = new SessionRuntime();
+    const context: ToolContext = { workspaceRoot: dir, env: {}, runtime };
+    const args = { a: 'x' };
+
+    const first = await registry.execute(
+      { id: 's1', name: 'Intermittent', arguments: args },
+      context,
+    );
+    const second = await registry.execute(
+      { id: 's2', name: 'Intermittent', arguments: args },
+      context,
+    );
+    const third = await registry.execute(
+      { id: 's3', name: 'Intermittent', arguments: args },
+      context,
+    );
+
+    expect(first.structuredError?.remediation).toBeUndefined();
+    expect(second.status).toBe('success');
+    // The success cleared the record, so the next failure is a first failure again.
+    expect(third.structuredError?.remediation).toBeUndefined();
+    expect(third.structuredError?.remediation ?? '').not.toContain('already failed');
     runtime.dispose();
   });
 });

@@ -8,6 +8,7 @@ import {
   shouldExpandTool,
 } from './tool-presentation.js';
 import { composeToolRow } from './tool-presentation.js';
+import { CONTROL_CHARACTERS } from '../control-characters.js';
 import {
   CONTENT_COLUMN,
   GUTTER_WIDTH,
@@ -337,6 +338,18 @@ describe('composeToolRow', () => {
     expect(row.label).toBe('');
     expect(row.target).toContain('Read ');
     expect(row.target).toContain('src/a.ts');
+  });
+
+  it('folds the control characters out of a failure text, not only out of a target', () => {
+    // The error is the model's own or a tool's, and the text of an
+    // `invalid_json_arguments` failure quotes the model's raw arguments: a newline,
+    // an ESC and a bidi override all reach it. `match`, not `test` — CONTROL_CHARACTERS
+    // is global, and `test` would advance lastIndex between assertions.
+    const row = composeToolRow({ title: 'Edit', target: 'src/tools/file.ts', metadata: [] }, grid, {
+      error: ['bad\nthing', String.fromCharCode(0x202e), 'here'].join(''),
+    });
+    expect(row.meta.match(CONTROL_CHARACTERS)).toBeNull();
+    expect(row.meta).toBe('bad thing here');
   });
 
   it('replaces metadata with the error message on a failure', () => {

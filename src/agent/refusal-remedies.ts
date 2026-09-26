@@ -1,0 +1,79 @@
+import type { ToolResult } from '../types/tools.js';
+import { networkPolicyRefusal, type NetworkPolicyRefusal } from '../tools/web-policy.js';
+
+/**
+ * Why a call was refused (`status: 'blocked'`), grouped by what lifts it. Each kind has its own
+ * remedy, because a streak of refusals that stops an unattended run is only actionable if the stop
+ * message names the right one: "grant the permission" does nothing for a hook, a tool policy or a
+ * call that never parsed. The web network policy's kinds (`fetch`, `search`, `redirect`) are
+ * classified by `networkPolicyRefusal`, whose remedies name the destinations they refused.
+ */
+export type RefusalKind = LocalRefusalKind | NetworkPolicyRefusal;
+
+/** The kinds whose remedy is fixed text, listed in {@link REFUSAL_REMEDIES}. */
+export type LocalRefusalKind =
+  'permission' | 'hook' | 'inactive' | 'capability' | 'skill' | 'question' | 'malformed' | 'other';
+
+/** Whether a tool result is a refusal: the call was blocked, not run. */
+export function isRefusal(
+  result: Pick<ToolResult, 'status' | 'structuredError'> | undefined,
+): boolean {
+  return result?.status === 'blocked';
+}
+
+/**
+ * Which kind of refusal a tool result is: a blocked result, or a call refused before it ran.
+ * Anything unrecognised counts as `other`.
+ */
+export function refusalKind(
+  result: Pick<ToolResult, 'status' | 'structuredError'> | undefined,
+): RefusalKind {
+  const network = networkPolicyRefusal(result);
+  if (network) return network;
+  switch (result?.structuredError?.code) {
+    case 'permission_denied':
+      return 'permission';
+    case 'hook_blocked':
+      return 'hook';
+    case 'tool_not_active':
+    case 'arguments_not_allowed':
+      return 'inactive';
+    case 'capability_denied':
+    case 'child_agent_unavailable':
+      return 'capability';
+    case 'skill_execution_denied':
+    case 'skill_tool_intersection_empty':
+      return 'skill';
+    case 'user_questions_disabled':
+    case 'user_declined':
+      return 'question';
+    case 'invalid_json_arguments':
+    case 'invalid_arguments':
+    case 'unknown_tool':
+      return 'malformed';
+    default:
+      return 'other';
+  }
+}
+
+/** What lifts each kind of refusal, worded to follow "Nothing can proceed: ". Listed in this order. */
+export const REFUSAL_REMEDIES: Readonly<Record<LocalRefusalKind, string>> = {
+  permission:
+    'grant the permission, add an allow rule, or change the permission mode (a permissions.deny rule is lifted only by changing that rule)',
+  hook: 'a PreToolUse hook refused the calls, which no permission rule or mode lifts; change or remove that hook',
+  inactive:
+    "the calls named tools, or arguments, that this turn's tool surface does not allow, which no permission rule or mode changes; a deferred tool has to be activated with ToolSearch first, and the run's allowed tools (--allowedTools, or a skill's or command's allowed-tools) must cover the tool and its arguments",
+  capability:
+    "the calls are outside this agent's tool policy (its profile or definition), which no permission rule or mode lifts; give the step to an agent whose policy allows it",
+  skill:
+    "a skill's activation policy or allowed-tools refused the calls, which no permission rule or mode lifts; change that skill's override under skills.overrides or its allowed-tools",
+  question:
+    'the model asked the user questions this run cannot put to anyone (dontAsk mode, or a declined question); it has to proceed without asking',
+  malformed:
+    "the calls could not run as sent (arguments that never parsed as JSON or failed the tool's schema, or a tool that does not exist), which no permission rule or mode lifts; the model has to correct them, and if `book tool-stats` shows invalid_json_arguments:truncated_start the provider route is dropping the first fragment of calls",
+  other:
+    "the calls were refused for a reason no permission rule or mode lifts; each refused call's own message names the cause",
+};
+
+/** The order the fixed remedies are listed in when a streak mixes kinds: that of REFUSAL_REMEDIES. */
+export const REFUSAL_KIND_ORDER = Object.keys(REFUSAL_REMEDIES) as LocalRefusalKind[];

@@ -68,11 +68,15 @@ import {
 } from '../reasoning-tags.js';
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
+import { refusedBeforeRun } from '../tools/pre-execution-codes.js';
 import {
-  networkPolicyRefusal,
-  networkPolicyRemedies,
-  type NetworkPolicyRefusal,
-} from '../tools/web-policy.js';
+  REFUSAL_KIND_ORDER,
+  REFUSAL_REMEDIES,
+  isRefusal,
+  refusalKind,
+  type LocalRefusalKind,
+} from './refusal-remedies.js';
+import { networkPolicyRefusal, networkPolicyRemedies } from '../tools/web-policy.js';
 import {
   formatUserQuestionAnswers,
   validateUserQuestionResponse,
@@ -87,7 +91,7 @@ import {
   toolResultSucceeded,
 } from '../tools/result.js';
 import { toolSearchTools } from '../tools/tool-search.js';
-import { appendToolUseRecords } from '../tool-telemetry.js';
+import { appendToolUseRecords, telemetryProviderOf } from '../tool-telemetry.js';
 import type { ToolUseRecord } from '../types/tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
@@ -458,7 +462,10 @@ export async function runAgentLoop(
       }
       approved = permission === 'allow' || permission === 'always';
       if (permission === 'always' && callbacks.onPersistPermissionRule) {
-        callbacks.onPersistPermissionRule(chosenRule ?? permissionRuleForToolCall(call));
+        // No rule, no write: a call with no primary argument has nothing to scope one
+        // to, and the bare tool rule would allow every call of that tool afterwards.
+        const rule = chosenRule ?? permissionRuleForToolCall(call);
+        if (rule) callbacks.onPersistPermissionRule(rule);
       }
     }
     if (!approved) {
@@ -482,7 +489,9 @@ export async function runAgentLoop(
       if (noApprover) {
         noteUnattendedRefusal('InvokeSkill', {
           kind: 'allow_rule_only',
-          rule: permissionRuleForToolCall(call),
+          // A call with nothing to scope a rule to is covered only by the bare tool
+          // name, which is the rule the remedy then quotes.
+          rule: permissionRuleForToolCall(call) ?? 'InvokeSkill',
         });
       }
       skillRegistry.recordActivationBlocked(skillName, 'user', code, message);
@@ -822,11 +831,11 @@ export async function runAgentLoop(
      */
     const blockedTurnTools = new Set<string>();
     /**
-     * What refused the streak's calls: a kind of network-policy refusal, or `other` for a
-     * permission or any other refusal. Kept over every turn of the streak, not only the last,
-     * because each kind names a different remedy in the terminal message.
+     * What refused the streak's calls, as the kind of refusal that decides what lifts it. Kept
+     * over every turn of the streak, not only the last, because each kind names a different
+     * remedy in the terminal message.
      */
-    const blockedStreakCauses = new Set<NetworkPolicyRefusal | 'other'>();
+    const blockedStreakCauses = new Set<LocalRefusalKind>();
     /** The network-policy refusals of the streak, so each remedy can name what was refused. */
     const blockedStreakNetworkRefusals: ToolResult[] = [];
     /** The workspace root after following links, resolved once for the run. */
@@ -1825,7 +1834,11 @@ export async function runAgentLoop(
           const abandonedResults = toolCalls.map<ToolResult>((call, callIndex) => {
             const result = toolFailure(
               'INTERRUPTED: the provider stream ended before this tool ran',
-              { toolCallId: call.id, code: 'cancelled', status: 'cancelled' },
+              {
+                toolCallId: call.id,
+                code: 'cancelled_before_start',
+                status: 'cancelled',
+              },
             );
             callbacks.onToolResult(result);
             const nestedTraceId = nestedTraceIds[callIndex];
@@ -2013,7 +2026,7 @@ export async function runAgentLoop(
         const cancelledResults = toolCalls.map<ToolResult>((call, callIndex) => {
           const result = toolFailure('CANCELLED: Agent execution was interrupted', {
             toolCallId: call.id,
-            code: 'cancelled',
+            code: 'cancelled_before_start',
             status: 'cancelled',
           });
           callbacks.onToolResult(result);
@@ -2156,9 +2169,36 @@ export async function runAgentLoop(
         if (signal?.aborted) {
           toolResults[callIndex] = toolFailure('CANCELLED: Agent execution was interrupted', {
             toolCallId: originalCall.id,
-            code: 'cancelled',
+            code: 'cancelled_before_start',
             status: 'cancelled',
           });
+          return undefined;
+        }
+
+        // A call that can never run however it is approved — an unknown tool, arguments that
+        // never parsed, or arguments that fail the tool's schema — is refused before PreToolUse
+        // hooks and the permission check see it, so a hook never judges it and the user is never
+        // asked to approve one (an 'Always' on a Bash call with no command would save a bare
+        // `Bash` rule). A tool that is merely not active, or active but refused on its
+        // arguments, is refused just before the permission prompt instead, once the
+        // mode-specific refusals below have named their mode.
+        syncHostMode();
+        const registeredTool = registry.getTool(originalCall.name);
+        const earlyName = canonicalToolName(registeredTool?.name ?? originalCall.name);
+        // Plan mode hides its mutating tools and dontAsk its question tool, and each refuses them
+        // below with a message that names the mode. "Not active; call ToolSearch" would send the
+        // model after a tool no search can activate, so those calls are left to the mode — but
+        // only a registered tool is the mode's to hide; an unknown one is `unknown_tool`, not a
+        // plan refusal.
+        const modeRefusesItself =
+          registeredTool !== undefined &&
+          ((effectiveMode === 'plan' && !READ_ONLY_PLAN_TOOLS.has(earlyName)) ||
+            (effectiveMode === 'dontAsk' && earlyName === 'AskUserQuestion'));
+        const unrunnable = modeRefusesItself
+          ? undefined
+          : registry.rejectBeforeGates(originalCall, toolContext);
+        if (unrunnable) {
+          toolResults[callIndex] = unrunnable;
           return undefined;
         }
 
@@ -2312,6 +2352,21 @@ export async function runAgentLoop(
           return undefined;
         }
 
+        // A tool this turn does not expose, or an active tool whose arguments this run's
+        // allowed-tools rules do not cover, can never run, so the user is not asked to approve it
+        // (an 'Always' would save a rule for it). Plan mode hides its mutating tools too, and its
+        // own refusal below names the mode, which "call ToolSearch" would not.
+        if (!modeRefusesItself) {
+          const inactive = registry.rejectBeforePrompt(call, toolContext);
+          if (inactive) {
+            if (forceSkillPermission && invokedSkillName && skillActivationReason) {
+              skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'tool_not_active');
+            }
+            toolResults[callIndex] = inactive;
+            return undefined;
+          }
+        }
+
         const toolPermissionRequired = requiresToolPermission(
           effectiveMode,
           persistentBackgroundShell,
@@ -2379,8 +2434,14 @@ export async function runAgentLoop(
                   : askRule
                     ? { kind: 'ask_rule', rule: askRule }
                     : forceSkillPermission
-                      ? { kind: 'allow_rule_only', rule: permissionRuleForToolCall(call) }
-                      : { kind: 'rule_or_auto', rule: permissionRuleForToolCall(call) };
+                      ? {
+                          kind: 'allow_rule_only',
+                          rule: permissionRuleForToolCall(call) ?? canonName,
+                        }
+                      : {
+                          kind: 'rule_or_auto',
+                          rule: permissionRuleForToolCall(call) ?? canonName,
+                        };
               const cause: PermissionDenialCause =
                 effectiveMode === 'dontAsk'
                   ? { kind: 'dont_ask', askRule }
@@ -2400,10 +2461,17 @@ export async function runAgentLoop(
             }
             if (permission === 'always' && !persistentBackgroundShell) {
               log.debug('permission always', { tool: canonName });
+              // No rule, no write: a call with no primary argument has nothing to scope
+              // one to, and a bare `Bash` rule allows every shell command afterwards. The
+              // answer still stands for this one call.
               const rule = chosenRule ?? permissionRuleForToolCall(call);
-              approveAllRules.push(rule);
-              if (callbacks.onPersistPermissionRule) {
-                callbacks.onPersistPermissionRule(rule);
+              if (!rule) {
+                log.debug('permission always with no rule to save', { tool: canonName });
+              } else {
+                approveAllRules.push(rule);
+                if (callbacks.onPersistPermissionRule) {
+                  callbacks.onPersistPermissionRule(rule);
+                }
               }
             }
           }
@@ -2839,23 +2907,47 @@ export async function runAgentLoop(
       // policy or user decision and `cancelled` is an abort; neither ran, so neither
       // counts toward the witness. Everything that did run counts, including errors —
       // an error-spin is caught by the witness freezing on identical file hashes.
+      /**
+       * Whether a result feeds the refusal brake: a refusal, or a call refused before it ran
+       * (unknown tool, arguments that never parsed or failed the schema). In a mode that checks
+       * permissions those used to reach the prompt, which an unattended run answers `deny`, so a
+       * spin on them was stopped; refused ahead of the prompt now, they still must be. An abort
+       * that cancelled a call before it started is not a refusal.
+       *
+       * One carve-out: a mode that never asks (`auto`, `bypassPermissions`) runs a name no
+       * registry holds exactly as it runs a mutation — as a plain error, never a refusal — so
+       * `unknown_tool` does not feed the brake there and the run stops on its turn budget.
+       * Argument refusals (`invalid_json_arguments`, `invalid_arguments`) are the run's own
+       * gates, not the mode's, so they count in every mode.
+       */
+      const modeWouldHaveAsked = needsPermissionCheck(effectiveMode);
+      const countsAsRefusal = (result: ToolResult | undefined): boolean => {
+        if (isRefusal(result)) return true;
+        const code = result?.structuredError?.code ?? '';
+        if (code === 'cancelled_before_start') return false;
+        if (code === 'unknown_tool' && !modeWouldHaveAsked) return false;
+        return refusedBeforeRun(result);
+      };
       let refusedThisTurn = 0;
       for (let index = 0; index < toolCalls.length; index++) {
-        const status = orderedToolResults[index]?.status;
-        // Neither a refusal nor an abort ran, so neither counts as progress. Only a
-        // refusal feeds the spin streak though: an abort already ends the run by
-        // its own path, and counting it would attribute a user's Ctrl-C to policy.
-        if (status === 'blocked') refusedThisTurn++;
-        if (status === 'blocked' || status === 'cancelled') continue;
+        const result = orderedToolResults[index];
+        const status = result?.status;
+        if (countsAsRefusal(result)) refusedThisTurn++;
+        // A call refused before it started ran nothing, whatever its status: it is not progress.
+        const neverRan = refusedBeforeRun(result);
+        if (status === 'blocked' || status === 'cancelled' || neverRan) continue;
         executedToolCalls++;
       }
       if (toolCalls.length > 0 && refusedThisTurn === toolCalls.length) {
         blockedTurnStreak++;
         for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
         for (const result of orderedToolResults) {
-          const kind = networkPolicyRefusal(result);
-          blockedStreakCauses.add(kind ?? 'other');
-          if (kind && result) blockedStreakNetworkRefusals.push(result);
+          if (!countsAsRefusal(result)) continue;
+          if (networkPolicyRefusal(result)) {
+            if (result) blockedStreakNetworkRefusals.push(result);
+          } else {
+            blockedStreakCauses.add(refusalKind(result) as LocalRefusalKind);
+          }
         }
       } else {
         blockedTurnStreak = 0;
@@ -2887,10 +2979,14 @@ export async function runAgentLoop(
       // reliability failures and must not inflate the fail rate. Best-effort.
       if (config.settings.observability.toolTelemetry && toolCalls.length > 0) {
         const recordedAt = Date.now();
+        // The route the model was actually reached through: a bad router is the whole
+        // story behind a run of truncated tool calls, and the model id alone hides it.
+        const telemetryProvider = telemetryProviderOf(effectiveConfig);
         const records: ToolUseRecord[] = [];
         for (let index = 0; index < toolCalls.length; index++) {
           const result = orderedToolResults[index];
           const isFailure = result.status === 'error' || result.status === 'timed_out';
+          const details = result.structuredError?.details;
           records.push({
             ts: recordedAt,
             session: runtime.traceId,
@@ -2898,9 +2994,16 @@ export async function runAgentLoop(
             status: result.status,
             isFailure,
             errorCode: isFailure ? (result.structuredError?.code ?? result.status) : undefined,
+            errorShape:
+              isFailure &&
+              result.structuredError?.code === 'invalid_json_arguments' &&
+              typeof details?.shape === 'string'
+                ? details.shape
+                : undefined,
             durationMs: result.metrics?.durationMs,
             retries: Math.max(0, (result.metrics?.retryAttempt ?? 1) - 1),
             model: effectiveConfig.model,
+            provider: telemetryProvider,
             subagent: options?.isSubagent === true,
             agentRole: options?.agentRole,
           });
@@ -2988,18 +3091,14 @@ export async function runAgentLoop(
           turns: blockedTurnStreak,
           tools: refused,
         });
-        // Each kind of refusal has its own remedy, and a streak that mixes kinds names
-        // each one, because every refused call needs its own fix before anything can
-        // proceed. A permission refusal is lifted by a rule or a mode. A network-policy
-        // refusal is lifted by neither, bypassPermissions included: a refused WebFetch
-        // by the host's opt-in, a refused WebSearch only by fixing the host's DNS. Each network
-        // remedy names the destinations the streak refused, and the WebFetch one warns that its
-        // opt-in lifts the policy for every destination, not only those.
-        const remedies: string[] = [];
-        if (blockedStreakCauses.has('other') || blockedStreakCauses.size === 0) {
-          remedies.push('grant the permission, add an allow rule, or change the permission mode');
-        }
+        // Each kind of refusal has its own remedy, and a streak that mixes kinds names each one,
+        // because every refused call needs its own fix before anything can proceed. The
+        // network-policy remedies come last and name the destinations the streak refused.
+        const remedies: string[] = REFUSAL_KIND_ORDER.filter((kind) =>
+          blockedStreakCauses.has(kind),
+        ).map((kind) => REFUSAL_REMEDIES[kind]);
         remedies.push(...networkPolicyRemedies(blockedStreakNetworkRefusals));
+        if (remedies.length === 0) remedies.push(REFUSAL_REMEDIES.permission);
         const detail =
           `Every tool call was refused on ${blockedTurnStreak} consecutive turns (${refused}). ` +
           `Nothing can proceed: ${remedies.join('. Separately, ')}.`;

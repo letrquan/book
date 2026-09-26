@@ -25,6 +25,7 @@ import {
   withLabelColumn,
 } from '../layout.js';
 import { formatElapsedDuration } from './SubagentRow.js';
+import { foldControlCharacters, stripTerminalControls } from '../../control-characters.js';
 import { useToolRowInteractionRegistry } from './tool-row-interactions.js';
 import { useUiClock } from '../ui-clock.js';
 import type { ToolResult } from '../../types/tools.js';
@@ -156,9 +157,9 @@ function ScreenReaderTool({
       <Text>
         {status} {accessibleSummary}
       </Text>
-      {result?.content ? <Text>{result.content}</Text> : null}
+      {result?.content ? <Text>{stripTerminalControls(result.content)}</Text> : null}
       {result?.structuredError && showsErrorMessage(result) ? (
-        <Text>Error: {result.structuredError.message}</Text>
+        <Text>Error: {foldControlCharacters(result.structuredError.message)}</Text>
       ) : null}
     </Box>
   );

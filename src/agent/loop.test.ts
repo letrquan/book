@@ -1069,6 +1069,296 @@ function noopCallbacks(overrides: Partial<AgentLoopCallbacks> = {}): AgentLoopCa
   };
 }
 
+describe('unparsed tool-call arguments', () => {
+  it('refuses a call whose arguments never parsed before hooks or the permission prompt', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-unparsed-'));
+    try {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'raw-1',
+                name: 'Bash',
+                // What 9router's cmc/stealth route delivers: the opening
+                // `{"command": ` never made it onto the wire (#260).
+                arguments: { __raw: '{"command": "ls' },
+              },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const onPermissionRequired = vi.fn(async () => 'allow' as const);
+      const results: ToolResult[] = [];
+
+      const history = await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'list the files',
+        [],
+        noopCallbacks({
+          onPermissionRequired,
+          onToolResult: (result) => results.push(result),
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      // The call can never run, so asking is asking about nothing — and "Always"
+      // would have saved a permission rule built from the `{__raw}` wrapper.
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+      expect(results[0]?.structuredError?.code).toBe('invalid_json_arguments');
+      expect(history.some((message) => (message.toolResults ?? []).length > 0)).toBe(true);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a call to an inactive deferred tool before the permission prompt', async () => {
+    // NotebookEdit is registered but never activated this turn, so it can never run
+    // however it is approved. Approving it would save a rule for a call that cannot
+    // execute; the refusal has to be the inactive one.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-inactive-'));
+    try {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'notebook-1',
+                name: 'NotebookEdit',
+                arguments: { notebook_path: 'a.ipynb', new_source: 'x' },
+              },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const onPermissionRequired = vi.fn(async () => 'allow' as const);
+      const results: ToolResult[] = [];
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'edit the notebook',
+        [],
+        noopCallbacks({
+          onPermissionRequired,
+          onToolResult: (result) => results.push(result),
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+      expect(results[0]?.structuredError?.code).toBe('tool_not_active');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('lets plan mode refuse its own hidden tool rather than reporting it inactive', async () => {
+    // Plan mode hides its mutating tools, and its own refusal names the mode. Told
+    // "not active, call ToolSearch" the model would search for a tool no search can
+    // activate, and lose the instruction to present a plan instead.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-plan-raw-'));
+    try {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'plan-raw-1',
+                name: 'Edit',
+                arguments: { __raw: '{"filePath": "a"' },
+              },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const onPermissionRequired = vi.fn(async () => 'allow' as const);
+      const results: ToolResult[] = [];
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'edit the file',
+        [],
+        noopCallbacks({
+          onPermissionRequired,
+          onToolResult: (result) => results.push(result),
+        }),
+        'plan',
+        { provider, isNewSession: false },
+      );
+
+      expect(results[0]?.structuredError?.code).toBe('plan_mode_blocked');
+      expect(results[0]?.structuredError?.message).toMatch(/not allowed in plan mode/);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses schema-invalid arguments before the prompt, so no bare rule is saved', async () => {
+    // A Bash call with no `command` has no primary argument, so the prompt has nothing to
+    // scope an "Always" rule to and would save a bare `Bash` rule allowing every Bash
+    // call afterwards.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-schema-'));
+    try {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: { id: 'schema-1', name: 'Bash', arguments: { script: 'rm -rf x' } },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const onPermissionRequired = vi.fn(async () => 'allow' as const);
+      const results: ToolResult[] = [];
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'delete everything',
+        [],
+        noopCallbacks({
+          onPermissionRequired,
+          onToolResult: (result) => results.push(result),
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+      expect(results[0]?.structuredError?.code).toBe('invalid_arguments');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('saves no rule for an "Always" on a call with an empty primary argument', async () => {
+    // `Bash {command: ''}` passes the schema, so it reaches the prompt with nothing to
+    // scope a rule to. The rule the ladder used to offer was a bare `Bash`, which allows
+    // every Bash call afterwards; the answer applies to this one call and writes nothing.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-empty-arg-'));
+    try {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: { id: 'empty-1', name: 'Bash', arguments: { command: '' } },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const onPermissionRequired = vi.fn(async () => 'always' as const);
+      const onPersistPermissionRule = vi.fn();
+      const results: ToolResult[] = [];
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'run nothing',
+        [],
+        noopCallbacks({
+          onPermissionRequired,
+          onPersistPermissionRule,
+          onToolResult: (result) => results.push(result),
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(onPermissionRequired).toHaveBeenCalledOnce();
+      expect(onPersistPermissionRule).not.toHaveBeenCalled();
+      // The call itself is still allowed; only the rule is withheld.
+      expect(results[0]?.status).not.toBe('blocked');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('names an unknown tool as unknown in plan mode, not as a plan refusal', async () => {
+    // Only a registered tool defers to the mode. `FooTool` has no definition for plan
+    // mode to hide, so "not allowed in plan mode" told the model to write a plan for a
+    // tool that does not exist and lost the one instruction that would have helped.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-plan-unknown-'));
+    try {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: { id: 'plan-unknown-1', name: 'FooTool', arguments: { path: 'a.ts' } },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const onPermissionRequired = vi.fn(async () => 'allow' as const);
+      const results: ToolResult[] = [];
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'call the tool',
+        [],
+        noopCallbacks({
+          onPermissionRequired,
+          onToolResult: (result) => results.push(result),
+        }),
+        'plan',
+        { provider, isNewSession: false },
+      );
+
+      expect(results[0]?.structuredError?.code).toBe('unknown_tool');
+      expect(results[0]?.structuredError?.message).not.toMatch(/plan mode/);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('runAgentLoop streaming render callbacks', () => {
   it('retries a successful but empty provider completion once', async () => {
     let calls = 0;
@@ -3030,10 +3320,20 @@ describe('runAgentLoop error handling', () => {
       }),
     );
 
+    const registry = createRegistry();
+    // Registered: a call to a tool this registry does not have is refused as unknown
+    // before the permission gate, which is a different refusal than the one under test.
+    registry.register({
+      name: 'Bash',
+      description: 'run a shell command',
+      parameters: { type: 'object', properties: { command: { type: 'string' } } },
+      execute: async () => toolSuccess('x'),
+    });
+
     const results: string[] = [];
     await runAgentLoop(
       defaultConfig({ maxTurns: 1 }),
-      createRegistry(),
+      registry,
       'hi',
       [],
       noopCallbacks({

@@ -46,6 +46,11 @@ book tool-stats --all           # ignore the retention window
 book tool-stats --since 7       # only the last 7 days
 ```
 
+Each per-model row names the provider the model was reached through (`9router/cmc/stealth/x`) and
+its error codes, and malformed arguments are counted by shape:
+`invalid_json_arguments:truncated_start` is a route dropping a call's first fragment, not the model
+writing bad JSON.
+
 ## Common flags
 
 | Flag                                  | Purpose                                                                                                                         |

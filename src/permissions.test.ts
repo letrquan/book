@@ -115,9 +115,9 @@ describe('remembered permission rules', () => {
       id: 'other',
       arguments: { url: 'https://status.example.com/' },
     };
-    const rule = permissionRuleForToolCall(fetchCall);
+    const rule = 'WebFetch(https://docs.example.com/**)';
 
-    expect(rule).toBe('WebFetch(https://docs.example.com/**)');
+    expect(permissionRuleForToolCall(fetchCall)).toBe(rule);
     expect(permissionRuleMatchesCall(rule, sameOrigin)).toBe(true);
     expect(permissionRuleMatchesCall(rule, originRoot)).toBe(true);
     expect(permissionRuleMatchesCall(rule, queryOnly)).toBe(true);
@@ -501,6 +501,17 @@ describe('permissionRuleLadder', () => {
 
   it('offers only the exact rule for a single-token command', () => {
     expect(permissionRuleLadder(bash('pwd'))).toEqual(['Bash(pwd)']);
+  });
+
+  it('offers no rule at all for a call whose primary argument is empty', () => {
+    // `{command: ""}` passes the schema, and a command whose first line is empty has
+    // no primary argument either. The bare `Bash` rule the ladder used to offer in
+    // their place allows every Bash call afterwards, which is not what "Always allow"
+    // on a call that ran nothing ever meant.
+    for (const command of ['', '\nrm -rf x']) {
+      expect(permissionRuleForToolCall(bash(command))).toBeUndefined();
+      expect(permissionRuleLadder(bash(command))).toEqual([]);
+    }
   });
 
   it('refuses to widen a command that already chains or redirects', () => {
