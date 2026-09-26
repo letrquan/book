@@ -288,13 +288,14 @@ function answerStart(content: string, rest: number): number {
 
 /**
  * Split the closed reasoning blocks a settled reply opens with out of it, so
- * they are stored and re-sent as reasoning rather than as answer text.
+ * they are stored as reasoning rather than as answer text, and re-sent as
+ * reasoning while their turn is in progress.
  *
- * Book renders earlier assistant turns to OpenAI-compatible providers as
- * `<reasoning_context>…</reasoning_context>` followed by the answer, and some
- * routers inline thinking the same way, so models start every reply with that
- * block themselves. Left in `content`, it is what print mode prints and what a
- * `--resume` shows as the answer.
+ * Book renders the assistant steps of the turn in progress to OpenAI-compatible
+ * providers as `<reasoning_context>…</reasoning_context>` followed by the
+ * answer, and some routers inline thinking the same way, so models start
+ * replies with that block themselves. Left in `content`, it is what print mode
+ * prints and what a `--resume` shows as the answer.
  *
  * What moves here leaves the answer for good — print mode, json `messages`, a
  * managed agent's result and every later request see only what is left — so
