@@ -483,6 +483,22 @@ describe('tool row targets', () => {
 
     expect(presentation.target).toBe(`{"command":"a${spaces}b"}`);
   });
+
+  it('shows the raw text of a call marked by the typed unparsedArguments field', () => {
+    // Same row as the `{__raw}` sentinel produced, reached through the type the
+    // providers set: `arguments` is `{}`, so the target has to come from the
+    // field, not the arguments object.
+    const raw = `{"command":"echo one\n${tab}echo${csi}two"}`;
+    const presentation = deriveToolPresentation(
+      'Bash',
+      {},
+      result({ success: false, error: 'Invalid JSON arguments for Bash' }),
+      { unparsedArguments: { raw, error: 'Bad control character' } },
+    );
+
+    expect(presentation.target).toBe('{"command":"echo one echo two"}');
+    expect(presentation.summary).not.toMatch(controlCharacter);
+  });
 });
 
 describe('decision tool rows', () => {

@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Unparsable tool-call arguments are a typed field, not a sentinel inside `arguments`** (#242).
+  The provider clients set `unparsedArguments: { raw, error }` on a call whose argument text never
+  parsed, rather than wrapping it as `{ __raw: "<text>" }` — the registry, the loop's pre-hook
+  rejection, replay and the tool row read the type, not a magic key inside the arguments. Sessions
+  persisted with `{__raw}` still load, Anthropic's `tool_use.input` still carries the wrapper (the
+  wire cannot carry unparseable text verbatim), and replay to OpenAI-compatible providers now
+  sends the raw text back, so the model sees the arguments it actually sent.
 - **Settings validation runs on Zod 4** (#88). Book moves from Zod 3.25 to Zod 4.6. Defaults, and
   which fields a rejected document names, are unchanged; `src/settings.test.ts` now pins them,
   including a check that no object schema is defaulted in the way Zod 4 would leave bare. What
@@ -347,6 +354,18 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Malformed tool-call arguments are repaired conservatively instead of refused** (#242). Three
+  shapes repair to the arguments the model sent: a control character written literally inside a
+  string is escaped, a comma directly before a `}` or `]` is dropped, and closing brackets missing
+  at the very end are appended. A repair only runs when the repaired text parses and satisfies the
+  tool's own schema — a dropped opening fragment (#260), a value cut off mid-way, or a string left
+  open is refused, never approximated. The 34-case eval reports 15 repaired correctly, 0 repaired
+  wrongly, 19 refused.
+- **A ` ``` ` run inside a JSON string no longer ends memory extraction early** (#299). The
+  fenced-block match in `extractJsonObject` stopped at the first three backticks even when they
+  were inside a string literal, so a memory body quoting a code block made the whole document
+  unparseable and its memories were lost. Fence runs are now paired until one holds a complete
+  object, with the unfenced text still the fallback.
 - **A refusal now says what lifts it** (#246). A run stopped as `all_tools_blocked` blamed a
   permission for every refusal but the web policy's, so a PreToolUse hook, an inactive tool, a
   managed agent's tool policy, a skill's policy or a malformed call was answered with "grant the

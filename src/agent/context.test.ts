@@ -104,6 +104,38 @@ describe('buildMessages', () => {
     expect(out[3].content).toBe('1: hi');
   });
 
+  it('replays the provider-sent text for a call whose arguments never parsed', async () => {
+    // The typed field carries the malformed text the provider streamed; replay
+    // has to put that text back on the wire, not `"{}", or a resumed session
+    // shows the model an argument object it never produced.
+    const raw = '{"filePath":"src/a.ts","oldString":"const re = /\\d+/;"}';
+    const call: ReturnType<typeof toolCall> = {
+      ...toolCall('call_1', 'Edit'),
+      unparsedArguments: { raw, error: 'Bad escaped character in JSON at position 48' },
+    };
+    const history = [userMsg('edit it'), assistantMsg('', [call], [toolResult('call_1', 'err')])];
+
+    const out = await buildMessages(config, history);
+
+    expect(out[2].tool_calls).toEqual([
+      { id: 'call_1', type: 'function', function: { name: 'Edit', arguments: raw } },
+    ]);
+  });
+
+  it("keeps replaying the legacy {__raw} wrapper's raw text", async () => {
+    // Sessions written before the typed field carry `{ __raw: "…" }` inside
+    // `arguments`; replay still has to surface the wrapped text, not the wrapper.
+    const raw = '{"filePath":"x"';
+    const call = toolCall('call_1', 'Edit', { __raw: raw });
+    const history = [userMsg('edit it'), assistantMsg('', [call], [toolResult('call_1', 'err')])];
+
+    const out = await buildMessages(config, history);
+
+    expect(out[2].tool_calls).toEqual([
+      { id: 'call_1', type: 'function', function: { name: 'Edit', arguments: raw } },
+    ]);
+  });
+
   it('serializes only explicitly included conversation messages', async () => {
     const call = toolCall('call_1', 'Read', { filePath: 'a.ts' });
     const result = toolResult('call_1', 'file contents');

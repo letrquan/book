@@ -125,6 +125,7 @@ function NestedToolRows({
           toolId={invocation.traceId}
           name={invocation.call.name}
           args={invocation.call.arguments}
+          unparsedArguments={invocation.call.unparsedArguments}
           result={invocation.result}
           isExpanded={shouldExpandTool({
             mode: transcriptMode,
@@ -786,6 +787,7 @@ export function AgentMessageInner({
                 toolId={tc.id}
                 name={tc.name}
                 args={tc.arguments}
+                unparsedArguments={tc.unparsedArguments}
                 result={result}
                 isExpanded={shouldExpandTool({
                   mode: transcriptMode,

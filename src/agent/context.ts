@@ -26,6 +26,7 @@ import { withBuiltInAgents } from '../agents/profiles.js';
 import { resolveBookHome } from '../book-home.js';
 import { resolveAgentProfile } from '../agents/profile-resolver.js';
 import { toolResultModelContent } from '../tools/result.js';
+import { unparsedArgumentsText } from '../tools/unparsed-arguments.js';
 import { resolveContextLimit, resolveEditFormat, type EditFormat } from '../models.js';
 import {
   countMemoryCandidates,
@@ -721,7 +722,10 @@ export async function buildMessages(
           type: 'function' as const,
           function: {
             name: tc.name,
-            arguments: JSON.stringify(tc.arguments ?? {}),
+            // A call whose arguments never parsed is replayed as the text the provider
+            // streamed, not as `{}` or as the legacy `{__raw}` wrapper: the model has to
+            // see its own malformed JSON again to be able to resend it correctly.
+            arguments: unparsedArgumentsText(tc) ?? JSON.stringify(tc.arguments ?? {}),
           },
         }));
       }

@@ -3,6 +3,8 @@ import type { ToolDefinition, ToolContext, ToolResult, ToolCall } from '../types
 import { escapeInvisibleCharacters } from '../control-characters.js';
 import { TOOL_ALIASES } from './aliases.js';
 import { normalizeToolDefinition } from './catalog.js';
+import { repairToolArguments } from './json-repair.js';
+import { unparsedArgumentsText } from './unparsed-arguments.js';
 import { validateToolArguments } from './schema.js';
 import { enrichToolResultPresentation, normalizeToolResult, toolFailure } from './result.js';
 import { MAX_SAFE_TIMEOUT_MS, resolveToolTimeoutMs, SELF_TIMEOUT_GRACE_MS } from './timeouts.js';
@@ -83,12 +85,6 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
-/** The key both provider clients wrap tool-call arguments in when they are not
- * valid JSON: `{ __raw: "<text>" }` (`parseToolArguments` in
- * provider/openai-compatible.ts and provider/anthropic.ts).
- */
-const RAW_ARGUMENTS_KEY = '__raw';
-
 /**
  * Marked on every rejection this registry makes before a tool runs, so `refusedBeforeRun`
  * can tell one apart from a tool that ran and then refused its own arguments
@@ -121,6 +117,15 @@ function quoteRaw(text: string): string {
   return escapeInvisibleCharacters(JSON.stringify(text));
 }
 
+/** The schema's own errors for these arguments, with the host `timeout` budget hidden. */
+function argumentErrors(tool: ToolDefinition, args: Record<string, unknown>): string[] {
+  const providerArguments = { ...args };
+  // Hide the host control from validation only while the tool keeps it
+  // hidden from the model; a tool that publishes `timeout` gets it checked.
+  if (!tool.inputSchema?.properties?.timeout) delete providerArguments.timeout;
+  return validateToolArguments(providerArguments, tool.inputSchema!);
+}
+
 /**
  * Why a call's arguments were not valid JSON, and what to do about it, or
  * undefined when they were.
@@ -151,24 +156,25 @@ function quoteRaw(text: string): string {
  *   string.
  *
  * "position N" counts in the raw text, which the model never sees again as such
- * (its replayed call is `JSON.stringify({__raw})`), so the text on both sides of
+ * (its replayed call carries that text verbatim), so the text on both sides of
  * the position is quoted too. V8's message is shown with invisible characters
  * escaped rather than folded, so a rejected NUL or BOM is visible.
  */
-function describeInvalidJson(
-  toolName: string,
-  args: Record<string, unknown>,
-): InvalidJsonArguments | undefined {
-  const raw = args[RAW_ARGUMENTS_KEY];
-  // Exactly the shape the providers emit; anything else is the schema's to judge.
-  if (typeof raw !== 'string' || Object.keys(args).length !== 1) return undefined;
-  let parseError: string;
-  try {
-    JSON.parse(raw);
-    // Valid JSON under the key is a literal `__raw` argument, not a parse failure.
-    return undefined;
-  } catch (error) {
-    parseError = error instanceof Error ? error.message : String(error);
+function describeInvalidJson(toolName: string, call: ToolCall): InvalidJsonArguments | undefined {
+  const raw = unparsedArgumentsText(call);
+  // A call whose arguments parsed, whether or not they are right for this tool:
+  // that is the schema's to judge.
+  if (raw === undefined) return undefined;
+  // The providers carry V8's own message with the raw text; an old session's
+  // `{__raw}` wrapper does not, so its text is parsed here to recover it.
+  let parseError = call.unparsedArguments?.error;
+  if (parseError === undefined) {
+    try {
+      JSON.parse(raw);
+      return undefined;
+    } catch (error) {
+      parseError = error instanceof Error ? error.message : String(error);
+    }
   }
   const prefix = `Invalid JSON arguments for ${toolName}:`;
   const opening = raw.trimStart();
@@ -295,6 +301,11 @@ function describeInvalidJson(
 
 /** The hash of the arguments that identify a call, ignoring the host-only `timeout` budget. */
 function argumentsDigest(call: ToolCall): string {
+  // A call that never parsed carries no arguments, so its raw text is its identity:
+  // hashing `{}` would make every malformed call to one tool read as a retry of the
+  // first, and escalate a resend of different text as an unchanged repeat.
+  if (call.unparsedArguments)
+    return createHash('sha256').update(call.unparsedArguments.raw).digest('hex');
   const significantArgs = { ...call.arguments };
   delete significantArgs.timeout;
   return createHash('sha256').update(stableStringify(significantArgs)).digest('hex');
@@ -507,20 +518,43 @@ async function waitForSettlement(settled: Promise<void>, timeoutMs: number): Pro
 export function createRegistry() {
   const tools = new Map<string, ToolDefinition>();
 
+  /**
+   * The arguments a call whose argument text never parsed runs with, when the text is
+   * one of the three shapes `repairToolArguments` accepts and the result satisfies this
+   * tool's own schema. A repair that fails either gate is refused, not approximated:
+   * arguments that are valid JSON but wrong for this tool are a different call than the
+   * model made. `undefined` when there is nothing to repair.
+   */
+  const repairedArguments = (
+    tool: ToolDefinition,
+    call: ToolCall,
+  ): Record<string, unknown> | undefined => {
+    const raw = unparsedArgumentsText(call);
+    if (raw === undefined) return undefined;
+    const repaired = repairToolArguments(raw);
+    if (!repaired) return undefined;
+    return argumentErrors(tool, normalizeToolArguments(tool, repaired)).length === 0
+      ? repaired
+      : undefined;
+  };
+
   /** The registered tool a call names and the call in canonical spelling, or undefined. */
   const resolveCall = (
     call: ToolCall,
   ): { tool: ToolDefinition; normalizedCall: ToolCall } | undefined => {
     const tool = resolveRegisteredTool(tools, call.name);
     if (!tool) return undefined;
-    return {
-      tool,
-      normalizedCall: {
-        ...call,
-        name: tool.name,
-        arguments: normalizeToolArguments(tool, call.arguments),
-      },
+    const repaired = repairedArguments(tool, call);
+    const normalizedCall: ToolCall = {
+      ...call,
+      name: tool.name,
+      arguments: normalizeToolArguments(tool, repaired ?? call.arguments),
     };
+    // A repaired call is an ordinary one from here on: the parse failure is gone, so
+    // the marker goes with it rather than travelling into hooks, permission,
+    // execution, persistence and replay.
+    if (repaired) delete normalizedCall.unparsedArguments;
+    return { tool, normalizedCall };
   };
 
   /** Canonicalize a call's tool name and argument spellings without executing it. */
@@ -636,11 +670,7 @@ export function createRegistry() {
     callId: string,
     context: ToolContext,
   ): ToolResult | undefined => {
-    const providerArguments = { ...normalizedCall.arguments };
-    // Hide the host control from validation only while the tool keeps it
-    // hidden from the model; a tool that publishes `timeout` gets it checked.
-    if (!tool.inputSchema?.properties?.timeout) delete providerArguments.timeout;
-    const validationErrors = validateToolArguments(providerArguments, tool.inputSchema!);
+    const validationErrors = argumentErrors(tool, normalizedCall.arguments);
     if (validationErrors.length === 0) return undefined;
     const allowedKeys = Object.keys(tool.inputSchema?.properties ?? {});
     const allowedSuffix = allowedKeys.length
@@ -693,7 +723,7 @@ export function createRegistry() {
       const resolved = resolveCall(call);
       if (!resolved) return unknownToolRejection(call, context);
       const { tool, normalizedCall } = resolved;
-      const invalid = describeInvalidJson(tool.name, normalizedCall.arguments);
+      const invalid = describeInvalidJson(tool.name, normalizedCall);
       if (invalid !== undefined) {
         if (!isVisible(normalizedCall, context))
           return inactiveRejection(call, normalizedCall, context);
@@ -738,7 +768,7 @@ export function createRegistry() {
       // Invalid JSON is named before the argument-scoped rules run: a rule such
       // as `Bash(git *)` cannot match text that never parsed, so the gate would
       // report a malformed call to an active tool as an inactive one.
-      const invalid = describeInvalidJson(tool.name, normalizedCall.arguments);
+      const invalid = describeInvalidJson(tool.name, normalizedCall);
       if (invalid)
         return {
           status: 'rejected',

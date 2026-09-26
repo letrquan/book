@@ -45,6 +45,8 @@ interface ToolCallBlockProps {
   toolId?: string;
   name: string;
   args: Record<string, unknown>;
+  /** The argument text of a call the provider could not parse; its `args` are empty. */
+  unparsedArguments?: { raw: string; error: string };
   result?: ToolResult;
   isExpanded: boolean;
   isPending?: boolean;
@@ -236,6 +238,7 @@ function ToolCallBlockInner({
   toolId,
   name,
   args,
+  unparsedArguments,
   result,
   isExpanded,
   isPending = false,
@@ -261,8 +264,13 @@ function ToolCallBlockInner({
   const rowGrid = useMemo(() => indentedGrid(grid), [grid]);
   const blockWidth = rowGrid.content;
   const presentation = useMemo(
-    () => deriveToolPresentation(name, args, result, { isPending, nestedActivityCount }),
-    [args, isPending, name, nestedActivityCount, result],
+    () =>
+      deriveToolPresentation(name, args, result, {
+        isPending,
+        nestedActivityCount,
+        unparsedArguments,
+      }),
+    [args, isPending, name, nestedActivityCount, result, unparsedArguments],
   );
   const isRunning = presentation.status === 'running';
   // Under reducedMotion the row must not tick at all: the spinner is frozen,

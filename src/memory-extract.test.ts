@@ -167,6 +167,24 @@ describe('parseExtraction', () => {
     ]);
     expect(parseExtraction('not json', 5)).toBeUndefined();
   });
+
+  it('keeps a memory whose body quotes a fenced code block (#299)', () => {
+    // The ``` run inside the body ended the fence match early, the truncated
+    // JSON never parsed, and the session was marked read with its memories lost.
+    const body = 'Run it:\n```bash\nnpm test\n```\nand stop.';
+    const items = parseExtraction(
+      '```json\n' +
+        JSON.stringify({
+          memories: [{ action: 'create', type: 'project', title: 'Test command', body }],
+        }) +
+        '\n```',
+      5,
+    );
+
+    expect(items).toEqual([
+      { action: 'create', slug: undefined, type: 'project', title: 'Test command', body },
+    ]);
+  });
 });
 
 describe('runMemoryExtraction', () => {

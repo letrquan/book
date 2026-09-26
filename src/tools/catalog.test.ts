@@ -468,8 +468,10 @@ describe('discovery gate and invalid JSON arguments', () => {
     const registry = createRegistry();
     registry.register(bash);
 
+    // Text that stays un-repairable: a string left open cannot be completed without
+    // inventing the quote that was never sent, so the call reaches the JSON gate.
     const malformed = await registry.execute(
-      { id: 'raw-git', name: 'Bash', arguments: { __raw: '{"command":"git log\n"}' } },
+      { id: 'raw-git', name: 'Bash', arguments: { __raw: '{"command":"git log' } },
       { ...context(), toolDiscovery: surface },
     );
     const refused = await registry.execute(

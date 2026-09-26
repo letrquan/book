@@ -20,13 +20,21 @@ import {
 
 const log = createDebugLogger('provider');
 
-function parseToolArguments(raw: string): Record<string, unknown> {
-  if (!raw.trim()) return {};
+function parseToolArguments(raw: string): {
+  arguments: Record<string, unknown>;
+  unparsedArguments?: { raw: string; error: string };
+} {
+  if (!raw.trim()) return { arguments: {} };
   try {
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return { __raw: raw };
+    return {
+      arguments: parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {},
+    };
+  } catch (error) {
+    return {
+      arguments: {},
+      unparsedArguments: { raw, error: error instanceof Error ? error.message : String(error) },
+    };
   }
 }
 
@@ -311,8 +319,8 @@ export async function* chatCompletionStream(
   const emitToolCalls = function* (): Generator<ProviderStreamEvent> {
     for (const part of [...toolCallParts].sort((a, b) => a.index - b.index)) {
       if (!part.id && !part.name) continue;
-      const arguments_ = parseToolArguments(part.arguments);
-      if ('__raw' in arguments_) {
+      const { arguments: arguments_, unparsedArguments } = parseToolArguments(part.arguments);
+      if (unparsedArguments) {
         // The head, not the whole text: enough to see whether the call arrived with its
         // first fragment missing (#260), which is a route's wire format, not the model's JSON.
         log.warn('tool call arguments are not valid JSON', {
@@ -330,6 +338,7 @@ export async function* chatCompletionStream(
           id: part.id || `tool-${part.index}`,
           name: part.name,
           arguments: arguments_,
+          ...(unparsedArguments ? { unparsedArguments } : {}),
         },
       };
     }

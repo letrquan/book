@@ -8,6 +8,7 @@ import type { ToolDefinition } from '../types/tools.js';
 import type { Usage } from '../types/messages.js';
 import { createDebugLogger, isDebugEnabled } from '../debug-log.js';
 import { escapeInvisibleCharacters } from '../control-characters.js';
+import { RAW_ARGUMENTS_KEY } from '../tools/unparsed-arguments.js';
 import {
   classifyApiError,
   classifyProviderError,
@@ -365,12 +366,17 @@ export function convertMessages(messages: ProviderMessage[]): {
           id: string;
           function?: { name: string; arguments: string };
         }>) {
-          const input = parseToolArguments(tc.function?.arguments ?? '{}');
+          const { arguments: parsed, unparsedArguments } = parseToolArguments(
+            tc.function?.arguments ?? '{}',
+          );
           content.push({
             type: 'tool_use',
             id: tc.id,
             name: tc.function?.name ?? '',
-            input,
+            // `tool_use.input` must be a JSON object, so unparseable text cannot go
+            // back verbatim: `{__raw}` is its wire encoding, and reloading it is a
+            // parse failure again.
+            input: unparsedArguments ? { [RAW_ARGUMENTS_KEY]: unparsedArguments.raw } : parsed,
           });
         }
       }
@@ -418,13 +424,21 @@ export function convertTools(tools: ToolDefinition[]): AnthropicTool[] {
   }));
 }
 
-function parseToolArguments(raw: string): Record<string, unknown> {
-  if (!raw.trim()) return {};
+function parseToolArguments(raw: string): {
+  arguments: Record<string, unknown>;
+  unparsedArguments?: { raw: string; error: string };
+} {
+  if (!raw.trim()) return { arguments: {} };
   try {
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return { __raw: raw };
+    return {
+      arguments: parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {},
+    };
+  } catch (error) {
+    return {
+      arguments: {},
+      unparsedArguments: { raw, error: error instanceof Error ? error.message : String(error) },
+    };
   }
 }
 
@@ -694,14 +708,19 @@ export async function* chatCompletionStream(
           }
 
           case 'content_block_stop': {
-            const parsedInput = parseToolArguments(currentToolArgs);
+            const { arguments: parsedInput, unparsedArguments } =
+              parseToolArguments(currentToolArgs);
             if (currentContentBlock?.type === 'tool_use') {
-              currentContentBlock.input = parsedInput;
+              // The block keeps the wire encoding of unparseable text, as `convertMessages`
+              // sends it, while the emitted call carries the typed field.
+              currentContentBlock.input = unparsedArguments
+                ? { [RAW_ARGUMENTS_KEY]: unparsedArguments.raw }
+                : parsedInput;
             }
             if (currentContentBlock) assistantContentBlocks.push(currentContentBlock);
             // Emit completed tool call
             if (currentToolId && currentToolName) {
-              if ('__raw' in parsedInput) {
+              if (unparsedArguments) {
                 log.warn('tool call arguments are not valid JSON', {
                   id: currentToolId,
                   name: escapeInvisibleCharacters(currentToolName),
@@ -713,6 +732,7 @@ export async function* chatCompletionStream(
                 id: currentToolId,
                 name: currentToolName,
                 arguments: parsedInput,
+                ...(unparsedArguments ? { unparsedArguments } : {}),
               };
               yield { type: 'tool_call', toolCall };
             }

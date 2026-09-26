@@ -176,19 +176,27 @@ Mutation reliability guardrails, tuned for heterogeneous models:
     backslash that escapes the closing quote (a Windows path ending in `\`, which reads as a
     cut-off string and is not one).
 
-  "position N" counts in the raw argument text, which the model never sees again as such — its
-  replayed call is `JSON.stringify({__raw})` — so the text on both sides of the position is quoted
-  too, and an invisible character (a NUL, a BOM, an ESC) is shown as a `\uXXXX` escape rather than
-  folded to a space, so the one V8 rejected stays visible. Such a call is refused right after the
-  call is normalized, before PreToolUse hooks and the permission prompt: it can never run, so a
-  hook would judge the `{__raw}` wrapper, and in `default` mode the user would be asked to approve a
-  call that cannot — with "Always" saving a permission rule built from it. Schema-invalid
-  arguments (`invalid_arguments`) and unknown tools (`unknown_tool`) are refused at the same point,
-  for the same reason: a Bash call with no `command` has no primary argument, so an "Always" there
-  would save a bare `Bash` rule allowing every Bash call. A tool that _is_ active but whose
-  arguments this run's allowed-tools rules do not cover is refused as `arguments_not_allowed` just
-  before the prompt instead — the tool needs no activation, so "call ToolSearch" would name one
-  that already has it and cannot lift the rule.
+  Three malformed shapes never reach that refusal at all, because Book repairs them itself:
+  a control character written literally inside a string is escaped (the tool receives the same
+  character the model sent), a comma directly before a `}` or `]` is dropped, and closing `}`/`]`
+  brackets missing at the very end are appended. A repair only runs when the repaired text parses
+  _and_ satisfies the tool's own schema; anything else — a dropped opening fragment, a value cut
+  off mid-way, a string left open — is refused, never approximated.
+
+  "position N" counts in the raw argument text, which the model sees again verbatim on replay —
+  the providers mark a call whose arguments never parsed with a typed field carrying the raw text
+  and the parse error, rather than wrapping them in `arguments` — so the text on both sides of the
+  position is quoted too, and an invisible character (a NUL, a BOM, an ESC) is shown as a `\uXXXX`
+  escape rather than folded to a space, so the one V8 rejected stays visible. Such a call is
+  refused right after the call is normalized, before PreToolUse hooks and the permission prompt:
+  it can never run, so a hook would judge it unread, and in `default` mode the user would be asked
+  to approve a call that cannot — with "Always" saving a permission rule built from nothing.
+  Schema-invalid arguments (`invalid_arguments`) and unknown tools (`unknown_tool`) are refused at
+  the same point, for the same reason: a Bash call with no `command` has no primary argument, so
+  an "Always" there would save a bare `Bash` rule allowing every Bash call. A tool that _is_
+  active but whose arguments this run's allowed-tools rules do not cover is refused as
+  `arguments_not_allowed` just before the prompt instead — the tool needs no activation, so "call
+  ToolSearch" would name one that already has it and cannot lift the rule.
 
 - **Retry-loop braking.** Repeating a call that already failed with identical arguments returns
   escalated guidance instead of the same error; structured `Fix:` remediation lines are rendered
