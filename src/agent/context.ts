@@ -173,7 +173,8 @@ function compactList(
 }
 
 function builtinSlashCommands(): SlashCommand[] {
-  return BUILTIN_COMMANDS.filter((c) => !c.isHidden).map((c) => ({
+  // Hidden ones are not offered, and a `tuiOnly` command is the TUI's own state, not the model's.
+  return BUILTIN_COMMANDS.filter((c) => !c.isHidden && !c.tuiOnly).map((c) => ({
     name: c.name,
     description: c.description,
     argumentHint: c.argumentHint,

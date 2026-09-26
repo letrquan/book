@@ -205,6 +205,26 @@ describe('resolvePrintCommand — prompt-body commands', () => {
     expect(dispatch.prompt).toBe('Summarise src');
   });
 
+  // `/queue` is the TUI's own state, listed in its menu but not a command a print host or the
+  // model knows: print mode treats the name as it did before `/queue` joined the catalog.
+  it('runs a project command named queue, since /queue belongs to the TUI alone', async () => {
+    const workspace = tempWorkspace();
+    writeCommand(workspace, 'queue', 'Summarise the release queue.');
+
+    const dispatch = await resolvePrintCommand('/queue', env(workspace));
+
+    if (dispatch.kind !== 'prompt') throw new Error('expected a prompt dispatch');
+    expect(dispatch.prompt).toBe('Summarise the release queue.');
+  });
+
+  it('sends a bare /queue unchanged when no command claims it', async () => {
+    const workspace = tempWorkspace();
+    expect(await resolvePrintCommand('/queue', env(workspace))).toEqual({
+      kind: 'passthrough',
+      prompt: '/queue',
+    });
+  });
+
   it('prefers a built-in over a same-named project command, like the TUI', async () => {
     const workspace = tempWorkspace();
     writeCommand(workspace, 'init', 'Custom init body that must not win.');

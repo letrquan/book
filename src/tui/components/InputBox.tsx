@@ -1,8 +1,23 @@
-import { Text, useInput } from 'ink';
+import { Text, useInput, type Key } from 'ink';
 import { useReducer, useRef } from 'react';
 
 interface InputBoxProps {
   value: string;
+  /**
+   * The parent's copy of the draft, written the moment the parent changes it (history,
+   * autocomplete, a restored draft). Ink hands every key of one stdin read to the handlers in
+   * turn before React renders, so the key after Up reached this editor while `value` still
+   * held the text Up had replaced: Up then a character gave the old text plus the character,
+   * and Up then Enter submitted nothing. Each key starts from this copy when it differs.
+   */
+  liveValueRef?: { readonly current: string };
+  /** Backspace or Delete arrived with an empty draft, so there is no text left for it to edit. */
+  onEmptyBackspace?: () => void;
+  /**
+   * An edit chord arrived with an empty draft. The editor knows the draft was empty before the key
+   * and has already declined to apply it, so the key belongs to the transcript.
+   */
+  onEmptyChord?: (input: string, key: Key) => void;
   onChange: (value: string) => void;
   onSubmit?: (value: string) => void;
   placeholder?: string;
@@ -13,6 +28,13 @@ interface EditState {
   value: string;
   cursorOffset: number;
 }
+
+/**
+ * Ctrl chords the editor handles as text edits. With an empty draft there is nothing for them to
+ * edit, so they belong to the transcript (Ctrl+E expands a tool, Ctrl+U scrolls) and are handed to
+ * `onEmptyChord`; Ctrl+Y still yanks into an empty draft when the kill ring holds text.
+ */
+export const COMPOSER_EDIT_KEYS = new Set(['a', 'e', 'w', 'u', 'k', 'y']);
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
@@ -99,6 +121,9 @@ export function applyInputSequence(value: string, cursorOffset: number, input: s
  */
 export function InputBox({
   value,
+  liveValueRef,
+  onEmptyBackspace,
+  onEmptyChord,
   onChange,
   onSubmit,
   placeholder = '',
@@ -135,6 +160,11 @@ export function InputBox({
 
   useInput(
     (input, key) => {
+      const parentValue = liveValueRef?.current;
+      if (parentValue !== undefined && parentValue !== valueRef.current) {
+        valueRef.current = parentValue;
+        cursorOffsetRef.current = parentValue.length;
+      }
       // Alt+Backspace deletes the previous word, as it does in every other
       // terminal composer.
       if (key.meta && (key.backspace || key.delete)) {
@@ -150,7 +180,12 @@ export function InputBox({
       if (key.ctrl && !key.meta) {
         const cursor = cursorOffsetRef.current;
         const current = valueRef.current;
-        switch (input.toLowerCase()) {
+        const chord = input.toLowerCase();
+        if (COMPOSER_EDIT_KEYS.has(chord) && !current && !(chord === 'y' && killRingRef.current)) {
+          onEmptyChord?.(input, key);
+          return;
+        }
+        switch (chord) {
           case 'a':
             commit({ value: current, cursorOffset: 0 });
             return;
@@ -216,6 +251,10 @@ export function InputBox({
       }
 
       if (key.backspace || key.delete) {
+        if (!valueRef.current) {
+          onEmptyBackspace?.();
+          return;
+        }
         commit(deletePreviousGrapheme(valueRef.current, cursorOffsetRef.current));
         return;
       }

@@ -332,7 +332,9 @@ export class AgentSession {
   private readonly listeners = new Set<AgentSessionListener>();
   private runGeneration = 0;
   private lifecycleStartedSessionId?: string;
+  private lifecycleStart?: Promise<void>;
   private lifecycleEndedSessionId?: string;
+  private lifecycleEnd?: Promise<void>;
   private runtime: SessionRuntime;
   private readonly registryFactory?: AgentSessionDependencies['registryFactory'];
 
@@ -541,20 +543,32 @@ export class AgentSession {
     source: Parameters<typeof runSessionStart>[2],
     options?: SessionLifecycleOptions,
   ): Promise<void> {
-    if (this.lifecycleStartedSessionId === sessionId) return;
+    if (this.lifecycleStartedSessionId === sessionId) {
+      await this.lifecycleStart?.catch(() => undefined);
+      return;
+    }
     this.lifecycleStartedSessionId = sessionId;
-    await this.sessionStartRunner(config, sessionId, source, options);
+    this.lifecycleStart = this.sessionStartRunner(config, sessionId, source, options);
+    await this.lifecycleStart;
   }
 
+  // A second call for a session that is already ending waits for the SessionEnd in flight
+  // instead of returning at once, which let a second exit or a `/clear` racing an exit move on
+  // while the hooks were still running. The first caller reports a failed SessionEnd; a caller that
+  // only waited for it does not report the same failure a second time.
   async endLifecycle(
     config: AgentConfig,
     sessionId: string,
     reason: Parameters<typeof runSessionEnd>[2],
     options?: SessionLifecycleOptions,
   ): Promise<void> {
-    if (this.lifecycleEndedSessionId === sessionId) return;
+    if (this.lifecycleEndedSessionId === sessionId) {
+      await this.lifecycleEnd?.catch(() => undefined);
+      return;
+    }
     this.lifecycleEndedSessionId = sessionId;
-    await this.sessionEndRunner(config, sessionId, reason, options);
+    this.lifecycleEnd = this.sessionEndRunner(config, sessionId, reason, options);
+    await this.lifecycleEnd;
   }
 
   async clearSession(
@@ -920,12 +934,14 @@ export class AgentSession {
       } satisfies SessionRecord);
     }
     request.onCommitted?.(result, boundary);
+    // No signal: a saved compaction cannot be taken back, so a cancel here (Esc in the row's last
+    // moments, an exit, a cancelled turn around an auto-compaction) would stop nothing but the
+    // user's hooks. They run to their own timeouts.
     await this.postCompactHooksRunner(request.config, {
       trigger: result.trigger,
       sessionId: request.sessionId,
       focus: request.options.focus,
       onHookEvent: request.options.onHookEvent,
-      signal: request.options.signal,
     });
     return { result, boundary };
   }

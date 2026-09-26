@@ -46,6 +46,8 @@ export interface BuiltinCommand {
   argumentHint?: string;
   /** Hide from / autocomplete when empty, but still match when typed exactly. */
   isHidden?: boolean;
+  /** Listed for the TUI's menu and help only; see `CommandDefinition.tuiOnly`. */
+  tuiOnly?: boolean;
 }
 
 export interface BuiltinCommandContext {
@@ -711,6 +713,17 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     execute: () => ({ type: 'managed-agent', operation: 'list' }),
   },
   {
+    name: 'queue',
+    description: 'Show the follow-up queue; /queue clear drops it',
+    argumentHint: '[clear]',
+    // The TUI handles /queue itself before this registry is consulted: the queue is its state.
+    tuiOnly: true,
+    execute: () => ({
+      type: 'local-message',
+      content: 'The follow-up queue belongs to the interactive session.',
+    }),
+  },
+  {
     name: 'agent',
     description: 'Inspect or control a managed agent',
     argumentHint: '<id>|send <id> <message>|stop <id>|apply <id>',
@@ -941,6 +954,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = BUILTIN_COMMAND_DEFINITIONS.fl
       description: definition.description,
       argumentHint: definition.argumentHint,
       isHidden: definition.isHidden,
+      tuiOnly: definition.tuiOnly,
     },
     ...(definition.aliases ?? []).map((alias) => metadataForAlias(definition, alias)),
   ],

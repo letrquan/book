@@ -747,6 +747,32 @@ describe('AgentSession', () => {
     expect(records).toEqual([]);
   });
 
+  // A saved compaction cannot be taken back, so a cancel (Esc during the row's last moments,
+  // or the exit) has nothing left to stop but the user's PostCompact hooks. They run to their
+  // own timeouts instead of under the compaction's abort signal.
+  it('runs PostCompact hooks outside the compaction abort signal', async () => {
+    const postCompactCalls: Array<{ signal?: AbortSignal }> = [];
+    const controller = new AbortController();
+    const session = new AgentSession({
+      compactRunner: async () => compactedResult(),
+      postCompactHooksRunner: async (_config, options) => {
+        postCompactCalls.push(options);
+      },
+    });
+
+    await session.compact({
+      config: defaultConfig(),
+      history: [],
+      sessionId: 'session-1',
+      transcriptOrdinal: 0,
+      options: { trigger: 'manual', signal: controller.signal },
+      timelineStore: { append: () => {} },
+    });
+
+    expect(postCompactCalls).toHaveLength(1);
+    expect(postCompactCalls[0]?.signal).toBeUndefined();
+  });
+
   it('owns compaction boundary persistence and post-compact hooks', async () => {
     const result = compactedResult();
     const records: SessionRecord[] = [];
@@ -970,6 +996,52 @@ describe('AgentSession', () => {
       ['session-2', 'completion'],
     ]);
     expect(hookEvents).toEqual(['SessionStart', 'SessionEnd']);
+  });
+
+  // #268 item 3: a second end for a session already ending returned at once, so a caller
+  // that awaited it (a second exit, a /clear racing an exit) went on while SessionEnd ran.
+  it('a second end for a session already ending waits for the SessionEnd in flight', async () => {
+    let finishSessionEnd: () => void = () => {};
+    const ends: string[] = [];
+    const session = new AgentSession({
+      sessionEndRunner: (_config, sessionId) => {
+        ends.push(sessionId);
+        return new Promise<void>((resolve) => {
+          finishSessionEnd = resolve;
+        });
+      },
+    });
+    const config = defaultConfig();
+
+    const first = session.endLifecycle(config, 'session-1', 'exit');
+    let secondSettled = false;
+    const second = session.endLifecycle(config, 'session-1', 'exit').then(() => {
+      secondSettled = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(secondSettled).toBe(false);
+
+    finishSessionEnd();
+    await Promise.all([first, second]);
+    expect(secondSettled).toBe(true);
+    expect(ends).toEqual(['session-1']);
+  });
+
+  // The first caller reports a failed SessionEnd; a caller that only waited for it must not
+  // report the same failure a second time.
+  it('a second end that waited on a failed SessionEnd does not rethrow its error', async () => {
+    const session = new AgentSession({
+      sessionEndRunner: async () => {
+        throw new Error('hook blew up');
+      },
+    });
+    const config = defaultConfig();
+
+    const first = session.endLifecycle(config, 'session-1', 'exit');
+    const second = session.endLifecycle(config, 'session-1', 'exit');
+
+    await expect(first).rejects.toThrow('hook blew up');
+    await expect(second).resolves.toBeUndefined();
   });
 
   it('owns clear transitions across lifecycle, persistence, cancellation, and projection', async () => {

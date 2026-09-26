@@ -97,6 +97,16 @@ export function shouldDiscardOptimisticMessages(result: AgentSessionSendResult):
   return result.status === 'failed' && result.phase !== 'run';
 }
 
+/** The card for a manual compaction the user cancelled: not a failure to report. */
+function cancelledCompactUi(preMessages: number) {
+  return {
+    phase: 'skipped',
+    trigger: 'manual',
+    preMessages,
+    message: 'Compaction cancelled.',
+  } as const;
+}
+
 export interface UseAgentSessionOptions extends SessionBootstrap {
   permissionMode?: PermissionMode;
   store?: SessionStoreInterface;
@@ -268,6 +278,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     Array<{ text: string; localCommand?: LocalCommandDisplay; sessionId: string }>
   >([]);
   const [isCompacting, setIsCompacting] = useState(false);
+  // True once the compaction's record is written, so the app stops offering to cancel it: the
+  // PostCompact hooks left are the same signal's and are not cancelled.
+  const [isCompactCommitted, setIsCompactCommitted] = useState(false);
   const [isRewinding, setIsRewinding] = useState(false);
   const [compactUi, setCompactUi] = useState<CompactUiState | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
@@ -703,6 +716,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       let activeUserMessage: Message | undefined;
       let placeholder: Message | undefined;
       let activeRunContext: AgentRunContext | undefined;
+      let activeSignal: AbortSignal | undefined;
 
       log.info('send message', {
         len: userMessage.length,
@@ -719,6 +733,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const beforePrepare = async (control: AgentSessionSendControl) => {
         operationIsCurrent = control.isCurrent;
         activeRunContext = control.runContext;
+        activeSignal = control.signal;
         // Cross-turn auto-compact before appending the new user message.
         const contextLimit = resolveContextLimit(liveConfig);
         const hostCompactAttemptKey = `${usagePressureTokens(hostUsageRef.current)}:${contextHistoryRef.current.length}`;
@@ -752,6 +767,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 trigger: 'auto',
                 preContextTokens: usagePressureTokens(hostUsageRef.current),
                 upcomingUserIntent: messageOptions?.contextMessage ?? userMessage,
+                // Esc on this row's "Esc to cancel" must stop the reducer, not only the send:
+                // without the turn's signal the model kept being called after the send was gone.
+                signal: control.signal,
               },
             });
             const autoResult = autoOutcome.result;
@@ -783,11 +801,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                   : null,
               );
             }
+            if (control.signal?.aborted) {
+              // A cancelled attempt is not an attempt: keeping its key would skip the compaction
+              // on the next send and send the oversized history.
+              lastHostCompactAttemptRef.current = null;
+            }
           } catch (err) {
             log.warn('pre-turn auto-compact failed', {
               error: err instanceof Error ? err.message : String(err),
             });
             if (stillCurrent()) setCompactUi(null);
+            if (control.signal?.aborted) lastHostCompactAttemptRef.current = null;
           } finally {
             if (stillCurrent()) setIsCompacting(false);
           }
@@ -989,6 +1013,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 ...hints,
                 trigger: 'auto',
                 preContextTokens: usage ? usagePressureTokens(usage) : undefined,
+                // The loop's own compaction answers to the turn's Esc, like the pre-turn one.
+                signal: activeSignal,
               },
             });
             const result = outcome.result;
@@ -1459,7 +1485,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           runtime: agentSession.getRuntime(),
           timelineStore,
           isCurrent: stillCurrent,
-          onCommitted: projectCompactResult,
+          onCommitted: (result, boundary) => {
+            projectCompactResult(result, boundary);
+            setIsCompactCommitted(true);
+          },
           options: {
             trigger: 'manual',
             focus,
@@ -1480,13 +1509,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           });
           return;
         }
+        // A cancelled compaction (Esc or Ctrl+C) ends on its aborted reducer stream, which is
+        // not a failure to report.
         if (result.status === 'failed') {
-          setCompactUi({
-            phase: 'error',
-            trigger: 'manual',
-            preMessages,
-            message: result.error,
-          });
+          setCompactUi(
+            operation.signal?.aborted
+              ? cancelledCompactUi(preMessages)
+              : { phase: 'error', trigger: 'manual', preMessages, message: result.error },
+          );
           return;
         }
 
@@ -1507,14 +1537,19 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         });
       } catch (e) {
         if (stillCurrent()) {
-          setCompactUi({
-            phase: 'error',
-            trigger: 'manual',
-            preMessages,
-            message: e instanceof Error ? e.message : String(e),
-          });
+          setCompactUi(
+            operation.signal?.aborted
+              ? cancelledCompactUi(preMessages)
+              : {
+                  phase: 'error',
+                  trigger: 'manual',
+                  preMessages,
+                  message: e instanceof Error ? e.message : String(e),
+                },
+          );
         }
       } finally {
+        setIsCompactCommitted(false);
         if (stillCurrent()) setIsCompacting(false);
         operation.release();
       }
@@ -2159,6 +2194,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     contextHistory: contextHistoryRef.current,
     isThinking,
     isCompacting,
+    isCompactCommitted,
     isRewinding,
     compactUi,
     setCompactUi,
