@@ -144,7 +144,21 @@ split content. A complete `assistant` record that reports what Book itself said 
 `UserPromptSubmit` hook refused, a tool batch Book rejected — carries `"host_notice": true`, so a
 consumer can tell a host notice from a model reply without matching on its text.
 
-Three things behave differently in print mode, because there is nobody to ask.
+Four things behave differently in print mode, because there is nobody to ask.
+
+**Permission prompts.** Print mode cannot show one, so in `default` and `acceptEdits` a call that
+would prompt in the TUI is refused. Reading and searching inside the workspace does not prompt
+unless a rule says so, so those calls run. For anything else, the model is told that nothing in the
+run can approve the call, and the first refusal of each tool in the session prints a line like this
+on stderr (a `notice` event in `stream-json`):
+
+```text
+Bash needs approval, and nothing in this run can answer a permission prompt, so the call was refused. To allow it, add a permissions.allow rule such as "Bash(npm test)" to your settings, or run with --permission-mode auto.
+```
+
+Book has no `--allowedTools` flag. To allow specific calls for one run, put the rules in a file
+and pass it with `--settings <path>`. See
+[Permission rules and modes](tools-and-safety.md#permission-rules-and-modes).
 
 **Slash commands.** A prompt beginning with `/name` is resolved through the same command
 registries the TUI uses instead of being sent to the model as literal text. See

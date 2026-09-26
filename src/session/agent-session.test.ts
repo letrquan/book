@@ -1027,7 +1027,7 @@ describe('AgentSession', () => {
       ]);
       expect(send.signal?.aborted).toBe(true);
       expect(send.isCurrent()).toBe(false);
-      await expect(permission).resolves.toBe('deny');
+      await expect(permission).resolves.toEqual({ result: 'deny', reason: 'dismissed' });
     } finally {
       persisted.cleanup();
       timeline.cleanup();
@@ -1639,7 +1639,8 @@ describe('AgentSession', () => {
     });
 
     expect(decisions).toEqual([
-      'deny',
+      // The stale run's prompt was withdrawn, not declined by a person (#264).
+      { result: 'deny', reason: 'dismissed' },
       'reject',
       { action: 'cancel', message: 'Session changed.' },
     ]);
@@ -1665,7 +1666,7 @@ describe('AgentSession', () => {
       interactions: { permission: true, planApproval: false, userQuestions: 0, elicitations: 0 },
     });
     expect(operation.signal?.aborted).toBe(true);
-    await expect(permission).resolves.toBe('deny');
+    await expect(permission).resolves.toEqual({ result: 'deny', reason: 'dismissed' });
     expect(operation.isCurrent()).toBe(true);
     expect(session.finishSend(operation)).toBe(true);
     expect(session.finishSend(operation)).toBe(false);
