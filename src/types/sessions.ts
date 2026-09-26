@@ -107,6 +107,12 @@ export type CompactResult =
         | 'invalid-checkpoint'
         | 'budget-overflow';
       error: string;
+      /**
+       * The provider's error code when the reducer's request failed (`reason: 'provider-error'`),
+       * so a caller can tell a verdict on that request (a 400) from a failure every request
+       * shares (a rejected key, an outage).
+       */
+      providerCode?: string;
     };
 
 export interface CompactBoundary {

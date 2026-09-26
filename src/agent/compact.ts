@@ -1350,6 +1350,19 @@ export async function runCompact(
   const throughMessage = contextHistory[preMessageCount - retainedCount - 1];
   const summary = renderLegacySummary(checkpoint);
 
+  // A model-free checkpoint exists to make a request sendable. When even it leaves the request
+  // over the window, committing it would only trade the summarized span for nothing.
+  if (
+    options.deterministic &&
+    postContextTokens + budgets.requestOverheadTokens >= budgets.usableContextLimit
+  ) {
+    return {
+      status: 'skipped',
+      reason: 'not-applicable',
+      message: 'a checkpoint built without the model would still be too large to send',
+    };
+  }
+
   log.info('compacted', {
     compactId,
     generation,
@@ -1909,7 +1922,6 @@ async function generateCheckpoint(
   // because a route may refuse at its real limit without naming the length (9router's
   // antigravity route answers a plain 400). The reducer's own request is read the same
   // way, or a history far over the window loses its recovery compaction to that 400.
-  const requestTokens = estimateTextTokens(`${options?.system ?? CHECKPOINT_SYSTEM}${prompt}`);
   try {
     for await (const event of provider.stream(
       requestConfig,
@@ -1956,6 +1968,10 @@ async function generateCheckpoint(
       }
       if (event.type === 'error') {
         const error = event.error ?? 'Checkpoint generation failed.';
+        // Sized only here, where it decides an overflow, and in parts, so a successful
+        // request never pays for a copy of its whole prompt.
+        const requestTokens =
+          estimateTextTokens(options?.system ?? CHECKPOINT_SYSTEM) + estimateTextTokens(prompt);
         return {
           ok: false,
           contextOverflow:
@@ -1963,7 +1979,12 @@ async function generateCheckpoint(
             isContextOverflowError(error) ||
             (event.errorCode === 'bad_request' &&
               requestTokens >= LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS),
-          result: { status: 'failed', reason: 'provider-error', error },
+          result: {
+            status: 'failed',
+            reason: 'provider-error',
+            error,
+            ...(event.errorCode === undefined ? {} : { providerCode: event.errorCode }),
+          },
         };
       }
     }

@@ -276,17 +276,21 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
-- **A request too large for the window compacts instead of ending the run** (#238). Resuming a
-  long session on a model with a smaller window (`--resume <id> --model <smaller>`) could end
-  with `Request is too large for <model> … Start a new session`: the preflight gate compacted
-  first, but when the reducer's request failed and the tool results were already too small for
-  the clip to help, it refused. A checkpoint built without the model is now the last resort: it
-  needs no provider call, so the request goes out. The run ends only when even that cannot be
-  made, or when `autoCompactEnabled` is off, and the message says which.
+- **A request too large for the window compacts instead of ending the run** (#238). Resuming a long
+  session on a model with a smaller window (`--resume <id> --model <smaller>`) could end with
+  `Request is too large for <model> … Start a new session`: the preflight gate compacted first, but
+  when the reducer's request failed and the tool results were already too small for the clip to
+  help, it refused. A checkpoint built without the model is now the last resort: it needs no
+  provider call, so the request goes out. It is not tried after a failure every request would share
+  (a rejected key, an outage) or a budget refusal, and it is not committed unless it fits. The run
+  ends only when even that cannot be made, or when `autoCompactEnabled` is off, and the message says
+  which.
 - **Overflow recovery follow-ups** (#244).
   - A 429 that states an oversized request (OpenAI's TPM limit) is no longer retried like a rate
     limit; it compacts at once, and no longer lowers the model's learned window for good. A
-    transient `Rate limit reached` is still retried.
+    transient `Rate limit reached` is still retried. It compacts under the limit the refusal states
+    and is not retried above it; a TPM refusal sent as a 413 or wrapped in a router's 503 counts
+    too, and no rate-limit error lowers the window.
   - The recovery honours `autoCompactEnabled`: with it off, only the tool-result clip runs.
   - When the recovery's reducer fails and the clip cannot bring the request under 80% of the
     refused size, a checkpoint built without the model is used. A clip that is not retried no

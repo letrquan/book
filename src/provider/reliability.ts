@@ -87,13 +87,13 @@ const CONTEXT_OVERFLOW_ERROR_NAMES: ReadonlySet<string> = new Set([
  * The message and the `code` / `type` names of a provider's error body. The
  * message is `error.message` (or `error` itself when it is a string), else a
  * top-level `message` or `detail`; a body that is not JSON is its own message.
- * A body that starts like JSON but does not parse (cut at the read cap, or
- * malformed) is read for its first `"message"`, `"code"` and `"type"` strings
- * alone, never for the rest, which may echo the request. `raw` is the upstream's
- * own error body that OpenRouter forwards in `error.metadata.raw`, as a string
- * or as an object. `parsed` says the body read as a JSON object, so a reader
- * can tell a body with no message of its own from a body that is not JSON at
- * all.
+ * A body that reached the read cap and starts like JSON but does not parse is
+ * read for its first `"message"`, `"error"` or `"detail"` string and its first
+ * `"code"` / `"type"` names alone, never for the rest, which may echo the
+ * request. `raw` is the upstream's own error body that OpenRouter forwards in
+ * `error.metadata.raw`, as a string or as an object. `parsed` says the body
+ * read as a JSON object, so a reader can tell a body with no message of its own
+ * from a body that is not JSON at all.
  */
 function errorBodyParts(body: string): {
   message: string;
@@ -105,20 +105,27 @@ function errorBodyParts(body: string): {
   try {
     parsedJson = JSON.parse(body);
   } catch {
-    // A router's plain text can open with a bracket of its own (9router's
-    // `[antigravity/x] [400]: …`), so only a `{` or an array of objects counts as JSON.
-    if (!/^\s*(?:\{|\[\s*\{)/.test(body)) return { message: body, names: [], parsed: false };
-    // JSON cut at the read cap, or malformed: only its first `"message"`, `"code"` and
-    // `"type"` strings are read, never the rest, which may echo the request.
-    const match = body.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-    let message = '';
-    if (match) {
-      try {
-        message = JSON.parse(`"${match[1]}"`) as string;
-      } catch {
-        message = '';
-      }
+    // Only a body that reached the read cap can be JSON the cap cut; a short malformed one
+    // (a Python-repr `{'error': …}`) is plain text, read whole. A router's plain text can open
+    // with a bracket of its own (9router's `[antigravity/x] [400]: …`), so only a `{` or an
+    // array of objects counts as JSON.
+    // The `- 3` allows for a multi-byte character the cap cut and the decoder replaced.
+    const reachedCap = new TextEncoder().encode(body).byteLength >= ERROR_BODY_MAX_BYTES - 3;
+    if (!reachedCap || !/^\s*(?:\{|\[\s*\{)/.test(body)) {
+      return { message: body, names: [], parsed: false };
     }
+    // Cut JSON: the first string of `"message"`, else of `"error"`, else of `"detail"`, and
+    // the first `"code"` / `"type"` names — never the rest, which may echo the request.
+    const readString = (key: string): string => {
+      const match = body.match(new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+      if (!match) return '';
+      try {
+        return JSON.parse(`"${match[1]}"`) as string;
+      } catch {
+        return '';
+      }
+    };
+    const message = readString('message') || readString('error') || readString('detail');
     const names = [body.match(/"code"\s*:\s*"([^"]*)"/), body.match(/"type"\s*:\s*"([^"]*)"/)]
       .filter((name): name is RegExpMatchArray => name !== null)
       .map((name) => name[1]);
@@ -258,6 +265,13 @@ export function isOversizedForRateLimit(text: string): boolean {
   const limit = text.match(/\blimit:?\s*(\d+)/i);
   const requested = text.match(/\brequested:?\s*(\d+)/i);
   return !limit || !requested || Number(requested[1]) > Number(limit[1]);
+}
+
+/** The per-request limit an oversized rate-limit error states (`Limit 30000`), if any. */
+export function statedRateLimit(text: string): number | undefined {
+  if (!isOversizedForRateLimit(text)) return undefined;
+  const limit = text.match(/\blimit:?\s*(\d+)/i);
+  return limit ? Number(limit[1]) : undefined;
 }
 
 /**
@@ -447,9 +461,10 @@ export async function fetchWithRetry(
     // that can never fit under it) is refused the same way however long the retries wait: the
     // loop's overflow recovery is what lets it through, so it gets the response now. Tested on
     // the same formatted text the loop reads, so a statement buried in `metadata.raw` — which
-    // that text does not carry — leaves the retries running.
+    // that text does not carry — leaves the retries running. A router may wrap that 429 in
+    // another status (`503 [route] [429]: …`), so the quoted one counts.
     if (
-      response.status === 429 &&
+      (quoted ?? response.status) === 429 &&
       isOversizedForRateLimit(formatApiError(response.status, bodyText))
     ) {
       logger?.warn('rate limit on a request too large to ever fit; not retrying', {

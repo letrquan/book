@@ -808,3 +808,42 @@ describe('error bodies, review round 2 (#244)', () => {
     ).toBe('context_overflow');
   });
 });
+
+describe('error bodies, review round 3 (#244)', () => {
+  it('reads a short malformed brace body whole, as before the read cap', () => {
+    expect(
+      classifyApiError(
+        400,
+        `{'error': {'message': "This model's maximum context length is 8192 tokens"}}`,
+      ),
+    ).toBe('context_overflow');
+  });
+
+  it('reads a string error in a JSON body cut at the read cap', () => {
+    const full = JSON.stringify({
+      error: "This model's maximum context length is 128000 tokens.",
+      echo: 'x'.repeat(100_000),
+    });
+    expect(classifyApiError(400, full.slice(0, 65_536))).toBe('context_overflow');
+  });
+
+  it('does not retry an oversized TPM refusal a router wrapped in a 503', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return new Response(
+          '[openai/gpt-4o] [429]: Request too large for gpt-4o on tokens per min (TPM): Limit 30000, Requested 45000.',
+          { status: 503 },
+        );
+      }),
+    );
+    try {
+      await fetchWithRetry('http://x/v1', {}, { ...defaultConfig().retry, maxAttempts: 3 });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(calls).toBe(1);
+  });
+});

@@ -2818,3 +2818,39 @@ describe('compaction a request cannot be sent without (#238, #244)', () => {
     expect(result).toMatchObject({ status: 'failed', reason: 'provider-error' });
   });
 });
+
+describe('compaction a request cannot be sent without, review round 3 (#238, #244)', () => {
+  beforeEach(() => {
+    mockedStream.mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('skips a model-free compaction that could not bring the request under the window', async () => {
+    // Nothing is committed when the result cannot be sent either: the request's
+    // overhead alone fills this 32k window.
+    const result = await runCompact(makeConfig(), twoTurns, {
+      trigger: 'auto',
+      deterministic: true,
+      requestOverheadTokens: 40_000,
+    });
+
+    expect(result).toMatchObject({ status: 'skipped', reason: 'not-applicable' });
+  });
+
+  it('names the provider code of a failed reducer request', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'error', error: 'API Error: 401 invalid api key', errorCode: 'auth' };
+    });
+
+    const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      reason: 'provider-error',
+      providerCode: 'auth',
+    });
+  });
+});

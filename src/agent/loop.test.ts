@@ -7350,3 +7350,232 @@ describe('the last-resort compaction, review round 2 (#238, #244)', () => {
     expect(errors.at(-1)).not.toContain('after compacting');
   });
 });
+
+describe('the last-resort compaction, review round 3 (#238, #244)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function resultHistory(count: number, size: number): Message[] {
+    const ids = Array.from({ length: count }, (_, index) => `r4-result-${index}`);
+    return [
+      { id: 'r4-user', role: 'user', content: 'build it', includeInContext: true, timestamp: 0 },
+      {
+        id: 'r4-assistant',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolResults: ids.map((id) => toolSuccess('r'.repeat(size), { toolCallId: id })),
+        timestamp: 0,
+      },
+    ];
+  }
+
+  const smallWindow = {
+    maxTurns: 1,
+    maxTokens: 4_000,
+    autoCompactEnabled: true,
+    modelInfo: { contextWindow: 40_000, maxOutputTokens: 4_000 },
+  };
+
+  function countingProvider(calls: { count: number }): Provider {
+    return {
+      id: 'scripted',
+      stream: async function* () {
+        calls.count++;
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done' };
+      },
+    };
+  }
+
+  const tpmBody = JSON.stringify({
+    error: {
+      message:
+        'Request too large for gpt-4o in organization org-x on tokens per min (TPM): Limit 30000, Requested 45000.',
+      type: 'tokens',
+      code: 'rate_limit_exceeded',
+    },
+  });
+
+  it('never lowers the learned window on a throttling 429 that mentions too many tokens', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: { message: 'Too many tokens, please wait before trying again.' },
+            }),
+            { status: 429 },
+          ),
+      ),
+    );
+    const compact = vi.fn(async () => compactedForRetry());
+    const store = new MemoryModelWindowStore();
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        model: 'router/throttle-model',
+        autoCompactEnabled: true,
+        retry: { ...defaultConfig().retry, maxAttempts: 0 },
+      }),
+      createRegistry(),
+      'hello',
+      [userMsg('x'.repeat(100_000))],
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { isNewSession: false, modelWindowStore: store },
+    );
+
+    expect(store.get('router/throttle-model')).toBeUndefined();
+    expect(compact).not.toHaveBeenCalled();
+  });
+
+  it('never lowers the learned window on a TPM refusal sent as a 413', async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) return new Response(tpmBody, { status: 413 });
+        return new Response(textStream('recovered'), { status: 200 });
+      }),
+    );
+    const compact = vi.fn(async () => compactedForRetry());
+    const store = new MemoryModelWindowStore();
+
+    const result = await runAgentLoop(
+      defaultConfig({ maxTurns: 1, model: 'router/tpm-413-model', autoCompactEnabled: true }),
+      createRegistry(),
+      'hello',
+      [userMsg('x'.repeat(100_000))],
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { isNewSession: false, modelWindowStore: store },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(store.get('router/tpm-413-model')).toBeUndefined();
+    expect(result.at(-1)?.content).toBe('recovered');
+  });
+
+  it('plans a TPM recovery under the stated limit and does not retry above it', async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) return new Response(tpmBody, { status: 429 });
+        return new Response(textStream('recovered'), { status: 200 });
+      }),
+    );
+    const hints: Array<CompactRequestHints | undefined> = [];
+    // Still ~33k tokens: under 80% of the refused size, but over the stated 30k limit.
+    const stillOver = userMsg('y'.repeat(132_000));
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) => {
+        hints.push(requestHints);
+        return {
+          ...compactedForRetry(),
+          replacementHistory: [stillOver],
+          postContextTokens: estimateHistoryTokens([stillOver]),
+        };
+      },
+    );
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1, model: 'router/tpm-limit-model', autoCompactEnabled: true }),
+      createRegistry(),
+      'hello',
+      [userMsg('x'.repeat(200_000))],
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(hints[0]?.planningWindowCap).toBeLessThanOrEqual(24_000);
+    expect(fetchCalls).toBe(1);
+  });
+
+  it('does not compact without the model after a reducer failure the main request would share', async () => {
+    const calls = { count: 0 };
+    const compact = vi.fn(async (): Promise<CompactResult> => ({
+      status: 'failed',
+      reason: 'provider-error',
+      error: 'API Error: 401 invalid api key',
+      providerCode: 'auth',
+    }));
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      resultHistory(60, 6_000),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(errors[0]).toContain('Request is too large for');
+  });
+
+  it('measures the model-free compaction against the history it compacts, not the clipped one', async () => {
+    const calls = { count: 0 };
+    const usages: Array<Usage | null> = [];
+    const compact = vi.fn(
+      async (_history: Message[], usage: Usage | null, requestHints?: CompactRequestHints) => {
+        if (!requestHints?.deterministic) {
+          return {
+            status: 'failed',
+            reason: 'provider-error',
+            error: 'API Error: 400 reasoning_effort is not supported',
+            providerCode: 'bad_request',
+          } satisfies CompactResult;
+        }
+        usages.push(usage);
+        return compactedForRetry();
+      },
+    );
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      resultHistory(30, 12_000),
+      noopCallbacks({ onCompact: compact }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(usages).toHaveLength(1);
+    expect(usages[0]?.promptTokens).toBeGreaterThan(90_000);
+  });
+
+  it('returns the history unclipped when the gate refuses', async () => {
+    const calls = { count: 0 };
+    const compact = vi.fn(async (): Promise<CompactResult> => ({
+      status: 'failed',
+      reason: 'provider-error',
+      error: 'API Error: 400 reasoning_effort is not supported',
+    }));
+
+    const result = await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      resultHistory(30, 12_000),
+      noopCallbacks({ onCompact: compact }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(calls.count).toBe(0);
+    const assistant = result.find((message) => message.id === 'r4-assistant');
+    expect(assistant?.toolResults?.[0]?.content).toHaveLength(12_000);
+  });
+});
