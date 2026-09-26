@@ -1519,6 +1519,51 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('input 1,000');
     expect(output).not.toContain('Session usage plain fallback');
   });
+
+  it('leaves exactly one blank row above each slash-command output', () => {
+    const local = (id: string, content: string): Message => ({
+      ...msg(id, 'assistant', content),
+      kind: 'local',
+      includeInContext: false,
+    });
+    const usage: Message = {
+      ...local('local-usage', 'Session usage plain fallback'),
+      localCommand: {
+        kind: 'usage',
+        model: 'claude-sonnet-5',
+        currentTurn: 1,
+        messageCount: 2,
+        turnDurationMs: 800,
+        usage: { promptTokens: 100, completionTokens: 20, totalTokens: 120 },
+      },
+    };
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[
+            msg('reply', 'assistant', 'REPLY-TEXT'),
+            local('cost', 'COST-TEXT'),
+            usage,
+            local('mcp', 'MCP-TEXT'),
+          ]}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+    const rows = frame(view.lastFrame).split('\n');
+    const gapAbove = (pattern: RegExp) => {
+      const at = rows.findIndex((row) => pattern.test(row));
+      let blank = 0;
+      for (let index = at - 1; index >= 0 && rows[index]!.trim() === ''; index--) blank++;
+      return blank;
+    };
+    // The card used to carry its own top margin on top of the transcript's,
+    // so it alone sat under two blank rows.
+    expect(gapAbove(/COST-TEXT/)).toBe(1);
+    expect(gapAbove(/─ § Usage ─/)).toBe(1);
+    expect(gapAbove(/MCP-TEXT/)).toBe(1);
+  });
 });
 
 describe('ChatPanel quiet tool runs', () => {

@@ -629,7 +629,8 @@ export function CommandPanel({
           };
 
   return (
-    <Box width={panelWidth} flexDirection="column" marginTop={1}>
+    // No top margin of its own: ChatPanel spaces every slash-command entry.
+    <Box width={panelWidth} flexDirection="column">
       <PanelHeader {...header} contentWidth={contentWidth} step={step} />
       <Box flexDirection="column" paddingX={2} marginTop={1}>
         {display.kind === 'config' ? (
