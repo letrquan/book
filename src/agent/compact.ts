@@ -129,6 +129,33 @@ const RETRIEVAL_WARNING =
   'Exact history remains searchable with SessionHistorySearch and SessionHistoryRead.';
 
 /**
+ * A `bad_request` on a prompt this large is read as a context overflow even when
+ * the body does not say so. The antigravity Gemini route behind 9router refuses a
+ * ~330k-token request with `INVALID_ARGUMENT` and no mention of length (#221):
+ * that is its practical window, not the 1M the model publishes. 9router used to
+ * wrap the refusal as `503 … [400]:`; 0.5.86 answers a plain
+ * `400 {"error":{"message":"[400]: …","code":"bad_request"}}`, so both count
+ * (#244). The recovery is the compaction a stated overflow gets, and no more:
+ *   - the learned window is ratcheted only when the error states an overflow: a
+ *     413, an overflow `error.code` or `error.type`, or the overflow wording in
+ *     the error message (`classifyApiError`, `isContextOverflowError`). An
+ *     overflow inferred from size alone never lowers it: a 400 that was really
+ *     about the request would shrink a 1M model's window for every later session;
+ *   - the compacted request is retried only if it is below this floor. At or
+ *     above it the same request would be refused the same way, so the run ends
+ *     on the real error.
+ * A repeat of the 400 right after compacting ends the run as well: the recovery
+ * runs once per turn (`forcedCompactTurn`). The reducer's own request is read by
+ * the same floor (`generateCheckpoint`), so a history far over the window does not
+ * lose its recovery compaction to that same plain 400.
+ */
+export const LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS = 200_000;
+
+/** What a model-free checkpoint says in place of a summary, since no reducer read the span. */
+const DETERMINISTIC_COMPACTION_NOTE =
+  'The conversation was compacted without a summarizer, so this checkpoint records no summary of the span.';
+
+/**
  * The checkpoint message's header.
  *
  * The base line stays exactly as it was -- the checkpoint is still historical,
@@ -896,6 +923,22 @@ export async function runCompact(
   while (!finalCheckpoint) {
     if (options.signal?.aborted) {
       return { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' };
+    }
+
+    if (options.deterministic) {
+      // No reducer call, so no plan: serializing and chunking the span would be thrown away,
+      // and this path exists for histories far over the window, where that costs the most.
+      finalCheckpoint = makeDeterministicFallback(
+        seedCheckpoint,
+        DETERMINISTIC_COMPACTION_NOTE,
+        generation,
+        statistics,
+        checkpointBudget,
+      );
+      finalChunks = [];
+      fallbackUsed = true;
+      finalAttemptReasons = new Set(['pass-limit']);
+      break;
     }
 
     const generationSlots = Math.max(
@@ -1862,6 +1905,11 @@ async function generateCheckpoint(
   const requestConfig = options?.effort
     ? { ...config, effort: options.effort, effortExplicit: true }
     : config;
+  // The loop reads a `bad_request` to a request of 200k tokens or more as an overflow,
+  // because a route may refuse at its real limit without naming the length (9router's
+  // antigravity route answers a plain 400). The reducer's own request is read the same
+  // way, or a history far over the window loses its recovery compaction to that 400.
+  const requestTokens = estimateTextTokens(`${options?.system ?? CHECKPOINT_SYSTEM}${prompt}`);
   try {
     for await (const event of provider.stream(
       requestConfig,
@@ -1910,7 +1958,11 @@ async function generateCheckpoint(
         const error = event.error ?? 'Checkpoint generation failed.';
         return {
           ok: false,
-          contextOverflow: event.errorCode === 'context_overflow' || isContextOverflowError(error),
+          contextOverflow:
+            event.errorCode === 'context_overflow' ||
+            isContextOverflowError(error) ||
+            (event.errorCode === 'bad_request' &&
+              requestTokens >= LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS),
           result: { status: 'failed', reason: 'provider-error', error },
         };
       }

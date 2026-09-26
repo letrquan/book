@@ -1791,7 +1791,7 @@ describe('runAgentLoop streaming render callbacks', () => {
     let turnStarts = 0;
 
     const result = await runAgentLoop(
-      defaultConfig({ maxTurns: 1 }),
+      defaultConfig({ maxTurns: 1, autoCompactEnabled: true }),
       createRegistry(),
       'hello',
       [],
@@ -1825,7 +1825,7 @@ describe('runAgentLoop streaming render callbacks', () => {
     const onError = vi.fn();
 
     await runAgentLoop(
-      defaultConfig({ maxTurns: 1 }),
+      defaultConfig({ maxTurns: 1, autoCompactEnabled: true }),
       createRegistry(),
       'hello',
       [],
@@ -1853,7 +1853,11 @@ describe('runAgentLoop streaming render callbacks', () => {
       },
     };
     const store = new MemoryModelWindowStore();
-    const config = defaultConfig({ maxTurns: 1, model: 'router/test-overflow-model' });
+    const config = defaultConfig({
+      maxTurns: 1,
+      model: 'router/test-overflow-model',
+      autoCompactEnabled: true,
+    });
 
     await runAgentLoop(
       config,
@@ -1884,7 +1888,11 @@ describe('runAgentLoop streaming render callbacks', () => {
       },
     };
     const store = new MemoryModelWindowStore();
-    const config = defaultConfig({ maxTurns: 1, model: 'router/margin-test-model' });
+    const config = defaultConfig({
+      maxTurns: 1,
+      model: 'router/margin-test-model',
+      autoCompactEnabled: true,
+    });
     const initialHistory = [userMsg('x'.repeat(100_000))];
     let refusedHistorySize = 0;
 
@@ -1925,7 +1933,11 @@ describe('runAgentLoop streaming render callbacks', () => {
       },
     };
     const store = new MemoryModelWindowStore();
-    const config = defaultConfig({ maxTurns: 1, model: 'router/below-floor-model' });
+    const config = defaultConfig({
+      maxTurns: 1,
+      model: 'router/below-floor-model',
+      autoCompactEnabled: true,
+    });
     // ~18k history tokens, which is > MIN_LEARNED_CONTEXT_WINDOW (16,384),
     // but floor(18k * 0.8) ~ 14.4k, which is below the floor.
     const initialHistory = [userMsg('x'.repeat(72_000))];
@@ -1962,6 +1974,7 @@ describe('runAgentLoop streaming render callbacks', () => {
     const config = defaultConfig({
       maxTurns: 1,
       model: 'router/declared-model',
+      autoCompactEnabled: true,
       modelInfo: { contextWindow: 200_000 },
     });
 
@@ -2019,7 +2032,7 @@ describe('runAgentLoop streaming render callbacks', () => {
     ];
 
     await runAgentLoop(
-      defaultConfig({ maxTurns: 1 }),
+      defaultConfig({ maxTurns: 1, autoCompactEnabled: true }),
       createRegistry(),
       'hello',
       history,
@@ -2640,7 +2653,7 @@ describe('runAgentLoop error handling', () => {
     );
 
     const result = await runAgentLoop(
-      defaultConfig({ maxTurns: 1 }),
+      defaultConfig({ maxTurns: 1, autoCompactEnabled: true }),
       createRegistry(),
       'hello',
       [],
@@ -5604,6 +5617,7 @@ describe('content filter and upstream error recoveries', () => {
       defaultConfig({
         maxTurns: 1,
         modelInfo: { contextWindow: 1_000_000 },
+        autoCompactEnabled: true,
       }),
       createRegistry(),
       largeUserMessage,
@@ -5797,7 +5811,7 @@ describe('content filter and upstream error recoveries', () => {
 
     // ~225k estimated tokens on a model whose window is not declared.
     const result = await runAgentLoop(
-      defaultConfig({ maxTurns: 1, model: 'gemini-2.5-pro' }),
+      defaultConfig({ maxTurns: 1, model: 'gemini-2.5-pro', autoCompactEnabled: true }),
       createRegistry(),
       'x '.repeat(450_000),
       [],
@@ -5882,7 +5896,11 @@ describe('content filter and upstream error recoveries', () => {
     const store = new MemoryModelWindowStore();
 
     const result = await runAgentLoop(
-      defaultConfig({ maxTurns: 1, model: 'router/stated-overflow-model' }),
+      defaultConfig({
+        maxTurns: 1,
+        model: 'router/stated-overflow-model',
+        autoCompactEnabled: true,
+      }),
       createRegistry(),
       'hello',
       [userMsg('x'.repeat(100_000))],
@@ -5912,7 +5930,12 @@ describe('content filter and upstream error recoveries', () => {
     // ~330k estimated tokens on a 1M-window model whose route refuses at ~300k.
     const model = 'ag/gemini-3.8-flash-high';
     const store = new MemoryModelWindowStore();
-    const config = defaultConfig({ maxTurns: 1, model, modelWindowStore: store });
+    const config = defaultConfig({
+      maxTurns: 1,
+      model,
+      modelWindowStore: store,
+      autoCompactEnabled: true,
+    });
     const history: Message[] = [];
     for (let i = 0; i < 40; i++) {
       history.push({
@@ -5995,7 +6018,7 @@ describe('content filter and upstream error recoveries', () => {
     const store = new MemoryModelWindowStore();
 
     const result = await runAgentLoop(
-      defaultConfig({ maxTurns: 1, model: 'gemini-2.5-pro' }),
+      defaultConfig({ maxTurns: 1, model: 'gemini-2.5-pro', autoCompactEnabled: true }),
       createRegistry(),
       'x '.repeat(450_000),
       [],
@@ -6033,7 +6056,7 @@ describe('content filter and upstream error recoveries', () => {
     const outcomes: AgentTerminalOutcome[] = [];
 
     await runAgentLoop(
-      defaultConfig({ maxTurns: 1, model: 'gemini-2.5-pro' }),
+      defaultConfig({ maxTurns: 1, model: 'gemini-2.5-pro', autoCompactEnabled: true }),
       createRegistry(),
       'x '.repeat(450_000),
       [],
@@ -6092,6 +6115,7 @@ describe('content filter and upstream error recoveries', () => {
       defaultConfig({
         maxTurns: 1,
         model: 'gemini-2.5-pro',
+        autoCompactEnabled: true,
         retry: { ...defaultConfig().retry, streamReissueAttempts: 3 },
       }),
       createRegistry(),
@@ -6530,5 +6554,799 @@ describe('runAgentLoop inline reasoning separation', () => {
     const assistant = history.find((m) => m.role === 'assistant');
     expect(assistant?.content).toBe(answer);
     expect(assistant?.reasoningContent ?? '').toBe('');
+  });
+});
+
+describe('requests the window cannot hold (#238, #244 review)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * A resumed build session: every tool result sits under the flat 2,000-token
+   * clip, so clipping cannot shrink the request, and ~90k tokens of them cannot
+   * go to a model with a 40k window.
+   */
+  function smallResultHistory(count: number): Message[] {
+    const ids = Array.from({ length: count }, (_, index) => `small-result-${index}`);
+    return [
+      {
+        id: 'resume-user',
+        role: 'user',
+        content: 'build the feature',
+        includeInContext: true,
+        timestamp: 0,
+      },
+      {
+        id: 'resume-assistant',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolResults: ids.map((id) => toolSuccess('r'.repeat(6_000), { toolCallId: id })),
+        timestamp: 0,
+      },
+    ];
+  }
+
+  const smallWindow = {
+    maxTurns: 1,
+    maxTokens: 4_000,
+    autoCompactEnabled: true,
+    modelInfo: { contextWindow: 40_000, maxOutputTokens: 4_000 },
+  };
+
+  function countingProvider(calls: { count: number }): Provider {
+    return {
+      id: 'scripted',
+      stream: async function* () {
+        calls.count++;
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done' };
+      },
+    };
+  }
+
+  const reducerRefused: CompactResult = {
+    status: 'failed',
+    reason: 'provider-error',
+    error: 'API Error: 400 reasoning_effort is not supported by this model',
+  };
+
+  const statedOverflow = JSON.stringify({
+    error: {
+      message:
+        "This model's maximum context length is 128000 tokens. However, your messages resulted in 131072 tokens.",
+      type: 'invalid_request_error',
+      code: 'context_length_exceeded',
+    },
+  });
+
+  const plainBadRequest = JSON.stringify({
+    error: {
+      message:
+        '[400]: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}',
+      code: 'bad_request',
+    },
+  });
+
+  it('compacts without the model before refusing a request the reducer could not shrink', async () => {
+    const calls = { count: 0 };
+    const hints: Array<CompactRequestHints | undefined> = [];
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) => {
+        hints.push(requestHints);
+        return requestHints?.deterministic ? compactedForRetry() : reducerRefused;
+      },
+    );
+    const onError = vi.fn();
+
+    const result = await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      smallResultHistory(60),
+      noopCallbacks({ onCompact: compact, onError }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(hints[0]?.deterministic).toBeFalsy();
+    expect(hints[1]?.deterministic).toBe(true);
+    expect(onError).not.toHaveBeenCalled();
+    expect(calls.count).toBe(1);
+    expect(result.at(-1)?.content).toBe('ok');
+  });
+
+  it('refuses with a pointer to the setting when auto-compaction is off', async () => {
+    const calls = { count: 0 };
+    const compact = vi.fn(async () => compactedForRetry());
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ ...smallWindow, autoCompactEnabled: false }),
+      createRegistry(),
+      'continue',
+      smallResultHistory(60),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(calls.count).toBe(0);
+    expect(errors[0]).toContain('Request is too large for');
+    expect(errors[0]).toContain('auto-compaction is off');
+  });
+
+  it('refuses only after the compaction without the model fails too', async () => {
+    const calls = { count: 0 };
+    const compact = vi.fn(async () => reducerRefused);
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      smallResultHistory(60),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(calls.count).toBe(0);
+    expect(errors[0]).toContain('Compaction could not bring it under the limit');
+    expect(errors[0]).toContain('reasoning_effort is not supported by this model');
+  });
+
+  it('compacts on a TPM 429 without lowering the learned window', async () => {
+    // OpenAI's per-minute cap on one request that can never fit under it reads as
+    // an overflow, and compaction is what lets it through; but it says nothing
+    // about the model's window, so the window must not be ratcheted for good.
+    const tpm = JSON.stringify({
+      error: {
+        message:
+          'Request too large for gpt-4o in organization org-x on tokens per min (TPM): Limit 30000, Requested 45000.',
+        type: 'tokens',
+        code: 'rate_limit_exceeded',
+      },
+    });
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) return new Response(tpm, { status: 429 });
+        return new Response(textStream('recovered'), { status: 200 });
+      }),
+    );
+    const compact = vi.fn(async () => compactedForRetry());
+    const store = new MemoryModelWindowStore();
+
+    const result = await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        model: 'router/tpm-model',
+        autoCompactEnabled: true,
+      }),
+      createRegistry(),
+      'hello',
+      [userMsg('x'.repeat(100_000))],
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { isNewSession: false, modelWindowStore: store },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(store.get('router/tpm-model')).toBeUndefined();
+    expect(fetchCalls).toBe(2);
+    expect(result.at(-1)?.content).toBe('recovered');
+  });
+
+  it('recovers from an overflow with the clip alone when auto-compaction is off', async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) return new Response(statedOverflow, { status: 400 });
+        return new Response(textStream('recovered'), { status: 200 });
+      }),
+    );
+    const compact = vi.fn(async () => compactedForRetry());
+    const history: Message[] = [
+      { id: 'off-user', role: 'user', content: 'inspect', includeInContext: true, timestamp: 0 },
+      {
+        id: 'off-assistant',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: [{ id: 'off-tool', name: 'Read', arguments: {} }],
+        toolResults: [toolSuccess('z'.repeat(100_000), { toolCallId: 'off-tool' })],
+        timestamp: 0,
+      },
+    ];
+
+    const result = await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        model: 'router/off-model',
+        autoCompactEnabled: false,
+        modelInfo: { contextWindow: 1_000_000 },
+      }),
+      createRegistry(),
+      'hello',
+      history,
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(fetchCalls).toBe(2);
+    expect(result.at(-1)?.content).toBe('recovered');
+  });
+
+  it('falls back to a compaction without the model when the recovery reducer fails', async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) return new Response(statedOverflow, { status: 400 });
+        return new Response(textStream('recovered'), { status: 200 });
+      }),
+    );
+    const hints: Array<CompactRequestHints | undefined> = [];
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) => {
+        hints.push(requestHints);
+        return requestHints?.deterministic ? compactedForRetry() : reducerRefused;
+      },
+    );
+
+    const result = await runAgentLoop(
+      defaultConfig({ maxTurns: 1, model: 'router/fallback-model', autoCompactEnabled: true }),
+      createRegistry(),
+      'hello',
+      [userMsg('x'.repeat(100_000))],
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(hints[1]).toMatchObject({ deterministic: true, recovery: true });
+    expect(fetchCalls).toBe(2);
+    expect(result.at(-1)?.content).toBe('recovered');
+  });
+
+  it('leaves the history unclipped when the recovery ends without a retry', async () => {
+    // A size-inferred overflow whose reducer fails and whose clip still leaves the
+    // request over the 200k floor is not retried; the clip must not outlive it.
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        return new Response(plainBadRequest, { status: 400 });
+      }),
+    );
+    const compact = vi.fn(async () => reducerRefused);
+    const history: Message[] = [
+      {
+        id: 'floor-user',
+        role: 'user',
+        content: 'x'.repeat(880_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      {
+        id: 'floor-assistant',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: [{ id: 'floor-tool', name: 'Read', arguments: {} }],
+        toolResults: [toolSuccess('y'.repeat(40_000), { toolCallId: 'floor-tool' })],
+        timestamp: 0,
+      },
+    ];
+
+    const result = await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        model: 'gemini-2.5-pro',
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 1_000_000 },
+      }),
+      createRegistry(),
+      'hello',
+      history,
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(fetchCalls).toBe(1);
+    const assistant = result.find((message) => message.id === 'floor-assistant');
+    expect(assistant?.toolResults?.[0]?.content).toHaveLength(40_000);
+  });
+
+  it('says a 400 is not about size when it repeats after a size-inferred recovery', async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        return new Response(plainBadRequest, { status: 400 });
+      }),
+    );
+    const compact = vi.fn(async () => compactedForRetry());
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1, model: 'gemini-2.5-pro', autoCompactEnabled: true }),
+      createRegistry(),
+      'x '.repeat(450_000),
+      [],
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(fetchCalls).toBe(2);
+    expect(errors.at(-1)).toContain('INVALID_ARGUMENT');
+    expect(errors.at(-1)).toContain('not about size');
+    expect(errors.at(-1)).toContain('contextWindow');
+  });
+});
+
+describe('the last-resort compaction, review round 1 (#238, #244)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function smallResultHistory(count: number): Message[] {
+    const ids = Array.from({ length: count }, (_, index) => `r2-result-${index}`);
+    return [
+      { id: 'r2-user', role: 'user', content: 'build it', includeInContext: true, timestamp: 0 },
+      {
+        id: 'r2-assistant',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolResults: ids.map((id) => toolSuccess('r'.repeat(6_000), { toolCallId: id })),
+        timestamp: 0,
+      },
+    ];
+  }
+
+  const smallWindow = {
+    maxTurns: 1,
+    maxTokens: 4_000,
+    autoCompactEnabled: true,
+    modelInfo: { contextWindow: 40_000, maxOutputTokens: 4_000 },
+  };
+
+  function countingProvider(calls: { count: number }): Provider {
+    return {
+      id: 'scripted',
+      stream: async function* () {
+        calls.count++;
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done' };
+      },
+    };
+  }
+
+  const reducerRefused: CompactResult = {
+    status: 'failed',
+    reason: 'provider-error',
+    error: 'API Error: 400 reasoning_effort is not supported by this model',
+  };
+
+  const plainBadRequest = JSON.stringify({
+    error: {
+      message:
+        '[400]: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}',
+      code: 'bad_request',
+    },
+  });
+
+  it('does not repeat a compaction a PreCompact hook blocked', async () => {
+    const calls = { count: 0 };
+    const compact = vi.fn(async (): Promise<CompactResult> => ({
+      status: 'skipped',
+      reason: 'blocked',
+      message: 'PreCompact hook blocked compaction.',
+    }));
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      smallResultHistory(60),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(calls.count).toBe(0);
+    expect(errors[0]).toContain('Request is too large for');
+  });
+
+  it('neither compacts again nor refuses once the run is cancelled', async () => {
+    const calls = { count: 0 };
+    const controller = new AbortController();
+    const compact = vi.fn(async (): Promise<CompactResult> => {
+      controller.abort();
+      return { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' };
+    });
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      smallResultHistory(60),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false, signal: controller.signal },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(calls.count).toBe(0);
+    expect(errors.some((error) => error.includes('Request is too large'))).toBe(false);
+  });
+
+  it('sends a compacted history that no longer carries tool results', async () => {
+    // The gate refuses only requests that carry tool results; one the compaction
+    // turned into text goes to the provider like any other text-only request.
+    const calls = { count: 0 };
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) =>
+        requestHints?.deterministic
+          ? {
+              ...compactedForRetry(),
+              replacementHistory: [userMsg('t'.repeat(200_000))],
+            }
+          : reducerRefused,
+    );
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      smallResultHistory(60),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(calls.count).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  it('compacts without the model when a clip leaves a size-inferred retry over the floor', async () => {
+    // The clip lands under 80% of the refused size but over the 200k floor a
+    // size-inferred retry must get under, so it is not enough on its own.
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) return new Response(plainBadRequest, { status: 400 });
+        return new Response(textStream('recovered'), { status: 200 });
+      }),
+    );
+    const hints: Array<CompactRequestHints | undefined> = [];
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) => {
+        hints.push(requestHints);
+        return requestHints?.deterministic ? compactedForRetry() : reducerRefused;
+      },
+    );
+    const ids = Array.from({ length: 8 }, (_, index) => `gap-tool-${index}`);
+    const history: Message[] = [
+      {
+        id: 'gap-user',
+        role: 'user',
+        content: 'x'.repeat(840_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      {
+        id: 'gap-assistant',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolResults: ids.map((id) => toolSuccess('y'.repeat(40_000), { toolCallId: id })),
+        timestamp: 0,
+      },
+    ];
+
+    const result = await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        model: 'gemini-2.5-pro',
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 1_000_000 },
+      }),
+      createRegistry(),
+      'hello',
+      history,
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(hints[1]?.deterministic).toBe(true);
+    expect(fetchCalls).toBe(2);
+    expect(result.at(-1)?.content).toBe('recovered');
+  });
+
+  it('names the setting when the recovery ends with auto-compaction off', async () => {
+    const statedOverflow = JSON.stringify({
+      error: {
+        message:
+          "This model's maximum context length is 128000 tokens. However, your messages resulted in 131072 tokens.",
+        type: 'invalid_request_error',
+        code: 'context_length_exceeded',
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(statedOverflow, { status: 400 })),
+    );
+    const compact = vi.fn(async () => compactedForRetry());
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1, model: 'router/off-text-model', autoCompactEnabled: false }),
+      createRegistry(),
+      'hello',
+      [userMsg('x'.repeat(100_000))],
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(errors.at(-1)).toContain('maximum context length');
+    expect(errors.at(-1)).toContain('autoCompactEnabled: false');
+  });
+});
+
+describe('the last-resort compaction, review round 2 (#238, #244)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function resultHistory(count: number, size: number): Message[] {
+    const ids = Array.from({ length: count }, (_, index) => `r3-result-${index}`);
+    return [
+      { id: 'r3-user', role: 'user', content: 'build it', includeInContext: true, timestamp: 0 },
+      {
+        id: 'r3-assistant',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolResults: ids.map((id) => toolSuccess('r'.repeat(size), { toolCallId: id })),
+        timestamp: 0,
+      },
+    ];
+  }
+
+  const smallWindow = {
+    maxTurns: 1,
+    maxTokens: 4_000,
+    autoCompactEnabled: true,
+    modelInfo: { contextWindow: 40_000, maxOutputTokens: 4_000 },
+  };
+
+  function countingProvider(calls: { count: number }): Provider {
+    return {
+      id: 'scripted',
+      stream: async function* () {
+        calls.count++;
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done' };
+      },
+    };
+  }
+
+  const reducerRefused: CompactResult = {
+    status: 'failed',
+    reason: 'provider-error',
+    error: 'API Error: 400 reasoning_effort is not supported by this model',
+  };
+
+  const tpm = JSON.stringify({
+    error: {
+      message:
+        'Request too large for gpt-4o in organization org-x on tokens per min (TPM): Limit 30000, Requested 45000. The input or output tokens must be reduced in order to run successfully.',
+      type: 'tokens',
+      code: 'rate_limit_exceeded',
+    },
+  });
+
+  it('does not compact without the model when the run budget refused the reducer', async () => {
+    const calls = { count: 0 };
+    const compact = vi.fn(async (): Promise<CompactResult> => ({
+      status: 'failed',
+      reason: 'budget-overflow',
+      error: 'Run budget exhausted.',
+    }));
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      resultHistory(60, 6_000),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(calls.count).toBe(0);
+    expect(errors[0]).toContain('Request is too large for');
+  });
+
+  it('says the model-free checkpoint was still too large, not the reducer error', async () => {
+    const calls = { count: 0 };
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) =>
+        requestHints?.deterministic
+          ? { ...compactedForRetry(), replacementHistory: resultHistory(60, 6_000) }
+          : reducerRefused,
+    );
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      resultHistory(60, 6_000),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(errors[0]).toContain('built without the model');
+    expect(errors[0]).not.toContain('reasoning_effort');
+  });
+
+  it('hands the model-free compaction the history before the preflight clips', async () => {
+    // Its own selection keeps retained results at its own cap; the flat clip the
+    // gate applied on the way would otherwise cut the evidence it keeps.
+    const calls = { count: 0 };
+    const seen: Message[][] = [];
+    const compact = vi.fn(
+      async (history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) => {
+        if (!requestHints?.deterministic) return reducerRefused;
+        seen.push([...history]);
+        return compactedForRetry();
+      },
+    );
+
+    await runAgentLoop(
+      defaultConfig(smallWindow),
+      createRegistry(),
+      'continue',
+      resultHistory(30, 12_000),
+      noopCallbacks({ onCompact: compact }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    expect(seen).toHaveLength(1);
+    const assistant = seen[0].find((message) => message.id === 'r3-assistant');
+    expect(assistant?.toolResults?.[0]?.content).toHaveLength(12_000);
+    expect(calls.count).toBe(1);
+  });
+
+  it('ends a TPM-oversized request that is refused again without re-sending it', async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        return new Response(tpm, { status: 429 });
+      }),
+    );
+    const compact = vi.fn(async () => compactedForRetry());
+    const errors: string[] = [];
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        model: 'router/tpm-again-model',
+        autoCompactEnabled: true,
+        retry: { ...defaultConfig().retry, streamReissueAttempts: 2 },
+      }),
+      createRegistry(),
+      'hello',
+      [userMsg('x'.repeat(100_000))],
+      noopCallbacks({
+        onCompact: compact,
+        onError: (error) => errors.push(error),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(fetchCalls).toBe(2);
+    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'context_overflow' });
+    expect(errors.at(-1)).toContain('Request too large');
+    expect(errors.at(-1)).not.toContain('temporary');
+  });
+
+  it('says a size-inferred retry was clipped, not compacted, when only the clip ran', async () => {
+    const plainBadRequest = JSON.stringify({
+      error: {
+        message:
+          '[400]: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}',
+        code: 'bad_request',
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(plainBadRequest, { status: 400 })),
+    );
+    const ids = Array.from({ length: 8 }, (_, index) => `clip-only-${index}`);
+    const history: Message[] = [
+      {
+        id: 'clip-only-user',
+        role: 'user',
+        content: 'x'.repeat(600_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      {
+        id: 'clip-only-assistant',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolResults: ids.map((id) => toolSuccess('y'.repeat(40_000), { toolCallId: id })),
+        timestamp: 0,
+      },
+    ];
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        model: 'gemini-2.5-pro',
+        autoCompactEnabled: false,
+        modelInfo: { contextWindow: 1_000_000 },
+      }),
+      createRegistry(),
+      'hello',
+      history,
+      noopCallbacks({ onError: (error) => errors.push(error) }),
+      'default',
+      { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(errors.at(-1)).toContain('after clipping');
+    expect(errors.at(-1)).not.toContain('after compacting');
   });
 });

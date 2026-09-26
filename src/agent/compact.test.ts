@@ -2724,3 +2724,97 @@ describe('judgeCompaction', () => {
     expect(verdict).toMatchObject({ verdict: 'accepted', suspectDelta: 1 });
   });
 });
+
+describe('compaction a request cannot be sent without (#238, #244)', () => {
+  beforeEach(() => {
+    mockedStream.mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('builds the checkpoint without the model when asked for a deterministic compaction', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'error', error: 'the reducer must not be called' };
+    });
+
+    const result = await runCompact(makeConfig(), twoTurns, {
+      trigger: 'auto',
+      deterministic: true,
+    });
+
+    expect(mockedStream).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      status: 'compacted',
+      strategy: 'degraded-fallback',
+      degraded: true,
+      modelCalls: 0,
+    });
+    if (result.status === 'compacted') {
+      expect(result.checkpoint.coverage?.reasons).toContain('pass-limit');
+      expect(result.checkpoint.state.summary).toContain('without a summarizer');
+      expect(result.checkpoint.state.summary).not.toContain('returned no usable');
+    }
+  });
+
+  it('halves the budget when a large reducer request is refused with a plain 400', async () => {
+    // 9router 0.5.86 answers the antigravity route's size refusal with a plain
+    // 400 that never names the length. The loop reads a bad_request of 200k
+    // tokens or more as an overflow; the reducer's own request must be read the
+    // same way, or a ~600k history loses its recovery compaction to that 400.
+    mockedStream.mockImplementation(async function* (_config, messages) {
+      const prompt = messages.map((message) => String(message.content)).join('');
+      if (prompt.length / 4 >= 200_000) {
+        yield {
+          type: 'error',
+          error:
+            'API Error: 400 [400]: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}',
+          errorCode: 'bad_request',
+        };
+        return;
+      }
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'evidence '.repeat(120_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(
+      makeConfig({ modelInfo: { contextWindow: 1_000_000 } }),
+      history,
+      { trigger: 'manual' },
+    );
+
+    expect(result).toMatchObject({ status: 'compacted' });
+    expect(mockedStream.mock.calls.length).toBeGreaterThan(1);
+    if (result.status === 'compacted') {
+      expect(result.checkpoint.coverage?.reasons).toContain('context-overflow');
+    }
+  });
+
+  it('still fails on a plain 400 to a reducer request under the size floor', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield {
+        type: 'error',
+        error: 'API Error: 400 Invalid value for reasoning_effort.',
+        errorCode: 'bad_request',
+      };
+    });
+
+    const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
+
+    expect(mockedStream).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ status: 'failed', reason: 'provider-error' });
+  });
+});

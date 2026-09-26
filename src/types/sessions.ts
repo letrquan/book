@@ -37,6 +37,14 @@ export interface CompactRequestHints {
    * as the refused one. It is never written to the learned-window store.
    */
   planningWindowCap?: number;
+  /**
+   * Build the checkpoint without the model: no reducer request is made, and the
+   * deterministic checkpoint (coverage `pass-limit`, strategy `degraded-fallback`)
+   * replaces the summarized span. The loop asks for it only as the last resort, when
+   * a model compaction failed and the request still cannot be sent: it needs no
+   * provider call, so it cannot fail the way the reducer just did.
+   */
+  deterministic?: boolean;
 }
 
 /**

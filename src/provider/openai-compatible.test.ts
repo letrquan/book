@@ -1148,3 +1148,35 @@ describe('OpenAI-compatible tool contracts', () => {
     });
   });
 });
+
+describe('non-retryable error bodies (#244 review)', () => {
+  it('reads at most 64 KB of a non-retryable error body', async () => {
+    let pulled = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                if (pulled >= 10 * 1024 * 1024) {
+                  controller.close();
+                  return;
+                }
+                const chunk = new TextEncoder().encode('x'.repeat(16_384));
+                pulled += chunk.byteLength;
+                controller.enqueue(chunk);
+              },
+            }),
+            { status: 400 },
+          ),
+      ),
+    );
+    const events = [];
+    for await (const event of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(event);
+    }
+    expect(events.at(-1)).toMatchObject({ type: 'error', errorCode: 'bad_request' });
+    expect(pulled).toBeLessThanOrEqual(64 * 1024 + 3 * 16_384);
+  });
+});

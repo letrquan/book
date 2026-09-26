@@ -660,3 +660,151 @@ describe('stated context overflow (#244)', () => {
     ).toBe(true);
   });
 });
+
+describe('error bodies read one way (#244 review)', () => {
+  it('reads an overflow stated in an OpenRouter metadata.raw object', () => {
+    // OpenRouter usually forwards the upstream body as a JSON string, but it can
+    // also send it as an object; both are the upstream's own words.
+    const body = JSON.stringify({
+      error: {
+        message: 'Provider returned error',
+        code: 400,
+        metadata: {
+          raw: { error: { message: "This model's maximum context length is 128000 tokens." } },
+          provider_name: 'Upstream',
+        },
+      },
+    });
+    expect(classifyApiError(400, body)).toBe('context_overflow');
+  });
+
+  it('shows the message the classifier reads, wherever the body puts it', () => {
+    const padding = 'p'.repeat(300);
+    expect(
+      formatApiError(400, JSON.stringify({ request_id: padding, message: 'top-level problem' })),
+    ).toContain('top-level problem');
+    expect(
+      formatApiError(400, JSON.stringify({ request_id: padding, error: 'plain string problem' })),
+    ).toContain('plain string problem');
+    expect(
+      formatApiError(400, JSON.stringify({ request_id: padding, detail: 'detail problem' })),
+    ).toContain('detail problem');
+    // A body with no message of its own still shows its first characters.
+    expect(
+      formatApiError(400, JSON.stringify({ error: { error: { message: 'nested problem' } } })),
+    ).toContain('nested problem');
+  });
+});
+
+describe('error bodies, review round 1 (#244)', () => {
+  it('reads only the message of a JSON body cut at the read cap', () => {
+    // A 400 that echoes the request can pass 64 KB; the cut body no longer parses,
+    // and its echoed text must not be read as the provider stating an overflow.
+    const full = JSON.stringify({
+      error: {
+        message: 'Invalid parameter: tools[3].function.name',
+        type: 'invalid_request_error',
+      },
+      echo: 'the maximum context length of this model '.repeat(3_000),
+    });
+    const cut = full.slice(0, 65_536);
+    expect(classifyApiError(400, cut)).toBe('bad_request');
+    expect(formatApiError(400, cut)).toContain('Invalid parameter: tools[3].function.name');
+  });
+
+  it('does not retry a 429 that states the request can never fit', async () => {
+    const tpm = JSON.stringify({
+      error: {
+        message:
+          'Request too large for gpt-4o in organization org-x on tokens per min (TPM): Limit 30000, Requested 45000.',
+        type: 'tokens',
+        code: 'rate_limit_exceeded',
+      },
+    });
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return new Response(tpm, { status: 429 });
+      }),
+    );
+    try {
+      const response = await fetchWithRetry('http://x/v1', {}, defaultConfig().retry);
+      expect(response.status).toBe(429);
+      expect(calls).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('error bodies, review round 2 (#244)', () => {
+  const retryPolicy = { ...defaultConfig().retry, maxAttempts: 3 };
+
+  async function callsFor(body: string): Promise<number> {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return new Response(body, { status: 429 });
+      }),
+    );
+    try {
+      await fetchWithRetry('http://x/v1', {}, retryPolicy);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    return calls;
+  }
+
+  it('retries a transient per-minute limit that only mentions too many tokens', async () => {
+    const body = JSON.stringify({
+      error: { message: 'Rate limit reached: too many tokens per minute, retry in 20s' },
+    });
+    expect(await callsFor(body)).toBe(4);
+  });
+
+  it('retries a 429 whose oversize statement the loop cannot read', async () => {
+    // OpenRouter's own message is generic; the TPM statement sits in metadata.raw,
+    // which the formatted error the loop reads does not carry, so it cannot recover it.
+    const body = JSON.stringify({
+      error: {
+        message: 'Provider returned error',
+        code: 429,
+        metadata: {
+          raw: '{"error":{"message":"Request too large for gpt-4o on tokens per min (TPM): Limit 30000, Requested 45000."}}',
+        },
+      },
+    });
+    expect(await callsFor(body)).toBe(4);
+  });
+
+  it('does not call an oversized TPM request a temporary capacity issue', () => {
+    const body = JSON.stringify({
+      error: {
+        message:
+          'Request too large for gpt-4o in organization org-x on tokens per min (TPM): Limit 30000, Requested 45000.',
+        code: 'rate_limit_exceeded',
+      },
+    });
+    const text = formatApiError(429, body);
+    expect(text).toContain('Request too large');
+    expect(text).not.toContain('temporary');
+  });
+
+  it('reads the code of a JSON body cut at the read cap', () => {
+    const full = JSON.stringify({
+      error: { code: 'context_length_exceeded', message: 'Bad request' },
+      echo: 'filler text '.repeat(10_000),
+    });
+    expect(classifyApiError(400, full.slice(0, 65_536))).toBe('context_overflow');
+  });
+
+  it('reads a plain-text router body that starts with a bracket', () => {
+    expect(
+      classifyApiError(400, '[antigravity/gemini-x] [400]: maximum context length exceeded'),
+    ).toBe('context_overflow');
+  });
+});
