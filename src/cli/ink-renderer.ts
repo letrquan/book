@@ -21,6 +21,15 @@ function inkBuildDir(): string {
   return dirname(require.resolve('ink'));
 }
 
+/**
+ * Ink's private log-update module: the renderer the TUI wraps for frame capture and scroll hints,
+ * and the file whose trailing-newline fix decides the renderer mode. Throws when Ink cannot be
+ * resolved.
+ */
+export function inkLogUpdatePath(): string {
+  return join(inkBuildDir(), 'log-update.js');
+}
+
 /** The installed Ink version, or undefined when Ink cannot be resolved. */
 export function installedInkVersion(): string | undefined {
   try {
@@ -38,9 +47,7 @@ export function installedInkVersion(): string | undefined {
 /** Incremental rendering is safe only when Ink's renderer carries the trailing-newline fix. */
 export function hasInkTrailingNewlineFix(): boolean {
   try {
-    return readFileSync(join(inkBuildDir(), 'log-update.js'), 'utf8').includes(
-      INK_TRAILING_NEWLINE_FIX,
-    );
+    return readFileSync(inkLogUpdatePath(), 'utf8').includes(INK_TRAILING_NEWLINE_FIX);
   } catch {
     return false;
   }

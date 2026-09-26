@@ -127,7 +127,7 @@ describe('InputBar editor box', () => {
   });
 
   it('dismisses the command menu on Esc and keeps the draft', async () => {
-    // Ink sets `meta` on a lone Esc; the Alt-shortcut filter used to swallow it,
+    // Ink 6 set `meta` on a lone Esc, and the Alt-shortcut filter swallowed it,
     // so Esc never closed the menu.
     const commands = [
       { name: 'clear', description: 'Clear it', body: 'Clear', source: 'project' as const },
@@ -780,7 +780,7 @@ describe('InputBar queued follow-up input', () => {
     await tick();
     expect(stripAnsi(view.lastFrame())).toContain('queued draft');
 
-    view.rerender(inputBar(() => {}, { ...props, editingQueuedInput: true }));
+    view.rerender(inputBar(() => {}, props));
     view.stdin.write(' edited');
     await tick();
     view.stdin.write('\r');

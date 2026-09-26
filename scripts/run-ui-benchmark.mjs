@@ -9,6 +9,10 @@ for (const name of ['BOOK_DEBUG', 'BOOK_DEBUG_RENDER', 'BOOK_DEBUG_FLOW', 'BOOK_
 // The CLI entry defaults NODE_ENV to production (src/runtime-env.ts), so the
 // benchmark must measure production React too. Dev-mode React is 2-3x slower.
 if (!environment.NODE_ENV) environment.NODE_ENV = 'production';
+// Ink 7 asks `terminal-size` for any dimension a stream lacks; ink-testing-library's stdout has no
+// `rows`, so without these each render and unmount in the benchmark spawns `tput` twice (~13 ms).
+environment.COLUMNS ??= '80';
+environment.LINES ??= '24';
 
 const result = spawnSync(
   process.execPath,

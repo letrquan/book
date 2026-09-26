@@ -1,4 +1,4 @@
-import { Box, Text, useInput, useStdout, useApp, type Key } from 'ink';
+import { Box, Text, useStdout, useApp, type Key } from 'ink';
 import {
   useState,
   useCallback,
@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { panelContentWidth, panelGrid } from './layout.js';
+import { GlobalKeyHandler } from './global-key-handler.js';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { QueuedInputPreview, type FlashNotice } from './components/QueuedInputPreview.js';
@@ -253,19 +254,6 @@ function capitalize(word: string): string {
 
 /** One empty list, so a pending title page does not hand ChatPanel a new array each render. */
 const NO_RECENT_SESSIONS: readonly never[] = [];
-
-/**
- * Subscribes the app's global key handler ahead of every other `useInput`. Ink 7 runs handlers in
- * the order their effects subscribed, and commits each handler's updates before calling the next.
- * Ink 6 re-subscribed every handler that re-rendered, which left this stable one first in
- * practice. Rendered as the first child of the providers, outside the error boundary, its effect
- * subscribes before any descendant's, so the app still decides Esc and Ctrl+C from the state the
- * screen showed when the key was pressed.
- */
-function GlobalKeyHandler({ onInput }: { onInput: (input: string, key: Key) => void }): null {
-  useInput(onInput);
-  return null;
-}
 
 /**
  * Full-screen interactive TUI with an application-owned transcript viewport.
@@ -3076,8 +3064,6 @@ export function App({
               canQueueWhileBusy={canQueueWhileParentBusy}
               onQueue={enqueueFollowUp}
               onRecallQueued={managedAgents.surface === 'main' ? recallQueuedInput : undefined}
-              onCancelQueuedEdit={cancelQueuedEdit}
-              editingQueuedInput={Boolean(editingQueuedInput)}
               onDraftChange={(value, attachments) => {
                 draftRef.current = value;
                 draftAttachmentsRef.current = attachments ?? [];

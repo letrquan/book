@@ -1,6 +1,5 @@
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { inkLogUpdatePath } from './ink-renderer.js';
 
 export interface TranscriptScrollHint {
   top: number;
@@ -195,9 +194,7 @@ export async function installInkScrollRenderer(enabled?: boolean): Promise<void>
   rendererInstalled = true;
 
   try {
-    const require = createRequire(import.meta.url);
-    const inkEntry = require.resolve('ink');
-    const logUpdateUrl = pathToFileURL(join(dirname(inkEntry), 'log-update.js')).href;
+    const logUpdateUrl = pathToFileURL(inkLogUpdatePath()).href;
     const module = (await import(logUpdateUrl)) as { default: LogUpdateModule };
     const logUpdate = module.default;
     const createBase = logUpdate.create;

@@ -14,10 +14,14 @@ All notable changes to this project are documented in this file.
   - **npm installs get the incremental renderer.** A published install never applied the patch, so
     it fell back to the full-frame renderer everywhere. Outside Windows it now uses the incremental
     renderer, as a source checkout always did.
-  - **Backspace on an empty composer removes the last attachment.** Ink 6 reported Backspace as
-    Delete, so this only worked with Ctrl+H.
+  - **Backspace on an empty composer removes the last attachment**, on a fresh press only: a held
+    Backspace that clears the draft stops there. Ink 6 reported Backspace as Delete, so this only
+    worked with Ctrl+H.
+  - **Delete deletes the character after the cursor.** Ink 6 could not tell it from Backspace, so it
+    deleted the one before.
   - **Esc takes effect about 20 ms later.** Ink 7 waits that long before treating a lone Esc as a
-    key, so an escape sequence split across reads is not misread.
+    key, so an escape sequence split across reads is not misread. An Esc followed by another key
+    within those 20 ms reads as Alt plus that key, which is how terminals encode Alt.
   - **Key handling is unchanged otherwise.** Ink 7 dispatches keys to handlers in mount order; Book
     now subscribes its global handler first, so Esc and Ctrl+C keep deciding from what the screen
     showed. A lone Esc no longer counts as Alt, so the composer returns on it explicitly.

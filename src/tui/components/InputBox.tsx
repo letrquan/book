@@ -18,6 +18,13 @@ interface EditState {
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
+/**
+ * Backspace on an empty composer removes the last attachment, but only on a fresh press. A held
+ * key repeats every 30-50 ms, and Ink 7 hands each repeated byte over as its own key, so without
+ * this window holding Backspace to clear a draft went on to delete every attached image.
+ */
+const BACKSPACE_REPEAT_WINDOW_MS = 200;
+
 function previousGraphemeBoundary(value: string, offset: number): number {
   let previous = 0;
   for (const segment of graphemeSegmenter.segment(value)) {
@@ -72,6 +79,12 @@ function deletePreviousGrapheme(value: string, cursorOffset: number): EditState 
   };
 }
 
+function deleteNextGrapheme(value: string, cursorOffset: number): EditState {
+  if (cursorOffset >= value.length) return { value, cursorOffset };
+  const nextOffset = nextGraphemeBoundary(value, cursorOffset);
+  return { value: value.slice(0, cursorOffset) + value.slice(nextOffset), cursorOffset };
+}
+
 /** Apply a raw terminal input chunk, including IME backspace/replacement sequences. */
 export function applyInputSequence(value: string, cursorOffset: number, input: string): EditState {
   let edit = { value, cursorOffset };
@@ -113,6 +126,7 @@ export function InputBox({
   // long prompt in one keystroke, and Ctrl+U in particular used to scroll the
   // transcript instead — so the recovery key ships with them, not after them.
   const killRingRef = useRef('');
+  const lastBackspaceAtRef = useRef(0);
   const [, rerender] = useReducer((version: number) => version + 1, 0);
 
   // Parent-driven changes such as history navigation and autocomplete own the cursor.
@@ -218,13 +232,21 @@ export function InputBox({
         return;
       }
 
-      if (key.backspace && valueRef.current === '') {
-        onBackspaceWhenEmpty?.();
+      if (key.backspace) {
+        const now = Date.now();
+        const repeated = now - lastBackspaceAtRef.current < BACKSPACE_REPEAT_WINDOW_MS;
+        lastBackspaceAtRef.current = now;
+        if (valueRef.current === '') {
+          if (!repeated) onBackspaceWhenEmpty?.();
+          return;
+        }
+        commit(deletePreviousGrapheme(valueRef.current, cursorOffsetRef.current));
         return;
       }
 
-      if (key.backspace || key.delete) {
-        commit(deletePreviousGrapheme(valueRef.current, cursorOffsetRef.current));
+      // Ink 7 reports the Delete key (ESC [3~) apart from Backspace; Ink 6 could not tell them apart.
+      if (key.delete) {
+        commit(deleteNextGrapheme(valueRef.current, cursorOffsetRef.current));
         return;
       }
 
