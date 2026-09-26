@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Settings validation runs on Zod 4** (#88). Book moves from Zod 3.25 to Zod 4.6. Defaults,
+  which documents are accepted, and which fields a rejected document names are unchanged, and a
+  new `src/settings-schema.test.ts` pins them. What changes is the wording of validation messages,
+  which now come from Zod 4. `book config set retry.maxAttempts 99` reports
+  `Too big: expected number to be <=15` where it said `Number must be less than or equal to 15`,
+  a missing field reads `Invalid input: expected string, received undefined` instead of
+  `Required`, and an unknown enum value reads `Invalid option: expected one of "low"|"medium"|…`
+  without echoing the value. In the issue list printed for an invalid settings file,
+  `invalid_enum_value` and `invalid_literal` issues are now `invalid_value`, and an
+  `invalid_type` issue no longer carries a `received` field. The same wording reaches the model
+  in `AskUserQuestion` validation errors.
 - **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
   rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
   green, so every PR that touched them either reformatted unrelated lines or left them drifting.

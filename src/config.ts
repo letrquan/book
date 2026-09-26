@@ -23,7 +23,7 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 64_000;
 
 const legacyConfigSchema = z.object({
   model: z.string().optional(),
-  baseUrl: z.string().url().optional(),
+  baseUrl: z.url().optional(),
   maxTurns: z.number().int().min(1).optional(),
   maxTokens: z.number().int().min(1000).optional(),
   autoCompactEnabled: z.boolean().optional(),

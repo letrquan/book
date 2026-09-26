@@ -6,6 +6,10 @@ import { z } from 'zod';
  */
 export const permissionRuleSchema = z.string().min(1);
 
+// An object schema defaulted to `{}` uses `.prefault({})`, not `.default({})`: Zod 4's `.default()`
+// returns its value without parsing it, so the object's own field defaults would never be applied.
+// Records and arrays keep `.default({})` / `.default([])`, whose values are already final.
+
 /**
  * Bash sandbox configuration (matches CC's sandbox.* keys).
  */
@@ -21,13 +25,13 @@ export const sandboxSchema = z.object({
       denyWrite: z.array(z.string()).default([]),
       denyRead: z.array(z.string()).default([]),
     })
-    .default({}),
+    .prefault({}),
   network: z
     .object({
       allowedDomains: z.array(z.string()).default([]),
       deniedDomains: z.array(z.string()).default([]),
     })
-    .default({}),
+    .prefault({}),
 });
 
 /**
@@ -54,7 +58,7 @@ export const permissionsSchema = z.object({
    * Decisions about `allow` rules the project layer declared. A project rule
    * with no `approved` entry here never reaches the resolved allow list.
    */
-  projectAllowRules: z.record(projectAllowRuleChoiceSchema).default({}),
+  projectAllowRules: z.record(z.string(), projectAllowRuleChoiceSchema).default({}),
 });
 
 /**
@@ -67,7 +71,7 @@ export const hookEntrySchema = z.object({
   /** Shell command to run (passed through system shell). */
   command: z.string().min(1),
   /** Extra environment variables for this hook. */
-  env: z.record(z.string()).default({}),
+  env: z.record(z.string(), z.string()).default({}),
 });
 
 export type HookEntry = z.infer<typeof hookEntrySchema>;
@@ -122,7 +126,7 @@ export const hooksSchema = z.object({
    * entry whose fingerprint has no `approved` record here never reaches the
    * resolved hooks.
    */
-  projectEntries: z.record(projectHookChoiceSchema).default({}),
+  projectEntries: z.record(z.string(), projectHookChoiceSchema).default({}),
 });
 
 export type HooksConfig = z.infer<typeof hooksSchema>;
@@ -200,7 +204,7 @@ export const providerConfigSchema = z.object({
   baseURL: z.string().min(1).optional(),
   baseUrl: z.string().min(1).optional(),
   apiKey: z.string().min(1).optional(),
-  models: z.record(providerModelSchema).default({}),
+  models: z.record(z.string(), providerModelSchema).default({}),
 });
 
 /**
@@ -262,7 +266,7 @@ export const memorySettingsSchema = z.object({
       maxPerSession: z.number().int().min(1).max(20).default(5),
       maxSessionsPerRun: z.number().int().min(1).max(20).default(3),
     })
-    .default({}),
+    .prefault({}),
 });
 
 export const agentSettingsSchema = z.object({
@@ -274,7 +278,9 @@ export const agentSettingsSchema = z.object({
   includeUntrackedInSnapshot: z.boolean().default(true),
   telemetry: z.boolean().default(true),
   retentionDays: z.number().int().min(1).max(3650).default(30),
-  checks: z.record(z.union([z.string().min(1), z.array(z.string().min(1)).min(1)])).default({}),
+  checks: z
+    .record(z.string(), z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]))
+    .default({}),
   /**
    * Wall-clock ceiling for one `Check` run. The 120s default suits a focused
    * suite; a full `npm test` on a large repository routinely exceeds it, and a
@@ -316,6 +322,7 @@ export const agentSettingsSchema = z.object({
     .default(2 * 1024 * 1024 * 1024),
   profiles: z
     .record(
+      z.string(),
       z.object({
         model: z.string().min(1).optional(),
         effort: effortLevelSchema.optional(),
@@ -324,13 +331,13 @@ export const agentSettingsSchema = z.object({
       }),
     )
     .default({}),
-  ui: z.object({ enabled: z.boolean().default(true) }).default({}),
+  ui: z.object({ enabled: z.boolean().default(true) }).prefault({}),
   routing: z
     .object({
       inlineSearchBudget: z.number().int().min(1).max(20).default(3),
       exploreReminder: z.boolean().default(true),
     })
-    .default({}),
+    .prefault({}),
   forwardTextEvents: z.boolean().default(false),
 });
 
@@ -377,7 +384,7 @@ export const mcpSettingsSchema = z.object({
    * Per-server trust decisions for workspace `.mcp.json` declarations.
    * User-global servers (<BOOK_HOME>/.book/mcp.json) never require approval.
    */
-  projectServers: z.record(mcpProjectServerChoiceSchema).default({}),
+  projectServers: z.record(z.string(), mcpProjectServerChoiceSchema).default({}),
 });
 
 export type McpSettings = z.infer<typeof mcpSettingsSchema>;
@@ -398,7 +405,7 @@ export const commandSettingsSchema = z.object({
    * needs a decision before it runs. User-global commands
    * (<BOOK_HOME>/commands) were written by the user and never require one.
    */
-  projectCommands: z.record(projectCommandChoiceSchema).default({}),
+  projectCommands: z.record(z.string(), projectCommandChoiceSchema).default({}),
 });
 
 export type CommandSettings = z.infer<typeof commandSettingsSchema>;
@@ -422,9 +429,9 @@ export const skillSettingsSchema = z.object({
   /** Emergency switch that removes skill prompt and runtime effects without deleting packages. */
   enabled: z.boolean().default(true),
   /** Per-skill visibility overrides keyed by the skill's declared name. */
-  overrides: z.record(skillActivationSchema).default({}),
+  overrides: z.record(z.string(), skillActivationSchema).default({}),
   /** Per-skill activation consent policy. Tool calls still use the normal permission system. */
-  execution: z.record(skillExecutionSchema).default({}),
+  execution: z.record(z.string(), skillExecutionSchema).default({}),
 });
 
 export type SkillSettings = z.infer<typeof skillSettingsSchema>;
@@ -461,8 +468,8 @@ export const bookSettingsSchema = z.object({
    * the program every command is handed to.
    */
   shell: z.string().min(1).optional(),
-  ui: uiSettingsSchema.default({}),
-  skills: skillSettingsSchema.default({}),
+  ui: uiSettingsSchema.prefault({}),
+  skills: skillSettingsSchema.prefault({}),
   autoCompactEnabled: z.boolean().optional(),
   /** Permission mode used by each host when no invocation-specific mode is supplied. */
   defaultMode: z
@@ -470,20 +477,20 @@ export const bookSettingsSchema = z.object({
     .optional(),
   disableBypassPermissionsMode: z.boolean().optional(),
   additionalDirectories: z.array(z.string()).default([]),
-  env: z.record(z.string()).default({}),
-  provider: z.record(providerConfigSchema).default({}),
-  permissions: permissionsSchema.default({}),
-  sandbox: sandboxSchema.default({}),
-  hooks: hooksSchema.default({}),
-  retry: retrySettingsSchema.default({}),
-  memory: memorySettingsSchema.default({}),
-  continuation: continuationSettingsSchema.default({}),
-  agents: agentSettingsSchema.default({}),
-  toolDiscovery: toolDiscoverySettingsSchema.default({}),
-  toolExecution: toolExecutionSettingsSchema.default({}),
-  observability: observabilitySettingsSchema.default({}),
-  mcp: mcpSettingsSchema.default({}),
-  commands: commandSettingsSchema.default({}),
+  env: z.record(z.string(), z.string()).default({}),
+  provider: z.record(z.string(), providerConfigSchema).default({}),
+  permissions: permissionsSchema.prefault({}),
+  sandbox: sandboxSchema.prefault({}),
+  hooks: hooksSchema.prefault({}),
+  retry: retrySettingsSchema.prefault({}),
+  memory: memorySettingsSchema.prefault({}),
+  continuation: continuationSettingsSchema.prefault({}),
+  agents: agentSettingsSchema.prefault({}),
+  toolDiscovery: toolDiscoverySettingsSchema.prefault({}),
+  toolExecution: toolExecutionSettingsSchema.prefault({}),
+  observability: observabilitySettingsSchema.prefault({}),
+  mcp: mcpSettingsSchema.prefault({}),
+  commands: commandSettingsSchema.prefault({}),
 });
 
 export type BookSettings = z.infer<typeof bookSettingsSchema>;
