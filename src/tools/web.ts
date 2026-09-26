@@ -131,7 +131,9 @@ class CrossOriginRedirectError extends Error {
     readonly sourceUrl: string,
     readonly targetUrl: string,
   ) {
-    super(`Redirect from ${sourceUrl} to a different origin requires a new WebFetch approval.`);
+    super(
+      `WebFetch stopped at a redirect from ${sourceUrl} to another origin (${targetUrl}); it follows only same-origin redirects on its own.`,
+    );
     this.name = 'CrossOriginRedirectError';
   }
 }
@@ -510,7 +512,7 @@ function webPolicyFailure(error: unknown): ToolResult | undefined {
     return toolFailure(error.message, {
       code: 'cross_origin_redirect',
       status: 'blocked',
-      remediation: `Call WebFetch again with url: ${error.targetUrl}`,
+      remediation: `To fetch the target, call WebFetch with url: ${error.targetUrl}`,
       details: { sourceUrl: error.sourceUrl, targetUrl: error.targetUrl },
     });
   }

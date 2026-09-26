@@ -159,11 +159,29 @@ function percentile(sortedAsc: number[], p: number): number | undefined {
   return Math.round(sortedAsc[low] * (1 - weight) + sortedAsc[high] * weight);
 }
 
+/**
+ * The provider id a model selection named, e.g. `9router` for `9router/cmc/stealth/x` when the
+ * resolved model is `cmc/stealth/x`; undefined when the selection is the bare model id.
+ */
+export function telemetryProviderOf(config: {
+  model: string;
+  modelSelection?: string;
+}): string | undefined {
+  const selection = config.modelSelection;
+  if (!selection || selection === config.model || !selection.endsWith(`/${config.model}`)) {
+    return undefined;
+  }
+  return selection.slice(0, -(config.model.length + 1)) || undefined;
+}
+
 /** Roll a flat record list into per-tool, per-model, and error-code summaries. */
 export function aggregateToolUse(records: ToolUseRecord[]): ToolUseAggregate {
   const sessions = new Set<string>();
   const errorCodes = new Map<string, number>();
-  const modelAgg = new Map<string, { calls: number; failures: number }>();
+  const modelAgg = new Map<
+    string,
+    { calls: number; failures: number; errorCodes: Map<string, number> }
+  >();
   const toolAgg = new Map<
     string,
     {
@@ -197,17 +215,30 @@ export function aggregateToolUse(records: ToolUseRecord[]): ToolUseAggregate {
     if (typeof record.durationMs === 'number') tool.durations.push(record.durationMs);
     if (record.retries > 0) tool.retried++;
 
-    const modelKey = record.model || 'unknown';
-    const model = modelAgg.get(modelKey) ?? { calls: 0, failures: 0 };
+    // The route is part of the model identity: the same id behind two providers is two
+    // different wire formats, and only one of them may be mangling tool calls.
+    const modelKey = record.provider
+      ? `${record.provider}/${record.model}`
+      : record.model || 'unknown';
+    const model = modelAgg.get(modelKey) ?? {
+      calls: 0,
+      failures: 0,
+      errorCodes: new Map<string, number>(),
+    };
     model.calls++;
 
     if (record.isFailure) {
       totalFailures++;
       tool.failures++;
       model.failures++;
-      const code = record.errorCode ?? record.status;
+      // A malformed-arguments failure is counted by shape, so a route that drops every
+      // call's first fragment reads as its own row rather than a flat `invalid_json_arguments`.
+      const code = record.errorShape
+        ? `${record.errorCode ?? record.status}:${record.errorShape}`
+        : (record.errorCode ?? record.status);
       errorCodes.set(code, (errorCodes.get(code) ?? 0) + 1);
       tool.errorCodes.set(code, (tool.errorCodes.get(code) ?? 0) + 1);
+      model.errorCodes.set(code, (model.errorCodes.get(code) ?? 0) + 1);
     }
 
     toolAgg.set(record.tool, tool);
@@ -238,6 +269,7 @@ export function aggregateToolUse(records: ToolUseRecord[]): ToolUseAggregate {
       calls: agg.calls,
       failures: agg.failures,
       failRate: agg.calls > 0 ? agg.failures / agg.calls : 0,
+      errorCodes: Object.fromEntries(agg.errorCodes),
     }))
     .sort((a, b) => b.calls - a.calls || a.model.localeCompare(b.model));
 
@@ -316,8 +348,17 @@ export function formatToolStatsReport(aggregate: ToolUseAggregate): string {
     lines.push('');
     lines.push('By model:');
     for (const row of aggregate.models) {
+      // The route's own codes, so a model line that fails tells you how: a run of
+      // `truncated_start` is the provider's wire format, not the model's JSON.
+      const codes = Object.entries(row.errorCodes ?? {})
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, 3)
+        .map(([code, count]) => `${code}(${count})`)
+        .join(', ');
       lines.push(
-        `  ${row.model}: ${row.calls} calls, ${row.failures} failed (${pct(row.failRate)})`,
+        `  ${row.model}: ${row.calls} calls, ${row.failures} failed (${pct(row.failRate)})${
+          codes ? ` — codes: ${codes}` : ''
+        }`,
       );
     }
   }

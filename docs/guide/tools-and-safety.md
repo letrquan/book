@@ -117,8 +117,25 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   Book's canonical arguments before validation, and `invalid_arguments` errors list the allowed
   argument names.
 - **Malformed-JSON arguments.** A call whose arguments are not valid JSON fails with
-  `invalid_json_arguments`. The error names the parse error and its position and asks for the whole
-  call to be resent, rather than reporting schema errors about arguments the model did send.
+  `invalid_json_arguments`, and the error names the shape the text arrived in rather than reporting
+  schema errors about arguments the model did send:
+  - _truncated at the start_ — the text does not begin with `{`, which is usually a provider or a
+    router dropping the call's first fragment on the wire. The model's own JSON was fine, so the
+    advice is to resend the whole call unchanged.
+  - _cut off at the end_ — the arguments stop before the JSON is complete, so the output was
+    probably truncated. Resend, and split the change into smaller calls if its arguments are long.
+  - _two objects_ — more than one JSON object arrived in one call. Send exactly one per call.
+  - _single quotes_ — a key or string value is single-quoted. JSON needs double quotes.
+  - _other syntax_ — most often an unescaped backslash or a newline inside a string.
+
+  "position N" counts in the raw argument text, which the model never sees again as such — its
+  replayed call is `JSON.stringify({__raw})` — so the text on both sides of the position is quoted
+  too, and an invisible character (a NUL, a BOM, an ESC) is shown as a `\uXXXX` escape rather than
+  folded to a space, so the one V8 rejected stays visible. Such a call is refused right after the
+  call is normalized, before PreToolUse hooks and the permission prompt: it can never run, so a
+  hook would judge the `{__raw}` wrapper, and in `default` mode the user would be asked to approve a
+  call that cannot — with "Always" saving a permission rule built from it.
+
 - **Retry-loop braking.** Repeating a call that already failed with identical arguments returns
   escalated guidance instead of the same error; structured `Fix:` remediation lines are rendered
   into the model-facing error text.
@@ -176,6 +193,13 @@ npm run eval:memory -- --only poison-web,poison-readme --concurrency 3
 
 `Write` remains appropriate for generated or intentional full-file replacement. The
 `apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not silently reinterpreted.
+
+## Tool discovery
+
+`ToolSearch` matches a query by its words — tool names, aliases, intent keywords, and at least two
+description words — and falls back to fuzzy matching for a misspelled name. It is callable whenever
+deferred discovery exists, including eager mode, where it names the matching tools that are already
+active instead of being refused.
 
 ## Permission rules and modes
 

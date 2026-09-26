@@ -4,6 +4,7 @@ import type { AgentTask, BackgroundShellStore } from '../types/runtime.js';
 import type { Todo } from '../tools/todo.js';
 import type { FileObservation, ToolDiscoveryState } from '../types/tools.js';
 import { AgentContextCache } from '../agent/context.js';
+import { PRE_EXECUTION_ERROR_CODES } from '../tools/pre-execution-codes.js';
 import { ToolExecutionScheduler } from '../tools/execution-scheduler.js';
 import { RunAccounting } from './run-accounting.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
@@ -29,14 +30,14 @@ export function toolNamesFromHistory(messages: Message[]): Set<string> {
   const ran = new Set(
     messages.flatMap((message) =>
       (message.toolResults ?? [])
-        // Blocked calls and calls rejected at argument validation (a schema
-        // mismatch, or arguments that were not valid JSON) never ran; the live
-        // path (executeToolCall) never counts them either.
+        // Blocked calls and every result refused before the tool ran — an unknown or
+        // inactive tool, arguments the schema or the JSON parser refused, a call the
+        // abort or a stream that ended first cancelled — read nothing. The live path
+        // (executeToolCall) never counts them either.
         .filter(
           (result) =>
             result.status !== 'blocked' &&
-            result.structuredError?.code !== 'invalid_arguments' &&
-            result.structuredError?.code !== 'invalid_json_arguments',
+            !PRE_EXECUTION_ERROR_CODES.has(result.structuredError?.code ?? ''),
         )
         .map((result) => result.toolCallId),
     ),

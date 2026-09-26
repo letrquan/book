@@ -164,7 +164,12 @@ describe('WebFetch', () => {
 
     expect(result.status).toBe('blocked');
     expect(result.structuredError?.code).toBe('cross_origin_redirect');
+    // A stop at a redirect, not a failure and not an approval request: the next step is the
+    // target URL, which the model already has.
+    expect(result.structuredError?.remediation).toContain('call WebFetch with url:');
     expect(result.structuredError?.remediation).toContain('https://other.example/path');
+    expect(result.structuredError?.message).toContain('stopped at a redirect');
+    expect(result.structuredError?.message).not.toContain('approval');
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 

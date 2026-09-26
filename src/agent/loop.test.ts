@@ -1068,6 +1068,59 @@ function noopCallbacks(overrides: Partial<AgentLoopCallbacks> = {}): AgentLoopCa
   };
 }
 
+describe('unparsed tool-call arguments', () => {
+  it('refuses a call whose arguments never parsed before hooks or the permission prompt', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-unparsed-'));
+    try {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'raw-1',
+                name: 'Bash',
+                // What 9router's cmc/stealth route delivers: the opening
+                // `{"command": ` never made it onto the wire (#260).
+                arguments: { __raw: '{"command": "ls' },
+              },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const onPermissionRequired = vi.fn(async () => 'allow' as const);
+      const results: ToolResult[] = [];
+
+      const history = await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'list the files',
+        [],
+        noopCallbacks({
+          onPermissionRequired,
+          onToolResult: (result) => results.push(result),
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      // The call can never run, so asking is asking about nothing — and "Always"
+      // would have saved a permission rule built from the `{__raw}` wrapper.
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+      expect(results[0]?.structuredError?.code).toBe('invalid_json_arguments');
+      expect(history.some((message) => (message.toolResults ?? []).length > 0)).toBe(true);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('runAgentLoop streaming render callbacks', () => {
   it('retries a successful but empty provider completion once', async () => {
     let calls = 0;

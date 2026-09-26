@@ -228,4 +228,44 @@ describe('toolNamesFromHistory', () => {
 
     expect([...toolNamesFromHistory(messages)]).toEqual(['WebFetch']);
   });
+
+  it('does not count a call refused or cancelled before it started, and does count one that had', () => {
+    // A resume seeds `usedToolNames` from this history, and memory quarantine reads it.
+    // A call that never started read nothing, so counting it as external would
+    // quarantine a conversation for a tool that never touched anything.
+    const messages: Message[] = [
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        timestamp: 1,
+        toolCalls: [
+          { id: 'unknown', name: 'WebFetch', arguments: {} },
+          { id: 'aborted', name: 'WebSearch', arguments: {} },
+          { id: 'started', name: 'Bash', arguments: {} },
+        ],
+        toolResults: [
+          toolFailure('Unknown tool: WebFetch', {
+            toolCallId: 'unknown',
+            code: 'unknown_tool',
+          }),
+          toolFailure('CANCELLED: Agent execution was interrupted', {
+            toolCallId: 'aborted',
+            code: 'cancelled_before_start',
+            status: 'cancelled',
+          }),
+          // A `cancelled` result from `executeWithTimeout` belongs to a tool that had
+          // already started, so it does count.
+          toolFailure('CANCELLED: Bash was cancelled', {
+            toolCallId: 'started',
+            code: 'cancelled',
+            status: 'cancelled',
+          }),
+        ],
+      },
+    ];
+
+    expect([...toolNamesFromHistory(messages)]).toEqual(['Bash']);
+  });
 });

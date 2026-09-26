@@ -276,6 +276,44 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A refusal now says what lifts it** (#246). A run stopped as `all_tools_blocked` blamed a
+  permission for every refusal, so a PreToolUse hook, an inactive tool, a managed agent's tool
+  policy or a cross-origin redirect was answered with "grant the permission" — advice nothing acts
+  on. Each kind of refusal has its own remedy, an inactive call is escalated like a failure, a
+  refusal says it was refused rather than failed, and a call's remembered failures are forgotten
+  once it succeeds.
+- **A tool call that lost its first fragment is resent, not re-escaped** (#260). On 9router's
+  `cmc/stealth/space-bunny-alpha` route a parallel call sometimes arrives with its opening
+  fragment missing: the raw text starts `/tools/file.ts", "newString": …`. The router dropped it,
+  but the error told the model to escape backslashes. `invalid_json_arguments` now names the shape
+  the text arrived in (truncated at the start, cut off at the end, two objects, single quotes, other
+  syntax) with advice for each, quotes the text on both sides of the parse position, and shows an
+  invisible character as a `\uXXXX` escape instead of a space. `book tool-stats` counts the shapes
+  per provider and model, and both provider clients log raw argument fragments under `BOOK_DEBUG`.
+- **A call whose arguments never parsed is refused before hooks and the permission prompt** (#242).
+  PreToolUse hooks judged the `{__raw}` wrapper, and in `default` mode the user was asked to approve
+  a call that could never run, with "Always" saving a rule built from it.
+- **Calls refused before they started no longer count as tools that ran** (#242). After a reload,
+  `toolNamesFromHistory` counted an `unknown_tool` result and a call cancelled before it started.
+  Both now belong to one shared set of pre-execution codes, and a call the abort or an ended stream
+  cancelled before it ran is coded `cancelled_before_start`.
+- **A failed tool row stays on one line** (#242). The TUI folded control characters out of a row's
+  target but not its error text, and neither fold covered bidi overrides or U+2028/2029, so a
+  `Read` of a path holding U+202E drew its row reversed. Both now fold with the one shared set.
+- **`ToolSearch` is always callable** (#270). In eager mode the surface activates every authorized
+  tool and leaves `ToolSearch` off the provider's tool list, but a call to it was still refused as
+  `tool_not_active` — a refusal whose own remediation said to call `ToolSearch` to discover it. The
+  same refusal hit the moment a session flipped from deferred to eager (plan mode shrinking the
+  tool list) and under `--allowedTools` rules that never name it. `ToolSearch` is now active
+  whenever the surface has it, and capability rules no longer gate it. When nothing deferred
+  matches a query, the result names the tools already active this turn instead of a bare miss.
+- **Tool search understands natural queries** (#265). Search ran the whole query as one fuzzy
+  string, so `fetch url page` matched nothing and `Task delegate subagent` found only `AgentSpawn`.
+  The query is now scored word by word against tool names, aliases, intent keywords and
+  descriptions, so a multi-word request ranks the tool that names the most of it, and CamelCase,
+  `sub-agent`/`subagent` and plural spellings meet each other. Fuzzy matching stays the fallback
+  for a misspelled name (`GitComit`), and the intent keywords were filled out for the git,
+  session, agent, evidence, check and notebook tools.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller

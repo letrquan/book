@@ -1,4 +1,5 @@
 import type { ToolResult } from '../types/tools.js';
+import { foldControlCharacters as foldShared } from '../control-characters.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
@@ -163,13 +164,14 @@ export function parseMcpToolName(name: string): { server: string; tool: string }
 
 /**
  * Fold a display target onto one line: every run of control characters (C0
- * such as tab, CR and LF, DEL, and C1) becomes one space. Ordinary spaces are
- * kept as they are, because the row shows what the call acted on: a Grep
- * pattern `^    def ` or a commit message's double space is part of it. One
- * linear pass, so a long raw argument costs its length.
+ * such as tab, CR and LF, DEL, C1, and the bidi marks and separators) becomes
+ * one space. Ordinary spaces are kept as they are, because the row shows what
+ * the call acted on: a Grep pattern `^    def ` or a commit message's double
+ * space is part of it. One linear pass, so a long raw argument costs its
+ * length.
  */
 function foldControlCharacters(value: string | undefined): string | undefined {
-  return value?.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ');
+  return value === undefined ? undefined : foldShared(value);
 }
 
 function stringArg(args: Record<string, unknown>, ...names: string[]): string | undefined {
@@ -606,8 +608,12 @@ export function composeToolRow(
   // Never truncate the verb. A row whose label does not fit the column runs
   // inline instead: `Read sr…` is unreadable in a way `Read src/a.ts` is not.
   const useLabelColumn = grid.label > 0 && displayWidth(title) <= grid.label;
-  const metaSource = extra.error
-    ? [extra.error]
+  // Both strings reaching the layout are someone else's: the target is a
+  // tool argument, and the error is the model's own or a tool's — it may hold a
+  // newline, an ESC, or a bidi override, none of which survive a one-line row.
+  const error = foldControlCharacters(extra.error);
+  const metaSource = error
+    ? [error]
     : [...presentation.metadata, ...(extra.elapsed ? [extra.elapsed] : [])];
 
   const label = useLabelColumn ? title.padEnd(grid.label) : '';
@@ -624,7 +630,7 @@ export function composeToolRow(
   // An error message outranks the target it failed on, so a failing row takes
   // as much as the message needs — capped, and never so much that the target
   // drops below a width worth reading.
-  const metaBudget = extra.error
+  const metaBudget = error
     ? Math.max(
         grid.meta,
         Math.min(
@@ -640,7 +646,10 @@ export function composeToolRow(
   // the prefix here as well clipped an inline-label row by exactly the width of
   // its own verb, and `gap` then padded those columns back with spaces.
   const targetBudget = Math.max(4, measure - labelWidth - metaWidth - (metaWidth > 0 ? 1 : 0));
-  const target = truncateDisplay(`${inlinePrefix}${presentation.target ?? ''}`, targetBudget);
+  const target = truncateDisplay(
+    `${inlinePrefix}${foldControlCharacters(presentation.target) ?? ''}`,
+    targetBudget,
+  );
 
   const used = labelWidth + displayWidth(target) + metaWidth;
   const gap = ' '.repeat(Math.max(metaWidth > 0 ? 1 : 0, measure - used));

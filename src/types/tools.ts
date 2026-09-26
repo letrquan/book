@@ -401,6 +401,12 @@ export interface ToolDiscoveryContext {
     namespace?: string,
     limit?: number,
   ): ToolSearchMatch[];
+  /**
+   * Names of tools already active this turn that match a query, best first. Optional so a
+   * discovery object built without it keeps working; ToolSearch then only reports that nothing
+   * deferred matched.
+   */
+  activeMatches?(query: string, limit?: number): string[];
   /** Activate selected definitions for the next provider request. */
   activate(names: string[]): string[];
   /** Intersect the current surface with an additional command/skill capability policy. */

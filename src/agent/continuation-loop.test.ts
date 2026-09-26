@@ -653,6 +653,29 @@ function refusedWebProvider(calls: Array<'WebFetch' | 'WebSearch'>): Provider {
 }
 
 /**
+ * A provider that calls NotebookEdit on every turn. It is a deferred tool and the run never
+ * activates it, so every call is refused as inactive — a refusal no permission can lift.
+ */
+function inactiveNotebookProvider(): Provider {
+  let call = 0;
+  return {
+    id: 'scripted',
+    stream: async function* () {
+      call++;
+      yield {
+        type: 'tool_call',
+        toolCall: {
+          id: `notebook-${call}`,
+          name: 'NotebookEdit',
+          arguments: { notebook_path: 'a.ipynb', new_source: 'x' },
+        },
+      };
+      yield { type: 'done' };
+    },
+  } as unknown as Provider;
+}
+
+/**
  * The default tools, with the web tools rebuilt on a resolver that answers every hostname inside
  * 198.18.0.0/15, as behind a fake-IP DNS proxy. Each built-in search provider is then refused
  * before any request leaves the host.
@@ -678,6 +701,20 @@ describe('the refusal brake names the cause it stopped on', () => {
     expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
     expect(outcome?.message).toContain('WebFetch');
     expect(outcome?.message).toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
+    expect(outcome?.message).not.toContain('grant the permission');
+  });
+
+  it('points a streak of refusals at activating the tool, not at permissions', async () => {
+    // NotebookEdit was never activated, so no permission rule and no permission mode can
+    // make it run: only ToolSearch (and an allowed-tools list that includes it) can. Telling
+    // this run to "grant the permission" sends it after a gate that was never the one that
+    // refused.
+    const { outcome, codes } = await runRefusals(inactiveNotebookProvider(), 'bypassPermissions');
+
+    expect(codes).toEqual(['tool_not_active', 'tool_not_active', 'tool_not_active']);
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('ToolSearch');
+    expect(outcome?.message).toContain('NotebookEdit');
     expect(outcome?.message).not.toContain('grant the permission');
   });
 

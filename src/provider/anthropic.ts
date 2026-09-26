@@ -7,6 +7,7 @@ import type {
 import type { ToolDefinition } from '../types/tools.js';
 import type { Usage } from '../types/messages.js';
 import { createDebugLogger } from '../debug-log.js';
+import { escapeInvisibleCharacters } from '../control-characters.js';
 import {
   classifyApiError,
   classifyProviderError,
@@ -647,21 +648,37 @@ export async function* chatCompletionStream(
               }
             } else if (delta.type === 'input_json_delta' && delta.partial_json) {
               currentToolArgs += delta.partial_json as string;
+              // The head of every fragment, not a count: a call that arrives missing its
+              // opening `{"filePath": ` is visible here (#260) and nowhere else.
+              log.debug('stream tool input delta', {
+                id: currentToolId,
+                length: String(delta.partial_json).length,
+                head: escapeInvisibleCharacters(String(delta.partial_json).slice(0, 120)),
+              });
             }
             break;
           }
 
           case 'content_block_stop': {
+            const parsedInput = parseToolArguments(currentToolArgs);
             if (currentContentBlock?.type === 'tool_use') {
-              currentContentBlock.input = parseToolArguments(currentToolArgs);
+              currentContentBlock.input = parsedInput;
             }
             if (currentContentBlock) assistantContentBlocks.push(currentContentBlock);
             // Emit completed tool call
             if (currentToolId && currentToolName) {
+              if ('__raw' in parsedInput) {
+                log.warn('tool call arguments are not valid JSON', {
+                  id: currentToolId,
+                  name: escapeInvisibleCharacters(currentToolName),
+                  length: currentToolArgs.length,
+                  head: escapeInvisibleCharacters(currentToolArgs.slice(0, 120)),
+                });
+              }
               const toolCall = {
                 id: currentToolId,
                 name: currentToolName,
-                arguments: parseToolArguments(currentToolArgs),
+                arguments: parsedInput,
               };
               yield { type: 'tool_call', toolCall };
             }
