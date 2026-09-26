@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from 'ink';
-import { useCallback, useMemo, useRef, useEffect, useState } from 'react';
+import { useCallback, useMemo, useRef, useEffect, useLayoutEffect, useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN, PANEL_CHROME, frameGrid } from '../layout.js';
@@ -56,6 +56,15 @@ interface PermissionButtonsProps {
    * card can only name the path.
    */
   workspaceRoot?: string;
+  /**
+   * Called when the card's height may have changed: when it opens, when the
+   * diff preview arrives, when `D` opens or closes a cut payload, and when it
+   * closes. The transcript above measures its viewport only on its own layout
+   * changes, and the preview lands after the card's first frame, so without
+   * this the grown card covered the transcript's last rows: the model's reason
+   * for the call and the call's own row.
+   */
+  onLayoutChange?: () => void;
 }
 
 interface ButtonDef {
@@ -172,6 +181,7 @@ export function PermissionButtons({
   terminalWidth = 80,
   terminalRows = 24,
   workspaceRoot,
+  onLayoutChange,
 }: PermissionButtonsProps) {
   const theme = useTheme();
   const density = useDensityMetrics();
@@ -260,6 +270,11 @@ export function PermissionButtons({
       .catch(() => undefined);
     return () => controller.abort();
   }, [canonical, previewable, toolCall.id, workspaceRoot]);
+
+  useLayoutEffect(() => {
+    onLayoutChange?.();
+    return () => onLayoutChange?.();
+  }, [expanded, onLayoutChange, preview]);
 
   // Row counts are constant for the life of a preview; the card re-renders on
   // every keypress and must not re-split a large diff each time.

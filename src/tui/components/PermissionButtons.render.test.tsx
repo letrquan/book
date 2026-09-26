@@ -339,6 +339,36 @@ describe('PermissionButtons payload', () => {
     expect(mentions(frame, 'notes.txt')).toBe(1);
   });
 
+  it('reports a height change when the diff preview lands, so the transcript re-measures', async () => {
+    const root = makeWorkspace({ 'notes.txt': 'alpha\nbeta\ngamma\n' });
+    const onLayoutChange = vi.fn();
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{
+            id: 'edit-layout',
+            name: 'Edit',
+            arguments: { filePath: 'notes.txt', oldString: 'beta', newString: 'delta' },
+          }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+          workspaceRoot={root}
+          onLayoutChange={onLayoutChange}
+        />,
+      ),
+    );
+    // Opening the card is a change of height too.
+    expect(onLayoutChange).toHaveBeenCalled();
+    const beforePreview = onLayoutChange.mock.calls.length;
+    await frameContaining(view, '+ delta');
+    // The preview arrives after the card's first frame and makes it taller.
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(beforePreview);
+    const beforeClose = onLayoutChange.mock.calls.length;
+    view.unmount();
+    // Closing hands the rows back.
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(beforeClose);
+  });
+
   it('gives a path too long for the title row the rows below, and says it once', async () => {
     // It used to show cut short on the title row and again in full underneath.
     const name = 'the-permission-sheet-names-this-once.txt';

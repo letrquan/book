@@ -2548,6 +2548,7 @@ export function App({
                 terminalWidth={termWidth}
                 terminalRows={termHeight}
                 workspaceRoot={config.workspace}
+                onLayoutChange={bumpFooterLayout}
               />
             ) : childPermission?.type === 'agent_permission' ? (
               <Box flexDirection="column">
@@ -2575,6 +2576,7 @@ export function App({
                   workspaceRoot={
                     managedAgents.records.get(childPermission.agentId)?.worktree ?? config.workspace
                   }
+                  onLayoutChange={bumpFooterLayout}
                 />
               </Box>
             ) : null}

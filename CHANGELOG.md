@@ -261,6 +261,13 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A permission prompt no longer covers what the model said before it.** The prompt's diff
+  preview is read from disk after the prompt first draws, and the prompt grows when it lands.
+  The transcript above measured its height only on its own layout changes, so it kept the taller
+  viewport and the grown prompt hid its last rows: the model's reason for the call and the call's
+  own `needs approval` row. On a reply that streamed in, this happened on three edit prompts in
+  four. The prompt now reports each change of its height (opening, the preview landing, `D`, and
+  closing), and the transcript re-measures, a managed agent's prompt included.
 - **Diffs no longer print the same lines twice.** Two changes fewer than six lines apart came out
   as two hunks whose context overlapped, so the lines between them were printed once under each,
   numbered twice, in the permission prompt, the transcript and the diff the model reads back.
