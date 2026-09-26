@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "noEmit": true, "rootDir": "." },
-  "include": ["scripts/compact-eval.ts", "scripts/compact-eval-worker.ts"]
+  "include": ["scripts/compact-eval.ts", "scripts/compact-eval-worker.ts", "scripts/prompt-eval.ts"]
 }

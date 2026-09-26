@@ -39,6 +39,8 @@ vi.mock('./eval-process.js', () => ({
 
 const usage = (totalTokens: number) => ({
   promptTokens: totalTokens,
+  cacheReadInputTokens: 0,
+  cacheCreationInputTokens: 0,
   completionTokens: 0,
   totalTokens,
 });

@@ -367,6 +367,7 @@ function operatingPrinciplesSection(editFormat: EditFormat): string {
     '- Use the strongest practical feedback loop available: exercise the affected behavior when possible, then run focused tests, type checks, lint, builds, or visual checks as relevant. Fix failures caused by your changes.',
     '- Before finishing, review the changed files or diff for requested scope, edge cases, security issues, and accidental edits. Do not claim success without evidence; if verification is incomplete or blocked, state what ran and what remains uncertain.',
     '- Report verification from the tool results already in the transcript. Do not re-run a command only to quote its output when nothing it reads has changed since it last ran; a second run of the same suite spends a turn and proves nothing new.',
+    '- A checkpoint or summary that says a check passed is not a tool result. When such a claim is the only evidence left, as after compaction, run the check again before you report it.',
     '',
     '## Communication',
     '- Be concise, direct, and factual. Lead with outcomes and include reasoning only when it helps the user evaluate a decision or tradeoff.',
@@ -657,7 +658,23 @@ export async function buildMessages(
     content: await buildSystemPromptZones(config, commands, systemOverrides, cache),
   });
 
-  for (const msg of history) {
+  // Reasoning goes back to the model only for the turn in progress: the assistant steps after
+  // the newest message the user wrote. A host-written user message (`derivedContent`: the
+  // `[continuation]` resume, the completion gate, the `[work-state]` refresh) does not start a
+  // turn, so a run keeps its chain of thought across them. A turn a later user message closed is
+  // sent as its answer and tool calls, the way the Anthropic API drops earlier turns' thinking,
+  // except a reply that was only reasoning, which would otherwise reach the model empty.
+  // Measured with `npm run eval:prompt -- --suite replay` (#248 item 6).
+  let turnStart = -1;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const candidate = history[index];
+    if (candidate.includeInContext && candidate.role === 'user' && !candidate.derivedContent) {
+      turnStart = index;
+      break;
+    }
+  }
+
+  for (const [index, msg] of history.entries()) {
     if (!msg.includeInContext) continue;
     if (msg.role === 'user') {
       // Checkpoint bytes render verbatim; drift is reported as session-state deltas.
@@ -692,7 +709,10 @@ export async function buildMessages(
         // OpenAI rejects null content when tool_calls is absent, so coerce to ''.
         content:
           msg.content && msg.content.length > 0 ? msg.content : msg.toolCalls?.length ? null : '',
-        reasoningContent: msg.reasoningContent,
+        reasoningContent:
+          config.replayAllReasoning || index > turnStart || (!msg.content && !msg.toolCalls?.length)
+            ? msg.reasoningContent
+            : undefined,
         providerMetadata: msg.providerMetadata,
       };
       if (msg.toolCalls && msg.toolCalls.length > 0) {

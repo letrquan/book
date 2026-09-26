@@ -22,7 +22,14 @@ import {
   listMemoryCandidates,
   type MemoryFileSummary,
 } from '../memory-store.js';
-import { costReport, failureTotal, PRICING, usageReport, type DelegatedUsage } from '../pricing.js';
+import {
+  costReport,
+  failureTotal,
+  resolveModelPricing,
+  usageCostForModel,
+  usageReport,
+  type DelegatedUsage,
+} from '../pricing.js';
 import { buildContextBreakdown, buildContextReport, sourceLabel } from '../context-report.js';
 import { resolveContextWindow } from '../models.js';
 import type { SkillRegistrySnapshot } from '../skill-registry.js';
@@ -517,12 +524,13 @@ function agentCommandEffect(
 }
 
 function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffect {
-  const rate = PRICING[context.runtimeConfig.model];
-  const estimatedCostUsd =
-    context.usage && rate
-      ? (context.usage.promptTokens * rate.in + context.usage.completionTokens * rate.out) /
-        1_000_000
-      : undefined;
+  // The same rate resolution as /cost and the /usage text, so a dated or aliased model id
+  // prices here too.
+  const priced = context.usage
+    ? usageCostForModel(context.runtimeConfig.model, context.usage)
+    : undefined;
+  const rate = priced?.rate ?? resolveModelPricing(context.runtimeConfig.model)?.rate;
+  const estimatedCostUsd = priced?.costUsd;
   const toolCallStats =
     context.toolCallStats && context.toolCallStats.size > 0
       ? [...context.toolCallStats.entries()]
