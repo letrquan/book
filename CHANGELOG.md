@@ -289,18 +289,21 @@ All notable changes to this project are documented in this file.
     Manager, `kill -9`), its command kept running with nothing left to stop it. The command now
     runs under a small supervisor that holds a pipe from the runner and ends the command's
     whole tree when that pipe closes, which the operating system does however the runner died.
+    Processes the command leaves running after it exits are not covered.
   - **The first record:** a runner that could not write its job's first record still ran the
     command, while `start()` waited out its 3 s, failed with no cause, forgot the job and
     deleted its files. The runner now writes that record before starting anything, exits if it
-    cannot, and `start()` fails at once with the cause.
+    cannot, and `start()` fails at once with the cause. A `start()` that gives up now also ends
+    the runner it started.
   - **Record-write failures** no longer write notes into the job's log, which is the command's
     own output. They are counted on the record (`recordWriteFailures`,
     `lastRecordWriteError`), and a heartbeat that finds the record locked gives up after 50 ms
     instead of blocking the runner for a second.
   - **The terminal record:** when every attempt to write it fails, the runner now says so at the
     end of the job's log, with the job's real outcome, instead of exiting silently.
-  - **The pid:** a persistent job now counts as started only once its record carries the command's
-    pid, so `Bash` reports it.
+  - **The pid:** a persistent job now counts as started only once its record carries a pid, so
+    `Bash` reports one. It is the supervisor's, and off Windows a signal sent to it is passed to
+    the whole job.
   - **Book's own process:** a record write that still failed after its retry budget could throw
     from the shell manager's 500 ms monitor and end Book. The lost-job write, an acknowledgement
     and a stop request now fail softly: the first two are retried or kept in memory, and a stop

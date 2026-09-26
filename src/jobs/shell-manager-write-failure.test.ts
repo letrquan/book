@@ -114,7 +114,12 @@ describe('ShellJobManager record writes that fail', () => {
     expect(existsSync(specPath)).toBe(true);
 
     failing.paths.delete(recordPath);
+    // The failed write is not retried on every refresh, only after its backoff.
     vi.advanceTimersByTime(500);
+    expect((JSON.parse(readFileSync(recordPath, 'utf8')) as PersistentShellState).status).toBe(
+      'running',
+    );
+    vi.advanceTimersByTime(5_000);
     const written = JSON.parse(readFileSync(recordPath, 'utf8')) as PersistentShellState;
     expect(written.status).toBe('lost');
     expect(existsSync(specPath)).toBe(false);

@@ -298,6 +298,16 @@ async function runSingleHook(
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
 
+    /** Why a cancellation ended this hook, the same way however it arrived. */
+    const abortReason = () =>
+      signal?.reason ?? new DOMException('Hook execution aborted', 'AbortError');
+    /** Let go of the hook's pipes, so no process that still holds them can hold the host open. */
+    const releasePipes = () => {
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    };
+
     /**
      * End the hook's whole process tree and let go of its pipes. A process the kill cannot reach
      * (on Windows, one whose parent has already exited) would otherwise hold the pipes, and with
@@ -306,9 +316,7 @@ async function runSingleHook(
      */
     const endTree = async (): Promise<void> => {
       ending = true;
-      child.stdin?.destroy();
-      child.stdout?.destroy();
-      child.stderr?.destroy();
+      releasePipes();
       await terminateForegroundProcess(child);
     };
 
@@ -330,16 +338,22 @@ async function runSingleHook(
       reject(error);
     };
 
+    /**
+     * End the tree, then finish the hook without its answer. A cancellation that arrived while the
+     * tree was being ended still wins.
+     */
+    const endThenContinue = () => {
+      void endTree().finally(() => {
+        if (signal?.aborted) fail(abortReason());
+        else settle({ entry, action: 'continue' });
+      });
+    };
+
     /** End the tree, then carry on without the hook's answer: its output is not trusted. */
     const overflow = () => {
       if (settled || ending) return;
       console.warn(`⚠  Hook output exceeded 1 MB: ${entry.command}`);
-      void endTree().finally(() => {
-        // A cancellation that arrived while the tree was being ended still wins.
-        if (signal?.aborted)
-          fail(signal.reason ?? new DOMException('Hook execution aborted', 'AbortError'));
-        else settle({ entry, action: 'continue' });
-      });
+      endThenContinue();
     };
 
     const collect = (stream: 'stdout' | 'stderr') => (chunk: string) => {
@@ -381,7 +395,9 @@ async function runSingleHook(
       // Non-zero exit but not a block — treat as continue with warning.
       if (code !== 0) {
         const how = code === null ? `signal ${exitSignal}` : `code ${code}`;
-        console.warn(`⚠  Hook exited with ${how}: ${entry.command}\n${stderr}`);
+        console.warn(
+          `⚠  Hook exited with ${how}: ${entry.command}\n${stderr.trim() || '(no output on stderr)'}`,
+        );
         settle({ entry, action: 'continue' });
         return;
       }
@@ -412,20 +428,20 @@ async function runSingleHook(
     };
     const finishHook = (code: number | null, exitSignal: NodeJS.Signals | null) => {
       if (signal?.aborted) {
-        fail(signal.reason ?? new DOMException('Hook execution aborted', 'AbortError'));
+        fail(abortReason());
         return;
       }
       decide(code, exitSignal);
     };
     child.on('exit', (code, exitSignal) => {
       if (settled || ending) return;
+      // The hook's own process is done; only the bounded drain below is left to wait for.
+      clearTimeout(timer);
       drainTimer = setTimeout(() => {
         if (settled || ending) return;
         // A process the hook started still holds its pipes. Let go of them, so that process cannot
         // hold the host's event loop, and leave it running: the hook is done.
-        child.stdin?.destroy();
-        child.stdout?.destroy();
-        child.stderr?.destroy();
+        releasePipes();
         finishHook(code, exitSignal);
       }, HOOK_DRAIN_GRACE_MS);
     });
@@ -442,18 +458,20 @@ async function runSingleHook(
 
     const onAbort = () => {
       if (settled || ending) return;
-      const reason = signal?.reason ?? new DOMException('Hook execution aborted', 'AbortError');
-      void endTree().finally(() => fail(reason));
+      const teardown = endTree();
+      // On Windows taskkill is a child of this process and would die with it if the host exited
+      // right after the rejection, so the rejection waits for it. Elsewhere the SIGTERM has already
+      // reached the hook's group by now; its escalation needs no one to wait.
+      if (process.platform === 'win32') void teardown.finally(() => fail(abortReason()));
+      else {
+        void teardown;
+        fail(abortReason());
+      }
     };
     const timer = setTimeout(() => {
       if (settled || ending) return;
       console.warn(`⚠  Hook timed out after ${timeoutMs / 1000}s: ${entry.command}`);
-      void endTree().finally(() => {
-        // A cancellation that arrived while the tree was being ended still wins.
-        if (signal?.aborted)
-          fail(signal.reason ?? new DOMException('Hook execution aborted', 'AbortError'));
-        else settle({ entry, action: 'continue' });
-      });
+      endThenContinue();
     }, timeoutMs);
     signal?.addEventListener('abort', onAbort, { once: true });
 

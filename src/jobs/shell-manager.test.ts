@@ -244,6 +244,50 @@ describe('ShellJobManager persistent jobs', () => {
     }
   }, 60_000);
 
+  // The pid reported for a persistent job is its supervisor's. A signal sent to it used to stop only
+  // the supervisor, and the command ran on without its lifeline.
+  it.skipIf(process.platform === 'win32')(
+    'stops the whole job when its reported pid is signalled',
+    async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
+      const persistentRoot = join(directory, 'jobs');
+      const script = join(directory, 'worker.cjs');
+      const pidPath = join(directory, 'worker.pid');
+      writeFileSync(
+        script,
+        `require('fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+setInterval(() => {}, 1000);
+`,
+      );
+      // The trailing `; true` keeps the shell from exec-ing into the worker, so they are two processes.
+      const command = `${shellQuote(process.execPath)} ${shellQuote(script)}; true`;
+      const manager = new ShellJobManager(
+        { nextId: 1, shells: new Map() },
+        { persistentRoot, ...ciBudgets },
+      );
+      managers.push(manager);
+      manager.configureWorkspace(directory);
+      const started = await manager.start({
+        command,
+        effectiveCommand: command,
+        workdir: directory,
+        env: process.env,
+        envOverrides: {},
+        sandboxed: false,
+        lifetime: 'persistent',
+        workspace: directory,
+      });
+      await waitFor(() => existsSync(pidPath), 'worker pid file', 30_000);
+      const workerPid = Number(readFileSync(pidPath, 'utf8'));
+      const reportedPid = manager.get(started.id)?.pid;
+      expect(reportedPid).toBeDefined();
+
+      process.kill(reportedPid!, 'SIGTERM');
+      await waitFor(() => !isProcessAlive(workerPid), 'the worker to end', 10_000);
+    },
+    60_000,
+  );
+
   it('refuses to run a command whose job record cannot be written, and says why', async () => {
     directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
     const persistentRoot = join(directory, 'jobs');

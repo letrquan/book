@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BackgroundShellRecord } from '../../types/runtime.js';
-import type { ShellJobManager } from '../../jobs/shell-manager.js';
+import { isTerminalShellStatus, type ShellJobManager } from '../../jobs/shell-manager.js';
 
 /**
  * Output chunks arrive at raw process frequency (hundreds/s for chatty
@@ -57,12 +57,7 @@ export function useBackgroundShells(
   parentSessionId: string,
 ): BackgroundShellState {
   const visible = useCallback(
-    () =>
-      manager
-        .list()
-        .filter(
-          (shell) => !['exited', 'failed', 'killed', 'timed_out', 'lost'].includes(shell.status),
-        ),
+    () => manager.list().filter((shell) => !isTerminalShellStatus(shell.status)),
     [manager],
   );
   const [shells, setShells] = useState<BackgroundShellRecord[]>(visible);
@@ -136,7 +131,7 @@ export function useBackgroundShells(
       const shell = manager.get(shellId);
       if (!shell) return undefined;
       try {
-        if (['exited', 'failed', 'killed', 'timed_out', 'lost'].includes(shell.status)) {
+        if (isTerminalShellStatus(shell.status)) {
           manager.dismiss(shellId);
         } else {
           await manager.stop(shellId);

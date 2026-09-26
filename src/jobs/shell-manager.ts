@@ -32,6 +32,8 @@ const MAX_OUTPUT_RESULT = 32_000;
 const MAX_RETAINED_TERMINAL_SHELLS = 20;
 const TERMINAL_SHELL_TTL_MS = 15 * 60_000;
 const PERSISTENT_HEARTBEAT_STALE_MS = 10_000;
+/** How long a lost-job record that could not be written waits before the next attempt. */
+const LOST_WRITE_RETRY_MS = 5_000;
 const log = createDebugLogger('jobs');
 
 export type ShellJobEvent =
@@ -140,6 +142,11 @@ export class ShellJobManager {
   private persistentPaths?: PersistentJobPaths;
   private persistentStorageError?: Error;
   private monitor?: NodeJS.Timeout;
+  /** Lost-job records whose write failed, by job id, with when to try the write again. */
+  private readonly unwrittenLost = new Map<
+    string,
+    { lost: PersistentShellState; retryAt: number }
+  >();
 
   constructor(
     private readonly store: BackgroundShellStore,
@@ -539,10 +546,20 @@ export class ShellJobManager {
       if (state) {
         this.applyPersistentState(shell, state);
         if (state.status !== 'starting') break;
-      } else if (runnerExited) break;
+      }
+      if (runnerExited) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     if (shell.status === 'starting') {
+      // The job is being forgotten, so nothing may keep running under it. Ending the runner closes
+      // the supervisor's lifeline, which ends the command's tree if it had started.
+      if (!runnerExited) {
+        try {
+          runner.kill('SIGKILL');
+        } catch {
+          // It exited in the meantime.
+        }
+      }
       this.store.shells.delete(id);
       try {
         removePersistentJobFiles(paths, id);
@@ -551,7 +568,7 @@ export class ShellJobManager {
       }
       const detail = runnerError.trim();
       const what = runnerExited
-        ? 'exited before recording the job'
+        ? 'exited before the job started'
         : `did not start within ${startBudgetMs}ms`;
       throw new Error(`Persistent background runner ${what}${detail ? `: ${detail}` : '.'}`);
     }
@@ -646,6 +663,10 @@ export class ShellJobManager {
     ) {
       return state;
     }
+    // A failed write costs this process the whole rename budget on every refresh, and the monitor,
+    // `list()`, `get()` and `readOutput()` all refresh: back off instead.
+    const unwritten = this.unwrittenLost.get(state.id);
+    if (unwritten && this.clock.monotonicNowMs() < unwritten.retryAt) return unwritten.lost;
     const lost: PersistentShellState = {
       ...state,
       revision: state.revision + 1,
@@ -659,11 +680,16 @@ export class ShellJobManager {
       writeJsonAtomic(recordPath, lost);
     } catch (error) {
       // The write still failed after its retry budget (on Windows, a reader holds the record). The
-      // next refresh finds the same stale record and tries again; until then the job reads as lost
-      // and its runner files stay, since the record does not say so yet.
+      // job reads as lost and its runner files stay, since the record does not say so yet; the next
+      // attempt comes after `LOST_WRITE_RETRY_MS`, not on the next refresh.
       log.warn('could not record a lost job', { id: state.id, error: String(error) });
+      this.unwrittenLost.set(state.id, {
+        lost,
+        retryAt: this.clock.monotonicNowMs() + LOST_WRITE_RETRY_MS,
+      });
       return lost;
     }
+    this.unwrittenLost.delete(state.id);
     if (this.persistentPaths) {
       try {
         removePersistentRunnerFiles(this.persistentPaths, state.id);

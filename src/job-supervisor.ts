@@ -13,7 +13,8 @@
  * the runner goes away, for any reason, the operating system closes the pipe, and this process
  * ends the command's whole tree and then itself. The pipe needs no polling and cannot be fooled by
  * a reused pid. The command writes straight into the runner's own pipes, and this process exits
- * with the command's exit code, so the runner records what it always recorded.
+ * with the command's exit code, so the runner records what it always recorded. The pid Book reports
+ * for the job is this process's; off Windows a signal sent to it is passed to the whole job.
  *
  * Usage, from the runner: node job-supervisor.js <spec-path>
  */
@@ -65,6 +66,8 @@ command.on('exit', (code, signal) => {
     if (RERAISABLE_SIGNALS.has(signal)) {
       // Die of the command's signal, so the runner records it the way it did before this process
       // stood between them.
+      // Drop the forwarding handler, or it would swallow the re-raised signal.
+      process.removeAllListeners(signal);
       process.kill(process.pid, signal);
       setTimeout(() => process.exit(1), 100);
       return;
@@ -76,6 +79,28 @@ command.on('exit', (code, signal) => {
   }
   process.exit(code ?? 1);
 });
+
+/**
+ * Signals sent to this process, the pid Book reports for the job, are meant for the job: pass each
+ * to the whole group, as the runner's own stop does, and exit with the command. Forwarded once per
+ * kind, because the forwarded signal reaches this process too. Windows has no such signals; there
+ * the runner's stop goes through taskkill.
+ */
+const FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ['SIGTERM', 'SIGINT', 'SIGHUP'];
+const forwarded = new Set<NodeJS.Signals>();
+if (process.platform !== 'win32') {
+  for (const kind of FORWARDED_SIGNALS) {
+    process.on(kind, () => {
+      if (lifelineLost || forwarded.has(kind)) return;
+      forwarded.add(kind);
+      try {
+        process.kill(-process.pid, kind);
+      } catch {
+        // The group has already exited.
+      }
+    });
+  }
+}
 
 /** The runner is gone: end the command's whole tree, then exit. */
 function endCommandTree(): void {

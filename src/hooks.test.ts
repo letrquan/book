@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { runHooks } from './hooks.js';
+import { isProcessAlive } from './jobs/process-tree.js';
 import type { HookEntry, HookEvent } from './settings.js';
 import { spawn } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
@@ -168,15 +169,6 @@ describe('runHooks — process tree', () => {
     return { command: `"${process.execPath}" "${parent}"`, env: {} };
   }
 
-  function isAlive(pid: number): boolean {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === 'EPERM';
-    }
-  }
-
   async function waitFor(predicate: () => boolean, what: string, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (!predicate()) {
@@ -194,7 +186,7 @@ describe('runHooks — process tree', () => {
 
   function killSurvivors(pids: { parent: number; grandchild: number } | undefined): void {
     for (const pid of pids ? [pids.parent, pids.grandchild] : []) {
-      if (isAlive(pid)) process.kill(pid, 'SIGKILL');
+      if (isProcessAlive(pid)) process.kill(pid, 'SIGKILL');
     }
   }
 
@@ -209,7 +201,7 @@ describe('runHooks — process tree', () => {
     try {
       controller.abort(new Error('hook cancelled'));
       await expect(pending).rejects.toThrow('hook cancelled');
-      await waitFor(() => !isAlive(pids.grandchild), 'the grandchild to end', 5_000);
+      await waitFor(() => !isProcessAlive(pids.grandchild), 'the grandchild to end', 5_000);
     } finally {
       killSurvivors(pids);
     }
@@ -242,7 +234,7 @@ describe('runHooks — process tree', () => {
       expect(exitCode).toBe(0);
       expect(stdout).toContain('settled continue');
       expect(pids).toBeDefined();
-      await waitFor(() => !isAlive(pids!.grandchild), 'the grandchild to end', 5_000);
+      await waitFor(() => !isProcessAlive(pids!.grandchild), 'the grandchild to end', 5_000);
     } finally {
       if (exitCode === 'lingered') host.kill('SIGKILL');
       killSurvivors(pids);
@@ -289,6 +281,37 @@ describe('runHooks — process tree', () => {
       warn.mockRestore();
     }
   });
+
+  it('keeps the answer of a hook that exits before its timeout but leaves its pipes held', async () => {
+    const pidPath = join(dir, 'background.pid');
+    const background = join(dir, 'background.cjs');
+    writeFileSync(
+      background,
+      `require('fs').writeFileSync(${JSON.stringify(pidPath)}, '0 ' + process.pid);
+setInterval(() => {}, 1000);
+`,
+    );
+    // The shell starts a process that inherits the hook's pipes, answers, and exits at once. The
+    // 0.4 s timeout falls inside the 0.5 s drain that follows the exit.
+    const command =
+      process.platform === 'win32'
+        ? `start "" /b "${process.execPath}" "${background}" & echo {"action":"block","message":"late"}`
+        : `"${process.execPath}" "${background}" & echo '{"action":"block","message":"late"}'`;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const results = await runHooks([{ command, env: {} }], 'PreToolUse', ctx(), {
+        timeoutMs: 400,
+      });
+      expect(results[0]).toMatchObject({ action: 'block', message: 'late' });
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('timed out'));
+    } finally {
+      warn.mockRestore();
+      await waitFor(() => readPids(pidPath) !== undefined, 'the background pid', 5_000).catch(
+        () => undefined,
+      );
+      killSurvivors(readPids(pidPath));
+    }
+  }, 20_000);
 
   it('does not wait for a process the hook leaves running', async () => {
     const pidPath = join(dir, 'background.pid');

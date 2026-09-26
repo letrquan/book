@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTestClock } from '../clock.js';
-import { renameWithContentionRetry, writeJsonAtomic } from './persistent-store.js';
+import {
+  loadPersistentShellSpec,
+  renameWithContentionRetry,
+  writeJsonAtomic,
+} from './persistent-store.js';
 
 // A write that fails partway, as on a full disk, leaves a partial file behind it.
 const fsFailure = vi.hoisted(() => ({ partialWrite: false }));
@@ -162,5 +166,18 @@ describe('writeJsonAtomic', () => {
     }
 
     expect(readdirSync(directory)).toEqual([]);
+  });
+});
+
+describe('loadPersistentShellSpec', () => {
+  it('refuses a spec without a token instead of throwing', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'book-persistent-store-'));
+    temporaryRoots.push(directory);
+    const path = join(directory, 'spec.json');
+    writeFileSync(path, JSON.stringify({ version: 1, tokenHash: 'x' }));
+
+    expect(loadPersistentShellSpec(path)).toEqual({
+      error: 'Invalid persistent shell specification.',
+    });
   });
 });

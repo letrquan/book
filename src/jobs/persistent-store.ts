@@ -208,6 +208,8 @@ export function loadPersistentShellSpec(
   if (
     !spec ||
     spec.version !== 1 ||
+    typeof spec.token !== 'string' ||
+    typeof spec.tokenHash !== 'string' ||
     createHash('sha256').update(spec.token).digest('hex') !== spec.tokenHash
   ) {
     return { error: 'Invalid persistent shell specification.' };

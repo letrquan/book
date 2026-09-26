@@ -107,8 +107,8 @@ function persistBestEffort(what: string): void {
 function appendBounded(data: unknown): void {
   const chunk = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
   if (chunk.length === 0) return;
-  appendFileSync(spec.outputPath, chunk);
   try {
+    appendFileSync(spec.outputPath, chunk);
     const size = statSync(spec.outputPath).size;
     if (size <= spec.maxLogBytes) return;
     const retained = readFileSync(spec.outputPath).subarray(-spec.maxLogBytes);
@@ -122,7 +122,7 @@ function appendBounded(data: unknown): void {
     };
     persistBestEffort('log rotation');
   } catch {
-    // Output retention is best effort; lifecycle state remains authoritative.
+    // Output and its retention are best effort; lifecycle state remains authoritative.
   }
 }
 
