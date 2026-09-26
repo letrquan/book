@@ -325,7 +325,12 @@ describe('App session commands', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 25));
     view.stdin.write('\t');
-    const childFrame = await frameContaining(view, 'main > Run child checks');
+    // Wait for the tool row itself: the child's heading can land a frame before
+    // its transcript rows do, and a click aimed from that frame hits nothing.
+    // Five seconds, not the helper's two: a loaded runner took just over two.
+    await frameContaining(view, 'main > Run child checks', 5000);
+    const childFrame = await frameContaining(view, 'npm test', 5000);
+    expect(childFrame).toContain('main > Run child checks');
     expect(childFrame).not.toContain('CHILD_MOUSE_OUTPUT');
     const lines = childFrame.split('\n');
     const toolRow = lines.findIndex((line) => line.includes('npm test'));
