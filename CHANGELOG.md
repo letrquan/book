@@ -279,31 +279,35 @@ All notable changes to this project are documented in this file.
 - **A managed child's effort follows its model's catalog, and only a real choice sticks** (#245).
   - **Catalog default:** with no level chosen, a child ran at the session's defaulted `high`
     rather than its model's catalog `default`, and a catalog entry with a `default` but no
-    `levels` list sent nothing, although Book reads a missing list as every level. The default now
-    applies, and such an entry's level is sent.
+    `levels` list never sent it. The default now applies, and an entry without `levels` sends the
+    level it names as its `default` (and no other).
   - **A chosen level is kept:** a profile's `effort: low` on a model listing `[medium, high]` was
-    clamped to nothing. A chosen level below every listed one now takes the lowest listed level.
+    clamped to nothing. A chosen level below every listed one now takes the lowest listed level. So
+    does an explicit `compactEffort` on the compact model; the session's capped effort still never
+    goes back up.
   - **Chosen and sent are separate:** a level sent only because the child's catalog listed it was
     carried into the child's own compaction as chosen, and sent to a compact model with no catalog
     entry, where a strict endpoint answers it with a 400. The same held for the deferred-compaction
     judge's `low`. Both are now sent only where a level was chosen or the catalog lists it.
   - **Later runs:** a queued, re-run or follow-up child kept its spawn-time level as if chosen. Only
-    a chosen level is kept now; a defaulted one is resolved again when the run starts.
-  - **The record:** `effort` on the agent record was the unclamped level (`max` for a child running
-    at `high`). It is now the level the child runs at, from the spawn on.
-- **A follow-up queued on a `/review` agent survives a restart** (#245). A restart left the review's
-  own run interrupted, and silently dropped the `AgentSend` follow-up queued behind it. That
-  follow-up now runs after the restart, and reports to the parent that sent it, since the review
-  that would have received it died with the process. A `/review` reviewer recorded by a build
-  before the no-resume mark (delivery suppressed, no `Task` call) is also no longer re-run once
-  after upgrading.
+    a chosen level is kept now, as asked, and clamped again against the catalog in force when the
+    run starts; a defaulted one is resolved again.
+  - **The record:** `effort` on the agent record was the unclamped level (`max` for a child whose
+    model lists nothing above `high`). It is now the child's level clamped to its model's catalog,
+    from the spawn on. On an OpenAI-compatible route it is still sent only when chosen or listed.
+- **A parent's follow-up to a `/review` agent survives a restart** (#245). A restart left the
+  review's own run interrupted, and silently dropped the parent's `AgentSend` follow-up, whether it
+  was queued behind that run or already running after it. That follow-up now runs after the
+  restart and reports to the parent that sent it, since the review that would have received it died
+  with the process.
 - **Memory extraction keeps its lock, and keeps a whole answer that reached the output limit**
   (#245). On the session's retry policy one session's provider call can take far longer than the
   extraction lock's 30-minute lifetime, and a second Book session then took the lock over and
   extracted the same sessions at the same time. A run now refreshes its lock while it lasts, and a
-  run whose lock was taken over writes nothing. A reply that ended at the output limit was always a
-  failed start, even when its JSON had arrived whole; it is now parsed first. A session given up
-  on after three cut-off replies is recorded as `truncated`, not `provider-failed`.
+  run whose lock another start took over writes nothing. A reply that ended at the output limit was
+  always a failed start, even when its whole answer had arrived; it now counts when its JSON object
+  closes the reply. A session given up on is recorded as `truncated` when its last reply was cut
+  off, not `provider-failed`.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller

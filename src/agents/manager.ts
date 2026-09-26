@@ -153,19 +153,6 @@ function errorKind(value: string | undefined): string | undefined {
   return 'other';
 }
 
-/**
- * A `/review` agent recorded by a build that predates `resumeAfterRestart` (#256): the only shape
- * that build gave its reserved `reviewer` profile -- delivery suppressed, and no `Task` call.
- */
-function isLegacyReviewRecord(record: AgentRecord): boolean {
-  return (
-    record.resumeAfterRestart === undefined &&
-    (record.profile ?? record.name) === 'reviewer' &&
-    record.notifyParentOnCompletion === false &&
-    !record.parentToolCallId
-  );
-}
-
 export class AgentManager {
   private config: AgentConfig;
   private readonly parentDefinitions: ToolDefinition[];
@@ -428,8 +415,9 @@ export class AgentManager {
       // Re-drive what died mid-flight. `ensureInitialized` already hydrates agents,
       // plans, evidence, and snapshots — it just never pushed anything onto the
       // queue, so a restart turned the entire pending backlog into terminal records
-      // nothing picked up. `prompt` and `purpose` are on disk and never mutated
-      // after spawn, so the re-drive needs no information a restart cannot have.
+      // nothing picked up. `purpose` is the spawn task and never changes, and `prompt`
+      // is the run to re-drive -- the spawn task, or a follow-up that was running --
+      // so the re-drive needs no information a restart cannot have.
       if (this.config.settings.agents.resumeInterrupted) {
         for (const record of this.agents.values()) {
           if (!record.resumable) continue;
@@ -441,16 +429,20 @@ export class AgentManager {
           // A host whose receiver died with the process (`/review` renders its agents'
           // output into its own report) gets no re-run: it would bill a result nobody
           // receives. The agent stays interrupted and says why.
-          if (record.resumeAfterRestart === false || isLegacyReviewRecord(record)) {
-            if ((record.pendingMessages?.length ?? 0) === 0) {
+          if (record.resumeAfterRestart === false) {
+            // The host's own run died with the host, which would have received it, and is not
+            // re-run. A parent's follow-up still has its sender: the one that was running (the
+            // prompt is no longer the spawn task) or one queued behind the host's run. It runs as
+            // the parent's.
+            const followUpRunning =
+              record.purpose !== undefined && record.prompt !== record.purpose;
+            if (!followUpRunning && (record.pendingMessages?.length ?? 0) === 0) {
               record.error =
                 'Not resumed after the restart: the host that spawned it handles its result and exited with the process.';
               this.persist(record);
               continue;
             }
-            // The host's own run is not re-run, but a follow-up queued behind it came from the
-            // parent (AgentSend), which is still here to receive it: it runs as the parent's.
-            record.prompt = record.pendingMessages.shift()!;
+            if (!followUpRunning) record.prompt = record.pendingMessages.shift()!;
             record.notifyParentOnCompletion = undefined;
             record.resumeAfterRestart = undefined;
           }
@@ -808,13 +800,18 @@ export class AgentManager {
       );
     }
     const resolvedProfile = resolveAgentProfile(definition, this.config, request.model);
-    // The level the child runs at, clamped to its model's catalog, so the record never
-    // reports one the child does not send.
-    const spawnEffort = resolveChildAgentConfig(
-      this.config,
-      resolvedProfile,
-      resolvedProfile.resolvedModel,
-    ).effort;
+    // The child's level, clamped to its model's catalog. A model id that does not resolve fails
+    // the run, as it always has, not the spawn.
+    let spawnEffort = resolvedProfile.effort;
+    try {
+      spawnEffort = resolveChildAgentConfig(
+        this.config,
+        resolvedProfile,
+        resolvedProfile.resolvedModel,
+      ).effort;
+    } catch {
+      // Reported when the run resolves the model.
+    }
 
     let plan = request.planId ? this.plans.get(request.planId) : undefined;
     const autoCreatedPlan = !request.planId;
@@ -858,7 +855,7 @@ export class AgentManager {
       resolvedModel: resolvedProfile.resolvedModel,
       provider: resolvedProfile.provider,
       effort: spawnEffort,
-      effortChosen: resolvedProfile.effortExplicit,
+      effortChoice: resolvedProfile.effortExplicit ? resolvedProfile.effort : undefined,
       isolation: definition.isolation,
       name: definition.name,
       role: definition.role,
@@ -1483,11 +1480,11 @@ export class AgentManager {
         );
       }
       const resolvedProfile = resolveAgentProfile(definition, this.config, record.requestedModel);
-      // A level chosen at spawn is kept for every later run of this agent. A defaulted one is
-      // resolved again, so a queued or re-run child follows the settings in force now instead of
-      // carrying an old default as if someone had chosen it.
-      const spawnChoice =
-        record.effortChosen === true ? usableAgentEffort(record.effort) : undefined;
+      // A level chosen at spawn is kept for every later run of this agent, clamped against the
+      // catalog in force now. A defaulted one is resolved again, so a queued or re-run child
+      // follows the settings in force now instead of carrying an old default as if someone had
+      // chosen it.
+      const spawnChoice = usableAgentEffort(record.effortChoice);
       const agentConfig = resolveChildAgentConfig(
         {
           ...this.config,

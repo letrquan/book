@@ -3,6 +3,7 @@ import type { ManagedAgentDef } from './profiles.js';
 import {
   applyModelDefaults,
   clampEffortToCatalog,
+  isEffortChosen,
   resolveEffortExplicit,
   resolveModelProviderConfig,
 } from '../config.js';
@@ -64,7 +65,7 @@ export function resolveAgentProfile(
     resolvedModel,
     provider: slash > 0 ? resolvedModel.slice(0, slash) : config.provider,
     effort: chosenEffort ?? config.effort,
-    effortExplicit: chosenEffort !== undefined || config.effortExplicit === true,
+    effortExplicit: chosenEffort !== undefined || isEffortChosen(config),
     maxTurns: override?.maxTurns ?? definition.maxTurns ?? config.maxTurns,
     color: override?.color ?? definition.color,
   };

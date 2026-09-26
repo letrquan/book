@@ -50,7 +50,7 @@ import {
   type MemoryType,
 } from './memory-store.js';
 import { createDebugLogger } from './debug-log.js';
-import { parseJsonObject } from './review/json.js';
+import { extractJsonObject, parseJsonObject } from './review/json.js';
 import { toolNamesFromHistory } from './session/runtime.js';
 import { isExternalContextTool } from './tools/memory-save.js';
 import type { Message } from './types/messages.js';
@@ -169,8 +169,10 @@ function acquireLock(path: string, nowMs: number): ExtractionLock | null {
   const held = (): boolean => {
     try {
       return readFileSync(path, 'utf-8') === token;
-    } catch {
-      return false;
+    } catch (error) {
+      // Gone means another start took it over or removed it. Any other failed read -- a scanner
+      // holding the file on Windows -- says nothing about who owns it.
+      return (error as NodeJS.ErrnoException).code !== 'ENOENT';
     }
   };
   return {
@@ -278,6 +280,18 @@ export function parseExtraction(text: string, max: number): ExtractedMemory[] | 
     if (out.length >= max) break;
   }
   return out;
+}
+
+/**
+ * Whether a reply cut off at its output limit still holds a whole answer: its first complete JSON
+ * object is the last thing in it, bar whitespace and a closing fence. The first complete object of
+ * a reply that goes on may be an example, not the answer.
+ */
+function wholeAnswer(text: string): boolean {
+  const candidate = extractJsonObject(text);
+  if (!candidate) return false;
+  const rest = text.slice(text.indexOf(candidate) + candidate.length);
+  return /^\s*(```\s*)?$/.test(rest);
 }
 
 async function complete(
@@ -450,7 +464,10 @@ export async function runMemoryExtraction(
         break;
       }
       const text = reply?.text.trim() ? reply.text : undefined;
-      const items = text ? parseExtraction(text, settings.extraction.maxPerSession) : undefined;
+      const items =
+        text && (!reply?.truncated || wholeAnswer(text))
+          ? parseExtraction(text, settings.extraction.maxPerSession)
+          : undefined;
       if (!items && (failure !== undefined || !text || reply?.truncated)) {
         // A reply cut off at its output limit, an empty one, or a provider failure: transient
         // trouble, retried at the next start. A session that keeps failing is given up on so it

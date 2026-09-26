@@ -410,7 +410,11 @@ function compactModelEffort(config: AgentConfig): AgentConfig['effort'] {
   const target =
     config.compactEffort ??
     (config.effort && EFFORT_LEVELS.indexOf(config.effort) > cap ? 'medium' : config.effort);
-  return clampEffortToCatalog(config, target);
+  // An explicit `compactEffort` is a choice for this model: below every listed level it takes the
+  // lowest one. The session's capped effort never goes back up.
+  return clampEffortToCatalog(config, target, {
+    raiseToLowest: config.compactEffort !== undefined,
+  });
 }
 
 /**
@@ -421,20 +425,19 @@ function compactModelEffort(config: AgentConfig): AgentConfig['effort'] {
  * its model's catalog lists that level. With neither -- the default `gpt-4o`, or
  * any model without a catalog entry -- it carries none, like the main agent's.
  * Every request on the compact model, and every managed child, decides by this
- * one rule. A catalog entry with no `levels` list accepts every level, as
- * `getAvailableEffortLevels` reads it.
+ * one rule. A catalog entry without a `levels` list vouches for the level it
+ * names as its `default`, and only that one.
  */
 export function resolveEffortExplicit(
-  config: Pick<AgentConfig, 'model' | 'modelSelection' | 'modelInfo'>,
+  config: Pick<AgentConfig, 'modelInfo'>,
   effort: AgentConfig['effort'],
   chosen: boolean,
 ): boolean {
   if (effort === undefined) return false;
   if (chosen) return true;
-  return (
-    typeof config.modelInfo?.effort === 'object' &&
-    (getAvailableEffortLevels(config)?.includes(effort) ?? false)
-  );
+  const catalog = config.modelInfo?.effort;
+  if (typeof catalog !== 'object') return false;
+  return catalog.levels ? catalog.levels.includes(effort) : catalog.default === effort;
 }
 
 /**

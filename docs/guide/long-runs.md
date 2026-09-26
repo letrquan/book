@@ -211,7 +211,8 @@ for long enough that the proxy dropped it, ten times over. Extraction answers in
 4,000-token limit that a reply at `max` could spend on reasoning alone. When the compact model's
 catalog lists effort levels and that level is not one of them, it is clamped down to the highest
 listed level below it, never back up to the session's effort. A catalog with no level at or below
-it, or one with `effort: false`, gets no effort at all. On the Anthropic path such a request
+it, or one with `effort: false`, gets no effort at all, except that an explicit `compactEffort`
+below every listed level takes the lowest listed one. On the Anthropic path such a request
 carries neither `thinking` nor `output_config`, so the model runs at its own default: no thinking
 at all on Opus 4.6–4.8 and Sonnet 4.6, and adaptive thinking at the model's default effort on
 Opus 5 and 5.5, Fable 5 and Sonnet 5. On an OpenAI-compatible route the request sends
@@ -227,7 +228,7 @@ The reducer's and the judge's requests are also retried at most twice, instead o
 reducer falls back to the deterministic checkpoint, and a failed judge leaves the verdict
 inconclusive, so the checkpoint is committed anyway. Memory extraction keeps the session's retry
 policy, because it gives up on a session after three failed starts. A reply that ended at the
-output limit is kept when its JSON parsed whole. An empty reply, or one cut off mid-answer, counts
+output limit is kept when its JSON object closes the reply. An empty reply, or one cut off mid-answer, counts
 as a failed start rather than as the session read, and a session given up on is recorded as
 `truncated` when its last reply was cut off (`provider-failed` otherwise). On that retry policy one
 session's call can outlast the extraction lock's 30-minute lifetime, so a run keeps its lock fresh
