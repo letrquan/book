@@ -7,7 +7,14 @@ import {
   createTerminalOutcome,
   type AgentTerminalOutcome,
 } from '../types/terminal.js';
-import type { ToolCall, ToolDefinition, ToolResult, UserQuestionResponse } from '../types/tools.js';
+import type {
+  PermissionDecision,
+  PermissionResult,
+  ToolCall,
+  ToolDefinition,
+  ToolResult,
+  UserQuestionResponse,
+} from '../types/tools.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { finalAnswerText } from '../agent/final-answer.js';
 import { runCompact, usagePressureTokens } from '../agent/compact.js';
@@ -179,7 +186,7 @@ export class AgentManager {
   private readonly questionResolvers = new Map<string, (response: UserQuestionResponse) => void>();
   private readonly permissionResolvers = new Map<
     string,
-    (response: 'allow' | 'deny' | 'always') => void
+    (response: PermissionResult | PermissionDecision) => void
   >();
   private readonly permissionRules = new Map<string, string>();
   private readonly activities = new Map<string, Map<string, AgentActivity>>();
@@ -245,7 +252,11 @@ export class AgentManager {
     for (const record of this.agents.values()) {
       let changed = false;
       if (record.pendingPermission) {
-        this.permissionResolvers.get(record.pendingPermission.id)?.('deny');
+        // The host that could answer has gone; the agent runs on with no approver.
+        this.permissionResolvers.get(record.pendingPermission.id)?.({
+          result: 'deny',
+          reason: 'no_approver',
+        });
         this.permissionResolvers.delete(record.pendingPermission.id);
         this.permissionRules.delete(record.pendingPermission.id);
         record.pendingPermission = undefined;
@@ -1165,7 +1176,10 @@ export class AgentManager {
     record.pendingQuestion = undefined;
     record.pendingQuestionCreatedAt = undefined;
     if (record.pendingPermission) {
-      this.permissionResolvers.get(record.pendingPermission.id)?.('deny');
+      this.permissionResolvers.get(record.pendingPermission.id)?.({
+        result: 'deny',
+        reason: 'dismissed',
+      });
       this.permissionResolvers.delete(record.pendingPermission.id);
       this.permissionRules.delete(record.pendingPermission.id);
       record.pendingPermission = undefined;
@@ -1676,7 +1690,9 @@ export class AgentManager {
             record.runOutcome = outcome;
           },
           onPermissionRequired: async (toolCall: ToolCall) => {
-            if (!this.interactivePermissions) return 'deny';
+            if (!this.interactivePermissions) {
+              return { result: 'deny', reason: 'no_approver' } as const;
+            }
             const request: AgentPermissionRequest = {
               id: randomUUID(),
               agentId: record.id,
@@ -1690,7 +1706,7 @@ export class AgentManager {
             this.permissionRules.set(request.id, permissionRuleForToolCall(toolCall));
             this.persist(record);
             this.emit({ type: 'agent_permission', agentId: record.id, request: clone(request) });
-            return new Promise<'allow' | 'deny' | 'always'>((resolvePromise) => {
+            return new Promise<PermissionResult | PermissionDecision>((resolvePromise) => {
               this.permissionResolvers.set(request.id, resolvePromise);
             });
           },
@@ -1898,7 +1914,10 @@ export class AgentManager {
       this.controllers.delete(record.id);
       this.questionResolvers.delete(record.id);
       if (record.pendingPermission) {
-        this.permissionResolvers.get(record.pendingPermission.id)?.('deny');
+        this.permissionResolvers.get(record.pendingPermission.id)?.({
+          result: 'deny',
+          reason: 'dismissed',
+        });
         this.permissionResolvers.delete(record.pendingPermission.id);
         this.permissionRules.delete(record.pendingPermission.id);
         record.pendingPermission = undefined;
