@@ -86,11 +86,11 @@ same `allowed-tools` and `model` frontmatter enforcement as the TUI — it is ne
 model as literal text. What differs is only what a host with no interactive surface is allowed to
 do with the result:
 
-| Command                                                                              | In print mode                                                      |
-| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
-| `/init`, `/security-review`, any `.book/commands/*.md`                               | Run as the prompt for that turn                                    |
-| `/review` (and `/review --help`)                                                     | Performed by the host itself; see [Code review](agents-and-review.md#code-review)      |
-| Everything else — session controls, pickers, panels, `/config`, `/export`, `/memory` | Refused with an error listing what _is_ supported, and exit code 1 |
+| Command                                                                              | In print mode                                                                     |
+| ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `/init`, `/security-review`, any `.book/commands/*.md`                               | Run as the prompt for that turn                                                   |
+| `/review` (and `/review --help`)                                                     | Performed by the host itself; see [Code review](agents-and-review.md#code-review) |
+| Everything else — session controls, pickers, panels, `/config`, `/export`, `/memory` | Refused with an error listing what _is_ supported, and exit code 1                |
 
 Refusal happens _before_ the command's own code runs, so a command with a side effect (`/config`
 writes `settings.local.json`, `/export` writes a file, `/memory approve` mutates memory) can never

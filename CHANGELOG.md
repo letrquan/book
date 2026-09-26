@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
+  rest of the root and `docs/` Markdown failed `prettier --check` on main while the gate stayed
+  green, so every PR that touched them either reformatted unrelated lines or left them drifting.
+  They are formatted once, and `npm run format` and `format:check` now include them.
 - **An empty session opens on a title page with a table of contents.** A five-row rubric drop cap
   B sits beside "O O K", a running head (workspace · model), a rule and a tagline. Below it, the
   contents list this workspace's five most recent sessions as chapters, with Roman numerals,
@@ -34,9 +38,9 @@ All notable changes to this project are documented in this file.
     a pilcrow under a hairline, like the composer, instead of in a nested box.
   - **One announcement per wait.** While a sheet is up, the "Waiting for permission" activity row
     is hidden, because the sheet already says it. Screen readers keep the row.
-  - **Transcript rows** for AskUserQuestion and ExitPlanMode read `Ask  Fallback, Scope   2
-    questions` and `Plan  Fix the timeout fallback   3 steps` instead of a bare tool name and raw
-    markdown.
+  - **Transcript rows** for AskUserQuestion and ExitPlanMode read
+    `Ask  Fallback, Scope   2 questions` and `Plan  Fix the timeout fallback   3 steps` instead of
+    a bare tool name and raw markdown.
 - **Book has its own spinner: a quill writing.** The activity row and the streaming spinner used
   the braille dot circle nearly every terminal tool spins. They now show a nib writing a flourish,
   a lemniscate `∞`, across four braille cells one dot at a time, slowing through the tight turns
@@ -187,7 +191,7 @@ All notable changes to this project are documented in this file.
   like undici had changed the lookup contract the SSRF defense is built on: the policy's `EACCES`
   never surfaced and `UND_ERR_INVALID_ARG` came back instead. It had not. The contract is unchanged
   -- undici 8 still calls the hook, still with `all: true`, and still honours an `EACCES` from it.
-  What broke is interop: `strictWebDispatcher` is an `Agent` from the *npm* undici, and it was being
+  What broke is interop: `strictWebDispatcher` is an `Agent` from the _npm_ undici, and it was being
   handed to Node's **global** `fetch`, which is Node's own bundled undici. undici 8 requires the new
   request-handler interface (`onRequestStart`), the bundled one still builds the legacy shape, and
   the dispatcher rejected the request outright -- `invalid onRequestStart method`, thrown before the
@@ -317,8 +321,9 @@ All notable changes to this project are documented in this file.
   mid-line near line 1169 with no way on, and a Read cut at its 2000-line default said nothing at
   all.
   - **The stop:** `Read` now stops at a line boundary before the clip and ends with a notice, for
-    example `[Lines 1-1163 of 1894 shown, the most one Read returns (50 KB). Continue with offset:
-    1164.]`. A Read that its line limit stops gets the same notice.
+    example
+    `[Lines 1-1163 of 1894 shown, the most one Read returns (50 KB). Continue with offset: 1164.]`.
+    A Read that its line limit stops gets the same notice.
   - **Long lines:** a line that fits under the clip on its own is returned whole, as before. A line
     too long for that is shown cut to fill the clip, and the notice gives its size in bytes and
     points past it: `… Continue with offset: 2. Line 1 (60000 bytes) was cut to fit.]`.
@@ -326,8 +331,9 @@ All notable changes to this project are documented in this file.
   - **Descriptions:** the `Read` description and its `offset`/`limit` descriptions now say the
     default is 2000 lines or 50 KB. These strings are part of the cached tool schema, so the prompt
     changes, and the first request after upgrading misses the prompt cache once.
-  - **Pagination:** a Read that stops early also reports `pagination: { truncated: true,
-    nextCursor }`, with the offset to continue from, as the shared clip's truncation did.
+  - **Pagination:** a Read that stops early also reports
+    `pagination: { truncated: true, nextCursor }`, with the offset to continue from, as the shared
+    clip's truncation did.
   - **TUI:** the Read row still counts the notice as one more line (`5 lines` for 4 shown). The
     row's line count comes from the shared result presentation, which counts the notice; only the
     fallback path for results without a presentation strips it.
@@ -348,10 +354,10 @@ All notable changes to this project are documented in this file.
     scripts that start with `#!`. A file named like a tool but with a code extension
     (`makefile.c`, `dockerfile.rs`) keeps its `#` lines.
   - **JSX-capable files** (`.tsx`, `.jsx`, `.js`) are not scanned for template text. JSX text is
-    not JavaScript, and a `/*` or a lone backtick in it (`<p>All requests to /api/* are
-    proxied</p>`) would open a comment or template that never closes, hiding every later
-    declaration. In the scanned files, a scan that ends inside a comment or template has lost its
-    place, and masks nothing.
+    not JavaScript, and a `/*` or a lone backtick in it
+    (`<p>All requests to /api/* are proxied</p>`) would open a comment or template that never
+    closes, hiding every later declaration. In the scanned files, a scan that ends inside a comment
+    or template has lost its place, and masks nothing.
   - **Markdown:** a file that opens with a `---` rule keeps the headings after it. Front matter now
     needs YAML up to its closing `---`: a `key:` line first, then `key:` lines (quoted keys, keys
     with spaces and `$schema:` included), indented or `- ` lines, and `#` comments. A `#` line
@@ -438,6 +444,7 @@ All notable changes to this project are documented in this file.
 
   The message also lists every tool refused over the streak rather than only its last turn's,
   because in a mixed streak the call a remedy is for may be turns back.
+
 - **A repeated identical refusal from a tool gets the "Do not retry it unchanged" escalation**
   (#246). The registry returned every `blocked` tool result before its repeated-failure note, so a
   model re-issuing the same refused `WebFetch` never heard it. Refusals the loop issues itself, such
@@ -563,8 +570,8 @@ All notable changes to this project are documented in this file.
   not retried, so every child request failed (#245). A child now follows the reducer's rule: it
   sends its effort only when a level was chosen for it (`agents.profiles.<name>.effort`, its
   definition's `effort`, or `--effort`, `BOOK_EFFORT` or `settings.effort`) or its model's catalog
-  lists that level. A chosen level is clamped to the child model's catalog first, so `--effort
-  max` reaches a child model that lists levels up to `high` as `high`.
+  lists that level. A chosen level is clamped to the child model's catalog first, so
+  `--effort max` reaches a child model that lists levels up to `high` as `high`.
 - **`Task`'s ceiling and the registry's backstop start together.** `Task` counted its ceiling from
   the end of `spawn` and the backstop from the start of the call, so a spawn slower than the
   backstop's 10 s grace (a worktree snapshot) let the backstop fire first, and the parent got an
@@ -707,9 +714,10 @@ All notable changes to this project are documented in this file.
   payload: about 25 rejected calls across 16 dogfood runs, mostly large `Edit`, `ApplyPatch` and
   `Bash` arguments with an unescaped backslash or newline (#242).
   - **The error:** the call now fails with `invalid_json_arguments`, which names the parse error
-    and its position (`Invalid JSON arguments for Edit: Bad escaped character in JSON at position
-    49 …`). Its fix line says to resend the whole call with valid JSON and to escape backslashes
-    and newlines inside strings. The status, the retry behaviour and the escalation of identical
+    and its position
+    (`Invalid JSON arguments for Edit: Bad escaped character in JSON at position 49 …`).
+    Its fix line says to resend the whole call with valid JSON and to escape backslashes and
+    newlines inside strings. The status, the retry behaviour and the escalation of identical
     resends are the same as for `invalid_arguments`.
   - **Order:** a tool that is not active is still refused as `tool_not_active`, whatever its
     arguments. The JSON check comes after that, and before argument-scoped rules such as

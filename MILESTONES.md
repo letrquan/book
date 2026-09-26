@@ -6,33 +6,33 @@ runtime defaults and known boundaries, see [docs/current-state.md](docs/current-
 ## Shipped Foundation
 
 - [x] Anthropic Messages and OpenAI-compatible provider ports with streaming, retries, usage,
-  model discovery, prompt caching, configurable effort, and BYOK provider management.
+      model discovery, prompt caching, configurable effort, and BYOK provider management.
 - [x] Interactive TUI, print/headless hosts, JSON/stream-JSON protocols, public `query()` SDK,
-  shared session lifecycle, resume/fork/name support, compaction, rewind, and structured output.
+      shared session lifecycle, resume/fork/name support, compaction, rewind, and structured output.
 - [x] Layered settings, atomic settings repository, migration/redaction, permission modes and rules,
-  lifecycle hooks, optional bubblewrap sandbox, project/user instructions, and themes.
+      lifecycle hooks, optional bubblewrap sandbox, project/user instructions, and themes.
 - [x] Auto-memory Phase 1: model writes via `MemorySave` (part A, measured by `npm run eval:memory`) and background extraction of missed memories from idle sessions at the next interactive start (part B, verified in the real TUI; the eval runs print mode, where extraction does not run).
 - [x] Auto-memory Phase 2: supersession (old entries kept as history, out of the index), index hooks, and index-pressure consolidation prompts.
 - [x] Provider-neutral tool registry with closed schemas, aliases, capability intersections,
-  model-conditional mutation guidance, read-before-edit, tool discovery, bounded parallel-safe
-  waves, retries/timeouts, structured errors, and persistent tool telemetry.
+      model-conditional mutation guidance, read-before-edit, tool discovery, bounded parallel-safe
+      waves, retries/timeouts, structured errors, and persistent tool telemetry.
 - [x] File, patch, shell, Git, web, notebook, todo, planning task, plan-mode, clarification,
-  session-history, skill, MCP, and managed-agent tool families.
+      session-history, skill, MCP, and managed-agent tool families.
 - [x] Managed explorer/patcher/validator agents with strict tool capabilities, concurrency limits,
-  non-Git read-only exploration, Git worktrees for mutation/validation, evidence gates, completion
-  delivery, resumable transcripts, ownership, retention, and recovery.
+      non-Git read-only exploration, Git worktrees for mutation/validation, evidence gates, completion
+      delivery, resumable transcripts, ownership, retention, and recovery.
 - [x] Host-orchestrated `/review` pipeline: immutable review target resolved by the host, read-only
-  `reviewer` agents, parallel specialized lenses, independent falsification pass, explicit coverage
-  that fails closed, `REVIEW.md` calibration, evidence-gated `--fix`, and a precision/recall
-  evaluation harness.
+      `reviewer` agents, parallel specialized lenses, independent falsification pass, explicit coverage
+      that fails closed, `REVIEW.md` calibration, evidence-gated `--fix`, and a precision/recall
+      evaluation harness.
 - [x] Background job manager with `/jobs`, session and explicit persistent shell lifetimes,
-  restart reattachment, bounded logs/output, notifications, stop/dismiss, and SDK/stream events.
+      restart reattachment, bounded logs/output, notifications, stop/dismiss, and SDK/stream events.
 - [x] First-class interoperable skill system with multi-root discovery, metadata-first prompting,
-  explicit/manual/automatic activation policies, consent, safe resources, reload/watch behavior,
-  TUI management, diagnostics, and evaluation tooling.
+      explicit/manual/automatic activation policies, consent, safe resources, reload/watch behavior,
+      TUI management, diagnostics, and evaluation tooling.
 - [x] Architecture and release gates: strict TypeScript, no import cycles, TUI leaf enforcement,
-  no synchronous production child-process APIs, unit/contract/integration tiers, coverage/UI
-  budgets, package smoke, audits, and main-branch stabilization checks.
+      no synchronous production child-process APIs, unit/contract/integration tiers, coverage/UI
+      budgets, package smoke, audits, and main-branch stabilization checks.
 
 ## Current Priorities
 
@@ -84,66 +84,66 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
 
 - [ ] Add a user-owned workspace trust database and a first-open review flow.
 - [ ] Disable or separately approve project hooks, provider credentials/endpoints, executable
-  custom-command substitutions, and privileged agent definitions in untrusted projects. Project
-  MCP servers, project-declared `permissions.allow` rules, project hook entries, and project
-  slash commands that substitute shell now each have per-item fingerprinted approval; provider
-  blocks and agent definitions do not. All four record their decisions in `~/.book/trust.json`,
-  keyed by workspace path and read from outside the working tree, so nothing a repository ships
-  can approve itself; `book trust hook|rule|command` records the decision, `book config set`
-  refuses those four paths outright, and `book doctor` prints what is withheld. What remains here
-  is provider blocks and agent definitions, and an interactive surface for any of it: the MCP gate
-  is the only one with a TUI prompt, so in the primary mode a withheld declaration is silent until
-  `book doctor` is run.
+      custom-command substitutions, and privileged agent definitions in untrusted projects. Project
+      MCP servers, project-declared `permissions.allow` rules, project hook entries, and project
+      slash commands that substitute shell now each have per-item fingerprinted approval; provider
+      blocks and agent definitions do not. All four record their decisions in `~/.book/trust.json`,
+      keyed by workspace path and read from outside the working tree, so nothing a repository ships
+      can approve itself; `book trust hook|rule|command` records the decision, `book config set`
+      refuses those four paths outright, and `book doctor` prints what is withheld. What remains here
+      is provider blocks and agent definitions, and an interactive surface for any of it: the MCP gate
+      is the only one with a TUI prompt, so in the primary mode a withheld declaration is silent until
+      `book doctor` is run.
 - [x] Rebuild shell sandbox execution around structured argv instead of a wrapped command string.
 - [x] Enforce declared filesystem sandbox policy, and fail closed on network domain rules that
-  bubblewrap cannot express.
+      bubblewrap cannot express.
 - [ ] Add a macOS (`sandbox-exec`) and Windows sandbox backend, and define fail-closed behavior on
-  platforms that still have none.
+      platforms that still have none.
 - [ ] Require independent approval for the `excludedCommands` escape path instead of letting a
-  matching command silently skip the sandbox. `sandbox.allowUnsandboxedCommands` is now enforced
-  rather than dead, so an operator can refuse every unsandboxed command outright and `book doctor`
-  reports the effective policy — but at its `true` default a model-chosen command that happens to
-  match an operator's exclusion pattern still runs on the host with no separate approval step.
+      matching command silently skip the sandbox. `sandbox.allowUnsandboxedCommands` is now enforced
+      rather than dead, so an operator can refuse every unsandboxed command outright and `book doctor`
+      reports the effective policy — but at its `true` default a model-chosen command that happens to
+      match an operator's exclusion pattern still runs on the host with no separate approval step.
 - [ ] Bind provider credentials to approved origins and restrict lower-trust secret resolution.
-  BYOK API keys still follow whatever base URL the resolved configuration carries; binding them
-  to declared or approved origins remains to be done.
+      BYOK API keys still follow whatever base URL the resolved configuration carries; binding them
+      to declared or approved origins remains to be done.
 
 See [plans/security-assessment.md](plans/security-assessment.md) for the current risk register.
 
 ### 2. Release Readiness
 
 - [x] Distribution identity decided: `@letrquan/book` on the public npm registry, `private` removed
-  and `publishConfig.access` set to `public` deliberately. The binary stays `book`.
+      and `publishConfig.access` set to `public` deliberately. The binary stays `book`.
 - [x] Licence reconciled with public distribution: PolyForm Small Business 1.0.0, which permits the
-  use a published package invites while reserving large-company commercial use. The published
-  tarball ships source maps, so the source is public by intention rather than by accident.
+      use a published package invites while reserving large-company commercial use. The published
+      tarball ships source maps, so the source is public by intention rather than by accident.
 - [ ] Complete the renderer real-PTY matrix and interactive soak on Windows and Unix terminals.
 - [ ] Maintain three eligible green main-branch CI runs with no open lifecycle/accounting
-  regression issues before advancing runtime-attribution work.
+      regression issues before advancing runtime-attribution work.
 - [x] Publishing runs from CI on a `v*` tag through npm trusted publishing (OIDC), with no token
-  to leak or expire: `.github/workflows/release.yml` verifies the tag against the manifest, runs
-  the full gate and the installed-artifact smoke test, then publishes with provenance. This also
-  replaces the bypass-2FA token 0.2.0 shipped on, which npm retires for direct publish in
-  January 2027.
+      to leak or expire: `.github/workflows/release.yml` verifies the tag against the manifest, runs
+      the full gate and the installed-artifact smoke test, then publishes with provenance. This also
+      replaces the bypass-2FA token 0.2.0 shipped on, which npm retires for direct publish in
+      January 2027.
 - [ ] Cut the next version only after `npm run release:check`, full Node 22/24 validation, package
-  inspection, changelog promotion, and installed-artifact smoke tests.
+      inspection, changelog promotion, and installed-artifact smoke tests.
 
 ### 3. Background Job Follow-up
 
 - [x] Evented shell manager, unified TUI panel, host events, and persistent runner.
 - [ ] Link planning tasks to executable jobs without conflating their state machines.
 - [ ] Add permission-preserving rerun, task-aware stop behavior, cleanup commands, and richer doctor
-  diagnostics for stale/lost persistent jobs.
+      diagnostics for stale/lost persistent jobs.
 
 ### 4. Review Pipeline Follow-up
 
 - [ ] Run the evaluation harness end to end: execute the review pipeline over checked-in golden
-  diffs instead of scoring reports captured by hand, and gate prompt changes on the result.
+      diffs instead of scoring reports captured by hand, and gate prompt changes on the result.
 - [x] Expose `/review` outside the TUI. The sequencing moved from `src/tui/app.tsx` into
-  `src/review/host.ts`, which both hosts call; print/headless and SDK runs execute the full
-  read-only pipeline — `--deep`, `--base`, path scopes, `<base>...<head>` — and emit a stable JSON
-  report. `--fix` stays interactive-only by design: a non-interactive host cannot approve a
-  patcher's tool calls, so it is refused with an explanation rather than patching unattended.
+      `src/review/host.ts`, which both hosts call; print/headless and SDK runs execute the full
+      read-only pipeline — `--deep`, `--base`, path scopes, `<base>...<head>` — and emit a stable JSON
+      report. `--fix` stays interactive-only by design: a non-interactive host cannot approve a
+      patcher's tool calls, so it is refused with an explanation rather than patching unattended.
 - [ ] Make the confidence threshold and the fixed 10-minute pass timeout configurable per project.
 
 ## Documentation Rule
