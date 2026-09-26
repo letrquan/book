@@ -92,24 +92,28 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
 /**
  * Map an OpenAI-compatible `usage` object onto Book's `Usage`, prompt-cache tokens included.
  *
- * Book's `promptTokens` is the uncached input, as on the Anthropic path: cache reads and writes
- * are counted separately and `contextTokens` holds the whole prompt. OpenAI-style `prompt_tokens`
- * already includes cached tokens, so they are subtracted from it; a provider whose cache counts
- * exceed `prompt_tokens` evidently reports them on top of it, and they are added instead.
+ * Book's `promptTokens` is the uncached input, as on the Anthropic path, with cache reads and
+ * writes counted separately. Where the cache counts sit depends on who reported them:
  *
- * Shapes read: `prompt_tokens_details.cached_tokens` (OpenAI, xAI, 9router),
- * `prompt_tokens_details.cache_creation_tokens` (9router), `prompt_tokens_details.cache_write_tokens`
- * (OpenRouter), `prompt_cache_hit_tokens` (DeepSeek), and top-level `cache_read_input_tokens` /
- * `cache_creation_input_tokens` (LiteLLM and other Anthropic-shaped proxies). A usage with no cache
- * tokens maps exactly as before, with no cache fields.
+ * - `prompt_tokens_details.cached_tokens` / `cache_creation_tokens` / `cache_write_tokens`
+ *   (OpenAI, xAI, 9router, OpenRouter) and DeepSeek's `prompt_cache_hit_tokens` are part of
+ *   `prompt_tokens`, so they are subtracted from it. `total_tokens` already covers them, so
+ *   `contextTokens` stays unset and compaction pressure is `total_tokens`, as before.
+ * - Anthropic's own top-level names (`cache_read_input_tokens`, `cache_creation_input_tokens`)
+ *   from a proxy that sends no `prompt_tokens_details` are Anthropic's numbers passed through,
+ *   where the input count excludes the cache: they are added on top, and `contextTokens` carries
+ *   the whole prompt. A proxy that also sends `prompt_tokens_details` (LiteLLM) has normalised
+ *   `prompt_tokens` to include them.
+ *
+ * Counts that cannot fit inside `prompt_tokens` are treated as on top of it whatever their
+ * source. A usage with no cache tokens maps exactly as before, with no cache fields.
  */
 export function parseCompatibleUsage(raw: unknown): Usage | null {
   if (!raw || typeof raw !== 'object') return null;
   const usage = raw as Record<string, unknown>;
-  const details =
-    usage.prompt_tokens_details && typeof usage.prompt_tokens_details === 'object'
-      ? (usage.prompt_tokens_details as Record<string, unknown>)
-      : {};
+  const hasDetails =
+    !!usage.prompt_tokens_details && typeof usage.prompt_tokens_details === 'object';
+  const details = hasDetails ? (usage.prompt_tokens_details as Record<string, unknown>) : {};
   const tokens = (value: unknown): number =>
     typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
   const firstCount = (...values: unknown[]): number => {
@@ -125,24 +129,26 @@ export function parseCompatibleUsage(raw: unknown): Usage | null {
     completionTokens: tokens(usage.completion_tokens),
     totalTokens: tokens(usage.total_tokens),
   };
-  const read = firstCount(
-    details.cached_tokens,
-    usage.prompt_cache_hit_tokens,
-    usage.cache_read_input_tokens,
-  );
-  const write = firstCount(
-    details.cache_creation_tokens,
-    details.cache_write_tokens,
-    usage.cache_creation_input_tokens,
-  );
+  const topRead = tokens(usage.cache_read_input_tokens);
+  const topWrite = tokens(usage.cache_creation_input_tokens);
+  const read = firstCount(details.cached_tokens, usage.prompt_cache_hit_tokens) || topRead;
+  const write = firstCount(details.cache_creation_tokens, details.cache_write_tokens) || topWrite;
   if (read === 0 && write === 0) return base;
-  const inclusive = read + write <= prompt;
+  const anthropicPassThrough =
+    !hasDetails && tokens(usage.prompt_cache_hit_tokens) === 0 && topRead + topWrite > 0;
+  if (!anthropicPassThrough && read + write <= prompt) {
+    return {
+      ...base,
+      promptTokens: prompt - read - write,
+      cacheReadInputTokens: read,
+      cacheCreationInputTokens: write,
+    };
+  }
   return {
     ...base,
-    promptTokens: inclusive ? prompt - read - write : prompt,
     cacheReadInputTokens: read,
     cacheCreationInputTokens: write,
-    contextTokens: inclusive ? prompt : prompt + read + write,
+    contextTokens: prompt + read + write,
   };
 }
 

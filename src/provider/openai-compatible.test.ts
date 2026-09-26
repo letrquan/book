@@ -1176,7 +1176,6 @@ describe('parseCompatibleUsage', () => {
       totalTokens: 1005,
       cacheReadInputTokens: 800,
       cacheCreationInputTokens: 0,
-      contextTokens: 1000,
     });
   });
 
@@ -1212,10 +1211,13 @@ describe('parseCompatibleUsage', () => {
         prompt_cache_hit_tokens: 600,
         prompt_cache_miss_tokens: 400,
       }),
-    ).toMatchObject({ promptTokens: 400, cacheReadInputTokens: 600, contextTokens: 1000 });
+    ).toMatchObject({ promptTokens: 400, cacheReadInputTokens: 600 });
+    expect(
+      parseCompatibleUsage({ prompt_tokens: 1000, prompt_cache_hit_tokens: 600 })?.contextTokens,
+    ).toBeUndefined();
   });
 
-  it('adds Anthropic-shaped cache counts that exceed prompt_tokens instead of subtracting them', () => {
+  it('adds Anthropic-shaped top-level cache counts on top of prompt_tokens', () => {
     expect(
       parseCompatibleUsage({
         prompt_tokens: 50,
@@ -1231,6 +1233,41 @@ describe('parseCompatibleUsage', () => {
       cacheReadInputTokens: 900,
       cacheCreationInputTokens: 100,
       contextTokens: 1050,
+    });
+    // Smaller than the uncached input, still on top: the source decides, not the size.
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 3,
+        total_tokens: 1003,
+        cache_creation_input_tokens: 800,
+      }),
+    ).toEqual({
+      promptTokens: 1000,
+      completionTokens: 3,
+      totalTokens: 1003,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 800,
+      contextTokens: 1800,
+    });
+  });
+
+  it('reads LiteLLM top-level cache writes as part of a normalised prompt_tokens', () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 4,
+        total_tokens: 1004,
+        prompt_tokens_details: { cached_tokens: 600 },
+        cache_read_input_tokens: 600,
+        cache_creation_input_tokens: 300,
+      }),
+    ).toEqual({
+      promptTokens: 100,
+      completionTokens: 4,
+      totalTokens: 1004,
+      cacheReadInputTokens: 600,
+      cacheCreationInputTokens: 300,
     });
   });
 
@@ -1261,7 +1298,6 @@ describe('parseCompatibleUsage', () => {
     expect(events.find((e) => e.type === 'done')?.usage).toMatchObject({
       promptTokens: 200,
       cacheReadInputTokens: 800,
-      contextTokens: 1000,
     });
   });
 });

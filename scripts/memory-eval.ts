@@ -160,11 +160,18 @@ async function session(
           sawResult = true;
           const body = event.result as {
             messages?: Array<{ role: string; content?: string }>;
-            usage?: { promptTokens?: number };
+            usage?: {
+              promptTokens?: number;
+              cacheReadInputTokens?: number;
+              cacheCreationInputTokens?: number;
+            };
           };
           const last = [...(body?.messages ?? [])].reverse().find((m) => m.role === 'assistant');
           result.text = last?.content ?? '';
-          result.inputTokens = body?.usage?.promptTokens ?? 0;
+          result.inputTokens =
+            (body?.usage?.promptTokens ?? 0) +
+            (body?.usage?.cacheReadInputTokens ?? 0) +
+            (body?.usage?.cacheCreationInputTokens ?? 0);
         }
       }
       if (!sawResult) {

@@ -148,6 +148,35 @@ export function usageCostUsd(rate: ModelPricing, usage: CostedUsage): number | n
   );
 }
 
+/** Every input token of a usage, cached or not: the prompt's size, whatever the provider cached. */
+export function promptSizeTokens(usage: CostedUsage): number {
+  return (
+    usage.promptTokens + (usage.cacheReadInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0)
+  );
+}
+
+/**
+ * The token count a report shows as its total. With cache tokens it is every input and output
+ * token, because `totalTokens` means different things by provider: the Anthropic path counts
+ * uncached input plus output, OpenAI-style usage counts the cache too.
+ */
+export function trafficTokens(usage: CostedUsage & { totalTokens: number }): number {
+  const cache = (usage.cacheReadInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0);
+  return cache > 0 ? promptSizeTokens(usage) + usage.completionTokens : usage.totalTokens;
+}
+
+/**
+ * The rate and USD cost of a usage on `model`: undefined for a model with no rate, and
+ * `costUsd: null` for cache writes the rate cannot price.
+ */
+export function usageCostForModel(
+  model: string,
+  usage: CostedUsage,
+): { rate: ModelPricing; costUsd: number | null } | undefined {
+  const rate = resolveModelPricing(model)?.rate;
+  return rate ? { rate, costUsd: usageCostUsd(rate, usage) } : undefined;
+}
+
 export type UsageCostEstimate =
   | {
       status: 'known';
@@ -172,7 +201,10 @@ export function hasKnownPricing(
   return resolveModelPricing(model, overrides) !== undefined;
 }
 
-/** Estimate one provider-reported usage event without guessing missing price dimensions. */
+/**
+ * Estimate one provider-reported usage event. A cache read on a model with no cache-read rate is
+ * priced at the input rate, an upper bound; a cache write with no rate makes the estimate unknown.
+ */
 export function estimateUsageCost(
   model: string,
   usage: Usage,
@@ -234,9 +266,7 @@ interface ModelTotal {
 }
 
 function usdFor(model: string, usage: CostedUsage): number | null {
-  const rate = resolveModelPricing(model)?.rate;
-  if (!rate) return null;
-  return usageCostUsd(rate, usage);
+  return usageCostForModel(model, usage)?.costUsd ?? null;
 }
 
 /**
@@ -297,9 +327,14 @@ export function modelBreakdownLines(
   const lines = ['Per model'];
   for (const row of rows) {
     const who = row.agents > 0 ? `${row.agents} delegated` : 'session';
-    const cost = row.usd === null ? 'pricing unknown' : `$${row.usd.toFixed(4)}`;
+    const cost =
+      row.usd !== null
+        ? `$${row.usd.toFixed(4)}`
+        : resolveModelPricing(row.model)
+          ? 'no cache-write price'
+          : 'pricing unknown';
     lines.push(
-      `  ${row.model} (${who}) - prompt ${row.promptTokens.toLocaleString()}, completion ${row.completionTokens.toLocaleString()}${row.cacheReadInputTokens > 0 ? `, cache read ${row.cacheReadInputTokens.toLocaleString()}` : ''} - ${cost}`,
+      `  ${row.model} (${who}) - prompt ${row.promptTokens.toLocaleString()}, completion ${row.completionTokens.toLocaleString()}${row.cacheReadInputTokens > 0 ? `, cache read ${row.cacheReadInputTokens.toLocaleString()}` : ''}${row.cacheCreationInputTokens > 0 ? `, cache write ${row.cacheCreationInputTokens.toLocaleString()}` : ''} - ${cost}`,
     );
   }
 
@@ -349,16 +384,17 @@ export function costReport(
   if (!usage) {
     return 'No token usage recorded for this session yet.\n\n(USD estimate available after the first model response.)';
   }
-  const rate = resolveModelPricing(model)?.rate;
-  const cost = rate ? usageCostUsd(rate, usage) : null;
-  const usd = cost === null ? null : cost.toFixed(4);
+  const priced = usageCostForModel(model, usage);
+  const usd = priced?.costUsd == null ? null : priced.costUsd.toFixed(4);
   // One line: what it cost, what it used, on which model. It used to take
   // three labelled lines (Model, Tokens, Est. cost) to say the same thing.
-  const tokens = `${usage.totalTokens.toLocaleString()} tokens (${usage.promptTokens.toLocaleString()} in${cacheTokenNote(usage)}, ${usage.completionTokens.toLocaleString()} out)`;
+  const tokens = `${trafficTokens(usage).toLocaleString()} tokens (${usage.promptTokens.toLocaleString()} in${cacheTokenNote(usage)}, ${usage.completionTokens.toLocaleString()} out)`;
   const summary =
     usd !== null
       ? `$${usd} estimated · ${tokens} · ${model}`
-      : `${tokens} · ${model} has no price, so no dollar estimate`;
+      : priced
+        ? `${tokens} · ${model} has no cache-write price, so no dollar estimate`
+        : `${tokens} · ${model} has no price, so no dollar estimate`;
   const breakdown = modelBreakdownLines(model, usage, delegated);
   return [summary, ...(breakdown.length ? ['', ...breakdown] : [])].join('\n');
 }
@@ -401,13 +437,16 @@ export function usageReport(
     return lines.join('\n');
   }
   lines.push(
-    `Tokens: prompt ${usage.promptTokens.toLocaleString()}  •  completion ${usage.completionTokens.toLocaleString()}  •  total ${usage.totalTokens.toLocaleString()}${cacheTokenNote(usage).replace(/, /g, '  •  ')}`,
+    `Tokens: prompt ${usage.promptTokens.toLocaleString()}  •  completion ${usage.completionTokens.toLocaleString()}  •  total ${trafficTokens(usage).toLocaleString()}${cacheTokenNote(usage).replace(/, /g, '  •  ')}`,
   );
-  const rate = resolveModelPricing(model)?.rate;
-  const cost = rate ? usageCostUsd(rate, usage) : null;
-  if (rate && cost !== null) {
+  const priced = usageCostForModel(model, usage);
+  if (priced && priced.costUsd !== null) {
     lines.push(
-      `Est. cost: $${cost.toFixed(4)}  (local estimate — $${rate.in}/M in, $${rate.out}/M out)`,
+      `Est. cost: $${priced.costUsd.toFixed(4)}  (local estimate — $${priced.rate.in}/M in, $${priced.rate.out}/M out)`,
+    );
+  } else if (priced) {
+    lines.push(
+      `Est. cost: unknown — "${model}" has no cache-write rate; tokens are counted, dollars are not`,
     );
   } else {
     lines.push(unpricedLine(model));

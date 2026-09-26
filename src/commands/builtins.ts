@@ -25,7 +25,7 @@ import {
 import {
   costReport,
   failureTotal,
-  PRICING,
+  resolveModelPricing,
   usageCostUsd,
   usageReport,
   type DelegatedUsage,
@@ -522,7 +522,9 @@ function agentCommandEffect(
 }
 
 function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffect {
-  const rate = PRICING[context.runtimeConfig.model];
+  // The same rate resolution as /cost and the /usage text, so a dated or aliased model id
+  // prices here too.
+  const rate = resolveModelPricing(context.runtimeConfig.model)?.rate;
   const estimatedCostUsd =
     context.usage && rate ? (usageCostUsd(rate, context.usage) ?? undefined) : undefined;
   const toolCallStats =

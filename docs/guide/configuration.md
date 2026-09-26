@@ -80,9 +80,11 @@ because the providers behind that API cache without them (OpenAI, DeepSeek) or i
 router that translates to Anthropic places its own. What Book does on that path is read the cache
 counts a provider reports: `prompt_tokens_details.cached_tokens`, DeepSeek's
 `prompt_cache_hit_tokens`, OpenRouter's `cache_write_tokens`, 9router's `cache_creation_tokens`,
-and LiteLLM's top-level `cache_read_input_tokens` / `cache_creation_input_tokens`. `/cost`,
-`/usage` and `--max-budget-usd` then price cached input at the model's cache rate, or at its input
-rate when the pricing table lists no cache rate for it.
+and LiteLLM's top-level `cache_read_input_tokens` / `cache_creation_input_tokens`.
+`/cost`, `/usage` and `--max-budget-usd` then price cached input at the model's cache rates. A cache
+read on a model with no listed cache-read rate is priced at its input rate, an upper bound. A cache
+write with no listed rate leaves the estimate unknown, and an unknown estimate makes
+`--max-budget-usd` refuse further calls.
 
 **9router** (checked against 0.5.91): its Claude routes (`cc/claude-*`) do cache. 9router adds its
 own breakpoints on the system prompt, the last tool and the last message, and drops the ones a

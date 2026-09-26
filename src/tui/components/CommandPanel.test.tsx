@@ -86,6 +86,32 @@ describe('CommandPanel', () => {
     expect(output).toContain('$0.0600');
   });
 
+  it('shows cached tokens in the usage panel and counts them in the traffic', () => {
+    const view = render(
+      withTheme(
+        <CommandPanel
+          display={{
+            ...usageDisplay,
+            usage: {
+              promptTokens: 1_400,
+              completionTokens: 50,
+              totalTokens: 12_450,
+              cacheReadInputTokens: 11_000,
+              cacheCreationInputTokens: 300,
+            },
+          }}
+          fallback="Session usage"
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain('12,750');
+    expect(output).toContain('input 1,400');
+    expect(output).toContain('cache 11,000 · 300 written');
+  });
+
   it('keeps the context panel inside a narrow terminal', () => {
     const view = render(
       withTheme(
