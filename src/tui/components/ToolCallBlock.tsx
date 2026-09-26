@@ -31,17 +31,13 @@ import type { ToolResult } from '../../types/tools.js';
 import { networkPolicyRefusal } from '../../tools/web-policy.js';
 
 /**
- * A blocked result shows its reason only for a network-policy refusal, which the user needs to
- * understand, and for a cross-origin redirect, whose target may be a host the model never asked
- * for. `networkPolicyRefusal` owns the list of those codes, shared with the loop's stop message.
+ * A blocked result shows its reason only for a network-policy refusal or a stopped cross-origin
+ * redirect, which the user needs to understand. `networkPolicyRefusal` classifies both, and the
+ * loop's stop message uses the same classifier.
  */
 function showsErrorMessage(result: ToolResult | undefined): boolean {
   if (!result?.structuredError) return false;
-  return (
-    result.status !== 'blocked' ||
-    networkPolicyRefusal(result) !== undefined ||
-    result.structuredError.code === 'cross_origin_redirect'
-  );
+  return result.status !== 'blocked' || networkPolicyRefusal(result) !== undefined;
 }
 
 interface ToolCallBlockProps {

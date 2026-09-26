@@ -11,6 +11,7 @@ import {
   WebPolicyError,
   connectionBlockedDestination,
   connectionBlockedReason,
+  refusalWithoutLookup,
   resolveHostname,
   safeNetworkLookup,
   validateWebUrl,
@@ -131,13 +132,36 @@ interface FetchedResponse {
   redirects: string[];
 }
 
+/**
+ * A redirect target as it is shown to the model and in the transcript: an http(s) URL without any
+ * embedded credentials, or only the scheme of anything else (`file:`, `data:`, `javascript:`),
+ * whose body could be a local path or a payload.
+ */
+function displayRedirectTarget(target: URL): string {
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') return target.protocol;
+  if (!target.username && !target.password) return target.toString();
+  const shown = new URL(target.toString());
+  shown.username = '';
+  shown.password = '';
+  return shown.toString();
+}
+
 class CrossOriginRedirectError extends Error {
+  readonly targetUrl: string;
+
   constructor(
     readonly sourceUrl: string,
-    readonly targetUrl: string,
+    target: URL,
+    /** Set when a check that needs no lookup already refuses the target. */
+    readonly targetRefused?: WebPolicyError['code'],
   ) {
-    super(`Redirect from ${sourceUrl} to a different origin requires a new WebFetch approval.`);
+    super(
+      targetRefused === undefined
+        ? `Redirect from ${sourceUrl} to a different origin requires a new WebFetch approval.`
+        : `Redirect from ${sourceUrl} to ${displayRedirectTarget(target)} was not followed: the web policy refuses that target (${targetRefused}).`,
+    );
     this.name = 'CrossOriginRedirectError';
+    this.targetUrl = displayRedirectTarget(target);
   }
 }
 
@@ -481,11 +505,17 @@ async function fetchWithPolicy(
     // the model never asked for, and following it is a new WebFetch that gets its own permission
     // and policy decision. Judged here, a private or plain-HTTP target would be refused under its
     // own code, naming the target as the model's destination and a switch that would still leave
-    // this call stopped at the origin change; and an attacker-chosen host would reach DNS.
+    // this call stopped at the origin change; and an attacker-chosen host would reach DNS. The
+    // checks that need no lookup still run on the target, so a target they refuse is reported as
+    // one the model must not follow.
     const target = new URL(location, current);
     target.hash = '';
     if (target.origin !== current.origin) {
-      throw new CrossOriginRedirectError(current.toString(), target.toString());
+      throw new CrossOriginRedirectError(
+        current.toString(),
+        target,
+        refusalWithoutLookup(target, policy)?.code,
+      );
     }
     const next = await validateWebUrl(target.toString(), policy, deps.resolveHostname);
     redirects.push(next.toString());
@@ -525,8 +555,15 @@ function webPolicyFailure(error: unknown): ToolResult | undefined {
     return toolFailure(error.message, {
       code: 'cross_origin_redirect',
       status: 'blocked',
-      remediation: `Call WebFetch again with url: ${error.targetUrl}`,
-      details: { sourceUrl: error.sourceUrl, targetUrl: error.targetUrl },
+      remediation:
+        error.targetRefused === undefined
+          ? `Call WebFetch again with url: ${error.targetUrl}`
+          : `Do not follow this redirect: the web policy refuses its target (${error.targetRefused}), so a WebFetch of it would be refused too.`,
+      details: {
+        sourceUrl: error.sourceUrl,
+        targetUrl: error.targetUrl,
+        ...(error.targetRefused === undefined ? {} : { targetRefused: error.targetRefused }),
+      },
     });
   }
   if (error instanceof RedirectLimitError) {
@@ -567,8 +604,13 @@ async function webFetch(
     const policyFailure = webPolicyFailure(error);
     if (policyFailure) return policyFailure;
     const message = error instanceof Error ? error.message : String(error);
+    // undici rejects with a bare `fetch failed` and puts the reason, such as a refused connection or
+    // an empty DNS answer, on `cause`.
+    const cause =
+      error instanceof Error && error.cause instanceof Error ? error.cause.message : undefined;
+    const detail = cause && cause !== message ? `${message} (${cause})` : message;
     const timedOut = error instanceof Error && error.name === 'TimeoutError';
-    return toolFailure(`Fetch failed: ${message}`, {
+    return toolFailure(`Fetch failed: ${detail}`, {
       code: timedOut ? 'fetch_timeout' : 'fetch_failed',
       retryable: !timedOut,
     });

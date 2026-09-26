@@ -344,6 +344,13 @@ describe('web URL policy', () => {
       expect(isBlockedIpAddress(address)).toBe(false);
     });
 
+    it.each(['2606:4700:1:2:100:5efe:a00:1', '2606:4700:1:2:300:5efe:a00:1'])(
+      'does not decode %s, whose group bit RFC 5214 never sets, as ISATAP',
+      (address) => {
+        expect(isBlockedIpAddress(address)).toBe(false);
+      },
+    );
+
     it('does not read a Teredo address as ISATAP when its obfuscated port happens to be 5efe', () => {
       // Teredo owns groups 4-7 (flags, port, obfuscated client): server 65.54.227.120 and client
       // ~f7f7:f7f7 = 8.8.8.8, both public. Read raw as ISATAP, the tail would be 247.247.247.247.
@@ -445,6 +452,32 @@ describe('network-policy refusals', () => {
     expect(networkPolicyRefusal(refusal('error', 'search_all_providers_failed'))).toBeUndefined();
     expect(networkPolicyRefusal(refusal('blocked', 'permission_denied'))).toBeUndefined();
     expect(networkPolicyRefusal(undefined)).toBeUndefined();
+  });
+
+  it('classifies a stopped cross-origin redirect as its own kind', () => {
+    // It is a policy stop, not a permission refusal: the TUI shows its reason and the refusal
+    // brake gives it its own remedy, both through this one classifier.
+    expect(networkPolicyRefusal(refusal('blocked', 'cross_origin_redirect'))).toBe('redirect');
+    expect(networkPolicyRefusal(refusal('error', 'cross_origin_redirect'))).toBeUndefined();
+  });
+
+  it('tells the operator a redirect needs its own WebFetch, not a permission or a setting', () => {
+    const [redirect] = networkPolicyRemedies([refusal('blocked', 'cross_origin_redirect')]);
+
+    expect(redirect).toContain('redirected to another origin');
+    expect(redirect).not.toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
+    expect(redirect).not.toContain('grant the permission');
+  });
+
+  it('counts a repeated unnamed refusal once', () => {
+    const [fetch] = networkPolicyRemedies([
+      fetchRefusal(),
+      fetchRefusal(),
+      fetchRefusal(),
+      fetchRefusal('10.0.0.1'),
+    ]);
+
+    expect(fetch).toContain('destinations 10.0.0.1 and 1 more');
   });
 
   const fetchRefusal = (destination?: string) => ({

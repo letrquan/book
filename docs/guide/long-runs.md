@@ -50,10 +50,13 @@ network policy (a private or special-use destination) is lifted by none of those
 included. For a refused `WebFetch` the message names the destinations it refused (the host the
 model asked for, and the address it resolved to; a redirect to another origin is reported as a
 cross-origin redirect instead) and `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment,
-warning that the variable lifts the policy for every destination rather than only those. For a refused `WebSearch`, whose built-in providers resolved to a private destination, it
-names the private addresses the providers resolved to and points at the host's DNS or proxy
-instead: the providers always validate strictly, so that variable does nothing for them. A streak
-holding several kinds names each remedy. It is separate because a refusal spin never
+warning that the variable lifts the policy for every destination rather than only those. For a
+refused `WebSearch`, whose built-in providers resolved to a private destination, it names the
+private addresses the providers resolved to and points at the host's DNS or proxy instead: the
+providers always validate strictly, so that variable does nothing for them. A streak of stopped
+cross-origin redirects gets its own remedy: the model has to fetch the target in its own
+`WebFetch` call, or stop fetching that page. A streak holding several kinds names each remedy. It
+is separate because a refusal spin never
 produces a tool-free turn, so the turn-end gate — and therefore every brake behind it — never fires:
 a headless run in the default permission mode answers each prompt `deny` and would otherwise
 re-issue refused calls until the budget ran out. Set it to `0` to disable. `planRefreshTurns` restates the open plan periodically, which also keeps compaction from

@@ -39,8 +39,11 @@ export class WebPolicyError extends Error {
  *   (`search_all_providers_failed`, which web.ts marks `blocked` only then). The providers always
  *   validate with `allowPrivateNetwork: false`, so no setting lifts it; the host's DNS or proxy
  *   is sending them to a private address.
+ * - `redirect`: a WebFetch stopped at a redirect to another origin (`cross_origin_redirect`). A
+ *   WebFetch never follows one by itself, whatever the permissions, mode or settings: the model has
+ *   to fetch the target in its own call.
  */
-export type NetworkPolicyRefusal = 'fetch' | 'search';
+export type NetworkPolicyRefusal = 'fetch' | 'search' | 'redirect';
 
 /** Which kind of network-policy refusal a tool result is, or `undefined` when it is none. */
 export function networkPolicyRefusal(
@@ -50,6 +53,7 @@ export function networkPolicyRefusal(
   const code = result.structuredError?.code;
   if (code === 'private_network_forbidden') return 'fetch';
   if (code === 'search_all_providers_failed') return 'search';
+  if (code === 'cross_origin_redirect') return 'redirect';
   return undefined;
 }
 
@@ -87,8 +91,9 @@ function destinationHost(destination: string): string {
 
 /**
  * What lifts each kind of network-policy refusal among `results`, worded to follow
- * "Nothing can proceed: ": one remedy per kind present, the WebFetch one first, each naming the
- * destinations it refused. Results that are not network-policy refusals are ignored.
+ * "Nothing can proceed: ": one remedy per kind present, the WebFetch one first, then the WebSearch
+ * one, then the redirect one, each naming the destinations it refused. Results that are not
+ * network-policy refusals are ignored.
  */
 export function networkPolicyRemedies(results: readonly RefusalResult[]): string[] {
   // Keyed by host, so one host that resolved to several addresses is named once: the operator
@@ -96,17 +101,26 @@ export function networkPolicyRemedies(results: readonly RefusalResult[]): string
   const destinations: Record<NetworkPolicyRefusal, Map<string, string>> = {
     fetch: new Map(),
     search: new Map(),
+    redirect: new Map(),
   };
-  const unnamed: Record<NetworkPolicyRefusal, number> = { fetch: 0, search: 0 };
+  // Keyed by the message, so the several refusals one destination list left unnamed, or one
+  // attempt repeated, count once rather than as one more each.
+  const unnamed: Record<NetworkPolicyRefusal, Set<string>> = {
+    fetch: new Set(),
+    search: new Set(),
+    redirect: new Set(),
+  };
   const kinds = new Set<NetworkPolicyRefusal>();
   for (const result of results) {
     const kind = networkPolicyRefusal(result);
     if (!kind) continue;
     kinds.add(kind);
-    const named = refusedDestinations(result);
+    // A redirect names no destination: its own remedy is about the model's next call, not a host
+    // to reach.
+    const named = kind === 'redirect' ? [] : refusedDestinations(result);
     // A refusal that names no destination is still one more of its kind, so it is counted in the
     // "2 more" rather than dropped.
-    if (named.length === 0) unnamed[kind] += 1;
+    if (named.length === 0) unnamed[kind].add(result?.structuredError?.message ?? '');
     for (const destination of named) {
       const host = destinationHost(destination);
       if (!destinations[kind].has(host)) destinations[kind].set(host, destination);
@@ -116,11 +130,11 @@ export function networkPolicyRemedies(results: readonly RefusalResult[]): string
   const remedies: string[] = [];
   if (kinds.has('fetch')) {
     const names = [...destinations.fetch.values()];
-    const total = names.length + unnamed.fetch;
+    const total = names.length + unnamed.fetch.size;
     const refused =
       names.length === 0
         ? 'a private or special-use destination'
-        : `the private or special-use destination${total === 1 ? '' : 's'} ${namedList(names, unnamed.fetch)}`;
+        : `the private or special-use destination${total === 1 ? '' : 's'} ${namedList(names, unnamed.fetch.size)}`;
     remedies.push(
       `the web network policy refused ${refused}, which no permission rule or mode lifts; ` +
         'BOOK_WEB_ALLOW_PRIVATE_NETWORK=true in the host environment lifts it, but for every ' +
@@ -133,9 +147,16 @@ export function networkPolicyRemedies(results: readonly RefusalResult[]): string
     remedies.push(
       (names.length === 0
         ? 'every built-in search provider resolved to a private or special-use destination'
-        : `every built-in search provider resolved to a private or special-use destination, namely ${namedList(names, unnamed.search)}`) +
+        : `every built-in search provider resolved to a private or special-use destination, namely ${namedList(names, unnamed.search.size)}`) +
         ", which no setting, permission rule or mode lifts; check the host's DNS or proxy (a fake-IP " +
         'DNS such as 198.18.0.0/15 causes this)',
+    );
+  }
+  if (kinds.has('redirect')) {
+    remedies.push(
+      'a page redirected to another origin, which a WebFetch never follows by itself and which no ' +
+        'permission rule, mode or setting changes; the model has to fetch the target in its own ' +
+        'WebFetch call, or stop fetching that page',
     );
   }
   return remedies;
@@ -275,13 +296,14 @@ function embeddedIpv4Destinations(groups: number[]): string[] | undefined {
 /**
  * The IPv4 address in an ISATAP interface identifier (RFC 5214), or `undefined` when the address has
  * none. The identifier is `0:5efe` (a private IPv4) or `200:5efe` (a global one) followed by the IPv4
- * address, under any /64 prefix; the u/g bits (0x0300 in group 4) are ignored so no variant slips
- * through. An ISATAP router tunnels to that IPv4 address, so the IPv4 policy has to decide it.
+ * address, under any /64 prefix; only the two identifiers RFC 5214 defines are decoded, since a
+ * random global interface identifier can end in `5efe` too. An ISATAP router tunnels to that IPv4
+ * address, so the IPv4 policy has to decide it.
  */
 function isatapIpv4(groups: number[]): string | undefined {
   // Teredo 2001:0::/32 is not ISATAP: its last 32 bits are the obfuscated client, not an address.
   if (groups[0] === 0x2001 && groups[1] === 0x0000) return undefined;
-  if ((groups[4] & 0xfcff) !== 0 || groups[5] !== 0x5efe) return undefined;
+  if ((groups[4] !== 0x0000 && groups[4] !== 0x0200) || groups[5] !== 0x5efe) return undefined;
   return ipv4FromGroups(groups[6], groups[7]);
 }
 
@@ -469,6 +491,51 @@ function refusedDestination(hostname: string, address?: string): string {
   return address === undefined || address.toLowerCase() === host ? host : `${host} (${address})`;
 }
 
+/**
+ * The policy's refusal of `url` by the checks that need no DNS lookup: scheme, plain HTTP, embedded
+ * credentials, and (unless private destinations are allowed) a local hostname or a private or
+ * special-use address literal. `undefined` when those pass; a hostname can still resolve to a
+ * private address, which only `validateWebUrl` finds out.
+ */
+export function refusalWithoutLookup(
+  url: URL,
+  policy: WebUrlPolicy,
+  rawUrl = url.toString(),
+): WebPolicyError | undefined {
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return new WebPolicyError(`URL must use http or https scheme: ${rawUrl}`, 'invalid_url_scheme');
+  }
+  if (url.protocol === 'http:' && !policy.allowHttp) {
+    return new WebPolicyError(
+      'Plain HTTP web fetches are disabled. Set BOOK_WEB_ALLOW_HTTP=true in the host environment to opt in.',
+      'insecure_http_url',
+    );
+  }
+  if (url.username || url.password) {
+    return new WebPolicyError(
+      'Credentials embedded in web URLs are not allowed.',
+      'url_credentials_forbidden',
+    );
+  }
+  if (policy.allowPrivateNetwork) return undefined;
+  const hostname = normalizedHostname(url);
+  if (isBlockedHostname(hostname)) {
+    return new WebPolicyError(
+      `Web fetch blocked for local or private hostname: ${hostname}`,
+      'private_network_forbidden',
+      refusedDestination(hostname),
+    );
+  }
+  if (isIP(hostname) && isBlockedIpAddress(hostname)) {
+    return new WebPolicyError(
+      `Web fetch blocked for private or special-use address: ${hostname}`,
+      'private_network_forbidden',
+      refusedDestination(hostname),
+    );
+  }
+  return undefined;
+}
+
 export async function validateWebUrl(
   rawUrl: string,
   policy: WebUrlPolicy,
@@ -481,43 +548,14 @@ export async function validateWebUrl(
     throw new WebPolicyError(`Invalid URL: ${rawUrl}`, 'invalid_url');
   }
 
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new WebPolicyError(`URL must use http or https scheme: ${rawUrl}`, 'invalid_url_scheme');
-  }
-  if (url.protocol === 'http:' && !policy.allowHttp) {
-    throw new WebPolicyError(
-      'Plain HTTP web fetches are disabled. Set BOOK_WEB_ALLOW_HTTP=true in the host environment to opt in.',
-      'insecure_http_url',
-    );
-  }
-  if (url.username || url.password) {
-    throw new WebPolicyError(
-      'Credentials embedded in web URLs are not allowed.',
-      'url_credentials_forbidden',
-    );
-  }
+  const refusal = refusalWithoutLookup(url, policy, rawUrl);
+  if (refusal) throw refusal;
 
   url.hash = '';
   if (policy.allowPrivateNetwork) return url;
 
   const hostname = normalizedHostname(url);
-  if (isBlockedHostname(hostname)) {
-    throw new WebPolicyError(
-      `Web fetch blocked for local or private hostname: ${hostname}`,
-      'private_network_forbidden',
-      refusedDestination(hostname),
-    );
-  }
-  if (isIP(hostname)) {
-    if (isBlockedIpAddress(hostname)) {
-      throw new WebPolicyError(
-        `Web fetch blocked for private or special-use address: ${hostname}`,
-        'private_network_forbidden',
-        refusedDestination(hostname),
-      );
-    }
-    return url;
-  }
+  if (isIP(hostname)) return url;
 
   let addresses: string[];
   try {

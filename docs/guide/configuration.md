@@ -181,11 +181,13 @@ after a failed run.
 `WebFetch` requires HTTPS by default, validates DNS results and the address used by the network
 connection, blocks private/special-use destinations, and stops on cross-origin redirects so the
 new origin receives its own permission decision. A cross-origin redirect is reported before its
-target is judged or even resolved, since that target is one the model did not ask for; following
-it is a new `WebFetch` with its own decision. It returns Markdown by default; `format` can be
-`markdown`, `text`, or sanitized `html`. `WebSearch` works without configuration through the
-built-in Exa MCP provider and accepts optional `limit`, `domains`, `recencyDays`, and `country`
-hints. Its provider endpoint is built in and cannot be overridden through settings or environment
+target is resolved, since that target is one the model did not ask for: following it is a new
+`WebFetch` with its own decision. When the checks that need no lookup (scheme, plain HTTP,
+credentials, a local name or a private address literal) already refuse the target, the model is
+told not to follow it, and a target's credentials or a non-web URL are never shown. It returns
+Markdown by default; `format` can be `markdown`, `text`, or sanitized `html`. `WebSearch` works
+without configuration through the built-in Exa MCP provider and accepts optional `limit`,
+`domains`, `recencyDays`, and `country` hints. Its provider endpoint is built in and cannot be overridden through settings or environment
 variables.
 
 An IPv6 address in one of these IPv4-embedding ranges is judged by the IPv4 address it carries:
@@ -193,7 +195,8 @@ IPv4-mapped `::ffff:0:0/96`, SIIT's IPv4-translated `::ffff:0:0:0/96`, IPv4-comp
 NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, and Teredo `2001::/32`, where either the server or the
 client address being private blocks it. An ISATAP address (interface identifier `0:5efe` or
 `200:5efe` followed by an IPv4 address, RFC 5214) is refused when that IPv4 address is, whatever
-its prefix. In the local-use NAT64 prefix `64:ff9b:1::/48`, an address laid out like the /96 (bits
+its prefix, except under Teredo's `2001::/32`, where that part of the address is the Teredo
+client. In the local-use NAT64 prefix `64:ff9b:1::/48`, an address laid out like the /96 (bits
 48-95 zero) is judged by its last 32 bits, and any other shape is blocked, because where its IPv4
 bits sit depends on a prefix length only the local network knows.
 

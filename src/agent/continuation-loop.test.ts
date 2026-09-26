@@ -623,7 +623,10 @@ async function runRefusals(
 }
 
 /** A provider that activates the web tools, then issues the same web calls on every turn. */
-function refusedWebProvider(calls: Array<'WebFetch' | 'WebSearch'>): Provider {
+function refusedWebProvider(
+  calls: Array<'WebFetch' | 'WebSearch'>,
+  fetchUrl = 'https://127.0.0.1/',
+): Provider {
   let turn = 0;
   return {
     id: 'scripted',
@@ -641,8 +644,7 @@ function refusedWebProvider(calls: Array<'WebFetch' | 'WebSearch'>): Provider {
             toolCall: {
               id: `${name}-${turn}`,
               name,
-              arguments:
-                name === 'WebFetch' ? { url: 'https://127.0.0.1/' } : { query: 'book agent docs' },
+              arguments: name === 'WebFetch' ? { url: fetchUrl } : { query: 'book agent docs' },
             },
           };
         }
@@ -663,7 +665,40 @@ function fakeIpDnsWebRegistry() {
   return registry;
 }
 
+/** The default tools, with WebFetch rebuilt on a server whose every page redirects to another origin. */
+function crossOriginRedirectWebRegistry() {
+  const registry = createDefaultRegistry();
+  registry.registerAll(
+    createWebTools({
+      resolveHostname: async () => ['93.184.216.34'],
+      fetch: async () =>
+        new Response(null, { status: 302, headers: { location: 'https://other.example/next' } }),
+    }),
+  );
+  return registry;
+}
+
 describe('the refusal brake names the cause it stopped on', () => {
+  it('gives a streak of stopped cross-origin redirects their own remedy, not permission advice', async () => {
+    // A redirect to another origin is never followed by the same WebFetch; the model has to fetch
+    // the target itself. No permission, mode or setting changes that, even under bypassPermissions.
+    const { outcome, codes } = await runRefusals(
+      refusedWebProvider(['WebFetch'], 'https://example.com/start'),
+      'bypassPermissions',
+      crossOriginRedirectWebRegistry(),
+    );
+
+    expect(codes).toEqual([
+      'cross_origin_redirect',
+      'cross_origin_redirect',
+      'cross_origin_redirect',
+    ]);
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('redirected to another origin');
+    expect(outcome?.message).not.toContain('grant the permission');
+    expect(outcome?.message).not.toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
+  });
+
   it('points a streak of network-policy refusals at the host opt-in, not at permissions', async () => {
     // Under bypassPermissions there is no permission left to grant, so "grant the permission, add
     // an allow rule, or change the permission mode" is a dead end. No rule or mode lifts the web

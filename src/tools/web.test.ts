@@ -195,10 +195,47 @@ describe('WebFetch', () => {
     expect(resolver).toHaveBeenCalledTimes(1);
     expect(resolver).toHaveBeenCalledWith('example.com');
     expect(fetchImpl).toHaveBeenCalledOnce();
+    // Nothing that needs no lookup refuses the target, so following it is offered.
+    expect(result.structuredError?.remediation).toContain(
+      'Call WebFetch again with url: https://internal.example/latest/meta-data/',
+    );
+    expect(result.structuredError?.details?.targetRefused).toBeUndefined();
   });
 
-  it('reports a cross-origin redirect to a private address or plain HTTP as the redirect', async () => {
-    for (const location of ['https://169.254.169.254/', 'http://other.example/']) {
+  it.each([
+    ['https://169.254.169.254/latest/meta-data/', 'private_network_forbidden'],
+    ['https://metadata.google.internal/', 'private_network_forbidden'],
+    ['https://localhost:8080/', 'private_network_forbidden'],
+    ['http://other.example/', 'insecure_http_url'],
+  ])(
+    'does not invite the model to follow a cross-origin redirect to %s, which the policy refuses',
+    async (location, refusedAs) => {
+      // The checks that need no lookup already refuse this target, so "call WebFetch again" would
+      // only feed a guaranteed refusal to the model, and the stop message would then name a host
+      // the page chose.
+      const resolver = vi.fn(async () => ['93.184.216.34']);
+      const fetchImpl = vi.fn(
+        async () => new Response(null, { status: 302, headers: { location } }),
+      );
+      const { fetchTool } = toolsFor(fetchImpl, resolver);
+
+      const result = await fetchTool.execute({ url: 'https://example.com/start' }, context());
+
+      expect(result.status).toBe('blocked');
+      expect(result.structuredError?.code).toBe('cross_origin_redirect');
+      expect(result.structuredError?.details?.targetRefused).toBe(refusedAs);
+      expect(result.structuredError?.remediation).not.toContain('Call WebFetch again');
+      expect(result.structuredError?.remediation).toContain('Do not follow');
+      expect(resolver).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('never echoes credentials or a non-web URL from a redirect target', async () => {
+    for (const [location, secret, refusedAs] of [
+      ['https://user:s3cr3t-token@other.example/x', 's3cr3t-token', 'url_credentials_forbidden'],
+      ['file:///etc/passwd', '/etc/passwd', 'invalid_url_scheme'],
+      ['data:text/html;base64,PHNjcmlwdD4=', 'PHNjcmlwdD4', 'invalid_url_scheme'],
+    ]) {
       const fetchImpl = vi.fn(
         async () => new Response(null, { status: 302, headers: { location } }),
       );
@@ -207,8 +244,27 @@ describe('WebFetch', () => {
       const result = await fetchTool.execute({ url: 'https://example.com/start' }, context());
 
       expect(result.structuredError?.code, location).toBe('cross_origin_redirect');
-      expect(result.structuredError?.remediation, location).toContain(location);
+      expect(result.structuredError?.details?.targetRefused, location).toBe(refusedAs);
+      expect(JSON.stringify(result), location).not.toContain(secret);
     }
+  });
+
+  it('reports what undici wrapped as the cause of a failed fetch', async () => {
+    // undici rejects with a bare `fetch failed`; the reason, such as an empty DNS answer at
+    // connect time, is only on its `cause`.
+    const fetchImpl = vi.fn(async () => {
+      throw Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('example.com resolved to no usable address.'), {
+          code: 'ENOTFOUND',
+        }),
+      });
+    });
+    const { fetchTool } = toolsFor(fetchImpl);
+
+    const result = await fetchTool.execute({ url: 'https://example.com/' }, context());
+
+    expect(result.structuredError?.code).toBe('fetch_failed');
+    expect(result.structuredError?.message).toContain('resolved to no usable address');
   });
 
   it('still refuses a same-origin redirect whose host now resolves privately', async () => {
