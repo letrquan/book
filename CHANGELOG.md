@@ -37,11 +37,14 @@ All notable changes to this project are documented in this file.
   - **Transcript rows** for AskUserQuestion and ExitPlanMode read `Ask  Fallback, Scope   2
     questions` and `Plan  Fix the timeout fallback   3 steps` instead of a bare tool name and raw
     markdown.
-- **Book has its own spinner: a swinging hedera.** The activity row and the streaming spinner
-  used the braille dot circle nearly every terminal tool spins. They now show `❦`, the ivy-leaf
-  fleuron printers set between the sections of a book. It swings like a pendulum (`❦ ❧ ❦ ☙`),
-  holding the upright pose longest, one swing a second, and takes the rubric red like the other
-  marks while the wording beside it stays in ink. With reduced motion it stands still.
+- **Book has its own spinner: a quill writing.** The activity row and the streaming spinner used
+  the braille dot circle nearly every terminal tool spins. They now show a nib writing a flourish,
+  a lemniscate `∞`, across four braille cells one dot at a time, slowing through the tight turns
+  the way a hand does. The ink is wet at the nib, rubric red just behind it, and dries to grey as
+  it ages, a colour per cell; the finished mark dries, lifts off in the order it was written, and
+  the next stroke touches down beside the last speck. Forty-eight frames at twenty a second, never
+  more than two dots changing between frames. The colours come from the theme, and with reduced
+  motion the finished flourish stands still.
 - **Commands say only what the screen does not.** Confirmations used to be written into the
   transcript as sentences, a permanent record of something already visible.
   - **Switching the model or the effort writes nothing.** The status line names the model and now

@@ -64,7 +64,11 @@ export function shimmerPhase(tick: number, steps = SHIMMER_STEPS): number {
  * custom themes may use Ink's named or `ansi256` colours, which cannot be
  * interpolated.
  */
-export function shimmerColor(pair: readonly [string, string], tick: number): string {
+export function shimmerColor(
+  pair: readonly [string, string],
+  tick: number,
+  steps = SHIMMER_STEPS,
+): string {
   // `loadCustomTheme` merges arbitrary `.book/themes/*.json` into the token set
   // without validating it, so this pair can be short, empty, or not an array at
   // all. It reaches here on the spinner's first frame, where throwing takes the
@@ -74,10 +78,27 @@ export function shimmerColor(pair: readonly [string, string], tick: number): str
   const end = parseHex(to);
   if (!start) return typeof from === 'string' && from ? from : FALLBACK_SHIMMER;
   if (!end) return from as string;
-  const t = shimmerPhase(tick);
+  const t = shimmerPhase(tick, steps);
   return toHex({
     r: start.r + (end.r - start.r) * t,
     g: start.g + (end.g - start.g) * t,
     b: start.b + (end.b - start.b) * t,
+  });
+}
+
+/**
+ * `from` blended towards `to` by `t` (0 is `from`, 1 is `to`). Returns `to`
+ * unchanged when either end is not a plain hex colour, since a custom theme's
+ * named or `ansi256` colours cannot be interpolated.
+ */
+export function mixColor(from: string, to: string, t: number): string {
+  const start = parseHex(from);
+  const end = parseHex(to);
+  if (!start || !end) return to;
+  const amount = Math.max(0, Math.min(1, t));
+  return toHex({
+    r: start.r + (end.r - start.r) * amount,
+    g: start.g + (end.g - start.g) * amount,
+    b: start.b + (end.b - start.b) * amount,
   });
 }

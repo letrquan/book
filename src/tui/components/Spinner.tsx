@@ -39,7 +39,7 @@ interface SpinnerProps {
 }
 
 /**
- * Book's swinging hedera fleuron (`HEDERA_FRAMES` in useAnimation), with rotating tips.
+ * Book's quill spinner (see quill.ts), with rotating tips.
  *
  * During long operations, the spinner cycles through a list of tips every 4
  * seconds, shown inline next to the spinner frame. The tip list is
@@ -47,7 +47,7 @@ interface SpinnerProps {
  */
 export function Spinner({
   active = true,
-  style = 'hedera',
+  style = 'quill',
   color,
   reducedMotion = false,
   showTips = false,
@@ -55,8 +55,7 @@ export function Spinner({
   excludeDefaultTips = false,
 }: SpinnerProps) {
   const theme = useTheme();
-  const { frame, markColor } = useGradientSpinner(active, style, reducedMotion);
-  const spinnerColor = color || markColor;
+  const spinner = useGradientSpinner(active, style, reducedMotion);
   const [tipIndex, setTipIndex] = useState(0);
   const tipTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -91,12 +90,42 @@ export function Spinner({
 
   return (
     <Box>
-      <Text color={spinnerColor}>{frame} </Text>
+      <SpinnerGlyphs frame={spinner.frame} colors={spinner.colors} color={color} />
+      <Text> </Text>
       {showTips && active && tip ? (
         <Text color={theme.subtle} dimColor>
           {tip}
         </Text>
       ) : null}
     </Box>
+  );
+}
+
+/**
+ * A spinner frame, each cell in its own colour: the quill's ink is fresh at
+ * the nib and dry behind it. `color` paints every cell one colour instead, for
+ * a caller that wants the spinner in a status colour.
+ */
+export function SpinnerGlyphs({
+  frame,
+  colors,
+  color,
+}: {
+  frame: string;
+  colors: readonly string[];
+  color?: string;
+}) {
+  const cells = [...frame];
+  if (color || colors.length < cells.length) {
+    return <Text color={color ?? colors[0]}>{frame}</Text>;
+  }
+  return (
+    <Text>
+      {cells.map((cell, index) => (
+        <Text key={index} color={colors[index]}>
+          {cell}
+        </Text>
+      ))}
+    </Text>
   );
 }
