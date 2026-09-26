@@ -292,7 +292,8 @@ setInterval(() => {}, 1000);
 `,
     );
     // The shell starts a process that inherits the hook's pipes, answers, and exits at once. The
-    // 0.4 s timeout falls inside the 0.5 s drain that follows the exit.
+    // drain now runs well past the timeout, so the answer wins however long the process took to
+    // start: a drain that began after the timeout would depend on the spawn being quick.
     const command =
       process.platform === 'win32'
         ? `start "" /b "${process.execPath}" "${background}" & echo {"action":"block","message":"late"}`
@@ -300,7 +301,8 @@ setInterval(() => {}, 1000);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const results = await runHooks([{ command, env: {} }], 'PreToolUse', ctx(), {
-        timeoutMs: 400,
+        timeoutMs: 2_000,
+        drainGraceMs: 5_000,
       });
       expect(results[0]).toMatchObject({ action: 'block', message: 'late' });
       expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('timed out'));

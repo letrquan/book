@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { FILE_CONTENTION_CODES, sleepSync } from '../fs-contention.js';
 
 export type AtomicWriteOperation = 'lock' | 'serialize' | 'write' | 'fsync' | 'rename';
 
@@ -74,8 +75,6 @@ export interface AtomicJsonFileSystem {
   writeFileSync: typeof writeFileSync;
 }
 
-/** Codes Windows returns while another process has a file open: retried, never fatal on first sight. */
-export const FILE_CONTENTION_CODES: ReadonlySet<string> = new Set(['EPERM', 'EBUSY', 'EACCES']);
 const LOCK_CONTENTION_CODES = new Set(['EEXIST', ...FILE_CONTENTION_CODES]);
 const DEFAULT_DEADLINE_MS = 500;
 const DEFAULT_STALE_LOCK_MS = 30_000;
@@ -102,12 +101,6 @@ function errorCode(error: unknown): string | undefined {
 function safeMessage(error: unknown): string {
   const code = errorCode(error);
   return code ? `Agent state storage operation failed (${code}).` : 'Agent state storage failed.';
-}
-
-/** Block the calling thread for `milliseconds`. */
-export function sleepSync(milliseconds: number): void {
-  if (milliseconds <= 0) return;
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
 function closeQuietly(fs: AtomicJsonFileSystem, descriptor: number | undefined): void {

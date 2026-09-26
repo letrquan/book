@@ -280,8 +280,8 @@ All notable changes to this project are documented in this file.
   cancellation Book killed only the shell wrapping the hook (`cmd.exe` or `sh`), so a process
   the hook had started kept the hook's pipes open and Book could not exit: after `/exit` a
   `SessionEnd` hook like that left the process running with no UI until a second Ctrl+C.
-  Book now ends the hook's whole process tree (`taskkill /T` on Windows, the hook's own
-  process group elsewhere) and lets go of its pipes. A hook is also decided as soon as its own
+  Book now kills the hook's whole process tree outright — the whole group off Windows, and with
+  `taskkill /T /F` on Windows — and lets go of its pipes. A hook is also decided as soon as its own
   process exits: a process it leaves running in the background no longer holds each event for the
   full 10 s, and is left running.
 - **A persistent background job's command no longer outlives its runner (#267).**

@@ -8,7 +8,7 @@ import {
   unsandboxedRefusalMessage,
   type SandboxSkipReason,
 } from '../sandbox.js';
-import { ShellJobManager } from '../jobs/shell-manager.js';
+import { isTerminalShellStatus, ShellJobManager } from '../jobs/shell-manager.js';
 import { terminateForegroundProcess } from '../jobs/process-tree.js';
 import { resolveWorkspacePath } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
@@ -433,7 +433,7 @@ async function killShell(args: Record<string, unknown>, ctx: ToolContext): Promi
   if (!shellId) return fail('shell_id must be a non-empty string');
   const shell = manager(ctx).get(shellId);
   if (!shell) return fail(`Shell ${shellId} not found`);
-  if (['exited', 'failed', 'killed', 'timed_out', 'lost'].includes(shell.status)) {
+  if (isTerminalShellStatus(shell.status)) {
     return ok(`Shell ${shell.id} is already ${shell.status}; no running process was stopped.`);
   }
   const stopped = await manager(ctx).stop(shellId);

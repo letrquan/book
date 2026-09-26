@@ -45,7 +45,24 @@ if ('error' in loaded) {
 }
 const spec = loaded.spec;
 
-const options: SpawnOptions = { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true };
+/**
+ * The env the command is started with. This process was started without `NODE_OPTIONS`, so that the
+ * options the user asked for apply to their command rather than opening an inspector here and
+ * writing about it into the job's log; the runner carries them beside it for exactly that reason.
+ */
+function commandEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  const nodeOptions = env.BOOK_SUPERVISED_NODE_OPTIONS;
+  delete env.BOOK_SUPERVISED_NODE_OPTIONS;
+  if (nodeOptions !== undefined) env.NODE_OPTIONS = nodeOptions;
+  return env;
+}
+
+const options: SpawnOptions = {
+  stdio: ['ignore', 'inherit', 'inherit'],
+  windowsHide: true,
+  env: commandEnv(),
+};
 // Sandboxed specs carry an argv; only unsandboxed ones go through a shell.
 const command = spec.exec
   ? spawn(spec.exec.file, spec.exec.args, { ...options, shell: false })
@@ -102,6 +119,21 @@ if (process.platform !== 'win32') {
   }
 }
 
+/** How long one `taskkill` may take, and how many times it is tried before the tree is given up on. */
+const TASKKILL_TIMEOUT_MS = 10_000;
+const TASKKILL_ATTEMPTS = 3;
+
+/**
+ * `taskkill /T /F` on the command's tree, retried until one of them actually runs. A single attempt
+ * that fails or times out leaves the command's descendants running, and here there is nobody to
+ * escalate afterwards: this process is about to exit and the runner it served is already gone.
+ */
+async function killCommandTree(pid: number): Promise<void> {
+  for (let attempt = 1; attempt <= TASKKILL_ATTEMPTS; attempt++) {
+    if (await runTaskkill(pid, TASKKILL_TIMEOUT_MS)) return;
+  }
+}
+
 /** The runner is gone: end the command's whole tree, then exit. */
 function endCommandTree(): void {
   if (lifelineLost) return;
@@ -109,12 +141,15 @@ function endCommandTree(): void {
   if (process.platform === 'win32') {
     if (command.pid === undefined) process.exit(1);
     // taskkill walks the tree from the command's root, which is still alive because this process
-    // holds it. Exit only when taskkill is done: as a child of this process, it would die with it.
-    void runTaskkill(command.pid).finally(() => process.exit(1));
+    // holds it. Exit only when the tree kill is done: as a child of this process, it would die with
+    // it, taking the walks it had left undone with it.
+    void killCommandTree(command.pid).finally(() => process.exit(1));
     return;
   }
-  // This process leads the command's process group. Spare itself the SIGTERM so it can escalate.
-  process.on('SIGTERM', () => {});
+  // This process leads the command's process group, and the group signal below reaches it too. Its
+  // own SIGTERM is already spared, by the forwarding handler above returning now that the lifeline
+  // is lost; that is what lets the escalation below run, and it is why nothing else has to spare it
+  // a second time.
   try {
     process.kill(-process.pid, 'SIGTERM');
   } catch {

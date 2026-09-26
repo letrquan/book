@@ -17,7 +17,13 @@ import {
   type PersistentShellSpec,
   type PersistentShellState,
 } from './jobs/persistent-store.js';
-import { terminateProcessTree, waitForProcessClose } from './jobs/process-tree.js';
+import {
+  signalProcessGroup,
+  terminateProcessTree,
+  waitForProcessClose,
+  waitForProcessGroupExit,
+  TERMINATE_GRACE_MS,
+} from './jobs/process-tree.js';
 
 const specPath = process.argv[2];
 if (!specPath) {
@@ -126,10 +132,31 @@ function appendBounded(data: unknown): void {
   }
 }
 
-function terminateTree(): Promise<boolean> {
+/**
+ * End the job's tree. Off Windows the first SIGTERM goes to the supervisor alone, because the
+ * supervisor leads the job's own process group and passes the signal on to that group exactly once:
+ * signalling the group from here as well would hand the command a second SIGTERM, which a command
+ * that has installed its own handler or is midway through a graceful shutdown sees as two stops
+ * rather than one. A supervisor that has already exited forwards nothing, so the signal falls
+ * through to the group itself. From there the escalation is this process's own, exactly as before,
+ * because the supervisor no longer passes SIGKILL along. Windows has no signal for a group, so
+ * `taskkill /T /F` still walks the tree from the supervisor there.
+ */
+async function terminateTree(): Promise<boolean> {
   const proc = child;
-  if (!proc) return Promise.resolve(true);
-  return terminateProcessTree(proc, proc.pid, (timeoutMs) => waitForProcessClose(proc, timeoutMs));
+  const pid = proc?.pid;
+  if (!proc || pid === undefined) return true;
+  if (process.platform === 'win32') {
+    return terminateProcessTree(proc, pid, (timeoutMs) => waitForProcessClose(proc, timeoutMs));
+  }
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    signalProcessGroup(proc, pid, 'SIGTERM');
+  }
+  if (await waitForProcessGroupExit(pid, TERMINATE_GRACE_MS)) return true;
+  signalProcessGroup(proc, pid, 'SIGKILL');
+  return waitForProcessGroupExit(pid, TERMINATE_GRACE_MS);
 }
 
 function finish(
@@ -232,6 +259,21 @@ function failStartup(what: string, error: unknown): never {
 }
 
 /**
+ * The env the supervisor is started with. `NODE_OPTIONS` is meant for the command the user asked
+ * for, not for the supervisor standing between them: left in place it makes the supervisor open the
+ * inspector and write "Debugger listening..." into the job's log, which the runner appends to the
+ * command's own output. It is therefore taken out here and carried beside it, under a name of this
+ * runner's own, which the supervisor puts back for the command alone.
+ */
+function supervisorEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...spec.env };
+  const nodeOptions = env.NODE_OPTIONS;
+  delete env.NODE_OPTIONS;
+  if (nodeOptions !== undefined) env.BOOK_SUPERVISED_NODE_OPTIONS = nodeOptions;
+  return env;
+}
+
+/**
  * Create the log, write the first record, then start the command under its supervisor. The first
  * record says `starting`, and the job counts as started once the second, carrying the command's
  * pid, has landed: `start()` returns on the first record whose status is not `starting`, so a
@@ -257,7 +299,7 @@ function startRunner(): void {
     // `process.execArgv` carries tsx's loader when this runner itself runs from source.
     proc = spawn(process.execPath, [...process.execArgv, supervisorPath(), specPath], {
       cwd: spec.workdir,
-      env: { ...process.env, ...spec.env },
+      env: supervisorEnv(),
       detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,

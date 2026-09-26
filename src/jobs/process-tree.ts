@@ -99,14 +99,19 @@ type WindowsTreeKill = (pid: number) => Promise<boolean>;
 
 /**
  * `taskkill /T /F` on the tree rooted at `pid`, resolved through `system32Executable` so a
- * workspace on the PATH cannot stand in for it. Reports whether the kill actually ran.
+ * workspace on the PATH cannot stand in for it. Reports whether the kill actually ran. The bound is
+ * a parameter because a caller that exits straight afterwards has nobody to escalate for it and can
+ * afford to wait far longer than one that does.
  */
-export async function runTaskkill(pid: number): Promise<boolean> {
+export async function runTaskkill(
+  pid: number,
+  timeoutMs: number = TERMINATE_GRACE_MS,
+): Promise<boolean> {
   return new Promise((resolve) => {
     execFile(
       system32Executable('taskkill'),
       ['/PID', String(pid), '/T', '/F'],
-      { windowsHide: true, timeout: TERMINATE_GRACE_MS },
+      { windowsHide: true, timeout: timeoutMs },
       (error) => resolve(!error),
     );
   });

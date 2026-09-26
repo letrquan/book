@@ -9,9 +9,9 @@ import {
 } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { FILE_CONTENTION_CODES, sleepSync } from '../agents/atomic-json.js';
 import { repositoryHash } from '../agents/git-isolation.js';
 import { systemClock, type Clock } from '../clock.js';
+import { FILE_CONTENTION_CODES, sleepSync } from '../fs-contention.js';
 import type {
   BackgroundShellNotify,
   BackgroundShellStatus,

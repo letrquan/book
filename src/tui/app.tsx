@@ -1188,13 +1188,16 @@ export function App({
     [backgroundShells.shells, managedAgents.selectAgent],
   );
 
+  // Depend on `stopOrDismiss` rather than on the whole hook result: the hook returns a fresh object
+  // on every render, which would rebuild this callback — and every consumer of it — each time.
+  const { stopOrDismiss: stopOrDismissBackgroundShell } = backgroundShells;
   const stopOrDismissShell = useCallback(
     (jobId: string) => {
-      void backgroundShells.stopOrDismiss(jobId).then((failure) => {
+      void stopOrDismissBackgroundShell(jobId).then((failure) => {
         if (failure) flashNotice(failure, 'warning', 6_000);
       });
     },
-    [backgroundShells, flashNotice],
+    [stopOrDismissBackgroundShell, flashNotice],
   );
 
   // Terminal jobs are removed from the active list as soon as they finish or

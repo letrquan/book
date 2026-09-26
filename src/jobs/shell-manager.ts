@@ -554,11 +554,9 @@ export class ShellJobManager {
       // The job is being forgotten, so nothing may keep running under it. Ending the runner closes
       // the supervisor's lifeline, which ends the command's tree if it had started.
       if (!runnerExited) {
-        try {
-          runner.kill('SIGKILL');
-        } catch {
-          // It exited in the meantime.
-        }
+        // Ends with a boolean rather than by throwing, and a false one only means the runner was
+        // already gone, which is the outcome this branch wants either way.
+        runner.kill('SIGKILL');
       }
       this.store.shells.delete(id);
       try {
@@ -842,6 +840,10 @@ export class ShellJobManager {
       }
     }
     this.store.shells.delete(shellId);
+    // A lost record whose write has not landed is otherwise only removed by a later write
+    // succeeding, and a job dismissed in the meantime has no record left to write. Left behind, the
+    // entry would keep retrying forever and report the same lost job after it is gone.
+    this.unwrittenLost.delete(shellId);
   }
 
   private pruneTerminalShells(now = Date.now()): void {

@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import type { HookEntry, HookEvent } from './settings.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { parsePatch } from './tools/patch.js';
-import { terminateForegroundProcess } from './jobs/process-tree.js';
+import { runTaskkill, signalProcessGroup } from './jobs/process-tree.js';
 
 /** Context passed to every hook invocation. */
 export interface HookContext {
@@ -63,6 +63,12 @@ export interface HookRunOptions {
   signal?: AbortSignal;
   /** How long one hook may run before it is killed with every process it started. Default 10 s. */
   timeoutMs?: number;
+  /**
+   * How long a hook's pipes may stay open after its own process exits, so that output written just
+   * before the exit is still read. Default 500 ms; a process the hook left running in the
+   * background keeps the pipes open indefinitely, and is not waited for.
+   */
+  drainGraceMs?: number;
 }
 
 const HOOK_TIMEOUT_MS = 10_000;
@@ -139,6 +145,7 @@ export async function runHooks(
       ctx,
       opts?.signal,
       opts?.timeoutMs ?? HOOK_TIMEOUT_MS,
+      opts?.drainGraceMs ?? HOOK_DRAIN_GRACE_MS,
     );
     results.push(result);
 
@@ -240,6 +247,7 @@ async function runSingleHook(
   ctx: HookContext,
   signal: AbortSignal | undefined,
   timeoutMs: number,
+  drainGraceMs: number,
 ): Promise<HookResult> {
   const inputPayload = JSON.stringify({
     hook: event,
@@ -309,15 +317,30 @@ async function runSingleHook(
     };
 
     /**
-     * End the hook's whole process tree and let go of its pipes. A process the kill cannot reach
-     * (on Windows, one whose parent has already exited) would otherwise hold the pipes, and with
-     * them the host's event loop, open. Resolves once the kill has finished, because on Windows
-     * taskkill is a child of this process and would die with it if the host exited first.
+     * End the hook's whole process tree and let go of its pipes. A hook that reached the end of its
+     * timeout, or was cancelled, has had its chance, so it is killed outright rather than asked to
+     * exit first: the SIGTERM-then-SIGKILL escalation would run on this process's timers, and a
+     * hook that outlives the host is never killed at all. The pipes are released either way, so a
+     * process the kill cannot reach cannot hold the host's event loop open. Off Windows the group
+     * signal is synchronous and there is nothing left to wait for; on Windows the kill is awaited
+     * because taskkill runs as a child of this process and would die with it.
      */
     const endTree = async (): Promise<void> => {
       ending = true;
       releasePipes();
-      await terminateForegroundProcess(child);
+      const pid = child.pid;
+      if (pid === undefined) return;
+      if (process.platform !== 'win32') {
+        signalProcessGroup(child, pid, 'SIGKILL');
+        return;
+      }
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      if (await runTaskkill(pid)) return;
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // The process exited between taskkill and the direct-child fallback.
+      }
     };
 
     const cleanup = () => {
@@ -443,7 +466,7 @@ async function runSingleHook(
         // hold the host's event loop, and leave it running: the hook is done.
         releasePipes();
         finishHook(code, exitSignal);
-      }, HOOK_DRAIN_GRACE_MS);
+      }, drainGraceMs);
     });
     child.on('close', (code, exitSignal) => {
       if (drainTimer) clearTimeout(drainTimer);
@@ -458,15 +481,7 @@ async function runSingleHook(
 
     const onAbort = () => {
       if (settled || ending) return;
-      const teardown = endTree();
-      // On Windows taskkill is a child of this process and would die with it if the host exited
-      // right after the rejection, so the rejection waits for it. Elsewhere the SIGTERM has already
-      // reached the hook's group by now; its escalation needs no one to wait.
-      if (process.platform === 'win32') void teardown.finally(() => fail(abortReason()));
-      else {
-        void teardown;
-        fail(abortReason());
-      }
+      void endTree().finally(() => fail(abortReason()));
     };
     const timer = setTimeout(() => {
       if (settled || ending) return;

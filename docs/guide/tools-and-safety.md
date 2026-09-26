@@ -235,9 +235,9 @@ It runs at most once per session, and never under the cancelled run's own signal
 
 **Awaited is the property that costs you latency**, and it is not the same as being able to veto.
 A slow `PostToolUse` hook cannot block anything, but it still delays _every tool call_ by up to its
-runtime — hooks are capped at 10 s each (a hook still running then is ended together with the
-processes it started; a process the hook leaves running in the background after it exits is neither
-waited for nor ended) and run sequentially in declaration order. Only `UserPromptSubmit`,
+runtime — hooks are capped at 10 s each (a hook still running then is killed outright, together
+with the processes it started; a process the hook leaves running in the background after it exits is
+neither waited for nor ended) and run sequentially in declaration order. Only `UserPromptSubmit`,
 `PreToolUse`, and `PreCompact` can refuse the operation outright.
 
 Off Windows each hook runs in its own session and process group, as foreground `Bash` commands
