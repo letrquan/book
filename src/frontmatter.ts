@@ -1,4 +1,50 @@
 /**
+ * The index of the line that closes the front matter a `---` first line
+ * opens: the next `---`, or YAML's `...` document end, trailing spaces
+ * allowed. -1 when the first line opens none or nothing closes it.
+ */
+export function frontMatterClose(lines: readonly string[]): number {
+  if (lines[0]?.trim() !== '---') return -1;
+  return lines.findIndex((line, index) => index > 0 && /^(?:---|\.\.\.)\s*$/.test(line));
+}
+
+// A front-matter key is anything up to a colon: `title:`, `"quoted key":`,
+// `my key:`, `$schema:`, `título:`.
+const FRONT_MATTER_KEY = /^[^\s#:-][^:]*:(?:\s|$)/;
+
+/**
+ * Where a Markdown document's content starts: after its front matter, or at
+ * line 0. A leading `---` may be a horizontal rule instead, so the lines up to
+ * the closing delimiter count as front matter only when they read as YAML:
+ * the first line that is not a `#` comment is a `key:` line, and each run of
+ * lines between blank lines holds a `key:`, indented or `- ` line, with `#`
+ * comments beside them. A `#` line with no such line in its run is a heading,
+ * and the block is a rule followed by text.
+ */
+export function markdownContentStart(lines: readonly string[]): number {
+  const close = frontMatterClose(lines);
+  if (close < 0) return 0;
+  const block = lines.slice(1, close);
+  const first = block.find((line) => line.trim().length > 0 && !line.startsWith('#'));
+  if (first === undefined || !FRONT_MATTER_KEY.test(first)) return 0;
+  let runLines = 0;
+  let runYaml = false;
+  for (const line of [...block, '']) {
+    if (line.trim().length === 0) {
+      if (runLines > 0 && !runYaml) return 0;
+      runLines = 0;
+      runYaml = false;
+      continue;
+    }
+    runLines++;
+    if (line.startsWith('#')) continue;
+    if (!FRONT_MATTER_KEY.test(line) && !/^\s+\S/.test(line) && !/^-(?:\s|$)/.test(line)) return 0;
+    runYaml = true;
+  }
+  return close + 1;
+}
+
+/**
  * Minimal YAML frontmatter parser shared by commands, skills, and subagents.
  *
  * Handles string values, array values (lines starting with "-"), and quoted
@@ -15,13 +61,9 @@ export function parseFrontmatter(raw: string): {
   // like an unparsed body.
   const normalized = raw.replace(/\r\n?/g, '\n');
   const lines = normalized.split('\n');
-  // Must start with ---
-  if (lines[0]?.trim() !== '---') {
-    return { body: raw, frontmatter: {} };
-  }
-  const endIdx = lines.indexOf('---', 1);
+  const endIdx = frontMatterClose(lines);
   if (endIdx === -1) {
-    // No closing ---; treat entire file as body.
+    // No opening or closing delimiter; treat the entire file as body.
     return { body: raw, frontmatter: {} };
   }
   const fmLines = lines.slice(1, endIdx);

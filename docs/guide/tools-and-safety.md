@@ -17,49 +17,72 @@ can decide what to read in full.
 - **Markdown** (`.md`, `.markdown`, `.mdx`): the `#`…`######` and setext headings, and nothing
   else. Fenced code blocks are skipped, so a `# comment` in a shell example is not taken for a
   heading. A leading `---` opens front matter, which is skipped, only when YAML runs up to a
-  closing `---`: a `key:` line first, then `key:` lines (any text up to a colon), indented or `- `
-  lines, and `#` comments. A `#` line after a blank line is a heading, so such a block is not
+  closing `---` (or `...`): the first line that is not a `#` comment is a `key:` line (any text
+  up to a colon), and each run of lines between blank lines holds a `key:`, indented or `- ` line,
+  with `#` comments beside them. A `#` line alone in its run is a heading, so such a block is not
   front matter. Otherwise it is a horizontal rule, and the headings after it count.
+- **JSON** (`.json`, `.jsonc`, `.json5`, `.webmanifest`, and rc files such as `.babelrc`): the
+  line that opens the root, then an object root's top-level keys, or an array root's elements,
+  each object element by its first key. Nesting depth decides, not indentation, and brackets
+  inside strings do not count.
 - **Everything else**: every line at indentation zero except blank lines, comments, lines of
   closing punctuation alone (`}`, `});`, `]);`) and an Allman-style `{` line, plus lines indented
   by up to four spaces that declare something:
-  - a `function`/`class`/`def`/`fn`/`fun`-style keyword line, unless the keyword is an object key
-    or an import-list member (`enum: [...]`, `describe,`);
+  - a `function`/`class`/`def`/`fn`/`fun`-style keyword line, unless the keyword is an object key,
+    an import-list member or a property access (`enum: [...]`, `describe,`, `set.add(x)`,
+    `it.skip;`), and a test block reached through a modifier (`it.skip('later', () => {`);
   - a method named first whose parameter list closes into a body, on the same line or a later one
-    (`async *entries() {`, `#secret(): string {`, `async send(` … `): Promise<void> {`, or
-    `}: Args): Promise<void> {` after a destructured parameter);
+    (`async *entries() {`, `*values() {`, `#secret(): string {`, `async send(` …
+    `): Promise<void> {`, or `}: Args): Promise<void> {` after a destructured parameter);
   - a method written return-type-first (`public int getN() {`, `Future<void> load() async {`),
-    with its `{` at the end of the line or alone on the next, or with an expression body
-    (`int Twice(int x) => x * 2;`); in Java and C#, also an interface or abstract method with no
-    body (`double area();`);
-  - an arrow-function member (`handle = (event) => {`).
+    with its `{` at the end of the line or alone on the next, with its whole body on the line
+    (`public int get() { return n; }`, and in Java and C# a constructor's too), or with an
+    expression body (`int Twice(int x) => x * 2;`); in Java and C#, also an interface or abstract
+    method with no body (`double area();`);
+  - an arrow-function member (`handle = (event) => {`);
+  - in C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx`, `.h` and the like), inside a class body
+    (under `class`, `struct` or an access specifier such as `public:`), every member function,
+    constructor, destructor and operator, declared (`void set(int v);`,
+    `virtual void draw() = 0;`) or defined (`int get() const { return n_; }`); elsewhere a function
+    with a body, qualified names included (`std::string Foo::name() {`). `int x(5);` and
+    `Foo f(1);` outside a class are variables and stay out.
+
+  An annotation or attribute on the declaration's own line does not hide it
+  (`@Override public String toString() {`, `@HostListener('click') onClick() {`,
+  `[HttpGet] public IActionResult Get() {`), and a parenthesis inside a quoted default value
+  (`paren(s = '(') {`) does not unbalance it. A line deeper than four spaces counts when it
+  declares a member of a type the outline lists: a Java inner class's methods, a nested C#
+  class's, an `impl` inside a Rust `mod`.
 
   Lines shaped like these that are not declarations stay out: control flow (`if (`, `else if (`,
   `for (`, `foreach (`, `using (`, `lock (`, `switch (`, `catch (`; in Java and C# also with no
   space, as in `foreach(` and `lock(`, which elsewhere may be method names), `assert x;`,
   `return foo(`, `new Foo(`, `go func() {`, `defer func() {`, a call that closes into a callback
-  (`useEffect(() => {`, `).then(() => {`), and a chained call (`foo(x).then(`). In `.ts`, `.mts`,
-  `.cts`, `.mjs` and `.cjs` files, the text of a multi-line template literal is skipped at any
-  indentation. `.tsx`, `.jsx` and `.js` files are not scanned for it, because JSX text may hold a
-  `/*` or a lone backtick that would open a comment or template that never closes, and a scan
-  that still ends inside one masks nothing. A `#` line is a
-  comment in Python, shell, YAML, TOML, Ruby and PowerShell files, Makefiles, Dockerfiles (unless
-  the name ends in a code extension, as `makefile.c` does), and extension-less scripts that start
-  with `#!`; elsewhere C preprocessor lines and Rust attributes stay in.
+  (`useEffect(() => {`, `).then(() => {`), a chained call (`foo(x).then(`), and a statement
+  followed by another on the same line (`foo(x); if (y) {`). In `.ts`, `.mts`, `.cts`, `.mjs` and
+  `.cjs` files, the text of a multi-line template literal, and of a string continued with a
+  trailing backslash, is skipped at any indentation, and a `/` right after a condition's `)`
+  (`if (ok) /\d+/.test(s)`) opens a regex. `.tsx`, `.jsx` and `.js` files are not scanned for it,
+  because JSX text may hold a `/*` or a lone backtick that would open a comment or template that
+  never closes, and a scan that still ends inside one masks nothing. A `#` line is a comment in
+  Python, shell, YAML, TOML, Ruby and PowerShell files, Makefiles, Dockerfiles (unless the name
+  ends in a code extension, as `makefile.c` does), and extension-less scripts that start with
+  `#!`; elsewhere C preprocessor lines and Rust attributes stay in.
 
 - **What it covers:** these shapes fit TypeScript/JavaScript, Python, Go, Rust, Java, Kotlin
   (declarations with `fun`; a `name(args) {` line there is a call taking a trailing lambda), C#
-  (members at indentation 8 under a block-scoped `namespace X {`) and Dart. The supported shapes
-  are the `Read outline contract` table in `src/tools/file.test.ts`. Not covered: C++ in-class
-  members (`const std::string& name() const {`), Java inner-class members (indentation 8), a Dart
-  constructor with no body, a plain `*values()` generator method (only `async *` is listed), a
-  signature whose closing `)` shares a line with its last parameter, and PowerShell `<# … #>`
-  block comments.
+  (members at indentation 8 under a block-scoped `namespace X {`), Dart, C++ class members and
+  JSON. The supported shapes are the `Read outline contract` table in `src/tools/file.test.ts`.
+  Not covered: members of a nested C++ class, Kotlin `companion object` members, a Dart
+  constructor with no body, a signature whose closing `)` shares a line with its last parameter,
+  and PowerShell `<# … #>` block comments.
 
 What an outline saves depends on the file: `src/agent/loop.ts` goes from 2876 lines to 51, and
 this README goes to its 33 headings. A test file keeps its `describe`/`it` lines, and a JSON file
-outlines to its opening brace. The outline is capped at 2000 entries or 50 KB, with a note naming
-the line where the rest start. It takes no `offset` or `limit`, and passing either is an error.
+outlines to its top-level keys. Each entry is cut at 512 bytes and ends with `…`, so one minified
+line cannot crowd out the rest. The outline is capped at 2000 entries or 50 KB, with a note naming
+the line where the rest start, and the header and note fit inside that budget whatever the path's
+length. It takes no `offset` or `limit`, and passing either is an error.
 
 An outline is not a read. It is recorded as its own `outline` observation, which satisfies
 neither the observed-file check nor the freshness check. `Edit`, `MultiEdit` and a `Write` over an
