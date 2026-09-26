@@ -20,7 +20,11 @@ import {
 import { resolvePrintCommand, type PrintCommandDispatch } from './commands/print-dispatch.js';
 import type { CommandContext, HostCommandResult } from './types/commands.js';
 import type { AgentActivity, AgentCompletionNotification } from './agents/types.js';
-import { createTerminalOutcome, type AgentTerminalOutcome } from './types/terminal.js';
+import {
+  classifyAbortReason,
+  createTerminalOutcome,
+  type AgentTerminalOutcome,
+} from './types/terminal.js';
 import { createAgentRunContext, type AgentRunContext, type AgentRunResult } from './types/runs.js';
 import { shouldCompact, usagePressureTokens } from './agent/compact.js';
 import { resolveContextLimit } from './models.js';
@@ -85,6 +89,63 @@ async function readPipedPrompt(stream: NodeJS.ReadableStream): Promise<string | 
   }
   const prompt = chunks.join('').trim();
   return prompt || undefined;
+}
+
+/**
+ * Destroy `stream` when `signal` aborts, so a pending read of a prompt that never
+ * finishes arriving rejects instead of holding a cancelled run open. Returns the
+ * cleanup.
+ */
+function destroyOnAbort(
+  stream: NodeJS.ReadableStream,
+  signal: AbortSignal | undefined,
+): () => void {
+  if (!signal) return () => {};
+  const destroy = () => {
+    const reason = signal.reason instanceof Error ? signal.reason : new Error('Aborted');
+    (stream as NodeJS.ReadableStream & { destroy?: (error?: Error) => void }).destroy?.(reason);
+  };
+  if (signal.aborted) {
+    destroy();
+    return () => {};
+  }
+  signal.addEventListener('abort', destroy, { once: true });
+  return () => signal.removeEventListener('abort', destroy);
+}
+
+/**
+ * Re-throw a signal's reason as an Error. A read that ends cleanly after the abort
+ * (a TTY returns at once) must still take the run's abort path rather than reading
+ * as an empty prompt.
+ */
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : new Error('Aborted');
+}
+
+/**
+ * Resolve `true` when `promise` settles first and `false` when `signal` aborts first.
+ * The promise is left running; only the wait for it ends.
+ */
+async function raceAbort(
+  promise: Promise<unknown>,
+  signal: AbortSignal | undefined,
+): Promise<boolean> {
+  if (!signal) {
+    await promise;
+    return true;
+  }
+  if (signal.aborted) return false;
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<false>((resolve) => {
+    onAbort = () => resolve(false);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([promise.then(() => true as const), aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
 }
 
 export async function runHeadless(
@@ -511,6 +572,8 @@ export async function runHeadless(
       runContext: AgentRunContext,
       commandContext?: CommandContext,
     ): Promise<void> => {
+      // An earlier prompt's error must not hide why this one failed.
+      eventState.errorReported = false;
       let runOutcome: AgentTerminalOutcome | undefined;
       finalRunOpeningId = userMessage.id;
       lastUsage = null;
@@ -654,7 +717,19 @@ export async function runHeadless(
     // stream-json -> read stdin.
     const prompts: string[] = [];
     if (opts.inputFormat === 'text') {
-      const prompt = opts.prompt ?? (await readPipedPrompt(opts.stdin ?? process.stdin));
+      let prompt = opts.prompt;
+      if (prompt === undefined) {
+        const stream = opts.stdin ?? process.stdin;
+        // A prompt that never finishes arriving must not hold a cancelled run open.
+        // A TTY returns at once inside `readPipedPrompt`, so it is never destroyed.
+        const release = destroyOnAbort(stream, opts.signal);
+        try {
+          prompt = await readPipedPrompt(stream);
+        } finally {
+          release();
+        }
+        throwIfAborted(opts.signal);
+      }
       if (!prompt) {
         throw new Error(
           'print mode requires a prompt: pass one to -p, pipe one on stdin, or use --input-format stream-json',
@@ -674,9 +749,15 @@ export async function runHeadless(
           onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
         },
       );
-      for await (const chunk of stream) {
-        parser.feed(chunk as string | Buffer);
+      const release = destroyOnAbort(stream, opts.signal);
+      try {
+        for await (const chunk of stream) {
+          parser.feed(chunk as string | Buffer);
+        }
+      } finally {
+        release();
       }
+      throwIfAborted(opts.signal);
       parser.flush();
       if (diagnostics.length > 0) throw new Error(diagnostics[0]?.message);
       if (opts.prompt) prompts.unshift(opts.prompt);
@@ -865,7 +946,17 @@ export async function runHeadless(
         ),
       );
       while (true) {
-        await managedAgentManager.waitForIdle();
+        if (opts.signal?.aborted) {
+          lastOutcome = classifyAbortReason(opts.signal.reason, true);
+          break;
+        }
+        const idle = await raceAbort(managedAgentManager.waitForIdle(), opts.signal);
+        if (!idle) {
+          // Cancelled while children were still working: stop waiting, and let the run end
+          // as the abort says rather than as the last parent turn did (#248).
+          lastOutcome = classifyAbortReason(opts.signal?.reason, true);
+          break;
+        }
         const pending = (await managedAgentManager.listPendingCompletions()).filter(
           (notification) => notification.parentSessionId === runtimeSessionId,
         );
@@ -1019,6 +1110,7 @@ export async function runHeadless(
           structuredError: result.structuredError,
           plan: result.plan,
           commandResults,
+          answer,
         },
       });
     } else if (opts.outputFormat === 'stream-json') {
@@ -1036,6 +1128,7 @@ export async function runHeadless(
           structuredError: result.structuredError,
           plan: result.plan,
           commandResults,
+          answer,
         },
       });
     }
@@ -1090,7 +1183,7 @@ export async function runHeadless(
         .endLifecycle(config, startedSessionId, opts.signal?.aborted ? 'aborted' : 'error', {
           onHookEvent: createHookEventHandler(opts, emit),
           endOutcome: opts.signal?.aborted
-            ? createTerminalOutcome('cancelled', 'caller_cancelled', { partialOutput: false })
+            ? classifyAbortReason(opts.signal.reason, false)
             : createTerminalOutcome('failed', 'runtime_error', { partialOutput: false }),
         })
         .catch((hookError: unknown) => {

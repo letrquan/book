@@ -14,10 +14,10 @@ import { resolveBookHome } from '../book-home.js';
 
 export const TOOL_RESULT_MAX_BYTES = 50 * 1024;
 /**
- * Where clipped tool output is saved in full. `Read` may open it (see the loop's
- * `readOnlyRoots`).
+ * Where clipped tool output is saved in full. The loop lets `Read` open each file
+ * it clipped a result into, never the whole directory.
  */
-export const TOOL_OUTPUT_DIRECTORY = join(resolveBookHome(), 'tool-output');
+const TOOL_OUTPUT_DIRECTORY = join(resolveBookHome(), 'tool-output');
 
 interface ToolResultOptions<TData> {
   toolCallId?: string;

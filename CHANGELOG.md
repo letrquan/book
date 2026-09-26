@@ -7,7 +7,8 @@ All notable changes to this project are documented in this file.
 ### Changed
 
 - **The stream-json `retry` record tells a re-sent turn from an HTTP retry** (#244). A turn sent again
-  after its stream ended is now phase `reissue` with a `reason`, where it was `transport` like an HTTP
+  after its stream ended is now phase `reissue` with a `reason` (an output-cap continuation is phase
+  `continue`), where it was `transport` like an HTTP
   retry inside one request; an unbounded watchdog retry reports `max: null` instead of `-1` (or
   `9007199254740991` for a 503); the TUI says "Re-sending the turn".
 - **`npm run format:check` covers the Markdown docs** (#269). `CHANGELOG.md`, `README.md` and the
@@ -292,14 +293,16 @@ All notable changes to this project are documented in this file.
   in a tool exits 0 like one that lands in the stream, since cancelling is not failing.
 - **Two managed children of one profile get distinct progress labels** (#248): `explorer` and
   `explorer 2`.
-- **`Read` can open the file a clip notice names** (#248). The full output of a result clipped at
-  50 KB lives in Book's `tool-output` directory, which the loop now makes readable.
+- **`Read` can open the file a clip notice names** (#248): each file a result of this run was clipped
+  into, never the rest of the shared `tool-output` directory.
 - **An at-sign in a prompt expands only when it names a file** (#261). Print mode and the TUI
   expanded every at-sign token, including inside fenced and inline code, so a spec quoting a JSDoc
   `{@link Foo.bar}` reached the model as `[Could not include @link: file not found]`, and the model
   wrote that marker into source. Tokens inside code are now left alone, and a token that names no
-  existing path stays exactly as written. A path that exists but cannot be included (a directory, a
-  binary file, a file outside the workspace) still gets its `[Could not include …]` note.
+  existing path stays exactly as written. A path that exists inside the workspace but cannot be
+  included (a directory, a binary file) keeps its `[Could not include …]` note; a path outside the
+  workspace is left as written and never touched on disk. A `!` line runs only when the user typed it
+  outside fenced code, never from a mentioned file's contents.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller
@@ -776,7 +779,8 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
-- **The SDK `result` event and `HeadlessResult` carry `answer`** (#248), exactly the text print mode
+- **The SDK `result` event, `HeadlessResult`, and the `json` and `stream-json` result documents carry
+  `answer`** (#248), exactly the text print mode
   would print, so an SDK host need not rebuild one from `messages`.
 - **`Read` has an outline mode.** Before its first edit a run read 40–55 whole files, and each
   survey read cost the entire file on every turn afterwards; the context reached 200k tokens by

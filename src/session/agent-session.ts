@@ -681,14 +681,20 @@ export class AgentSession {
   async recordUserMessage(
     request: AgentSessionRecordUserRequest,
   ): Promise<{ contextMessage: string; sessionName: string }> {
-    const expandedMentions =
-      request.contextMessage === undefined
-        ? expandAtMentions(request.displayMessage, request.config.workspace)
-        : request.contextMessage;
-    const contextMessage =
+    // Shell expansion runs on what the user typed, before mentions are inlined: a mentioned
+    // file's lines must never run as commands (#261 review).
+    const typed =
       request.contextMessage !== undefined || request.expandShellInput === false
-        ? expandedMentions
-        : await expandShellCommands(expandedMentions, request.config.workspace, request.signal);
+        ? request.displayMessage
+        : await expandShellCommands(
+            request.displayMessage,
+            request.config.workspace,
+            request.signal,
+          );
+    const contextMessage =
+      request.contextMessage !== undefined
+        ? request.contextMessage
+        : expandAtMentions(typed, request.config.workspace);
     request.userMessage.contextContent =
       contextMessage === request.displayMessage ? undefined : contextMessage;
     request.userMessage.fileObservations =

@@ -156,4 +156,27 @@ describe('runHeadless — the stream-json retry record (#244)', () => {
       { type: 'retry', phase: 'watchdog', attempt: 1, max: null, delay_ms: expect.any(Number) },
     ]);
   });
+
+  it('reports an output-cap continuation as phase continue, not as a re-sent turn', async () => {
+    let request = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        request++;
+        if (request === 1) {
+          return sse([
+            textDelta('First half '),
+            `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\n`,
+          ]);
+        }
+        return sse([textDelta('second half')]);
+      }),
+    );
+
+    const records = await retryRecords(config({ outputCapContinuations: 2 }));
+
+    expect(records).toEqual([
+      { type: 'retry', phase: 'continue', attempt: 1, max: 2, delay_ms: 0, reason: 'output_cap' },
+    ]);
+  });
 });

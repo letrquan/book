@@ -37,9 +37,12 @@ export function installPrintInterrupt(
     (options.stderr ?? process.stderr).write(
       '\nCancelling: running SessionEnd hooks. Press Ctrl+C again to exit now.\n',
     );
-    // The shape `classifyAbortReason` reads, so the run reports a `cancelled`
-    // outcome rather than a bare `caller_cancelled`.
-    controller.abort({ bookTerminalReason: 'user_cancelled' });
+    // An Error, so a native `signal.throwIfAborted()` rethrows something a user
+    // can read, that still carries the `bookTerminalReason` `classifyAbortReason`
+    // reads so the run reports `cancelled` rather than a bare `caller_cancelled`.
+    controller.abort(
+      Object.assign(new Error(`Cancelled by ${signal}`), { bookTerminalReason: 'user_cancelled' }),
+    );
   };
   const onSigint = (): void => onSignal('SIGINT');
   const onSigterm = (): void => onSignal('SIGTERM');
@@ -57,9 +60,11 @@ export function installPrintInterrupt(
 
 /**
  * The exit code a print run leaves behind: 130 or 143 when a signal interrupted it
- * (what a shell reports for a process a signal ended), 1 for a failed or thrown run,
- * and 0 otherwise — a cancelled run is not a failed one, wherever the abort landed,
- * in the stream or inside a tool (#248).
+ * (what a shell reports for a process a signal ended); otherwise whatever the run's
+ * own outcome says, even if the signal aborted after it, so a reader that goes away
+ * once a failed run has reported cannot turn it green; 1 for a run that threw; and
+ * 0 for a run that was merely cancelled, wherever the abort landed, in the stream or
+ * inside a tool — cancelling is not failing (#248).
  */
 export function printExitCode(run: {
   outcome?: AgentTerminalOutcome;
@@ -67,7 +72,6 @@ export function printExitCode(run: {
   interruptedBy?: InterruptSignal;
 }): number {
   if (run.interruptedBy) return run.interruptedBy === 'SIGINT' ? 130 : 143;
-  if (run.aborted) return 0;
-  if (!run.outcome) return 1;
-  return run.outcome.status === 'failed' ? 1 : 0;
+  if (run.outcome) return run.outcome.status === 'failed' ? 1 : 0;
+  return run.aborted ? 0 : 1;
 }

@@ -148,6 +148,24 @@ describe('runSubagent', () => {
     expect(result.error).toBeUndefined();
   });
 
+  it("does not return a refused prompt's notice as the child's answer (#248)", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('unused', { status: 500 })),
+    );
+    const hook = join(dir, 'block.cjs');
+    writeFileSync(
+      hook,
+      "process.stdout.write(JSON.stringify({ action: 'block', message: 'no' }));",
+    );
+    const config = defaultConfig({ maxTurns: 5, workspace: dir });
+    config.settings.hooks.UserPromptSubmit = [{ command: `node "${hook}"`, env: {} }];
+
+    const result = await runSubagent(def, 'Say DONE.', config, createDefaultRegistry());
+
+    expect(result.content).not.toContain('UserPromptSubmit hook blocked');
+  });
+
   it('forwards live tool calls and results with stable parent trace ids', async () => {
     let fetchCalls = 0;
     vi.stubGlobal(

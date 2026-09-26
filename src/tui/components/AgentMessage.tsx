@@ -206,20 +206,19 @@ export function getRetryLabel(
   retryMax: number,
   retryCountdownMs: number,
 ): string | undefined {
+  const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
+  const attemptStr =
+    retryMax > 0 ? `attempt ${retryAttempt}/${retryMax}` : `attempt ${retryAttempt}`;
   if (retryPhase === 'transport') {
-    const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
-    const attemptStr =
-      retryMax > 0 ? `attempt ${retryAttempt}/${retryMax}` : `attempt ${retryAttempt}`;
     return `Retrying in ${countdown}s · ${attemptStr}`;
   }
+  if (retryPhase === 'continue') {
+    return `Continuing past the output limit · ${attemptStr}`;
+  }
   if (retryPhase === 'reissue') {
-    const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
-    const attemptStr =
-      retryMax > 0 ? `attempt ${retryAttempt}/${retryMax}` : `attempt ${retryAttempt}`;
     return `Re-sending the turn in ${countdown}s · ${attemptStr}`;
   }
   if (retryPhase === 'stalled') {
-    const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
     return `Waiting for API response · will retry in ${countdown}s · check your network`;
   }
   if (retryPhase === 'watchdog') {

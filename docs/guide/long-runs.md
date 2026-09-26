@@ -127,7 +127,8 @@ again, and no `[continuation]` message is written. Every retry is visible to a p
 `{"type":"retry","phase","attempt","max","delay_ms"}` record in `stream-json`, a `retry: …` line on
 stderr in `text` output. `phase` is `transport` for an HTTP-level retry inside one request,
 `watchdog` for one with no limit (`max` is then `null`), and `reissue` for a turn sent again after
-its stream ended mid-turn; a `reissue` record also carries `reason`, the outcome that would otherwise
+its stream ended mid-turn, or `continue` for a continuation after the output cap; a `reissue` record
+also carries `reason`, the outcome that would otherwise
 have ended the run (`stream_stall`, `transport_interrupted`, `provider_error`, `output_cap`, …).
 
 For a supervised loop, use `--session-id` (resume-or-create) rather than `--continue`, which selects

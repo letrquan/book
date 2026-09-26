@@ -8,7 +8,8 @@ How Book reads and changes files, runs shell commands, and decides what it may d
 first; `offset`/`limit` are for files larger than that. A Read that stops before the end of the
 file ends with a notice naming where to continue, such as `[Lines 1-1163 of 1894 shown, the most
 one Read returns (50 KB). Continue with offset: 1164.]`, so the shared 50 KB clip on tool results,
-whose notice names a file in Book's `tool-output` directory that `Read` can open, never cuts a
+whose notice names a file in Book's `tool-output` directory that `Read` can open in the same run,
+never cuts a
 Read. A line that fits under the clip on
 its own is returned whole; a longer one is shown cut to fill it, and the notice gives the line's size
 and points past it. `Read { filePath, outline: true }` is the survey call:

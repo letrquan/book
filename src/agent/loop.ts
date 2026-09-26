@@ -10,6 +10,7 @@ import type {
 import type { ProviderResponseMetadata } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
 import type {
+  ReadOnlyRoot,
   ToolCall,
   ToolResult,
   ToolContext,
@@ -76,7 +77,6 @@ import {
   toolFailure,
   toolResultErrorMessage,
   toolResultSucceeded,
-  TOOL_OUTPUT_DIRECTORY,
 } from '../tools/result.js';
 import { toolSearchTools } from '../tools/tool-search.js';
 import { appendToolUseRecords } from '../tool-telemetry.js';
@@ -506,16 +506,15 @@ export async function runAgentLoop(
   });
 
   const initialMode = mode as PermissionMode;
+  // Read may open the memory directory (minus its inbox) and, below, each file this run
+  // clipped a result into: a clip notice's "Full output: <path>" (#248). Never the whole
+  // tool-output directory, which holds every project's clipped output.
+  const readOnlyRoots: Array<string | ReadOnlyRoot> = config.memoryContext?.dir
+    ? [{ root: config.memoryContext.dir, exclude: ['.inbox'] }]
+    : [];
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
-    readOnlyRoots: [
-      // The tool-output directory is readable so a clip notice's "Full output: <path>" can be
-      // opened with Read (#248). The memory directory keeps its inbox excluded.
-      options?.toolOutputRoot ?? TOOL_OUTPUT_DIRECTORY,
-      ...(config.memoryContext?.dir
-        ? [{ root: config.memoryContext.dir, exclude: ['.inbox'] }]
-        : []),
-    ],
+    readOnlyRoots,
     env: process.env as Record<string, string>,
     envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,
@@ -1683,7 +1682,13 @@ export async function runAgentLoop(
             recovery === 'continue'
               ? 0
               : Math.min(config.retry.maxDelayMs, config.retry.baseDelayMs * 2 ** streamReissues);
-          callbacks.onRetry?.('reissue', spent + 1, allowed, reissueDelayMs, streamOutcome.reason);
+          callbacks.onRetry?.(
+            recovery === 'continue' ? 'continue' : 'reissue',
+            spent + 1,
+            allowed,
+            reissueDelayMs,
+            streamOutcome.reason,
+          );
           await delay(reissueDelayMs, signal);
           if (!signal?.aborted) {
             // Never re-send a request that ENDS with an assistant message.
@@ -2442,12 +2447,20 @@ export async function runAgentLoop(
           });
         }
 
-        return boundToolResultOutput(
+        const bounded = await boundToolResultOutput(
           enrichToolResultPresentation(result, canonName, call.arguments),
           context.workspaceRoot,
           undefined,
           options?.toolOutputRoot,
         );
+        if (
+          bounded.pagination?.truncated &&
+          bounded.artifacts?.outputPath &&
+          !readOnlyRoots.includes(bounded.artifacts.outputPath)
+        ) {
+          readOnlyRoots.push(bounded.artifacts.outputPath);
+        }
+        return bounded;
       };
 
       const finishCall = async (entry: PreparedLoopCall, result: ToolResult): Promise<void> => {

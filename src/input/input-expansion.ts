@@ -1,7 +1,6 @@
 import { existsSync, readFileSync, statSync } from 'fs';
 import { exec } from 'child_process';
 import { createHash } from 'crypto';
-import { isAbsolute, resolve } from 'path';
 import type { FileObservation } from '../types/tools.js';
 import { workspaceIdentity } from '../tools/file-provenance.js';
 import { resolveWorkspaceMentionPath } from './file-mentions.js';
@@ -38,12 +37,32 @@ function codeRanges(input: string): Array<[number, number]> {
 
   let cursor = 0;
   for (const [start, end] of fenced) {
-    collectInlineCodeSpans(input.slice(cursor, start), cursor, inline);
+    collectParagraphInlineCodeSpans(input.slice(cursor, start), cursor, inline);
     cursor = end;
   }
-  collectInlineCodeSpans(input.slice(cursor), cursor, inline);
+  collectParagraphInlineCodeSpans(input.slice(cursor), cursor, inline);
 
   return [...fenced, ...inline];
+}
+
+/**
+ * A code span never crosses a blank line (CommonMark), so each paragraph of a
+ * segment is scanned on its own: a lone backtick in one paragraph must not pair
+ * with one in the next.
+ */
+function collectParagraphInlineCodeSpans(
+  segment: string,
+  base: number,
+  ranges: Array<[number, number]>,
+): void {
+  const blankLine = /\n[ \t]*\r?\n/g;
+  let start = 0;
+  let separator: RegExpExecArray | null;
+  while ((separator = blankLine.exec(segment)) !== null) {
+    collectInlineCodeSpans(segment.slice(start, separator.index), base + start, ranges);
+    start = separator.index + separator[0].length;
+  }
+  collectInlineCodeSpans(segment.slice(start), base + start, ranges);
 }
 
 /** A run of 3+ backticks or tildes opens a fence that runs to its closing line. */
@@ -65,8 +84,12 @@ function fencedCodeRanges(input: string): Array<[number, number]> {
         fence = null;
       }
     } else {
-      const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-      if (open) fence = { start: offset, char: open[1][0], length: open[1].length };
+      // CommonMark: a backtick fence's info string may not contain a backtick.
+      const open = /^ {0,3}(?:(`{3,})(?!.*`)|(~{3,}))/.exec(line);
+      if (open) {
+        const run = open[1] ?? open[2];
+        fence = { start: offset, char: run[0], length: run.length };
+      }
     }
 
     offset = rangeEnd;
@@ -162,15 +185,15 @@ function looksBinary(content: string): boolean {
   return content.includes('\0');
 }
 
-/** Returns null when the token names no existing path, so it stays as written. */
+/**
+ * Returns null when the token names no existing path inside the workspace, so it
+ * stays as written. A path outside the workspace is never probed: a token like
+ * `\\server\share` would otherwise make a network request for every prompt
+ * that mentions one.
+ */
 function expandMention(filePath: string, workspace: string): string | null {
   const resolved = resolveWorkspaceMentionPath(workspace, filePath);
-  if (!resolved) {
-    const outside = isAbsolute(filePath) ? filePath : resolve(workspace, filePath);
-    return existsSync(outside)
-      ? formatMentionError(filePath, 'path is outside the workspace')
-      : null;
-  }
+  if (!resolved) return null;
   if (!existsSync(resolved.filePath)) return null;
 
   try {
@@ -256,7 +279,11 @@ export async function expandShellCommands(
   workspace: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const matches = [...input.matchAll(/^!(\S.*)$/gm)];
+  const fenced = fencedCodeRanges(input);
+  const matches = [...input.matchAll(/^!(\S.*)$/gm)].filter(
+    // A `!` line inside fenced code is shown, not run (#261).
+    (match) => !isInsideCode(fenced, match.index ?? 0),
+  );
   if (matches.length === 0) return input;
   let output = '';
   let cursor = 0;

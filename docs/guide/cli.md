@@ -180,9 +180,10 @@ not yet carried on the SDK `result` event.
 
 **Exit codes.** Print mode exits 1 when the run fails or throws — a slash command this host cannot
 perform, a command invoked with a bad argument, or a failure inside a host-performed command such as
-`/review`. A cancelled run exits 0 wherever the cancel landed, since cancelling is not failing;
-Ctrl+C (SIGINT) or SIGTERM cancels the run, runs SessionEnd hooks, and exits 130 or 143, and a second
-one exits at once. Everything else exits 0.
+`/review`. A cancelled run exits 0 wherever the cancel landed, since cancelling is not failing; a run
+that failed exits 1 even if its reader goes away afterwards; Ctrl+C (SIGINT) or SIGTERM cancels the
+run, runs SessionEnd hooks, and exits 130 or 143, and a second one exits at once. Everything else
+exits 0.
 
 ## SDK usage
 
@@ -208,6 +209,7 @@ for await (const event of query('Explain this code', {
 ```
 
 The `result` event's `answer` is the text print mode would print: empty when the model did not answer.
+The `json` and `stream-json` result documents carry it too.
 
 `AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop` — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK. Host notices (such as saved memories or review candidates) emit `notice` (`{type: 'notice', message}`).
 

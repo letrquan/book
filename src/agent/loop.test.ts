@@ -6538,6 +6538,8 @@ describe('runAgentLoop — the clip notice names a file Read can open (#248)', (
   it('lets Read open the full output a clipped result was saved to', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'book-loop-spill-'));
     const toolOutputRoot = mkdtempSync(join(tmpdir(), 'book-loop-spill-out-'));
+    const strayPath = join(toolOutputRoot, 'another-session.txt').split('\\').join('/');
+    writeFileSync(strayPath, 'secret from another project');
     let providerTurn = 0;
     let spillPath = '';
     const provider: Provider = {
@@ -6552,6 +6554,11 @@ describe('runAgentLoop — the clip notice names a file Read can open (#248)', (
           yield {
             type: 'tool_call',
             toolCall: { id: 'read_1', name: 'Read', arguments: { file_path: spillPath, limit: 5 } },
+          };
+          // Another project's clipped output in the same directory stays out of reach.
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'read_2', name: 'Read', arguments: { file_path: strayPath } },
           };
         } else {
           yield { type: 'text', content: 'read it' };
@@ -6584,6 +6591,9 @@ describe('runAgentLoop — the clip notice names a file Read can open (#248)', (
       const read = results.find((result) => result.toolCallId === 'read_1');
       expect(read?.status).toBe('success');
       expect(read?.content).toContain('first line');
+      const stray = results.find((result) => result.toolCallId === 'read_2');
+      expect(stray?.status).not.toBe('success');
+      expect(stray?.content ?? '').not.toContain('secret');
     } finally {
       rmSync(workspace, { recursive: true, force: true });
       rmSync(toolOutputRoot, { recursive: true, force: true });

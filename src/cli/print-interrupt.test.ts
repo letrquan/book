@@ -23,6 +23,10 @@ describe('installPrintInterrupt', () => {
       reason: 'user_cancelled',
     });
     expect(notices.join('')).toContain('Ctrl+C again');
+    // A native `throwIfAborted()` rethrows the reason as is: it must be an Error, or the
+    // user reads `[object Object]` (review of #285).
+    expect(installed.signal.reason).toBeInstanceOf(Error);
+    expect(() => installed?.signal.throwIfAborted()).toThrow(/cancel/i);
   });
 
   it('leaves at once on a second signal', () => {
@@ -62,6 +66,12 @@ describe('printExitCode', () => {
   it('is 1 for a failed run, and for a run that threw', () => {
     expect(printExitCode({ outcome: failed, aborted: false })).toBe(1);
     expect(printExitCode({ aborted: false })).toBe(1);
+  });
+
+  it('lets a failed outcome decide even when the signal aborted afterwards', () => {
+    // A stream-json reader that closes after a failed run's `result` must not turn it green.
+    expect(printExitCode({ outcome: failed, aborted: true })).toBe(1);
+    expect(printExitCode({ outcome: stalled, aborted: true })).toBe(0);
   });
 
   it('is 0 for an aborted run wherever the abort landed, since cancelling is not failing', () => {

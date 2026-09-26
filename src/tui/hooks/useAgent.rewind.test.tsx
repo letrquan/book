@@ -402,7 +402,9 @@ describe('useAgent rewind integration', () => {
     expect(callOrder.indexOf('compact')).toBeLessThan(callOrder.indexOf('capture'));
     expect(callOrder.indexOf('capture')).toBeLessThan(callOrder.indexOf('turn_checkpoint'));
     expect(callOrder.indexOf('turn_checkpoint')).toBeLessThan(callOrder.indexOf('expand-at'));
-    expect(callOrder.indexOf('expand-at')).toBeLessThan(callOrder.indexOf('expand-shell'));
+    // Shell expansion runs on what the user typed, so it comes first (#261 review).
+    expect(callOrder.indexOf('turn_checkpoint')).toBeLessThan(callOrder.indexOf('expand-shell'));
+    expect(callOrder.indexOf('expand-shell')).toBeLessThan(callOrder.indexOf('expand-at'));
     expect(timeline.readRecords(sessionId).map((record) => record.type)).toContain(
       'turn_checkpoint',
     );

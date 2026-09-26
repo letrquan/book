@@ -136,14 +136,33 @@ describe('expandAtMentions — only real paths outside code (#261)', () => {
     expect(loneTick).toContain('Contents of src/app.ts:');
   });
 
-  it('still reports an existing file outside the workspace', () => {
-    const ws = codeWorkspace();
+  it('leaves an existing file outside the workspace as written, without a note', () => {
+    const ws = workspace();
     const outside = join(dirname(ws), `${basename(ws)}-secret.txt`);
     writeFileSync(outside, 'secret');
     dirs.push(outside);
-    const result = expandAtMentions(`Read @../${basename(outside)}`, ws);
-    expect(result).toContain('path is outside the workspace');
-    expect(result).not.toContain('secret\n');
+    const input = `Read @../${basename(outside)}`;
+    expect(expandAtMentions(input, ws)).toBe(input);
+  });
+
+  it('leaves network paths as written', () => {
+    const ws = workspace();
+    const unc = ['Read @', '\\', '\\', 'server', '\\', 'share', '\\', 'x.txt'].join('');
+    for (const input of ['Read @//server/share/x.txt', unc]) {
+      expect(expandAtMentions(input, ws)).toBe(input);
+    }
+  });
+
+  it('does not take a line that opens with a closed inline span for a fence', () => {
+    const ws = codeWorkspace();
+    const result = expandAtMentions('```npm test``` fails\nsee @src/app.ts', ws);
+    expect(result).toContain('Contents of src/app.ts:');
+  });
+
+  it('does not pair backticks across a blank line', () => {
+    const ws = codeWorkspace();
+    const result = expandAtMentions('press the ` key\n\nthen read @src/app.ts and `x`', ws);
+    expect(result).toContain('Contents of src/app.ts:');
   });
 
   it('leaves a mention outside the workspace that does not exist as written', () => {

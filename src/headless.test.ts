@@ -1344,8 +1344,11 @@ describe('runHeadless — reasoning tags in text mode', () => {
         expect(complete?.text).toBe('Answer');
       }
       const final = records.find((record) => 'result' in record) as
-        { result: { messages: Array<{ role: string; content: string }> } } | undefined;
+        | { result: { answer?: string; messages: Array<{ role: string; content: string }> } }
+        | undefined;
       expect(final?.result.messages.at(-1)?.content, outputFormat).toBe('Answer');
+      // The documents carry the answer too, so a json host need not rebuild it (#248).
+      expect(final?.result.answer, outputFormat).toBe('Answer');
     }
   });
 });

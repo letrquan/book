@@ -59,6 +59,12 @@ describe('getRetryLabel', () => {
   it('says a re-sent turn is being re-sent, not retried inside one request (#244)', () => {
     expect(getRetryLabel('reissue', 1, 3, 2000)).toBe('Re-sending the turn in 2s · attempt 1/3');
   });
+
+  it('says an output-cap continuation continues rather than retries', () => {
+    expect(getRetryLabel('continue', 1, 10, 0)).toBe(
+      'Continuing past the output limit · attempt 1/10',
+    );
+  });
 });
 
 describe('AgentMessage retry layout contract', () => {

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { Readable } from 'stream';
+import { PassThrough, Readable } from 'stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runHeadless } from './headless.js';
 import { AgentSession } from './session/agent-session.js';
@@ -9,6 +9,7 @@ import { createDefaultRegistry, createRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
 import { toolSuccess } from './tools/result.js';
 import type { AgentConfig } from './types/runtime.js';
+import type { AgentManager } from './agents/manager.js';
 
 let tempDirs: string[] = [];
 
@@ -83,14 +84,14 @@ function streamOptions(signal: AbortSignal | undefined, writes: string[]) {
   };
 }
 
-function abortingRegistry(controller: AbortController) {
+function abortingRegistry(controller: AbortController, reason?: unknown) {
   const registry = createRegistry();
   registry.register({
     name: 'AbortRun',
     description: 'Abort the run while this tool executes.',
     parameters: { type: 'object', properties: {} },
     execute: async () => {
-      controller.abort();
+      controller.abort(reason);
       return toolSuccess('aborted');
     },
   });
@@ -167,6 +168,39 @@ describe('runHeadless — SessionEnd reports how the run ended (#248)', () => {
     ]);
   });
 
+  it('keeps the abort reason when the abort lands inside a tool', async () => {
+    const cases = [
+      {
+        reason: Object.assign(new Error('Cancelled'), { bookTerminalReason: 'user_cancelled' }),
+        expected: { status: 'cancelled', stopReason: 'user_cancelled' },
+      },
+      {
+        reason: new DOMException('The operation timed out.', 'TimeoutError'),
+        expected: { status: 'timed_out', stopReason: 'provider_timeout' },
+      },
+    ];
+    for (const { reason, expected } of cases) {
+      const controller = new AbortController();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => sse([toolDelta('call-1', 'AbortRun')])),
+      );
+      const writes: string[] = [];
+
+      await expect(
+        runHeadless(
+          sessionEndConfig(),
+          abortingRegistry(controller, reason),
+          streamOptions(controller.signal, writes),
+        ),
+      ).rejects.toThrow();
+
+      expect(sessionEndRecords(writes)).toEqual([
+        expect.objectContaining({ reason: 'aborted', ...expected }),
+      ]);
+    }
+  });
+
   it('reports a failed run when the run throws after SessionStart', async () => {
     const writes: string[] = [];
 
@@ -225,4 +259,72 @@ describe('runHeadless — SessionEnd runs after the session is disposed (#248)',
 
     expect(disposedFirst()).toBe(true);
   });
+});
+
+describe('runHeadless — an abort stops waiting (#248)', () => {
+  it('stops waiting for background children when the run is cancelled', async () => {
+    const controller = new AbortController();
+    const fakeManager = {
+      // Children that never finish: only the abort can end the wait.
+      waitForIdle: vi.fn(() => {
+        setTimeout(() => controller.abort(), 20);
+        return new Promise<void>(() => {});
+      }),
+      listPendingCompletions: vi.fn(async () => []),
+      acknowledgeCompletion: vi.fn(async () => {}),
+      dispose: vi.fn(),
+    } as unknown as AgentManager;
+    const registry = createRegistry();
+    registry.register({
+      name: 'SpawnFakeAgent',
+      description: 'Leave a background child running.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, context) => {
+        context.runtime!.agentManager = fakeManager;
+        return toolSuccess('spawned');
+      },
+    });
+    let request = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        request++;
+        return request === 1
+          ? sse([toolDelta('call-1', 'SpawnFakeAgent')])
+          : sse([textDelta('started it')]);
+      }),
+    );
+    const writes: string[] = [];
+
+    const result = await runHeadless(
+      sessionEndConfig(),
+      registry,
+      streamOptions(controller.signal, writes),
+    );
+
+    expect(result.outcome.status).toBe('cancelled');
+    expect(sessionEndRecords(writes)).toEqual([expect.objectContaining({ reason: 'aborted' })]);
+  }, 10_000);
+
+  it('stops reading a prompt from stdin when the run is cancelled', async () => {
+    for (const inputFormat of ['text', 'stream-json'] as const) {
+      const controller = new AbortController();
+      const stdin = new PassThrough();
+      setTimeout(() => controller.abort(), 20);
+      const writes: string[] = [];
+
+      await expect(
+        runHeadless(sessionEndConfig(), createDefaultRegistry(), {
+          ...streamOptions(controller.signal, writes),
+          prompt: undefined,
+          inputFormat,
+          stdin,
+        }),
+      ).rejects.toThrow();
+
+      expect(sessionEndRecords(writes), inputFormat).toEqual([
+        expect.objectContaining({ reason: 'aborted' }),
+      ]);
+    }
+  }, 10_000);
 });

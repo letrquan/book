@@ -1,5 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { Readable } from 'stream';
 import { tmpdir } from 'os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runHeadless } from './headless.js';
@@ -189,6 +190,52 @@ describe('runHeadless — the answer is only ever the model answering (#248)', (
     const opening = result.messages.find((message) => message.role === 'user');
     expect(opening?.derivedContent).toBe(true);
     expect(result.answer).toBe('Reviewed.');
+  });
+});
+
+describe('runHeadless — each prompt says why it failed (#248)', () => {
+  it("reports a later prompt's refusal even after an earlier prompt reported an error", async () => {
+    const config = makeConfig();
+    const hook = join(config.workspace, 'block-second.cjs');
+    writeFileSync(
+      hook,
+      [
+        "let input = '';",
+        "process.stdin.on('data', (chunk) => (input += chunk));",
+        "process.stdin.on('end', () => {",
+        "  if (JSON.parse(input).user_prompt.includes('second')) {",
+        "    process.stdout.write(JSON.stringify({ action: 'block', message: 'not today' }));",
+        '  }',
+        '});',
+      ].join('\n'),
+    );
+    config.settings.hooks.UserPromptSubmit = [{ command: `node "${hook}"`, env: {} }];
+    // The first prompt ends on an error the loop reports itself: a rejected tool batch.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sse([
+          toolCallDelta(0, 'dup', 'Read', { file_path: 'a.txt' }),
+          toolCallDelta(1, 'dup', 'Read', { file_path: 'b.txt' }),
+        ]),
+      ),
+    );
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      inputFormat: 'stream-json',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdin: Readable.from([
+        `${JSON.stringify({ type: 'user', content: 'first prompt' })}\n`,
+        `${JSON.stringify({ type: 'user', content: 'second prompt' })}\n`,
+      ]),
+      stdout: capture().stdout,
+    });
+
+    expect(result.outcome.reason).toBe('blocked_by_policy');
+    expect(stderrWrites.join('')).toContain('duplicate tool call IDs');
+    expect(stderrWrites.join('')).toContain('error: not today');
   });
 });
 
