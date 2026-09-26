@@ -8,45 +8,28 @@ import {
   truncateSync,
   writeFileSync,
 } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  loadPersistentShellSpec,
   readJsonFile,
   writeJsonAtomic,
   type PersistentShellSpec,
   type PersistentShellState,
 } from './jobs/persistent-store.js';
 import { terminateProcessTree, waitForProcessClose } from './jobs/process-tree.js';
-import { system32Executable } from './system32.js';
 
 const specPath = process.argv[2];
 if (!specPath) {
   process.exitCode = 2;
   throw new Error('Missing persistent shell specification path.');
 }
-const loadedSpec = readJsonFile<PersistentShellSpec>(specPath);
-if (
-  !loadedSpec ||
-  loadedSpec.version !== 1 ||
-  createHash('sha256').update(loadedSpec.token).digest('hex') !== loadedSpec.tokenHash
-) {
+const loaded = loadPersistentShellSpec(specPath);
+if ('error' in loaded) {
   process.exitCode = 2;
-  throw new Error('Invalid persistent shell specification.');
+  throw new Error(loaded.error);
 }
-// `effectiveCommand` is the raw user command now that sandboxing rides on
-// `exec`, so a spec claiming `sandboxed` without one would run completely
-// unconfined while the job panel and the [sandboxed] marker said otherwise.
-// Refuse to start rather than silently downgrade. The reverse is legitimate:
-// an unsandboxed command also carries an `exec` when the session shell is
-// spawned as argv (Git Bash or PowerShell on Windows).
-if (loadedSpec.sandboxed && !loadedSpec.exec) {
-  process.exitCode = 2;
-  throw new Error(
-    'Invalid persistent shell specification: sandboxed is set but no sandboxed argv is present.',
-  );
-}
-const spec: PersistentShellSpec = loadedSpec;
+const spec: PersistentShellSpec = loaded.spec;
 /**
  * How long a contended record write may block before it counts as failed. The first record and
  * the terminal record wait up to a second for Windows to release the file: the job cannot start
@@ -75,7 +58,7 @@ let state: PersistentShellState = {
   command: spec.command,
   title: spec.title,
   workdir: spec.workdir,
-  status: 'running',
+  status: 'starting',
   notify: spec.notify,
   sandboxed: spec.sandboxed,
   runnerPid: process.pid,
@@ -102,11 +85,11 @@ function persist(budgetMs = RECORD_RENAME_RETRY_BUDGET_MS): void {
 }
 
 /**
- * A non-terminal write: the child's pid, the heartbeat, the switch to `stopping`, a log
- * rotation. One that fails must not end the runner, or its job would keep running with nothing
- * left to stop it; the next heartbeat writes the same state again. The failure is counted on the
- * record, which that next write carries, rather than noted in the job's log: the log is the
- * command's own output, and the model reads it through BashOutput.
+ * A non-terminal write: the heartbeat, the switch to `stopping`, a log rotation. One that fails
+ * must not end the runner, or its job would keep running with nothing left to stop it; the next
+ * heartbeat writes the same state again. The failure is counted on the record, which that next
+ * write carries, rather than noted in the job's log: the log is the command's own output, and the
+ * model reads it through BashOutput.
  */
 function persistBestEffort(what: string): void {
   try {
@@ -249,11 +232,14 @@ function failStartup(what: string, error: unknown): never {
 }
 
 /**
- * Create the log, write the first record, then start the command under its supervisor. The
- * first record is the one write that cannot be best effort: the manager waits for it to call
- * the job started, and without it the manager gives up, forgets the job and deletes its files
- * while the command runs on with nothing left to stop it. So until it has landed, a failure
- * ends the runner before anything runs, and says why on stderr, which `start()` reports.
+ * Create the log, write the first record, then start the command under its supervisor. The first
+ * record says `starting`, and the job counts as started once the second, carrying the command's
+ * pid, has landed: `start()` returns on the first record whose status is not `starting`, so a
+ * record that claimed otherwise would report a persistent job with nothing to stop. That first
+ * write is therefore the one that cannot be best effort — without it the manager gives up, forgets
+ * the job and deletes its files while the command runs on with nothing left to stop it. So until
+ * it has landed, a failure ends the runner before anything runs; a failure on the second ends the
+ * command first, and both say why on stderr, which `start()` reports.
  */
 function startRunner(): void {
   try {
@@ -269,17 +255,13 @@ function startRunner(): void {
   let proc: ChildProcess;
   try {
     // `process.execArgv` carries tsx's loader when this runner itself runs from source.
-    proc = spawn(
-      process.execPath,
-      [...process.execArgv, supervisorPath(), specPath, system32Executable('taskkill')],
-      {
-        cwd: spec.workdir,
-        env: { ...process.env, ...spec.env },
-        detached: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true,
-      },
-    );
+    proc = spawn(process.execPath, [...process.execArgv, supervisorPath(), specPath], {
+      cwd: spec.workdir,
+      env: { ...process.env, ...spec.env },
+      detached: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
   } catch (error) {
     appendBounded(error instanceof Error ? `${error.message}\n` : `${String(error)}\n`);
     process.exitCode = 1;
@@ -290,8 +272,6 @@ function startRunner(): void {
   // The supervisor's stdin is its lifeline to this process: never written and never closed, it
   // reaches end-of-file only when this process is gone. See job-supervisor.ts.
   proc.stdin?.on('error', () => {});
-  state = { ...state, childPid: proc.pid };
-  persistBestEffort('child pid');
   proc.stdout?.on('data', appendBounded);
   proc.stderr?.on('data', appendBounded);
   proc.on('error', (error) => {
@@ -302,6 +282,17 @@ function startRunner(): void {
     if (terminal || state.status === 'stopping') return;
     finish(code === 0 ? 'exited' : 'failed', code, signal);
   });
+  state = { ...state, status: 'running', childPid: proc.pid };
+  try {
+    persist();
+  } catch (error) {
+    // The manager calls the job started only once it reads this record. Without it, it would
+    // give up, forget the job and delete its files while the command ran on: end the command
+    // first, then say why.
+    terminal = true;
+    void terminateTree().finally(() => failStartup('write its job record', error));
+    return;
+  }
   heartbeat = setInterval(() => persistBestEffort('heartbeat'), 1_000);
   controlPoll = setInterval(() => {
     if (!existsSync(spec.controlPath) || terminal) return;

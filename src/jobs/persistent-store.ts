@@ -7,7 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { FILE_CONTENTION_CODES, sleepSync } from '../agents/atomic-json.js';
 import { repositoryHash } from '../agents/git-isolation.js';
@@ -190,6 +190,35 @@ export function readJsonFile<T>(path: string): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The spec at `path`, when it is one a runner or supervisor may execute. Both read it from disk,
+ * so both apply these checks: a spec whose token does not match its hash was not written by Book,
+ * and a spec that claims `sandboxed` without a sandboxed argv would run the raw command unconfined
+ * while the job panel said otherwise. `effectiveCommand` is the raw user command now that
+ * sandboxing rides on `exec`, so that combination is refused rather than silently downgraded; the
+ * reverse is legitimate, since an unsandboxed command also carries an `exec` when the session shell
+ * is spawned as argv (Git Bash or PowerShell on Windows).
+ */
+export function loadPersistentShellSpec(
+  path: string,
+): { spec: PersistentShellSpec } | { error: string } {
+  const spec = readJsonFile<PersistentShellSpec>(path);
+  if (
+    !spec ||
+    spec.version !== 1 ||
+    createHash('sha256').update(spec.token).digest('hex') !== spec.tokenHash
+  ) {
+    return { error: 'Invalid persistent shell specification.' };
+  }
+  if (spec.sandboxed && !spec.exec) {
+    return {
+      error:
+        'Invalid persistent shell specification: sandboxed is set but no sandboxed argv is present.',
+    };
+  }
+  return { spec };
 }
 
 export function listPersistentStates(paths: PersistentJobPaths): PersistentShellState[] {

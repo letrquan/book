@@ -281,7 +281,9 @@ All notable changes to this project are documented in this file.
   the hook had started kept the hook's pipes open and Book could not exit: after `/exit` a
   `SessionEnd` hook like that left the process running with no UI until a second Ctrl+C.
   Book now ends the hook's whole process tree (`taskkill /T` on Windows, the hook's own
-  process group elsewhere) and lets go of its pipes.
+  process group elsewhere) and lets go of its pipes. A hook is also decided as soon as its own
+  process exits: a process it leaves running in the background no longer holds each event for the
+  full 10 s, and is left running.
 - **A persistent background job's command no longer outlives its runner (#267).**
   - **Orphans:** when the detached runner died other than through a stop (a crash, Task
     Manager, `kill -9`), its command kept running with nothing left to stop it. The command now
@@ -297,10 +299,13 @@ All notable changes to this project are documented in this file.
     instead of blocking the runner for a second.
   - **The terminal record:** when every attempt to write it fails, the runner now says so at the
     end of the job's log, with the job's real outcome, instead of exiting silently.
+  - **The pid:** a persistent job now counts as started only once its record carries the command's
+    pid, so `Bash` reports it.
   - **Book's own process:** a record write that still failed after its retry budget could throw
     from the shell manager's 500 ms monitor and end Book. The lost-job write, an acknowledgement
     and a stop request now fail softly: the first two are retried or kept in memory, and a stop
-    request that could not be written fails the stop and leaves the job `running`.
+    request that could not be written fails the stop (KillShell names why, the TUI shows a notice)
+    and leaves the job `running`.
 - **A permission prompt no longer covers what the model said before it.** The prompt's diff
   preview is read from disk after the prompt first draws, and the prompt grows when it lands.
   The transcript above measured its height only on its own layout changes, so it kept the taller

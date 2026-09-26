@@ -13,7 +13,8 @@ import { systemClock, type Clock } from '../clock.js';
 import { system32Executable } from '../system32.js';
 
 const GROUP_POLL_INTERVAL_MS = 25;
-const TERMINATE_GRACE_MS = 1_500;
+/** How long a process group is given between SIGTERM and SIGKILL, and how long taskkill may take. */
+export const TERMINATE_GRACE_MS = 1_500;
 
 /** A signal target exists when it accepts signal 0, or rejects it as another user's. */
 function signalTargetExists(target: number): boolean {
@@ -96,7 +97,11 @@ export function waitForProcessClose(proc: ChildProcess, timeoutMs: number): Prom
 
 type WindowsTreeKill = (pid: number) => Promise<boolean>;
 
-async function runTaskkill(pid: number): Promise<boolean> {
+/**
+ * `taskkill /T /F` on the tree rooted at `pid`, resolved through `system32Executable` so a
+ * workspace on the PATH cannot stand in for it. Reports whether the kill actually ran.
+ */
+export async function runTaskkill(pid: number): Promise<boolean> {
   return new Promise((resolve) => {
     execFile(
       system32Executable('taskkill'),

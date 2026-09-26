@@ -46,7 +46,8 @@ export interface BackgroundShellState {
   pendingUiCompletions: BackgroundShellRecord[];
   pendingAgentCompletions: BackgroundShellRecord[];
   refresh: () => void;
-  stopOrDismiss: (shellId: string) => Promise<void>;
+  /** Resolves with the reason the stop or dismiss failed, or `undefined` when it did not. */
+  stopOrDismiss: (shellId: string) => Promise<string | undefined>;
   acknowledge: (shellId: string) => void;
   acknowledgeAgentCompletion: (shellId: string, sequence?: number) => void;
 }
@@ -128,16 +129,24 @@ export function useBackgroundShells(
     };
   }, [manager, parentSessionId, refresh]);
 
+  // A stop that cannot even be requested (its control file is unwritable) rejects. The TUI calls
+  // this without awaiting, so a rejection here would be unhandled and end Book; it reports instead.
   const stopOrDismiss = useCallback(
-    async (shellId: string) => {
+    async (shellId: string): Promise<string | undefined> => {
       const shell = manager.get(shellId);
-      if (!shell) return;
-      if (['exited', 'failed', 'killed', 'timed_out', 'lost'].includes(shell.status)) {
-        manager.dismiss(shellId);
-      } else {
-        await manager.stop(shellId);
+      if (!shell) return undefined;
+      try {
+        if (['exited', 'failed', 'killed', 'timed_out', 'lost'].includes(shell.status)) {
+          manager.dismiss(shellId);
+        } else {
+          await manager.stop(shellId);
+        }
+        return undefined;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      } finally {
+        refresh();
       }
-      refresh();
     },
     [manager, refresh],
   );

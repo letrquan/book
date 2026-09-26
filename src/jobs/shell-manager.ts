@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { systemClock, type Clock } from '../clock.js';
+import { createDebugLogger } from '../debug-log.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -31,6 +32,7 @@ const MAX_OUTPUT_RESULT = 32_000;
 const MAX_RETAINED_TERMINAL_SHELLS = 20;
 const TERMINAL_SHELL_TTL_MS = 15 * 60_000;
 const PERSISTENT_HEARTBEAT_STALE_MS = 10_000;
+const log = createDebugLogger('jobs');
 
 export type ShellJobEvent =
   | { type: 'background_job_start'; job: BackgroundShellRecord }
@@ -173,15 +175,7 @@ export class ShellJobManager {
       else this.store.shells.set(state.id, this.recordFromPersistentState(state));
     }
     if (!this.monitor) {
-      this.monitor = setInterval(() => {
-        // An exception thrown from this timer would be uncaught and end Book. Whatever failed is
-        // tried again on the next tick.
-        try {
-          this.refreshPersistentJobs();
-        } catch {
-          // Retried on the next tick.
-        }
-      }, 500);
+      this.monitor = setInterval(() => this.refreshPersistentJobs(), 500);
       this.monitor.unref();
     }
   }
@@ -436,9 +430,13 @@ export class ShellJobManager {
         completionDeliveredSequence: shell.completionDeliveredSequence ?? 0,
         completionAcknowledgedSequence: shell.completionAcknowledgedSequence ?? 0,
       });
-    } catch {
+    } catch (error) {
       // The acknowledgement stands in memory. If its write still fails, a restarted Book offers
       // this completion once more, which is the whole cost.
+      log.warn('could not acknowledge a job completion', {
+        id: shell.id,
+        error: String(error),
+      });
     }
   }
 
@@ -602,7 +600,13 @@ export class ShellJobManager {
 
   private refreshPersistentJobs(): void {
     for (const shell of this.store.shells.values()) {
-      if (shell.lifetime === 'persistent') this.refreshPersistentRecord(shell);
+      if (shell.lifetime !== 'persistent') continue;
+      try {
+        this.refreshPersistentRecord(shell);
+      } catch (error) {
+        // Retried on the next refresh; the shell keeps its last known state meanwhile.
+        log.warn('persistent job refresh failed', { id: shell.id, error: String(error) });
+      }
     }
   }
 
@@ -653,13 +657,23 @@ export class ShellJobManager {
     };
     try {
       writeJsonAtomic(recordPath, lost);
-    } catch {
+    } catch (error) {
       // The write still failed after its retry budget (on Windows, a reader holds the record). The
       // next refresh finds the same stale record and tries again; until then the job reads as lost
       // and its runner files stay, since the record does not say so yet.
+      log.warn('could not record a lost job', { id: state.id, error: String(error) });
       return lost;
     }
-    if (this.persistentPaths) removePersistentRunnerFiles(this.persistentPaths, state.id);
+    if (this.persistentPaths) {
+      try {
+        removePersistentRunnerFiles(this.persistentPaths, state.id);
+      } catch (error) {
+        log.warn("could not remove a lost job's runner files", {
+          id: state.id,
+          error: String(error),
+        });
+      }
+    }
     return lost;
   }
 
@@ -790,7 +804,16 @@ export class ShellJobManager {
     const shell = this.store.shells.get(shellId);
     if (shell?.retentionTimer) clearTimeout(shell.retentionTimer);
     if (shell?.lifetime === 'persistent' && this.persistentPaths) {
-      removePersistentJobFiles(this.persistentPaths, shell.id);
+      try {
+        removePersistentJobFiles(this.persistentPaths, shell.id);
+      } catch (error) {
+        // The record is dropped from memory either way. Leftover files are loaded again on the
+        // next start as a finished job, which can be dismissed again.
+        log.warn("could not remove a dismissed job's files", {
+          id: shell.id,
+          error: String(error),
+        });
+      }
     }
     this.store.shells.delete(shellId);
   }

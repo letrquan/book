@@ -248,6 +248,75 @@ describe('runHooks — process tree', () => {
       killSurvivors(pids);
     }
   }, 40_000);
+
+  it('decodes a character split across two reads', async () => {
+    const script = join(dir, 'split.cjs');
+    writeFileSync(
+      script,
+      [
+        "const bytes = Buffer.from(JSON.stringify({ action: 'modify', output: 'price: €5' }));",
+        "const cut = bytes.indexOf(Buffer.from('€')) + 1;",
+        'process.stdout.write(bytes.subarray(0, cut));',
+        'setTimeout(() => process.stdout.write(bytes.subarray(cut)), 100);',
+      ].join('\n'),
+    );
+    const results = await runHooks(
+      [{ command: `"${process.execPath}" "${script}"`, env: {} }],
+      'PostToolUse',
+      ctx({ event: 'PostToolUse' as HookEvent }),
+    );
+    expect(results[0].modifiedOutput).toBe('price: €5');
+  });
+
+  it('caps each output stream on its own', async () => {
+    const script = join(dir, 'noisy.cjs');
+    writeFileSync(
+      script,
+      [
+        "process.stderr.write('x'.repeat(700 * 1024));",
+        "process.stdout.write(JSON.stringify({ action: 'block', message: 'no' }));",
+      ].join('\n'),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const results = await runHooks(
+        [{ command: `"${process.execPath}" "${script}"`, env: {} }],
+        'PreToolUse',
+        ctx(),
+      );
+      expect(results[0]).toMatchObject({ action: 'block', message: 'no' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not wait for a process the hook leaves running', async () => {
+    const pidPath = join(dir, 'background.pid');
+    const script = join(dir, 'leaves-one-running.cjs');
+    writeFileSync(
+      script,
+      [
+        "const { spawn } = require('child_process');",
+        "const background = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });",
+        `require('fs').writeFileSync(${JSON.stringify(pidPath)}, process.pid + ' ' + background.pid);`,
+        "process.stdout.write(JSON.stringify({ action: 'block', message: 'decided' }));",
+        'process.exit(0);',
+      ].join('\n'),
+    );
+    const startedAt = Date.now();
+    try {
+      const results = await runHooks(
+        [{ command: `"${process.execPath}" "${script}"`, env: {} }],
+        'PreToolUse',
+        ctx(),
+      );
+      expect(results[0]).toMatchObject({ action: 'block', message: 'decided' });
+      // Well inside the 10 s timeout: the hook's own exit decided it.
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+    } finally {
+      killSurvivors(readPids(pidPath));
+    }
+  }, 20_000);
 });
 
 describe('runHooks — matcher filtering', () => {

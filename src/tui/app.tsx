@@ -1184,6 +1184,15 @@ export function App({
     [backgroundShells.shells, managedAgents.selectAgent],
   );
 
+  const stopOrDismissShell = useCallback(
+    (jobId: string) => {
+      void backgroundShells.stopOrDismiss(jobId).then((failure) => {
+        if (failure) flashNotice(failure, 'warning', 6_000);
+      });
+    },
+    [backgroundShells, flashNotice],
+  );
+
   // Terminal jobs are removed from the active list as soon as they finish or
   // stop. Leave their detail view even when notifications are disabled.
   useEffect(() => {
@@ -3126,7 +3135,7 @@ export function App({
               onCancel={() => managedAgents.setSurface('main')}
               onStopOrDismiss={(jobId) => {
                 if (backgroundShells.shells.some((shell) => shell.id === jobId)) {
-                  void backgroundShells.stopOrDismiss(jobId);
+                  stopOrDismissShell(jobId);
                 } else {
                   void managedAgents.stopOrDismiss(jobId);
                 }
@@ -3156,7 +3165,7 @@ export function App({
               }}
               onStopOrDismiss={(jobId) => {
                 if (backgroundShells.shells.some((shell) => shell.id === jobId)) {
-                  void backgroundShells.stopOrDismiss(jobId);
+                  stopOrDismissShell(jobId);
                 } else {
                   void managedAgents.stopOrDismiss(jobId);
                 }
