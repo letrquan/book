@@ -35,12 +35,6 @@ const TERMINAL_SHELL_TTL_MS = 15 * 60_000;
 const PERSISTENT_HEARTBEAT_STALE_MS = 10_000;
 /** How long a lost-job record that could not be written waits before the next attempt. */
 const LOST_WRITE_RETRY_MS = 5_000;
-/**
- * How long `disposeAsync` waits for session-shell trees to come down before giving up on them.
- * `terminateProcessTree` spends at most `TERMINATE_GRACE_MS` twice, so a tree that can be ended
- * is; this is the ceiling on the ones that cannot.
- */
-const DISPOSE_TEARDOWN_BUDGET_MS = 5_000;
 const log = createDebugLogger('jobs');
 
 export type ShellJobEvent =
@@ -181,8 +175,6 @@ export class ShellJobManager {
     string,
     { lost: PersistentShellState; retryAt: number }
   >();
-  /** In-flight tree teardowns started by `dispose()`, for `disposeAsync` to await. */
-  private readonly teardowns: Promise<boolean>[] = [];
   /** Set by `dispose()`: a disposed manager takes on no new work. */
   private disposed = false;
 
@@ -494,7 +486,7 @@ export class ShellJobManager {
   }
 
   /**
-   * End every session shell, and return once the trees are down (or the bound elapsed).
+   * End every session shell this manager owns.
    *
    * `dispose()` used to `kill()` the direct child, which is the wrapper rather than the command:
    * on Windows the worker it started kept running with the console still attached, and on POSIX
@@ -506,34 +498,11 @@ export class ShellJobManager {
    * Persistent jobs are untouched: a job started with `lifetime: "persistent"` is explicitly one
    * that outlives Book, and it is stopped through its runner's control file instead.
    *
-   * The teardown is started by `dispose()` itself, so a caller that never awaits is still held
-   * open by it: the escalation and the poll run on the loop. `disposeAsync` is for a caller that
-   * has to know the trees are down before it does something else.
+   * It returns before the trees are down, because a teardown is not something a tick can wait for.
+   * It needs no one to wait for it either: the escalation and the poll run on the loop, and their
+   * children and timers hold a host open until they finish — which is what a caller that ends by
+   * letting the process exit needs, and the only caller this had.
    */
-  async disposeAsync(timeoutMs = DISPOSE_TEARDOWN_BUDGET_MS): Promise<void> {
-    this.dispose();
-    await this.awaitTeardowns(timeoutMs);
-  }
-
-  /** Wait for the tree teardowns `dispose()` started, bounded by `timeoutMs`. */
-  async awaitTeardowns(timeoutMs = DISPOSE_TEARDOWN_BUDGET_MS): Promise<void> {
-    if (!this.teardowns.length) return;
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        Promise.allSettled(this.teardowns),
-        new Promise<void>((resolve) => {
-          // Bounded: a tree that cannot be ended is already reported by the job it belonged to,
-          // and an exit that waits forever is worse than one command that outlived it.
-          timer = setTimeout(resolve, timeoutMs);
-          timer.unref?.();
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
   dispose(): void {
     this.disposed = true;
     if (this.monitor) clearInterval(this.monitor);
@@ -553,10 +522,11 @@ export class ShellJobManager {
           shell.process.kill();
           continue;
         }
-        this.teardowns.push(
-          terminateProcessTree(shell.process, shell.pid, (timeoutMs) =>
-            waitForShellClose(shell, timeoutMs),
-          ),
+        // Started and not awaited on purpose: the escalation and the poll run on the loop, and
+        // their children and timers are what hold a host open until the tree is down. The
+        // boolean it resolves to is a report for a caller that wanted one, and there is none.
+        void terminateProcessTree(shell.process, shell.pid, (timeoutMs) =>
+          waitForShellClose(shell, timeoutMs),
         );
       }
     }

@@ -127,14 +127,11 @@ describe('SessionRuntime', () => {
     expect(kill).not.toHaveBeenCalled();
   });
 
-  it('resolves disposeAsync once the shell manager reports its teardowns settled', async () => {
-    const runtime = new SessionRuntime();
-    const awaitTeardowns = vi.spyOn(runtime.shellManager, 'awaitTeardowns');
-
-    await runtime.disposeAsync('test');
-
-    expect(runtime.isDisposed).toBe(true);
-    expect(awaitTeardowns).toHaveBeenCalledTimes(1);
+  it('claims session shells by default, and only a child runtime gives them up', () => {
+    // A Task subagent's and a managed agent's runtime is disposed when their run ends, so a
+    // foreground `Bash` that reaches its deadline is killed there rather than adopted (#302).
+    expect(new SessionRuntime().ownsSessionShells).toBe(true);
+    expect(new SessionRuntime({ ownsSessionShells: false }).ownsSessionShells).toBe(false);
   });
 
   it('owns one normalized skill registry and invalidates context on reload', () => {

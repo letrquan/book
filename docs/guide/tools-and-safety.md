@@ -462,7 +462,12 @@ So a `NODE_ENV` that Book defaulted itself never reaches a command, on any path 
 expansion, clipboard and git helpers, and Book's own detached job runner and supervisor, which is
 the one a persistent job's command would otherwise inherit through. A `NODE_ENV` you exported
 before starting Book always passes through, and so does one set explicitly — in `ToolContext.env`,
-a hook's own `env`, or an MCP server's `env`.
+a hook's own `env`, or an MCP server's `env`. **Explicit wins, even when it agrees**: a hook or a
+server configured with `NODE_ENV=production` gets `production`, because that is the one value where
+a request and Book's own default look identical, and a setting somebody wrote down is not deleted
+by looking like something else. What is stripped instead is the environment `ToolContext.env` _is_
+— Book's own, marker and all — since a copy of `process.env` is not a request for the default it
+carries.
 
 ## Shell command timeouts
 
@@ -476,10 +481,13 @@ When a foreground command is still running at its deadline it is **not killed**.
 session background shell, and the result reports it as a success that names the `shell_id` and the
 output it produced so far, so the next call is a `BashOutput` rather than a re-run of whatever
 took five minutes. Read it with `BashOutput` (see below) and stop it with `KillShell`. A command
-the host cannot hand over — no shell manager for the context, a session already ending, or a
-process that exited as the deadline arrived — is ended as before and reports itself as killed,
-returning whatever it printed before the kill: the two outcomes call for different next moves, so
-the failure message names the deadline it hit and the ways past it.
+the host cannot hand over — no shell manager for the context, a session already ending, a process
+that exited as the deadline arrived, or a command run by a **subagent or a managed agent** — is
+ended as before and reports itself as killed, returning whatever it printed before the kill: the
+two outcomes call for different next moves, so the failure message names the deadline it hit and
+the ways past it. Subagents and managed agents are refused on purpose: each owns a runtime that is
+disposed when its own run ends, and a background shell adopted there would be destroyed at the end
+of the very run that reported it as still running.
 
 `BOOK_TOOL_TIMEOUT_MS` overrides the default for every tool, `Bash` included, and where it is set it
 is also the **ceiling** on what a single call may ask for: lowering it to 30000 caps a model that
@@ -521,21 +529,32 @@ The wait is bounded by the same ceiling as every other deadline in force (`toolT
 rather than quietly shortened, exactly as `Bash` refuses an over-limit `timeout`. It ends early if
 the turn is cancelled, and it kills nothing when it does: the shell keeps running, the result
 reports the output there is, and a later call can wait on it again. A shell that is still running
-and has printed nothing new says so, and names the call that would wait instead of polling.
+and has printed nothing new says so, and what it says next depends on the call: a read is pointed
+at `wait_ms` instead of another poll, and a wait that ran out reports how long it waited, so the
+model is not told to pass the argument it just passed.
 
-Session shells and `lifetime: "persistent"` jobs are both supported. A session shell reports its
-transitions as events, so the wait subscribes; a persistent job lives in another process, so its
-record file is polled a few times a second until the job is terminal or the wait is up.
+Session shells and `lifetime: "persistent"` jobs are both supported. A shell's terminal
+transition is always an event from the manager, so the wait subscribes; a persistent job lives in
+another process, so the manager's monitor reads its record file a few times a second and the wait
+ends on the transition that read reports.
 
 ## What ends a background shell
 
 A **session** shell — the default, and what a foreground command that reached its deadline becomes
 — ends with Book. On exit, or when the session is cleared or replaced, Book ends the whole process
 tree the command started, not just the wrapper it was handed: the process group on macOS and Linux,
-and `taskkill /T /F` on Windows, which walks the tree from a root that has to still be alive, so
-the wrapper is not killed first. This is the same escalation `KillShell` uses, and it is why a
-`server &`-style command leaves nothing running after Book exits. Processes that have already
-detached from the command's tree are not covered.
+and `taskkill /T /F` on Windows. This is the same escalation `KillShell` uses, and the wrapper is
+not killed first on either platform, because the teardown has to walk from a root that is still
+alive.
+
+What that covers, honestly, differs by platform. On macOS and Linux the signal goes to the process
+group, and a process group outlives the shell that led it — so `npm run dev &` started through a
+Git Bash wrapper is ended with Book. On Windows `taskkill /T` walks the tree from that live root, so
+a command whose wrapper has **already exited** leaves descendants that nothing here can reach: run
+`npm run dev &` inside a Git Bash window, close the window, and Book has no wrapper left to walk
+from, and the dev server keeps running. Stop those yourself, or use a session shell that stays in
+the foreground. A process that re-parents itself out of the tree — `setsid`, a Windows service, a
+daemon that double-forks — is not covered on either platform.
 
 A job started with `lifetime: "persistent"` is deliberately exempt: it is meant to outlive Book, so
 it is not ended by any of this. It is stopped through its runner's control file, and

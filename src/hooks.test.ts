@@ -485,6 +485,21 @@ describe('runHooks — child environment', () => {
     expect(reported().nodeEnv).toBe('staging');
   });
 
+  it('passes a hook that declares the same NODE_ENV Book defaulted', async () => {
+    // `production` is the one value an explicit request and Book's own default agree on. A hook
+    // that writes it down has asked for it, and a filter that cannot tell the two apart deletes
+    // a setting the project declared.
+    const results = await runHooks(
+      [reportEnvHook({ NODE_ENV: 'production' })],
+      'Stop',
+      ctx({ event: 'Stop' as HookEvent }),
+    );
+
+    expect(results[0].action).toBe('continue');
+    expect(reported().nodeEnv).toBe('production');
+    expect(reported().marker).toBeNull();
+  });
+
   it('passes a NODE_ENV the user set before Book started', async () => {
     delete process.env.BOOK_DEFAULTED_NODE_ENV;
     process.env.NODE_ENV = 'development';

@@ -450,6 +450,15 @@ describe('MCP stdio server environment', () => {
     expect(reported.nodeEnv).toBe('staging');
   });
 
+  it('passes a server that declares the same NODE_ENV Book defaulted', async () => {
+    // `production` is the one value an explicit request and Book's own default agree on, so it
+    // is the one a server can declare and lose.
+    const reported = await reportedEnv({ mode: 'report-env', env: { NODE_ENV: 'production' } });
+
+    expect(reported.nodeEnv).toBe('production');
+    expect(reported.marker).toBeNull();
+  });
+
   it('passes a NODE_ENV the user set before Book started', async () => {
     delete process.env.BOOK_DEFAULTED_NODE_ENV;
     process.env.NODE_ENV = 'development';

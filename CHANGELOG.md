@@ -411,9 +411,10 @@ All notable changes to this project are documented in this file.
   clipboard and git helpers, and Book's own detached job runner and supervisor — the last being the
   one a persistent job's command would otherwise inherit through. A `NODE_ENV` the user exported
   before starting Book still passes through, as does one set explicitly in `ToolContext.env`, a
-  hook's own `env`, or an MCP server's `env`. An override that merely restates Book's own
-  environment counts as no choice, which matters because `ToolContext.env` _is_ `process.env` in
-  the agent.
+  hook's own `env`, or an MCP server's `env` — including one declaring `NODE_ENV=production`, which
+  is the single value an explicit request and Book's default agree on. An override carrying the
+  marker is a copy of Book's own environment and so counts as no choice, which matters because
+  `ToolContext.env` _is_ `process.env` in the agent.
 - **Session shells end with Book, process tree and all** (#314). `dispose()` sent `SIGTERM` to the
   direct child, which is the shell wrapper rather than the command: on macOS and Linux the session
   shell leads its own process group, so the group survived Book, and on Windows the worker it
@@ -423,8 +424,9 @@ All notable changes to this project are documented in this file.
   whose teardown is already under way is marked as such and skipped by dispose, so an abort in the
   same tick as a `dispose()` cannot kill the root out from under its own teardown. A
   `lifetime: "persistent"` job is untouched: it exists to outlive Book. `dispose()` still returns
-  before the trees are down, because it cannot promise otherwise; `disposeAsync` on the runtime and
-  on `ShellJobManager` awaits them, bounded at 5 s, for a caller that has work to do in between.
+  before the trees are down, because it cannot promise otherwise; the teardown's own children and
+  timers hold an exit open until they finish, which is what a host that ends by letting Node
+  process its handles needs.
 - **A foreground command that reaches its timeout is not killed** (#302). It used to die at the
   deadline, and the model got `timed_out` with no result and usually a re-run of the whole gate that
   took five minutes to time out. The running process is now handed to the session's

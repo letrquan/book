@@ -17,10 +17,11 @@
  * would otherwise hand the default on to a persistent job that outlives Book.
  *
  * `ToolContext.env` is `process.env` in the agent, so the default arrives through the override
- * layer as well; and a persistent job's spec carries the environment it was started with. An
- * override that restates the base value has chosen nothing, so it does not count as a request
- * for it — otherwise the two layers together would put the default straight back on every
- * command. An override that differs is still an explicit request, and wins.
+ * layer as well. The marker is what tells that apart from a request: an override object carrying
+ * the marker is a copy of Book's own environment, and its NODE_ENV is the default arriving by a
+ * second route. Every other override object is a declaration — even one whose NODE_ENV happens to
+ * equal `production`, which is the single value an explicit request and Book's default share, and
+ * the one a value-comparison rule would silently delete.
  */
 
 /** Set alongside the default `NODE_ENV`, and stripped from every child. */
@@ -40,9 +41,12 @@ export function buildChildEnv(
   delete env[DEFAULTED_NODE_ENV_MARKER];
   // Only Book's own default is removed, and only when nothing asked for it. A NODE_ENV that
   // arrived some other way is the user's and the command's to keep.
-  const requestedNodeEnv = overrides.NODE_ENV;
-  const choseNodeEnv = requestedNodeEnv !== undefined && requestedNodeEnv !== base.NODE_ENV;
-  if (base[DEFAULTED_NODE_ENV_MARKER] !== undefined && !choseNodeEnv) {
+  //
+  // An override carrying the marker is a copy of Book's own environment rather than a declaration:
+  // `ToolContext.env` is `process.env` in the agent, and a persistent job's spec carries the
+  // environment its runner was started with. Both carry the default without having asked for it.
+  const overrideIsAmbient = overrides[DEFAULTED_NODE_ENV_MARKER] !== undefined;
+  if (overrideIsAmbient || (base[DEFAULTED_NODE_ENV_MARKER] !== undefined && !overrides.NODE_ENV)) {
     delete env.NODE_ENV;
   }
   return env;

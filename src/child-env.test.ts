@@ -35,11 +35,23 @@ describe('buildChildEnv', () => {
     expect(env[DEFAULTED_NODE_ENV_MARKER]).toBeUndefined();
   });
 
-  it('drops the default when the override layer is the environment it came from', () => {
+  it('keeps an explicit NODE_ENV that happens to be the value Book defaulted', () => {
+    // A hook or an MCP server configured with `env: { NODE_ENV: "production" }` asked for exactly
+    // what Book asked for itself. Reading the agreement as consent to drop it deletes a setting
+    // the project wrote down, and the value is indistinguishable from the default by content
+    // alone.
+    const env = buildChildEnv(DEFAULTED_ENV, { NODE_ENV: 'production' });
+
+    expect(env.NODE_ENV).toBe('production');
+    expect(env[DEFAULTED_NODE_ENV_MARKER]).toBeUndefined();
+  });
+
+  it('drops the default when the override layer is a copy of Book’s own environment', () => {
     // The agent path hands `ToolContext.env` the ambient environment itself, so the invented
-    // NODE_ENV arrives through the override layer as well. An override that restates what the
-    // base already says has chosen nothing, and believing it would put #293 straight back.
-    const env = buildChildEnv(DEFAULTED_ENV, DEFAULTED_ENV);
+    // NODE_ENV arrives through the override layer as well. The marker is what tells those two
+    // apart: an override carrying it is a copy of `process.env`, and its NODE_ENV is Book's
+    // default reaching a child by a second route rather than a request for it.
+    const env = buildChildEnv(DEFAULTED_ENV, { ...DEFAULTED_ENV });
 
     expect(env.NODE_ENV).toBeUndefined();
     expect(env[DEFAULTED_NODE_ENV_MARKER]).toBeUndefined();

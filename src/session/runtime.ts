@@ -18,13 +18,6 @@ import type { DiscoverSkillsOptions } from '../skills.js';
 import type { Message } from '../types/messages.js';
 
 /**
- * How long `disposeAsync` waits for process trees to come down. A tree that can be ended is ended
- * inside `TERMINATE_GRACE_MS` twice over; this is the ceiling on the ones that cannot, so a
- * command that refuses to die delays an exit rather than wedging it.
- */
-const DISPOSE_TEARDOWN_MS = 5_000;
-
-/**
  * Canonical names of the tools a conversation actually ran.
  *
  * `usedToolNames` gates memory quarantine: a conversation that fetched the web,
@@ -74,6 +67,12 @@ export interface SessionRuntimeOptions {
    * conversation knows what that conversation already read.
    */
   history?: Message[];
+  /**
+   * Whether this runtime is the session's long-lived one. `false` marks a runtime that is disposed
+   * when one run ends — a Task subagent's, a managed agent's — and so may not adopt a timed-out
+   * command as a background shell it would then destroy. Defaults to `true`.
+   */
+  ownsSessionShells?: boolean;
 }
 
 /** Mutable resources owned by one logical agent session. */
@@ -117,6 +116,17 @@ export class SessionRuntime {
   readonly unattendedRefusalNotices = new Set<string>();
   /** Per-session tool call/failure counters keyed by canonical tool name. */
   readonly toolCallStats = new Map<string, { calls: number; failures: Record<string, number> }>();
+  /**
+   * Whether this runtime is the session's long-lived one, and so may hand a long-running command
+   * to its shell manager as a background job it will still own afterwards.
+   *
+   * A Task subagent and a managed agent each build a runtime of their own and dispose it when their
+   * run ends, and disposing a runtime ends every session shell it holds — so a command adopted there
+   * would be killed at the end of the very run that told the model it was not killed. Those two
+   * pass `ownsSessionShells: false` and a foreground `Bash` that reaches its deadline is killed
+   * there, as it was before #302.
+   */
+  readonly ownsSessionShells: boolean;
   /**
    * Canonical names of tools executed in this conversation, seeded from the
    * conversation it was built for. A runtime is replaced rather than cleared
@@ -164,6 +174,7 @@ export class SessionRuntime {
     this.traceId = options.traceId ?? crypto.randomUUID();
     this.skillRegistry = options.skillRegistry;
     this.skillDiscoveryOptions = options.skillDiscoveryOptions ?? {};
+    this.ownsSessionShells = options.ownsSessionShells ?? true;
     this.usedToolNames = toolNamesFromHistory(options.history ?? []);
   }
 
@@ -334,25 +345,6 @@ export class SessionRuntime {
 
   get isDisposed(): boolean {
     return this.disposed;
-  }
-
-  /**
-   * Dispose every resource, then wait for the process trees to actually come down.
-   *
-   * `dispose()` alone is synchronous and cannot promise that anything is gone: a session shell's
-   * tree is ended by an external `taskkill` on Windows and by a signal to the process group on
-   * POSIX, and both take longer than the tick dispose runs in. A host that ends by letting Node
-   * exit once its handles close is held open by the teardown's own handles anyway, but an exit
-   * path that has something to do between the abort and the process going away — a final render,
-   * a last write — needs a promise to await. The wait is bounded, so a tree that refuses to die
-   * costs a few seconds and not a hung exit.
-   */
-  async disposeAsync(
-    reason = 'session_runtime_disposed',
-    timeoutMs = DISPOSE_TEARDOWN_MS,
-  ): Promise<void> {
-    this.dispose(reason);
-    await this.shellManager.awaitTeardowns(timeoutMs);
   }
 
   /** Dispose every resource registered by this session exactly once. */

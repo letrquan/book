@@ -42,15 +42,25 @@ function tail(stream: string): string {
   return stream.length <= OVERFLOW_STREAM_TAIL ? stream : stream.slice(-OVERFLOW_STREAM_TAIL);
 }
 
+/** The line a killed command's silence speaks with. */
+const KILLED_WITHOUT_OUTPUT = '(no output was captured before the command was killed)';
+/** The same silence, for a command that is not dead: nothing to report yet, and no ending claimed. */
+const SILENT_SO_FAR = '(no output yet)';
+
 /**
  * A killed command is judged on whatever it managed to say, and both streams
  * count: a build that dies mid-run usually leaves its only clue on stderr. They
  * are labelled rather than concatenated, because the two are written on
  * independent schedules and gluing them together presents a timeline that never
  * happened.
+ *
+ * `empty` is the line that stands in for a command that said nothing, and what it may
+ * claim depends on the outcome — so it is the caller's to state. A command that
+ * was killed gets a line about the kill; one still running gets a line that does
+ * not describe an ending that has not happened.
  */
-function labelStreams(stdout: string, stderr: string): string {
-  if (!stdout && !stderr) return '(no output was captured before the command was killed)';
+function labelStreams(stdout: string, stderr: string, empty = KILLED_WITHOUT_OUTPUT): string {
+  if (!stdout && !stderr) return empty;
   if (!stderr) return stdout;
   if (!stdout) return stderr;
   return `--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`;
@@ -249,6 +259,15 @@ async function bashForeground(
 
     let stdout = '';
     let stderr = '';
+    /**
+     * Every chunk, in the order it arrived, for a command that may be handed to a shell manager.
+     *
+     * The two per-stream strings cannot answer "what did it print, in what order" — they only hold
+     * each stream's half, and a manager that inherits the command needs one buffer the model reads
+     * as a single stream. A reference per chunk is the whole cost: the chunk text is already
+     * retained by the per-stream strings, so this is an array of pointers and no second copy.
+     */
+    const chunks: string[] = [];
     let settled = false;
     let cancelled = false;
     let timedOut = false;
@@ -300,12 +319,19 @@ async function bashForeground(
      * background costs the model nothing it was not already paying, and everything after it is
      * one `BashOutput` away.
      *
-     * Returns `undefined` when the move is impossible — no manager for this context, a disposed
-     * one, or a process that has already exited — and the caller then kills the command and
-     * reports the timeout exactly as before.
+     * Returns `undefined` when the move is impossible and the caller then kills the command and
+     * reports the timeout exactly as before:
+     *
+     * - no manager for this context, or a disposed one;
+     * - a process that has already exited;
+     * - a runtime that is disposed when its run ends. A Task subagent's and a managed agent's are:
+     *   adopting there would hand the command to a manager that is torn down at the end of the same
+     *   run, which is the "moved to the background, not killed" promise made to a model that then
+     *   watches the command die anyway.
      */
     const adoptAsBackground = (): BackgroundShellRecord | undefined => {
-      if (ctx.runtime?.isDisposed) return undefined;
+      if (ctx.runtime && (!ctx.runtime.ownsSessionShells || ctx.runtime.isDisposed))
+        return undefined;
       let record: BackgroundShellRecord | undefined;
       try {
         record = manager(ctx).adopt({
@@ -315,7 +341,11 @@ async function bashForeground(
           workdir: built.workdir,
           sandboxed: built.sandboxed,
           startedAt,
-          initialOutput: labelStreams(stdout, stderr),
+          // Raw, and in arrival order. The manager's buffer becomes the single stream the model
+          // reads for the rest of this command's life, so what belongs in it is what the command
+          // printed — not the labelled two-report layout this call's own message uses, and not a
+          // placeholder for a command that has said nothing yet.
+          initialOutput: chunks.join(''),
           parentSessionId: ctx.parentSessionId,
           rootRunId: ctx.runContext?.rootRunId,
           parentRunId: ctx.runContext?.runId,
@@ -343,13 +373,26 @@ async function bashForeground(
           ok(
             [
               // The output so far, as the buffer-cap path reports it, so the model has the
-              // progress the command made before the move and not only a shell id.
-              labelStreams(tail(stdout), tail(stderr)),
+              // progress the command made before the move and not only a shell id. A command that
+              // has printed nothing says so without claiming it was killed — it was not.
+              labelStreams(tail(stdout), tail(stderr), SILENT_SO_FAR),
               `Command still running after ${timeout}ms; moved to background shell ${adopted.id}${
                 adopted.pid ? ` (pid ${adopted.pid})` : ''
               }, not killed. Its output so far is above. Next: BashOutput with shell_id="${adopted.id}" and wait_ms to wait for it to finish, or KillShell with shell_id="${adopted.id}" to stop it.`,
             ].join('\n'),
-            { backgrounded: true, shell: adopted },
+            {
+              backgrounded: true,
+              // The job, named. `cloneRecord` keeps the whole output buffer, and a command that ran
+              // for five minutes has megabytes of it — which the line above already carries, and
+              // which a host would then hold in every result, every rewind, and every transcript.
+              shell: {
+                id: adopted.id,
+                command: adopted.command,
+                pid: adopted.pid,
+                status: adopted.status,
+                lifetime: adopted.lifetime,
+              },
+            },
           ),
         );
         return;
@@ -385,6 +428,17 @@ async function bashForeground(
       // stops the runtime from killing it on dispose: dispose ends session shells through the
       // manager, which walks the whole tree.
       ctx.runtime?.releaseChildProcess(proc);
+      if (!backgrounded) return;
+      // Everything this call held on the process is let go. A listener left on `proc` keeps this
+      // closure reachable, and the closure holds the text the command printed before the move —
+      // so an adopted command would keep this call's whole capture alive for as long as it runs,
+      // long after the result that reported it was read and forgotten. The stream readers are
+      // already detached by `adoptAsBackground`; these are the lifecycle ones.
+      proc.off('close', onClose);
+      proc.off('error', onError);
+      stdout = '';
+      stderr = '';
+      chunks.length = 0;
     };
     const finish = async (result: ToolResult | (() => ToolResult)) => {
       if (settled) return;
@@ -407,6 +461,7 @@ async function bashForeground(
     const onStderr = (data: unknown) => append('stderr', data);
     const append = (target: 'stdout' | 'stderr', data: unknown) => {
       const chunk = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
+      chunks.push(chunk);
       if (target === 'stdout') stdout += chunk;
       else stderr += chunk;
       if (stdout.length + stderr.length <= MAX_FOREGROUND_BUFFER || bufferExceeded) return;
@@ -426,7 +481,7 @@ async function bashForeground(
 
     proc.stdout?.on('data', onStdout);
     proc.stderr?.on('data', onStderr);
-    proc.on('close', (code) => {
+    const onClose = (code: number | null) => {
       closed = true;
       if (cancelled || timedOut || backgrounded || bufferExceeded) return;
       void finish(
@@ -434,11 +489,13 @@ async function bashForeground(
           ? ok((built.sandboxed ? '[sandboxed] ' : '') + (stdout || '(no output)'))
           : fail(stderr || `Exit code: ${code}`, stdout),
       );
-    });
-    proc.on('error', (error) => {
+    };
+    const onError = (error: Error) => {
       if (!cancelled && !timedOut && !backgrounded && !bufferExceeded)
         void finish(fail(error.message));
-    });
+    };
+    proc.on('close', onClose);
+    proc.on('error', onError);
     ctx.signal?.addEventListener('abort', onAbort, { once: true });
     if (ctx.signal?.aborted) onAbort();
   });
@@ -496,16 +553,14 @@ async function bashBackground(
   }
 }
 
-/** How often a waiting `BashOutput` checks a persistent job's state and output file. */
-const WAIT_POLL_INTERVAL_MS = 250;
-
 /**
  * Resolve once `shellId` is terminal, or `waitMs` elapses, or the call is aborted.
  *
- * A session shell reports its transitions as events, so it is subscribed rather than polled. A
- * persistent job lives in another process, so its record file is the only thing to read and it
- * is polled — 250ms is well under the 500ms a status change takes to be worth noticing, and a
- * wait that ends a few hundred milliseconds late costs nothing next to the turn it saved.
+ * Everything is waited on through the manager's events, persistent jobs included: the monitor that
+ * reads a persistent job's record file is what emits its terminal transition, so a separate poll
+ * only ever re-read every persistent record in the store to learn the one thing the monitor was
+ * going to say within half a second anyway. A wait that ends that late costs nothing next to the
+ * turn it saved.
  */
 function waitForShell(
   shells: ShellJobManager,
@@ -514,40 +569,25 @@ function waitForShell(
   signal: AbortSignal | undefined,
 ): Promise<void> {
   return new Promise((resolve) => {
-    let poll: NodeJS.Timeout | undefined;
     const timer = setTimeout(() => done(), waitMs);
     const unsubscribe = shells.subscribe((event) => {
       if (event.type === 'background_job_result' && event.job.id === shellId) done();
     });
     function done() {
       clearTimeout(timer);
-      clearInterval(poll);
       unsubscribe();
       signal?.removeEventListener('abort', done);
       resolve();
     }
-    const terminalNow = () => {
-      const shell = shells.get(shellId);
-      return shell === undefined || isTerminalShellStatus(shell.status);
-    };
-    if (terminalNow()) {
+    if (signal?.aborted) {
       done();
       return;
     }
-    if (signal) {
-      if (signal.aborted) {
-        done();
-        return;
-      }
-      // An aborted wait ends early and kills nothing: the shell is still there, and a second
-      // call can wait on it again.
-      signal.addEventListener('abort', done, { once: true });
-    }
-    if (shells.get(shellId)?.lifetime === 'persistent') {
-      poll = setInterval(() => {
-        if (terminalNow()) done();
-      }, WAIT_POLL_INTERVAL_MS);
-    }
+    signal?.addEventListener('abort', done, { once: true });
+    // Checked after subscribing rather than before. A shell that finished between the two would
+    // report to nobody, and the wait would sit out its full length for a job already done — the
+    // whole cost of a wait, for nothing.
+    if (isTerminalShellStatus(shells.get(shellId)?.status ?? 'lost')) done();
   });
 }
 
@@ -556,7 +596,7 @@ async function bashOutput(args: Record<string, unknown>, ctx: ToolContext): Prom
   if (!shellId) return fail('shell_id must be a non-empty string');
   const shells = manager(ctx);
   if (!shells.get(shellId)) return fail(`Shell ${shellId} not found`);
-  const requestedWait = readNumber(args, 'wait_ms') ?? readNumber(args, 'waitMs');
+  const requestedWait = readNumber(args, 'wait_ms');
   // Refused rather than clamped, exactly as Bash refuses an over-limit `timeout`: the model would
   // otherwise believe it had a ten-minute wait and get a shorter one.
   const ceiling = toolTimeoutCeilingMs(ctx.env);
@@ -566,9 +606,8 @@ async function bashOutput(args: Record<string, unknown>, ctx: ToolContext): Prom
         `Re-run with a wait_ms at or below ${ceiling}ms.`,
     );
   }
-  if (requestedWait !== undefined && requestedWait > 0) {
-    await waitForShell(shells, shellId, requestedWait, ctx.signal);
-  }
+  const waited = requestedWait !== undefined && requestedWait > 0;
+  if (waited) await waitForShell(shells, shellId, requestedWait, ctx.signal);
   const result = shells.readOutput(shellId);
   if (!result) return fail(`Shell ${shellId} not found`);
   const parts = [`Shell ${result.shell.id}: ${result.shell.status}`];
@@ -587,11 +626,14 @@ async function bashOutput(args: Record<string, unknown>, ctx: ToolContext): Prom
       : result.output,
   );
   // A shell that is still running and has said nothing new is the case where polling costs the
-  // most and helps the least, so the result names the cheaper call rather than leaving the model
-  // to infer it from a status line.
+  // most and helps the least. Which advice it gets depends on the call: a poll is told the cheaper
+  // call, and a wait that ran out is told how long it waited, since telling the model to pass the
+  // argument it just passed reads as though the wait was refused.
   if (!isTerminalShellStatus(result.shell.status) && result.output === '(no new output)') {
     lines.push(
-      `Still running with no new output. Call BashOutput with wait_ms (up to ${ceiling}ms) to wait for it to finish instead of polling again.`,
+      waited
+        ? `Still running with no new output after waiting ${requestedWait}ms. Call BashOutput again with wait_ms to wait longer, or KillShell to stop it.`
+        : `Still running with no new output. Call BashOutput with wait_ms (up to ${ceiling}ms) to wait for it to finish instead of polling again.`,
     );
   }
   return ok(lines.join('\n'), result);

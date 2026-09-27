@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -532,7 +533,10 @@ setInterval(() => {}, 1000);\n`,
     }
     const grandchildPid = Number(readFileSync(pidPath, 'utf8'));
 
-    await runtime.disposeAsync();
+    // `dispose()` starts the teardown and returns; the tree is walked outside the tick, so the
+    // grandchild is polled for rather than awaited. The pending call is a second witness: the
+    // foreground teardown promise is resolved before that result comes back.
+    runtime.dispose();
     const result = await pending;
 
     expect(result.structuredError?.message).toMatch(/cancel/i);
@@ -603,6 +607,75 @@ setTimeout(() => { console.log('after'); process.exit(0); }, 1500);\n`,
     expect(quiet.content).toContain('(no new output)');
   });
 
+  it('seeds the buffer with raw output in arrival order, not labelled streams', async () => {
+    // The buffer a `BashOutput` reads is the command's own output, and the two streams are
+    // interleaved as they arrived. `--- stdout ---` headers are a presentation of one report, and
+    // they would sit in the middle of everything the model reads next.
+    const c = ctxWith({ workspaceRoot: process.cwd() });
+    const command = nodeCommand(
+      'adopted-order.cjs',
+      `process.stderr.write('err-first\\n');
+setTimeout(() => console.log('out-second'), 50);
+setTimeout(() => process.exit(0), 1500);\n`,
+    );
+
+    const started = await bash.execute({ command, timeout: 600 }, c);
+    const record = c.backgroundShells?.shells.get(shellIdFrom(started));
+
+    expect(record?.output).toContain('err-first');
+    expect(record?.output).toContain('out-second');
+    expect(record?.output).not.toContain('--- stdout ---');
+    expect(record?.output).not.toContain('--- stderr ---');
+    expect(record?.output.indexOf('err-first')).toBeLessThan(record!.output.indexOf('out-second'));
+  });
+
+  it('does not say a command was killed when it was moved to the background', async () => {
+    // A silent command has no output, and the placeholder that stands in for a killed command's
+    // silence says it was killed — directly above the line saying it was not.
+    const c = ctxWith({ workspaceRoot: process.cwd() });
+    const command = nodeCommand('adopted-silent.cjs', `setInterval(() => {}, 1000);\n`);
+
+    const result = await bash.execute({ command, timeout: 300 }, c);
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('(no output yet)');
+    expect(result.content).not.toMatch(/no output was captured/);
+    expect(result.content).toMatch(/not killed/i);
+  });
+
+  it('carries the job reference in its data, not a second copy of the output', async () => {
+    // `cloneRecord` keeps the shell's whole buffer, and a long-running command's buffer is
+    // megabytes. Everything a host needs to point `BashOutput` at the job fits in a few fields,
+    // and the output is already in the message above it.
+    const c = ctxWith({ workspaceRoot: process.cwd() });
+    const command = nodeCommand(
+      'adopted-heavy.cjs',
+      `console.log('x'.repeat(200_000));
+setTimeout(() => process.exit(0), 1500);\n`,
+    );
+
+    const result = await bash.execute({ command, timeout: 600 }, c);
+
+    expect(result.status).toBe('success');
+    expect(result.data).toMatchObject({ backgrounded: true, shell: { id: shellIdFrom(result) } });
+    expect(JSON.stringify(result.data).length).toBeLessThan(2_000);
+  });
+
+  it('leaves nothing of this call attached to the command it adopted', async () => {
+    // The manager is the reader from here on. A listener left on the process keeps this call's
+    // closure — and the text it captured — alive for as long as the command runs. What remains on
+    // the process is the manager's own set: one reader per stream, one of each lifecycle event.
+    const c = ctxWith({ workspaceRoot: process.cwd() });
+    const started = await bash.execute({ command: slowCommand(), timeout: 300 }, c);
+    const record = c.backgroundShells?.shells.get(shellIdFrom(started));
+    const proc = record?.process as ChildProcess;
+
+    expect(proc.listenerCount('close')).toBe(1);
+    expect(proc.listenerCount('error')).toBe(1);
+    expect(proc.stdout?.listenerCount('data')).toBe(1);
+    expect(proc.stderr?.listenerCount('data')).toBe(1);
+  });
+
   it('gives the adopted shell the default background lifetime and notify policy', async () => {
     const c = ctxWith({ workspaceRoot: process.cwd() });
     const started = await bash.execute(
@@ -617,6 +690,45 @@ setTimeout(() => { console.log('after'); process.exit(0); }, 1500);\n`,
     expect(record?.status).toBe('running');
   });
 
+  it('adopts into the session runtime, which outlives the call', async () => {
+    const runtime = new SessionRuntime();
+    const c = ctxWith({ workspaceRoot: process.cwd(), runtime });
+
+    const result = await bash.execute({ command: slowCommand(), timeout: 300 }, c);
+
+    expect(result.status).toBe('success');
+    expect(result.content).toMatch(/moved to background shell shell_\d+/);
+    runtime.dispose();
+  });
+
+  /**
+   * A Task subagent and a managed agent each own a runtime that is disposed when their run ends, and
+   * disposing a runtime ends every session shell it holds. Adopting into one therefore hands a
+   * command to a manager that is torn down at the end of the same run — after the model has been
+   * told the command is running in the background and was not killed. The move is refused there and
+   * the old kill-and-`timed_out` result stands.
+   */
+  it('kills the command instead of adopting it into a run that is about to end', async () => {
+    const transientRuntime = new SessionRuntime({ ownsSessionShells: false });
+    const c = ctxWith({ workspaceRoot: process.cwd(), runtime: transientRuntime });
+    const marker = join(dir, 'transient-runtime-survived.txt');
+    const command = nodeCommand(
+      'adopted-transient.cjs',
+      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 1500);
+setInterval(() => {}, 1000);\n`,
+    );
+
+    const result = await bash.execute({ command, timeout: 300 }, c);
+
+    expect(result.status).toBe('timed_out');
+    expect(result.structuredError?.code).toBe('tool_timeout');
+    expect(result.content).not.toMatch(/moved to background shell/);
+    expect(c.backgroundShells?.shells.size ?? 0).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    expect(existsSync(marker)).toBe(false);
+    transientRuntime.dispose();
+  }, 15_000);
+
   it('keeps the adopted shell a session shell, so it ends with Book', async () => {
     const c = ctxWith({ workspaceRoot: process.cwd() });
     const started = await bash.execute(
@@ -627,10 +739,11 @@ setTimeout(() => { console.log('after'); process.exit(0); }, 1500);\n`,
     const adoptedPid = c.backgroundShells?.shells.get(shellId)?.pid;
     expect(adoptedPid).toBeDefined();
 
-    await (c.shellManager as ShellJobManager).disposeAsync();
+    (c.shellManager as ShellJobManager).dispose();
 
     expect(c.backgroundShells?.shells.has(shellId)).toBe(false);
-    // Session lifetime is a promise the record alone cannot keep: the process has to be gone.
+    // Session lifetime is a promise the record alone cannot keep: the process has to be gone. The
+    // teardown runs outside the tick dispose returns in, so it is polled for rather than awaited.
     await waitForPidGone(adoptedPid!);
   }, 15_000);
 
@@ -747,7 +860,7 @@ describe('BashOutput wait_ms', () => {
     expect(elapsed).toBeLessThan(4_000);
   });
 
-  it('returns after the wait, with no new output and advice, when the shell is still running', async () => {
+  it('returns after the wait, saying it is still running, when the shell has not finished', async () => {
     const c = ctx();
     const command = nodeCommand('wait-silent.cjs', `setInterval(() => {}, 1000);\n`);
     const started = await bash.execute({ command, run_in_background: true }, c);
@@ -759,9 +872,25 @@ describe('BashOutput wait_ms', () => {
 
     expect(result.status).toBe('success');
     expect(result.content).toContain('(no new output)');
-    expect(result.content).toMatch(/wait_ms/);
+    // The wait was the caller's own decision, so advice to pass it is advice the model just took
+    // and found wanting; what it needs here is how much longer the command has been running.
+    expect(result.content).toMatch(/still running/i);
+    expect(result.content).toMatch(/after waiting 400ms/);
+    expect(result.content).not.toMatch(/instead of polling/);
     expect(elapsed).toBeGreaterThanOrEqual(350);
     expect(elapsed).toBeLessThan(3_000);
+  });
+
+  it('advises a wait when the call asked for none', async () => {
+    const c = ctx();
+    const command = nodeCommand('wait-unasked.cjs', `setInterval(() => {}, 1000);\n`);
+    const started = await bash.execute({ command, run_in_background: true }, c);
+    const shellId = shellIdFrom(started);
+
+    const result = await bashOutput.execute({ shell_id: shellId }, c);
+
+    expect(result.content).toContain('(no new output)');
+    expect(result.content).toMatch(/call BashOutput with wait_ms/i);
   });
 
   it('stops waiting and leaves the shell running when the call is aborted', async () => {
