@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import type { AgentApplyResult, AgentRecord, AgentSnapshot, PatchCandidate } from './types.js';
+import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 
 interface GitResult {
@@ -21,7 +22,7 @@ function git(
     return new Promise((resolvePromise, reject) => {
       const child = spawn('git', args, {
         cwd,
-        env: { ...process.env, ...options.env },
+        env: buildChildEnv(process.env, options.env),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let stdout = '';
@@ -47,7 +48,7 @@ function git(
       args,
       {
         cwd,
-        env: { ...process.env, ...options?.env },
+        env: buildChildEnv(process.env, options?.env),
         encoding: 'utf8',
         maxBuffer: 50 * 1024 * 1024,
       },

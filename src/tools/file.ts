@@ -4,6 +4,7 @@ import { basename, extname, join, resolve as resolvePath } from 'node:path';
 import fg from 'fast-glob';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
+import { buildChildEnv } from '../child-env.js';
 import { markdownContentStart } from '../frontmatter.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { findRelaxedMatch } from './fuzzy-match.js';
@@ -23,6 +24,7 @@ import {
 } from './file-provenance.js';
 import {
   readLineMetadata,
+  READ_EMPTY_FILE_NOTICE,
   TOOL_RESULT_MAX_BYTES,
   toolFailure,
   toolSuccess,
@@ -443,22 +445,45 @@ const OUTLINE_TYPE = `[A-Za-z_$][\\w$.]*(?:${OUTLINE_GENERIC})?(?:\\[\\])*\\??`;
 const OUTLINE_KEYWORD = new RegExp(
   `^\\s+${OUTLINE_MODIFIERS}(?:function|class|interface|enum|namespace|def|func|fn|fun|struct|impl|trait|describe|it|test|constructor|get|set)\\b(?!\\s*(?:[:,;=?).]|->)|\\s*$)`,
 );
+/**
+ * A `union` at the indentation its class members sit at, which the keyword
+ * list cannot hold: listed there it would also match a call or an assignment
+ * named `union`, so what follows the word decides — a name (`union U {`) or the
+ * anonymous form's brace (`union {`), never an argument list, a `=`, or the
+ * punctuation that makes `union,` an import-list member.
+ */
+const OUTLINE_UNION_DECLARATION = /^\s+union\b(?!\s*(?:[:,;=?.]|->|\())/;
 // A test block reached through a modifier: `it.skip('later', () => {`,
 // `describe.each(cases)('x', …)`, `it.each<[number]>([[1]])('x', …)`,
 // `it.for([1, 2])('x', …)`, `test.extend({})('z', …)`, and Jest's table form,
-// `it.each` followed by a backtick. Any other chain counts when it is called
-// with a title (`it.custom('titled', …)`), so `it.next()` and
-// `test.context.onTestFailed(h)` stay out.
+// `it.each` followed by a backtick.
 const OUTLINE_TEST_MODIFIERS =
   '(?:skip|only|todo|each|for|concurrent|sequential|shuffle|fails|failing|runIf|skipIf|extend|serial|parallel|fixme|slow|describe|step)';
-const OUTLINE_TEST_CHAIN = new RegExp(
-  `^\\s+(?:describe|it|test)(?:(?:\\.${OUTLINE_TEST_MODIFIERS})+\\s*(?:(?:${OUTLINE_GENERIC})?\\s*\\(|\`)|(?:\\.[A-Za-z]+)+\\s*\\(\\s*['"\`])`,
+const OUTLINE_TEST_MODIFIER_CHAIN = new RegExp(
+  `^\\s+(?:describe|it|test)(?:\\.${OUTLINE_TEST_MODIFIERS})+\\s*(?:(?:${OUTLINE_GENERIC})?\\s*\\(|\`)`,
 );
-// A type whose members may sit deeper than OUTLINE_MAX_INDENT: a Java inner
-// class, a nested C# class, an `impl` inside a Rust `mod`. Its keyword is
-// followed by a name or type arguments, so `impl->value = f(` is not one.
+/**
+ * A chain of any other name counts when it is called with a title *and* a
+ * second argument: `it.custom('titled', () => {`, `it.effect('adds', () => …`.
+ * The callback is the second argument, and the comma before it is what says
+ * so. A title alone does not (`it.next('resume');`), and neither does a body
+ * somewhere on the line (`it.next('resume').then(() => {`) — a test call
+ * passes the callback to the chain member itself (#316).
+ */
+const OUTLINE_TEST_TITLE_CHAIN =
+  /^\s+(?:describe|it|test)(?:\.[A-Za-z_$][\w$]*)+\s*\(\s*(['"`])[^'"`\n]*\1\s*,/;
+const OUTLINE_TEST_CHAIN = new RegExp(
+  `${OUTLINE_TEST_MODIFIER_CHAIN.source}|${OUTLINE_TEST_TITLE_CHAIN.source}`,
+);
+/**
+ * A type whose members may sit deeper than OUTLINE_MAX_INDENT: a Java inner
+ * class, a nested C# class, a nested C++ `union`, an `impl` inside a Rust
+ * `mod`. Its keyword is followed by a name, type arguments, or — for the
+ * anonymous C/C++ forms — a brace, but never a `(`, so `union(a, b)` and
+ * `union(setA, setB);` are calls and not declarations.
+ */
 const OUTLINE_TYPE_DECLARATION = new RegExp(
-  `^\\s*${OUTLINE_MODIFIERS}(?:class|interface|enum|record|struct|trait|impl|object|namespace)(?:\\s+[A-Za-z_$@[]|\\s*<)`,
+  `^\\s*${OUTLINE_MODIFIERS}(?:(?:class|interface|enum|record|struct|union|trait|impl|object|namespace)(?:\\s+[A-Za-z_$@[]|\\s*<)|(?:struct|union)\\s*\\{)`,
 );
 // A method named first: `name(`, `async *entries(`, `#secret(`, `map<K extends Record<string, V>>(`.
 function outlineNameFirst(statement: string): RegExp {
@@ -500,12 +525,20 @@ const CPP_CLASS_SCOPE =
 // C++ access specifiers (`public:`, Qt's `signals:`). Tested without a trailing comment.
 const OUTLINE_TRANSPARENT_LINE =
   /^(?:#\s*(?:if|ifdef|ifndef|elif|else|endif|define|undef|include|pragma|region|endregion|error|warning|line)\b|#!?\[|(?:(?:public|private|protected)(?:\s+(?:slots|Q_SLOTS))?|signals|Q_SIGNALS)\s*:\s*$)/;
+/**
+ * A parenthesised group nested as deep as `OUTLINE_GENERIC` is, the way a macro argument
+ * list holding a call is: `noexcept(noexcept(a.swap(b)))`, `GUARDED_BY(mu_.lock())`. A flat
+ * `[^()]*` cannot hold even one inner `(`, and stops on the first `)`, which leaves the
+ * qualifier half-read and drops the member it belongs to (#316).
+ */
+const CPP_PARENS = String.raw`\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)`;
 // One thing that may follow a C++ member's parameter list before its body or
 // `;`: a qualifier, a qualifier macro such as `Q_DECL_OVERRIDE`, an attribute
 // or a trailing return type. `cppTailRest` reads it sticky from a local copy,
 // so a tail is read in one pass whatever it holds.
-const CPP_QUALIFIER =
-  /\s*(?:(?:const|volatile|override|final)\b|noexcept\b(?:\s*\([^()]*\))?|&&?|\[\[[^\]]*\]\]|[A-Z_][A-Z0-9_]*\b(?:\s*\([^()]*\))?|->[^;{=]*)/;
+const CPP_QUALIFIER = new RegExp(
+  `\\s*(?:(?:const|volatile|override|final)\\b|noexcept\\b(?:\\s*${CPP_PARENS})?|&&?|\\[\\[[^\\]]*\\]\\]|[A-Z_][A-Z0-9_]*\\b(?:\\s*${CPP_PARENS})?|->[^;{=]*)`,
+);
 // A class member bound to an arrow function: `name = (...) => {`, `#name = async (...) => {`.
 const OUTLINE_ARROW_MEMBER =
   /^\s+(?:(?:public|private|protected|static|readonly|override)\s+)*#?[A-Za-z_$][\w$]*\s*(?::[^=]*)?=\s*(?:async\s*)?\(.*\)\s*(?::[^=]*)?=>\s*\{\s*$/;
@@ -675,15 +708,28 @@ function quoteEnd(line: string, start: number, quote: string): number | undefine
 }
 
 /**
+ * What may stand immediately before a character literal's opening quote. Only
+ * `u8` needs naming: a `'` between digits (`1'000`, a C++14 separator) opens
+ * nothing, and the digit check below already rejects `U'x'` and `L'y'` because
+ * no hex digit follows their quote. `u8'a'` is the one shape where a letter
+ * does, and `U8` is not a C++ prefix, so the encoding prefix is what tells them
+ * apart (#316).
+ */
+const CHARACTER_LITERAL_PREFIX = /u8$/;
+
+/**
  * Where the quoted text opening at `index` ends: the index of its closing
  * quote, or -1 when it runs past the line. A C# verbatim string (`@"C:\"`)
  * takes no backslash escapes, only a doubled quote, and a `'` between digits
- * (`1'000`, a C++14 separator) opens nothing, so its own index comes back.
+ * (`1'000`, a C++14 separator) opens nothing, so its own index comes back —
+ * unless the quote carries an encoding prefix, which is what tells `u8'a'`
+ * from `1'000` (#316).
  */
 function quotedEnd(line: string, index: number): number {
   const quote = line[index];
   if (
     quote === "'" &&
+    !CHARACTER_LITERAL_PREFIX.test(line.slice(Math.max(0, index - 2), index)) &&
     /\d/.test(line[index - 1] ?? '') &&
     /[\dA-Fa-f]/.test(line[index + 1] ?? '')
   ) {
@@ -913,7 +959,11 @@ function isShallowDeclaration(
   inCppClass: boolean,
 ): boolean {
   const line = declarationText(lines[index], profile);
-  if (OUTLINE_KEYWORD.test(line) || (profile.testChains && OUTLINE_TEST_CHAIN.test(line)))
+  if (
+    OUTLINE_KEYWORD.test(line) ||
+    OUTLINE_UNION_DECLARATION.test(line) ||
+    (profile.testChains && OUTLINE_TEST_CHAIN.test(line))
+  )
     return true;
   if (profile.cpp) return isCppMember(lines, index, indent, inCppClass);
   if (profile.keywordsOnly) return false;
@@ -1253,8 +1303,11 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   const resolved = resolveReadablePath(ctx, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath } = resolved;
-  const offset = (args.offset as number) || 1;
-  const limit = Math.max(1, (args.limit as number) || 2000);
+  // Floored as well as validated, and clamped: the schema rejects a fraction
+  // and anything below 1, but a caller that reaches the tool directly must
+  // never be handed `0: undefined` or `offset: -2.5` as the next page (#310).
+  const offset = Math.max(1, Math.floor((args.offset as number) || 1));
+  const limit = Math.max(1, Math.floor((args.limit as number) || 2000));
 
   let content: string;
   try {
@@ -1280,7 +1333,24 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
       { code: 'offset_out_of_range' },
     );
   }
-  const end = Math.min(lines.length, offset - 1 + limit);
+  // A file with no lines at all gets one notice line: an empty tool result
+  // reads as a call that produced no output, which is not what an empty file
+  // is, and the row for it would have no lines to count (#309).
+  if (lineCount === 0) {
+    const observation = await observeFile(ctx, filePath, 'read', { lineStart: 1, lineEnd: 0 });
+    return toolSuccess(READ_EMPTY_FILE_NOTICE, {
+      artifacts: { fileObservations: [observation] },
+      presentation: {
+        kind: 'file',
+        summary: `Read ${args.filePath}`,
+        metadata: readLineMetadata(1, 0),
+      },
+    });
+  }
+  // Bounded by lineCount, never by lines.length: `split` leaves an empty
+  // element after a file's final newline, and numbering that phantom line is
+  // what made `a\nb\n` read as three lines and an empty file as `1: ` (#309).
+  const end = Math.min(lineCount, offset - 1 + limit);
   const output: string[] = [];
   let bytes = 0;
   let last = offset - 1;
@@ -1323,12 +1393,13 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   return toolSuccess(page, {
     artifacts: { fileObservations: [observation] },
     pagination,
-    // Only Read knows how many lines of the file the page holds: its text shows one more, empty,
-    // numbered line past a final newline, and a notice when it stops early.
+    // Only Read knows which lines of the file the page holds: a notice when it
+    // stops early, and a line cut to fit at the clip, so both have to be read
+    // back out of the text rather than counted from it.
     presentation: {
       kind: 'file',
       summary: `Read ${args.filePath}`,
-      metadata: readLineMetadata(offset, Math.min(last, lineCount) - offset + 1),
+      metadata: readLineMetadata(offset, last - offset + 1),
     },
   });
 }
@@ -1616,6 +1687,39 @@ interface GrepFileMatches {
   lines?: string[];
 }
 
+/** The structured counts a Grep result carries, in every `output_mode`. */
+interface GrepCounts {
+  mode: 'content' | 'files_with_matches' | 'count';
+  totalMatches?: number;
+  matches?: Record<string, GrepFileMatches>;
+  files?: string[];
+}
+
+/**
+ * A Grep row's count, from the counts Grep already collected rather than by
+ * re-reading its own page. The text cannot be counted back: a context line's
+ * own text can hold a `12:30` of its own, and a match spanning several lines
+ * is several lines of the page (#311). In the unit `output_mode` asks for —
+ * matches in `content` and `count` mode, files in `files_with_matches` — and
+ * the summary follows the same count and noun.
+ */
+function grepPresentation(data: GrepCounts): {
+  kind: 'search';
+  metadata: string[];
+  summary: string;
+} {
+  const files = data.mode === 'files_with_matches';
+  const count = files ? (data.files?.length ?? 0) : (data.totalMatches ?? sumMatches(data.matches));
+  const noun = files ? 'file' : 'match';
+  const label = `${count} ${count === 1 ? noun : files ? 'files' : 'matches'}`;
+  return { kind: 'search', metadata: [label], summary: `Found ${label}` };
+}
+
+function sumMatches(matches: Record<string, GrepFileMatches> | undefined): number {
+  if (!matches) return 0;
+  return Object.values(matches).reduce((total, file) => total + file.matches.length, 0);
+}
+
 async function grepSearchPortable(
   args: Record<string, unknown>,
   ctx: ToolContext,
@@ -1752,15 +1856,19 @@ async function grepSearchPortable(
     const lines = Array.from(matchesByFile.entries()).map(
       ([file, result]) => `${file}:${result.matches.length}`,
     );
+    const data: GrepCounts = { mode: outputMode, totalMatches, matches: serializedMatches };
     return toolSuccess(lines.join('\n') || 'No matches found', {
-      data: { mode: outputMode, matches: serializedMatches },
+      data,
+      presentation: grepPresentation(data),
     });
   }
 
   if (outputMode === 'files_with_matches') {
     const matchedFiles = Array.from(matchesByFile.keys());
+    const data: GrepCounts = { mode: outputMode, files: matchedFiles };
     return toolSuccess(matchedFiles.join('\n') || 'No matches found', {
-      data: { mode: outputMode, files: matchedFiles },
+      data,
+      presentation: grepPresentation(data),
     });
   }
 
@@ -1797,9 +1905,11 @@ async function grepSearchPortable(
   const truncationNotice = outputTruncated
     ? '\n... (truncated at 50 KB; refine pattern or include)'
     : '';
+  const data: GrepCounts = { mode: outputMode, totalMatches, matches: serializedMatches };
   return toolSuccess((output.join('\n') || 'No matches found') + truncationNotice, {
-    data: { mode: outputMode, totalMatches, matches: serializedMatches },
+    data,
     pagination: { truncated: totalMatches >= headLimit || outputTruncated },
+    presentation: grepPresentation(data),
   });
 }
 
@@ -1850,6 +1960,7 @@ async function grepSearchWithRipgrep(
       cwd: scope.root,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'ignore'],
+      env: buildChildEnv(process.env, ctx.env),
     });
     let settled = false;
     let pending = '';
@@ -1977,22 +2088,26 @@ async function grepSearchWithRipgrep(
         const lines = Array.from(matchesByFile.entries()).map(
           ([file, result]) => `${file}:${result.matches.length}`,
         );
+        const data: GrepCounts = { mode: outputMode, totalMatches, matches: serializedMatches };
         finish({
           kind: 'success',
           result: toolSuccess(lines.join('\n') || 'No matches found', {
-            data: { mode: outputMode, matches: serializedMatches },
+            data,
             pagination: { truncated: totalMatches >= headLimit },
+            presentation: grepPresentation(data),
           }),
         });
         return;
       }
       if (outputMode === 'files_with_matches') {
         const matchedFiles = Array.from(matchesByFile.keys());
+        const data: GrepCounts = { mode: outputMode, files: matchedFiles };
         finish({
           kind: 'success',
           result: toolSuccess(matchedFiles.join('\n') || 'No matches found', {
-            data: { mode: outputMode, files: matchedFiles },
+            data,
             pagination: { truncated: totalMatches >= headLimit },
+            presentation: grepPresentation(data),
           }),
         });
         return;
@@ -2000,11 +2115,13 @@ async function grepSearchWithRipgrep(
       const truncationNotice = outputTruncated
         ? '\n... (truncated at 50 KB; refine pattern or include)'
         : '';
+      const data: GrepCounts = { mode: outputMode, totalMatches, matches: serializedMatches };
       finish({
         kind: 'success',
         result: toolSuccess((output.join('\n') || 'No matches found') + truncationNotice, {
-          data: { mode: outputMode, totalMatches, matches: serializedMatches },
+          data,
           pagination: { truncated: totalMatches >= headLimit || outputTruncated },
+          presentation: grepPresentation(data),
         }),
       });
     });
@@ -2041,13 +2158,15 @@ export const fileTools: ToolDefinition[] = [
             'Path to the file relative to workspace root; absolute paths inside the workspace are also accepted',
         },
         offset: {
-          type: 'number',
+          type: 'integer',
+          minimum: 1,
           description:
             'Line number to start reading from (1-indexed). Leave unset unless the file is larger than one Read returns (2000 lines or 50 KB); a Read that stops early names the offset to continue from.',
           default: 1,
         },
         limit: {
-          type: 'number',
+          type: 'integer',
+          minimum: 1,
           description:
             'Maximum number of lines to read. Leave unset to read the whole file; only set it for a file larger than 2000 lines or 50 KB.',
           default: 2000,

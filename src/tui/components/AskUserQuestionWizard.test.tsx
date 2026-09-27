@@ -496,4 +496,61 @@ describe('AskUserQuestionWizard', () => {
       answers: { 'Which format?': 'Summary' },
     });
   });
+
+  // The sheet shares the screen with the transcript, which re-measures its
+  // viewport only when the app hears that the footer's height changed. The
+  // second question here is two rows taller than the first, and without this the
+  // transcript kept its old viewport and the sheet covered its last rows.
+  it('reports a height change for each question, mode and notice', async () => {
+    const onLayoutChange = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <AskUserQuestionWizard
+          request={request}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+          onLayoutChange={onLayoutChange}
+        />
+      </ThemeContext.Provider>,
+    );
+    // Opening the sheet is a change of height too.
+    expect(onLayoutChange).toHaveBeenCalled();
+
+    const onFirstQuestion = onLayoutChange.mock.calls.length;
+    await press(view, '\r');
+    await waitForText(view, 'Which sections?');
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(onFirstQuestion);
+
+    const onChoices = onLayoutChange.mock.calls.length;
+    await press(view, 'o');
+    await waitForText(view, 'Enter use answer');
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(onChoices);
+
+    // The empty-answer notice is a row, so it is a height change.
+    const onEditor = onLayoutChange.mock.calls.length;
+    await press(view, '\r');
+    await waitForText(view, 'Type an answer before continuing.');
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(onEditor);
+
+    // Typing into the editor adds no row, so the app is not asked to
+    // re-measure for every character.
+    const whileTyping = onLayoutChange.mock.calls.length;
+    await press(view, 'A note');
+    await waitForText(view, 'A note');
+    expect(onLayoutChange.mock.calls.length).toBe(whileTyping);
+
+    // Growing the editor onto another line is a height change, though. The
+    // shape carries the editor's row count rather than its text, so this is one
+    // report when the answer wraps and none while it does not.
+    const whileWrapping = onLayoutChange.mock.calls.length;
+    await press(view, 'x'.repeat(120));
+    await waitForText(view, 'x'.repeat(20));
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(whileWrapping);
+
+    // Leaving the editor takes both the editor and the notice back.
+    const onAnswered = onLayoutChange.mock.calls.length;
+    await press(view, '\x1b');
+    await waitForText(view, '↑↓ move');
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(onAnswered);
+  });
 });

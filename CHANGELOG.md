@@ -108,12 +108,24 @@ All notable changes to this project are documented in this file.
 - **`book trust` gains `dir`**, alongside `hook`, `rule` and `command`. It takes `--workspace`,
   `--all-pending` and `--reject`, prints the real path beside the declared text before recording
   anything, and leaves every other decision in every workspace untouched.
+- **The stream-JSON `result` event no longer carries the conversation by default** (#307). This is
+  a **breaking change for hosts that read `result.messages` from stream-JSON output**: the field is
+  absent unless the new `--include-result-messages` flag is passed, because a long run's history is
+  500 KB – 1 MB on that one line and every reader had to buffer it whole to reach the field it came
+  for. `--output-format json` and the SDK's own `result` are unchanged and still carry `messages`.
+  The event also gained a top-level `outcome` beside the top-level `stopReason`, so the supervised
+  loop documented in `docs/guide/long-runs.md` — which reads `.outcome.reason` and saw `null` — works
+  as written. `result.outcome` and `result.stopReason` are kept for hosts already reading them there.
 - **System prompt v5** (`book-system-prompt-v5`): the prompt and the tool descriptions stop
   contradicting each other. `TaskCreate` no longer says to use it instead of `TodoWrite`; both
   descriptions now say the todo list is the one shown in every turn's `<session-state>`.
   `MemorySave` no longer asks for conventions the code already shows, matching the kernel's memory
   rules. A subagent, or a session with `agents.mode: "off"`, no longer gets the line about
-  batching `AgentSpawn` calls it cannot make. The `Bash` description is a complete sentence.
+  batching `AgentSpawn` calls it cannot make. The `Bash` description is a complete sentence, and it
+  and `BashOutput`'s now say what actually happens to a command that reaches its `timeout` (it moves
+  to a background shell rather than being killed, and `wait_ms` waits for one instead of polling) —
+  a description that said a command is killed while the tool no longer killed it was the worst kind
+  of wrong.
 - **`ApplyPatch` matches hunks in order.** A hunk whose context occurs more than once in the file
   is now accepted when exactly one occurrence lies at or after the end of the previous hunk. This
   is the shape of most real `ambiguous_patch_context` failures: a later hunk whose context is a
@@ -499,6 +511,182 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A resumed print run no longer counts its restored spend twice** (#294). The `usage` record a
+  run writes is how the next process restores what the objective has cost, and two things made it
+  wrong: the first record of a resumed run wrote the restored total again instead of this run's
+  first request, and the loop reported a response to the host before charging it to run accounting,
+  so the snapshot the record is computed from never held the request being reported — every run
+  wrote its first request twice and lost its last. `RunAccounting` is now charged before `onUsage`
+  runs (the order the compactor's model calls already used), and the recorded figure is the part of
+  the root's total no earlier record covers, tracked as a watermark on the root that starts at its
+  seeded carry. Each restart now adds exactly what it spent, `--max-budget-usd` bounds the
+  objective rather than running out early, and a second run under a root an earlier run already
+  used — a delivered managed-agent completion — can no longer re-persist that run's spend.
+- **Preflight no longer reports a clip it did not make** (#306). `clipHistoryToolResults` rebuilt
+  every message that had tool results, so the loop's identity check read a clip on a history where
+  nothing crossed the cap, rebuilt the request, and logged `preflight tool outputs clipped` for an
+  unchanged conversation. A message with nothing to cut is now handed back as the same object.
+- **Book's own `NODE_ENV` no longer reaches the commands it starts** (#293). `runtime-env.ts` sets
+  `NODE_ENV=production` before React loads, because the development renderer is 2-3x slower per
+  pass, and every child inherited it: `npm install` in a project dropped its devDependencies, a
+  test runner read a production build flag, and a framework refused to serve a source map — none
+  of it visible, because the user who set nothing had no way to see why. The default is now marked
+  as one Book invented, and `buildChildEnv` keeps it off every child on every spawn path: `Bash`
+  foreground and background, hooks, MCP stdio servers, a `Check` command, slash-command expansion,
+  clipboard and git helpers, and Book's own detached job runner and supervisor — the last being the
+  one a persistent job's command would otherwise inherit through. A `NODE_ENV` the user exported
+  before starting Book still passes through, as does one set explicitly in `ToolContext.env`, a
+  hook's own `env`, or an MCP server's `env` — including one declaring `NODE_ENV=production`, which
+  is the single value an explicit request and Book's default agree on. An override carrying the
+  marker is a copy of Book's own environment and so counts as no choice, which matters because
+  `ToolContext.env` _is_ `process.env` in the agent.
+- **Session shells end with Book, process tree and all** (#314). `dispose()` sent `SIGTERM` to the
+  direct child, which is the shell wrapper rather than the command: on macOS and Linux the session
+  shell leads its own process group, so the group survived Book, and on Windows the worker it
+  started kept running with the console still attached. Dispose now runs the same tree escalation
+  `KillShell` uses — the process group on POSIX, `taskkill /T /F` on Windows — and never the direct
+  kill first, because `taskkill /T` walks the tree from a root that has to still be alive. A child
+  whose teardown is already under way is marked as such and skipped by dispose, so an abort in the
+  same tick as a `dispose()` cannot kill the root out from under its own teardown. A
+  `lifetime: "persistent"` job is untouched: it exists to outlive Book. `dispose()` still returns
+  before the trees are down, because it cannot promise otherwise; the teardown's own children and
+  timers hold an exit open until they finish, which is what a host that ends by letting Node
+  process its handles needs.
+- **A foreground command that reaches its timeout is not killed** (#302). It used to die at the
+  deadline, and the model got `timed_out` with no result and usually a re-run of the whole gate that
+  took five minutes to time out. The running process is now handed to the session's
+  `ShellJobManager` as a session background shell: the same record shape, events, stream handling
+  and buffer cap as `run_in_background`, and a success result carrying the output so far plus the
+  `shell_id` to read it with `BashOutput` or stop it with `KillShell`. Adoption is refused, and the
+  old kill-and-report happens instead, when it is impossible — no manager for the context, a
+  disposed one, or a process that exited as the deadline arrived. Not on cancellation, not at the
+  10 MB buffer cap, and never with a deadline of its own: a detached command is not on a clock it
+  never agreed to. It is always session lifetime, and a session shell's tree ends with Book.
+- **`BashOutput` can wait for a shell instead of being polled** (#313). Without `wait_ms` a slow
+  command cost one tool call per turn, each learning only "still running", so a four-minute test
+  suite took eight turns. `wait_ms` waits for the shell to reach a terminal status or for the
+  requested time, whichever comes first, and reports the status either way. It does not return early
+  on new output, so a chatty runner costs the same wait as a silent one; it ends early when the turn
+  is cancelled and kills nothing, leaving the shell to be waited on again; a `wait_ms` above
+  `toolTimeoutCeilingMs` is refused rather than quietly shortened, as `Bash` refuses an over-limit
+  `timeout`; and a still-running shell with nothing new to say names the call that would wait
+  instead of polling. A session shell is subscribed to, and a persistent job — which lives in
+  another process — is polled. A `BashOutput` naming a shell that does not exist is refused rather
+  than reported as an empty read.
+- **Read, Grep and tool-result presentation: five defects** (#308, #309, #310, #311, #316).
+  - **A `Read` no longer numbers a phantom line past a file's final newline** (#309). `lineCount`
+    already excluded the empty element `split('\n')` leaves after a trailing newline, but the page
+    loop was bounded by the array, so `a\nb\n` read as `1: a`, `2: b`, `3: ` and an empty file as
+    `1: `. The loop is bounded by `lineCount` now, so `"a\n"` and `"a\n\n"` are finally two
+    different reads, and offset 1 still reads an empty file — as the single notice line
+    `[Empty file: 0 lines.]`, because an empty tool result reads as a call that produced no output
+    at all. A file of exactly `"\n"` still reads as its one blank line, `1: `. The row's line count
+    matches the numbered lines shown, and results persisted by an older build — which do carry the
+    phantom line — still reconstruct correctly.
+  - **An `offset` or `limit` that is fractional or below 1 is refused, and clamped if it reaches the
+    tool anyway** (#310). `offset: 2.5` printed `2.5: undefined` and offered `Continue with offset:
+4.5`; `offset: 0.5` printed `0: undefined`, and a schema-valid `-3` printed `-3: undefined`
+    lines. Both are `type: 'integer'` with `minimum: 1` in `Read`'s schema now, so a fraction or a
+    value below 1 is rejected as `invalid_arguments` before the tool runs, and `readFile` floors and
+    clamps both defensively for a direct caller. This is a tool-schema change and so costs one
+    prompt-cache miss the first time a session runs it.
+  - **Four outline defects** (#316). A conditional `noexcept(noexcept(a.swap(b)))` and a
+    `GUARDED_BY(mu_.lock())`-style macro argument both dropped their C++ member, because the
+    qualifier pattern's `[^()]*` could not hold a nested `(`; it nests as deep as the generic-argument
+    pattern does now. `u8'a'` was read as the `1'000` digit separator, which unbalanced the
+    signature and dropped `void f(char8_t c = u8'a') {`; the `u8` prefix now tells the two apart,
+    which is the only prefix that has to be named — the digit check already rejects `U'x'` and
+    `L'y'`, and `U8` is not a C++ prefix. A nested `union` hid its members, so `union` was added to
+    the type-declaration list, where a name or the anonymous form's brace is what admits it and an
+    argument list is not: `union(a, b)` and `union(setA, setB);` are calls and stay out. And the
+    generic test-chain arm listed any `it.<name>('title')`, so `it.next('resume');` was taken for a
+    test block; it now requires the title and a second argument — the callback a test call passes —
+    so `it.custom('titled', () => {` and `it.effect('adds', () => …` are listed while
+    `it.next('resume').then(() => {` and `it.value = run('x', () => {` are not.
+  - **A `Grep` row counts in the unit `output_mode` asks for, from Grep's own data** (#311). The
+    presentation counted `/:\d+:/` lines whatever the mode, so a `count` page holding 57 matches
+    across two files read `2 matches` and a `files_with_matches` page read `3 matches` rather than
+    `3 files`. Both Grep implementations already returned exact counts in `result.data`, and the
+    text cannot be counted back into them — a context line's own text can hold a `12:30`, and a
+    match spanning lines is several lines — so Grep now sets its own `presentation.metadata` and
+    summary, as `Read` sets its line metadata, and the enricher keeps it. Only a failed `Grep` no
+    longer counts at all: an invalid regex showed `Found 0 matches` beside the error, which reads
+    as a search that ran and found nothing rather than one that never ran. The text-derived count
+    remains as the fallback for a result persisted by a build that did not set one, and the TUI's
+    own fallback calls it rather than keeping a second copy.
+  - **A failed command keeps both ends of its output** (#308). Only a killed command kept even its
+    tail: any other failure was head-clipped, so the model read the `act()` warnings at the top of
+    a test run and never the `Tests 2 failed | 10 passed` every runner prints last. Every
+    non-success result is now clipped to its first few KB **and** its last, with a
+    `[... N bytes omitted. Full output: <path>]` notice naming the gap and the file, in the
+    structured message, in the row's details, and in the renderer fallback. The head is not
+    decoration: a non-zero exit puts all of stderr in the message and stdout in the content, so a
+    tail-only clip of a large stderr head-clipped the message, dropped the stdout that holds the
+    summary, and wrongly reported the earlier output as the part cut — the same bug, still there
+    after the first fix. And the head is what carries a failure's framing: the Task tool's
+    `Partial result (the child was stopped; nothing below is final):` was cut off, leaving
+    unfinished output that read as final. A successful result keeps the head clip alone.
+- **Ctrl+U and Ctrl+D edit the draft instead of scrolling the transcript** (#296). Ink hands every
+  key to every input handler, so the composer cleared the draft and the transcript jumped half a
+  page in the same keystroke. The composer is the only thing that knows whether there was a draft
+  at the moment the key arrived — InputBox's own Ctrl+U may have emptied the field before any other
+  handler runs — so it now reports the chords it cannot spend, and the transcript scrolls from that
+  hand-off rather than from a second, order-dependent reading of the draft. With a draft in hand
+  the chords only edit; with the composer empty, or with no editor on screen at all, they still
+  scroll. The same hand-off now covers the sheets' own editors: plan approval's feedback field,
+  AskUserQuestion's `Other` answer and an MCP text field report that they hold an editor the way
+  they report their height, and the app stops the transcript reading Ctrl+U and Ctrl+D as pages
+  while one is open. A sheet that is a list of choices, with no editor, still pages.
+- **Text fields are the project's own single-line editor** (#296). `TextInputField` wrapped
+  `ink-text-input`, which has no readline keys at all: it spliced anything it did not recognise
+  straight into the value, so every chord arrived as the bare letter it stands for and Ctrl+U in a
+  wizard's prefilled base URL produced `u`. Filtering in front of it could not fix that, because Ink
+  delivers one stdin chunk to every handler in turn and after a Left the inner component
+  re-subscribed and inserted its `u` _after_ the wrapper had cleared the field —
+  `https://abc.example/v1`, Left, Ctrl+U gave `https://abc.example/vu1`. Every Book text field now
+  uses a small editor of the project's own, sharing the composer's cursor arithmetic
+  (`src/tui/line-edit.ts`): Ctrl+A/E for the start and end of the line, Ctrl+U kill to the cursor,
+  Ctrl+K kill to the end, Ctrl+W kill the word to the left, Ctrl+D delete the character under the
+  cursor, and Left/Right/Home/End/Backspace/Delete moving by grapheme. Any other Ctrl chord is
+  ignored rather than typed. Masked fields, the placeholder's look, pasted chunks and the SGR
+  mouse-sequence stripping are unchanged, and the cursor no longer needs re-seating after a dropped
+  report. `ink-text-input` has no importer left; it is still in `package.json`.
+- **The bottom sheets stop covering the transcript rows behind them** (#304). A question, a plan
+  approval, an MCP elicitation form and the add-provider wizard all changed height while the
+  transcript above it kept the viewport it had measured on its own last layout change, so the sheet
+  landed on top of the last rows of the turn that raised it. `AskUserQuestionWizard`,
+  `PlanApprovalActions` and `McpElicitationForm` now report a change of rendered shape — a different
+  question, an editor opening or closing, a filter that left a different number of rows, an error
+  row, the width the body wraps to, the number of rows a wrapping editor's text takes — and the app
+  re-measures the transcript from that, never once per keystroke. The report is one shared hook
+  (`useReportLayout`) that fires once on mount, once per change of shape and once on unmount, so a
+  change no longer costs two layout measurements. The add-provider wizard is now a sheet like every
+  other decision: a labelled rule reading `Add BYOK provider` with its `Step N/9` counter set at
+  the far end, sitting on the same content column as the rest of the screen, instead of the one
+  surface that still drew a box of its own. It takes the model picker's `panelGrid` rather than
+  `frameGrid`, so it cannot run wider than the panels around it, and a model row's label and id
+  split the content width between them instead of each taking a share of the whole, which had the
+  two add up to more than the row and wrap the highlighted model in two lines.
+- **The permission prompt says whether `D` shows everything** (#304). It claimed to show all when
+  the expanded command still wrapped past the terminal, so pressing it changed nothing the user
+  could see. The hint now reports `D shows all` only when the expansion fits every wrapped row and
+  `D shows more` otherwise, and `D` is not offered at all when the expansion would not add a row
+  the collapsed command does not already have — the same rule the diff view already followed.
+- **A later layer's notification hooks replaced the user layer's** (#295). The hook arrays that
+  concatenate across settings layers were spelled out by hand, and `Notification` was never added to
+  that list when the event was, so declaring one in a project or local layer silently took away the
+  ntfy, Slack or SMS push the user had wired to every event in `~/.book/settings.json`. The
+  concatenating paths are now built from `HOOK_EVENTS` — the same list `hooksSchema` is generated
+  from — so the next event added there is covered by construction, and a test loops the list so a
+  regression names the event it lost.
+- **Flaky tests stabilized** (#315, #297, #301, #317). The OpenAI-compatible stall fixture no
+  longer writes to a stream the client has already cancelled (#315), the Windows PowerShell 5.1
+  test warms the shell once so the measured spawns do not pay its cold start (#297), the
+  delegation-latency ceiling still applies its 2 s budget to every sample, judging each one net of
+  its own measured timer stall, and the TUI key-timing tests and the large-diff test wait for
+  rendered state instead of a fixed sleep (#301). The TUI integration suite now fails immediately
+  with a build hint when `dist/` is missing instead of timing out test after test, and the release
+  workflow builds before running that tier (#317).
 - **Malformed tool-call arguments are repaired conservatively instead of refused** (#242). Three
   shapes repair to the arguments the model sent: a control character written literally inside a
   string is escaped, a comma directly before a `}` or `]` is dropped, and closing brackets missing
@@ -1521,6 +1709,18 @@ All notable changes to this project are documented in this file.
   baseline and labelled an estimate, since it assumes identical token counts on a different model.
   A model with no known pricing reports its tokens and suppresses the total rather than guessing.
 
+- **`BOOK_STARTUP_ANIMATION` switches the startup splash** (#303). `0`, `false`, `off` or `no` turns
+  it off and `1`, `true`, `on` or `yes` turns it on, matched case-insensitively and ignoring
+  surrounding whitespace; unset, empty or any other value leaves `ui.startupAnimation` alone. It
+  outranks every settings layer, as `BOOK_MODEL` does for `model`, so anything that drives Book
+  rather than uses it — a script, a capture, the run-book PTY driver — can turn the splash off
+  without owning a settings layer it would have to merge with whatever the user passes. The
+  resolved value lands on `config.settings.ui.startupAnimation`, so `shouldPlayStartupFire` and
+  `/config` read the same one. The override is applied wherever the effective settings are read,
+  not only at startup: `book config get`/`list` report the value in force and name the variable as
+  its source, the settings a provider removal re-reads keep it, and `/config` says the variable
+  decides at every launch so a value saved while it is set does not look like it took. It is never
+  applied to a value being written back to a settings file.
 - **Releases publish from CI with no token.** `.github/workflows/release.yml` publishes on a `v*`
   tag using npm trusted publishing, which proves the workflow's identity over OIDC instead of
   presenting a credential. 0.2.0 went out on a bypass-2FA granular token, the only thing that still
@@ -1528,6 +1728,23 @@ All notable changes to this project are documented in this file.
   bypass-2FA tokens in January 2027, so that path was already on a clock. The workflow refuses a tag
   that disagrees with `package.json`, runs the full gate and the installed-artifact smoke test
   before publishing, and gets provenance attached automatically.
+- **The run-book driver drives resizes** (Refs #268). `--record` writes the size the run started at
+  plus every `resize` as an entry of its own, interleaved with the output in arrival order, and the
+  driver's `screen`, `shot` and `shotpng` replay that same timeline, so a script that resized
+  mid-run is read at the size each frame was drawn at instead of being wrapped into the size the run
+  happened to end at. `record-gif.mjs` applies each resize to its replay terminal, draws every frame
+  at its own size from the top left on one canvas sized to the largest size the run drove, and crops
+  `--rows a:b` against the frame's own rows; a version-1 recording replays as it always did.
+- **The run-book driver takes `delete` and `insert`, and sends Alt with a named key** (#298). Alt
+  plus a single character is still ESC then the character; Alt plus a named key is now the xterm
+  modifier form (Alt+Delete is `\x1b[3;3~`, Alt+Up `\x1b[1;3A`), and a key with no Alt encoding —
+  backspace, enter, tab, Esc — is ESC then the key itself, as a terminal sends it.
+- **The run-book driver turns the splash off from the environment** (#303). It sets
+  `BOOK_STARTUP_ANIMATION=0` (`1` with `--startup-animation`) instead of writing a temporary
+  `--settings` layer and merging a user's own settings file into it, which a single `--settings`
+  layer made necessary. A user's `--settings` or `--no-settings` after `--` now reaches Book
+  untouched, the refusals that stood in its way are gone, and the temp directory the layer lived in
+  is no longer created or kept on failure.
 
 ## [0.2.0] - 2026-09-08
 

@@ -42,6 +42,7 @@ import {
 import { AgentSession, type AgentSessionRunRequest } from './session/agent-session.js';
 import { SessionRuntime } from './session/runtime.js';
 import type { AgentEvent } from './session/agent-events.js';
+import type { CarriedSpend } from './session/run-accounting.js';
 import {
   buildAgentCompletionMessage,
   takeAgentCompletionBatch,
@@ -772,16 +773,19 @@ export async function runHeadless(
     // stream-json prompts under a $50 cap would authorise $5000 inside a single
     // process. Carry the accumulated spend into each subsequent root through the
     // same seam that already carries it across processes.
-    let carriedSpend: { usage: Usage | null; costUsd: number | null } | undefined =
-      opts.carriedUsage
-        ? {
-            usage: opts.carriedUsage,
-            costUsd: carriedCostUsd(
-              opts.carriedUsage,
-              opts.carriedModels?.length ? opts.carriedModels : [config.model],
-            ),
-          }
-        : undefined;
+    //
+    // A carry restored from disk names no `persistedUsage`: the `usage` records it
+    // was summed from already cover all of it. Each later carry in this process is
+    // an in-process total, so it brings the watermark its root actually reached.
+    let carriedSpend: CarriedSpend | undefined = opts.carriedUsage
+      ? {
+          usage: opts.carriedUsage,
+          costUsd: carriedCostUsd(
+            opts.carriedUsage,
+            opts.carriedModels?.length ? opts.carriedModels : [config.model],
+          ),
+        }
+      : undefined;
 
     for (const submitted of prompts) {
       // The run exists before dispatch, not after it. A host-performed command
@@ -926,11 +930,17 @@ export async function runHeadless(
       rootContexts.set(runContext.rootRunId, runContext);
       await runParentTurn(contextMessage, prompt, userMessage, runContext, commandContext);
       // Fold this prompt's inclusive spend into the carry so the next root starts
-      // where this one finished instead of back at zero.
+      // where this one finished instead of back at zero — along with how much of it
+      // a record already covers. The total can run ahead of the records: a
+      // background agent or a compaction judge can spend after this root's last
+      // `onUsage`, and a continuation the budget gate refused is charged but never
+      // reported. Seeding the next root's watermark with the whole total would
+      // skip that remainder for good, so the next root's first record writes it.
       const spentSoFar = runtime.runAccounting.snapshotRoot(runContext.rootRunId);
       carriedSpend = {
         usage: spentSoFar.inclusiveUsage,
         costUsd: spentSoFar.inclusiveCostUsd,
+        persistedUsage: runtime.runAccounting.persistedUsage(runContext.rootRunId),
       };
       // An unapprovable plan is the deliverable: queued prompts would only
       // re-plan against a workspace nothing is allowed to change.
@@ -1122,9 +1132,18 @@ export async function runHeadless(
     } else if (opts.outputFormat === 'stream-json') {
       emit({
         type: 'result',
+        // At the top level, beside `stopReason`, because that is where a
+        // supervised loop reads the outcome from: `jq -e 'select(.type=="result")
+        // | .outcome.reason=="objective_complete"'` was written against this
+        // record and read a null. `result.outcome` stays for hosts already
+        // reading it there.
         stopReason: outcome.reason,
+        outcome,
         result: {
-          messages: contextHistory,
+          // Off by default: a long run's conversation is half a megabyte of JSONL
+          // on one line, which every reader has to buffer before it can look at
+          // the field it came for. `--include-result-messages` asks for it back.
+          ...(opts.includeResultMessages ? { messages: contextHistory } : {}),
           usage: reportedUsage,
           accounting: result.accounting,
           outcome,

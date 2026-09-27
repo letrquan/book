@@ -1439,6 +1439,10 @@ export class AgentManager {
       // redundant re-Read. Worktree children key by their own workspace, so
       // parent entries are simply inert there.
       fileObservationLedger: new Map(this.options.runtime?.fileObservationLedger ?? []),
+      // Disposed in this run's `finally`, which ends every session shell it holds. A foreground
+      // command that reached its deadline must therefore be killed here, not moved to a background
+      // shell this run would destroy before the model could read it.
+      ownsSessionShells: false,
     });
     const controller = runtime.trackAbortController(new AbortController());
     this.controllers.set(record.id, controller);

@@ -1344,11 +1344,15 @@ describe('runHeadless — reasoning tags in text mode', () => {
         expect(complete?.text).toBe('Answer');
       }
       const final = records.find((record) => 'result' in record) as
-        | { result: { answer?: string; messages: Array<{ role: string; content: string }> } }
+        | { result: { answer?: string; messages?: Array<{ role: string; content: string }> } }
         | undefined;
-      expect(final?.result.messages.at(-1)?.content, outputFormat).toBe('Answer');
       // The documents carry the answer too, so a json host need not rebuild it (#248).
       expect(final?.result.answer, outputFormat).toBe('Answer');
+      if (outputFormat === 'json') {
+        // The stream-json result event leaves the conversation out by default
+        // (#307), so only the `json` document is read for its last message here.
+        expect(final?.result.messages?.at(-1)?.content, outputFormat).toBe('Answer');
+      }
     }
   });
 });

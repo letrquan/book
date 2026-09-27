@@ -28,7 +28,7 @@ import { SkillManager } from './components/SkillManager.js';
 import { AgentProfilePicker } from './components/AgentProfilePicker.js';
 import { SessionPicker } from './components/SessionPicker.js';
 import { RewindPicker } from './components/RewindPicker.js';
-import { TranscriptView } from './components/TranscriptView.js';
+import { TranscriptView, type TranscriptScrollRequest } from './components/TranscriptView.js';
 import { PermissionButtons } from './components/PermissionButtons.js';
 import { HelpPanel } from './components/HelpPanel.js';
 import { KeyValueList, SoftPanel } from './components/chrome.js';
@@ -88,12 +88,14 @@ import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewScope } from '../review/types.js';
 import { join } from 'path';
 import { selectExpandedToolId, selectLatestToolId } from './tool-traces.js';
+import { halfPageScrollDirection, pagerChordsAvailable } from './transcript-scroll.js';
 import {
   getTranscriptShortcutAction,
   isShortcutsToggleKey,
   type TranscriptMode,
 } from './tool-presentation.js';
 import { permissionResultOf } from '../permissions.js';
+import { startupAnimationEnvNote } from '../settings-loader.js';
 import { PermissionsPanel } from './components/PermissionsPanel.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
@@ -1744,6 +1746,17 @@ export function App({
   // the transcript's viewport must be measured again.
   const [footerLayoutRevision, setFooterLayoutRevision] = useState(0);
   const bumpFooterLayout = useCallback(() => setFooterLayoutRevision((value) => value + 1), []);
+  // A sheet with a text editor open takes the readline chords, so the transcript
+  // must not read Ctrl+U and Ctrl+D as half-page scrolls while it is. The sheets
+  // report this the same way they report their height — see `useReportLayout`.
+  const [sheetEditorFocused, setSheetEditorFocused] = useState(false);
+  // Sheets come and go, so a sheet that unmounts while focused has to hand the
+  // chords back rather than leave them claimed for a surface that is gone.
+  useEffect(() => {
+    if (!pendingPlanApproval && !pendingUserQuestion && !pendingElicitation && !childQuestion) {
+      setSheetEditorFocused(false);
+    }
+  }, [childQuestion, pendingElicitation, pendingPlanApproval, pendingUserQuestion]);
   // Whether a composer menu is open, as of the last commit. Read by the Esc
   // handler below, which must not also act on the Esc that closes a menu.
   const composerMenuOpenRef = useRef(false);
@@ -2088,8 +2101,16 @@ export function App({
         }
         if (effect?.type === 'set-startup-animation') {
           const result = toggleStartupAnimation(effect.enabled);
-          if (result.ok) flashNotice(`Startup animation ${effect.enabled ? 'on' : 'off'}`);
-          else {
+          if (result.ok) {
+            // The row saves to `~/.book/settings.json`, and the variable outranks
+            // that file at every launch, so a save here looks like it took effect
+            // when it will not. Same sentence as the `BOOK_MODEL` warning above.
+            const envNote = startupAnimationEnvNote();
+            flashNotice(
+              `Startup animation ${effect.enabled ? 'on' : 'off'}` +
+                (envNote ? ` · ${envNote}` : ''),
+            );
+          } else {
             addLocalMessage(`✕ ${result.error ?? 'Could not save the startup animation setting.'}`);
           }
           return;
@@ -2319,6 +2340,19 @@ export function App({
     [],
   );
 
+  // Ctrl+U and Ctrl+D scroll the transcript half a page, but only when the
+  // composer had no draft to edit. The composer is the only thing that knows
+  // that, so it reports those chords through `forwardEmptyChord` and this hands
+  // them back to the transcript as a request rather than as a keypress.
+  const [transcriptScrollRequest, setTranscriptScrollRequest] = useState<TranscriptScrollRequest>({
+    key: 0,
+    direction: 'up',
+  });
+  const requestTranscriptHalfPage = useCallback((direction: 'up' | 'down') => {
+    uiLog.event(`input:Ctrl+${direction === 'up' ? 'U' : 'D'}`, { action: 'scroll-transcript' });
+    setTranscriptScrollRequest((current) => ({ key: current.key + 1, direction }));
+  }, []);
+
   const handleGlobalShortcut = useCallback(
     (
       input: string,
@@ -2355,10 +2389,16 @@ export function App({
         redrawViewport?.();
         return true;
       }
-      if (
-        key.ctrl &&
-        (input.toLowerCase() === 'u' || input.toLowerCase() === 'd' || key.home || key.end)
-      ) {
+      // Reached with Ctrl+U / Ctrl+D only when the composer had nothing to edit:
+      // InputBar hands over the chords it cannot spend, and nothing else routes
+      // them here, so a draft in hand never scrolls the transcript out from under
+      // the person clearing it.
+      const halfPage = halfPageScrollDirection(input, key);
+      if (halfPage) {
+        requestTranscriptHalfPage(halfPage);
+        return true;
+      }
+      if (key.ctrl && (key.home || key.end)) {
         return true;
       }
       if (isShortcutsToggleKey(input, key)) {
@@ -2387,6 +2427,7 @@ export function App({
     },
     [
       redrawViewport,
+      requestTranscriptHalfPage,
       showEffortPicker,
       showPermissionModePicker,
       showModelPicker,
@@ -2435,6 +2476,30 @@ export function App({
       pendingUserQuestion ??
       pendingElicitation,
     ) || showMcpApproval;
+
+  // Whether the composer is taking keys at all. The transcript asks the same
+  // question before it reads Ctrl+U and Ctrl+D as paging chords, so the answer
+  // is named once here instead of being restated in two places that could drift.
+  const composerAcceptsInput = !(
+    modalOwnsInput ||
+    // The rules sheet is a list, not a page of text: while it is up
+    // it takes the arrows, so the composer must not also read them
+    // as history navigation. Esc closes it, as it does every panel.
+    showPermissions ||
+    transcriptMode === 'detailed' ||
+    managedAgents.surface === 'tasks' ||
+    detailTaskPickerOpen
+  );
+
+  // Whether the transcript may read Ctrl+U and Ctrl+D as its own half-page
+  // scrolls. The rule is "no editor on screen is taking the keys", not "the
+  // composer is free": the composer spends those chords on the draft and a
+  // sheet's editor spends them on its field, and either one hands back a chord
+  // it cannot spend as `transcriptScrollRequest` instead. A sheet that is up with
+  // no editor open is a list of choices, and there the chords can only mean
+  // paging. `pagerChordsAvailable` is that rule as one function, so it cannot be
+  // restated — and read backwards — at a second call site.
+  const pagerChordsFree = pagerChordsAvailable({ composerAcceptsInput, sheetEditorFocused });
 
   const pickerOwnsTranscript =
     showModelPicker ||
@@ -2502,6 +2567,8 @@ export function App({
             isActive={!pickerOwnsTranscript && managedAgents.surface !== 'tasks'}
             followRequestKey={followRequestKey}
             layoutRevision={transcriptLayoutRevision}
+            pagerChordsAvailable={pagerChordsFree}
+            scrollRequest={transcriptScrollRequest}
             onToggleTool={toggleToolExpansion}
             onNotify={handleCopiedNotice}
             onRedrawViewport={redrawViewport}
@@ -2706,6 +2773,8 @@ export function App({
                 onResolve={resolvePlanApproval}
                 screenReader={screenReader}
                 terminalWidth={termWidth}
+                onLayoutChange={bumpFooterLayout}
+                onEditorFocusChange={setSheetEditorFocused}
               />
             ) : null}
             {pendingElicitation ? (
@@ -2716,6 +2785,8 @@ export function App({
                 terminalWidth={termWidth}
                 onResolve={resolveElicitation}
                 screenReader={screenReader}
+                onLayoutChange={bumpFooterLayout}
+                onEditorFocusChange={setSheetEditorFocused}
               />
             ) : null}
             {pendingUserQuestion ? (
@@ -2726,6 +2797,8 @@ export function App({
                 terminalWidth={termWidth}
                 onResolve={resolveUserQuestion}
                 screenReader={screenReader}
+                onLayoutChange={bumpFooterLayout}
+                onEditorFocusChange={setSheetEditorFocused}
               />
             ) : childQuestion ? (
               <AskUserQuestionWizard
@@ -2737,6 +2810,8 @@ export function App({
                   void managedAgents.resolveQuestion(childQuestion.agentId, response)
                 }
                 screenReader={screenReader}
+                onLayoutChange={bumpFooterLayout}
+                onEditorFocusChange={setSheetEditorFocused}
               />
             ) : null}
             {showSessionPicker ? (
@@ -2903,6 +2978,7 @@ export function App({
                     );
                   }
                 }}
+                startupAnimationWarning={startupAnimationEnvNote()}
                 onCancel={() => {
                   forgetConfigOrigin();
                   setShowConfigPicker(false);
@@ -3216,16 +3292,7 @@ export function App({
                 managedAgents.setSurface('tasks');
                 return true;
               }}
-              inputSuppressed={
-                modalOwnsInput ||
-                // The rules sheet is a list, not a page of text: while it is up
-                // it takes the arrows, so the composer must not also read them
-                // as history navigation. Esc closes it, as it does every panel.
-                showPermissions ||
-                transcriptMode === 'detailed' ||
-                managedAgents.surface === 'tasks' ||
-                detailTaskPickerOpen
-              }
+              inputSuppressed={!composerAcceptsInput}
               awaitingAnswer={awaitingAnswer}
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}

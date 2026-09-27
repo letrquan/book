@@ -5,7 +5,15 @@ How Book reads and changes files, runs shell commands, and decides what it may d
 ## Reading files
 
 `Read` returns a whole file by default, up to 2000 lines or 50 KB of output, whichever comes
-first; `offset`/`limit` are for files larger than that. A Read that stops before the end of the
+first; `offset`/`limit` are for files larger than that, and both are integers of at least 1 — a
+fractional or zero value is rejected as an invalid argument rather than printing `2.5: undefined`
+or `0: undefined`. The numbered lines are
+the file's own lines and nothing else: a final newline ends the last line rather than starting
+another, so `a\nb\n` reads as `1: a` and `2: b` and a file of exactly one newline reads as its one
+blank line, `1: `. A file with no lines at all returns the notice `[Empty file: 0 lines.]` rather
+than an empty result, which would read as a call that produced no output.
+
+A Read that stops before the end of the
 file ends with a notice naming where to continue, such as `[Lines 1-1163 of 1894 shown, the most
 one Read returns (50 KB). Continue with offset: 1164.]`, so the shared 50 KB clip on tool results,
 whose notice names a file in Book's `tool-output` directory that `Read` can open in the same run,
@@ -38,7 +46,9 @@ can decide what to read in full.
   - a `function`/`class`/`def`/`fn`/`fun`-style keyword line, unless the keyword is an object key,
     an import-list member or a property access (`enum: [...]`, `describe,`, `set.add(x)`,
     `it.skip;`); in JavaScript and TypeScript, also a test block reached through a modifier
-    (`it.skip('later', () => {`, `it.each` tables);
+    (`it.skip('later', () => {`, `it.each` tables) or a chain called with a title **and** a second
+    argument, which is the callback a test call passes (`it.custom('titled', () => {`,
+    `it.effect('adds', () => …`);
   - a method named first whose parameter list closes into a body, on the same line or a later one
     (`async *entries() {`, `*values() {`, `#secret(): string {`, `async send(` …
     `): Promise<void> {`, or `}: Args): Promise<void> {` after a destructured parameter);
@@ -49,12 +59,15 @@ can decide what to read in full.
     method with no body (`double area();`);
   - an arrow-function member (`handle = (event) => {`);
   - in C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx`, `.h` and the like), inside a class body
-    (under `class`, `struct` or an access specifier such as `public:`), every member function,
-    constructor, destructor and operator, declared (`void set(int v);`,
+    (under `class`, `struct`, a nested `union` or an access specifier such as `public:`), every
+    member function, constructor, destructor and operator, declared (`void set(int v);`,
     `virtual void draw() = 0;`) or defined (`int get() const { return n_; }`), with qualifier
-    macros and `[[attributes]]` allowed; elsewhere a function whose body is on its line or opens
-    below it, qualified names included (`std::string Foo::name() {`). `int x(5);` and
+    macros and `[[attributes]]` allowed — including one whose argument nests, as a conditional
+    `noexcept` and a `GUARDED_BY(mu_.lock())` do; elsewhere a function whose body is on its line or
+    opens below it, qualified names included (`std::string Foo::name() {`). `int x(5);` and
     `Foo f(1);` outside a class are variables and stay out, and so does `static_assert(…)`. A
+    `union` is a type only when a name or the anonymous form's brace follows it, never an argument
+    list, so `union(a, b)` and `union(setA, setB);` are calls and stay out. A
     capitalised call with an underscore (`Q_PROPERTY(…)`, `GENERATED_BODY()`, a field's
     `ABSL_GUARDED_BY(mu_)`) or a builtin such as `__attribute__((…))` is a macro, not a member,
     unless a body follows it (`BOOST_AUTO_TEST_CASE(works) {`); `RGB(int r, int g, int b);` is a
@@ -65,19 +78,23 @@ can decide what to read in full.
   (`@Override public String toString() {`, `@HostListener('click') onClick() {`,
   `[HttpGet] public IActionResult Get() {`) in languages that have them (Java, Kotlin, Scala,
   Groovy, C#, Dart, Swift, TypeScript and JavaScript). A parenthesis inside a quoted default value
-  (`paren(s = '(') {`, a C# verbatim string, a C++ `1'000`) does not unbalance a signature, and
-  neither does a trailing comment (`void set(int v);  // Sets it.`) or a block comment before the
-  body (`run() /* entry */ {`). A line deeper than four spaces counts when it declares a member of
-  a type the outline lists: a Java inner class's methods, a nested C# or C++ class's, an `impl`
-  inside a Rust `mod`.
+  (`paren(s = '(') {`, a C# verbatim string, a C++ `1'000` or `u8'a'`) does not unbalance a
+  signature, and neither does a trailing comment (`void set(int v);  // Sets it.`) or a block
+  comment before the body (`run() /* entry */ {`). A line deeper than four spaces counts when it
+  declares a member of a type the outline lists: a Java inner class's methods, a nested C# class's
+  or C++ `class`/`struct`/`union`'s, an `impl` inside a Rust `mod`.
 
   Lines shaped like these that are not declarations stay out: control flow (`if (`, `else if (`,
   `for (`, `foreach (`, `using (`, `lock (`, `switch (`, `catch (`; in Java and C# also with no
   space, as in `foreach(` and `lock(`, which elsewhere may be method names), `assert x;`,
   `return foo(`, `new Foo(`, `go func() {`, `defer func() {`, a call that closes into a callback
   (`useEffect(() => {`, `).then(() => {`), a chained call (`foo(x).then(`), a call on an object
-  named like a keyword (`it.next()`, `impl->value = f(`, Kotlin's `it.split(",")`), and a
-  statement followed by another on the same line (`foo(x); if (y) {`). In `.ts`, `.mts`, `.cts`,
+  named like a keyword (`it.next('resume')`, `impl->value = f(`, Kotlin's `it.split(",")`), and a
+  statement followed by another on the same line (`foo(x); if (y) {`). A `describe`/`it`/`test`
+  chain counts when it is reached through a test modifier (`it.skip`, `test.extend({})('z', …)`,
+  `it.each` tables) or when it is called with a title and a second argument — the comma before the
+  callback is what says so, and a title alone (`it.next('resume');`) or a body further along the
+  line (`it.next('resume').then(() => {`) is a plain call on a variable named `it`. In `.ts`, `.mts`, `.cts`,
   `.mjs` and `.cjs` files, the text of a multi-line template literal, and of a string continued
   with a trailing backslash, is skipped at any indentation, and a `/` right after a condition's
   `)` (`if (ok) /\d+/.test(s)`) opens a regex. `.tsx`, `.jsx` and `.js` files are not scanned for
@@ -515,13 +532,45 @@ each record as text: left alone, that shell serializes a redirected stderr as a 
 a failing `Get-Item` handed the model XML instead of `Cannot find path`. Exit codes follow the last
 statement, as in bash.
 
+## The environment a command gets
+
+A command starts from Book's own environment, and a `Bash` call's `env` is layered over it. One
+value is deliberately kept back: Book defaults `NODE_ENV=production` in its own process so the TUI
+loads React's production renderer instead of the 2-3x slower development build, and a default
+Book invented for itself is not the command's business. `npm install` in a project silently drops
+devDependencies under it, and a test runner reads a production build flag nobody asked for.
+
+So a `NODE_ENV` that Book defaulted itself never reaches a command, on any path that starts one —
+`Bash` foreground and background, hooks, MCP stdio servers, a `Check` command, slash-command
+expansion, clipboard and git helpers, and Book's own detached job runner and supervisor, which is
+the one a persistent job's command would otherwise inherit through. A `NODE_ENV` you exported
+before starting Book always passes through, and so does one set explicitly — in `ToolContext.env`,
+a hook's own `env`, or an MCP server's `env`. **Explicit wins, even when it agrees**: a hook or a
+server configured with `NODE_ENV=production` gets `production`, because that is the one value where
+a request and Book's own default look identical, and a setting somebody wrote down is not deleted
+by looking like something else. What is stripped instead is the environment `ToolContext.env` _is_
+— Book's own, marker and all — since a copy of `process.env` is not a request for the default it
+carries.
+
 ## Shell command timeouts
 
-A foreground `Bash` command is killed after **300000 ms** (five minutes) by default. The model can
-raise that per call with the `timeout` argument, up to **600000 ms** — reach for it before a full
-build or test suite rather than after the kill. It is validated like any other argument, so a value
+A foreground `Bash` command is given **300000 ms** (five minutes) by default. The model can raise
+that per call with the `timeout` argument, up to **600000 ms** — reach for it before a full build
+or test suite rather than after the deadline. It is validated like any other argument, so a value
 outside the declared range is rejected rather than quietly ignored. Background commands ignore
 `timeout` entirely and take `max_runtime_ms` instead.
+
+When a foreground command is still running at its deadline it is **not killed**. It moves to a
+session background shell, and the result reports it as a success that names the `shell_id` and the
+output it produced so far, so the next call is a `BashOutput` rather than a re-run of whatever
+took five minutes. Read it with `BashOutput` (see below) and stop it with `KillShell`. A command
+the host cannot hand over — no shell manager for the context, a session already ending, a process
+that exited as the deadline arrived, or a command run by a **subagent or a managed agent** — is
+ended as before and reports itself as killed, returning whatever it printed before the kill: the
+two outcomes call for different next moves, so the failure message names the deadline it hit and
+the ways past it. Subagents and managed agents are refused on purpose: each owns a runtime that is
+disposed when its own run ends, and a background shell adopted there would be destroyed at the end
+of the very run that reported it as still running.
 
 `BOOK_TOOL_TIMEOUT_MS` overrides the default for every tool, `Bash` included, and where it is set it
 is also the **ceiling** on what a single call may ask for: lowering it to 30000 caps a model that
@@ -541,10 +590,69 @@ does, so a lower blanket override cannot fire it ahead of `Check` or `Task`. A `
 sets the host budget only for a tool that publishes one, so a stray value cannot pull the backstop
 underneath a tool that times itself.
 
-A killed command reports itself as killed rather than failed, and returns whatever it printed on
-stdout and stderr before the kill. The two outcomes call for different next moves — retrying a
-killed command identically is pointless; retrying with a larger `timeout` is not — so the failure
-message names the deadline it hit and the ways past it.
+A command that had to be killed reports itself as killed rather than failed, and returns whatever
+it printed on stdout and stderr before the kill, so the failure names the deadline it hit and the
+ways past it.
+
+## Waiting for a background shell
+
+`BashOutput` reads a shell's new output and its status. Left to itself it returns at once, which
+turns a slow command into one tool call per turn: the model polls, the poll is the whole turn, and
+a test suite that takes four minutes costs eight calls that each learn "still running".
+
+`wait_ms` makes the call wait instead. The wait ends when the shell reaches a terminal status —
+exited, failed, or stopped — or when the requested time elapses, whichever comes first, and the
+result then reports the status either way. It does **not** return early on new output: a chatty
+command would then return at once and the wait would be worth nothing, so a noisy test runner costs
+the same wait as a silent one. Omit `wait_ms` to read the current output and status immediately, as
+before.
+
+The wait is bounded by the same ceiling as every other deadline in force (`toolTimeoutCeilingMs`:
+`BOOK_TOOL_TIMEOUT_MS` where set, 600000 ms otherwise), and a `wait_ms` above it is **refused**
+rather than quietly shortened, exactly as `Bash` refuses an over-limit `timeout`. It ends early if
+the turn is cancelled, and it kills nothing when it does: the shell keeps running, the result
+reports the output there is, and a later call can wait on it again. A shell that is still running
+and has printed nothing new says so, and what it says next depends on the call: a read is pointed
+at `wait_ms` instead of another poll, and a wait that ran out reports how long it waited, so the
+model is not told to pass the argument it just passed.
+
+Session shells and `lifetime: "persistent"` jobs are both supported. A shell's terminal
+transition is always an event from the manager, so the wait subscribes; a persistent job lives in
+another process, so the manager's monitor reads its record file a few times a second and the wait
+ends on the transition that read reports.
+
+## What ends a background shell
+
+A **session** shell — the default, and what a foreground command that reached its deadline becomes
+— ends with Book. On exit, or when the session is cleared or replaced, Book ends the whole process
+tree the command started, not just the wrapper it was handed: the process group on macOS and Linux,
+and `taskkill /T /F` on Windows. This is the same escalation `KillShell` uses, and the wrapper is
+not killed first on either platform, because the teardown has to walk from a root that is still
+alive.
+
+What that covers, honestly, differs by platform. On macOS and Linux the signal goes to the process
+group, and a process group outlives the shell that led it — so `npm run dev &` started through a
+Git Bash wrapper is ended with Book. On Windows `taskkill /T` walks the tree from that live root, so
+a command whose wrapper has **already exited** leaves descendants that nothing here can reach: run
+`npm run dev &` inside a Git Bash window, close the window, and Book has no wrapper left to walk
+from, and the dev server keeps running. Stop those yourself, or use a session shell that stays in
+the foreground. A process that re-parents itself out of the tree — `setsid`, a Windows service, a
+daemon that double-forks — is not covered on either platform.
+
+A job started with `lifetime: "persistent"` is deliberately exempt: it is meant to outlive Book, so
+it is not ended by any of this. It is stopped through its runner's control file, and
+`book doctor` reports the ones that are still running.
+
+**A failure keeps both ends of its output; a success keeps the head.** Any tool result over 50 KB
+is clipped, and a notice names the file in Book's user-local `tool-output` directory that holds it
+in full, so a `Read` in the same run can open it. What survives the clip depends on the status. A
+failed result — a non-zero exit, a refused plan, anything but success — keeps its first few KB
+**and** its last, with the count of what sits between them in the notice, because a failed run
+puts something worth reading at each end: the `act()` warnings at the top, and the
+`Tests 2 failed | 10 passed` every runner prints last. The head is also what carries a failure's
+framing, such as the Task tool's `Partial result (the child was stopped; nothing below is
+final):`, which is what says the output after it is not finished. A successful result keeps the
+**head** alone, where the first thing the command did is.
 
 ## Bash sandbox
 

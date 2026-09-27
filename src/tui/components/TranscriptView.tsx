@@ -15,6 +15,7 @@ import {
   getTranscriptHalfPageRows,
   getTranscriptPageRows,
   getTranscriptWheelDrainRows,
+  halfPageScrollDirection,
   reconcileTranscriptScroll,
   scrollTranscriptBy,
   scrollTranscriptToEnd,
@@ -56,9 +57,39 @@ interface TranscriptViewProps {
   followRequestKey?: number;
   /** Structural layout changes outside transcript components that self-report height updates. */
   layoutRevision?: unknown;
+  /**
+   * True while nothing on screen is holding a text editor's focus, and only then
+   * may this transcript read Ctrl+U and Ctrl+D as its own half-page scrolls.
+   * Derive it with `pagerChordsAvailable` from `../transcript-scroll.js`.
+   *
+   * Ctrl+U and Ctrl+D are readline's kills, and Ink hands every key to every
+   * handler, so this transcript cannot decide the question on its own: by the
+   * time its own handler runs, an editor has already acted, and a draft that
+   * Ctrl+U itself emptied looks exactly like one that was empty all along. So
+   * the editor takes the chord and, when it had nothing to edit, hands it back
+   * through `scrollRequest` — and this transcript's own Ctrl+U / Ctrl+D handling
+   * is for the times no editor is taking keys at all (a permission prompt, a
+   * sheet of choices), which is when a scroll is the only thing the key can mean.
+   *
+   * A sheet with its own editor open reports through the same channel as its
+   * height, so plan approval, the `Other` answer and an MCP text field take
+   * these keys the way the composer does.
+   */
+  pagerChordsAvailable?: boolean;
+  /**
+   * A half-page scroll the app asked for on the composer's behalf. Keyed so a
+   * repeated request scrolls again; the initial `key: 0` is treated as none.
+   */
+  scrollRequest?: TranscriptScrollRequest;
   onToggleTool?: (toolId: string, expanded: boolean) => void;
   onNotify?: (message: string) => void;
   onRedrawViewport?: () => void;
+}
+
+/** A half-page scroll asked for from outside, as the composer reports it. */
+export interface TranscriptScrollRequest {
+  key: number;
+  direction: 'up' | 'down';
 }
 
 const INITIAL_METRICS: TranscriptMetrics = { contentRows: 0, viewportRows: 1 };
@@ -128,6 +159,11 @@ export function TranscriptView({
   isActive = true,
   followRequestKey = 0,
   layoutRevision,
+  // True by default: a transcript on its own has no editor to take these keys,
+  // and the chords are the only thing they can mean. `app.tsx` passes the real
+  // answer for the whole screen.
+  pagerChordsAvailable = true,
+  scrollRequest,
   onToggleTool,
   onNotify,
   onRedrawViewport,
@@ -145,6 +181,13 @@ export function TranscriptView({
   const stateRef = useRef<TranscriptScrollState>(createTranscriptScrollState());
   const previousContentRowsRef = useRef(0);
   const previousFollowRequestRef = useRef(followRequestKey);
+  // Seeded from the request in hand, the way `previousFollowRequestRef` is seeded
+  // from `followRequestKey`. A remount is not a fresh request: `app.tsx` keys
+  // this component on the session, so /resume and /clear mount a new one while
+  // `scrollRequest` still carries the count from the session before. Starting at
+  // 0 would replay that count and open the new session scrolled half a page back
+  // and no longer following output.
+  const previousScrollRequestRef = useRef(scrollRequest?.key ?? 0);
   const pendingWheelRowsRef = useRef(0);
   const wheelImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
   const layoutMeasureImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
@@ -402,6 +445,24 @@ export function TranscriptView({
     });
   }, [measureTranscript]);
 
+  const scrollByHalfPage = useCallback(
+    (direction: 'up' | 'down') => {
+      const metrics = metricsRef.current;
+      if (
+        direction === 'up' &&
+        stateRef.current.scrollTop === 0 &&
+        historyLoaderRef.current?.('page')
+      )
+        return;
+      cancelWheelScroll();
+      const rows = getTranscriptHalfPageRows(metrics.viewportRows);
+      applyScrollState(
+        scrollTranscriptBy(stateRef.current, metrics, direction === 'up' ? -rows : rows),
+      );
+    },
+    [applyScrollState, cancelWheelScroll],
+  );
+
   const layoutDependency = layoutRevision === undefined ? children : layoutRevision;
   useLayoutEffect(() => {
     cancelScheduledLayoutMeasure();
@@ -423,6 +484,16 @@ export function TranscriptView({
     dragRef.current = null;
     applyScrollState(scrollTranscriptToEnd(metricsRef.current));
   }, [applyScrollState, cancelWheelScroll, clearSelection, followRequestKey]);
+
+  // A chord the composer had no draft to edit. It arrives as a request rather
+  // than as a keypress, because by the time every handler has run there is no
+  // telling which of the two the key was meant for.
+  useLayoutEffect(() => {
+    if (!isActive || !scrollRequest) return;
+    if (previousScrollRequestRef.current === scrollRequest.key) return;
+    previousScrollRequestRef.current = scrollRequest.key;
+    scrollByHalfPage(scrollRequest.direction);
+  }, [isActive, scrollByHalfPage, scrollRequest]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -606,19 +677,14 @@ export function TranscriptView({
         next = scrollTranscriptToStart();
       } else if (key.ctrl && key.end) {
         next = scrollTranscriptToEnd(metrics);
-      } else if (key.ctrl && input.toLowerCase() === 'u') {
-        if (stateRef.current.scrollTop === 0 && historyLoaderRef.current?.('page')) return;
-        next = scrollTranscriptBy(
-          stateRef.current,
-          metrics,
-          -getTranscriptHalfPageRows(metrics.viewportRows),
-        );
-      } else if (key.ctrl && input.toLowerCase() === 'd') {
-        next = scrollTranscriptBy(
-          stateRef.current,
-          metrics,
-          getTranscriptHalfPageRows(metrics.viewportRows),
-        );
+      } else if (pagerChordsAvailable && halfPageScrollDirection(input, key)) {
+        // The pager chords reach this handler only when no editor is taking
+        // keys — a permission prompt, a sheet of choices. There is then no draft
+        // to edit, so a half-page scroll is the only thing the key can mean. With
+        // an editor live they arrive as `scrollRequest` instead, because by the
+        // time this handler runs the editor has already spent them.
+        scrollByHalfPage(halfPageScrollDirection(input, key)!);
+        return;
       }
 
       if (next) {

@@ -10,6 +10,7 @@ vi.mock('../async.js', async (importOriginal) => {
   return { ...actual, yieldToEventLoop: vi.fn(actual.yieldToEventLoop) };
 });
 import { fileTools } from './file.js';
+import { createRegistry } from './registry.js';
 import { boundToolResultOutput, TOOL_RESULT_MAX_BYTES } from './result.js';
 import type { ToolContext } from '../types/tools.js';
 import {
@@ -422,6 +423,146 @@ describe('read_file', () => {
     expect(emptyPast.status).toBe('error');
     expect(emptyPast.structuredError?.code).toBe('offset_out_of_range');
     expect(emptyPast.structuredError?.message).toContain('the file has 0 lines');
+  });
+
+  // #309: `content.split('\n')` leaves an empty element after a file's final
+  // newline, and a page loop bounded by that array numbered it as though it
+  // were a line of the file — so `a\nb\n` read as three lines and an empty
+  // file as `1: `.
+  it('numbers exactly the lines of a file that ends in a newline (#309)', async () => {
+    writeFileSync(join(dir, 'trailing.txt'), 'a\nb\n');
+
+    const result = await read.execute({ filePath: 'trailing.txt' }, ctx);
+
+    expect(result.status).toBe('success');
+    expect(result.content.split('\n')).toEqual(['1: a', '2: b']);
+  });
+
+  it('says an empty file is empty rather than returning nothing (#309)', async () => {
+    writeFileSync(join(dir, 'empty.txt'), '');
+
+    const result = await read.execute({ filePath: 'empty.txt' }, ctx);
+
+    expect(result.status).toBe('success');
+    // An empty tool result reads as a call that produced no output at all,
+    // which is not the same thing as a file that has no lines in it.
+    expect(result.content).toBe('[Empty file: 0 lines.]');
+    expect(result.presentation?.metadata).toEqual(['empty']);
+  });
+
+  it('reads a file of one newline as the one blank line it has (#309)', async () => {
+    writeFileSync(join(dir, 'blank.txt'), '\n');
+
+    const result = await read.execute({ filePath: 'blank.txt' }, ctx);
+
+    expect(result.status).toBe('success');
+    expect(result.content).toBe('1: ');
+    expect(result.presentation?.metadata).toEqual(['1 line']);
+  });
+
+  it('tells a file ending in a newline apart from one ending in a blank line (#309)', async () => {
+    writeFileSync(join(dir, 'one.txt'), 'a\n');
+    writeFileSync(join(dir, 'two.txt'), 'a\n\n');
+
+    const one = await read.execute({ filePath: 'one.txt', limit: 2 }, ctx);
+    const two = await read.execute({ filePath: 'two.txt', limit: 2 }, ctx);
+
+    // Before the fix both ended in a `2: ` numbered line, so a file whose last
+    // line was blank and one that merely ended with a newline were the same
+    // Read.
+    expect(one.content).toBe('1: a');
+    expect(two.content).toBe('1: a\n2: ');
+  });
+
+  it('counts the numbered lines it shows in a row for a file ending in a newline (#309)', async () => {
+    writeFileSync(
+      join(dir, 'page.ts'),
+      'export const a = 1;\nexport const b = 2;\nexport const c = 3;\n',
+    );
+
+    const whole = await read.execute({ filePath: 'page.ts' }, ctx);
+    const numbered = whole.content.split('\n').filter((line) => /^\d+: /.test(line));
+
+    expect(numbered).toHaveLength(3);
+    expect(whole.presentation?.metadata).toEqual(['3 lines']);
+  });
+
+  it('allows an Edit after a Read of an empty file (#309)', async () => {
+    writeFileSync(join(dir, 'empty.ts'), '');
+    const observed = await read.execute({ filePath: 'empty.ts' }, ctx);
+    expect(observed.status).toBe('success');
+
+    const written = await write.execute({ filePath: 'empty.ts', content: 'const a = 1;\n' }, ctx);
+    expect(written.status).toBe('success');
+
+    const edited = await edit.execute(
+      { filePath: 'empty.ts', oldString: 'a = 1', newString: 'a = 2' },
+      ctx,
+    );
+    expect(edited.status).toBe('success');
+    expect(readFileSync(join(dir, 'empty.ts'), 'utf-8')).toBe('const a = 2;\n');
+  });
+
+  // #310: the schema took `offset` as a number, so a model's `2.5` printed
+  // `2.5: undefined` and offered `offset: 4.5` as the next page.
+  it('rejects a fractional offset before the tool runs (#310)', async () => {
+    writeFileSync(join(dir, 'lines.txt'), '1\n2\n3\n4\n5');
+    const registry = createRegistry();
+    registry.register(read);
+
+    const result = await registry.execute(
+      { id: 'fractional', name: 'Read', arguments: { filePath: 'lines.txt', offset: 2.5 } },
+      ctx,
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.code).toBe('invalid_arguments');
+    expect(result.structuredError?.message).toContain('arguments.offset');
+  });
+
+  it('floors a fractional offset and limit rather than numbering 2.5 (#310)', async () => {
+    writeFileSync(join(dir, 'lines.txt'), '1\n2\n3\n4\n5');
+
+    const result = await read.execute({ filePath: 'lines.txt', offset: 2.5, limit: 2 }, ctx);
+
+    expect(result.content.split('\n')).toEqual([
+      '2: 2',
+      '3: 3',
+      '[Lines 2-3 of 5 shown. Continue with offset: 4.]',
+    ]);
+  });
+
+  // #310, C: `Math.floor` ran after the `|| 1` fallback, so `offset: 0.5`
+  // floored to 0 and printed `0: undefined`, and a schema-valid negative
+  // integer printed `-3: undefined` lines.
+  it.each([
+    { name: 'a fraction below one', offset: 0.5 },
+    { name: 'a negative integer', offset: -3 },
+  ])('starts at line 1 for $name (#310)', async ({ offset }) => {
+    writeFileSync(join(dir, 'lines.txt'), '1\n2\n3\n4\n5');
+
+    const result = await read.execute({ filePath: 'lines.txt', offset }, ctx);
+
+    expect(result.status).toBe('success');
+    expect(result.content.split('\n')[0]).toBe('1: 1');
+  });
+
+  it.each([
+    { field: 'offset', value: 0 },
+    { field: 'limit', value: 0 },
+  ])('rejects $field of 0 before the tool runs (#310)', async ({ field, value }) => {
+    writeFileSync(join(dir, 'lines.txt'), '1\n2\n3');
+    const registry = createRegistry();
+    registry.register(read);
+
+    const result = await registry.execute(
+      { id: 'zero', name: 'Read', arguments: { filePath: 'lines.txt', [field]: value } },
+      ctx,
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.code).toBe('invalid_arguments');
+    expect(result.structuredError?.message).toContain(`arguments.${field}`);
   });
 });
 
@@ -976,6 +1117,22 @@ describe('grep', () => {
     });
     expect(data.matches['a.ts']).not.toHaveProperty('lines');
     expect(JSON.stringify(result.data)).not.toContain('unrelated secret');
+  });
+
+  it('counts a content-mode row from its own data, not by re-parsing the page (#311)', async () => {
+    // A context line carries `path:line- text`, and the text itself holds a
+    // `12:30` timestamp. Counting `/:\d+:/` lines took that context line for a
+    // match; Grep's own data knows there is only one.
+    writeFileSync(join(dir, 'a.ts'), "const found = 1;\nconst at = '10:12:30';\n");
+    const context = { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' } };
+
+    const result = await grep.execute({ pattern: 'found', include: '*.ts', C: 1 }, context);
+
+    expect(result.status).toBe('success');
+    // The context line is in the page, so the text alone would count two.
+    expect(result.content).toContain('a.ts:2- const at');
+    expect(result.presentation?.metadata).toEqual(['1 match']);
+    expect(result.presentation?.summary).toBe('Found 1 match');
   });
 
   it('skips binary files even when their bytes contain the pattern', async () => {
@@ -2553,6 +2710,114 @@ const OUTLINE_CONTRACT: Array<{ shape: string; file: string; lines: string[]; ou
       file: 'List.kt',
       lines: ['fun top() = xs.map {', '    it.split(",")', '}'],
       outline: ['1: fun top() = xs.map {'],
+    },
+    {
+      // #316: `CPP_QUALIFIER`'s `[^()]*` could not hold a nested `(`.
+      shape: 'C++: a conditional noexcept and a guarded macro argument with a nested call',
+      file: 'swap.h',
+      lines: [
+        'class Buffer {',
+        ' public:',
+        '  void swap(Buffer&) noexcept(noexcept(a.swap(b)));',
+        '  int size() GUARDED_BY(mu_.lock());',
+        '  void Clear();',
+        '};',
+      ],
+      outline: [
+        '1: class Buffer {',
+        '3:   void swap(Buffer&) noexcept(noexcept(a.swap(b)));',
+        '4:   int size() GUARDED_BY(mu_.lock());',
+        '5:   void Clear();',
+      ],
+    },
+    {
+      // #316: `u8'a'` was read as the digit separator in `1'000`.
+      shape: 'C++: a u8 character literal is a literal, not a digit separator',
+      file: 'Charset.h',
+      lines: ['class Charset {', ' public:', "  void f(char8_t c = u8'a') {", '  }', '};'],
+      outline: ['1: class Charset {', "3:   void f(char8_t c = u8'a') {"],
+    },
+    {
+      // #316: `union` was missing from OUTLINE_KEYWORD, so a nested union's
+      // members fell outside the class body that held them.
+      shape: 'C++: a nested union keeps its members',
+      file: 'Value.h',
+      lines: [
+        'class Value {',
+        ' public:',
+        '  union U {',
+        '    void f();',
+        '    int n;',
+        '  };',
+        '};',
+      ],
+      outline: ['1: class Value {', '3:   union U {', '4:     void f();'],
+    },
+    {
+      // #316: the generic test-chain arm matched any `it.<name>('title')`.
+      shape: 'TypeScript: a call taking a string is not a test block',
+      file: 'drive.ts',
+      lines: ['export function drive(it: Iterator<string>) {', "  it.next('resume');", '}'],
+      outline: ['1: export function drive(it: Iterator<string>) {'],
+    },
+    {
+      // #316, item 4, both directions. Requiring the line to end in `=> {`
+      // listed any call whose callback opened a body, and a title with anything
+      // after it on the line. A test call is a member chain called with a title
+      // *and* a second argument: the callback. The comma is what says so.
+      shape: 'TypeScript: a test chain is a titled call with a second argument',
+      file: 'suite.ts',
+      lines: [
+        "describe('suite', () => {",
+        "  it.effect('adds', () => Effect.gen(function* () {",
+        '  }));',
+        "  it.custom('titled', function () {",
+        '  });',
+        "  it.custom('titled',",
+        '    () => {',
+        '    });',
+        "  test.extend({})('z', () => {",
+        '  });',
+        "  it.next('resume');",
+        "  it.next('resume').then(() => {",
+        "  it.value = run('x', () => {",
+        '});',
+      ],
+      outline: [
+        "1: describe('suite', () => {",
+        "2:   it.effect('adds', () => Effect.gen(function* () {",
+        "4:   it.custom('titled', function () {",
+        "6:   it.custom('titled',",
+        "9:   test.extend({})('z', () => {",
+      ],
+    },
+    {
+      // #316, D: `union` in the language-agnostic keyword list made a call
+      // named `union` a declaration. It is a type only when a name or `{`
+      // follows, never a `(`.
+      shape: 'Python: a call named union is a call',
+      file: 'sets.py',
+      lines: [
+        'def combine(set_a, set_b):',
+        '    union = 1',
+        '    total = union(set_a, {1, 2})',
+        '    other = set_a.union(set_b)',
+      ],
+      outline: ['1: def combine(set_a, set_b):'],
+    },
+    {
+      // #316, D: the same call in JavaScript, where the keyword list applies
+      // too (`const u = union(a, b);` is an assignment, not a declaration).
+      shape: 'JavaScript: a call named union is a call',
+      file: 'sets.js',
+      lines: [
+        'function combine(setA, setB) {',
+        '  union(setA, setB);',
+        '  const total = union(setA, { 1, 2 });',
+        '  return total;',
+        '}',
+      ],
+      outline: ['1: function combine(setA, setB) {'],
     },
   ];
 

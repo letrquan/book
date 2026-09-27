@@ -36,6 +36,7 @@ import { hasInkTrailingNewlineFix } from './ink-renderer.js';
 import { isCiEnvironment, resolveTuiRendererMode } from './tui-renderer-mode.js';
 import { resolvePermissionMode } from '../permission-mode.js';
 import { spawn } from 'node:child_process';
+import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 
 const SESSION_ROOT = join(resolveBookHome(), 'sessions');
@@ -103,6 +104,7 @@ function writeTerminalControl(stdout: Pick<NodeJS.WriteStream, 'write'>, sequenc
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
+        env: buildChildEnv(),
       },
     );
     bridge.on('error', () => {});
@@ -282,6 +284,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           persistSession: options.sessionPersistence as boolean | undefined,
           includeHookEvents: options.includeHookEvents as boolean | undefined,
           includePartialMessages: options.includePartialMessages as boolean | undefined,
+          includeResultMessages: options.includeResultMessages as boolean | undefined,
           promptSuggestions: options.promptSuggestions as boolean | undefined,
         });
       } finally {

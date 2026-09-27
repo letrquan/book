@@ -1,3 +1,5 @@
+import type { AgentTerminalOutcome } from './types/terminal.js';
+
 /** Known event types in the stream-json wire format. */
 export type StreamJsonEvent =
   | { type: 'user'; content: string }
@@ -52,7 +54,26 @@ export type StreamJsonEvent =
   | { type: 'prompt_suggestions'; suggestions?: string[] }
   | { type: 'notice'; message?: string }
   | { type: 'error'; error?: string }
-  | { type: 'result'; result?: unknown; stopReason?: string }
+  /**
+   * The run's terminal record, and the last line of the stream.
+   *
+   * `outcome` and `stopReason` sit at the top level: a supervised loop reads the
+   * outcome from here (see the `jq` selector in `docs/guide/long-runs.md`), and
+   * `result.outcome` / `result.stopReason` are kept for hosts already reading them
+   * there. It is the run's own `AgentTerminalOutcome`, not a restatement of it, so
+   * a status the run cannot emit cannot typecheck into this record.
+   *
+   * `result` is the host-performed part of the record — the answer, the usage, the
+   * accounting, and the conversation when the run passed
+   * `--include-result-messages`, which #307 made opt-in to keep a long run's last
+   * line small. Nothing in the parser reads into it, so it stays `unknown` here.
+   */
+  | {
+      type: 'result';
+      stopReason?: string;
+      outcome?: AgentTerminalOutcome;
+      result?: unknown;
+    }
   | { type: 'done' };
 
 export type StreamJsonDiagnosticCode = 'invalid-json' | 'invalid-shape' | 'oversized-line';

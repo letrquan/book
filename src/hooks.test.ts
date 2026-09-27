@@ -17,6 +17,11 @@ const ctx = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+/** Quote a path for the platform shell a hook command is handed to. */
+function shellQuote(value: string): string {
+  return process.platform === 'win32' ? `"${value.replace(/"/g, '\\"')}"` : `'${value}'`;
+}
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'book-hooks-'));
 });
@@ -418,5 +423,90 @@ fi`,
     };
     const results = await runHooks([hook], 'Stop', ctx({ event: 'Stop' as HookEvent }));
     expect(results[0].action).toBe('continue');
+  });
+});
+
+/**
+ * Book defaults NODE_ENV=production for its own renderer. A hook is a project-supplied command,
+ * so it must not inherit a default nobody asked for — and an `env` the hook declares is an
+ * explicit request, so it must survive.
+ */
+describe('runHooks — child environment', () => {
+  const saved = { ...process.env };
+
+  beforeEach(() => {
+    process.env.BOOK_DEFAULTED_NODE_ENV = '1';
+    process.env.NODE_ENV = 'production';
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) delete process.env[key];
+    Object.assign(process.env, saved);
+  });
+
+  /** A hook that reports the env it was started with, as JSON on stdout inside a block. */
+  const reportEnvHook = (env: Record<string, string> = {}): HookEntry => {
+    const reportPath = join(dir, 'hook-env.json');
+    const scriptPath = join(dir, 'hook-env.cjs');
+    writeFileSync(
+      scriptPath,
+      `require('fs').writeFileSync(${JSON.stringify(reportPath)}, JSON.stringify({
+        nodeEnv: process.env.NODE_ENV ?? null,
+        marker: process.env.BOOK_DEFAULTED_NODE_ENV ?? null,
+      }));\n`,
+    );
+    return {
+      command: `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`,
+      env,
+    };
+  };
+
+  const reported = (): { nodeEnv: string | null; marker: string | null } =>
+    JSON.parse(readFileSync(join(dir, 'hook-env.json'), 'utf8'));
+
+  it('does not hand a hook the NODE_ENV Book defaulted', async () => {
+    const results = await runHooks([reportEnvHook()], 'Stop', ctx({ event: 'Stop' as HookEvent }));
+
+    expect(results[0].action).toBe('continue');
+    expect(reported().nodeEnv).toBeNull();
+    expect(reported().marker).toBeNull();
+  });
+
+  it('passes a NODE_ENV the hook declares in its own env', async () => {
+    const results = await runHooks(
+      [reportEnvHook({ NODE_ENV: 'staging' })],
+      'Stop',
+      ctx({
+        event: 'Stop' as HookEvent,
+      }),
+    );
+
+    expect(results[0].action).toBe('continue');
+    expect(reported().nodeEnv).toBe('staging');
+  });
+
+  it('passes a hook that declares the same NODE_ENV Book defaulted', async () => {
+    // `production` is the one value an explicit request and Book's own default agree on. A hook
+    // that writes it down has asked for it, and a filter that cannot tell the two apart deletes
+    // a setting the project declared.
+    const results = await runHooks(
+      [reportEnvHook({ NODE_ENV: 'production' })],
+      'Stop',
+      ctx({ event: 'Stop' as HookEvent }),
+    );
+
+    expect(results[0].action).toBe('continue');
+    expect(reported().nodeEnv).toBe('production');
+    expect(reported().marker).toBeNull();
+  });
+
+  it('passes a NODE_ENV the user set before Book started', async () => {
+    delete process.env.BOOK_DEFAULTED_NODE_ENV;
+    process.env.NODE_ENV = 'development';
+
+    const results = await runHooks([reportEnvHook()], 'Stop', ctx({ event: 'Stop' as HookEvent }));
+
+    expect(results[0].action).toBe('continue');
+    expect(reported().nodeEnv).toBe('development');
   });
 });

@@ -185,26 +185,33 @@ after a failed run.
 
 ## Environment variables
 
-| Variable                                                                                          | Purpose                                                                            |
-| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `BOOK_API_KEY`                                                                                    | Default API key (or `{env:VAR}` in provider settings)                              |
-| `BOOK_BASE_URL`                                                                                   | Default OpenAI-compatible base URL                                                 |
-| `BOOK_MODEL`                                                                                      | Default model                                                                      |
-| `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                                                  |
-| `BOOK_EFFORT`                                                                                     | Thinking effort level                                                              |
-| `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                                                |
-| `BOOK_SHELL`                                                                                      | Shell for `Bash`: `bash`, `pwsh`, `powershell`, `cmd`, or a path                   |
-| `BOOK_WORKSPACE`                                                                                  | Default workspace                                                                  |
-| `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                                           |
-| `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                                         |
-| `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                                           |
-| `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout (`Bash` included) and telemetry location                              |
-| `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)                           |
-| `BOOK_WEB_ALLOW_PRIVATE_NETWORK`                                                                  | Opt into local/private web destinations for every `WebFetch` (disabled by default) |
-| `BOOK_WEB_MAX_REDIRECTS`                                                                          | Same-origin redirect limit for `WebFetch` (default 5, maximum 10)                  |
-| `BOOK_TUI_RENDERER`                                                                               | `safe`, `incremental`, or experimental scroll renderer                             |
-| `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                                                |
-| `BOOK_DEBUG_FILE` / `BOOK_DEBUG_STDERR` / `BOOK_DEBUG_MAX_BYTES` / `BOOK_DEBUG_BACKUPS`           | Debug log destination and rotation controls                                        |
+| Variable                                                                                          | Purpose                                                                                    |
+| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `BOOK_API_KEY`                                                                                    | Default API key (or `{env:VAR}` in provider settings)                                      |
+| `BOOK_BASE_URL`                                                                                   | Default OpenAI-compatible base URL                                                         |
+| `BOOK_MODEL`                                                                                      | Default model                                                                              |
+| `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                                                          |
+| `BOOK_EFFORT`                                                                                     | Thinking effort level                                                                      |
+| `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                                                        |
+| `BOOK_SHELL`                                                                                      | Shell for `Bash`: `bash`, `pwsh`, `powershell`, `cmd`, or a path                           |
+| `BOOK_WORKSPACE`                                                                                  | Default workspace                                                                          |
+| `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                                                   |
+| `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                                                 |
+| `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                                                   |
+| `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout (`Bash` included) and telemetry location                                      |
+| `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)                                   |
+| `BOOK_WEB_ALLOW_PRIVATE_NETWORK`                                                                  | Opt into local/private web destinations for every `WebFetch` (disabled by default)         |
+| `BOOK_WEB_MAX_REDIRECTS`                                                                          | Same-origin redirect limit for `WebFetch` (default 5, maximum 10)                          |
+| `BOOK_TUI_RENDERER`                                                                               | `safe`, `incremental`, or experimental scroll renderer                                     |
+| `BOOK_STARTUP_ANIMATION`                                                                          | Startup splash on or off; outranks `ui.startupAnimation`, as `BOOK_MODEL` does for `model` |
+| `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                                                        |
+| `BOOK_DEBUG_FILE` / `BOOK_DEBUG_STDERR` / `BOOK_DEBUG_MAX_BYTES` / `BOOK_DEBUG_BACKUPS`           | Debug log destination and rotation controls                                                |
+
+`BOOK_STARTUP_ANIMATION` holds wherever the effective settings are read, not only at startup:
+`book config get ui.startupAnimation` and `book config list` report the value in force and name the
+variable as its source, and the settings a provider removal re-reads keep it. It is never written
+into a settings file, so `/config` says the variable decides at every launch when the row is toggled
+while it is set — the saved value applies once it is unset.
 
 `WebFetch` requires HTTPS by default, validates DNS results and the address used by the network
 connection, blocks private/special-use destinations, and stops on cross-origin redirects so the

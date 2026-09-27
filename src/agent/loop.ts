@@ -1340,6 +1340,18 @@ export async function runAgentLoop(
 
       const provider = options?.provider ?? createProvider(effectiveConfig);
       let usageRecorded = false;
+      /**
+       * Charge the run before anyone is told about the response.
+       *
+       * `onUsage` is the seam that persists this turn's spend, and it works out
+       * what to write by snapshotting the root: reported first, it saw a total
+       * that excluded the request it was being called for, so every run wrote its
+       * first request's usage twice and lost its last. The same order the
+       * compactor's model calls already use (`accountedOptions` in agent-session).
+       * Nothing that runs inside the callback reads the total expecting this turn
+       * to be missing from it — the budget gate runs before the next call, and the
+       * cost display runs at the turn boundary.
+       */
       const recordTurnUsage = (): void => {
         if (!turnUsage || usageRecorded) return;
         usageRecorded = true;
@@ -1347,9 +1359,10 @@ export async function runAgentLoop(
           provider: provider.id,
           requestedModel: effectiveConfig.model,
         };
-        callbacks.onUsage?.(turnUsage, metadata);
-        if (options?.runContext)
+        if (options?.runContext) {
           runtime.runAccounting.record(options.runContext, turnUsage, metadata);
+        }
+        callbacks.onUsage?.(turnUsage, metadata);
       };
       if (options?.runContext) {
         const budget = runtime.runAccounting.checkBeforeModelCall(
