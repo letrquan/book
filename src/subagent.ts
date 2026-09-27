@@ -32,6 +32,11 @@ export async function runSubagent(
     parentToolTraceId?: string;
     nestedToolObserver?: NestedToolObserver;
     onUserQuestionRequired?: UserQuestionHandler;
+    /**
+     * Where a refusal raised inside this child goes. The child's result is a summary, so a step
+     * that was refused and never ran is otherwise invisible to whoever delegated it (#305 item 4).
+     */
+    onNotice?: (notice: string) => void;
     agentPath?: string[];
     /** Parent file observations, copied so same-workspace edits need no re-Read. */
     fileObservationSeed?: ReadonlyMap<string, FileObservation>;
@@ -82,6 +87,7 @@ export async function runSubagent(
         signal: options?.signal,
       }),
     onUserQuestionRequired: options?.onUserQuestionRequired,
+    onNotice: options?.onNotice,
   };
 
   try {

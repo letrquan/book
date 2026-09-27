@@ -1122,6 +1122,19 @@ export function App({
       }
     }
   }, [mcpSnapshot, isThinking, sendInFlight, addLocalMessage, flashNotice]);
+
+  // A managed child that was refused something says so here (#305 item 4). The child's result is
+  // a summary, so a step that never ran is otherwise indistinguishable from one the model chose
+  // to skip. Kept in the transcript rather than flashed, because it is a fact about the run the
+  // operator needs after the fact. Consumption waits for idle, as above.
+  useEffect(() => {
+    if (!managedAgents.noticeEvent) return;
+    if (isThinking || sendInFlight) return;
+    const { message } = managedAgents.noticeEvent;
+    managedAgents.clearNotice();
+    addLocalMessage(message);
+  }, [managedAgents, isThinking, sendInFlight, addLocalMessage]);
+
   const queueDrainBlocked = Boolean(
     exitStarted ||
     isThinking ||

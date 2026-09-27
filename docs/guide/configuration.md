@@ -35,7 +35,10 @@ it.
 
 Two groups of keys are refused in every scope. Trust decisions
 (`mcp.projectServers`, `permissions.projectAllowRules`, `hooks.projectEntries`,
-`commands.projectCommands`) live in `<BOOK_HOME>/trust.json` and are recorded with `book trust`.
+`commands.projectCommands`, `projectDirectories`) live in `<BOOK_HOME>/trust.json` and are recorded
+with `book trust`. The store is version 3; an older build reads a v3 store as unreadable and
+withholds every gated declaration until it is upgraded, rather than silently writing over the
+decisions it does not understand.
 The `shell` setting is not writable by `book config` in a workspace scope — it names the program
 every `Bash` command is handed to, so edit the user-global file directly, pass `--settings`, or
 use `BOOK_SHELL`.

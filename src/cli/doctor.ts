@@ -274,6 +274,45 @@ export async function runDoctorCommand(
     }
   }
 
+  // A declared `additionalDirectories` entry widens the roots Read, Glob and Grep may cross, so
+  // a checked-in one is withheld the same way a project allow rule is. The line shows the real
+  // path next to the declared text: the decision is keyed by, and granted over, where the path
+  // really goes, because the text is the repository's to write and a link can point anywhere.
+  //
+  // A rejected entry is not listed. It is not in effect, nothing is awaiting a decision, and
+  // there is no command to print — re-reporting it on every run would be noise that trains the
+  // reader to skim past the `[!]` lines that do matter.
+  const { collectDeclaredDirectories, partitionProjectDirectories, resolveAdditionalRoots } =
+    await import('../additional-roots.js');
+  const projectDirectories = partitionProjectDirectories(
+    collectDeclaredDirectories(config.workspace, projectSettings?.additionalDirectories ?? []),
+    settings.projectDirectories,
+  );
+  const honoredAdditionalRoots = resolveAdditionalRoots(
+    config.workspace,
+    settings.additionalDirectories,
+  );
+  if (honoredAdditionalRoots.length > 0 || projectDirectories.pending.length > 0) {
+    console.log('Additional directories (Read, Glob and Grep may reach these):');
+    for (const root of honoredAdditionalRoots) console.log('    [x] ' + root);
+    for (const directory of projectDirectories.pending) {
+      console.log(
+        '    [!] ' +
+          directory.realPath +
+          ' (not in effect; declared as ' +
+          directory.declared +
+          ')',
+      );
+    }
+    if (projectDirectories.pending.length > 0) {
+      console.log(approvalHint('    Approve one:', config.workspace, 'dir <path>'));
+      console.log(
+        approvalHint('    Approve all pending:', config.workspace, 'dir --all-pending') +
+          ' (add --reject to refuse)',
+      );
+    }
+  }
+
   console.log();
 
   // A command body that substitutes shell runs it outside the permission

@@ -4,7 +4,7 @@ import { extname } from 'path';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
-import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
+import { pathOutsideWorkspaceResult, resolveMutationPath } from './path-utils.js';
 import {
   observeFile,
   requireFreshObservation,
@@ -184,7 +184,7 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
     return fail(`cell_id is required for ${mode} mode`);
   }
 
-  const resolved = resolveWorkspacePath(ctx.workspaceRoot, notebookPath);
+  const resolved = resolveMutationPath(ctx, notebookPath);
   if (!resolved) return pathOutsideWorkspaceResult(notebookPath);
   const { filePath, relativePath } = resolved;
   const stale = await requireFreshObservation(ctx, filePath, relativePath);

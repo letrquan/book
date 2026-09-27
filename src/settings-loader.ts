@@ -11,6 +11,7 @@ import {
 } from './settings.js';
 import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
 import { resolveBookHome } from './book-home.js';
+import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
 import { collectDeclaredHooks, partitionProjectHooks } from './hook-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
@@ -112,12 +113,17 @@ export type SettingsLayerTrust = 'trusted' | 'local' | 'repository';
  * workspace layers are therefore stripped. Trust decisions come from the
  * user-global store; experimental flags come from a trusted user-global or
  * explicit settings document (or from a process environment opt-in).
+ *
+ * An empty `parent` names a key at the document root, which is how the
+ * `additionalDirectories` decisions map is expressed: the setting it decides
+ * about is itself top-level, so there is no container object to put it in.
  */
 const WORKSPACE_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
   ['mcp', 'projectServers'],
   ['permissions', 'projectAllowRules'],
   ['hooks', 'projectEntries'],
   ['commands', 'projectCommands'],
+  ['', 'projectDirectories'],
 ];
 
 function stripPaths(
@@ -125,6 +131,10 @@ function stripPaths(
   paths: ReadonlyArray<readonly [string, string]>,
 ): void {
   for (const [parent, key] of paths) {
+    if (parent === '') {
+      delete (settings as Record<string, unknown>)[key];
+      continue;
+    }
     const container = (settings as Record<string, unknown>)[parent];
     if (container && typeof container === 'object' && !Array.isArray(container)) {
       delete (container as Record<string, unknown>)[key];
@@ -269,7 +279,12 @@ export function resolveSettings(
   // Project-declared hook entries are held back the same way: each one is a
   // shell command the repository would otherwise get Book to run.
   const declaredProjectHooks = collectDeclaredHooks(project);
-  // Released hooks belong between the user and local layers, matching the
+  // `additionalDirectories` widens the roots the file tools serve, so a checked-in
+  // declaration is held back for the same reason a project allow rule is: it
+  // grants authority, and the decisions that release it live in the local layer,
+  // which has not been merged yet. Released after the trust store loads, by real path.
+  const declaredProjectDirectories = project?.additionalDirectories ?? [];
+  // Released declarations belong between the user and local layers, matching the
   // relative merge order ungated layers still produce.
   const userHookCounts = Object.fromEntries(
     HOOK_EVENTS.map((event) => [event, resolved.hooks[event].length]),
@@ -278,6 +293,9 @@ export function resolveSettings(
     let withheld: BookSettings = project;
     if (declaredProjectAllow.length > 0) {
       withheld = { ...withheld, permissions: { ...withheld.permissions, allow: [] } };
+    }
+    if (declaredProjectDirectories.length > 0) {
+      withheld = { ...withheld, additionalDirectories: [] };
     }
     if (declaredProjectHooks.length > 0) {
       withheld = { ...withheld, hooks: structuredClone(DEFAULT_SETTINGS.hooks) };
@@ -314,6 +332,10 @@ export function resolveSettings(
     ...resolved.commands.projectCommands,
     ...trust.projectCommands,
   };
+  resolved.projectDirectories = {
+    ...resolved.projectDirectories,
+    ...trust.projectDirectories,
+  };
 
   // Every decision source is in place now, so the withheld repository rules can
   // be released — approved ones only.
@@ -324,6 +346,22 @@ export function resolveSettings(
     );
     if (approved.length > 0) {
       resolved.permissions.allow = [...(resolved.permissions.allow ?? []), ...approved];
+    }
+  }
+
+  if (declaredProjectDirectories.length > 0) {
+    // Released by real path, not by the text the repository wrote: see `additional-roots.ts`.
+    // Approved entries join the resolved list as their declared text, which is what the merge
+    // above normalizes and deduplicates; the file tools resolve it again to the same place.
+    const { approved } = partitionProjectDirectories(
+      collectDeclaredDirectories(workspace, declaredProjectDirectories),
+      resolved.projectDirectories,
+    );
+    if (approved.length > 0) {
+      resolved.additionalDirectories = [
+        ...(resolved.additionalDirectories ?? []),
+        ...approved.map((directory) => directory.declared),
+      ];
     }
   }
 

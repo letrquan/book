@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, normalize } from 'path';
 import { runTrustCommand } from './trust-cmd.js';
 import { setExitFn } from './exit.js';
 import { hookFingerprint } from '../hook-approvals.js';
@@ -20,7 +28,7 @@ interface RunResult {
 
 /** Run the command, capturing output and the exit code instead of exiting. */
 async function run(
-  kind: 'hook' | 'rule' | 'command',
+  kind: 'hook' | 'rule' | 'command' | 'dir',
   target: string | undefined,
   options: { reject?: boolean; allPending?: boolean; workspace?: string } = {},
 ): Promise<RunResult> {
@@ -364,5 +372,164 @@ describe('book trust targeting', () => {
     } finally {
       rmSync(other, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * #300. `book trust dir` is the one way a repository-declared directory becomes an honored root,
+ * and the whole safety of that decision rests on it being keyed and displayed by the directory's
+ * **real** path: the repository chooses the text, and a symlink can make that text point anywhere.
+ */
+describe('book trust dir', () => {
+  let shared: string;
+
+  beforeEach(() => {
+    shared = mkdtempSync(join(tmpdir(), 'book-trust-cmd-shared-'));
+  });
+
+  afterEach(() => {
+    rmSync(shared, { recursive: true, force: true });
+  });
+
+  // `BOOK_HOME` is the store's own directory, so the resolver is pointed at the store path
+  // directly rather than at a parent home it would append `.book/` to.
+  const roots = () =>
+    resolveSettings(workspace, undefined, { trustStorePath: storePath() }).additionalDirectories;
+  const decisionFor = (realPath: string) =>
+    loadWorkspaceTrust(workspace, storePath()).projectDirectories?.[realPath];
+
+  it('releases the directory, keyed by where it really is', async () => {
+    writeProject({ additionalDirectories: [shared] });
+
+    const result = await run('dir', shared);
+
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(decisionFor(realpathSync.native(shared))).toBe('approved');
+    expect(roots()).toEqual([normalize(shared)]);
+  });
+
+  it('shows the real path beside the declared text before approving', async () => {
+    const link = join(workspace, 'link');
+    symlinkSync(shared, link, 'junction');
+    writeProject({ additionalDirectories: ['link'] });
+
+    const result = await run('dir', 'link');
+
+    // A user who approves `link` has to see that it is really somewhere else entirely.
+    expect(result.out).toContain('link is really:');
+    expect(result.out).toContain(realpathSync.native(shared));
+    expect(decisionFor(realpathSync.native(shared))).toBe('approved');
+  });
+
+  it('accepts the declared text, the real path, and a trailing slash as one entry', async () => {
+    symlinkSync(shared, join(workspace, 'link'), 'junction');
+    writeProject({ additionalDirectories: ['link'] });
+
+    await run('dir', `${realpathSync.native(shared)}/`);
+
+    expect(decisionFor(realpathSync.native(shared))).toBe('approved');
+  });
+
+  it('records a refusal under --reject and keeps the directory withheld', async () => {
+    writeProject({ additionalDirectories: [shared] });
+
+    const result = await run('dir', shared, { reject: true });
+
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(decisionFor(realpathSync.native(shared))).toBe('rejected');
+    expect(roots()).toEqual([]);
+  });
+
+  it('approves one directory without approving the rest of the file', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'book-trust-cmd-other-'));
+    try {
+      writeProject({ additionalDirectories: [shared, other] });
+
+      await run('dir', shared);
+
+      expect(decisionFor(realpathSync.native(shared))).toBe('approved');
+      expect(decisionFor(realpathSync.native(other))).toBeUndefined();
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('decides every withheld directory under --all-pending', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'book-trust-cmd-other-'));
+    try {
+      writeProject({ additionalDirectories: [shared, other] });
+
+      const result = await run('dir', undefined, { allPending: true });
+
+      expect(result.exitCode ?? 0).toBe(0);
+      expect(decisionFor(realpathSync.native(shared))).toBe('approved');
+      expect(decisionFor(realpathSync.native(other))).toBe('approved');
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves an already-decided directory out of --all-pending', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'book-trust-cmd-other-'));
+    try {
+      writeProject({ additionalDirectories: [shared, other] });
+      await run('dir', shared, { reject: true });
+
+      await run('dir', undefined, { allPending: true });
+
+      expect(decisionFor(realpathSync.native(shared))).toBe('rejected');
+      expect(decisionFor(realpathSync.native(other))).toBe('approved');
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('says so, without writing, when nothing is pending', async () => {
+    writeProject({ additionalDirectories: [] });
+
+    const result = await run('dir', undefined, { allPending: true });
+
+    expect(result.out).toContain('No project-declared directories are awaiting a decision');
+    expect(loadWorkspaceTrust(workspace, storePath()).projectDirectories).toEqual({});
+  });
+
+  it('refuses an entry the project never declared, and lists what is pending', async () => {
+    writeProject({ additionalDirectories: [shared] });
+
+    const result = await run('dir', join(workspace, 'elsewhere'));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.err).toContain('declares no project additionalDirectories entry');
+    expect(result.err).toContain(realpathSync.native(shared));
+  });
+
+  it('refuses a directory the user declared themselves', async () => {
+    mkdirSync(join(bookHome, '.book'), { recursive: true });
+    writeFileSync(
+      join(bookHome, '.book', 'settings.json'),
+      JSON.stringify({ additionalDirectories: [shared] }),
+    );
+
+    const result = await run('dir', shared);
+
+    // The user layer needs no approval, and recording one would be a decision they never made.
+    expect(result.exitCode).toBe(1);
+    expect(result.err).toContain('declares no project additionalDirectories entry');
+  });
+
+  it('rejects a target and --all-pending together', async () => {
+    writeProject({ additionalDirectories: [shared] });
+
+    const result = await run('dir', shared, { allPending: true, reject: true });
+
+    expect(result.exitCode).toBe(1);
+  });
+
+  it('rejects neither a target nor --all-pending', async () => {
+    writeProject({ additionalDirectories: [shared] });
+
+    const result = await run('dir', undefined);
+
+    expect(result.exitCode).toBe(1);
   });
 });

@@ -31,6 +31,14 @@ export interface ManagedAgentState {
   }>;
   pendingCompletions: QueuedAgentCompletion[];
   persistenceEvent?: Extract<AgentRuntimeEvent, { type: 'agent_persistence' }>;
+  /**
+   * The most recent line a managed child raised for the operator, already carrying the child's
+   * name. Held rather than pushed straight into the transcript, because this hook does not own
+   * the transcript: `app.tsx` adds it, and only when the session is idle.
+   */
+  noticeEvent?: Extract<AgentRuntimeEvent, { type: 'agent_notice' }>;
+  /** Drop the held notice once the transcript has taken it, so it is not shown twice. */
+  clearNotice: () => void;
   setSurface: (surface: ManagedAgentSurface) => void;
   selectAgent: (agentId?: string) => void;
   send: (message: string) => Promise<void>;
@@ -64,6 +72,9 @@ export function useManagedAgents(
   const [pendingCompletions, setPendingCompletions] = useState<QueuedAgentCompletion[]>([]);
   const [persistenceEvent, setPersistenceEvent] = useState<
     Extract<AgentRuntimeEvent, { type: 'agent_persistence' }> | undefined
+  >();
+  const [noticeEvent, setNoticeEvent] = useState<
+    Extract<AgentRuntimeEvent, { type: 'agent_notice' }> | undefined
   >();
   const seenCompletions = useRef(new Set<string>());
   const deferredDismissals = useRef(new Set<string>());
@@ -131,6 +142,7 @@ export function useManagedAgents(
     setSurface('main');
     setPendingCompletions([]);
     setPersistenceEvent(undefined);
+    setNoticeEvent(undefined);
     seenCompletions.current.clear();
     deferredDismissals.current.clear();
     visibleAgentIds.current.clear();
@@ -139,6 +151,13 @@ export function useManagedAgents(
       (event) => {
         if (event.type === 'agent_persistence') {
           setPersistenceEvent(event);
+          return;
+        }
+        if (event.type === 'agent_notice') {
+          // Only a child of this session, and only one the operator can see the row for: a
+          // notice about an agent from another session would name something they cannot open.
+          if (!visibleAgentIds.current.has(event.agentId)) return;
+          setNoticeEvent(event);
           return;
         }
         if (event.type === 'agent_status') {
@@ -401,6 +420,8 @@ export function useManagedAgents(
     pendingPermissions,
     pendingQuestions,
     pendingCompletions,
+    noticeEvent,
+    clearNotice: () => setNoticeEvent(undefined),
     persistenceEvent,
     setSurface: changeSurface,
     selectAgent: setSelectedAgentId,

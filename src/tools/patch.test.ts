@@ -269,6 +269,51 @@ describe('ApplyPatch', () => {
     expect(result.structuredError?.code).toBe('path_outside_workspace');
   });
 
+  it('applies a patch to an honored directory, and refuses it without one', async () => {
+    const { context } = await fixture();
+    const extra = await mkdtemp(join(tmpdir(), 'book-apply-patch-extra-'));
+    roots.push(extra);
+    const target = join(extra, 'shared.txt');
+    await writeFile(target, 'before\n');
+    context.additionalRoots = [extra];
+
+    const patch = `*** Begin Patch\n*** Update File: ${target}\n@@\n-before\n+after\n*** End Patch`;
+    const applied = await execute({ patch }, context);
+    expect(applied.status).toBe('success');
+    expect(await readFile(target, 'utf8')).toBe('after\n');
+
+    // The same absolute path is outside every root once the directory is not honored, so honoring
+    // it is the only thing that made the call legal.
+    context.additionalRoots = [];
+    const refused = await execute(
+      { patch: `*** Begin Patch\n*** Update File: ${target}\n@@\n-after\n+again\n*** End Patch` },
+      context,
+    );
+    expect(refused.structuredError?.code).toBe('path_outside_workspace');
+    expect(await readFile(target, 'utf8')).toBe('after\n');
+  });
+
+  it('keeps a relative patch path anchored to the workspace', async () => {
+    const { root, context } = await fixture();
+    const extra = await mkdtemp(join(tmpdir(), 'book-apply-patch-extra-'));
+    roots.push(extra);
+    // The same name in both: a bare filename is the workspace's, never the honored root's.
+    await writeFile(join(root, 'dup.txt'), 'workspace\n');
+    await writeFile(join(extra, 'dup.txt'), 'extra\n');
+    context.additionalRoots = [extra];
+
+    const result = await execute(
+      {
+        patch: '*** Begin Patch\n*** Update File: dup.txt\n@@\n-workspace\n+edited\n*** End Patch',
+      },
+      context,
+    );
+
+    expect(result.status).toBe('success');
+    expect(await readFile(join(root, 'dup.txt'), 'utf8')).toBe('edited\n');
+    expect(await readFile(join(extra, 'dup.txt'), 'utf8')).toBe('extra\n');
+  });
+
   it('serializes concurrent patches so only one old-context mutation commits', async () => {
     const { root, context } = await fixture();
     const file = join(root, 'shared.txt');

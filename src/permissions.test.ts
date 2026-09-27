@@ -1,7 +1,8 @@
-import { afterEach, describe, it, expect } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import * as pathUtils from './tools/path-utils.js';
 import {
   permissionReasonOf,
   permissionRuleLadder,
@@ -623,7 +624,17 @@ describe('workspace reads need no prompt (#264)', () => {
         scope(workspace, { autoAllowReads: false }),
       ),
     ).toBe('ask');
-    expect(evaluatePermission('GitStatus', {}, s, scope(workspace))).toBe('ask');
+    // The four read-only Git tools run without a prompt (#305 item 6)...
+    expect(evaluatePermission('GitStatus', {}, s, scope(workspace))).toBe('allow');
+    expect(evaluatePermission('GitDiff', {}, s, scope(workspace))).toBe('allow');
+    expect(evaluatePermission('GitLog', {}, s, scope(workspace))).toBe('allow');
+    expect(evaluatePermission('GitBranch', {}, s, scope(workspace))).toBe('allow');
+    // ...but nowhere that does not judge calls: the same rule a read is judged by.
+    expect(
+      evaluatePermission('GitStatus', {}, s, scope(workspace, { autoAllowReads: false })),
+    ).toBe('ask');
+    // A mutation is a mutation, and a shell command is a shell command.
+    expect(evaluatePermission('GitCommit', { message: 'x' }, s, scope(workspace))).toBe('ask');
     expect(evaluatePermission('Bash', { command: 'cat notes.txt' }, s, scope(workspace))).toBe(
       'ask',
     );
@@ -632,26 +643,26 @@ describe('workspace reads need no prompt (#264)', () => {
     ).toBe('ask');
   });
 
-  it('asks for a target outside the workspace, however it is spelled, and says it is outside', () => {
+  it('refuses a target outside the workspace, however it is spelled, and says it is outside', () => {
     const { workspace, outside } = setup();
     const s = settings();
     const outsideFile = join(outside, 'secret.txt');
     expect(
       evaluatePermissionDetail('Read', { filePath: outsideFile }, s, scope(workspace)),
-    ).toEqual({ decision: 'ask', source: 'default', outsideWorkspace: true });
+    ).toEqual({ decision: 'refuse', source: 'default', outsideWorkspace: true });
     expect(evaluatePermission('Read', { filePath: '../secret.txt' }, s, scope(workspace))).toBe(
-      'ask',
+      'refuse',
     );
     expect(
       evaluatePermission('Read', { filePath: 'src/../../secret.txt' }, s, scope(workspace)),
-    ).toBe('ask');
+    ).toBe('refuse');
     expect(evaluatePermission('Grep', { pattern: 'x', path: outside }, s, scope(workspace))).toBe(
-      'ask',
+      'refuse',
     );
     expect(
       evaluatePermissionDetail('Grep', { pattern: 'x', path: '..' }, s, scope(workspace)),
-    ).toMatchObject({ decision: 'ask', outsideWorkspace: true });
-    expect(evaluatePermission('Glob', { pattern: '../**/*' }, s, scope(workspace))).toBe('ask');
+    ).toMatchObject({ decision: 'refuse', outsideWorkspace: true });
+    expect(evaluatePermission('Glob', { pattern: '../**/*' }, s, scope(workspace))).toBe('refuse');
     expect(
       evaluatePermission(
         'Glob',
@@ -659,7 +670,7 @@ describe('workspace reads need no prompt (#264)', () => {
         s,
         scope(workspace),
       ),
-    ).toBe('ask');
+    ).toBe('refuse');
     // No path at all is not "outside": the call goes on to the tool, which rejects it with the
     // real reason (a missing argument, or arguments that were not valid JSON).
     expect(evaluatePermissionDetail('Read', {}, s, scope(workspace))).toEqual({
@@ -677,9 +688,9 @@ describe('workspace reads need no prompt (#264)', () => {
     const posix = (path: string) => path.replace(/\\/g, '/');
     const glob = (pattern: string) => evaluatePermission('Glob', { pattern }, s, scope(workspace));
     expect(glob(`${posix(workspace)}/src/*.ts`)).toBe('allow');
-    expect(glob(`${posix(outside)}/*.txt`)).toBe('ask');
-    expect(glob('.{.,x}/*')).toBe('ask');
-    expect(glob('src/{a,{b,../..}}/*')).toBe('ask');
+    expect(glob(`${posix(outside)}/*.txt`)).toBe('refuse');
+    expect(glob('.{.,x}/*')).toBe('refuse');
+    expect(glob('src/{a,{b,../..}}/*')).toBe('refuse');
     // These never leave the workspace: fast-glob walks from inside it.
     expect(glob('src/{a,{b,..}}/*')).toBe('allow');
     expect(glob('{..,src}/*')).toBe('allow');
@@ -689,9 +700,11 @@ describe('workspace reads need no prompt (#264)', () => {
     expect(glob('~$*.docx')).toBe('allow');
   });
 
-  it('marks an outside target even where reads keep asking, and under an ask rule', () => {
+  it('refuses an outside target even where reads keep asking, and still honours an ask rule', () => {
     const { workspace, outside } = setup();
     const outsideFile = join(outside, 'secret.txt');
+    // A workspace that holds a home asks for everything, and an outside target is still refused:
+    // `autoAllowReads` is about skipping the prompt, not about which roots exist.
     expect(
       evaluatePermissionDetail(
         'Read',
@@ -699,7 +712,7 @@ describe('workspace reads need no prompt (#264)', () => {
         settings(),
         scope(workspace, { autoAllowReads: false }),
       ),
-    ).toEqual({ decision: 'ask', source: 'default', outsideWorkspace: true });
+    ).toEqual({ decision: 'refuse', source: 'default', outsideWorkspace: true });
     const rule = `Read(${outside.replace(/\\/g, '/')}/**)`;
     expect(
       evaluatePermissionDetail(
@@ -709,7 +722,7 @@ describe('workspace reads need no prompt (#264)', () => {
         scope(workspace),
       ),
     ).toEqual({ decision: 'ask', source: 'ask', matchedRule: rule, outsideWorkspace: true });
-    // Only judged in the modes that prompt for reads.
+    // Only judged in the modes that judge reads.
     expect(
       evaluatePermissionDetail(
         'Read',
@@ -763,11 +776,13 @@ describe('workspace reads need no prompt (#264)', () => {
     // A junction needs no symlink privilege on Windows; elsewhere the type is ignored.
     symlinkSync(outside, join(workspace, 'link'), 'junction');
     const s = settings();
+    // Following the link is what makes it outside, so the answer is a refusal rather than a
+    // prompt: a workspace-relative spelling does not make the target reachable.
     expect(evaluatePermission('Read', { filePath: 'link/secret.txt' }, s, scope(workspace))).toBe(
-      'ask',
+      'refuse',
     );
     expect(evaluatePermission('Grep', { pattern: 'x', path: 'link' }, s, scope(workspace))).toBe(
-      'ask',
+      'refuse',
     );
   });
 
@@ -785,8 +800,11 @@ describe('workspace reads need no prompt (#264)', () => {
     expect(
       evaluatePermission('Read', { filePath: join(memory, '.inbox', 'pending.md') }, s, withMemory),
     ).toBe('ask');
-    // Grep and Glob reach only the workspace.
-    expect(evaluatePermission('Grep', { pattern: 'x', path: memory }, s, withMemory)).toBe('ask');
+    // Grep and Glob reach only the workspace and the honored directories: the memory directory is
+    // a root `Read` alone may cross, so Grep on it is refused, not asked about.
+    expect(evaluatePermission('Grep', { pattern: 'x', path: memory }, s, withMemory)).toBe(
+      'refuse',
+    );
   });
 
   it("keeps asking for Book's project-local settings, which can hold an API key", () => {
@@ -869,6 +887,132 @@ describe('workspace reads need no prompt (#264)', () => {
     }
   });
 
+  it('judges a read in plan mode the way default does (#305 item 7)', () => {
+    const { workspace, outside } = setup();
+    mkdirSync(join(workspace, '.book'));
+    writeFileSync(join(workspace, '.book', 'settings.local.json'), '{}\n');
+    const s = settings();
+    // Plan mode is a judging mode now: the scope it is given is the one loop.ts builds. Before
+    // this, a plan-mode run auto-approved every read-only tool outside `PLAN_PERMISSION_REQUIRED_TOOLS`,
+    // so a guarded Read ran unprompted and an outside Read reached the tool and came back
+    // `path_outside_workspace` with nobody asked.
+    const plan = () => scope(workspace, { judgeReads: true, autoAllowReads: true });
+    // A workspace target runs.
+    expect(evaluatePermission('Read', { filePath: 'notes.txt' }, s, plan())).toBe('allow');
+    expect(evaluatePermission('Grep', { pattern: 'notes' }, s, plan())).toBe('allow');
+    // A guarded target asks, instead of running unprompted.
+    expect(evaluatePermission('Read', { filePath: '.book/settings.local.json' }, s, plan())).toBe(
+      'ask',
+    );
+    // An outside target is refused before the prompt: the tool cannot serve it.
+    expect(
+      evaluatePermissionDetail('Read', { filePath: join(outside, 'secret.txt') }, s, plan()),
+    ).toMatchObject({ decision: 'refuse', outsideWorkspace: true });
+    expect(evaluatePermission('Glob', { pattern: '../**/*' }, s, plan())).toBe('refuse');
+    // Plan mode is not exempt from a rule the user wrote either.
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: 'notes.txt' },
+        settings({ deny: ['Read(notes.txt)'] }),
+        plan(),
+      ),
+    ).toMatchObject({ decision: 'deny' });
+  });
+
+  it('refuses a target the tool cannot serve, rather than asking about it (item 3)', () => {
+    const { workspace, outside } = setup();
+    const s = settings();
+    const outsideFile = join(outside, 'secret.txt');
+    // A refusal is not a prompt: no mode reaches the approver for it.
+    for (const autoAllowReads of [true, false]) {
+      expect(
+        evaluatePermissionDetail(
+          'Read',
+          { filePath: outsideFile },
+          s,
+          scope(workspace, { autoAllowReads }),
+        ),
+      ).toEqual({ decision: 'refuse', source: 'default', outsideWorkspace: true });
+    }
+    // An ask rule still asks: it is the user naming the target, so they may want to answer.
+    const rule = `Read(${outside.replace(/\\/g, '/')}/**)`;
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: outsideFile },
+        settings({ ask: [rule] }),
+        scope(workspace),
+      ),
+    ).toEqual({ decision: 'ask', source: 'ask', matchedRule: rule, outsideWorkspace: true });
+    // Deny still denies, and reports the rule rather than the remedy.
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: outsideFile },
+        settings({ deny: [rule] }),
+        scope(workspace),
+      ),
+    ).toEqual({ decision: 'deny', matchedRule: rule, source: 'deny' });
+    // Allow wins outright: the tool can open an honored root, and a rule says to.
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: outsideFile },
+        settings({ allow: [rule] }),
+        scope(workspace),
+      ),
+    ).toEqual({ decision: 'allow', matchedRule: rule, source: 'allow' });
+    // Only the modes that judge reads refuse; the rest are unchanged.
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: outsideFile },
+        s,
+        scope(workspace, { judgeReads: false, autoAllowReads: false }),
+      ),
+    ).toEqual({ decision: 'ask', source: 'default' });
+  });
+
+  it('folds the case of a deny or ask path rule on every platform (#305 item 1)', () => {
+    const { workspace } = setup();
+    writeFileSync(join(workspace, '.env'), 'KEY=1\n');
+    const off = scope(workspace, { judgeReads: false, autoAllowReads: false });
+    // Every spelling the path rules produce is folded, not just the raw argument.
+    for (const spelling of ['.ENV', '.Env', join(workspace, '.ENV').replace(/\\/g, '/')]) {
+      expect(
+        evaluatePermissionDetail(
+          'Read',
+          { filePath: spelling },
+          settings({ deny: ['Read(.env)'] }),
+          off,
+        ),
+      ).toMatchObject({ decision: 'deny', matchedRule: 'Read(.env)' });
+    }
+    // Ask folds the same way.
+    expect(
+      evaluatePermission(
+        'Read',
+        { filePath: '.ENV' },
+        settings({ ask: ['Read(.env)'] }),
+        scope(workspace),
+      ),
+    ).toBe('ask');
+    // A writing tool folds too, and every resolved spelling of the path is checked.
+    expect(
+      evaluatePermissionDetail(
+        'Write',
+        { filePath: 'src/../.ENV' },
+        settings({ deny: ['Write(.env)'] }),
+        off,
+      ),
+    ).toMatchObject({ decision: 'deny' });
+    // Allow keeps today's matching, so nothing is widened by the folding.
+    expect(
+      evaluatePermission('Read', { filePath: '.ENV' }, settings({ allow: ['Read(.env)'] }), off),
+    ).toBe('ask');
+  });
+
   it('keeps Grep and Glob asking while a rule adjudicates reads, since a Read rule cannot see them', () => {
     const { workspace } = setup();
     writeFileSync(join(workspace, '.env'), 'KEY=1\n');
@@ -883,5 +1027,375 @@ describe('workspace reads need no prompt (#264)', () => {
         'allow',
       );
     }
+  });
+});
+
+describe('an honored additional directory reads like the workspace (#300)', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function tempDir(prefix: string): string {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    dirs.push(dir);
+    return dir;
+  }
+
+  function settings(overrides: Partial<ResolvedSettings['permissions']> = {}): ResolvedSettings {
+    return {
+      ...DEFAULT_SETTINGS,
+      permissions: { ...DEFAULT_SETTINGS.permissions, ...overrides },
+    };
+  }
+
+  function setup() {
+    const workspace = tempDir('book-dir-ws-');
+    const honored = tempDir('book-dir-extra-');
+    writeFileSync(join(workspace, 'notes.txt'), 'notes\n');
+    writeFileSync(join(honored, 'notes.txt'), 'extra\n');
+    return { workspace, honored };
+  }
+
+  function scope(
+    root: string,
+    extra: Partial<WorkspaceScope> = {},
+    additionalRoots: string[] = [],
+  ): { workspace: WorkspaceScope } {
+    return {
+      workspace: { root, judgeReads: true, autoAllowReads: true, additionalRoots, ...extra },
+    };
+  }
+
+  it('auto-allows a read inside an honored directory, with the workspace as its source', () => {
+    const { workspace, honored } = setup();
+    const s = settings();
+    for (const spelling of [
+      join(honored, 'notes.txt'),
+      join(honored, 'notes.txt').replace(/\\/g, '/'),
+    ]) {
+      expect(
+        evaluatePermissionDetail(
+          'Read',
+          { filePath: spelling },
+          s,
+          scope(workspace, {}, [honored]),
+        ),
+      ).toEqual({ decision: 'allow', source: 'workspace' });
+    }
+    // Grep and Glob reach it too, on the same terms as the workspace.
+    expect(
+      evaluatePermission(
+        'Grep',
+        { pattern: 'x', path: honored },
+        s,
+        scope(workspace, {}, [honored]),
+      ),
+    ).toBe('allow');
+    expect(
+      evaluatePermission(
+        'Glob',
+        { pattern: `${honored.replace(/\\/g, '/')}/**` },
+        s,
+        scope(workspace, {}, [honored]),
+      ),
+    ).toBe('allow');
+    // The same path is refused outright when the directory is not honored.
+    expect(
+      evaluatePermission('Read', { filePath: join(honored, 'notes.txt') }, s, scope(workspace)),
+    ).toBe('refuse');
+  });
+
+  it('keeps every exception an inside-the-workspace read has', () => {
+    const { workspace, honored } = setup();
+    // A deny rule still denies.
+    expect(
+      evaluatePermission(
+        'Read',
+        { filePath: join(honored, 'notes.txt') },
+        settings({ deny: ['Read(**/notes.txt)'] }),
+        scope(workspace, {}, [honored]),
+      ),
+    ).toBe('deny');
+    // An ask rule still asks.
+    expect(
+      evaluatePermission(
+        'Read',
+        { filePath: join(honored, 'notes.txt') },
+        settings({ ask: ['Read(**/notes.txt)'] }),
+        scope(workspace, {}, [honored]),
+      ),
+    ).toBe('ask');
+    // A `.book/settings.local.json` inside the honored directory keeps asking.
+    mkdirSync(join(honored, '.book'));
+    writeFileSync(join(honored, '.book', 'settings.local.json'), '{}\n');
+    expect(
+      evaluatePermission(
+        'Read',
+        { filePath: join(honored, '.book', 'settings.local.json') },
+        settings(),
+        scope(workspace, {}, [honored]),
+      ),
+    ).toBe('ask');
+    // A path inside a home directory held by the root that serves it never auto-allows, but it is
+    // still served: the prompt is the answer there, not a refusal. Keyed on the root rather than on
+    // the target, so the guard is `homeGuards` — the real paths the loop resolved once for the run.
+    const container = tempDir('book-dir-container-');
+    const home = join(container, 'home');
+    mkdirSync(home);
+    writeFileSync(join(home, 'notes.txt'), 'extra\n');
+    writeFileSync(join(container, 'beside.txt'), 'beside\n');
+    const guards = { homeGuards: [realpathSync.native(home)] };
+    expect(
+      evaluatePermission(
+        'Read',
+        { filePath: join(home, 'notes.txt') },
+        settings(),
+        scope(workspace, guards, [container]),
+      ),
+    ).toBe('ask');
+    // Only the home is guarded, not the whole root that holds it: a file beside the home is an
+    // ordinary read in an honored root, which is what makes approving a directory useful.
+    expect(
+      evaluatePermission(
+        'Read',
+        { filePath: join(container, 'beside.txt') },
+        settings(),
+        scope(workspace, guards, [container]),
+      ),
+    ).toBe('allow');
+    // Without that list the same read is an ordinary read in an honored root: whether a path is
+    // under a home is resolved once per run, not per call.
+    expect(
+      evaluatePermission(
+        'Read',
+        { filePath: join(home, 'notes.txt') },
+        settings(),
+        scope(workspace, {}, [container]),
+      ),
+    ).toBe('allow');
+  });
+
+  it('does not guard a root that merely sits below a home (#300 regression)', () => {
+    // Nearly every real workspace lives under the user's home. A read of an ordinary workspace
+    // file must not stop prompting because of where the workspace happens to be, so the home has
+    // to *contain* the root — which is the shape this was really about.
+    const home = tempDir('book-dir-regression-home-');
+    const workspace = join(home, 'repo');
+    mkdirSync(workspace);
+    writeFileSync(join(workspace, 'package.json'), '{}\n');
+    const guarded = { homeGuards: [realpathSync.native(home)] };
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: join(workspace, 'package.json') },
+        settings(),
+        scope(workspace, guarded),
+      ),
+    ).toEqual({ decision: 'allow', source: 'workspace' });
+    // Grep and Glob judge the same target the same way, so a search cannot be the way around a
+    // Read that asks.
+    expect(
+      evaluatePermissionDetail('Grep', { pattern: 'x' }, settings(), scope(workspace, guarded)),
+    ).toEqual({ decision: 'allow', source: 'workspace' });
+    expect(
+      evaluatePermissionDetail(
+        'Glob',
+        { pattern: join(workspace, '*.json') },
+        settings(),
+        scope(workspace, guarded),
+      ),
+    ).toEqual({ decision: 'allow', source: 'workspace' });
+    // An honored directory under a home is not guarded by it either.
+    const honored = join(home, 'shared');
+    mkdirSync(honored);
+    writeFileSync(join(honored, 'notes.txt'), 'extra\n');
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: join(honored, 'notes.txt') },
+        settings(),
+        scope(workspace, guarded, [honored]),
+      ),
+    ).toEqual({ decision: 'allow', source: 'workspace' });
+  });
+
+  it('keeps a relative path workspace-anchored, whatever is honored', () => {
+    const { workspace, honored } = setup();
+    // `notes.txt` is the workspace's own file, not the honored directory's.
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: 'notes.txt' },
+        settings(),
+        scope(workspace, {}, [honored]),
+      ),
+    ).toEqual({ decision: 'allow', source: 'workspace' });
+    // A relative path that climbs out stays refused even when a real root would match it.
+    expect(
+      evaluatePermission(
+        'Read',
+        { filePath: '../notes.txt' },
+        settings(),
+        scope(workspace, {}, [honored]),
+      ),
+    ).toBe('refuse');
+  });
+
+  it('judges a write in an honored directory exactly as the same write in the workspace', () => {
+    // The permission layer knows nothing about modes: the loop turns a mode into the scope flags,
+    // and it does that the same way whatever root a path lands in. So parity is the property that
+    // matters — for every rule configuration, the write into an honored directory gets the verdict
+    // the identical write into the workspace gets. (`accept-edits` differs from `default` only in
+    // how the loop treats the ask, and that is one code path for both roots.)
+    const { workspace, honored } = setup();
+    const inWorkspace = { filePath: join(workspace, 'notes.txt') };
+    const inHonored = { filePath: join(honored, 'notes.txt') };
+    const configurations: Array<[string, Partial<ResolvedSettings['permissions']>]> = [
+      ['no rules', {}],
+      ['a deny rule', { deny: ['Write(**/notes.txt)'] }],
+      ['an ask rule', { ask: ['Write(**/notes.txt)'] }],
+      ['an allow rule', { allow: ['Write(**/notes.txt)'] }],
+      ['deny and allow', { deny: ['Write(**/notes.txt)'], allow: ['Write(**/notes.txt)'] }],
+    ];
+
+    for (const [label, overrides] of configurations) {
+      for (const writing of ['Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'NotebookEdit']) {
+        const s = settings(overrides);
+        const inWs = evaluatePermissionDetail(writing, inWorkspace, s, scope(workspace));
+        const inRoot = evaluatePermissionDetail(
+          writing,
+          inHonored,
+          s,
+          scope(workspace, {}, [honored]),
+        );
+        // A deny is a hard block in every mode, and the source must not soften it either.
+        expect(inRoot.decision, `${writing} with ${label}`).toBe(inWs.decision);
+      }
+    }
+
+    // Spelled out, because parity alone would also pass if both answers were trivially the same
+    // refusal: an unconfigured write into an honored directory is an ordinary `ask`, the way it is
+    // in the workspace, and a deny rule still blocks it.
+    expect(
+      evaluatePermissionDetail('Write', inHonored, settings(), scope(workspace, {}, [honored])),
+    ).toEqual({ decision: 'ask', source: 'default' });
+    expect(
+      evaluatePermissionDetail(
+        'Write',
+        inHonored,
+        settings({ deny: ['Write(**/notes.txt)'] }),
+        scope(workspace, {}, [honored]),
+      ).decision,
+    ).toBe('deny');
+  });
+
+  it('gives an honored directory the workspace guards, local settings included', () => {
+    // The `.book/settings.local.json` guard and the home guard are both consulted on the read
+    // path, and both enumerate the roots. An honored directory therefore has to appear in that
+    // enumeration, or approving a directory would expose a local settings file — or a home
+    // directory it contains — to exactly the read the rule exists to stop.
+    const { workspace } = setup();
+    const container = tempDir('book-dir-guards-');
+    mkdirSync(join(container, '.book'));
+    writeFileSync(join(container, '.book', 'settings.local.json'), '{}\n');
+    const s = settings();
+
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: join(container, '.book', 'settings.local.json') },
+        s,
+        scope(workspace, {}, [container]),
+      ),
+    ).toEqual({ decision: 'ask', source: 'default' });
+    // The same file in the workspace asks, so the two are the same guard seen from two roots.
+    mkdirSync(join(workspace, '.book'));
+    writeFileSync(join(workspace, '.book', 'settings.local.json'), '{}\n');
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: join(workspace, '.book', 'settings.local.json') },
+        s,
+        scope(workspace),
+      ),
+    ).toEqual({ decision: 'ask', source: 'default' });
+  });
+
+  /**
+   * #305 item 5. One Read evaluation resolves its path once and remembers the answer, because a
+   * resolution walks the root list with `realpath` on every candidate — running it per rule
+   * candidate turned a single read into a dozen filesystem round trips. The decisions must be
+   * identical either way; only the work changes.
+   */
+  describe('a Read evaluation resolves its path once', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('resolves once per distinct path, however many rule spellings it is matched against', () => {
+      const { workspace, honored } = setup();
+      const target = join(honored, 'notes.txt');
+      // A deny and an ask rule for the same path, each in a different spelling, so the matcher
+      // has reason to look at the target more than once.
+      const rules = settings({ deny: [`Read(${target})`], ask: [`Read(${honored}/notes.txt)`] });
+      const spy = vi.spyOn(pathUtils, 'resolveReadablePathDetail');
+
+      const decision = evaluatePermission(
+        'Read',
+        { filePath: target },
+        rules,
+        scope(workspace, {}, [honored]),
+      );
+
+      expect(decision).toBe('deny');
+      // The deny rule matched the very path that was resolved, so the ladder never needed a
+      // second look at it.
+      expect(spy.mock.calls.length).toBeLessThanOrEqual(1);
+    });
+
+    it('decides each path on its own', () => {
+      const { workspace, honored } = setup();
+      const rules = settings({});
+      const workspaceScope = scope(workspace, {}, [honored]);
+
+      expect(
+        evaluatePermissionDetail(
+          'Read',
+          { filePath: join(honored, 'notes.txt') },
+          rules,
+          workspaceScope,
+        ),
+      ).toEqual({ decision: 'allow', source: 'workspace' });
+      expect(
+        evaluatePermission(
+          'Read',
+          { filePath: join(workspace, '..', 'escape.txt') },
+          rules,
+          workspaceScope,
+        ),
+      ).toBe('refuse');
+    });
+
+    it('reaches the same decision however many times the same path is evaluated', () => {
+      const { workspace, honored } = setup();
+      const rules = settings({ ask: ['Read(*)'] });
+      const workspaceScope = scope(workspace, {}, [honored]);
+
+      const first = evaluatePermissionDetail(
+        'Read',
+        { filePath: join(honored, 'notes.txt') },
+        rules,
+        workspaceScope,
+      );
+      const second = evaluatePermissionDetail(
+        'Read',
+        { filePath: join(honored, 'notes.txt') },
+        rules,
+        workspaceScope,
+      );
+
+      expect(first).toEqual(second);
+    });
   });
 });

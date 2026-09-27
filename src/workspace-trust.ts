@@ -33,6 +33,7 @@ import {
   mcpProjectServerChoiceSchema,
   projectAllowRuleChoiceSchema,
   projectCommandChoiceSchema,
+  projectDirectoryChoiceSchema,
   projectHookChoiceSchema,
 } from './settings.js';
 
@@ -46,8 +47,16 @@ import {
  * command approvals on the way out. Refusing the whole store is the louder and
  * safer failure — a v1 build reports it as unreadable, withholds every gated
  * declaration, and declines to write, rather than quietly erasing decisions.
+ *
+ * v3 added `projectDirectories` for the same reason and with the same
+ * consequence: a v2 build that records a hook or command decision for a
+ * workspace would write the store without that workspace's `additionalDirectories`
+ * approvals, and a project directory the user had approved would silently go
+ * back to being withheld. Bumping the version is what makes that failure loud
+ * instead of silent: an older build reads a v3 store as unreadable, withholds
+ * every gated declaration, and declines to write until it is upgraded.
  */
-export const TRUST_STORE_VERSION = 2;
+export const TRUST_STORE_VERSION = 3;
 
 export const workspaceTrustSchema = z.object({
   /** Keyed by the exact rule text the project layer declared. */
@@ -58,12 +67,24 @@ export const workspaceTrustSchema = z.object({
   hookEntries: z.record(z.string(), projectHookChoiceSchema).default({}),
   /** Keyed by command name, carrying the fingerprint of the shell its body runs. */
   projectCommands: z.record(z.string(), projectCommandChoiceSchema).default({}),
+  /**
+   * Keyed by the *real path* of a project-declared `additionalDirectories` entry. The declared
+   * text is what the repository controls; the real path is what the file tools would serve, and
+   * so what the user is approving.
+   */
+  projectDirectories: z.record(z.string(), projectDirectoryChoiceSchema).default({}),
 });
 
 export type WorkspaceTrust = z.infer<typeof workspaceTrustSchema>;
 
 export function emptyWorkspaceTrust(): WorkspaceTrust {
-  return { permissionAllowRules: {}, mcpServers: {}, hookEntries: {}, projectCommands: {} };
+  return {
+    permissionAllowRules: {},
+    mcpServers: {},
+    hookEntries: {},
+    projectCommands: {},
+    projectDirectories: {},
+  };
 }
 
 /** Location of the user-global trust store. */

@@ -294,6 +294,25 @@ trustCommand
     },
   );
 
+trustCommand
+  .command('dir')
+  .description('Approve or reject a project-declared additionalDirectories entry')
+  .argument('[path]', 'The declared entry, or the real path `book doctor` reported for it')
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
+  .option('--all-pending', 'Apply to every directory currently awaiting a decision')
+  .option('--reject', 'Record a refusal instead of an approval')
+  .action(
+    async (
+      path: string | undefined,
+      options: { workspace?: string; allPending?: boolean; reject?: boolean },
+    ) => {
+      await runTrustCommand('dir', path, {
+        ...options,
+        workspace: resolveWorkspace(options.workspace),
+      });
+    },
+  );
+
 // ---- book config ----
 program
   .command('config')

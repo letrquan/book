@@ -2734,3 +2734,168 @@ describe('Read output budget', () => {
     expect(note).toContain(`the rest start at line ${shownCount + 1}.`);
   });
 });
+
+/**
+ * #300. `additionalDirectories` is honored for reads and nothing else. Read, Glob and Grep serve
+ * an approved directory; Write, Edit, MultiEdit, NotebookEdit and ApplyPatch do not, because a
+ * repository that can choose where Book *reads* must not get to choose where it writes.
+ */
+describe('additionalRoots', () => {
+  let extra: string;
+  let outside: string;
+
+  beforeEach(() => {
+    extra = mkdtempSync(join(tmpdir(), 'book-additional-'));
+    outside = mkdtempSync(join(tmpdir(), 'book-notadditional-'));
+    writeFileSync(join(extra, 'shared.txt'), 'shared directory content\n');
+    writeFileSync(join(extra, 'matchme.txt'), 'grepme\n');
+    writeFileSync(join(outside, 'secret.txt'), 'not yours\n');
+    ctx.additionalRoots = [extra];
+  });
+
+  afterEach(() => {
+    rmSync(extra, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+    delete ctx.additionalRoots;
+  });
+
+  it('reads a file in an honored directory', async () => {
+    const r = await read.execute({ filePath: join(extra, 'shared.txt') }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('shared directory content');
+  });
+
+  it('refuses a file in a directory that is not honored', async () => {
+    const r = await read.execute({ filePath: join(outside, 'secret.txt') }, ctx);
+
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/outside workspace/i);
+  });
+
+  it('refuses a file in a sibling of an honored directory, which is not a root', async () => {
+    const sibling = mkdtempSync(join(tmpdir(), 'book-additional-sibling-'));
+    try {
+      writeFileSync(join(sibling, 'sneaky.txt'), 'not covered\n');
+
+      const r = await read.execute({ filePath: join(sibling, 'sneaky.txt') }, ctx);
+
+      expect(r.status).toBe('error');
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+
+  it('anchors a relative path to the workspace, not to the honored directory', async () => {
+    // `shared.txt` exists in both. A bare filename must name the workspace's, or a model could
+    // read a file from a root the user only approved for other work.
+    writeFileSync(join(dir, 'shared.txt'), 'workspace copy\n');
+
+    const r = await read.execute({ filePath: 'shared.txt' }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('workspace copy');
+  });
+
+  it('refuses a symlink out of an honored directory', async () => {
+    symlinkSync(outside, join(extra, 'escape'), 'junction');
+
+    const r = await read.execute({ filePath: join(extra, 'escape', 'secret.txt') }, ctx);
+
+    expect(r.status).toBe('error');
+  });
+
+  it('globs into an honored directory', async () => {
+    const r = await glob.execute({ pattern: '*.txt' }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain(join(extra, 'shared.txt'));
+  });
+
+  it('greps a scope inside an honored directory, rather than the workspace tree', async () => {
+    // The scope is not in the workspace tree at all, so a search rooted at the workspace would
+    // find nothing — the root is what a Grep `path` argument now resolves against.
+    const r = await grep.execute({ pattern: 'grepme', path: extra }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('grepme');
+  });
+
+  it('writes a file in an honored directory', async () => {
+    await observeFirst(join(extra, 'shared.txt'));
+
+    const w = await write.execute({ filePath: join(extra, 'shared.txt'), content: 'changed' }, ctx);
+
+    expect(w.status).toBe('success');
+    expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toBe('changed');
+  });
+
+  it('refuses the same write once the directory is not honored', async () => {
+    delete ctx.additionalRoots;
+    try {
+      const w = await write.execute(
+        { filePath: join(extra, 'shared.txt'), content: 'changed' },
+        ctx,
+      );
+
+      expect(w.status).toBe('error');
+      expect(w.structuredError?.code).toBe('path_outside_workspace');
+      expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toContain('shared directory content');
+    } finally {
+      ctx.additionalRoots = [extra];
+    }
+  });
+
+  it('edits a file in an honored directory', async () => {
+    await observeFirst(join(extra, 'shared.txt'));
+
+    const e = await edit.execute(
+      { filePath: join(extra, 'shared.txt'), oldString: 'shared', newString: 'edited' },
+      ctx,
+    );
+
+    expect(e.status).toBe('success');
+    expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toContain('edited');
+  });
+
+  it('multi-edits a file in an honored directory', async () => {
+    await observeFirst(join(extra, 'shared.txt'));
+
+    const m = await multiEditTool.execute(
+      {
+        filePath: join(extra, 'shared.txt'),
+        edits: [{ oldString: 'shared', newString: 'edited' }],
+      },
+      ctx,
+    );
+
+    expect(m.status).toBe('success');
+    expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toContain('edited');
+  });
+
+  it('anchors a relative write to the workspace, not to the honored directory', async () => {
+    // The write tools get the same anchoring the read tools do: a bare filename is the
+    // workspace's, never a root the user approved for other work.
+    writeFileSync(join(dir, 'shared.txt'), 'workspace copy\n');
+    await observeFirst('shared.txt');
+
+    const w = await write.execute({ filePath: 'shared.txt', content: 'written' }, ctx);
+
+    expect(w.status).toBe('success');
+    expect(readFileSync(join(dir, 'shared.txt'), 'utf8')).toBe('written');
+    expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toContain('shared directory content');
+  });
+
+  it('still requires a write into an honored directory to be read first', async () => {
+    // The same fresh-observation requirement the workspace has: a file in an honored root is a
+    // different resolved path from a workspace file of the same name, not a way around the check.
+    const w = await write.execute(
+      { filePath: join(extra, 'matchme.txt'), content: 'changed' },
+      ctx,
+    );
+
+    expect(w.status).toBe('error');
+    expect(w.structuredError?.code).toBe('file_not_observed');
+    expect(readFileSync(join(extra, 'matchme.txt'), 'utf8')).toBe('grepme\n');
+  });
+});

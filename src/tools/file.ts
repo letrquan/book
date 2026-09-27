@@ -1,6 +1,6 @@
 import { open, readFile as readTextFile, stat } from 'fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { basename, extname } from 'node:path';
+import { basename, extname, join, resolve as resolvePath } from 'node:path';
 import fg from 'fast-glob';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
@@ -8,11 +8,13 @@ import { markdownContentStart } from '../frontmatter.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { findRelaxedMatch } from './fuzzy-match.js';
 import {
-  isBookLocalSettingsPath,
+  isBookLocalSettingsUnderRoots,
   pathOutsideWorkspaceResult,
-  realWorkspaceRoot,
+  resolveMutationPath,
   resolveReadablePath,
   resolveWorkspacePath,
+  type PathRoots,
+  type ResolvedReadablePath,
 } from './path-utils.js';
 import {
   observeFile,
@@ -126,26 +128,76 @@ const EDIT_NOT_FOUND_REMEDIATION =
   'it again and rebuild oldString from the actual content.';
 
 interface GrepScope {
-  /** Workspace-relative scope with forward slashes ('' = workspace root). */
+  /** Relative to the root the scope resolved under, with forward slashes. */
   relativePath: string;
   absolutePath: string;
   isFile: boolean;
+  /**
+   * The root `relativePath` is relative to: the workspace, or the honored directory the scope
+   * landed in. Grep globs from here, so a scope inside an honored directory searches that
+   * directory rather than the workspace tree that does not contain it.
+   */
+  root: string;
 }
 
 type GrepScopeResolution = { ok: true; scope: GrepScope } | { ok: false; failure: ToolResult };
+
+/**
+ * The roots a Grep may search, which is `PathRoots` without the read-only ones.
+ *
+ * Grep is deliberately not given Book's memory directory: it walks a whole subtree and prints
+ * matching lines, so a root that exists only so `Read` can open a file it remembers stays out of
+ * it. An honored `additionalDirectory` is the user's own declaration and is the one root #300
+ * adds, so it is included here.
+ */
+function grepRoots(ctx: ToolContext): PathRoots {
+  return { workspaceRoot: ctx.workspaceRoot, additionalRoots: ctx.additionalRoots };
+}
+
+/**
+ * Which root of {@link grepRoots} a resolved file came from, so a caller can be told to search
+ * there. Tried in the same order the resolution itself uses, so the two always agree.
+ */
+function grepRootFor(roots: PathRoots, canonicalPath: string): string {
+  const candidates = [roots.workspaceRoot, ...(roots.additionalRoots ?? [])];
+  return (
+    candidates.find((root) => resolveWorkspacePath(root, canonicalPath) !== null) ??
+    roots.workspaceRoot
+  );
+}
+
+/**
+ * How a matched file is labelled in Glob and Grep output.
+ *
+ * A workspace match is labelled workspace-relative, because that is the form Read accepts. A match
+ * in an honored directory is labelled with its absolute path: its relative form would read as a
+ * workspace path that does not exist, so the model would try it and be told the path is outside
+ * the workspace (#300).
+ */
+function readableLabel(roots: PathRoots, resolved: ResolvedReadablePath): string {
+  return resolveWorkspacePath(roots.workspaceRoot, resolved.canonicalPath) !== null
+    ? resolved.relativePath
+    : resolved.canonicalPath;
+}
 
 async function resolveGrepScope(
   args: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<GrepScopeResolution> {
   const raw = args.path as string | undefined;
+  const roots = grepRoots(ctx);
   if (!raw || raw === '.') {
     return {
       ok: true,
-      scope: { relativePath: '', absolutePath: ctx.workspaceRoot, isFile: false },
+      scope: {
+        relativePath: '',
+        absolutePath: ctx.workspaceRoot,
+        isFile: false,
+        root: ctx.workspaceRoot,
+      },
     };
   }
-  const resolved = resolveWorkspacePath(ctx.workspaceRoot, raw);
+  const resolved = resolveReadablePath(roots, raw);
   if (!resolved) return { ok: false, failure: pathOutsideWorkspaceResult(raw) };
   try {
     const info = await stat(resolved.filePath);
@@ -155,6 +207,7 @@ async function resolveGrepScope(
         relativePath: resolved.relativePath,
         absolutePath: resolved.filePath,
         isFile: info.isFile(),
+        root: grepRootFor(roots, resolved.canonicalPath),
       },
     };
   } catch {
@@ -1281,7 +1334,7 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
 }
 
 async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
+  const resolved = resolveMutationPath(ctx, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath, canonicalPath, relativePath } = resolved;
   return withMutationLocks([canonicalPath], async () => {
@@ -1341,7 +1394,7 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
 }
 
 async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
+  const resolved = resolveMutationPath(ctx, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath, canonicalPath, relativePath } = resolved;
   return withMutationLocks([canonicalPath], async () => {
@@ -1412,7 +1465,7 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
 }
 
 async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
+  const resolved = resolveMutationPath(ctx, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath, canonicalPath, relativePath } = resolved;
   const edits =
@@ -1490,13 +1543,31 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
   });
 }
 
+/**
+ * The `cwd` values a Glob may walk, in the order the roots are tried.
+ *
+ * fast-glob resolves a relative pattern against its `cwd` and an absolute one against the file
+ * system, so the workspace alone was enough to *find* nothing in an honored directory and the
+ * filter below was never the only thing standing in the way. Each root is a cwd in turn, which
+ * also keeps a relative pattern workspace-anchored: it produces the same matches in the honored
+ * roots as the workspace walk, and the dedupe below drops them.
+ */
+function globSearchDirs(ctx: ToolContext): string[] {
+  return [ctx.workspaceRoot, ...(ctx.additionalRoots ?? [])];
+}
+
 async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const pattern = args.pattern as string;
-  const files = await fg(pattern, {
-    cwd: ctx.workspaceRoot,
-    dot: true,
-    ignore: ctx.gitignorePatterns ?? [],
-  });
+  const roots = grepRoots(ctx);
+  const files: string[] = [];
+  for (const cwd of globSearchDirs(ctx)) {
+    const found = await fg(pattern, {
+      cwd,
+      dot: true,
+      ignore: ctx.gitignorePatterns ?? [],
+    });
+    files.push(...found.map((file) => resolvePath(cwd, file)));
+  }
 
   throwIfAborted(ctx.signal);
   const seen = new Set<string>();
@@ -1504,14 +1575,16 @@ async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
   let truncated = false;
 
   for (let index = 0; index < files.length; index++) {
-    const resolved = resolveWorkspacePath(ctx.workspaceRoot, files[index]);
-    if (resolved && !seen.has(resolved.relativePath)) {
-      seen.add(resolved.relativePath);
+    // Filtered through the read roots, so a pattern that walked out of them (a symlinked entry,
+    // an `absolute` base) is dropped rather than listed.
+    const resolved = resolveReadablePath(roots, files[index]);
+    if (resolved && !seen.has(resolved.canonicalPath)) {
+      seen.add(resolved.canonicalPath);
       if (output.length >= GLOB_OUTPUT_LIMIT) {
         truncated = true;
         break;
       }
-      output.push(resolved.relativePath);
+      output.push(readableLabel(roots, resolved));
     }
     if (index > 0 && index % PATH_YIELD_INTERVAL === 0) await yieldToEventLoop(ctx.signal);
   }
@@ -1562,12 +1635,14 @@ async function grepSearchPortable(
   const scoped = await resolveGrepScope(args, ctx);
   if (!scoped.ok) return scoped.failure;
   const scope = scoped.scope;
-  // Glob from the workspace root so root-anchored .gitignore patterns keep
-  // matching, then limit the results to the requested scope.
+  const roots = grepRoots(ctx);
+  // Glob from the scope's own root so root-anchored .gitignore patterns keep matching there too
+  // (#300): a scope inside an honored directory is not in the workspace tree at all, so globbing
+  // from the workspace would find nothing. Then limit the results to the requested scope.
   const globbed = scope.isFile
     ? [scope.relativePath]
     : await fg(includePattern, {
-        cwd: ctx.workspaceRoot,
+        cwd: scope.root,
         dot: true,
         ignore: [...GREP_DEFAULT_IGNORES, ...(ctx.gitignorePatterns ?? [])],
       });
@@ -1581,18 +1656,19 @@ async function grepSearchPortable(
 
   const inWorkspaceFiles: Array<{ file: string; filePath: string }> = [];
   const seenFiles = new Set<string>();
-  const realRoot = realWorkspaceRoot(ctx.workspaceRoot);
   for (let index = 0; index < files.length; index++) {
-    const resolved = resolveWorkspacePath(ctx.workspaceRoot, files[index]);
+    // `files` came from a glob whose cwd was `scope.root`, so each entry is relative to that
+    // root rather than to the workspace — rejoined before resolution (#300).
+    const resolved = resolveReadablePath(roots, join(scope.root, files[index]));
     if (
       resolved &&
-      !seenFiles.has(resolved.relativePath) &&
-      // Book's local settings can hold an API key: never search them, whatever path (a link,
-      // an explicit `path`) led here (#264).
-      !isBookLocalSettingsPath(resolved.canonicalPath, realRoot)
+      !seenFiles.has(resolved.canonicalPath) &&
+      // Book's local settings can hold an API key: never search them, whatever path (a link, an
+      // explicit `path`, an honored directory) led here (#264, #300).
+      !isBookLocalSettingsUnderRoots(resolved.canonicalPath, roots)
     ) {
-      seenFiles.add(resolved.relativePath);
-      inWorkspaceFiles.push({ file: resolved.relativePath, filePath: resolved.filePath });
+      seenFiles.add(resolved.canonicalPath);
+      inWorkspaceFiles.push({ file: readableLabel(roots, resolved), filePath: resolved.filePath });
     }
     if (index > 0 && index % PATH_YIELD_INTERVAL === 0) await yieldToEventLoop(ctx.signal);
   }
@@ -1754,7 +1830,7 @@ async function grepSearchWithRipgrep(
   const scoped = await resolveGrepScope(args, ctx);
   if (!scoped.ok) return { kind: 'success', result: scoped.failure };
   const scope = scoped.scope;
-  const realRoot = realWorkspaceRoot(ctx.workspaceRoot);
+  const roots = grepRoots(ctx);
 
   const rgArgs = ['--json', '--hidden', '--regexp', pattern, '--glob', includePattern];
   for (const ignored of GREP_DEFAULT_IGNORES) rgArgs.push('--glob', `!${ignored}`);
@@ -1765,7 +1841,7 @@ async function grepSearchWithRipgrep(
 
   return new Promise<RipgrepOutcome>((resolve, reject) => {
     const proc = spawn('rg', rgArgs, {
-      cwd: ctx.workspaceRoot,
+      cwd: scope.root,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
@@ -1828,10 +1904,12 @@ async function grepSearchWithRipgrep(
       const lineNumber = event.data?.line_number;
       const text = event.data?.lines?.text;
       if (!rawPath || !lineNumber || text === undefined) return;
-      const resolved = resolveWorkspacePath(ctx.workspaceRoot, rawPath.replaceAll('\\', '/'));
+      // ripgrep reports paths relative to its `cwd`, which is the scope's root — not necessarily
+      // the workspace — so the path is rejoined to that root before it is resolved (#300).
+      const resolved = resolveReadablePath(roots, join(scope.root, rawPath.replaceAll('\\', '/')));
       if (!resolved) return;
-      if (isBookLocalSettingsPath(resolved.canonicalPath, realRoot)) return;
-      const file = resolved.relativePath;
+      if (isBookLocalSettingsUnderRoots(resolved.canonicalPath, roots)) return;
+      const file = readableLabel(roots, resolved);
 
       if (event.type === 'match') {
         const fileMatches = matchesByFile.get(file) ?? { matches: [] };

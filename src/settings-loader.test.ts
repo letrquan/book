@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, realpathSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, normalize } from 'path';
 import { resolveSettings, mergeSettings, loadSettingsFile } from './settings-loader.js';
@@ -279,7 +279,7 @@ describe('resolveSettings — layered merging', () => {
     expect(result.permissions.allow).toEqual(['Bash(git *)']);
   });
 
-  it('additionalDirectories concatenate across scopes', () => {
+  it('additionalDirectories concatenate across scopes, minus the gated project layer', () => {
     const projectSettingsDir = join(dir, '.book');
     mkdirSync(projectSettingsDir, { recursive: true });
     writeFileSync(
@@ -291,8 +291,11 @@ describe('resolveSettings — layered merging', () => {
       JSON.stringify({ additionalDirectories: ['../private'] }),
     );
 
-    const result = resolveSettings(dir);
-    expect(result.additionalDirectories).toEqual([normalize('../shared'), normalize('../private')]);
+    // Only the local entry survives: a checked-in `additionalDirectories` widens the roots a read
+    // may cross, so it is withheld until the user approves it (see the gating suite below). The
+    // local layer is the user's own file, so it is not repository input.
+    const result = resolveSettings(dir, undefined, { home: userDir });
+    expect(result.additionalDirectories).toEqual([normalize('../private')]);
   });
 
   it('normalizes and deduplicates additionalDirectories across scopes', () => {
@@ -307,7 +310,9 @@ describe('resolveSettings — layered merging', () => {
       JSON.stringify({ additionalDirectories: ['../shared'] }),
     );
 
-    expect(resolveSettings(dir).additionalDirectories).toEqual([normalize('../shared')]);
+    expect(resolveSettings(dir, undefined, { home: userDir }).additionalDirectories).toEqual([
+      normalize('../shared'),
+    ]);
   });
 
   it('replaces unregistered arrays instead of concatenating them', () => {
@@ -781,5 +786,162 @@ describe('project-declared hooks require approval', () => {
     decide(hookFingerprint('Stop', { command: 'project', env: {} }), 'approved');
 
     expect(load().hooks.Stop.map((hook) => hook.command)).toEqual(['user', 'project', 'local']);
+  });
+});
+
+/**
+ * #300. `additionalDirectories` widens the set of roots Read, Glob and Grep may reach, so a
+ * checked-in declaration is held back for the same reason a project allow rule is: it grants
+ * authority, and the decision that releases it lives in the user-global trust store, which a
+ * repository cannot write.
+ *
+ * The gate is keyed by the directory's **real path**, not by the text the repository wrote — a
+ * clone could declare `./link` for a symlink pointing at `$HOME`, and a user approving the string
+ * would have approved a path they never saw.
+ */
+describe('project-declared additionalDirectories require approval', () => {
+  const shared = () => mkdtempSync(join(tmpdir(), 'book-dirs-shared-'));
+  const declared: string[] = [];
+
+  beforeEach(() => {
+    declared.push(shared());
+  });
+
+  afterEach(() => {
+    for (const dir of declared.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeProject(additionalDirectories: string[]): void {
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(join(dir, '.book', 'settings.json'), JSON.stringify({ additionalDirectories }));
+  }
+  const load = () => resolveSettings(dir, undefined, { home: userDir });
+  const decide = (realPath: string, choice: 'approved' | 'rejected') =>
+    updateWorkspaceTrust(
+      dir,
+      (trust) => {
+        trust.projectDirectories[realPath] = choice;
+      },
+      join(userDir, '.book', 'trust.json'),
+    );
+
+  it('withholds an undecided project directory', () => {
+    const outside = shared();
+    writeProject([outside]);
+
+    expect(load().additionalDirectories).toEqual([]);
+  });
+
+  it('releases the directory once it is approved, by real path', () => {
+    const outside = shared();
+    writeProject([outside]);
+    decide(realpathSync.native(outside), 'approved');
+
+    expect(load().additionalDirectories).toEqual([normalize(outside)]);
+  });
+
+  it('keeps withholding a rejected directory', () => {
+    const outside = shared();
+    writeProject([outside]);
+    decide(realpathSync.native(outside), 'rejected');
+
+    expect(load().additionalDirectories).toEqual([]);
+  });
+
+  it('approves one directory without carrying the rest of the file with it', () => {
+    const first = shared();
+    const second = shared();
+    writeProject([first, second]);
+    decide(realpathSync.native(first), 'approved');
+
+    expect(load().additionalDirectories).toEqual([normalize(first)]);
+  });
+
+  /**
+   * A symlink is the whole reason the key is a path. Repointing it moves the directory, and the
+   * old decision must not follow it: a user who approved `link -> shared` never saw the target.
+   */
+  it('does not carry a decision across a repointed link', () => {
+    const first = shared();
+    const second = shared();
+    symlinkSync(first, join(dir, 'link'), 'junction');
+    writeProject(['link']);
+    decide(realpathSync.native(first), 'approved');
+    expect(load().additionalDirectories).toEqual([normalize('link')]);
+
+    rmSync(join(dir, 'link'), { force: true });
+    symlinkSync(second, join(dir, 'link'), 'junction');
+
+    expect(load().additionalDirectories).toEqual([]);
+  });
+
+  it('never gates a directory the user declared for themselves', () => {
+    const outside = shared();
+    mkdirSync(join(userDir, '.book'), { recursive: true });
+    writeFileSync(
+      join(userDir, '.book', 'settings.json'),
+      JSON.stringify({ additionalDirectories: [outside] }),
+    );
+
+    expect(load().additionalDirectories).toEqual([normalize(outside)]);
+  });
+
+  it('never gates a directory the user put in their local layer', () => {
+    const outside = shared();
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(
+      join(dir, '.book', 'settings.local.json'),
+      JSON.stringify({ additionalDirectories: [outside] }),
+    );
+
+    // `.gitignore` does not stop a force-added `settings.local.json` from reaching a clone, but
+    // the trust store is keyed by workspace path and a clone lands in a new one, so approving a
+    // directory here is still a decision about *this* checkout.
+    expect(load().additionalDirectories).toEqual([normalize(outside)]);
+  });
+
+  // Neither workspace layer can write the store, so neither can self-approve.
+  it('ignores a decision the project layer records for itself', () => {
+    const outside = shared();
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(
+      join(dir, '.book', 'settings.json'),
+      JSON.stringify({
+        additionalDirectories: [outside],
+        projectDirectories: { [realpathSync.native(outside)]: 'approved' },
+      }),
+    );
+
+    expect(load().additionalDirectories).toEqual([]);
+    expect(load().projectDirectories).toEqual({});
+  });
+
+  it('ignores a decision a cloned local layer arrived with', () => {
+    const outside = shared();
+    writeProject([outside]);
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(
+      join(dir, '.book', 'settings.local.json'),
+      JSON.stringify({ projectDirectories: { [realpathSync.native(outside)]: 'approved' } }),
+    );
+
+    expect(load().additionalDirectories).toEqual([]);
+  });
+
+  it('releases the project directory between the user and local layers', () => {
+    const outside = shared();
+    mkdirSync(join(userDir, '.book'), { recursive: true });
+    writeFileSync(
+      join(userDir, '.book', 'settings.json'),
+      JSON.stringify({ additionalDirectories: [mkdtempSync(join(tmpdir(), 'book-dirs-user-'))] }),
+    );
+    writeProject([outside]);
+    decide(realpathSync.native(outside), 'approved');
+
+    // Layer order, so the position a released entry occupies is the one its layer would have had.
+    expect(load().additionalDirectories).toEqual([
+      normalize(load().additionalDirectories[0]),
+      normalize(outside),
+    ]);
   });
 });

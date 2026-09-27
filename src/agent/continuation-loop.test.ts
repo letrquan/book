@@ -960,3 +960,42 @@ describe('the refusal brake names the cause it stopped on', () => {
     expect(outcome?.message).not.toContain('grant the permission');
   });
 });
+
+/**
+ * #305 item 3. A streak of outside reads ends the run with `all_tools_blocked`, and the remedy
+ * has to name `additionalDirectories` — telling the operator to "grant the permission" for a
+ * Read that no rule can reach is how a run dead-ends with nothing to change.
+ */
+describe('a streak of outside reads names the outside remedy', () => {
+  /** Refuses every Read the same way a plan-mode or default-mode outside read now is. */
+  function outsideReadProvider(): Provider {
+    let call = 0;
+    return {
+      id: 'scripted',
+      stream: async function* () {
+        call++;
+        yield {
+          type: 'tool_call',
+          toolCall: {
+            id: `read-${call}`,
+            name: 'Read',
+            arguments: { file_path: '/etc/hostname' },
+          },
+        };
+        yield { type: 'done' };
+      },
+    } as unknown as Provider;
+  }
+
+  it('points the operator at the directory, not at a permission rule', async () => {
+    const config = configWith({ enabled: false });
+    config.settings.continuation.blockedToolTurnLimit = 3;
+    config.maxTurns = 25;
+
+    const { outcome } = await runDenied(config, outsideReadProvider());
+
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('additionalDirectories');
+    expect(outcome?.message).not.toContain('grant the permission');
+  });
+});

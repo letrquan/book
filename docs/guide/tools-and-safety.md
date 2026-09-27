@@ -305,9 +305,30 @@ What still asks:
 - Everything, in a workspace that holds a home directory, yours or Book's own (`BOOK_HOME`),
   also when either is reached through a link: a session started in your home directory. A home
   holds SSH and provider keys and the trust store.
+- Any read whose resolved path lands inside a home directory **held by the root that serves it**. An
+  approved `additionalDirectories` entry that contains a home directory still prompts for every file
+  under that home. A root that merely sits _below_ a home — which is nearly every workspace — is not
+  guarded by it; the bullet above already covers that case by asking for everything.
 
-`additionalDirectories` does not widen this: no file tool reads there yet, and the setting may come
-from a checked-in project file.
+**Outside every root.** A `Read`, `Glob` or `Grep` whose target is in the workspace, in a read-only
+root, or in an approved `additionalDirectories` entry is served as above. One that is not is
+_refused_, not prompted for: no permission rule and no permission mode makes the file tools serve
+it, so a prompt would be a question nothing could answer, and an "Always allow" would have saved a
+rule for a call that could never run. The result is `blocked` with the code `path_outside_workspace`
+and a message naming the path, the directories already honored, and the two ways through — add the
+directory to `additionalDirectories` (a project-declared one also needs `book trust dir <path>`), or
+start Book somewhere that contains it. This is the same in `default`, `accept-edits` and `plan`;
+`dontAsk` already refused these, and nothing was lost by not asking it to.
+
+**Writes in an approved directory.** An approved `additionalDirectories` entry is a root for the
+write tools too: `Write`, `Edit`, `MultiEdit`, `ApplyPatch` and `NotebookEdit` accept an absolute
+path inside one, and the write is judged, guarded and observed exactly as the same write in the
+workspace is — `default` prompts, `acceptEdits` approves it, a `deny` rule blocks it in every mode.
+The entry carries the workspace's protections too: its own `.book/settings.local.json` and the
+`.book` directory holding it are guarded, a file must be read before it can be edited, and a write
+into a home directory held inside the entry still asks. A _relative_ path stays anchored to the
+workspace, so a bare `./notes.txt` is never re-anchored to a directory you did not name. Without an
+approved entry, the same absolute path is still `path_outside_workspace`.
 
 A path rule for `Read`, `Write`, `Edit`, `MultiEdit` or `NotebookEdit` is also matched against the
 other spellings of the target — relative to the workspace and absolute, before and after following
@@ -409,11 +430,20 @@ book trust hook <fingerprint>          # or --all-pending for every withheld hoo
 book trust hook <fingerprint> --reject # refuse it, and stop being re-offered it
 book trust rule "Bash(npm run *)"      # the same, for a project-declared allow rule
 book trust command deploy              # and for a project command that substitutes shell
+book trust dir ./shared                # and for a project-declared additionalDirectories entry
+book trust dir --all-pending           # every such directory still awaiting a decision
+book trust dir ./shared --reject       # refuse it
 ```
 
-All three take `--workspace <path>`; `book doctor` prints it for you when it is diagnosing a
+All of them take `--workspace <path>`; `book doctor` prints it for you when it is diagnosing a
 directory other than the one you are in. Each invocation records one decision and leaves every
 other decision — in this workspace and in every other — untouched.
+
+`book trust dir` shows the real path beside the declared text before recording anything, because
+the decision is keyed by where the path _really_ goes: a repository could declare `./shared` for a
+symlink pointing at your home directory, and approving the string you were shown would approve a
+path you never saw. Retargeting the link makes the entry pending again, and `--reject` records the
+refusal under that same real path.
 
 `Stop` fires once when the agent stops, not once per provider turn — a task that takes twelve
 tool-call turns still fires it once. It fires on cancellation too, which is usually the point of

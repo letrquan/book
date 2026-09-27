@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -37,6 +37,7 @@ describe('loadWorkspaceTrust', () => {
       mcpServers: {},
       hookEntries: {},
       projectCommands: {},
+      projectDirectories: {},
     });
   });
 
@@ -55,23 +56,32 @@ describe('loadWorkspaceTrust', () => {
   });
 
   it('reads back what was recorded for this workspace', () => {
-    updateWorkspaceTrust(
-      workspace,
-      (trust) => {
-        trust.hookEntries.abc123 = 'approved';
-        trust.permissionAllowRules['Bash(ls *)'] = 'rejected';
-        trust.mcpServers.github = { fingerprint: 'def456', choice: 'approved' };
-        trust.projectCommands.deploy = { fingerprint: 'ghi789', choice: 'approved' };
-      },
-      storePath,
-    );
+    const realDir = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-trust-dir-')));
+    try {
+      updateWorkspaceTrust(
+        workspace,
+        (trust) => {
+          trust.hookEntries.abc123 = 'approved';
+          trust.permissionAllowRules['Bash(ls *)'] = 'rejected';
+          trust.mcpServers.github = { fingerprint: 'def456', choice: 'approved' };
+          trust.projectCommands.deploy = { fingerprint: 'ghi789', choice: 'approved' };
+          // A directory decision is keyed by the real path, so two spellings of one directory
+          // are one decision — see `additional-roots.ts`.
+          trust.projectDirectories[realDir] = 'approved';
+        },
+        storePath,
+      );
 
-    expect(loadWorkspaceTrust(workspace, storePath)).toEqual({
-      hookEntries: { abc123: 'approved' },
-      permissionAllowRules: { 'Bash(ls *)': 'rejected' },
-      mcpServers: { github: { fingerprint: 'def456', choice: 'approved' } },
-      projectCommands: { deploy: { fingerprint: 'ghi789', choice: 'approved' } },
-    });
+      expect(loadWorkspaceTrust(workspace, storePath)).toEqual({
+        hookEntries: { abc123: 'approved' },
+        permissionAllowRules: { 'Bash(ls *)': 'rejected' },
+        mcpServers: { github: { fingerprint: 'def456', choice: 'approved' } },
+        projectCommands: { deploy: { fingerprint: 'ghi789', choice: 'approved' } },
+        projectDirectories: { [realDir]: 'approved' },
+      });
+    } finally {
+      rmSync(realDir, { recursive: true, force: true });
+    }
   });
 
   it('keeps one workspace out of another', () => {

@@ -1,11 +1,20 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runAgentLoop } from './loop.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { SessionRuntime } from '../session/runtime.js';
+import type { AgentConfig } from '../types/runtime.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { PermissionDecision, ToolResult } from '../types/tools.js';
 import type { Provider } from '../provider/index.js';
@@ -118,23 +127,34 @@ describe('runAgentLoop workspace reads (#264)', () => {
     });
   }
 
-  it('still asks before reading outside the workspace', async () => {
-    const prompt = vi.fn(async () => 'allow' as const);
-    await runAgentLoop(
-      defaultConfig({ workspace, maxTurns: 2 }),
-      createDefaultRegistry(),
-      'read it',
-      [],
-      noopCallbacks({ onPermissionRequired: prompt }),
-      'default',
-      {
-        provider: toolsThenText([
-          { id: 'r1', name: 'Read', arguments: { filePath: join(outside, 'secret.txt') } },
-        ]),
-        isNewSession: false,
-      },
-    );
-    expect(prompt).toHaveBeenCalledTimes(1);
+  it('refuses a read outside the workspace without asking, in every judging mode', async () => {
+    // #305 item 3. Before this, an outside Read raised a prompt nobody could satisfy: the tool
+    // would answer `path_outside_workspace` whatever the user said, and an "Always allow" would
+    // have written a rule for a call that could never run.
+    for (const mode of ['default', 'accept-edits', 'plan'] as const) {
+      const prompt = vi.fn(async () => 'allow' as const);
+      const results: ToolResult[] = [];
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        createDefaultRegistry(),
+        'read it',
+        [],
+        noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+        mode,
+        {
+          provider: toolsThenText([
+            { id: 'r1', name: 'Read', arguments: { filePath: join(outside, 'secret.txt') } },
+          ]),
+          isNewSession: false,
+        },
+      );
+      const result = byId(results, 'r1');
+      expect(prompt, `mode ${mode}`).not.toHaveBeenCalled();
+      expect(result?.status, `mode ${mode}`).toBe('blocked');
+      // Named by the code the streak remedy classifies as `outside`, not by prose.
+      expect(result?.structuredError?.code).toBe('path_outside_workspace');
+      expect(result?.content).toContain('additionalDirectories');
+    }
   });
 
   it("keeps asking in a workspace that holds Book's own home", async () => {
@@ -270,6 +290,9 @@ describe('runAgentLoop workspace reads (#264)', () => {
     );
     expect(byId(results, 'r1')?.content).toContain('outside the workspace');
     expect(notices.filter((notice) => notice.includes('needs approval'))).toHaveLength(0);
+    // #305 item 3: the approver is not even consulted, because nothing it could answer would
+    // have let the read happen.
+    expect(byId(results, 'r1')?.structuredError?.code).toBe('path_outside_workspace');
   });
 
   it('says a prompt nobody answered was dismissed, and prints no remedy', async () => {
@@ -581,9 +604,13 @@ describe('runAgentLoop workspace reads (#264)', () => {
   });
 
   it('says the user declined when a person refused the prompt', async () => {
+    // A workspace read, because that is the call that still reaches a prompt: an outside read is
+    // refused before the approver is consulted (#305 item 3), so it can no longer be declined.
     const results: ToolResult[] = [];
+    const config = defaultConfig({ workspace, maxTurns: 2 });
+    config.settings.permissions.ask = ['Read(notes.txt)'];
     await runAgentLoop(
-      defaultConfig({ workspace, maxTurns: 2 }),
+      config,
       createDefaultRegistry(),
       'read it',
       [],
@@ -593,14 +620,379 @@ describe('runAgentLoop workspace reads (#264)', () => {
       }),
       'default',
       {
-        provider: toolsThenText([
-          { id: 'r1', name: 'Read', arguments: { filePath: join(outside, 'secret.txt') } },
-        ]),
+        provider: toolsThenText([{ id: 'r1', name: 'Read', arguments: { filePath: 'notes.txt' } }]),
         isNewSession: false,
       },
     );
     const content = byId(results, 'r1')?.content ?? '';
     expect(content).toContain('The user declined');
     expect(content).not.toContain('configured permission policy');
+  });
+});
+
+/**
+ * #305 item 7. Plan mode exists to let a model read a lot without writing, so before this change
+ * it auto-approved every read-only tool outside its small `PLAN_PERMISSION_REQUIRED_TOOLS` set.
+ * A guarded Read ran with no prompt, and an outside Read reached the tool and came back
+ * `path_outside_workspace` after a prompt that could not have helped. Recorded here so the
+ * tightening below is measurable.
+ */
+describe('plan mode judges reads like default (#305)', () => {
+  it('asks for a workspace read an ask rule covers', async () => {
+    const prompt = vi.fn(async () => 'allow' as const);
+    const config = defaultConfig({ workspace, maxTurns: 2 });
+    config.settings.permissions.ask = ['Read(notes.txt)'];
+    await runAgentLoop(
+      config,
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt }),
+      'plan',
+      {
+        provider: toolsThenText([{ id: 'r1', name: 'Read', arguments: { filePath: 'notes.txt' } }]),
+        isNewSession: false,
+      },
+    );
+    expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an outside read, and never reaches the tool', async () => {
+    const prompt = vi.fn(async () => 'allow' as const);
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2 }),
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'plan',
+      {
+        provider: toolsThenText([
+          { id: 'r1', name: 'Read', arguments: { filePath: join(outside, 'secret.txt') } },
+        ]),
+        isNewSession: false,
+      },
+    );
+    expect(prompt).not.toHaveBeenCalled();
+    expect(byId(results, 'r1')?.status).toBe('blocked');
+    // The refusal names the remedy, so the model does not retry the same path.
+    expect(byId(results, 'r1')?.content).toContain('additionalDirectories');
+  });
+
+  it('runs an unguarded workspace read without a prompt', async () => {
+    const prompt = vi.fn(async () => 'deny' as const);
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2 }),
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'plan',
+      {
+        provider: toolsThenText([{ id: 'r1', name: 'Read', arguments: { filePath: 'notes.txt' } }]),
+        isNewSession: false,
+      },
+    );
+    expect(prompt).not.toHaveBeenCalled();
+    expect(byId(results, 'r1')?.status).toBe('success');
+  });
+});
+
+/**
+ * #300. `additionalDirectories` is the only thing that widens which paths Read, Glob and Grep may
+ * open without a prompt, so each of these states is a distinct security boundary: a directory the
+ * user approved is an ordinary read root, its siblings are not, a declared-but-unapproved one is
+ * not, and a root holding a home directory still asks.
+ */
+describe('runAgentLoop reads an approved additional directory (#300)', () => {
+  /**
+   * The loop sees a `ResolvedSettings`, which the settings loader has already reduced to the
+   * approved entries. Writing the store decision and the surviving list together keeps this test
+   * on the same seam the real launcher uses: a decision that never reached the list would be
+   * indistinguishable here from a permission bug.
+   */
+  function configHonoring(extra: string, maxTurns = 2): AgentConfig {
+    const config = defaultConfig({ workspace, maxTurns });
+    config.settings.additionalDirectories = [realpathSync.native(extra)];
+    return config;
+  }
+
+  for (const mode of ['default', 'accept-edits', 'plan'] as const) {
+    it(`reads, globs and greps inside the root without a prompt in ${mode}`, async () => {
+      writeFileSync(join(outside, 'visible.txt'), 'visible from the extra root\n');
+      const prompt = vi.fn(async () => 'deny' as const);
+      const results: ToolResult[] = [];
+      await runAgentLoop(
+        configHonoring(outside),
+        createDefaultRegistry(),
+        'read it',
+        [],
+        noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+        mode,
+        {
+          provider: toolsThenText([
+            { id: 'r1', name: 'Read', arguments: { filePath: join(outside, 'visible.txt') } },
+            { id: 'g1', name: 'Glob', arguments: { pattern: '*.txt' } },
+            { id: 'g2', name: 'Grep', arguments: { pattern: 'visible' } },
+          ]),
+          isNewSession: false,
+        },
+      );
+      expect(prompt, `mode ${mode}`).not.toHaveBeenCalled();
+      expect(byId(results, 'r1')?.status).toBe('success');
+      expect(byId(results, 'r1')?.content).toContain('visible from the extra root');
+    });
+  }
+
+  it('refuses a symlink that escapes an approved root, rather than serving the link target', async () => {
+    // The stricter reading, chosen deliberately: approving `/opt/stuff` is a decision about that
+    // directory, and a link planted inside it pointing at `~` is the shape of attack this brief
+    // asks to be refused rather than guessed at. The resolved target is outside every root, so
+    // the call is the outside refusal — not a prompt, because no approval could serve it.
+    const linked = tempDir('book-loop-linked-');
+    symlinkSync(outside, join(linked, 'into'), 'junction');
+    writeFileSync(join(outside, 'visible.txt'), 'visible through the link\n');
+    const prompt = vi.fn(async () => 'allow' as const);
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      configHonoring(linked),
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'default',
+      {
+        provider: toolsThenText([
+          { id: 'r1', name: 'Read', arguments: { filePath: join(linked, 'into', 'visible.txt') } },
+        ]),
+        isNewSession: false,
+      },
+    );
+    expect(prompt).not.toHaveBeenCalled();
+    expect(byId(results, 'r1')?.status).toBe('blocked');
+  });
+
+  it('does not read a sibling of an approved directory, which is not a root', async () => {
+    const sibling = tempDir('book-loop-sibling-');
+    writeFileSync(join(sibling, 'sneaky.txt'), 'not covered\n');
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      configHonoring(outside),
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({ onToolResult: (r) => results.push(r) }),
+      'default',
+      {
+        provider: toolsThenText([
+          { id: 'r1', name: 'Read', arguments: { filePath: join(sibling, 'sneaky.txt') } },
+        ]),
+        isNewSession: false,
+      },
+    );
+    expect(byId(results, 'r1')?.status).toBe('blocked');
+  });
+
+  it('does not read a directory the settings loader withheld', async () => {
+    // What the loop receives for a project-declared, unapproved directory is an empty list — the
+    // gate lives in `settings-loader`, and this is the state it produces.
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2 }),
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({ onToolResult: (r) => results.push(r) }),
+      'default',
+      {
+        provider: toolsThenText([
+          { id: 'r1', name: 'Read', arguments: { filePath: join(outside, 'secret.txt') } },
+        ]),
+        isNewSession: false,
+      },
+    );
+    expect(byId(results, 'r1')?.status).toBe('blocked');
+  });
+
+  /**
+   * A directory holding a home directory is a root the user may approve and still get asked about:
+   * a home holds SSH keys, provider keys, and Book's own trust store. Approving it must not
+   * become a standing key to everything under it.
+   */
+  it('still asks for a read under a root that holds BOOK_HOME', async () => {
+    const realHome = tempDir('book-loop-roothome-');
+    const previousHome = process.env.BOOK_HOME;
+    process.env.BOOK_HOME = realHome;
+    try {
+      writeFileSync(join(realHome, 'id_rsa'), 'PRIVATE KEY\n');
+      const prompt = vi.fn(async () => 'allow' as const);
+      const results: ToolResult[] = [];
+      await runAgentLoop(
+        configHonoring(realHome),
+        createDefaultRegistry(),
+        'read it',
+        [],
+        noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+        'default',
+        {
+          provider: toolsThenText([
+            { id: 'r1', name: 'Read', arguments: { filePath: join(realHome, 'id_rsa') } },
+          ]),
+          isNewSession: false,
+        },
+      );
+      expect(prompt).toHaveBeenCalledTimes(1);
+      expect(byId(results, 'r1')?.content).toContain('PRIVATE KEY');
+    } finally {
+      process.env.BOOK_HOME = previousHome;
+    }
+  });
+
+  it('still asks for a read under a root that holds the home directory, wherever HOME points', async () => {
+    const realHome = tempDir('book-loop-roothome2-');
+    writeFileSync(join(realHome, 'id_rsa'), 'PRIVATE KEY\n');
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    process.env.HOME = realHome;
+    process.env.USERPROFILE = realHome;
+    try {
+      const prompt = vi.fn(async () => 'allow' as const);
+      await runAgentLoop(
+        configHonoring(realHome),
+        createDefaultRegistry(),
+        'read it',
+        [],
+        noopCallbacks({ onPermissionRequired: prompt }),
+        'default',
+        {
+          provider: toolsThenText([
+            { id: 'r1', name: 'Read', arguments: { filePath: join(realHome, 'id_rsa') } },
+          ]),
+          isNewSession: false,
+        },
+      );
+      expect(prompt).toHaveBeenCalledTimes(1);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it('still asks for a local settings file under an approved root', async () => {
+    // Every root Book serves carries its own `.book/settings.local.json`, and a local one can hold
+    // an API key exactly as the workspace's does.
+    const root = tempDir('book-loop-localsettings-');
+    mkdirSync(join(root, '.book'), { recursive: true });
+    writeFileSync(join(root, '.book', 'settings.local.json'), '{"apiKey":"sk-secret"}');
+    const prompt = vi.fn(async () => 'allow' as const);
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      configHonoring(root),
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'default',
+      {
+        provider: toolsThenText([
+          {
+            id: 'r1',
+            name: 'Read',
+            arguments: { filePath: join(root, '.book', 'settings.local.json') },
+          },
+        ]),
+        isNewSession: false,
+      },
+    );
+    expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes into an approved directory, the way it writes into the workspace', async () => {
+    // An approved directory is a root for the write tools too, so the write goes through the
+    // ordinary permission flow for its mode: `default` prompts, and the file only appears once
+    // the operator has agreed. Owner decision A — the alternative (reads only) is a deviation.
+    const results: ToolResult[] = [];
+    const prompt = vi.fn(async () => 'deny' as const);
+    await runAgentLoop(
+      configHonoring(outside),
+      createDefaultRegistry(),
+      'write it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'default',
+      {
+        provider: toolsThenText([
+          {
+            id: 'w1',
+            name: 'Write',
+            arguments: { filePath: join(outside, 'planted.txt'), content: 'planted\n' },
+          },
+        ]),
+        isNewSession: false,
+      },
+    );
+    // Reached the prompt, rather than being refused as outside or silently written: the tool
+    // served the path, so the mode decided.
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(outside, 'planted.txt'))).toBe(false);
+  });
+
+  it('writes into an approved directory in accept-edits without a prompt', async () => {
+    // The parity that decision A asks for: the same write into the workspace is auto-approved in
+    // this mode, so the one into an approved directory is too.
+    const results: ToolResult[] = [];
+    const prompt = vi.fn(async () => 'deny' as const);
+    await runAgentLoop(
+      configHonoring(outside),
+      createDefaultRegistry(),
+      'write it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'accept-edits',
+      {
+        provider: toolsThenText([
+          {
+            id: 'w1',
+            name: 'Write',
+            arguments: { filePath: join(outside, 'planted.txt'), content: 'planted\n' },
+          },
+        ]),
+        isNewSession: false,
+      },
+    );
+    expect(prompt).not.toHaveBeenCalled();
+    expect(byId(results, 'w1')?.status).toBe('success');
+    expect(existsSync(join(outside, 'planted.txt'))).toBe(true);
+  });
+
+  it('still refuses a write into a directory that is not approved', async () => {
+    // The root is what made the call above legal, and it is still the whole of the permission.
+    const results: ToolResult[] = [];
+    const prompt = vi.fn(async () => 'allow' as const);
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2 }),
+      createDefaultRegistry(),
+      'write it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'accept-edits',
+      {
+        provider: toolsThenText([
+          {
+            id: 'w1',
+            name: 'Write',
+            arguments: { filePath: join(outside, 'planted.txt'), content: 'planted\n' },
+          },
+        ]),
+        isNewSession: false,
+      },
+    );
+    // Not even a prompt: no mode can make a write tool serve a path no root contains.
+    expect(prompt).not.toHaveBeenCalled();
+    expect(byId(results, 'w1')?.structuredError?.code).toBe('path_outside_workspace');
+    expect(existsSync(join(outside, 'planted.txt'))).toBe(false);
   });
 });

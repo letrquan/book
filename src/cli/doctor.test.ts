@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { runDoctorCommand } from './doctor.js';
+import { updateWorkspaceTrust } from '../workspace-trust.js';
 
 // Only the backend probe is stubbed; `sandboxPolicySummary` and everything else
 // stay real. Whether the developer's machine has bubblewrap installed must not
@@ -429,5 +430,91 @@ describe('runDoctorCommand memory health', () => {
     expect(output).toContain('Index lines:       2 / 200');
     expect(output).toContain('Superseded:        0');
     expect(output).toMatch(/Last write:\s+\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+/**
+ * #300. Doctor is where a user goes to find out *why* a project-declared directory is not in
+ * effect, so the report has to name the real path and the exact command — the declared text is
+ * the repository's, and a symlink makes it a poor guide to what would be approved.
+ */
+describe('runDoctorCommand reports additional directories', () => {
+  let shared: string;
+
+  beforeEach(() => {
+    shared = mkdtempSync(join(tmpdir(), 'book-doctor-shared-'));
+  });
+
+  afterEach(() => {
+    rmSync(shared, { recursive: true, force: true });
+  });
+
+  function declare(entries: string[]): void {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ sandbox: { enabled: false }, additionalDirectories: entries }),
+    );
+  }
+
+  it('says nothing when the project declares none', async () => {
+    declare([]);
+    expect(await doctorOutput()).not.toContain('Additional directories');
+  });
+
+  it('names a withheld entry by its real path, with the command that releases it', async () => {
+    symlinkSync(shared, join(workspace, 'link'), 'junction');
+    declare(['link']);
+
+    const report = await doctorOutput();
+
+    expect(report).toContain('Additional directories');
+    expect(report).toContain(realpathSync.native(shared));
+    expect(report).toContain('not in effect');
+    expect(report).toContain('book trust dir');
+  });
+
+  it('lists a directory the user already approved as in effect', async () => {
+    declare([shared]);
+    const config = { workspace, maxTurns: 1 };
+    void config;
+    // Approve through the same store doctor reads, so the report reflects a real decision.
+    updateWorkspaceTrust(
+      workspace,
+      (trust) => {
+        trust.projectDirectories[realpathSync.native(shared)] = 'approved';
+      },
+      join(bookHome, 'trust.json'),
+    );
+
+    const report = await doctorOutput();
+
+    expect(report).toContain('Additional directories');
+    expect(report).toContain(`[x] ${realpathSync.native(shared)}`);
+    expect(report).not.toContain('book trust dir');
+  });
+
+  it('says nothing about a rejected entry, which has nothing to act on', async () => {
+    declare([shared]);
+    updateWorkspaceTrust(
+      workspace,
+      (trust) => {
+        trust.projectDirectories[realpathSync.native(shared)] = 'rejected';
+      },
+      join(bookHome, 'trust.json'),
+    );
+
+    // A refusal is not in effect, nothing awaits a decision, and there is no command to print.
+    // Re-reporting it every run would be noise that trains the reader to skim past the `[!]`
+    // lines that do need acting on.
+    expect(await doctorOutput()).not.toContain('Additional directories');
+  });
+
+  it('says nothing about a directory that does not exist', async () => {
+    // A checkout may not carry the directory yet; doctor must not report a decision to make
+    // about a path the user cannot even see.
+    declare([join(workspace, 'not-here')]);
+
+    expect(await doctorOutput()).not.toContain('Additional directories');
   });
 });

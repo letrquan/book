@@ -4,8 +4,82 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **`additionalDirectories` is honored for reads and writes, and gated like every other
+  project-declared authority** (#300). The setting was accepted from a checked-in `.book/settings.json`
+  and did nothing, so the fix had to make it both real and safe. `Read`, `Glob` and `Grep` now serve
+  an approved directory without a prompt, and the write tools accept an absolute path inside one —
+  `Write`, `Edit`, `MultiEdit`, `ApplyPatch` and `NotebookEdit` treat an approved directory as a
+  root, so the same write is judged, guarded and observed exactly as the same write in the workspace
+  is. An approved directory carries the same protections the workspace does: its own
+  `.book/settings.local.json` and `.book` directory are guarded, a write into a home directory held
+  inside it still asks, and a relative path stays anchored to the workspace. A project-declared
+  entry is withheld until it is
+  approved with the new `book trust dir <path>` (or `book trust dir --all-pending`), and
+  `book doctor` lists what is in effect and what is waiting. The decision is keyed — and shown —
+  by the directory's **real path**, never the text the repository wrote: `./shared`, `shared` and
+  the absolute path are one decision, a symlink is displayed as what it actually points at, and
+  retargeting a link makes the entry pending again. User-global, local and `--settings` entries
+  need no approval. The trust store is **version 3**: a v2 build would write the store without a
+  workspace's directory approvals and silently put them back to pending, so the bump makes that
+  failure loud — an older build reads a v3 store as unreadable, withholds every gated declaration,
+  and declines to write.
+- **The trust store for repository-controlled input is version 3** (`TRUST_STORE_VERSION`), adding
+  `projectDirectories` to the same treatment as hook, command, allow-rule and MCP decisions: the
+  key is refused in every `book config` scope, the decision is keyed by workspace path, and a store
+  written by a newer build is never partially understood.
+- **Reads that no root can serve are refused, not prompted for** (#305). A `Read`, `Glob` or `Grep`
+  whose target is outside the workspace and every approved root raised a prompt that nothing could
+  answer — the tool returned `path_outside_workspace` whatever the user said, and an "Always allow"
+  saved a rule for a call that could never run. It is now refused up front, in `default`,
+  `accept-edits` and `plan`, as `blocked` with the code `path_outside_workspace` and a message
+  naming the path, the directories already honored, and the two ways through. The `all_tools_blocked`
+  remedy for a streak of them names `additionalDirectories` rather than a permission rule. A read
+  whose path lands inside a home directory still prompts, but only when a home lies inside the root
+  that serves it: approving `/opt/stuff` must not become a standing key to `~/.ssh` through a link
+  or a home held inside it. A root that merely sits below the home — which is nearly every
+  workspace — is not guarded by the home rule.
+- **`deny` and `ask` path rules match case-insensitively** (#305). `deny: ["Read(.env)"]` already
+  blocked `.ENV` and `.Env` on Linux, but `ask: ["Read(.env)"]` did not prompt for them, so the
+  model could ask for a spelling that a rule plainly meant to cover. Deny and ask now fold on every
+  platform. `allow` is unchanged, so nothing is widened by the fold and a case-sensitive Linux mount
+  still distinguishes the two the way it always did.
+- **`runGit` is hardened against the repository's own git configuration** (#305). The read-only Git
+  tools pass `-c core.fsmonitor=false`, `-c core.pager=cat`, an empty `-c core.hooksPath`,
+  `-c core.untrackedCache=false`, `-c gc.auto=0` and `--no-optional-locks`, and `GitDiff` adds
+  `--no-ext-diff --no-textconv`; `GIT_PAGER=cat` and `GIT_TERMINAL_PROMPT=0` are set in the
+  environment, so a checked-in `core.pager` or `core.sshCommand` cannot make a read-only call
+  execute a program. **Residual:** a repository's `.git/config` can still configure clean/smudge
+  filters, and those run on `status` and `diff`; Book does not suppress them, because doing so would
+  mean rewriting the command the user asked for.
+- **A managed child's refusal reaches the operator** (#305). A child runs unattended and its
+  handoff is a summary, so a step that was refused and never ran was indistinguishable from one
+  the model chose to skip. The child raises an `agent_notice` event, `AgentManager` forwards it,
+  and the TUI adds it to the transcript labelled with the child.
+
 ### Changed
 
+- **Plan mode judges reads like `default`** (#305). It auto-approved every read-only tool outside
+  its small `PLAN_PERMISSION_REQUIRED_TOOLS` set, so a guarded `Read` ran with no prompt and an
+  outside `Read` reached the tool. It now applies the same read rules — `ask` rules prompt, outside
+  reads are refused — while an unguarded workspace read still runs unprompted, which is what plan
+  mode is for. `dontAsk` is unchanged.
+- **The four read-only Git tools run without a prompt** in `default` and `accept-edits`
+  (`GitStatus`, `GitDiff`, `GitLog`, `GitBranch`): a repository's own git configuration cannot make
+  these read-only calls execute programs, a `deny` rule still blocks them, an `ask` rule still
+  prompts, and `dontAsk` still refuses.
+- **A `Read` evaluation resolves its path once** (#305). Every path a call is judged by was
+  resolved per rule candidate, so a single read with a handful of spellings walked the root list
+  with `realpath` a dozen times. The decisions are identical; only the work changed.
+- **A `Glob` or `Grep` result outside the workspace is listed absolutely.** A file in an approved
+  additional directory was labelled with its relative form, which reads as a workspace path that
+  does not exist — the model would try it and be told the path was outside the workspace. A
+  `Grep` `path` argument inside an approved directory now searches that directory rather than the
+  workspace tree, which does not contain it.
+- **`book trust` gains `dir`**, alongside `hook`, `rule` and `command`. It takes `--workspace`,
+  `--all-pending` and `--reject`, prints the real path beside the declared text before recording
+  anything, and leaves every other decision in every workspace untouched.
 - **System prompt v5** (`book-system-prompt-v5`): the prompt and the tool descriptions stop
   contradicting each other. `TaskCreate` no longer says to use it instead of `TodoWrite`; both
   descriptions now say the todo list is the one shown in every turn's `<session-state>`.
