@@ -304,6 +304,17 @@ describe('MarkdownBlock', () => {
     expect(output.split('\n')).toEqual(['First paragraph', '', 'Second paragraph']);
   });
 
+  it('keeps a closing paragraph off a list that a link definition follows', () => {
+    // A link definition draws nothing, so the paragraph after it must take the
+    // gap from the block the reader actually saw above it.
+    const view = render(
+      withTheme(React.createElement(MarkdownBlock, { content: '- a\n- b\n\n[ref]: /u\n\nDone.' })),
+    );
+    const lines = frame(view.lastFrame).split('\n');
+
+    expect(lines).toEqual(['  • a', '  • b', '', 'Done.']);
+  });
+
   it('places heading bodies directly under their heading chrome', () => {
     const view = render(
       withTheme(React.createElement(MarkdownBlock, { content: '## Compact heading\n\nBody text' })),

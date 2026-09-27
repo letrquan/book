@@ -93,14 +93,14 @@ function estimateTimelineRows(
   // A boundary is one row of its own plus the blank row it takes, which tight density drops.
   if ('transcriptOrdinal' in entry) return density === 'tight' ? 1 : 2;
 
-  // A user turn is its prompt and nothing else: it wraps by the same rules
-  // UserMessage sets it with, so the estimate is its row count exactly.
+  // A user turn is its prompt and the two blank rows above it (tight density
+  // drops them): the margin belongs to the turn, so an unmeasured one is
+  // estimated with it. The transcript's first turn has no margin — measuring
+  // corrects that one row pair.
   if (entry.role === 'user') {
-    return userTurnRows(
-      entry.content,
-      terminalWidth,
-      entry.timestamp,
-      entry.attachments?.length ?? 0,
+    return (
+      userTurnRows(entry.content, terminalWidth, entry.timestamp, entry.attachments?.length ?? 0) +
+      (density === 'tight' ? 0 : 2)
     );
   }
   const textRows = estimateWrappedRows(entry.content, transcriptGrid(terminalWidth).content);
@@ -370,7 +370,9 @@ export function ChatPanelInner({
           const previous = visibleTimeline[index - 1];
           if (message.role === 'user') {
             row = (
-              <Box flexDirection="column" marginTop={index > 0 && density !== 'tight' ? 1 : 0}>
+              // Two blank rows, like the space before a new section: one left
+              // your turn reading as another paragraph of the reply above it.
+              <Box flexDirection="column" marginTop={index > 0 && density !== 'tight' ? 2 : 0}>
                 {screenReader ? (
                   <ScreenReaderRoleLabel role="user" timestamp={message.timestamp} />
                 ) : null}
@@ -622,8 +624,11 @@ function buildTimeline(
       flush();
       timeline.push(...markers.sort((a, b) => a.timestamp - b.timestamp));
     }
-    if (index < messages.length && messages[index].kind !== 'agent-notification') {
-      segment.push(messages[index]);
+    if (index < messages.length) {
+      // A notification opens a new turn: the agent's reply to it never folds
+      // into the answer that closed the turn before.
+      if (messages[index].kind === 'agent-notification') flush();
+      else segment.push(messages[index]);
     }
   }
   // A row placed past the last message, for a streaming message whose append never landed,
@@ -658,7 +663,7 @@ function CompactBoundaryRow({
       marginLeft={screenReader ? 0 : CONTENT_COLUMN}
       width={GUTTER_WIDTH + text}
     >
-      <Text color={theme.success}>✓ </Text>
+      <Text color={theme.inactive}>✓ </Text>
       <Text color={theme.text}>{truncateDisplay('Compact conversation', text)}</Text>
     </Box>
   );

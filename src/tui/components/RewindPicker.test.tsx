@@ -1,6 +1,8 @@
+import chalk from 'chalk';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RewindTarget } from '../../types/sessions.js';
+import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { RewindPicker } from './RewindPicker.js';
 
 const targets: RewindTarget[] = [
@@ -44,6 +46,34 @@ describe('RewindPicker', () => {
     expect(view.lastFrame()).toContain('Conversation');
     expect(view.lastFrame()).toContain('Code');
     expect(view.lastFrame()).toContain('Both');
+  });
+
+  it('sets past prompts in the ink the transcript sets them in, upright', async () => {
+    // Ink styles through chalk, which emits nothing off a TTY; force truecolor
+    // so the prompt's ink is visible in the frame.
+    const level = chalk.level;
+    chalk.level = 3;
+    let raw: string;
+    try {
+      const view = render(
+        <ThemeContext.Provider value={DEFAULT_THEME}>
+          <RewindPicker
+            targets={targets}
+            isRewinding={false}
+            onAction={vi.fn()}
+            onCancel={vi.fn()}
+          />
+        </ThemeContext.Provider>,
+      );
+      raw = view.lastFrame() ?? '';
+    } finally {
+      chalk.level = level;
+    }
+    const [r, g, b] = [1, 3, 5].map((at) => parseInt(DEFAULT_THEME.userText.slice(at, at + 2), 16));
+    const promptRow = raw.split('\n').find((line) => line.includes('older prompt'))!;
+
+    expect(promptRow).toContain(`\u001b[38;2;${r};${g};${b}molder prompt`);
+    expect(promptRow).not.toContain('\u001b[3m');
   });
 
   it('disables code actions with the checkpoint failure reason', async () => {

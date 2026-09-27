@@ -69,7 +69,10 @@ export function loadCustomTheme(workspace: string, name: string): ThemeTokens | 
     const raw = readFileSync(themePath, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<ThemeTokens>;
     // A custom theme overrides the default look, so it starts from Rubric.
-    return { ...RUBRIC_THEME, ...parsed };
+    // A theme written before `userText` existed set its ink through `text`; the
+    // prompt keeps following that ink rather than Rubric's near-white.
+    const userText = parsed.userText ?? parsed.text ?? RUBRIC_THEME.userText;
+    return { ...RUBRIC_THEME, ...parsed, userText };
   } catch {
     return null;
   }

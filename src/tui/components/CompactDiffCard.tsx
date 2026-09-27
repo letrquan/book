@@ -60,7 +60,7 @@ export function CompactDiffCard({
   const failed = state.phase === 'error';
   const skipped = state.phase === 'skipped';
   const symbol = failed ? '×' : skipped ? '–' : '✓';
-  const color = failed ? theme.error : skipped ? theme.warning : theme.success;
+  const color = failed ? theme.error : skipped ? theme.warning : theme.inactive;
   const summary =
     failed || skipped ? (state.message ?? compactSummary(state)) : compactSummary(state);
 

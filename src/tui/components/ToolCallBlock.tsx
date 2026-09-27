@@ -102,7 +102,10 @@ function toolLabel(name: string): string {
 }
 
 function statusColor(status: ToolPresentationStatus, theme: ReturnType<typeof useTheme>): string {
-  if (status === 'success') return theme.success;
+  // A column of green checks beside one rose `×` made every row shout. Success
+  // is the default, so it is the exception — a failure or a pending row — that
+  // takes colour.
+  if (status === 'success') return theme.inactive;
   if (status === 'failure') return theme.error;
   if (status === 'skipped' || status === 'pending') return theme.warning;
   return theme.brand;
