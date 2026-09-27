@@ -1,5 +1,16 @@
 import { Text, useInput, type Key } from 'ink';
 import { useEffect, useReducer, useRef } from 'react';
+import {
+  applyInputSequence,
+  cut,
+  deleteNextGrapheme,
+  deletePreviousGrapheme,
+  nextGraphemeBoundary,
+  nextWordBoundary,
+  previousGraphemeBoundary,
+  previousWordBoundary,
+  type EditState,
+} from '../line-edit.js';
 
 interface InputBoxProps {
   value: string;
@@ -24,11 +35,6 @@ interface InputBoxProps {
   focus?: boolean;
 }
 
-interface EditState {
-  value: string;
-  cursorOffset: number;
-}
-
 /**
  * Ctrl chords the editor handles as text edits. With an empty draft there is nothing for them to
  * edit, so they belong to the transcript (Ctrl+E expands a tool, Ctrl+U scrolls) and are handed to
@@ -48,8 +54,6 @@ export const COMPOSER_EDIT_KEYS = new Set(['a', 'e', 'w', 'u', 'k', 'y']);
  */
 export const COMPOSER_PAGER_KEYS = new Set(['u', 'd']);
 
-const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-
 /**
  * A Backspace this soon after the previous one is key repeat, not a new press. Repeats come every
  * 30-90 ms once a held key starts repeating (Windows ~33 ms, GNOME/X11 ~30-40 ms, macOS ~90 ms);
@@ -60,97 +64,6 @@ const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme
  * attached image.
  */
 const HELD_REPEAT_MS = 120;
-
-function previousGraphemeBoundary(value: string, offset: number): number {
-  let previous = 0;
-  for (const segment of graphemeSegmenter.segment(value)) {
-    if (segment.index >= offset) break;
-    previous = segment.index;
-  }
-  return previous;
-}
-
-function nextGraphemeBoundary(value: string, offset: number): number {
-  for (const segment of graphemeSegmenter.segment(value)) {
-    if (segment.index > offset) return segment.index;
-  }
-  return value.length;
-}
-
-/**
- * Offset of the start of the word before `offset`.
- *
- * Skips the whitespace immediately behind the cursor, then the run of
- * non-whitespace before that — readline's `unix-word-rubout`, which is what
- * Ctrl+W and Alt+Backspace both mean to a terminal user.
- */
-function previousWordBoundary(value: string, offset: number): number {
-  let index = offset;
-  while (index > 0 && /\s/.test(value[index - 1]!)) index -= 1;
-  while (index > 0 && !/\s/.test(value[index - 1]!)) index -= 1;
-  return index;
-}
-
-/** Offset of the end of the word after `offset`: readline's `kill-word`, what Alt+Delete means. */
-function nextWordBoundary(value: string, offset: number): number {
-  let index = offset;
-  while (index < value.length && /\s/.test(value[index]!)) index += 1;
-  while (index < value.length && !/\s/.test(value[index]!)) index += 1;
-  return index;
-}
-
-/** Remove `[start, end)` and leave the cursor where the text was. */
-function cut(value: string, start: number, end: number): { edit: EditState; killed: string } {
-  return {
-    edit: { value: value.slice(0, start) + value.slice(end), cursorOffset: start },
-    killed: value.slice(start, end),
-  };
-}
-
-function normalizeEdit(value: string, cursorOffset: number): EditState {
-  return {
-    value: value.normalize('NFC'),
-    cursorOffset: value.slice(0, cursorOffset).normalize('NFC').length,
-  };
-}
-
-function deletePreviousGrapheme(value: string, cursorOffset: number): EditState {
-  if (cursorOffset <= 0) return { value, cursorOffset };
-  const previousOffset = previousGraphemeBoundary(value, cursorOffset);
-  return {
-    value: value.slice(0, previousOffset) + value.slice(cursorOffset),
-    cursorOffset: previousOffset,
-  };
-}
-
-function deleteNextGrapheme(value: string, cursorOffset: number): EditState {
-  if (cursorOffset >= value.length) return { value, cursorOffset };
-  const nextOffset = nextGraphemeBoundary(value, cursorOffset);
-  return { value: value.slice(0, cursorOffset) + value.slice(nextOffset), cursorOffset };
-}
-
-/** Apply a raw terminal input chunk, including IME backspace/replacement sequences. */
-export function applyInputSequence(value: string, cursorOffset: number, input: string): EditState {
-  let edit = { value, cursorOffset };
-
-  for (const character of input) {
-    if (character === '\b' || character === '\x7f') {
-      edit = deletePreviousGrapheme(edit.value, edit.cursorOffset);
-      continue;
-    }
-
-    // Ignore control bytes that should never become visible prompt text.
-    if (character < ' ' && character !== '\n' && character !== '\t') continue;
-
-    edit = {
-      value:
-        edit.value.slice(0, edit.cursorOffset) + character + edit.value.slice(edit.cursorOffset),
-      cursorOffset: edit.cursorOffset + character.length,
-    };
-  }
-
-  return normalizeEdit(edit.value, edit.cursorOffset);
-}
 
 /**
  * Unicode input editor that keeps its draft in refs so rapid IME replacement
