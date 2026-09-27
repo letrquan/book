@@ -13,10 +13,12 @@ function sleep(ms: number): Promise<void> {
 function Harness({
   initial,
   onBackspaceWhenEmpty,
+  onEmptyChord,
   onChange,
 }: {
   initial: string;
   onBackspaceWhenEmpty?: () => void;
+  onEmptyChord?: () => void;
   onChange?: (value: string) => void;
 }) {
   const [value, setValue] = useState(initial);
@@ -28,6 +30,7 @@ function Harness({
         onChange?.(next);
       }}
       onBackspaceWhenEmpty={onBackspaceWhenEmpty}
+      onEmptyChord={onEmptyChord}
     />
   );
 }
@@ -145,5 +148,44 @@ describe('InputBox', () => {
     }
     view.stdin.write('\x1b[3;3~');
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith('foo  baz'));
+  });
+
+  // Ctrl+U and Ctrl+D are the pager's half-page chords. The transcript can only
+  // read them as a scroll when the composer had nothing to edit, and it cannot
+  // tell that for itself: Ctrl+U empties the field before any other handler
+  // runs. So the composer reports an empty-draft chord itself, and a draft in
+  // hand ends the key here.
+  it('hands Ctrl+U and Ctrl+D to the transcript only on an empty draft', async () => {
+    const onEmptyChord = vi.fn();
+    const onChange = vi.fn();
+    const view = render(<Harness initial="" onChange={onChange} onEmptyChord={onEmptyChord} />);
+    await sleep(30);
+
+    view.stdin.write('\x15'); // Ctrl+U
+    await vi.waitFor(() => expect(onEmptyChord).toHaveBeenCalledOnce());
+    view.stdin.write('\x04'); // Ctrl+D
+    await vi.waitFor(() => expect(onEmptyChord).toHaveBeenCalledTimes(2));
+    expect(onChange).not.toHaveBeenCalled();
+
+    // A draft in hand: Ctrl+U clears it and Ctrl+D does nothing, and neither
+    // is the transcript's.
+    view.stdin.write('second draft');
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith('second draft'));
+    onEmptyChord.mockClear();
+    onChange.mockClear();
+
+    view.stdin.write('\x15'); // Ctrl+U
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith(''));
+    expect(onEmptyChord).not.toHaveBeenCalled();
+
+    view.stdin.write('second draft');
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith('second draft'));
+    onEmptyChord.mockClear();
+    onChange.mockClear();
+
+    view.stdin.write('\x04'); // Ctrl+D
+    await sleep(30);
+    expect(onEmptyChord).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

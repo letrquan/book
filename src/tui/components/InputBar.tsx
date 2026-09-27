@@ -35,7 +35,7 @@ import {
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 import { stripSgrMouseSequences } from '../mouse.js';
-import { COMPOSER_EDIT_KEYS, InputBox } from './InputBox.js';
+import { COMPOSER_EDIT_KEYS, COMPOSER_PAGER_KEYS, InputBox } from './InputBox.js';
 import { displayWidth, wordWrap } from './word-wrap.js';
 
 const uiLog = createUiDebugLogger('tui:inputbar');
@@ -638,8 +638,17 @@ export function InputBar({
       return;
     }
     // The readline chords are the editor's: it edits a draft with them, and hands them to
-    // `forwardEmptyChord` below when there is no draft to edit.
-    if (key.ctrl && COMPOSER_EDIT_KEYS.has(_input.toLowerCase())) return;
+    // `forwardEmptyChord` below when there is no draft to edit. The pager chords join them here
+    // for the same reason — a draft in hand means Ctrl+U and Ctrl+D are not the transcript's,
+    // and forwarding them to the App would scroll the transcript out from under the composer
+    // (Ctrl+D is not an edit, so the editor itself cannot end the key).
+    if (
+      key.ctrl &&
+      (COMPOSER_EDIT_KEYS.has(_input.toLowerCase()) ||
+        COMPOSER_PAGER_KEYS.has(_input.toLowerCase()))
+    ) {
+      return;
+    }
     // Forward Ctrl-based shortcuts to the parent App. Ctrl+/ arrives as a bare US
     // byte with no `ctrl` flag (see `isShortcutsToggleKey`), so gating on
     // `key.ctrl` alone would swallow it here.

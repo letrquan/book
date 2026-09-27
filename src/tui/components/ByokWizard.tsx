@@ -21,10 +21,14 @@ import {
 import { useDensityMetrics } from '../density.js';
 import { stripSgrMouseSequences } from '../mouse.js';
 import { useTheme } from '../theme.js';
+import { DecisionSheet } from './chrome.js';
+import { truncateDisplay } from './word-wrap.js';
+import { LABEL_COLUMN_WIDTH, panelGrid, sheetContentWidth } from '../layout.js';
 
 export interface ByokWizardProps {
   retry: RetryConfig;
   compact?: boolean;
+  terminalWidth?: number;
   maxVisibleModels?: number;
   discover?: (options: ModelDiscoveryOptions) => Promise<DiscoveredModel[]>;
   onSave: (
@@ -95,6 +99,7 @@ function filterModels(models: DiscoveredModel[], filter: string): DiscoveredMode
 export function ByokWizard({
   retry,
   compact = false,
+  terminalWidth = 80,
   maxVisibleModels = 8,
   discover = discoverModels,
   onSave,
@@ -394,172 +399,185 @@ export function ByokWizard({
   );
   const visibleModels = filteredModels.slice(modelWindowStart, modelWindowStart + maxVisibleModels);
   const showOptionalHelp = !compact && density.showOptionalHelp;
+  // The rule spans the sheet and the body sits two columns in, so the wizard's
+  // text lands on the transcript's content column instead of one column left of
+  // it inside a box of its own.
+  //
+  // `panelGrid`, not `frameGrid`: the wizard opens from the model picker and
+  // sits beside its other panels, so it is a floating surface and takes the same
+  // `MAX_PANEL_MEASURE` cap. `frameGrid` would let it run the width of a
+  // 200-column terminal, and the picker it opened from would be 80 columns
+  // narrower than the surface that replaced it.
+  const sheetWidth = panelGrid(terminalWidth).width;
+  const contentWidth = sheetContentWidth(sheetWidth);
+
+  // One model row: the cursor column, the tick, the label, then the id in a
+  // quieter tone after it. The two text columns split what is left over *after*
+  // those four leading columns and the two between the label and the id, so the
+  // row is exactly `contentWidth` wide. Budgeting each column a share of the
+  // whole width instead let a long label and a long id add up to more than the
+  // row, and Ink wrapped them: the highlighted row split in two and the list
+  // grew past the `maxVisibleModels` it was supposed to hold.
+  const modelRowLead = 4;
+  const modelRowGap = 2;
+  const modelTextWidth = Math.max(8, contentWidth - modelRowLead - modelRowGap);
+  const modelLabelWidth = Math.ceil(modelTextWidth * 0.6);
+  const modelIdWidth = modelTextWidth - modelLabelWidth;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
-      <Box justifyContent="space-between">
-        <Text bold color={theme.brand}>
-          Add BYOK provider
-        </Text>
-        {stepNumber && (
-          <Text color={theme.subtle} dimColor>
-            Step {stepNumber}/{TOTAL_STEPS}
-          </Text>
-        )}
-      </Box>
-
-      <Box flexDirection="column">
-        {step === 'provider' && (
-          <Field
-            label="Provider ID"
-            hint={showOptionalHelp ? 'Example: openrouter' : undefined}
-            value={providerId}
-            onChange={setProviderId}
-            onSubmit={submitProvider}
-          />
-        )}
-        {step === 'protocol' && (
-          <>
-            <Text bold>Protocol</Text>
-            {(['openai', 'anthropic'] as const).map((value) => (
-              <Text key={value} color={type === value ? theme.brand : theme.subtle}>
-                {type === value ? '›' : ' '}{' '}
-                {value === 'openai' ? 'OpenAI-compatible' : 'Anthropic'}
-              </Text>
-            ))}
-          </>
-        )}
-        {step === 'base-url' && (
-          <Field
-            label="Base URL"
-            hint={
-              !showOptionalHelp
-                ? undefined
-                : type === 'openai'
-                  ? 'Include /v1 when required by the endpoint.'
-                  : 'Book adds /v1 for Anthropic requests.'
-            }
-            placeholder={DEFAULT_PROVIDER_BASE_URLS[type]}
-            value={baseURL}
-            onChange={setBaseURL}
-            onSubmit={submitBaseUrl}
-          />
-        )}
-        {step === 'api-key' && (
-          <Field
-            label="API key"
-            hint={
-              showOptionalHelp
-                ? 'Stored in ~/.book/settings.json (shared across all your projects).'
-                : undefined
-            }
-            value={apiKey}
-            onChange={setApiKey}
-            onSubmit={submitApiKey}
-            mask="•"
-          />
-        )}
-        {step === 'model-source' && (
-          <>
-            <Text bold>Models</Text>
-            {MODEL_SOURCES.map((source) => (
-              <Text
-                key={source.value}
-                color={modelSource === source.value ? theme.brand : theme.subtle}
-              >
-                {modelSource === source.value ? '›' : ' '} {source.title}
-              </Text>
-            ))}
-            {showOptionalHelp && (
-              <Text color={theme.subtle} dimColor>
-                {MODEL_SOURCES.find((source) => source.value === modelSource)?.hint}
-              </Text>
-            )}
-          </>
-        )}
-        {step === 'discovering' && (
-          <>
-            <Text bold>Discover models</Text>
-            <Text color={theme.brand}>Discovering models…</Text>
-          </>
-        )}
-        {step === 'discovery-error' && (
-          <>
-            <Text bold>Discover models</Text>
-            <Text color={theme.error}>✕ {error}</Text>
-            <Text color={theme.subtle}>r retry · m enter model manually · Esc back</Text>
-          </>
-        )}
-        {step === 'choose-models' && (
-          <>
-            <Text bold>Choose models</Text>
-            <Text color={theme.subtle}>Filter: {modelFilter || '(type to filter)'}</Text>
-            {visibleModels.length === 0 ? (
-              <Text color={theme.subtle}>(no matching models)</Text>
-            ) : (
-              visibleModels.map((model, index) => {
-                const absoluteIndex = modelWindowStart + index;
-                return (
-                  <Text
-                    key={model.id}
-                    backgroundColor={
-                      absoluteIndex === modelCursor ? theme.surfaceActive : undefined
-                    }
-                    color={absoluteIndex === modelCursor ? theme.selectionText : theme.subtle}
-                    bold={absoluteIndex === modelCursor}
-                  >
-                    {absoluteIndex === modelCursor ? '›' : ' '}{' '}
-                    {selectedIds.includes(model.id) ? '◉' : '○'} {model.label ?? model.id}
-                    {model.label && model.label !== model.id ? `  ${model.id}` : ''}
-                  </Text>
-                );
-              })
-            )}
-            <Text color={theme.subtle} dimColor>
-              ↑↓ move · Space toggle · Enter continue ({selectedIds.length} selected)
+    <DecisionSheet
+      label="Add BYOK provider"
+      tone={theme.brand}
+      meta={stepNumber ? `Step ${stepNumber}/${TOTAL_STEPS}` : undefined}
+      width={sheetWidth}
+    >
+      {step === 'provider' && (
+        <Field
+          label="Provider ID"
+          hint={showOptionalHelp ? 'Example: openrouter' : undefined}
+          value={providerId}
+          onChange={setProviderId}
+          onSubmit={submitProvider}
+        />
+      )}
+      {step === 'protocol' && (
+        <>
+          <Text bold>Protocol</Text>
+          {(['openai', 'anthropic'] as const).map((value) => (
+            <Text key={value} color={type === value ? theme.brand : theme.subtle}>
+              {type === value ? '›' : ' '} {value === 'openai' ? 'OpenAI-compatible' : 'Anthropic'}
             </Text>
-          </>
-        )}
-        {step === 'manual-model' && (
-          <Field
-            label="Model IDs"
-            hint={
-              showOptionalHelp
-                ? 'Example: deepseek-chat, deepseek-reasoner — comma-separate to add several.'
-                : undefined
-            }
-            value={manualModel}
-            onChange={setManualModel}
-            onSubmit={submitManualModel}
+          ))}
+        </>
+      )}
+      {step === 'base-url' && (
+        <Field
+          label="Base URL"
+          hint={
+            !showOptionalHelp
+              ? undefined
+              : type === 'openai'
+                ? 'Include /v1 when required by the endpoint.'
+                : 'Book adds /v1 for Anthropic requests.'
+          }
+          placeholder={DEFAULT_PROVIDER_BASE_URLS[type]}
+          value={baseURL}
+          onChange={setBaseURL}
+          onSubmit={submitBaseUrl}
+        />
+      )}
+      {step === 'api-key' && (
+        <Field
+          label="API key"
+          hint={
+            showOptionalHelp
+              ? 'Stored in ~/.book/settings.json (shared across all your projects).'
+              : undefined
+          }
+          value={apiKey}
+          onChange={setApiKey}
+          onSubmit={submitApiKey}
+          mask="•"
+        />
+      )}
+      {step === 'model-source' && (
+        <>
+          <Text bold>Models</Text>
+          {MODEL_SOURCES.map((source) => (
+            <Text
+              key={source.value}
+              color={modelSource === source.value ? theme.brand : theme.subtle}
+            >
+              {modelSource === source.value ? '›' : ' '} {source.title}
+            </Text>
+          ))}
+          {showOptionalHelp && (
+            <Text color={theme.subtle} dimColor>
+              {MODEL_SOURCES.find((source) => source.value === modelSource)?.hint}
+            </Text>
+          )}
+        </>
+      )}
+      {step === 'discovering' && (
+        <>
+          <Text bold>Discover models</Text>
+          <Text color={theme.brand}>Discovering models…</Text>
+        </>
+      )}
+      {step === 'discovery-error' && (
+        <>
+          <Text bold>Discover models</Text>
+          <Text color={theme.error}>✕ {error}</Text>
+          <Text color={theme.subtle}>r retry · m enter model manually · Esc back</Text>
+        </>
+      )}
+      {step === 'choose-models' && (
+        <>
+          <Text bold>Choose models</Text>
+          <Text color={theme.subtle}>Filter: {modelFilter || '(type to filter)'}</Text>
+          {visibleModels.length === 0 ? (
+            <Text color={theme.subtle}>(no matching models)</Text>
+          ) : (
+            visibleModels.map((model, index) => {
+              const absoluteIndex = modelWindowStart + index;
+              return (
+                <Text
+                  key={model.id}
+                  backgroundColor={absoluteIndex === modelCursor ? theme.surfaceActive : undefined}
+                  color={absoluteIndex === modelCursor ? theme.selectionText : theme.subtle}
+                  bold={absoluteIndex === modelCursor}
+                >
+                  {absoluteIndex === modelCursor ? '›' : ' '}{' '}
+                  {selectedIds.includes(model.id) ? '◉' : '○'}{' '}
+                  {truncateDisplay(model.label ?? model.id, modelLabelWidth)}
+                  {model.label && model.label !== model.id
+                    ? `${' '.repeat(modelRowGap)}${truncateDisplay(model.id, modelIdWidth)}`
+                    : ''}
+                </Text>
+              );
+            })
+          )}
+          <Text color={theme.subtle} dimColor>
+            ↑↓ move · Space toggle · Enter continue ({selectedIds.length} selected)
+          </Text>
+        </>
+      )}
+      {step === 'manual-model' && (
+        <Field
+          label="Model IDs"
+          hint={
+            showOptionalHelp
+              ? 'Example: deepseek-chat, deepseek-reasoner — comma-separate to add several.'
+              : undefined
+          }
+          value={manualModel}
+          onChange={setManualModel}
+          onSubmit={submitManualModel}
+        />
+      )}
+      {step === 'label' && (
+        <Field
+          label="Display label (optional)"
+          value={label}
+          onChange={setLabel}
+          onSubmit={submitLabel}
+        />
+      )}
+      {step === 'review' && (
+        <>
+          <Text bold>Review</Text>
+          <Summary label="Provider" value={providerId} />
+          <Summary label="Protocol" value={type === 'openai' ? 'OpenAI-compatible' : 'Anthropic'} />
+          <Summary label="Base URL" value={baseURL} />
+          <Summary label="API key" value="•••••••• (stored in ~/.book)" />
+          <Summary
+            label="Models"
+            value={`${selectedIds.length} selected (${modelSource === 'manual' ? 'entered manually' : 'discovered'})`}
           />
-        )}
-        {step === 'label' && (
-          <Field
-            label="Display label (optional)"
-            value={label}
-            onChange={setLabel}
-            onSubmit={submitLabel}
-          />
-        )}
-        {step === 'review' && (
-          <>
-            <Text bold>Review</Text>
-            <Summary label="Provider" value={providerId} />
-            <Summary
-              label="Protocol"
-              value={type === 'openai' ? 'OpenAI-compatible' : 'Anthropic'}
-            />
-            <Summary label="Base URL" value={baseURL} />
-            <Summary label="API key" value="•••••••• (stored in ~/.book)" />
-            <Summary
-              label="Models"
-              value={`${selectedIds.length} selected (${modelSource === 'manual' ? 'entered manually' : 'discovered'})`}
-            />
-            <Summary label="Active" value={activeModelId} />
-            {label && <Summary label="Label" value={label} />}
-          </>
-        )}
-      </Box>
+          <Summary label="Active" value={activeModelId} />
+          {label && <Summary label="Label" value={label} />}
+        </>
+      )}
 
       {error && step !== 'discovery-error' && <Text color={theme.error}>✕ {error}</Text>}
       <Text color={theme.subtle} dimColor>
@@ -577,7 +595,7 @@ export function ByokWizard({
                     ? 'Enter continue · Esc back · Ctrl+C cancel'
                     : 'Enter continue · Esc back'}
       </Text>
-    </Box>
+    </DecisionSheet>
   );
 }
 
@@ -625,7 +643,7 @@ function Summary({ label, value }: { label: string; value: string }) {
   const theme = useTheme();
   return (
     <Box>
-      <Box width={12}>
+      <Box width={LABEL_COLUMN_WIDTH + 2}>
         <Text color={theme.subtle}>{label}</Text>
       </Box>
       <Text>{value}</Text>
