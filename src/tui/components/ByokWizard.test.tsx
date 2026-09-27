@@ -368,4 +368,26 @@ describe('ByokWizard', () => {
     await waitForText(view, 'Base URL');
     expect(stripAnsi(view.lastFrame())).toContain('https://api.openai.com/v1');
   });
+
+  // Every other decision the TUI asks for is a sheet: a rule with a label, no
+  // box around it. The wizard is the one that still drew its own border, so it
+  // was the only surface whose text sat a column left of everything around it.
+  it('is a sheet: a labelled rule with the step counter, not a box', async () => {
+    const { view } = createWizard();
+    const first = stripAnsi(view.lastFrame());
+
+    expect(first).not.toContain('╭');
+    expect(first).not.toContain('╰');
+    expect(first).toContain('Add BYOK provider');
+    expect(first).toContain('Step 1/9');
+
+    // The counter follows the step, and the sheet's geometry does not change
+    // what any step says.
+    await advanceToModelSource(view);
+    const later = stripAnsi(view.lastFrame());
+    expect(later).toContain('Add BYOK provider');
+    expect(later).toContain('Step 5/9');
+    expect(later).not.toContain('╭');
+    expect(later).not.toContain('╰');
+  });
 });

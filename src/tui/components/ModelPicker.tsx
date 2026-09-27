@@ -422,6 +422,7 @@ export function ModelPicker({
       <ByokWizard
         retry={retry}
         compact={compact}
+        terminalWidth={terminalWidth}
         maxVisibleModels={maxVisibleModels}
         discover={discover}
         onCancel={() => setShowWizard(false)}
