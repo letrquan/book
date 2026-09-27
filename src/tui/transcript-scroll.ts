@@ -66,3 +66,23 @@ export function getTranscriptWheelDrainRows(pendingRows: number, viewportRows: n
   const maxRows = Math.max(3, getTranscriptHalfPageRows(viewportRows));
   return Math.sign(pending) * Math.min(Math.abs(pending), maxRows);
 }
+
+/**
+ * Which way a readline chord scrolls the transcript, or `null` for a key that is
+ * not one. Ctrl+U scrolls back half a page, Ctrl+D forward — the pager pair of
+ * every terminal.
+ *
+ * The composer owns these keys while it accepts input and reports them here only
+ * when it had no draft to edit, so the caller is the one place that knows which
+ * of the two it is looking at.
+ */
+export function halfPageScrollDirection(
+  input: string,
+  key: { ctrl?: boolean },
+): 'up' | 'down' | null {
+  if (!key.ctrl) return null;
+  const chord = input.toLowerCase();
+  if (chord === 'u') return 'up';
+  if (chord === 'd') return 'down';
+  return null;
+}

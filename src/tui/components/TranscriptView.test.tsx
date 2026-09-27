@@ -4,14 +4,16 @@ import { useState } from 'react';
 import { render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
-import { TranscriptView } from './TranscriptView.js';
+import { TranscriptView, type TranscriptScrollRequest } from './TranscriptView.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { ChatPanel } from './ChatPanel.js';
+import { InputBar } from './InputBar.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
 import { toolSuccess } from '../../tools/result.js';
 import type { Message } from '../../types/messages.js';
 import { useTranscriptHistoryLoader, type TranscriptHistoryLoader } from '../transcript-layout.js';
 import { setFrameSnapshotForTesting } from '../frame-buffer.js';
+import { halfPageScrollDirection } from '../transcript-scroll.js';
 
 const { setTranscriptScrollHintSpy, writeClipboardMock } = vi.hoisted(() => ({
   setTranscriptScrollHintSpy: vi.fn(),
@@ -393,5 +395,92 @@ describe('TranscriptView', () => {
 
     act(() => app.stdin.write('\x1b[1;5F'));
     expect(app.lastFrame()).toContain('entry-199');
+  });
+});
+
+// Ctrl+U reads as "clear the line" in every shell, and Ctrl+D as half a page
+// forward. Ink hands every key to every handler, so the transcript scrolled
+// while the composer was editing a draft with the same key: a long reply
+// filling the transcript jumped half a page every time the prompt was cleared.
+describe('TranscriptView chords with the composer', () => {
+  const labels = ['A', 'B', 'C', 'D', 'E', 'F'];
+
+  /**
+   * The wiring `app.tsx` uses: the composer owns the keys, reports the chords
+   * it had nothing to edit through `onGlobalShortcut` (its `forwardEmptyChord`),
+   * and the app hands those back to the transcript as a scroll request.
+   */
+  function Composer({ composerAcceptsInput = true }: { composerAcceptsInput?: boolean }) {
+    const [scroll, setScroll] = useState<TranscriptScrollRequest>({ key: 0, direction: 'up' });
+    return (
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <Box flexDirection="column" width={20} height={9}>
+          <TranscriptView
+            height={5}
+            width={20}
+            composerAcceptsInput={composerAcceptsInput}
+            scrollRequest={scroll}
+          >
+            <Rows labels={labels} />
+          </TranscriptView>
+          <InputBar
+            onSubmit={() => {}}
+            submissionMode="submit"
+            mode="default"
+            onCycleMode={() => {}}
+            terminalWidth={20}
+            inputSuppressed={!composerAcceptsInput}
+            onGlobalShortcut={(input, key) => {
+              const direction = halfPageScrollDirection(input, key);
+              if (!direction) return false;
+              setScroll((current) => ({ key: current.key + 1, direction }));
+              return true;
+            }}
+          />
+        </Box>
+      </ThemeContext.Provider>
+    );
+  }
+
+  const visible = (app: ReturnType<typeof render>) =>
+    labels.filter((label) => frameLines(app.lastFrame()).includes(label));
+  const browsing = (app: ReturnType<typeof render>) =>
+    frameLines(app.lastFrame()).some((line) => line.includes('browsing history'));
+
+  it('edits the draft instead of scrolling when Ctrl+U clears the whole line', () => {
+    const app = render(<Composer />);
+    expect(visible(app)).toEqual(['C', 'D', 'E', 'F']);
+
+    act(() => app.stdin.write('fix the bug'));
+    act(() => app.stdin.write('\x15'));
+
+    // The draft is gone — Ctrl+U killed the text before the cursor, which was
+    // all of it — and the transcript is exactly where the user left it.
+    expect(app.lastFrame()).not.toContain('fix the bug');
+    expect(visible(app)).toEqual(['C', 'D', 'E', 'F']);
+    expect(browsing(app)).toBe(false);
+  });
+
+  it('scrolls half a page once the composer has nothing left to edit', () => {
+    const app = render(<Composer />);
+
+    act(() => app.stdin.write('\x15'));
+    expect(visible(app)).toEqual(['A', 'B', 'C', 'D']);
+    expect(browsing(app)).toBe(true);
+
+    act(() => app.stdin.write('\x04'));
+    expect(visible(app)).toEqual(['C', 'D', 'E', 'F']);
+  });
+
+  it('keeps scrolling with the chords while a sheet owns the keys', () => {
+    // A permission prompt silences the composer, so no empty chord is ever
+    // reported and the transcript's own handler has to keep the key.
+    const app = render(<Composer composerAcceptsInput={false} />);
+
+    act(() => app.stdin.write('\x15'));
+    expect(visible(app)).toEqual(['A', 'B', 'C', 'D']);
+
+    act(() => app.stdin.write('\x04'));
+    expect(visible(app)).toEqual(['C', 'D', 'E', 'F']);
   });
 });

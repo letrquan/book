@@ -36,6 +36,18 @@ interface EditState {
  */
 export const COMPOSER_EDIT_KEYS = new Set(['a', 'e', 'w', 'u', 'k', 'y']);
 
+/**
+ * Chords that scroll the transcript half a page, and only ever reach it when
+ * the composer has no draft to edit.
+ *
+ * Ctrl+U is in {@link COMPOSER_EDIT_KEYS} as well, because it is also an edit
+ * (kill to the start of the line). Ctrl+D is not an edit at all: readline uses
+ * it for end-of-file, which a non-empty line ignores. Both are listed here
+ * because that is the question both are asked — is there a draft? — and because
+ * the transcript cannot answer it once the editor has run.
+ */
+export const COMPOSER_PAGER_KEYS = new Set(['u', 'd']);
+
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
 /**
@@ -233,6 +245,11 @@ export function InputBox({
           return;
         }
         switch (chord) {
+          case 'd':
+            // Not an edit: readline's end-of-file, which a non-empty line
+            // ignores. With nothing to edit it is the transcript's.
+            if (!current) onEmptyChord?.(input, key);
+            return;
           case 'a':
             commit({ value: current, cursorOffset: 0 });
             return;

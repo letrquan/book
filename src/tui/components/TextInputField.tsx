@@ -1,5 +1,6 @@
 import InkTextInput, { type Props as InkTextInputProps } from 'ink-text-input';
-import { useCallback, useState } from 'react';
+import { useInput } from 'ink';
+import { useCallback, useRef, useState } from 'react';
 import { stripSgrMouseSequences } from '../mouse.js';
 
 export type TextInputFieldProps = InkTextInputProps;
@@ -17,7 +18,7 @@ export type TextInputFieldProps = InkTextInputProps;
  * character, invisibly in a masked field. Remounting on the strip re-seats the
  * cursor at the end of the value that survived.
  */
-export function TextInputField({ onChange, ...props }: TextInputFieldProps) {
+export function TextInputField({ onChange, focus = true, ...props }: TextInputFieldProps) {
   const [strippedCount, setStrippedCount] = useState(0);
 
   const handleChange = useCallback(
@@ -29,7 +30,27 @@ export function TextInputField({ onChange, ...props }: TextInputFieldProps) {
     [onChange],
   );
 
-  return <InkTextInput key={strippedCount} {...props} onChange={handleChange} />;
+  // Ctrl+U kills the text from the start of the line to the cursor, and
+  // `ink-text-input` has no readline keys at all: it dropped the chord, so the
+  // key arrived as an ordinary `u` and the add-provider wizard's prefilled base
+  // URL became "u". Its cursor is component state this wrapper cannot read, so
+  // rather than guess an offset to cut at, the chord clears the field. That is
+  // the whole of what precedes the cursor in the fields this wraps — a prefilled
+  // URL, an API key, a model list, a one-line answer — where the cursor sits at
+  // the end. A ref keeps this current: `onChange` changes with every keystroke
+  // and re-subscribing the handler on each one is what put a stale closure on
+  // the key before.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  useInput(
+    (input, key) => {
+      if (!key.ctrl || key.meta || input.toLowerCase() !== 'u') return;
+      onChangeRef.current('');
+    },
+    { isActive: focus },
+  );
+
+  return <InkTextInput key={strippedCount} focus={focus} {...props} onChange={handleChange} />;
 }
 
 export default TextInputField;

@@ -15,6 +15,7 @@ import {
   getTranscriptHalfPageRows,
   getTranscriptPageRows,
   getTranscriptWheelDrainRows,
+  halfPageScrollDirection,
   reconcileTranscriptScroll,
   scrollTranscriptBy,
   scrollTranscriptToEnd,
@@ -56,9 +57,34 @@ interface TranscriptViewProps {
   followRequestKey?: number;
   /** Structural layout changes outside transcript components that self-report height updates. */
   layoutRevision?: unknown;
+  /**
+   * True while the composer is accepting keys.
+   *
+   * Ctrl+U and Ctrl+D are the composer's readline chords, and Ink hands every
+   * key to every handler, so this transcript cannot decide the question on its
+   * own: by the time its own handler runs, the composer has already killed the
+   * text in front of the cursor, and a draft that Ctrl+U itself emptied looks
+   * exactly like one that was empty all along. So the composer takes the chord
+   * and, when it had nothing to edit, hands it back through `scrollRequest` —
+   * and this transcript's own Ctrl+U / Ctrl+D handling is for the times it does
+   * not accept keys at all (a permission prompt, a sheet), which is when a
+   * scroll is the only thing the key can mean.
+   */
+  composerAcceptsInput?: boolean;
+  /**
+   * A half-page scroll the app asked for on the composer's behalf. Keyed so a
+   * repeated request scrolls again; the initial `key: 0` is treated as none.
+   */
+  scrollRequest?: TranscriptScrollRequest;
   onToggleTool?: (toolId: string, expanded: boolean) => void;
   onNotify?: (message: string) => void;
   onRedrawViewport?: () => void;
+}
+
+/** A half-page scroll asked for from outside, as the composer reports it. */
+export interface TranscriptScrollRequest {
+  key: number;
+  direction: 'up' | 'down';
 }
 
 const INITIAL_METRICS: TranscriptMetrics = { contentRows: 0, viewportRows: 1 };
@@ -128,6 +154,8 @@ export function TranscriptView({
   isActive = true,
   followRequestKey = 0,
   layoutRevision,
+  composerAcceptsInput = false,
+  scrollRequest,
   onToggleTool,
   onNotify,
   onRedrawViewport,
@@ -145,6 +173,7 @@ export function TranscriptView({
   const stateRef = useRef<TranscriptScrollState>(createTranscriptScrollState());
   const previousContentRowsRef = useRef(0);
   const previousFollowRequestRef = useRef(followRequestKey);
+  const previousScrollRequestRef = useRef(0);
   const pendingWheelRowsRef = useRef(0);
   const wheelImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
   const layoutMeasureImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
@@ -402,6 +431,24 @@ export function TranscriptView({
     });
   }, [measureTranscript]);
 
+  const scrollByHalfPage = useCallback(
+    (direction: 'up' | 'down') => {
+      const metrics = metricsRef.current;
+      if (
+        direction === 'up' &&
+        stateRef.current.scrollTop === 0 &&
+        historyLoaderRef.current?.('page')
+      )
+        return;
+      cancelWheelScroll();
+      const rows = getTranscriptHalfPageRows(metrics.viewportRows);
+      applyScrollState(
+        scrollTranscriptBy(stateRef.current, metrics, direction === 'up' ? -rows : rows),
+      );
+    },
+    [applyScrollState, cancelWheelScroll],
+  );
+
   const layoutDependency = layoutRevision === undefined ? children : layoutRevision;
   useLayoutEffect(() => {
     cancelScheduledLayoutMeasure();
@@ -423,6 +470,16 @@ export function TranscriptView({
     dragRef.current = null;
     applyScrollState(scrollTranscriptToEnd(metricsRef.current));
   }, [applyScrollState, cancelWheelScroll, clearSelection, followRequestKey]);
+
+  // A chord the composer had no draft to edit. It arrives as a request rather
+  // than as a keypress, because by the time every handler has run there is no
+  // telling which of the two the key was meant for.
+  useLayoutEffect(() => {
+    if (!isActive || !scrollRequest) return;
+    if (previousScrollRequestRef.current === scrollRequest.key) return;
+    previousScrollRequestRef.current = scrollRequest.key;
+    scrollByHalfPage(scrollRequest.direction);
+  }, [isActive, scrollByHalfPage, scrollRequest]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -606,19 +663,14 @@ export function TranscriptView({
         next = scrollTranscriptToStart();
       } else if (key.ctrl && key.end) {
         next = scrollTranscriptToEnd(metrics);
-      } else if (key.ctrl && input.toLowerCase() === 'u') {
-        if (stateRef.current.scrollTop === 0 && historyLoaderRef.current?.('page')) return;
-        next = scrollTranscriptBy(
-          stateRef.current,
-          metrics,
-          -getTranscriptHalfPageRows(metrics.viewportRows),
-        );
-      } else if (key.ctrl && input.toLowerCase() === 'd') {
-        next = scrollTranscriptBy(
-          stateRef.current,
-          metrics,
-          getTranscriptHalfPageRows(metrics.viewportRows),
-        );
+      } else if (!composerAcceptsInput && halfPageScrollDirection(input, key)) {
+        // The pager chords reach this handler only when the composer is not
+        // taking keys — a permission prompt, a sheet. There is then no draft to
+        // edit, so a half-page scroll is the only thing the key can mean. With
+        // the composer live they arrive as `scrollRequest` instead, because by
+        // the time this handler runs the editor has already spent them.
+        scrollByHalfPage(halfPageScrollDirection(input, key)!);
+        return;
       }
 
       if (next) {

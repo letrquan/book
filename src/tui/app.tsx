@@ -28,7 +28,7 @@ import { SkillManager } from './components/SkillManager.js';
 import { AgentProfilePicker } from './components/AgentProfilePicker.js';
 import { SessionPicker } from './components/SessionPicker.js';
 import { RewindPicker } from './components/RewindPicker.js';
-import { TranscriptView } from './components/TranscriptView.js';
+import { TranscriptView, type TranscriptScrollRequest } from './components/TranscriptView.js';
 import { PermissionButtons } from './components/PermissionButtons.js';
 import { HelpPanel } from './components/HelpPanel.js';
 import { KeyValueList, SoftPanel } from './components/chrome.js';
@@ -88,6 +88,7 @@ import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewScope } from '../review/types.js';
 import { join } from 'path';
 import { selectExpandedToolId, selectLatestToolId } from './tool-traces.js';
+import { halfPageScrollDirection } from './transcript-scroll.js';
 import {
   getTranscriptShortcutAction,
   isShortcutsToggleKey,
@@ -2306,6 +2307,19 @@ export function App({
     [],
   );
 
+  // Ctrl+U and Ctrl+D scroll the transcript half a page, but only when the
+  // composer had no draft to edit. The composer is the only thing that knows
+  // that, so it reports those chords through `forwardEmptyChord` and this hands
+  // them back to the transcript as a request rather than as a keypress.
+  const [transcriptScrollRequest, setTranscriptScrollRequest] = useState<TranscriptScrollRequest>({
+    key: 0,
+    direction: 'up',
+  });
+  const requestTranscriptHalfPage = useCallback((direction: 'up' | 'down') => {
+    uiLog.event(`input:Ctrl+${direction === 'up' ? 'U' : 'D'}`, { action: 'scroll-transcript' });
+    setTranscriptScrollRequest((current) => ({ key: current.key + 1, direction }));
+  }, []);
+
   const handleGlobalShortcut = useCallback(
     (
       input: string,
@@ -2342,10 +2356,16 @@ export function App({
         redrawViewport?.();
         return true;
       }
-      if (
-        key.ctrl &&
-        (input.toLowerCase() === 'u' || input.toLowerCase() === 'd' || key.home || key.end)
-      ) {
+      // Reached with Ctrl+U / Ctrl+D only when the composer had nothing to edit:
+      // InputBar hands over the chords it cannot spend, and nothing else routes
+      // them here, so a draft in hand never scrolls the transcript out from under
+      // the person clearing it.
+      const halfPage = halfPageScrollDirection(input, key);
+      if (halfPage) {
+        requestTranscriptHalfPage(halfPage);
+        return true;
+      }
+      if (key.ctrl && (key.home || key.end)) {
         return true;
       }
       if (isShortcutsToggleKey(input, key)) {
@@ -2374,6 +2394,7 @@ export function App({
     },
     [
       redrawViewport,
+      requestTranscriptHalfPage,
       showEffortPicker,
       showPermissionModePicker,
       showModelPicker,
@@ -2422,6 +2443,20 @@ export function App({
       pendingUserQuestion ??
       pendingElicitation,
     ) || showMcpApproval;
+
+  // Whether the composer is taking keys at all. The transcript asks the same
+  // question before it reads Ctrl+U and Ctrl+D as paging chords, so the answer
+  // is named once here instead of being restated in two places that could drift.
+  const composerAcceptsInput = !(
+    modalOwnsInput ||
+    // The rules sheet is a list, not a page of text: while it is up
+    // it takes the arrows, so the composer must not also read them
+    // as history navigation. Esc closes it, as it does every panel.
+    showPermissions ||
+    transcriptMode === 'detailed' ||
+    managedAgents.surface === 'tasks' ||
+    detailTaskPickerOpen
+  );
 
   const pickerOwnsTranscript =
     showModelPicker ||
@@ -2489,6 +2524,8 @@ export function App({
             isActive={!pickerOwnsTranscript && managedAgents.surface !== 'tasks'}
             followRequestKey={followRequestKey}
             layoutRevision={transcriptLayoutRevision}
+            composerAcceptsInput={composerAcceptsInput}
+            scrollRequest={transcriptScrollRequest}
             onToggleTool={toggleToolExpansion}
             onNotify={handleCopiedNotice}
             onRedrawViewport={redrawViewport}
@@ -2693,6 +2730,7 @@ export function App({
                 onResolve={resolvePlanApproval}
                 screenReader={screenReader}
                 terminalWidth={termWidth}
+                onLayoutChange={bumpFooterLayout}
               />
             ) : null}
             {pendingElicitation ? (
@@ -2703,6 +2741,7 @@ export function App({
                 terminalWidth={termWidth}
                 onResolve={resolveElicitation}
                 screenReader={screenReader}
+                onLayoutChange={bumpFooterLayout}
               />
             ) : null}
             {pendingUserQuestion ? (
@@ -2713,6 +2752,7 @@ export function App({
                 terminalWidth={termWidth}
                 onResolve={resolveUserQuestion}
                 screenReader={screenReader}
+                onLayoutChange={bumpFooterLayout}
               />
             ) : childQuestion ? (
               <AskUserQuestionWizard
@@ -2724,6 +2764,7 @@ export function App({
                   void managedAgents.resolveQuestion(childQuestion.agentId, response)
                 }
                 screenReader={screenReader}
+                onLayoutChange={bumpFooterLayout}
               />
             ) : null}
             {showSessionPicker ? (
@@ -3203,16 +3244,7 @@ export function App({
                 managedAgents.setSurface('tasks');
                 return true;
               }}
-              inputSuppressed={
-                modalOwnsInput ||
-                // The rules sheet is a list, not a page of text: while it is up
-                // it takes the arrows, so the composer must not also read them
-                // as history navigation. Esc closes it, as it does every panel.
-                showPermissions ||
-                transcriptMode === 'detailed' ||
-                managedAgents.surface === 'tasks' ||
-                detailTaskPickerOpen
-              }
+              inputSuppressed={!composerAcceptsInput}
               awaitingAnswer={awaitingAnswer}
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
