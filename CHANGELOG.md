@@ -448,6 +448,59 @@ All notable changes to this project are documented in this file.
   instead of polling. A session shell is subscribed to, and a persistent job — which lives in
   another process — is polled. A `BashOutput` naming a shell that does not exist is refused rather
   than reported as an empty read.
+- **Read, Grep and tool-result presentation: five defects** (#308, #309, #310, #311, #316).
+  - **A `Read` no longer numbers a phantom line past a file's final newline** (#309). `lineCount`
+    already excluded the empty element `split('\n')` leaves after a trailing newline, but the page
+    loop was bounded by the array, so `a\nb\n` read as `1: a`, `2: b`, `3: ` and an empty file as
+    `1: `. The loop is bounded by `lineCount` now, so `"a\n"` and `"a\n\n"` are finally two
+    different reads, and offset 1 still reads an empty file — as the single notice line
+    `[Empty file: 0 lines.]`, because an empty tool result reads as a call that produced no output
+    at all. A file of exactly `"\n"` still reads as its one blank line, `1: `. The row's line count
+    matches the numbered lines shown, and results persisted by an older build — which do carry the
+    phantom line — still reconstruct correctly.
+  - **An `offset` or `limit` that is fractional or below 1 is refused, and clamped if it reaches the
+    tool anyway** (#310). `offset: 2.5` printed `2.5: undefined` and offered `Continue with offset:
+4.5`; `offset: 0.5` printed `0: undefined`, and a schema-valid `-3` printed `-3: undefined`
+    lines. Both are `type: 'integer'` with `minimum: 1` in `Read`'s schema now, so a fraction or a
+    value below 1 is rejected as `invalid_arguments` before the tool runs, and `readFile` floors and
+    clamps both defensively for a direct caller. This is a tool-schema change and so costs one
+    prompt-cache miss the first time a session runs it.
+  - **Four outline defects** (#316). A conditional `noexcept(noexcept(a.swap(b)))` and a
+    `GUARDED_BY(mu_.lock())`-style macro argument both dropped their C++ member, because the
+    qualifier pattern's `[^()]*` could not hold a nested `(`; it nests as deep as the generic-argument
+    pattern does now. `u8'a'` was read as the `1'000` digit separator, which unbalanced the
+    signature and dropped `void f(char8_t c = u8'a') {`; the `u8` prefix now tells the two apart,
+    which is the only prefix that has to be named — the digit check already rejects `U'x'` and
+    `L'y'`, and `U8` is not a C++ prefix. A nested `union` hid its members, so `union` was added to
+    the type-declaration list, where a name or the anonymous form's brace is what admits it and an
+    argument list is not: `union(a, b)` and `union(setA, setB);` are calls and stay out. And the
+    generic test-chain arm listed any `it.<name>('title')`, so `it.next('resume');` was taken for a
+    test block; it now requires the title and a second argument — the callback a test call passes —
+    so `it.custom('titled', () => {` and `it.effect('adds', () => …` are listed while
+    `it.next('resume').then(() => {` and `it.value = run('x', () => {` are not.
+  - **A `Grep` row counts in the unit `output_mode` asks for, from Grep's own data** (#311). The
+    presentation counted `/:\d+:/` lines whatever the mode, so a `count` page holding 57 matches
+    across two files read `2 matches` and a `files_with_matches` page read `3 matches` rather than
+    `3 files`. Both Grep implementations already returned exact counts in `result.data`, and the
+    text cannot be counted back into them — a context line's own text can hold a `12:30`, and a
+    match spanning lines is several lines — so Grep now sets its own `presentation.metadata` and
+    summary, as `Read` sets its line metadata, and the enricher keeps it. Only a failed `Grep` no
+    longer counts at all: an invalid regex showed `Found 0 matches` beside the error, which reads
+    as a search that ran and found nothing rather than one that never ran. The text-derived count
+    remains as the fallback for a result persisted by a build that did not set one, and the TUI's
+    own fallback calls it rather than keeping a second copy.
+  - **A failed command keeps both ends of its output** (#308). Only a killed command kept even its
+    tail: any other failure was head-clipped, so the model read the `act()` warnings at the top of
+    a test run and never the `Tests 2 failed | 10 passed` every runner prints last. Every
+    non-success result is now clipped to its first few KB **and** its last, with a
+    `[... N bytes omitted. Full output: <path>]` notice naming the gap and the file, in the
+    structured message, in the row's details, and in the renderer fallback. The head is not
+    decoration: a non-zero exit puts all of stderr in the message and stdout in the content, so a
+    tail-only clip of a large stderr head-clipped the message, dropped the stdout that holds the
+    summary, and wrongly reported the earlier output as the part cut — the same bug, still there
+    after the first fix. And the head is what carries a failure's framing: the Task tool's
+    `Partial result (the child was stopped; nothing below is final):` was cut off, leaving
+    unfinished output that read as final. A successful result keeps the head clip alone.
 - **Ctrl+U and Ctrl+D edit the draft instead of scrolling the transcript** (#296). Ink hands every
   key to every input handler, so the composer cleared the draft and the transcript jumped half a
   page in the same keystroke. The composer is the only thing that knows whether there was a draft
