@@ -54,6 +54,10 @@ export async function runSubagent(
 
   const runtime = new SessionRuntime({
     fileObservationLedger: new Map(options?.fileObservationSeed ?? []),
+    // Disposed in the `finally` below, which ends every session shell it holds. A foreground
+    // command that reached its deadline must therefore be killed here, not moved to a background
+    // shell this run would destroy before the model could read it.
+    ownsSessionShells: false,
   });
   let result = '';
   let error: string | undefined;

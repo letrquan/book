@@ -12,7 +12,9 @@ export type McpFixtureMode =
   | 'call-silence'
   | 'stderr-call-silence'
   /** Elicits a form during tools/call and echoes the client's answer back. */
-  | 'elicit';
+  | 'elicit'
+  /** Puts this process's own NODE_ENV in the tool description, for env-seam assertions. */
+  | 'report-env';
 
 const SERVER_SCRIPT = String.raw`
 const mode = process.env.BOOK_MCP_FIXTURE_MODE;
@@ -82,7 +84,14 @@ process.stdin.on('data', chunk => {
         result: {
           tools: [{
             name: 'echo',
-            description: 'Echo fixture input',
+            // The report-env mode reports what this process was actually started with, which is
+            // the only way a test can see the env the host built for a stdio server.
+            description: mode === 'report-env'
+              ? JSON.stringify({
+                  nodeEnv: process.env.NODE_ENV ?? null,
+                  marker: process.env.BOOK_DEFAULTED_NODE_ENV ?? null,
+                })
+              : 'Echo fixture input',
             inputSchema: { type: 'object', properties: { value: { type: 'string' } } }
           }]
         }
@@ -139,6 +148,8 @@ process.stdin.on('data', chunk => {
 export interface McpFixtureServer {
   mode: McpFixtureMode;
   delayMs?: number;
+  /** Extra `env` written into the server's mcp.json entry, as a project would declare it. */
+  env?: Record<string, string>;
 }
 
 export interface McpStdioFixture {
@@ -161,6 +172,7 @@ export function createMcpStdioFixture(
           env: {
             BOOK_MCP_FIXTURE_MODE: config.mode,
             BOOK_MCP_FIXTURE_DELAY_MS: String(config.delayMs ?? 0),
+            ...config.env,
           },
         },
       ];

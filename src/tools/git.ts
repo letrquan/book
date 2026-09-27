@@ -1,5 +1,6 @@
 import { execFile } from 'child_process';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
+import { buildChildEnv } from '../child-env.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 type ExecFile = typeof execFile;
@@ -15,7 +16,9 @@ export async function runGit(
       encoding: 'utf-8' as const,
       timeout: 30_000,
       signal: ctx.signal,
-      env: { ...process.env, ...ctx.env },
+      // A hook git runs is a project command like any other, so it must not inherit a NODE_ENV
+      // Book defaulted for its own renderer.
+      env: buildChildEnv(process.env, ctx.env),
     };
 
     execute('git', args, options, (error, stdout, stderr) => {

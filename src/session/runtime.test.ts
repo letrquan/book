@@ -92,6 +92,48 @@ describe('SessionRuntime', () => {
     }
   });
 
+  /**
+   * A child whose tree teardown is already under way must not be killed directly first: on Windows
+   * `taskkill /T` walks the tree from a root that has to still be alive, and the direct kill used
+   * to land in the same tick as the abort that began the teardown, so the wrapper died first and
+   * the tree was orphaned instead of ended (#314).
+   */
+  it('does not kill a child whose tree teardown is already under way', () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = new SessionRuntime();
+      const kill = vi.fn();
+      const child = { killed: false, kill, pid: undefined } as unknown as ChildProcess;
+      runtime.trackChildProcess(child);
+      runtime.trackTreeTermination(child);
+
+      runtime.dispose('test');
+
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('kills an ordinary child on dispose and forgets it once released', () => {
+    const runtime = new SessionRuntime();
+    const kill = vi.fn();
+    const child = { killed: false, kill } as unknown as ChildProcess;
+    runtime.trackChildProcess(child);
+    runtime.releaseChildProcess(child);
+
+    runtime.dispose('test');
+
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('claims session shells by default, and only a child runtime gives them up', () => {
+    // A Task subagent's and a managed agent's runtime is disposed when their run ends, so a
+    // foreground `Bash` that reaches its deadline is killed there rather than adopted (#302).
+    expect(new SessionRuntime().ownsSessionShells).toBe(true);
+    expect(new SessionRuntime({ ownsSessionShells: false }).ownsSessionShells).toBe(false);
+  });
+
   it('owns one normalized skill registry and invalidates context on reload', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'book-runtime-skills-'));
     try {

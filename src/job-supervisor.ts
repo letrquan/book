@@ -20,6 +20,7 @@
  */
 import { spawn, type SpawnOptions } from 'node:child_process';
 import { constants } from 'node:os';
+import { buildChildEnv } from './child-env.js';
 import { loadPersistentShellSpec } from './jobs/persistent-store.js';
 import { runTaskkill, TERMINATE_GRACE_MS } from './jobs/process-tree.js';
 
@@ -49,9 +50,12 @@ const spec = loaded.spec;
  * The env the command is started with. This process was started without `NODE_OPTIONS`, so that the
  * options the user asked for apply to their command rather than opening an inspector here and
  * writing about it into the job's log; the runner carries them beside it for exactly that reason.
+ *
+ * A `NODE_ENV` Book defaulted for its own renderer is dropped here too, the last link of the
+ * chain: the runner has already removed its own, and this process reads what it inherited.
  */
 function commandEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env: NodeJS.ProcessEnv = buildChildEnv(process.env);
   const nodeOptions = env.BOOK_SUPERVISED_NODE_OPTIONS;
   delete env.BOOK_SUPERVISED_NODE_OPTIONS;
   if (nodeOptions !== undefined) env.NODE_OPTIONS = nodeOptions;

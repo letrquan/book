@@ -30,6 +30,7 @@ import type {
   ToolContext,
 } from './types/tools.js';
 import { toElicitationFields, validateElicitationContent } from './mcp-elicitation.js';
+import { buildChildEnv } from './child-env.js';
 import { toolFailure, toolSuccess } from './tools/result.js';
 import { getPackageVersion } from './version-info.js';
 import {
@@ -199,7 +200,7 @@ class StdioProcessTransport implements Transport {
       return Promise.reject(new Error(`MCP server ${this.name} is not a stdio server`));
     }
     const child = spawn(this.config.command, this.config.args ?? [], {
-      env: { ...process.env, ...this.config.env },
+      env: buildChildEnv(process.env, this.config.env),
       cwd: this.config.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
     });

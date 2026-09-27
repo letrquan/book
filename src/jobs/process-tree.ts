@@ -10,6 +10,7 @@
 
 import { execFile, type ChildProcess } from 'node:child_process';
 import { systemClock, type Clock } from '../clock.js';
+import { buildChildEnv } from '../child-env.js';
 import { system32Executable } from '../system32.js';
 
 const GROUP_POLL_INTERVAL_MS = 25;
@@ -111,7 +112,9 @@ export async function runTaskkill(
     execFile(
       system32Executable('taskkill'),
       ['/PID', String(pid), '/T', '/F'],
-      { windowsHide: true, timeout: timeoutMs },
+      // Book's own helper, but it is a command like any other and is handed no more of Book's
+      // environment than the next one would be.
+      { windowsHide: true, timeout: timeoutMs, env: buildChildEnv() },
       (error) => resolve(!error),
     );
   });
