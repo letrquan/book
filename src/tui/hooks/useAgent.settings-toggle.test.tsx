@@ -1,7 +1,8 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanup, render } from 'ink-testing-library';
+import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { defaultConfig } from '../../test/fixtures.js';
 import { SessionStore } from '../../session/store.js';
@@ -62,12 +63,20 @@ let latest: ReturnType<typeof useAgent> | undefined;
  */
 let bookHome: string;
 let previousBookHome: string | undefined;
+let previousStartupAnimation: string | undefined;
 
 beforeEach(() => {
   bookHome = mkdtempSync(join(tmpdir(), 'book-use-agent-toggle-home-'));
   previousBookHome = process.env.BOOK_HOME;
   process.env.BOOK_HOME = bookHome;
+  previousStartupAnimation = process.env.BOOK_STARTUP_ANIMATION;
+  delete process.env.BOOK_STARTUP_ANIMATION;
 });
+
+/** The user layer, of which `BOOK_HOME` is the root. */
+function writeUserSettings(contents: unknown): void {
+  writeFileSync(join(bookHome, 'settings.json'), JSON.stringify(contents), 'utf-8');
+}
 
 function Harness({
   config,
@@ -112,6 +121,8 @@ function valuesFor(key: string): unknown[] {
 afterEach(() => {
   if (previousBookHome === undefined) delete process.env.BOOK_HOME;
   else process.env.BOOK_HOME = previousBookHome;
+  if (previousStartupAnimation === undefined) delete process.env.BOOK_STARTUP_ANIMATION;
+  else process.env.BOOK_STARTUP_ANIMATION = previousStartupAnimation;
   rmSync(bookHome, { recursive: true, force: true });
   cleanup();
   latest = undefined;
@@ -178,5 +189,71 @@ describe('settings toggles inside one React batch', () => {
     // `before` instead.
     latest!.toggleStartupAnimation();
     expect(valuesFor('ui.startupAnimation')).toEqual([!before]);
+  });
+});
+
+/**
+ * Removing a provider re-resolves the settings and swaps the result into the
+ * live config. That re-read went through the bare loader, so the splash flipped
+ * back to the file's value in the middle of a session that had started under
+ * `BOOK_STARTUP_ANIMATION` — and `/config` then showed a setting that did not
+ * match the one the launch used.
+ */
+describe('the provider-removal re-read', () => {
+  const providerId = 'byok';
+
+  function writeOwnedProvider(): void {
+    writeUserSettings({
+      model: `${providerId}/some-model`,
+      provider: { [providerId]: { type: 'openai', baseURL: 'http://x/v1', models: {} } },
+      ui: { startupAnimation: true },
+    });
+  }
+
+  /**
+   * The live config a session starts with is what `loadConfig` produced, so the
+   * fixture states the variable's value for the launch and the file's `true` is
+   * only ever something the re-read can reach.
+   */
+  function fixtureLaunchedWith(startupAnimation: boolean) {
+    const { config, session } = fixture();
+    config.settings = {
+      ...config.settings,
+      ui: { ...config.settings.ui, startupAnimation },
+    };
+    return { config, session };
+  }
+
+  it('keeps the env override after a provider is removed', async () => {
+    process.env.BOOK_STARTUP_ANIMATION = '0';
+    writeOwnedProvider();
+    const { config, session } = fixtureLaunchedWith(false);
+    render(<Harness config={config} session={session} />);
+
+    let result: { ok: boolean } | undefined;
+    // `act` so the re-render lands: without it `latest` still holds the mount
+    // state, and the assertion below would pass on the value it started with.
+    await act(async () => {
+      result = latest!.removeProvider(providerId);
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    // The file still says `true`; only the re-read is in question, and it has to
+    // land on the variable's value the way the launch did.
+    expect(latest!.liveConfig.settings.ui.startupAnimation).toBe(false);
+  });
+
+  it('falls back to the file when the variable is not set', async () => {
+    writeOwnedProvider();
+    const { config, session } = fixtureLaunchedWith(true);
+    render(<Harness config={config} session={session} />);
+
+    let result: { ok: boolean } | undefined;
+    await act(async () => {
+      result = latest!.removeProvider(providerId);
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(latest!.liveConfig.settings.ui.startupAnimation).toBe(true);
   });
 });

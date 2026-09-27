@@ -109,7 +109,10 @@ one is a request to write that one file, and the reply then says the change wait
 start — because that is what a file write on its own does — and warns when a later-resolved layer
 still decides the value.
 The startup fire plays only for a new, empty launch session and is skipped automatically for
-screen-reader or reduced-motion mode. Press Esc to skip it.
+screen-reader or reduced-motion mode. Press Esc to skip it. `BOOK_STARTUP_ANIMATION` (`0`, `false`,
+`off`, `no` to turn it off; `1`, `true`, `on`, `yes` to turn it on) outranks `ui.startupAnimation`
+from every settings layer, as `BOOK_MODEL` does for `model`, so a script that drives Book needs no
+settings file of its own to switch it off.
 
 TUI preference changes are saved by whose choice they are. Preferences about how Book behaves for
 _you_ — model, effort, compact model, permission default mode, provider registries and API keys,
@@ -117,4 +120,5 @@ thinking display, startup animation, model memory writes — are written to the 
 `~/.book/settings.json` and follow you across projects. What is genuinely about _this_ repository
 stays in `.book/settings.local.json`: skill overrides, approved permission rules, and per-profile agent
 models. Set `ui.startupAnimation` to `false` in `~/.book/settings.json` to disable the
-effect everywhere.
+effect everywhere, or export `BOOK_STARTUP_ANIMATION=0` to do the same for one run without touching
+a file.

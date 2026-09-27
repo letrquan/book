@@ -95,6 +95,7 @@ import {
   type TranscriptMode,
 } from './tool-presentation.js';
 import { permissionResultOf } from '../permissions.js';
+import { startupAnimationEnvNote } from '../settings-loader.js';
 import { PermissionsPanel } from './components/PermissionsPanel.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
@@ -2087,8 +2088,16 @@ export function App({
         }
         if (effect?.type === 'set-startup-animation') {
           const result = toggleStartupAnimation(effect.enabled);
-          if (result.ok) flashNotice(`Startup animation ${effect.enabled ? 'on' : 'off'}`);
-          else {
+          if (result.ok) {
+            // The row saves to `~/.book/settings.json`, and the variable outranks
+            // that file at every launch, so a save here looks like it took effect
+            // when it will not. Same sentence as the `BOOK_MODEL` warning above.
+            const envNote = startupAnimationEnvNote();
+            flashNotice(
+              `Startup animation ${effect.enabled ? 'on' : 'off'}` +
+                (envNote ? ` · ${envNote}` : ''),
+            );
+          } else {
             addLocalMessage(`✕ ${result.error ?? 'Could not save the startup animation setting.'}`);
           }
           return;
@@ -2956,6 +2965,7 @@ export function App({
                     );
                   }
                 }}
+                startupAnimationWarning={startupAnimationEnvNote()}
                 onCancel={() => {
                   forgetConfigOrigin();
                   setShowConfigPicker(false);
