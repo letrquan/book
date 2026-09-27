@@ -23,6 +23,8 @@
 import { spawn as ptySpawn } from 'node-pty';
 import { spawn as procSpawn } from 'node:child_process';
 import {
+  accessSync,
+  constants,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -65,8 +67,8 @@ const DEFAULT_TIMEOUT = Number(opt('timeout', '20000'));
 // keystrokes, 600ms does not. 2500ms is the comfortable margin.
 const READY_SETTLE_MS = Number(opt('ready-settle', '2500'));
 const SEND_GAP_MS = Number(opt('send-gap', '250'));
-// `--record <file>`: every PTY chunk with its arrival time, as JSON, for
-// record-gif.mjs to replay into an animated GIF.
+// `--record <file>`: every PTY chunk with its arrival time, plus every `resize`
+// the script asked for, as JSON, for record-gif.mjs to replay into an animated GIF.
 const RECORD_FILE = opt('record', null);
 // Forwarded to the mock: the pause before each streamed delta (see mock-provider.mjs).
 const CHUNK_DELAY_MS = opt('chunk-delay-ms', null);
@@ -177,10 +179,55 @@ let raw = '';
 let exited = false;
 let exitCode = null;
 
-const extraArgs = (() => {
+/**
+ * The arguments after `--`, with a relative `--settings` path made absolute.
+ *
+ * Book is spawned with `cwd` set to the workspace, so a relative path written
+ * against the driver's own cwd would resolve somewhere else there. Both spellings
+ * are rewritten in place; every other argument is passed through as given.
+ */
+function passthroughArgs() {
   const i = argv.indexOf('--');
-  return i === -1 ? [] : argv.slice(i + 1);
-})();
+  const args = i === -1 ? [] : argv.slice(i + 1);
+  for (let a = 0; a < args.length; a++) {
+    const arg = args[a];
+    if (arg === '--settings' && args[a + 1] !== undefined) {
+      args[a + 1] = resolve(args[a + 1]);
+    } else if (arg.startsWith('--settings=')) {
+      args[a] = `--settings=${resolve(arg.slice('--settings='.length))}`;
+    }
+  }
+  return args;
+}
+
+const extraArgs = passthroughArgs();
+
+/**
+ * Refuse to start when a `--settings` path cannot be read.
+ *
+ * Book ignores an override file it cannot find, so a typo in one — the argument
+ * a script passes to pin a workspace's settings — would quietly test the
+ * default configuration and pass. The file's contents are Book's to parse; only
+ * its existence is the driver's business, and it costs one stat before the PTY
+ * opens rather than a wrong screenshot after.
+ */
+function checkSettingsReadable(args) {
+  for (let a = 0; a < args.length; a++) {
+    const path =
+      args[a] === '--settings' && args[a + 1] !== undefined
+        ? args[a + 1]
+        : args[a].startsWith('--settings=')
+          ? args[a].slice('--settings='.length)
+          : undefined;
+    if (path === undefined) continue;
+    try {
+      accessSync(path, constants.R_OK);
+    } catch (error) {
+      return { path, reason: error.code === 'ENOENT' ? 'no such file' : error.message };
+    }
+  }
+  return undefined;
+}
 
 // --bin <path> drives a different executable (e.g. the Go build, bin/book.exe)
 // instead of node dist/index.js; the same flags are passed through. A path is made
@@ -192,64 +239,14 @@ const BIN = (() => {
 
 // The startup fire animation delays the first render past short waits, so the driver
 // turns it off, and `--startup-animation` turns it on, for driving the splash itself.
-// Either way the value goes in a `--settings` layer the driver owns, which outranks every
-// settings file: the workspace's own `.book/settings.json` is never written, and a value
-// an older driver left there cannot win. A `--settings` of your own after `--` (a relative
-// path is taken from the driver's cwd) is merged into that layer, its keys winning except
-// `ui.startupAnimation`, which the driver sets. One the driver cannot read fails the run
-// here, since Book would ignore a missing file and the splash would then hide the input bar.
-// (Book takes one `--settings` layer, hence the merge.) `--no-settings` skips every layer,
-// this one too. The Go build (`--bin`) reads a flat `startupAnimation` key and gets no layer.
-let settingsLayerDir = null;
-// Kept when the run fails after a merge: Book's settings errors name this file.
-let keepSettingsLayer = false;
-// Set by fail() and the crash path (declared here: removeOwnedDirs() reads it on early exits).
+// Both go through `BOOK_STARTUP_ANIMATION` in the env below, which outranks every
+// settings file: the workspace's own `.book/settings.json` is never written, a value an
+// older driver left in a settings file cannot win, and a user's own `--settings` or
+// `--no-settings` after `--` reaches Book untouched rather than being merged with a
+// layer of the driver's own.
+
+// Set by fail(), by the crash path, and by a record that could not be written.
 let runFailed = false;
-const isObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
-function settingsUsageError(message) {
-  console.error(`[driver] ${message}`);
-  removeOwnedDirs();
-  process.exit(1);
-}
-const settingsArgs = (() => {
-  const isSettings = (a) => a === '--settings' || a.startsWith('--settings=');
-  const count = extraArgs.filter(isSettings).length;
-  if (count > 1) settingsUsageError('pass --settings at most once (Book reads only the last)');
-  if (count === 1 && extraArgs.includes('--no-settings')) {
-    settingsUsageError('--settings and --no-settings contradict each other');
-  }
-  if (BIN || extraArgs.includes('--no-settings')) return [];
-  const layer = { ui: { startupAnimation: STARTUP_ANIMATION } };
-  let merged = '';
-  const i = extraArgs.findIndex(isSettings);
-  if (i !== -1) {
-    const eq = extraArgs[i].startsWith('--settings=');
-    const path = eq ? extraArgs[i].slice('--settings='.length) : extraArgs[i + 1];
-    const file = path ? resolve(path) : '';
-    let own;
-    try {
-      // Parsed as Book parses it (no BOM, no comments), so the two agree on what is valid.
-      own = JSON.parse(readFileSync(file, 'utf8'));
-      if (!isObject(own) || (own.ui !== undefined && !isObject(own.ui))) {
-        throw new Error('expected a JSON object (with an object `ui`, if any)');
-      }
-    } catch (error) {
-      settingsUsageError(`cannot read --settings ${path ?? '(no path)'}: ${error.message}`);
-    }
-    Object.assign(layer, own, { ui: { ...(own.ui ?? {}), ...layer.ui } });
-    extraArgs.splice(i, eq ? 1 : 2);
-    merged = ` merged from ${file}`;
-    keepSettingsLayer = true;
-  }
-  settingsLayerDir = mkdtempSync(join(tmpdir(), 'book-drive-settings-'));
-  const file = join(settingsLayerDir, 'settings.json');
-  writeFileSync(file, JSON.stringify(layer, null, 2));
-  // A settings error from Book names this temp file: say what it holds.
-  console.log(
-    `[driver] settings layer ${file}: ui.startupAnimation=${layer.ui.startupAnimation}${merged}`,
-  );
-  return ['--settings', file];
-})();
 
 const env = {
   ...process.env,
@@ -263,6 +260,9 @@ const env = {
   BOOK_HOME: join(BOOK_HOME, '.book'),
   // Book's loadConfig throws without an API key even for `doctor`, so always set one.
   BOOK_API_KEY: process.env.BOOK_API_KEY ?? 'mock-key',
+  // `0` off, `1` on: the one switch that decides the splash without a settings layer.
+  // The Go build (`--bin`) reads a flat `startupAnimation` key and ignores this.
+  BOOK_STARTUP_ANIMATION: STARTUP_ANIMATION ? '1' : '0',
 };
 if (USE_MOCK) {
   env.BOOK_BASE_URL = `http://127.0.0.1:${MOCK_PORT}/v1`;
@@ -280,15 +280,29 @@ if (USE_MOCK) {
 // `--sessions` keeps session persistence on, so a pre-seeded
 // `<book-home>/.book/sessions/*.jsonl` shows up in /resume and on the title page.
 const PERSISTENCE = flag('sessions') ? [] : ['--no-session-persistence'];
+// Before the PTY opens, and on the same path as a missing executable: a run that
+// cannot honour its own arguments has nothing to show.
+const unreadableSettings = checkSettingsReadable(extraArgs);
+if (unreadableSettings) {
+  console.error(
+    `[driver] cannot read --settings ${unreadableSettings.path}: ${unreadableSettings.reason}`,
+  );
+  removeOwnedDirs();
+  process.exit(1);
+}
 let pty;
 try {
   pty = BIN
     ? ptySpawn(BIN, ['--workspace', WORKSPACE, ...PERSISTENCE, ...extraArgs], {
-        cwd: WORKSPACE, cols: COLS, rows: ROWS, env, name: 'xterm-256color',
+        cwd: WORKSPACE,
+        cols: COLS,
+        rows: ROWS,
+        env,
+        name: 'xterm-256color',
       })
     : ptySpawn(
         process.execPath,
-        [DIST_INDEX, '--workspace', WORKSPACE, ...PERSISTENCE, ...settingsArgs, ...extraArgs],
+        [DIST_INDEX, '--workspace', WORKSPACE, ...PERSISTENCE, ...extraArgs],
         { cwd: WORKSPACE, cols: COLS, rows: ROWS, env, name: 'xterm-256color' },
       );
 } catch (error) {
@@ -298,10 +312,19 @@ try {
   process.exit(1);
 }
 const recordStart = Date.now();
-const recorded = [];
+// `raw` is the output log, and each resize a mark in it: the run's own terminal
+// changed size where the script said so, so a replay that never changed size
+// wrapped every line the run drew before the `resize` (#268). A mark is a byte
+// offset rather than a copy of the stream, so one write per resize segment
+// replays the whole run -- `waitFor` reads a screen every 150 ms, and a long run
+// is thousands of chunks that must not each cost a write callback.
+const resizes = [];
+// Only when the run is recorded: `--record` carries every chunk's arrival time,
+// which the log itself has no room for.
+const recorded = RECORD_FILE ? [] : null;
 pty.onData((d) => {
   raw += d;
-  if (RECORD_FILE) recorded.push([Date.now() - recordStart, d]);
+  recorded?.push([Date.now() - recordStart, d]);
 });
 pty.onExit((e) => {
   exited = true;
@@ -311,14 +334,35 @@ pty.onExit((e) => {
 let cols = COLS;
 let rows = ROWS;
 
-async function screen() {
+/**
+ * The run replayed into a terminal that started at the initial size and is resized
+ * at each mark, so a screen read after a mid-run `resize` shows the frame at the
+ * size it was drawn at. One write per segment, not per chunk.
+ */
+async function replay() {
   // convertEol turns a bare LF into CRLF; Bubble Tea moves the cursor with bare
   // LFs (column kept), so the Go build must be replayed without it.
-  const term = new Terminal({ cols, rows, allowProposedApi: true, convertEol: !BIN });
+  const term = new Terminal({ cols: COLS, rows: ROWS, allowProposedApi: true, convertEol: !BIN });
+  let written = 0;
+  for (const { at, cols: nextCols, rows: nextRows } of resizes) {
+    if (at > written) await new Promise((res) => term.write(raw.slice(written, at), res));
+    written = at;
+    term.resize(nextCols, nextRows);
+  }
+  if (written < raw.length) await new Promise((res) => term.write(raw.slice(written), res));
+  return term;
+}
+
+async function screen() {
+  const term = await replay();
   try {
-    await new Promise((res) => term.write(raw, res));
+    // From `viewportY`, as `screenHtml` reads: shrinking the rows on the main
+    // buffer pushes what was on screen into scrollback, and reading from line 0
+    // would then return the top of a longer run's history instead of what is
+    // visible now.
+    const top = term.buffer.active.viewportY;
     return Array.from({ length: rows }, (_, i) =>
-      (term.buffer.active.getLine(i)?.translateToString(true) ?? '').trimEnd(),
+      (term.buffer.active.getLine(top + i)?.translateToString(true) ?? '').trimEnd(),
     );
   } finally {
     term.dispose();
@@ -327,8 +371,22 @@ async function screen() {
 
 // xterm's 256-colour palette: 16 ANSI colours, a 6x6x6 cube, then 24 greys.
 const ANSI16 = [
-  '#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5',
-  '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff',
+  '#000000',
+  '#cd3131',
+  '#0dbc79',
+  '#e5e510',
+  '#2472c8',
+  '#bc3fbc',
+  '#11a8cd',
+  '#e5e5e5',
+  '#666666',
+  '#f14c4c',
+  '#23d18b',
+  '#f5f543',
+  '#3b8eea',
+  '#d670d6',
+  '#29b8db',
+  '#ffffff',
 ];
 function paletteColor(i) {
   if (i < 16) return ANSI16[i];
@@ -354,26 +412,34 @@ function blockElementStyle(ch, fg, bg) {
   const strip = (w, h, x, y) =>
     `background:${bg} linear-gradient(${fg},${fg}) no-repeat ${x} ${y}/${w} ${h}`;
   switch (ch) {
-    case '█': return `background:${fg}`;
-    case '▀': return `background:linear-gradient(${fg} 50%,${bg} 50%)`;
-    case '▄': return `background:linear-gradient(${bg} 50%,${fg} 50%)`;
-    case '▌': return `background:linear-gradient(to right,${fg} 50%,${bg} 50%)`;
-    case '▐': return `background:linear-gradient(to right,${bg} 50%,${fg} 50%)`;
-    case '│': return strip('1px', '100%', '50%', '0');
-    case '─': return strip('100%', '1px', '0', '50%');
-    case '━': return strip('100%', '2px', '0', '50%');
-    default: return null;
+    case '█':
+      return `background:${fg}`;
+    case '▀':
+      return `background:linear-gradient(${fg} 50%,${bg} 50%)`;
+    case '▄':
+      return `background:linear-gradient(${bg} 50%,${fg} 50%)`;
+    case '▌':
+      return `background:linear-gradient(to right,${fg} 50%,${bg} 50%)`;
+    case '▐':
+      return `background:linear-gradient(to right,${bg} 50%,${fg} 50%)`;
+    case '│':
+      return strip('1px', '100%', '50%', '0');
+    case '─':
+      return strip('100%', '1px', '0', '50%');
+    case '━':
+      return strip('100%', '2px', '0', '50%');
+    default:
+      return null;
   }
 }
 
 // The screen as HTML with colours and attributes kept: a text shot cannot show
 // whether a design reads well, and PTY bytes cannot be looked at.
 async function screenHtml() {
-  const term = new Terminal({ cols, rows, allowProposedApi: true, convertEol: !BIN });
+  const term = await replay();
   const DEFAULT_FG = '#d4d4d4';
   const DEFAULT_BG = '#0c0c0c';
   try {
-    await new Promise((res) => term.write(raw, res));
     const out = [];
     const cell = term.buffer.active.getNullCell();
     for (let y = 0; y < rows; y++) {
@@ -497,7 +563,40 @@ const KEYS = {
   end: '\x1b[F',
   pageup: '\x1b[5~',
   pagedown: '\x1b[6~',
+  insert: '\x1b[2~',
+  delete: '\x1b[3~',
 };
+
+/**
+ * The bytes one `key` argument sends.
+ *
+ * `alt-<char>` is ESC then the character, the way a terminal sends Alt+A. A named
+ * key has no such spelling, so Alt is carried the way xterm encodes it: bit 2 of
+ * the modifier field, added to whatever modifier the key already asks for, which
+ * comes after the `;` — the number before it is the key's own (`5` in
+ * `\x1b[5~` is page up, not a modifier, and reading it as one asked for
+ * Ctrl+Alt). So Alt+Delete is `\x1b[3;3~`, Alt+PageUp `\x1b[5;3~`, Alt+Up
+ * `\x1b[1;3A`; a key that already carries a modifier keeps it, and back-tab,
+ * which is Shift with no number, becomes Alt+Shift: `\x1b[1;4Z`. Every other key
+ * — backspace, enter, tab, esc — is ESC followed by the key itself, which is
+ * what a terminal with no Alt+Delete encoding sends.
+ */
+function keySequence(name) {
+  const key = name.toLowerCase();
+  if (!key.startsWith('alt-')) return KEYS[key];
+  const named = key.slice('alt-'.length);
+  if (named.length === 1) return `\x1b${named}`;
+  const seq = KEYS[named];
+  if (seq === undefined) return undefined;
+  // Three parts: the key's number, a modifier only if one is written, and the
+  // final character.
+  const csi = /^\x1b\[(\d*)(?:;(\d+))?([A-Za-z~])$/.exec(seq);
+  if (!csi) return `\x1b${seq}`;
+  // Shift is the one modifier xterm spells without a number: back-tab is
+  // `\x1b[Z` for modifier 2, and every unmodified key stands at 1.
+  const existing = csi[2] ? Number(csi[2]) : csi[3] === 'Z' ? 2 : 1;
+  return `\x1b[${csi[1] || 1};${1 + ((existing - 1) | 2)}${csi[3]}`;
+}
 
 // ---------------------------------------------------------------------------
 // Command loop
@@ -596,7 +695,13 @@ function cleanup() {
     await Promise.race([mockClosed, sleep(1000)]);
     if (RECORD_FILE) {
       try {
-        writeFileSync(RECORD_FILE, JSON.stringify({ cols, rows, chunks: recorded }));
+        // Version 2: the size the run started at, and every resize interleaved with
+        // the output in arrival order, so the replay resizes where the run resized
+        // instead of drawing the whole record at the size it ended at.
+        writeFileSync(
+          RECORD_FILE,
+          JSON.stringify({ version: 2, cols: COLS, rows: ROWS, chunks: recorded }),
+        );
         console.log(`[driver] record -> ${RECORD_FILE}`);
       } catch (error) {
         runFailed = true;
@@ -608,8 +713,8 @@ function cleanup() {
   return cleanupPromise;
 }
 
-// Only what this driver created: a scratch workspace, a BOOK_HOME it made (not one passed
-// with --book-home), and its settings layer.
+// Only what this driver created: a scratch workspace and a BOOK_HOME it made (not one passed
+// with --book-home).
 //
 // Windows keeps a dir while any process has it as its cwd, and a just-killed child can hold
 // a file for a moment, hence the retries. One hold they cannot outwait: a background shell
@@ -625,11 +730,7 @@ function removeOwnedDirs() {
   if (kept.length > 0) {
     console.error(`[driver] kept ${kept.join(' and ')}: the home holds ${outlives.join(' and ')}`);
   }
-  if (runFailed && keepSettingsLayer && settingsLayerDir) {
-    kept.push(settingsLayerDir);
-    console.error(`[driver] kept the merged settings layer ${settingsLayerDir} for a look`);
-  }
-  for (const dir of [scratch, ownedBookHome, settingsLayerDir]) {
+  for (const dir of [scratch, ownedBookHome]) {
     if (!dir || kept.includes(dir)) continue;
     try {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -676,7 +777,10 @@ function stateOutlivingBook() {
   const book = join(BOOK_HOME, '.book');
   const kinds = [];
   const worktrees = join(book, 'worktrees');
-  if (ownedBookHome && entries(worktrees).some((repo) => entries(join(worktrees, repo)).length > 0)) {
+  if (
+    ownedBookHome &&
+    entries(worktrees).some((repo) => entries(join(worktrees, repo)).length > 0)
+  ) {
     kinds.push('agent worktrees');
   }
   const live = entries(join(book, 'jobs')).some((repo) => {
@@ -756,7 +860,11 @@ async function run() {
         // Wait for the placeholder, then settle.
         // A narrow composer shortens the placeholder to `Ask...`, so match the
         // prompt glyph in front of it too.
-        const ok = await waitFor('Ask me anything|[›>¶] Ask', Number(rest || DEFAULT_TIMEOUT), 'screen');
+        const ok = await waitFor(
+          'Ask me anything|[›>¶] Ask',
+          Number(rest || DEFAULT_TIMEOUT),
+          'screen',
+        );
         if (!ok) await fail('TUI never rendered the input bar');
         await sleep(READY_SETTLE_MS);
         console.log('[driver] ready');
@@ -774,9 +882,7 @@ async function run() {
         break;
       case 'key': {
         for (const name of rest.split(/\s+/)) {
-          // `alt-a` is ESC then the key, the way a terminal sends Alt+A.
-          const alt = /^alt-(.)$/i.exec(name);
-          const seq = alt ? `\x1b${alt[1].toLowerCase()}` : KEYS[name.toLowerCase()];
+          const seq = keySequence(name);
           if (seq === undefined) await fail(`unknown key: ${name}`);
           pty.write(seq);
           await sleep(60);
@@ -788,12 +894,21 @@ async function run() {
         break;
       case 'status':
         // Whether the TUI process is still running, without sending it a key.
-        console.log(`[driver] status exited=${exited} code=${exitCode} at=${new Date().toISOString()}`);
+        console.log(
+          `[driver] status exited=${exited} code=${exitCode} at=${new Date().toISOString()}`,
+        );
         break;
-      case 'resize':
+      case 'resize': {
         [cols, rows] = rest.split(/\s+/).map(Number);
+        const t = Date.now() - recordStart;
+        resizes.push({ at: raw.length, t, cols, rows });
+        // Into the recording at its own place in the stream, so a replay resizes
+        // where the run resized instead of at the end. Every chunk already in
+        // `recorded` arrived before this, so appending keeps it in order.
+        recorded?.push([t, { cols, rows }]);
         pty.resize(cols, rows);
         break;
+      }
       case 'screen':
         console.log('----- screen -----');
         console.log((await screen()).join('\n'));

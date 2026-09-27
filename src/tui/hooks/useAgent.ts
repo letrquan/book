@@ -63,7 +63,7 @@ import {
   type SkillActivation,
   type SkillExecution,
 } from '../../settings.js';
-import { resolveSettings } from '../../settings-loader.js';
+import { resolveSettings, applySettingsEnvOverrides } from '../../settings-loader.js';
 import { providerConfigFromDraft, type ProviderSaveRequest } from '../model-options.js';
 import type { ProviderRemovalResult } from '../components/ModelPicker.js';
 import { updateEffortLevel } from '../../commands/effort.js';
@@ -1888,9 +1888,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       let resolvedSettings: ResolvedSettings;
       let resolvedRuntime: ReturnType<typeof resolveConfigAfterProviderRemoval>;
       try {
-        resolvedSettings = config.settingsContext?.noSettings
-          ? structuredClone(DEFAULT_SETTINGS)
-          : resolveSettings(config.workspace, config.settingsContext?.overridePath);
+        // The re-read has to answer with the settings the session is running
+        // under, not the files' contents: resolving without the environment's
+        // override put the file's value back into `liveConfig`, so `/config`
+        // showed a splash state this session was not launched with.
+        resolvedSettings = applySettingsEnvOverrides(
+          config.settingsContext?.noSettings
+            ? structuredClone(DEFAULT_SETTINGS)
+            : resolveSettings(config.workspace, config.settingsContext?.overridePath),
+        );
         resolvedRuntime = resolveConfigAfterProviderRemoval(
           liveConfigRef.current,
           resolvedSettings,

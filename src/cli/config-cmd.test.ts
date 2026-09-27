@@ -353,3 +353,69 @@ describe('book config set validates against the merged configuration', () => {
     expect(readFileSync(localSettings(), 'utf-8')).toBe('{not json');
   });
 });
+
+/**
+ * `BOOK_STARTUP_ANIMATION` outranks every layer, so the value a read reports has
+ * to be the one Book would act on. Reporting the file's value instead made
+ * `book config get` answer a question about a setting that was not in force —
+ * and with no note, the mismatch reads as a bug in the merge rather than as the
+ * variable winning.
+ */
+describe('book config reports the effective value under BOOK_STARTUP_ANIMATION', () => {
+  let previous: string | undefined;
+
+  beforeEach(() => {
+    previous = process.env.BOOK_STARTUP_ANIMATION;
+    writeSettings(userSettings(), { ui: { startupAnimation: true } });
+  });
+
+  afterEach(() => {
+    if (previous === undefined) delete process.env.BOOK_STARTUP_ANIMATION;
+    else process.env.BOOK_STARTUP_ANIMATION = previous;
+  });
+
+  it('gets: reports the variable value and says where it came from', async () => {
+    process.env.BOOK_STARTUP_ANIMATION = '0';
+
+    const result = await run('get', 'ui.startupAnimation');
+
+    expect(result.exitCode).toBeUndefined();
+    expect(result.out).toContain('false');
+    expect(result.out).toContain('BOOK_STARTUP_ANIMATION is set to "0"');
+  });
+
+  it('gets: stays quiet about the variable when the key is something else', async () => {
+    process.env.BOOK_STARTUP_ANIMATION = '0';
+
+    const result = await run('get', 'model');
+
+    expect(result.out).not.toContain('BOOK_STARTUP_ANIMATION');
+  });
+
+  it('list: dumps the effective value and carries the note', async () => {
+    process.env.BOOK_STARTUP_ANIMATION = 'off';
+
+    const result = await run('list');
+
+    expect(result.out).toContain('"startupAnimation": false');
+    expect(result.out).toContain('BOOK_STARTUP_ANIMATION is set to "off"');
+  });
+
+  it('list: says nothing when the variable is not set', async () => {
+    delete process.env.BOOK_STARTUP_ANIMATION;
+
+    const result = await run('list');
+
+    expect(result.out).toContain('"startupAnimation": true');
+    expect(result.out).not.toContain('BOOK_STARTUP_ANIMATION');
+  });
+
+  it('ignores a value that is not a spelling, as the runtime does', async () => {
+    process.env.BOOK_STARTUP_ANIMATION = 'maybe';
+
+    const result = await run('get', 'ui.startupAnimation');
+
+    expect(result.out).toContain('true');
+    expect(result.out).not.toContain('BOOK_STARTUP_ANIMATION');
+  });
+});

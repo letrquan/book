@@ -2,10 +2,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, normalize } from 'path';
-import { resolveSettings, mergeSettings, loadSettingsFile } from './settings-loader.js';
+import {
+  resolveSettings,
+  mergeSettings,
+  loadSettingsFile,
+  applySettingsEnvOverrides,
+  startupAnimationEnvNote,
+} from './settings-loader.js';
 import { hookFingerprint } from './hook-approvals.js';
 import { updateWorkspaceTrust } from './workspace-trust.js';
-import { DEFAULT_SETTINGS, type ResolvedSettings } from './settings.js';
+import { DEFAULT_SETTINGS, HOOK_EVENTS, type ResolvedSettings } from './settings.js';
 
 let dir: string;
 let userDir: string;
@@ -172,6 +178,96 @@ describe('mergeSettings', () => {
     expect(result.ui.startupAnimation).toBe(false);
     expect(result.ui.showThinking).toBe(true);
   });
+
+  /**
+   * A later layer's notification hooks used to replace the user layer's outright:
+   * the concatenated hook paths were spelled out by hand and `Notification` was
+   * never added to the list. A user wiring an ntfy/Slack push to every event
+   * silently lost it the moment a project declared one.
+   */
+  it('appends a later layer Notification hooks to the user layer entries', () => {
+    const userLayer = structuredClone(DEFAULT_SETTINGS);
+    userLayer.hooks.Notification = [{ command: 'user-notify', env: {} }];
+    const projectLayer = { hooks: { Notification: [{ command: 'project-notify', env: {} }] } };
+
+    const result = mergeSettings(userLayer, projectLayer as Partial<ResolvedSettings>);
+
+    expect(result.hooks.Notification.map((hook) => hook.command)).toEqual([
+      'user-notify',
+      'project-notify',
+    ]);
+  });
+
+  // The loop, so the next event added to HOOK_EVENTS cannot be missed the same way.
+  it('concatenates every hook event across layers', () => {
+    for (const event of HOOK_EVENTS) {
+      const userLayer = structuredClone(DEFAULT_SETTINGS);
+      userLayer.hooks[event] = [{ command: 'user', env: {} }];
+      const layer = { hooks: { [event]: [{ command: 'later', env: {} }] } };
+
+      const result = mergeSettings(userLayer, layer as unknown as Partial<ResolvedSettings>);
+
+      expect(result.hooks[event].map((hook) => hook.command)).toEqual(['user', 'later']);
+    }
+  });
+});
+
+describe('applySettingsEnvOverrides', () => {
+  function withSplash(enabled: boolean): ResolvedSettings {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.ui.startupAnimation = enabled;
+    return settings;
+  }
+
+  it('outranks every layer, on and off', () => {
+    expect(
+      applySettingsEnvOverrides(withSplash(true), { BOOK_STARTUP_ANIMATION: '0' }).ui
+        .startupAnimation,
+    ).toBe(false);
+    expect(
+      applySettingsEnvOverrides(withSplash(false), { BOOK_STARTUP_ANIMATION: 'on' }).ui
+        .startupAnimation,
+    ).toBe(true);
+  });
+
+  it('leaves the resolved value alone when the variable says nothing', () => {
+    // An unset variable, an empty one, and a word that is not a spelling: all
+    // three mean "the file decides", and a wrong guess either delays the first
+    // render or hides the input bar a script is waiting for.
+    for (const env of [
+      {},
+      { BOOK_STARTUP_ANIMATION: '' },
+      { BOOK_STARTUP_ANIMATION: '  ' },
+      { BOOK_STARTUP_ANIMATION: 'maybe' },
+    ]) {
+      expect(applySettingsEnvOverrides(withSplash(true), env).ui.startupAnimation).toBe(true);
+      expect(applySettingsEnvOverrides(withSplash(false), env).ui.startupAnimation).toBe(false);
+    }
+  });
+
+  it('keeps the rest of the settings, and the object it was given', () => {
+    const original = withSplash(true);
+    const result = applySettingsEnvOverrides(original, { BOOK_STARTUP_ANIMATION: 'off' });
+
+    expect(result.ui.showThinking).toBe(DEFAULT_SETTINGS.ui.showThinking);
+    // A caller may hand the same object on to code that saves it, so the
+    // override cannot be allowed to rewrite what the caller still holds.
+    expect(original.ui.startupAnimation).toBe(true);
+  });
+});
+
+describe('startupAnimationEnvNote', () => {
+  it('names the variable and the value it is set to', () => {
+    expect(startupAnimationEnvNote({ BOOK_STARTUP_ANIMATION: '0' })).toContain(
+      'BOOK_STARTUP_ANIMATION is set to "0"',
+    );
+  });
+
+  it('says nothing when the variable is unset or unreadable', () => {
+    expect(startupAnimationEnvNote({})).toBeUndefined();
+    expect(startupAnimationEnvNote({ BOOK_STARTUP_ANIMATION: '' })).toBeUndefined();
+    expect(startupAnimationEnvNote({ BOOK_STARTUP_ANIMATION: 'maybe' })).toBeUndefined();
+  });
 });
 
 describe('resolveSettings — layered merging', () => {
@@ -277,6 +373,41 @@ describe('resolveSettings — layered merging', () => {
     const result = resolveSettings(dir);
     expect(result.permissions.deny).toEqual(['Read(./.env)', 'Bash(curl *)']);
     expect(result.permissions.allow).toEqual(['Bash(git *)']);
+  });
+
+  // A released repository hook takes the position its layer would have given it,
+  // so a project entry must not cost the user layer's Notification entries (#295).
+  it('hook entries concatenate across scopes', () => {
+    mkdirSync(join(userDir, '.book'), { recursive: true });
+    writeFileSync(
+      join(userDir, '.book', 'settings.json'),
+      JSON.stringify({ hooks: { Notification: [{ command: 'user-notify' }] } }),
+    );
+    const projectSettingsDir = join(dir, '.book');
+    mkdirSync(projectSettingsDir, { recursive: true });
+    writeFileSync(
+      join(projectSettingsDir, 'settings.json'),
+      JSON.stringify({ hooks: { Notification: [{ command: 'project-notify' }] } }),
+    );
+    writeFileSync(
+      join(projectSettingsDir, 'settings.local.json'),
+      JSON.stringify({ hooks: { Notification: [{ command: 'local-notify' }] } }),
+    );
+    updateWorkspaceTrust(
+      dir,
+      (trust) => {
+        trust.hookEntries[hookFingerprint('Notification', { command: 'project-notify', env: {} })] =
+          'approved';
+      },
+      join(userDir, '.book', 'trust.json'),
+    );
+
+    const result = resolveSettings(dir, undefined, { home: userDir });
+    expect(result.hooks.Notification.map((hook) => hook.command)).toEqual([
+      'user-notify',
+      'project-notify',
+      'local-notify',
+    ]);
   });
 
   it('additionalDirectories concatenate across scopes', () => {

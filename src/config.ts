@@ -7,6 +7,7 @@ import {
   resolveSettings,
   migrateLegacyPermissions,
   settingsLayerPaths,
+  applySettingsEnvOverrides,
 } from './settings-loader.js';
 import { hadRemovedAuthConfiguration } from './settings-removed.js';
 import type { SettingsResolutionPaths } from './settings-loader.js';
@@ -132,6 +133,14 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
       settings = resolveSettings(resolvedWorkspace, settingsOverridePath, options?.settingsPaths);
     }
   }
+
+  // The startup splash is on by default, so anything that drives Book rather
+  // than using it has to switch it off — and a settings layer is the wrong place
+  // to say so, since Book reads one and a driver would have to merge whatever the
+  // user passes. The variable outranks every layer, as `BOOK_MODEL` does for
+  // `model`, and lands on the resolved settings so `shouldPlayStartupFire` and
+  // `/config` read the same value.
+  settings = applySettingsEnvOverrides(settings);
 
   // Load legacy .bookrc.json (deprecated) only after settings availability is accepted.
   const legacy = loadLegacyConfig(resolvedWorkspace);
