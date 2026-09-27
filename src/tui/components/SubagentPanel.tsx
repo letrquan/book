@@ -10,9 +10,12 @@ import { SheetRule } from './chrome.js';
 import { SubagentRow } from './SubagentRow.js';
 import { BackgroundShellRow } from './BackgroundShellRow.js';
 
+// A stable default: a fresh `[]` per render re-ran the selection-reset effect after every key.
+const NO_SHELLS: BackgroundShellRecord[] = [];
+
 export function SubagentPanel({
   agents,
-  shells = [],
+  shells = NO_SHELLS,
   selectedJobId,
   selectedAgentId,
   isActive = false,
@@ -73,12 +76,15 @@ export function SubagentPanel({
     [orderedAgents, orderedShells],
   );
   const rows = useMemo(() => [undefined, ...jobs.map((job) => job.id)], [jobs]);
+  // Keyed on content, not identity: a parent passing a fresh `agents` array on every render must
+  // not reset the selection between keys, which Ink 7 flushes effects between.
+  const rowsKey = rows.map((row) => row ?? '').join('\u0000');
   useEffect(() => {
     const selected = selectedJobId ?? selectedAgentId;
-    const next = selected ? rows.indexOf(selected) : 0;
+    const next = selected ? rowsKey.split('\u0000').indexOf(selected) : 0;
     const resolved = next >= 0 ? next : 0;
     setSelectedIndex(resolved);
-  }, [rows, selectedAgentId, selectedJobId, setSelectedIndex]);
+  }, [rowsKey, selectedAgentId, selectedJobId, setSelectedIndex]);
   useInput(
     (input, key) => {
       if (!isActive) return;

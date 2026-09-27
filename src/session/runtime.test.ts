@@ -214,18 +214,86 @@ describe('toolNamesFromHistory', () => {
         ],
         toolResults: [
           toolSuccess('page', { toolCallId: 'ran' }),
+          // The registry marks the rejections it makes itself; a `Read` that read the
+          // file and then refused its own `offset` carries the same code unflagged.
           toolFailure('Invalid arguments for WebSearch', {
             toolCallId: 'schema',
             code: 'invalid_arguments',
+            details: { preExecution: true },
           }),
           toolFailure('Invalid JSON arguments for Task', {
             toolCallId: 'json',
             code: 'invalid_json_arguments',
+            details: { preExecution: true },
           }),
         ],
       },
     ];
 
     expect([...toolNamesFromHistory(messages)]).toEqual(['WebFetch']);
+  });
+
+  it('counts an unflagged invalid_arguments result as a call that ran', () => {
+    // `Read {outline: true, offset}` reads the file and only then refuses the two
+    // arguments, so the code alone cannot say whether the tool ran; the refusal the
+    // registry makes itself says so in its details.
+    const messages: Message[] = [
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        timestamp: 1,
+        toolCalls: [{ id: 'outline', name: 'Read', arguments: { outline: true, offset: 2 } }],
+        toolResults: [
+          toolFailure('outline and offset cannot be combined', {
+            toolCallId: 'outline',
+            code: 'invalid_arguments',
+          }),
+        ],
+      },
+    ];
+
+    expect([...toolNamesFromHistory(messages)]).toEqual(['Read']);
+  });
+
+  it('does not count a call refused or cancelled before it started, and does count one that had', () => {
+    // A resume seeds `usedToolNames` from this history, and memory quarantine reads it.
+    // A call that never started read nothing, so counting it as external would
+    // quarantine a conversation for a tool that never touched anything.
+    const messages: Message[] = [
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        timestamp: 1,
+        toolCalls: [
+          { id: 'unknown', name: 'WebFetch', arguments: {} },
+          { id: 'aborted', name: 'WebSearch', arguments: {} },
+          { id: 'started', name: 'Bash', arguments: {} },
+        ],
+        toolResults: [
+          toolFailure('Unknown tool: WebFetch', {
+            toolCallId: 'unknown',
+            code: 'unknown_tool',
+          }),
+          toolFailure('CANCELLED: Agent execution was interrupted', {
+            toolCallId: 'aborted',
+            code: 'cancelled_before_start',
+            status: 'cancelled',
+          }),
+          // A `cancelled` result from `executeWithTimeout` belongs to a tool that had
+          // already started, so it does count.
+          toolFailure('CANCELLED: Bash was cancelled', {
+            toolCallId: 'started',
+            code: 'cancelled',
+            status: 'cancelled',
+          }),
+        ],
+      },
+    ];
+
+    expect([...toolNamesFromHistory(messages)]).toEqual(['Bash']);
   });
 });

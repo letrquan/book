@@ -995,6 +995,52 @@ describe('chatCompletionStream tool call streaming', () => {
     expect(events[events.length - 1].type).toBe('done');
   });
 
+  it('marks arguments that never parsed with the typed unparsedArguments field', async () => {
+    // The `{__raw}` sentinel is gone: `arguments` stays `{}` and the raw text and
+    // the parse error ride in `unparsedArguments`, so no consumer has to sniff
+    // the arguments object for a magic key.
+    const raw = '{"filePath":"src/a.ts","oldString":"const re = /\\d+/;"}';
+    let parseError = '';
+    try {
+      JSON.parse(raw);
+    } catch (error) {
+      parseError = error instanceof Error ? error.message : String(error);
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(
+              enc.encode(
+                `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"Edit","arguments":${JSON.stringify(raw)}}}]},"finish_reason":"tool_calls"}]}\n\n`,
+              ),
+            );
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(e);
+    }
+
+    const calls = events.filter((e) => e.type === 'tool_call').map((e) => e.toolCall);
+    expect(calls).toEqual([
+      {
+        id: 'call_1',
+        name: 'Edit',
+        arguments: {},
+        unparsedArguments: { raw, error: parseError },
+      },
+    ]);
+  });
+
   it('does not hang when an already-open stream is aborted', async () => {
     const controller = new AbortController();
     vi.stubGlobal(

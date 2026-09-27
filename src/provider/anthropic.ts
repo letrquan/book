@@ -6,7 +6,9 @@ import type {
 } from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
 import type { Usage } from '../types/messages.js';
-import { createDebugLogger } from '../debug-log.js';
+import { createDebugLogger, isDebugEnabled } from '../debug-log.js';
+import { escapeInvisibleCharacters } from '../control-characters.js';
+import { RAW_ARGUMENTS_KEY } from '../tools/unparsed-arguments.js';
 import {
   classifyApiError,
   classifyProviderError,
@@ -364,12 +366,17 @@ export function convertMessages(messages: ProviderMessage[]): {
           id: string;
           function?: { name: string; arguments: string };
         }>) {
-          const input = parseToolArguments(tc.function?.arguments ?? '{}');
+          const { arguments: parsed, unparsedArguments } = parseToolArguments(
+            tc.function?.arguments ?? '{}',
+          );
           content.push({
             type: 'tool_use',
             id: tc.id,
             name: tc.function?.name ?? '',
-            input,
+            // `tool_use.input` must be a JSON object, so unparseable text cannot go
+            // back verbatim: `{__raw}` is its wire encoding, and reloading it is a
+            // parse failure again.
+            input: unparsedArguments ? { [RAW_ARGUMENTS_KEY]: unparsedArguments.raw } : parsed,
           });
         }
       }
@@ -417,13 +424,21 @@ export function convertTools(tools: ToolDefinition[]): AnthropicTool[] {
   }));
 }
 
-function parseToolArguments(raw: string): Record<string, unknown> {
-  if (!raw.trim()) return {};
+function parseToolArguments(raw: string): {
+  arguments: Record<string, unknown>;
+  unparsedArguments?: { raw: string; error: string };
+} {
+  if (!raw.trim()) return { arguments: {} };
   try {
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return { __raw: raw };
+    return {
+      arguments: parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {},
+    };
+  } catch (error) {
+    return {
+      arguments: {},
+      unparsedArguments: { raw, error: error instanceof Error ? error.message : String(error) },
+    };
   }
 }
 
@@ -676,22 +691,48 @@ export async function* chatCompletionStream(
                   (currentContentBlock.signature ?? '') + String(delta.signature);
               }
             } else if (delta.type === 'input_json_delta' && delta.partial_json) {
+              // The head of each call's first fragment, not of every one: a call that arrives
+              // missing its opening `{"filePath": ` is visible here (#260) and nowhere else.
+              // Behind the flag, so a large streamed Write does no string work and writes no
+              // lines when debugging is off.
+              if (currentToolArgs === '' && isDebugEnabled()) {
+                log.debug('stream tool input delta', {
+                  id: currentToolId,
+                  length: String(delta.partial_json).length,
+                  head: escapeInvisibleCharacters(String(delta.partial_json).slice(0, 120)),
+                });
+              }
               currentToolArgs += delta.partial_json as string;
             }
             break;
           }
 
           case 'content_block_stop': {
+            const { arguments: parsedInput, unparsedArguments } =
+              parseToolArguments(currentToolArgs);
             if (currentContentBlock?.type === 'tool_use') {
-              currentContentBlock.input = parseToolArguments(currentToolArgs);
+              // The block keeps the wire encoding of unparseable text, as `convertMessages`
+              // sends it, while the emitted call carries the typed field.
+              currentContentBlock.input = unparsedArguments
+                ? { [RAW_ARGUMENTS_KEY]: unparsedArguments.raw }
+                : parsedInput;
             }
             if (currentContentBlock) assistantContentBlocks.push(currentContentBlock);
             // Emit completed tool call
             if (currentToolId && currentToolName) {
+              if (unparsedArguments) {
+                log.warn('tool call arguments are not valid JSON', {
+                  id: currentToolId,
+                  name: escapeInvisibleCharacters(currentToolName),
+                  length: currentToolArgs.length,
+                  head: escapeInvisibleCharacters(currentToolArgs.slice(0, 120)),
+                });
+              }
               const toolCall = {
                 id: currentToolId,
                 name: currentToolName,
-                arguments: parseToolArguments(currentToolArgs),
+                arguments: parsedInput,
+                ...(unparsedArguments ? { unparsedArguments } : {}),
               };
               yield { type: 'tool_call', toolCall };
             }

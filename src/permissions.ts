@@ -144,7 +144,17 @@ function ruleMatches(rule: ParsedRule, toolName: string, primaryArg: string): bo
   return globToRegex(normalizedPattern).test(normalizedArg);
 }
 
-export function permissionRuleForToolCall(call: ToolCall): string {
+/**
+ * The rule that remembers exactly this call, or `undefined` when the call has no
+ * primary argument to scope one to.
+ *
+ * A bare tool name means "every call of this tool", so a call whose primary argument
+ * is empty must not produce one: `{command: ""}` and `{command: "\nrm -rf x"}` both
+ * pass the schema, `getPrimaryArg` reads nothing out of either, and an "Always" on
+ * them would have written a `Bash` rule allowing every shell command from then on.
+ * The call is still allowed; nothing is remembered.
+ */
+export function permissionRuleForToolCall(call: ToolCall): string | undefined {
   const toolName = canonicalToolName(call.name);
   const primaryArg = getPrimaryArg(call.arguments);
   if (toolName === 'WebSearch') return toolName;
@@ -156,7 +166,8 @@ export function permissionRuleForToolCall(call: ToolCall): string {
       // An invalid URL must not widen into a tool-wide permission.
     }
   }
-  return primaryArg ? `${toolName}(${primaryArg})` : toolName;
+  if (!primaryArg) return undefined;
+  return `${toolName}(${primaryArg})`;
 }
 
 /**
@@ -211,10 +222,13 @@ const SHELL_CHAINING = /[;&|><`$(){}\n]/;
  * the difference between these is the whole decision.
  *
  * Only Bash gets a ladder. Paths are already reusable as written, and WebFetch
- * globs its own origin in {@link permissionRuleForToolCall}.
+ * globs its own origin in {@link permissionRuleForToolCall}. The list is empty
+ * when the call has no primary argument to scope a rule to, and a caller reads
+ * that as "remember nothing".
  */
 export function permissionRuleLadder(call: ToolCall): string[] {
   const exact = permissionRuleForToolCall(call);
+  if (!exact) return [];
   if (canonicalToolName(call.name) !== 'Bash') return [exact];
 
   const command = getPrimaryArg(call.arguments).trim();

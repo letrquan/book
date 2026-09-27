@@ -21,10 +21,41 @@ All notable changes to this project are documented in this file.
   hunk and are still refused, since Book never picks between candidates. The ambiguous error now
   reports `matchesAfterPreviousHunk` and asks for the enclosing function signature. The tool
   description is deliberately unchanged: on `cx/gpt-5.6-luna` in `eval:edit`, rewrites that spelled
-  out the `@@` rule raised `invalid_patch_syntax` failures from 0 in 39 runs to 6 in 60, so the rule
+  out the `@@` rule raised `invalid_patch_syntax` failures from 0 in 65 runs to 8 in 99, so the rule
   is stated in the error a model gets when it needs it. A patch that repeats its
   `*** Begin Patch` or `*** End Patch` marker, a model glitch seen in real sessions and in
   `eval:edit`, is now accepted instead of failing with `invalid_patch_syntax`.
+- **Unparsable tool-call arguments are a typed field, not a sentinel inside `arguments`** (#242).
+  The provider clients set `unparsedArguments: { raw, error }` on a call whose argument text never
+  parsed, rather than wrapping it as `{ __raw: "<text>" }` — the registry, the loop's pre-hook
+  rejection, replay and the tool row read the type, not a magic key inside the arguments. Sessions
+  persisted with `{__raw}` still load, Anthropic's `tool_use.input` still carries the wrapper (the
+  wire cannot carry unparseable text verbatim), and replay to OpenAI-compatible providers now
+  sends the raw text back, so the model sees the arguments it actually sent.
+- **The TUI runs on Ink 7.1.1** (#89). The Ink 6.8.0 renderer patch is gone: the trailing-newline
+  fix it backported ships in Ink 7. `package.json` pins the exact version, and
+  `src/cli/ink-renderer.contract.test.ts` plus `npm run verify:ink` fail on any other version until
+  the TUI is re-verified (`docs/guide/development.md`, "Upgrading Ink"). `patch-package` and the
+  `postinstall` step are gone. What changes for users:
+  - **npm installs get the incremental renderer.** A published install never applied the patch, so
+    it fell back to the full-frame renderer everywhere. Outside Windows it now uses the incremental
+    renderer, as a source checkout always did.
+  - **Backspace on an empty composer removes the last attachment**, one per press. Holding Backspace
+    to clear a draft removes none, and holding it on an empty composer removes one. Ink 6 reported
+    Backspace as Delete, so this only worked with Ctrl+H.
+  - **Delete and Alt+Delete delete forward**, the character or the word after the cursor. Ink 6
+    could not tell Delete from Backspace, so both deleted backwards.
+  - **Ctrl+L and resizing repaint the whole screen.** Ink skips writing a frame identical to the last
+    one, so after Ctrl+L the screen stayed blank until something changed, and a resize left blank the
+    rows the new frame shared with the old. This predates Ink 7, but Ink 7 brings the incremental
+    renderer to npm installs, where it showed most. Book now redraws through Ink's
+    `suspendTerminal()`.
+  - **Esc takes effect about 20 ms later.** Ink 7 waits that long before treating a lone Esc as a
+    key, so an escape sequence split across reads is not misread. An Esc followed by another key
+    within those 20 ms reads as Alt plus that key, which is how terminals encode Alt.
+  - **Key handling is unchanged otherwise.** Ink 7 dispatches keys to handlers in mount order; Book
+    now subscribes its global handler first, so Esc and Ctrl+C keep deciding from what the screen
+    showed. A lone Esc no longer counts as Alt, so the composer returns on it explicitly.
 - **Settings validation runs on Zod 4** (#88). Book moves from Zod 3.25 to Zod 4.6. Defaults, and
   which fields a rejected document names, are unchanged; `src/settings.test.ts` now pins them,
   including a check that no object schema is defaulted in the way Zod 4 would leave bare. What
@@ -366,6 +397,62 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Malformed tool-call arguments are repaired conservatively instead of refused** (#242). Three
+  shapes repair to the arguments the model sent: a control character written literally inside a
+  string is escaped, a comma directly before a `}` or `]` is dropped, and closing brackets missing
+  at the very end are appended. A repair only runs when the repaired text parses and satisfies the
+  tool's own schema — a dropped opening fragment (#260), a value cut off mid-way, or a string left
+  open is refused, never approximated. The 34-case eval reports 15 repaired correctly, 0 repaired
+  wrongly, 19 refused.
+- **A ` ``` ` run inside a JSON string no longer ends memory extraction early** (#299). The
+  fenced-block match in `extractJsonObject` stopped at the first three backticks even when they
+  were inside a string literal, so a memory body quoting a code block made the whole document
+  unparseable and its memories were lost. Fence runs are now paired until one holds a complete
+  object, with the unfenced text still the fallback.
+- **A refusal now says what lifts it** (#246). A run stopped as `all_tools_blocked` blamed a
+  permission for every refusal but the web policy's, so a PreToolUse hook, an inactive tool, a
+  managed agent's tool policy, a skill's policy or a malformed call was answered with "grant the
+  permission" — advice nothing acts on. Each kind of refusal has its own remedy, an inactive call
+  is escalated like a failure, a refusal says it was refused rather than failed, and a call's
+  remembered failures are forgotten once it succeeds.
+- **A tool call that lost its first fragment is resent, not re-escaped** (#260). On 9router's
+  `cmc/stealth/space-bunny-alpha` route a parallel call sometimes arrives with its opening
+  fragment missing: the raw text starts `/tools/file.ts", "newString": …`. The router dropped it,
+  but the error told the model to escape backslashes. `invalid_json_arguments` now names the shape
+  the text arrived in (truncated at the start, wrapped in other text, not an object, cut off at the
+  end, two objects, single quotes, other syntax) with advice for each, quotes the text on both sides
+  of the parse position, and shows an invisible character as a `\uXXXX` escape instead of a space. `book tool-stats` counts the shapes
+  per provider and model, and both provider clients log raw argument fragments under `BOOK_DEBUG`.
+  Records written before this version carry no provider, so they stay under the bare model id: a
+  route whose calls span the upgrade shows as two rows until the older records age out of the
+  retention window.
+- **A call whose arguments never parsed is refused before hooks and the permission prompt** (#242).
+  PreToolUse hooks judged the `{__raw}` wrapper, and in `default` mode the user was asked to approve
+  a call that could never run, with "Always" saving a rule built from it. Schema-invalid arguments
+  and unknown tools are refused at that same point — a `Bash` call with no `command` has no primary
+  argument, so the "Always" it would have saved is a bare `Bash` rule allowing every `Bash` call.
+- **Calls refused before they started no longer count as tools that ran** (#242). After a reload,
+  `toolNamesFromHistory` counted an `unknown_tool` result and a call cancelled before it started.
+  Both now belong to one shared set of pre-execution codes, and a call the abort or an ended stream
+  cancelled before it ran is coded `cancelled_before_start`.
+- **A failed tool row stays on one line** (#242). The TUI folded control characters out of a row's
+  target but not its error text, and neither fold covered bidi overrides or U+2028/2029, so a
+  `Read` of a path holding U+202E drew its row reversed. Both now fold with the one shared set.
+- **`ToolSearch` is always callable** (#270). In eager mode the surface activates every authorized
+  tool and leaves `ToolSearch` off the provider's tool list, but a call to it was still refused as
+  `tool_not_active` — a refusal whose own remediation said to call `ToolSearch` to discover it. The
+  same refusal hit the moment a session flipped from deferred to eager (plan mode shrinking the
+  tool list) and under `--allowedTools` rules that never name it. `ToolSearch` is now active
+  whenever the surface has it, and capability rules no longer gate it. When nothing deferred
+  matches a query, the result names the tools already active this turn instead of a bare miss.
+- **Tool search understands natural queries** (#265). Search ran the whole query as one fuzzy
+  string, so `fetch url page` matched nothing and `Task delegate subagent` found only `AgentSpawn`.
+  The query is now scored word by word against tool names, aliases, intent keywords and
+  descriptions, so a multi-word request ranks the tool that names the most of it, and CamelCase,
+  `sub-agent`/`subagent` and plural spellings meet each other, and the word ranking tolerates one
+  typo in a longer word (`GitComit`, `GitCommet`). Fuzzy matching is the fallback for a query none
+  of whose words names anything, and the intent keywords were filled out for the git,
+  session, agent, evidence, check and notebook tools.
 - **A request too large for the window compacts instead of ending the run** (#238). Resuming a long
   session on a model with a smaller window (`--resume <id> --model <smaller>`) could end with
   `Request is too large for <model> … Start a new session`: the preflight gate compacted first, but

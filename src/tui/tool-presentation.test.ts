@@ -8,6 +8,7 @@ import {
   shouldExpandTool,
 } from './tool-presentation.js';
 import { composeToolRow } from './tool-presentation.js';
+import { CONTROL_CHARACTERS } from '../control-characters.js';
 import {
   CONTENT_COLUMN,
   GUTTER_WIDTH,
@@ -339,6 +340,18 @@ describe('composeToolRow', () => {
     expect(row.target).toContain('src/a.ts');
   });
 
+  it('folds the control characters out of a failure text, not only out of a target', () => {
+    // The error is the model's own or a tool's, and the text of an
+    // `invalid_json_arguments` failure quotes the model's raw arguments: a newline,
+    // an ESC and a bidi override all reach it. `match`, not `test` — CONTROL_CHARACTERS
+    // is global, and `test` would advance lastIndex between assertions.
+    const row = composeToolRow({ title: 'Edit', target: 'src/tools/file.ts', metadata: [] }, grid, {
+      error: ['bad\nthing', String.fromCharCode(0x202e), 'here'].join(''),
+    });
+    expect(row.meta.match(CONTROL_CHARACTERS)).toBeNull();
+    expect(row.meta).toBe('bad thing here');
+  });
+
   it('replaces metadata with the error message on a failure', () => {
     const row = composeToolRow({ title: 'Bash', target: 'npm test', metadata: ['failed'] }, grid, {
       error: 'exit code 1',
@@ -469,6 +482,22 @@ describe('tool row targets', () => {
     });
 
     expect(presentation.target).toBe(`{"command":"a${spaces}b"}`);
+  });
+
+  it('shows the raw text of a call marked by the typed unparsedArguments field', () => {
+    // Same row as the `{__raw}` sentinel produced, reached through the type the
+    // providers set: `arguments` is `{}`, so the target has to come from the
+    // field, not the arguments object.
+    const raw = `{"command":"echo one\n${tab}echo${csi}two"}`;
+    const presentation = deriveToolPresentation(
+      'Bash',
+      {},
+      result({ success: false, error: 'Invalid JSON arguments for Bash' }),
+      { unparsedArguments: { raw, error: 'Bad control character' } },
+    );
+
+    expect(presentation.target).toBe('{"command":"echo one echo two"}');
+    expect(presentation.summary).not.toMatch(controlCharacter);
   });
 });
 

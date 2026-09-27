@@ -1,4 +1,5 @@
 import { Box, Text, measureElement, useInput, useStdin, useStdout, type DOMElement } from 'ink';
+import type { EventEmitter } from 'node:events';
 import {
   useCallback,
   useEffect,
@@ -132,7 +133,11 @@ export function TranscriptView({
   onRedrawViewport,
 }: TranscriptViewProps) {
   const theme = useTheme();
-  const { internal_eventEmitter } = useStdin();
+  // Mouse reports need Ink's raw input events: `useInput` strips the ESC prefix and parses them as
+  // keys. Ink 7 still passes the emitter in the stdin context but no longer types it.
+  const { internal_eventEmitter } = useStdin() as ReturnType<typeof useStdin> & {
+    internal_eventEmitter?: EventEmitter;
+  };
   const { stdout } = useStdout();
   const viewportRef = useRef<DOMElement>(null);
   const contentRef = useRef<DOMElement>(null);
@@ -543,10 +548,12 @@ export function TranscriptView({
     };
 
     const unsubscribeFrameUpdates = subscribeToFrameUpdates(scheduleSelectionRepaint);
-    internal_eventEmitter.on('input', handleMouseInput);
+    if (internal_eventEmitter) {
+      internal_eventEmitter.on('input', handleMouseInput);
+    }
     return () => {
       unsubscribeFrameUpdates();
-      internal_eventEmitter.removeListener('input', handleMouseInput);
+      internal_eventEmitter?.removeListener('input', handleMouseInput);
       cancelWheelScroll();
       if (dragRef.current || selectionRef.current) cancelDrag();
     };

@@ -42,21 +42,24 @@ policy decision, not work, and counting it would move the one signal meant to pr
 
 `blockedToolTurnLimit` is a second, independent brake, and it is enforced **even when `enabled` is
 false**. It stops a run whose every tool call was refused on that many consecutive turns, ending it
-as `all_tools_blocked` and naming every tool refused over the streak and what lifts the refusal. A permission
-refusal is lifted by a grant, an allow rule, or another permission mode, except one made by a
-`permissions.deny` rule: deny rules are checked before allow rules and every mode, so only removing
-or narrowing that rule lifts it. A refusal by the web
-network policy (a private or special-use destination) is lifted by none of those, bypassPermissions
-included. For a refused `WebFetch` the message names the destinations it refused (the host the
-model asked for, and the address it resolved to; a redirect to another origin is reported as a
-cross-origin redirect instead) and `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment,
-warning that the variable lifts the policy for every destination rather than only those. For a
-refused `WebSearch`, whose built-in providers resolved to a private destination, it names the
-private addresses the providers resolved to and points at the host's DNS or proxy instead: the
-providers always validate strictly, so that variable does nothing for them. A streak of stopped
-cross-origin redirects gets its own remedy: the model has to fetch the target in its own
-`WebFetch` call, or stop fetching that page. A streak holding several kinds names each remedy. It
-is separate because a refusal spin never
+as `all_tools_blocked` and naming every tool refused over the streak and what lifts the refusal. Each
+kind of refusal gets its own remedy, because most of them cannot be lifted by a permission at all:
+
+| Refusal                                                                                                          | What lifts it                                                                                                                                                                                                                         |
+| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A permission (including one made by a `permissions.deny` rule, which no other rule or mode lifts)                | A grant, an allow rule, or another permission mode — for a deny rule, changing that rule                                                                                                                                              |
+| A PreToolUse hook                                                                                                | Changing or removing that hook                                                                                                                                                                                                        |
+| A tool that was not active for the turn, or arguments the run's allowed tools do not cover                       | Activating a deferred tool with `ToolSearch`, and an allowed-tools list that covers the tool and its arguments                                                                                                                        |
+| A managed agent's tool policy (its profile or definition)                                                        | Giving the step to an agent whose policy allows it                                                                                                                                                                                    |
+| A skill's activation policy or its allowed-tools                                                                 | Changing that skill's override under `skills.overrides`, or its allowed-tools                                                                                                                                                         |
+| A question the run cannot put to anyone (`dontAsk` mode, or a question the user declined)                        | Nothing — the model has to proceed without asking                                                                                                                                                                                     |
+| Calls that could not run as sent (arguments that never parsed, failed the schema, or a tool that does not exist) | Nothing — the model has to correct them; if `book tool-stats` shows `invalid_json_arguments:truncated_start`, the route is dropping the first fragment of calls                                                                       |
+| A private or special-use web destination                                                                         | `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment, which no rule or mode lifts, bypassPermissions included; the message names the refused destinations and warns that the variable lifts the policy for every destination |
+| A `WebSearch` whose every built-in provider resolved privately                                                   | Fixing the host's DNS or proxy; no setting relaxes the providers' strict validation. The message names the private addresses                                                                                                          |
+| A `WebFetch` stopped at a redirect to another origin                                                             | Nothing — the model has to fetch the target in its own `WebFetch` call, or stop fetching that page                                                                                                                                    |
+| Any other refusal                                                                                                | Whatever that refused call's own message names as the cause                                                                                                                                                                           |
+
+A streak holding several kinds names each remedy. It is separate because a refusal spin never
 produces a tool-free turn, so the turn-end gate — and therefore every brake behind it — never fires:
 a headless run in the default permission mode answers each prompt `deny` and would otherwise
 re-issue refused calls until the budget ran out. Set it to `0` to disable. `planRefreshTurns` restates the open plan periodically, which also keeps compaction from

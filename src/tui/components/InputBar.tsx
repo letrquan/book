@@ -107,10 +107,6 @@ interface InputBarProps {
   onQueue?: (value: string, attachments?: ImageAttachment[]) => boolean;
   /** Recalls the newest queued input when the composer is empty. */
   onRecallQueued?: () => string | { value: string; attachments?: ImageAttachment[] } | undefined;
-  /** Cancels the queued input currently being edited. */
-  onCancelQueuedEdit?: () => void;
-  /** True while the composer contains a recalled queued input. */
-  editingQueuedInput?: boolean;
   /** Keeps the parent aware of the live draft for interrupt restoration. */
   onDraftChange?: (value: string, attachments?: ImageAttachment[]) => void;
   /** Moves focus from an empty prompt to the first background task when available. */
@@ -212,8 +208,6 @@ export function InputBar({
   canQueueWhileBusy,
   onQueue,
   onRecallQueued,
-  onCancelQueuedEdit,
-  editingQueuedInput = false,
   onDraftChange,
   onFocusBackgroundTask,
   onCycleAgentFocus,
@@ -273,25 +267,23 @@ export function InputBar({
     },
     [reportDraft],
   );
-  // An attachment goes only on a Backspace into an empty draft, as the editor judged it before
-  // the key: a Backspace that deleted the draft's last character leaves the image attached.
-  const removeLastAttachment = useCallback(() => {
-    if (attachmentsRef.current.length === 0) return;
-    setAttachments((current) => current.slice(0, -1));
-    setAttachmentError(undefined);
-  }, [setAttachments]);
-  // An edit chord on an empty draft belongs to the transcript. As with other forwarded shortcuts,
-  // a consumed chord restores the draft the parent may have touched. A plain function: InputBox
+  // An edit chord on an empty draft belongs to the transcript. A plain function: InputBox
   // re-reads its props each render, and nothing else here needs it.
   const forwardEmptyChord = (
     input: string,
     key: Parameters<NonNullable<typeof onGlobalShortcut>>[1],
   ) => {
-    if (!onGlobalShortcut?.(input, key)) return;
-    const preservedValue = valueRef.current;
-    queueMicrotask(() => setValue(preservedValue));
+    onGlobalShortcut?.(input, key);
   };
   const [attachmentError, setAttachmentError] = useState<string | undefined>();
+  // Backspace on an empty composer removes the last attachment. InputBox reports it: only InputBox
+  // knows whether the composer was empty before this key's own edit, whatever order Ink runs the
+  // two handlers in (a modal re-subscribes InputBox after this handler).
+  const removeLastAttachment = useCallback(() => {
+    if (attachmentsRef.current.length === 0) return;
+    setAttachments((current) => current.slice(0, -1));
+    setAttachmentError(undefined);
+  }, [setAttachments]);
   const suggestion = compact ? 'Ask...' : 'Ask me anything...';
 
   // Command menu state
@@ -491,24 +483,14 @@ export function InputBar({
       pasteImage();
       return;
     }
-    // Alt+Backspace is a composer edit, not a shortcut: InputBox deletes the
-    // previous word, and restoring the pre-event value here would undo it.
-    if (key.meta && (key.backspace || key.delete)) return;
-    // Filter out Alt/Meta-modified keys — they're shortcuts, not text input.
-    // Preserve the editor value while the parent handles Alt/Meta shortcuts.
-    //
-    // Ink reports a lone Esc with `meta` set (`use-input.js`: `meta:
-    // keypress.meta || keypress.name === 'escape'`), so this filter used to eat
-    // every Esc before the menu handlers below could dismiss a menu with it.
-    // Only an open menu takes Esc here; every other Esc still belongs to the
-    // app (cancel the turn, drop a recalled queued input, close a panel).
-    const menuOpen =
-      menuVisibleRef.current || skillMenuVisibleRef.current || fileMenuVisibleRef.current;
-    if (key.meta && !(key.escape && menuOpen)) {
-      const preservedValue = valueRef.current;
-      queueMicrotask(() => setValue(preservedValue));
-      return;
-    }
+    // Only an open menu takes Esc here. Every other Esc belongs to the app (cancel the turn, drop a
+    // recalled queued input, close a panel), whose handler runs before this one. Ink 6 reported a
+    // lone Esc as `meta`, so the Alt/Meta filter below swallowed it; Ink 7 does not.
+    const menuOpen = menuVisible || skillMenuVisible || fileMenuVisible;
+    if (key.escape && !menuOpen) return;
+    // Filter out Alt/Meta-modified keys — they're shortcuts, not text input. Alt+Backspace is
+    // InputBox's word delete, and Alt+V is handled above.
+    if (key.meta && !key.escape) return;
 
     if (key.shift && key.tab) {
       onCycleMode();
@@ -629,14 +611,6 @@ export function InputBar({
       if (key.return) return;
     }
 
-    if (key.escape && editingQueuedInput) {
-      setValue('');
-      setHistoryIndex(-1);
-      onCancelQueuedEdit?.();
-      uiLog.event('input:Escape', { action: 'cancel-queued-edit' });
-      return;
-    }
-
     // ---- Normal mode (no menu) ----
     // Tab from an empty prompt cycles focus through main + spawned agents
     // (Claude-Code-style flat switching). Falls back to accepting the
@@ -666,16 +640,11 @@ export function InputBar({
     // The readline chords are the editor's: it edits a draft with them, and hands them to
     // `forwardEmptyChord` below when there is no draft to edit.
     if (key.ctrl && COMPOSER_EDIT_KEYS.has(_input.toLowerCase())) return;
-    // Forward Ctrl-based shortcuts to the parent App. As with Alt chords,
-    // restore the pre-event value when consumed to keep shortcut routing defensive.
-    // Ctrl+/ arrives as a bare US byte with no `ctrl` flag (see
-    // `isShortcutsToggleKey`), so gating on `key.ctrl` alone would swallow it here.
+    // Forward Ctrl-based shortcuts to the parent App. Ctrl+/ arrives as a bare US
+    // byte with no `ctrl` flag (see `isShortcutsToggleKey`), so gating on
+    // `key.ctrl` alone would swallow it here.
     if ((key.ctrl || isShortcutsToggleKey(_input, key)) && onGlobalShortcut) {
-      if (onGlobalShortcut(_input, key)) {
-        const preservedValue = valueRef.current;
-        queueMicrotask(() => setValue(preservedValue));
-        return;
-      }
+      if (onGlobalShortcut(_input, key)) return;
     }
     // Claude Code-style task access: Down from a fresh, empty prompt moves
     // focus into the task list. Enter is then handled by SubagentPanel.
@@ -1044,10 +1013,10 @@ export function InputBar({
           <InputBox
             value={value}
             liveValueRef={valueRef}
-            onEmptyBackspace={removeLastAttachment}
             onEmptyChord={forwardEmptyChord}
             onChange={safeOnChange}
             onSubmit={handleSubmit}
+            onBackspaceWhenEmpty={removeLastAttachment}
             placeholder={placeholder}
             // Stay focused while busy so Enter can queue a follow-up; only yield
             // to a modal (permission prompt). `focus` here maps

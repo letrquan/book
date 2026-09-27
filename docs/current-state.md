@@ -213,10 +213,10 @@ fresh verification pass.
   and expanding a row reveals structured details or output rather than the parameters.
 - Skills: discovered skills start in `manual` activation mode. Enable `auto` per skill only after
   representative evaluation.
-- TUI renderer: `safe` on Windows, `incremental` on other interactive terminals — and `safe`
-  anywhere the Ink patch is absent, which is every npm install under npm 11, since it blocks the
-  postinstall that applies it (`isInkIncrementalRendererPatched`). Windows users can
-  opt into incremental rendering with `BOOK_TUI_RENDERER=incremental`.
+- TUI renderer: `safe` on Windows and `incremental` on other interactive terminals, npm installs
+  included: Ink 7 ships the trailing-newline fix the old Ink 6 patch backported, and
+  `hasInkTrailingNewlineFix` (`src/cli/ink-renderer.ts`) still falls back to `safe` if it is
+  missing. Windows users can opt into incremental rendering with `BOOK_TUI_RENDERER=incremental`.
 - `Bash` shell: the platform default (`/bin/sh`) on macOS and Linux. On Windows, `BOOK_SHELL` or the
   `shell` setting, then Git Bash when Book was launched from one, then PowerShell 7, then Windows
   PowerShell 5.1, then an installed Git Bash, and `cmd.exe` only when nothing else exists

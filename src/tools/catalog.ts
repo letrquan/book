@@ -89,18 +89,42 @@ function aliasesFor(name: string): string[] {
 
 function keywordsFor(name: string): string[] {
   const common: Record<string, string[]> = {
-    GitStatus: ['working tree', 'changes'],
-    GitDiff: ['changes', 'patch'],
-    GitLog: ['history', 'commits'],
-    GitCommit: ['save changes', 'commit'],
-    GitBranch: ['branches'],
-    SessionHistorySearch: ['conversation', 'transcript', 'past session'],
-    SessionHistoryRead: ['conversation', 'transcript', 'past session'],
+    GitStatus: ['status', 'working tree', 'changes', 'modified', 'staged'],
+    GitDiff: ['diff', 'changes', 'patch'],
+    GitLog: ['log', 'history', 'commits'],
+    GitCommit: ['commit', 'save changes'],
+    GitBranch: ['branch', 'branches'],
+    SessionHistorySearch: ['conversation', 'transcript', 'past session', 'history', 'earlier'],
+    SessionHistoryRead: ['conversation', 'transcript', 'past session', 'history', 'earlier'],
     InvokeSkill: ['workflow', 'instructions'],
-    AgentSpawn: ['delegate', 'subagent', 'parallel'],
-    AgentRead: ['subagent', 'result', 'output', 'continuation'],
-    WebSearch: ['internet', 'research'],
-    WebFetch: ['url', 'page', 'download'],
+    Task: ['delegate', 'subagent', 'sub-agent', 'agent', 'parallel', 'spawn', 'worker'],
+    AgentPlan: ['plan', 'delegation', 'budget', 'route'],
+    AgentSpawn: [
+      'delegate',
+      'subagent',
+      'sub-agent',
+      'agent',
+      'parallel',
+      'spawn',
+      'background',
+      'worker',
+    ],
+    AgentList: ['agents', 'list', 'running', 'background'],
+    AgentGet: ['status', 'agent', 'inspect'],
+    AgentRead: ['subagent', 'result', 'output', 'continuation', 'summary'],
+    AgentSend: ['follow-up', 'message', 'answer', 'resume', 'agent'],
+    AgentWait: ['wait', 'finish', 'agent'],
+    AgentStop: ['stop', 'cancel', 'agent'],
+    AgentApply: ['apply', 'patch', 'candidate', 'validator'],
+    EvidencePublish: ['evidence', 'publish', 'report'],
+    EvidenceList: ['evidence', 'list', 'verified'],
+    EvidenceReview: ['evidence', 'review', 'validator', 'verify'],
+    Check: ['check', 'test', 'tests', 'lint', 'typecheck', 'build', 'verify'],
+    NotebookEdit: ['jupyter', 'notebook', 'ipynb', 'cell'],
+    DismissShell: ['shell', 'background', 'dismiss'],
+    TaskStop: ['task', 'stop', 'cancel'],
+    WebSearch: ['search', 'web', 'internet', 'research', 'online', 'lookup'],
+    WebFetch: ['fetch', 'url', 'page', 'http', 'https', 'download', 'website', 'link'],
     MemorySave: ['remember', 'memory', 'save fact'],
   };
   return common[name] ?? [];
@@ -221,6 +245,126 @@ interface SearchRecord {
   namespace: string;
 }
 
+/** Words that carry no capability in a ToolSearch query. */
+const QUERY_STOPWORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'any',
+  'at',
+  'by',
+  'for',
+  'from',
+  'i',
+  'in',
+  'is',
+  'it',
+  'me',
+  'my',
+  'need',
+  'of',
+  'on',
+  'or',
+  'please',
+  'some',
+  'the',
+  'this',
+  'that',
+  'to',
+  'tool',
+  'tools',
+  'use',
+  'using',
+  'want',
+  'with',
+]);
+
+/**
+ * Lowercase words of a name, keyword, or query. CamelCase and digits split (`WebFetch` → web,
+ * fetch; `SpecialTool3` → special, tool, 3), so do `_`, `-`, spaces and punctuation; a chunk that
+ * splits into more than one part also yields its joined lowercase form (`sub-agent` → sub, agent,
+ * subagent; `GitLog` → git, log, gitlog), so a query spelled either way meets a keyword spelled
+ * either way.
+ */
+function searchWords(text: string): string[] {
+  const words: string[] = [];
+  for (const chunk of text.split(/[^A-Za-z0-9_-]+/)) {
+    if (!chunk) continue;
+    const parts = chunk
+      .split(/[_-]+/)
+      .flatMap((part) =>
+        part.split(/(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=[0-9])|(?<=[0-9])(?=[A-Za-z])/),
+      )
+      .map((part) => part.toLowerCase())
+      .filter(Boolean);
+    words.push(...parts);
+    const joined = chunk.toLowerCase().replace(/[_-]+/g, '');
+    if (parts.length > 1 && !words.includes(joined)) words.push(joined);
+  }
+  return words;
+}
+
+/** The endings that make a longer word the same word as its stem, with nothing before the stem. */
+const WORD_SUFFIXES = ['s', 'es', 'd', 'ed', 'ing', 'er', 'ers'] as const;
+
+/**
+ * The single edit that turns one word into the other, or undefined when they are further apart:
+ * `'substitution'` for a swapped letter, `'other'` for a letter inserted, dropped or two adjacent
+ * letters transposed. Callers pass the shorter word first, and need the distinction: one
+ * substitution among five letters is often two different words, the same edit among six is a typo.
+ */
+function oneEditApart(short: string, long: string): 'substitution' | 'other' | undefined {
+  if (long.length - short.length > 1) return undefined;
+  if (short.length === long.length) {
+    const differ: number[] = [];
+    for (let index = 0; index < short.length; index++) {
+      if (short[index] !== long[index]) differ.push(index);
+      if (differ.length > 2) return undefined;
+    }
+    if (differ.length === 1) return 'substitution';
+    // An adjacent transposition: `commti` for `commit`.
+    if (
+      differ.length === 2 &&
+      differ[1] === differ[0] + 1 &&
+      short[differ[0]] === long[differ[1]] &&
+      short[differ[1]] === long[differ[0]]
+    )
+      return 'other';
+    return undefined;
+  }
+  let index = 0;
+  while (index < short.length && short[index] === long[index]) index++;
+  return short.slice(index) === long.slice(index + 1) ? 'other' : undefined;
+}
+
+/**
+ * True when a query token names the same word: equal, a suffix form of it (`logs` for `log`,
+ * `searches` for `search`, `fetching` for `fetch`), or one typo. A prefix is not a form:
+ * `checkout` is not `check` any more than it is `out`, and matching it put `Check` first for
+ * "git checkout". A typo counts from five letters, and a substituted letter only from six: one
+ * substitution between five-letter words is too often a different word (`match`/`patch`,
+ * `texts`/`tests`), while an inserted, dropped or transposed letter is a typo from five (`comit`,
+ * `commti`).
+ */
+function sameWord(token: string, word: string): boolean {
+  if (token === word) return true;
+  const [short, long] = token.length <= word.length ? [token, word] : [word, token];
+  if (short.length >= 3 && WORD_SUFFIXES.some((suffix) => long === `${short}${suffix}`))
+    return true;
+  if (token.length < 5 || word.length < 5) return false;
+  const edit = oneEditApart(short, long);
+  return edit === 'other' ? true : edit === 'substitution' && short.length >= 6;
+}
+
+const SEARCH_FIELD_WEIGHTS = {
+  name: 4,
+  alias: 3,
+  keyword: 2,
+  namespace: 2,
+  description: 1,
+  category: 1,
+} as const;
+
 export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext {
   const { config, context } = options;
   const sourceDefinitions = options.definitions.some(
@@ -240,6 +384,24 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     ? { clock: 0, loaded: new Map() }
     : (context.runtime?.toolDiscoveryState ?? { clock: 0, loaded: new Map() });
   let activeSnapshot = new Set<string>();
+  // A definition's word lists are fixed once normalized, and every search ranks the whole
+  // catalog, so they are built on the first ranking and read from here after.
+  const wordsByDefinition = new WeakMap<ToolDefinition, Array<[number, string[]]>>();
+
+  const fieldsFor = (definition: ToolDefinition): Array<[number, string[]]> => {
+    const cached = wordsByDefinition.get(definition);
+    if (cached) return cached;
+    const fields: Array<[number, string[]]> = [
+      [SEARCH_FIELD_WEIGHTS.name, searchWords(definition.name)],
+      [SEARCH_FIELD_WEIGHTS.alias, (definition.catalog?.aliases ?? []).flatMap(searchWords)],
+      [SEARCH_FIELD_WEIGHTS.keyword, (definition.catalog?.keywords ?? []).flatMap(searchWords)],
+      [SEARCH_FIELD_WEIGHTS.namespace, searchWords(definition.catalog?.namespace ?? '')],
+      [SEARCH_FIELD_WEIGHTS.description, searchWords(definition.description)],
+      [SEARCH_FIELD_WEIGHTS.category, [definition.catalog?.category ?? 'other']],
+    ];
+    wordsByDefinition.set(definition, fields);
+    return fields;
+  };
 
   const authorized = (additionalRules?: CapabilityRule[]): ToolDefinition[] =>
     definitions.filter((definition) => {
@@ -310,30 +472,62 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     return active;
   };
 
-  const search = (
-    query: string,
-    category?: ToolCategory,
-    namespace?: string,
-    limit = config.settings.toolDiscovery.searchLimit,
-  ): ToolSearchMatch[] => {
-    const active = new Set(
-      activeDefinitions().map((definition) => canonicalToolName(definition.name)),
-    );
-    const records: SearchRecord[] = authorized()
-      .filter((definition) => definition.name !== 'ToolSearch')
-      .filter((definition) => !active.has(canonicalToolName(definition.name)))
-      .filter((definition) => !category || definition.catalog?.category === category)
-      .filter((definition) => !namespace || definition.catalog?.namespace === namespace)
-      .map((definition) => ({
-        definition,
-        name: definition.name,
-        aliases: definition.catalog?.aliases?.join(' ') ?? '',
-        keywords: definition.catalog?.keywords?.join(' ') ?? '',
-        description: definition.description,
-        category: definition.catalog?.category ?? 'other',
-        namespace: definition.catalog?.namespace ?? '',
-      }));
+  /**
+   * Rank definitions against a query by its words, not the query as one fuzzy string: each query
+   * word scores the heaviest field it names (tool name 4, alias 3, keyword 2, MCP namespace 2,
+   * description 1, category 1), and a definition's score is the sum over the words. A tool
+   * qualifies when a word names its name, an alias or a keyword, or when at least two words
+   * appear in its description - description words alone are too common to admit a tool on
+   * one hit, even a one-word query's (`not` takes the `es` suffix form of `notes`, which
+   * would let every "do not" in a description answer a search for notes). Ties keep catalog
+   * order.
+   */
+  const rankByWords = (query: string, candidates: ToolDefinition[]): ToolDefinition[] => {
+    const tokens = [...new Set(searchWords(query))].filter((token) => !QUERY_STOPWORDS.has(token));
+    if (tokens.length === 0) return [];
+    const scored: Array<{ definition: ToolDefinition; score: number; index: number }> = [];
+    candidates.forEach((definition, index) => {
+      const fields = fieldsFor(definition);
+      let score = 0;
+      let strongHits = 0;
+      let descriptionHits = 0;
+      for (const token of tokens) {
+        let best = 0;
+        for (const [weight, words] of fields) {
+          if (weight > best && words.some((word) => sameWord(token, word))) best = weight;
+        }
+        if (best >= SEARCH_FIELD_WEIGHTS.keyword) strongHits++;
+        else if (best === SEARCH_FIELD_WEIGHTS.description) descriptionHits++;
+        score += best;
+      }
+      const qualifies = strongHits > 0 || descriptionHits >= 2;
+      if (qualifies && score > 0) scored.push({ definition, score, index });
+    });
+    return scored
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .map((entry) => entry.definition);
+  };
 
+  /**
+   * The Fuse fallback for a query no word of which names anything, which is mostly a name whose
+   * letters are all wrong (`Webfetch` spelled `Wibfetch`). The records it needs are built here
+   * rather than for every search: ranking answers nearly every query on the definitions alone, and
+   * indexing the whole catalog to throw it away costs every ToolSearch call.
+   */
+  const fuseFallback = (
+    definitions: ToolDefinition[],
+    query: string,
+    count: number,
+  ): ToolDefinition[] => {
+    const records: SearchRecord[] = definitions.map((definition) => ({
+      definition,
+      name: definition.name,
+      aliases: definition.catalog?.aliases?.join(' ') ?? '',
+      keywords: definition.catalog?.keywords?.join(' ') ?? '',
+      description: definition.description,
+      category: definition.catalog?.category ?? 'other',
+      namespace: definition.catalog?.namespace ?? '',
+    }));
     const fuse = new Fuse(records, {
       includeScore: true,
       threshold: 0.42,
@@ -347,11 +541,31 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
         { name: 'namespace', weight: 1 },
       ],
     });
+    return fuse.search(query, { limit: count }).map((result) => result.item.definition);
+  };
+
+  const search = (
+    query: string,
+    category?: ToolCategory,
+    namespace?: string,
+    limit = config.settings.toolDiscovery.searchLimit,
+  ): ToolSearchMatch[] => {
+    const active = new Set(
+      activeDefinitions().map((definition) => canonicalToolName(definition.name)),
+    );
+    const candidates = authorized()
+      .filter((definition) => definition.name !== 'ToolSearch')
+      .filter((definition) => !active.has(canonicalToolName(definition.name)))
+      .filter((definition) => !category || definition.catalog?.category === category)
+      .filter((definition) => !namespace || definition.catalog?.namespace === namespace);
+
     const count = Math.max(1, Math.min(5, limit));
-    const matches = query.trim()
-      ? fuse.search(query, { limit: count }).map((result) => result.item)
-      : records.slice(0, count);
-    return matches.map(({ definition }) => ({
+    const ranked = query.trim() ? rankByWords(query, candidates) : candidates;
+    const matchedDefinitions =
+      ranked.length > 0 || !query.trim()
+        ? ranked.slice(0, count)
+        : fuseFallback(candidates, query, count);
+    return matchedDefinitions.map((definition) => ({
       name: definition.name,
       description: definition.description,
       summary: definition.catalog?.summary ?? summaryFor(definition),
@@ -360,6 +574,29 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       loaded: false,
     }));
   };
+
+  /**
+   * Names of the tools already active this turn that match a query, filtered exactly as `search`
+   * filters its records: a category or namespace the call carried narrows the answer the same way
+   * there, instead of naming tools the model excluded.
+   */
+  const activeMatches = (
+    query: string,
+    filter?: { category?: ToolCategory; namespace?: string; limit?: number },
+  ): string[] =>
+    rankByWords(
+      query,
+      activeDefinitions()
+        .filter((definition) => definition.name !== 'ToolSearch')
+        .filter(
+          (definition) => !filter?.category || definition.catalog?.category === filter.category,
+        )
+        .filter(
+          (definition) => !filter?.namespace || definition.catalog?.namespace === filter.namespace,
+        ),
+    )
+      .slice(0, Math.max(1, Math.min(5, filter?.limit ?? 5)))
+      .map((definition) => definition.name);
 
   const activate = (names: string[]): string[] => {
     const allowed = new Set(authorized().map((definition) => canonicalToolName(definition.name)));
@@ -402,12 +639,39 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     pushRestriction(rawRules);
   };
 
-  const isActive = (name: string): boolean => activeSnapshot.has(canonicalToolName(name));
+  const isActive = (name: string): boolean => {
+    const canonical = canonicalToolName(name);
+    // ToolSearch is the way into the deferred catalog, so it is callable whenever the surface
+    // has it (always: `authorized()` admits it unconditionally), even in eager mode where it is
+    // left off the provider's tool list. Refusing it as `tool_not_active` told the model to
+    // "call ToolSearch" about ToolSearch.
+    return canonical === 'ToolSearch' || activeSnapshot.has(canonical);
+  };
+
+  /**
+   * Whether the run admits the tool at all — its role, the capability rule sets and the
+   * MemorySave setting — ignoring activation and the mode. A name this rejects can never be
+   * activated by a search this run, so the registry's refusal names the allowed tools instead
+   * of pointing at ToolSearch.
+   */
+  const isAuthorized = (name: string): boolean => {
+    const canonical = canonicalToolName(name);
+    if (canonical === 'ToolSearch') return true;
+    const definition = byName.get(canonical);
+    if (!definition) return false;
+    if (!definition.catalog?.roles?.includes(role)) return false;
+    if (canonical === 'MemorySave' && !isMemorySaveAvailable(config.settings)) return false;
+    return [...ruleSets.values()].every((rules) => isToolDefinitionAllowed(rules, definition));
+  };
 
   const canExecute = (call: ToolCall): boolean => {
     const name = canonicalToolName(call.name);
     if (!isActive(name)) return false;
-    if (![...ruleSets.values()].every((rules) => isToolCallAllowed(rules, call))) return false;
+    if (
+      name !== 'ToolSearch' &&
+      ![...ruleSets.values()].every((rules) => isToolCallAllowed(rules, call))
+    )
+      return false;
     if (state.loaded.has(name)) state.loaded.set(name, ++state.clock);
     return true;
   };
@@ -442,11 +706,13 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
 
   return {
     search,
+    activeMatches,
     activate,
     restrict,
     pushRestriction,
     previewRestriction,
     isActive,
+    isAuthorized,
     canExecute,
     activeDefinitions,
     catalogSummary,

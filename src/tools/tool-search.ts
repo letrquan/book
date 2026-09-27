@@ -76,6 +76,14 @@ export const toolSearchTools: ToolDefinition[] = [
         typeof args.namespace === 'string' ? args.namespace : undefined,
         typeof args.limit === 'number' ? args.limit : undefined,
       );
+      // Named on every answer, not only when nothing matched: a model that searched for a tool it
+      // already has should learn that it has it rather than read a list of others.
+      const active =
+        context.toolDiscovery.activeMatches?.(query, {
+          category: args.category as ToolCategory | undefined,
+          namespace: typeof args.namespace === 'string' ? args.namespace : undefined,
+          limit: typeof args.limit === 'number' ? args.limit : undefined,
+        }) ?? [];
       const activated = new Set(context.toolDiscovery.activate(matches.map((match) => match.name)));
       const resolvedMatches = matches.map((match) => ({
         ...match,
@@ -83,10 +91,18 @@ export const toolSearchTools: ToolDefinition[] = [
       }));
       const loadedMatches = resolvedMatches.filter((match) => match.loaded);
       if (matches.length === 0) {
-        return toolSuccess(`No authorized deferred tools matched: ${query}`, {
-          data: { query, matches: [] },
-          presentation: { kind: 'search', summary: 'No deferred tools matched' },
-        });
+        return toolSuccess(
+          active.length > 0
+            ? `No deferred tools matched: ${query}. Already active this turn, so call them directly: ${active.join(', ')}.`
+            : `No authorized deferred tools matched: ${query}`,
+          {
+            data: { query, matches: [], active },
+            presentation: {
+              kind: 'search',
+              summary: active.length > 0 ? 'Already active' : 'No deferred tools matched',
+            },
+          },
+        );
       }
       if (loadedMatches.length === 0) {
         return toolFailure(
@@ -99,14 +115,16 @@ export const toolSearchTools: ToolDefinition[] = [
           },
         );
       }
-      const content = loadedMatches
-        .map(
-          (match) =>
-            `${match.name} [${match.category}${match.namespace ? `:${match.namespace}` : ''}] - ${match.summary}`,
-        )
-        .join('\n');
+      const content =
+        loadedMatches
+          .map(
+            (match) =>
+              `${match.name} [${match.category}${match.namespace ? `:${match.namespace}` : ''}] - ${match.summary}`,
+          )
+          .join('\n') +
+        (active.length > 0 ? `\nAlready active this turn: ${active.join(', ')}.` : '');
       return toolSuccess(content, {
-        data: { query, matches: resolvedMatches },
+        data: { query, matches: resolvedMatches, active },
         presentation: {
           kind: 'search',
           summary: `Loaded ${loadedMatches.length} tool${loadedMatches.length === 1 ? '' : 's'} for the next turn`,
