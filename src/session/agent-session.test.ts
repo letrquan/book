@@ -15,12 +15,13 @@ import type {
   SessionRecord,
   TurnCheckpointRecordData,
 } from '../types/sessions.js';
-import type { Message } from '../types/messages.js';
+import type { Message, Usage } from '../types/messages.js';
 import { createSessionFixture } from '../test/session-fixture.js';
 import { SessionStore } from './store.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { hasExternalContext } from '../tools/memory-save.js';
 import { SessionRuntime } from './runtime.js';
+import type { ProviderResponseMetadata } from '../types/providers.js';
 
 function compactedResult(): Extract<CompactResult, { status: 'compacted' }> {
   const replacementHistory: Message[] = [
@@ -1742,6 +1743,205 @@ describe('AgentSession', () => {
     expect(operation.isCurrent()).toBe(true);
     expect(session.finishSend(operation)).toBe(true);
     expect(session.finishSend(operation)).toBe(false);
+  });
+});
+
+describe('AgentSession usage records across runs sharing a root', () => {
+  /**
+   * One model call's worth of usage, as the provider reports it.
+   */
+  const turnUsage = (promptTokens: number, completionTokens: number) => ({
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+  });
+  const meta = {
+    provider: 'openai-compatible',
+    requestedModel: 'gpt-5',
+    responseModel: 'gpt-5',
+    responseId: 'response-1',
+  } as unknown as ProviderResponseMetadata;
+
+  it('persists each run under a shared root once, never the whole root total', async () => {
+    // A managed agent's completion is handed to the model as a NEW run under the
+    // root its spawning turn already used, in the same process. The spawn's spend
+    // is already on disk, so writing the root's whole inclusive total again would
+    // bill it twice on every delivered completion.
+    const runtime = new SessionRuntime();
+    const spendPerRun = [turnUsage(100, 10), turnUsage(20, 2)];
+    let run = 0;
+    // Mirrors `runAgentLoop`'s `recordTurnUsage`: charge the root, THEN report.
+    const runLoop: AgentLoopRunner = async (
+      _config,
+      _registry,
+      _prompt,
+      _history,
+      callbacks,
+      _mode,
+      options,
+    ) => {
+      const turn = spendPerRun[run++];
+      if (options?.runContext) runtime.runAccounting.record(options.runContext, turn, meta);
+      callbacks.onUsage?.(turn, meta);
+      return [];
+    };
+    const session = new AgentSession({ runtime, runLoop });
+    const records: SessionRecord[] = [];
+
+    for (const runId of ['spawning-turn', 'completion-turn']) {
+      await session.run({
+        config: defaultConfig(),
+        registry: {} as ToolRegistry,
+        prompt: 'prompt',
+        history: [],
+        sessionId: 'session-1',
+        runContext: createAgentRunContext({
+          sessionId: 'session-1',
+          runId,
+          rootRunId: 'shared-root',
+          source: 'tui',
+          startedAt: 1,
+        }),
+        timelineStore: { append: (_id, record) => records.push(record) },
+        callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+      });
+    }
+
+    const persisted = records
+      .filter((record) => record.type === 'usage')
+      .map((record) => (record.data as { usage: Usage }).usage);
+    // The stored record keeps every spend field, so a read of the session sums to
+    // the objective's real total rather than to one of its runs.
+    expect(persisted).toEqual(
+      spendPerRun.map((spend) => ({
+        ...spend,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      })),
+    );
+  });
+
+  it('leaves a skipped record for the next writer instead of marking it persisted', async () => {
+    // A run that is no longer the current session, or that has nowhere to write,
+    // appends nothing. Marking its spend persisted anyway would hand it to no
+    // record at all: the tokens would be counted as written for every later run
+    // under that root and never reach disk, so the next process restored a carry
+    // short by exactly the abandoned turn.
+    const runtime = new SessionRuntime();
+    const spendPerRun = [turnUsage(100, 10), turnUsage(20, 2)];
+    let run = 0;
+    const runLoop: AgentLoopRunner = async (
+      _config,
+      _registry,
+      _prompt,
+      _history,
+      callbacks,
+      _mode,
+      options,
+    ) => {
+      const turn = spendPerRun[run++];
+      if (options?.runContext) runtime.runAccounting.record(options.runContext, turn, meta);
+      callbacks.onUsage?.(turn, meta);
+      return [];
+    };
+    const session = new AgentSession({ runtime, runLoop });
+    const records: SessionRecord[] = [];
+    const shared = { sessionId: 'session-1', rootRunId: 'shared-root', source: 'tui' as const };
+
+    // The first run's turn is abandoned: the session moved on before it reported.
+    await session.run({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      prompt: 'prompt',
+      history: [],
+      sessionId: 'session-1',
+      runContext: createAgentRunContext({ ...shared, runId: 'abandoned-turn', startedAt: 1 }),
+      timelineStore: { append: (_id, record) => records.push(record) },
+      isCurrent: () => false,
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+    expect(records).toEqual([]);
+
+    // The next run under the same root writes both turns: the skipped one is
+    // still unpersisted spend.
+    await session.run({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      prompt: 'prompt',
+      history: [],
+      sessionId: 'session-1',
+      runContext: createAgentRunContext({ ...shared, runId: 'later-turn', startedAt: 2 }),
+      timelineStore: { append: (_id, record) => records.push(record) },
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+
+    const persisted = records
+      .filter((record) => record.type === 'usage')
+      .map((record) => (record.data as { usage: Usage }).usage);
+    expect(persisted).toEqual([
+      {
+        promptTokens: 120,
+        completionTokens: 12,
+        totalTokens: 132,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+    ]);
+  });
+
+  it('persists root spend the run never reported when the caller passed no runContext', async () => {
+    // `run()` mints a run context for a caller that passed none, and the loop
+    // charges that root. Keying the record off the request's (absent) context
+    // skipped the root's watermark and wrote only the reported turn, so a managed
+    // agent's spend — routed to the root, never through `onUsage` — reached no
+    // record and no later process restored it.
+    const runtime = new SessionRuntime();
+    const runLoop: AgentLoopRunner = async (
+      _config,
+      _registry,
+      _prompt,
+      _history,
+      callbacks,
+      _mode,
+      options,
+    ) => {
+      const turn = turnUsage(40, 4);
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, turn, meta);
+        // A managed agent's spend: in the root, never reported to `onUsage`.
+        runtime.runAccounting.record(options.runContext, turnUsage(70, 7), {
+          ...meta,
+          responseId: 'response-agent',
+        } as unknown as ProviderResponseMetadata);
+      }
+      callbacks.onUsage?.(turn, meta);
+      return [];
+    };
+    const session = new AgentSession({ runtime, runLoop });
+    const records: SessionRecord[] = [];
+
+    await session.run({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      prompt: 'prompt',
+      history: [],
+      sessionId: 'session-1',
+      timelineStore: { append: (_id, record) => records.push(record) },
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+
+    const persisted = records
+      .filter((record) => record.type === 'usage')
+      .map((record) => (record.data as { usage: Usage }).usage);
+    expect(persisted).toEqual([
+      {
+        promptTokens: 110,
+        completionTokens: 11,
+        totalTokens: 121,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+    ]);
   });
 });
 

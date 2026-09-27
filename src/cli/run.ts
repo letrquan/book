@@ -284,6 +284,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           persistSession: options.sessionPersistence as boolean | undefined,
           includeHookEvents: options.includeHookEvents as boolean | undefined,
           includePartialMessages: options.includePartialMessages as boolean | undefined,
+          includeResultMessages: options.includeResultMessages as boolean | undefined,
           promptSuggestions: options.promptSuggestions as boolean | undefined,
         });
       } finally {

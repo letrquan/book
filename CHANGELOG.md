@@ -6,6 +6,14 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **The stream-JSON `result` event no longer carries the conversation by default** (#307). This is
+  a **breaking change for hosts that read `result.messages` from stream-JSON output**: the field is
+  absent unless the new `--include-result-messages` flag is passed, because a long run's history is
+  500 KB – 1 MB on that one line and every reader had to buffer it whole to reach the field it came
+  for. `--output-format json` and the SDK's own `result` are unchanged and still carry `messages`.
+  The event also gained a top-level `outcome` beside the top-level `stopReason`, so the supervised
+  loop documented in `docs/guide/long-runs.md` — which reads `.outcome.reason` and saw `null` — works
+  as written. `result.outcome` and `result.stopReason` are kept for hosts already reading them there.
 - **System prompt v5** (`book-system-prompt-v5`): the prompt and the tool descriptions stop
   contradicting each other. `TaskCreate` no longer says to use it instead of `TodoWrite`; both
   descriptions now say the todo list is the one shown in every turn's `<session-state>`.
@@ -401,6 +409,21 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A resumed print run no longer counts its restored spend twice** (#294). The `usage` record a
+  run writes is how the next process restores what the objective has cost, and two things made it
+  wrong: the first record of a resumed run wrote the restored total again instead of this run's
+  first request, and the loop reported a response to the host before charging it to run accounting,
+  so the snapshot the record is computed from never held the request being reported — every run
+  wrote its first request twice and lost its last. `RunAccounting` is now charged before `onUsage`
+  runs (the order the compactor's model calls already used), and the recorded figure is the part of
+  the root's total no earlier record covers, tracked as a watermark on the root that starts at its
+  seeded carry. Each restart now adds exactly what it spent, `--max-budget-usd` bounds the
+  objective rather than running out early, and a second run under a root an earlier run already
+  used — a delivered managed-agent completion — can no longer re-persist that run's spend.
+- **Preflight no longer reports a clip it did not make** (#306). `clipHistoryToolResults` rebuilt
+  every message that had tool results, so the loop's identity check read a clip on a history where
+  nothing crossed the cap, rebuilt the request, and logged `preflight tool outputs clipped` for an
+  unchanged conversation. A message with nothing to cut is now handed back as the same object.
 - **Book's own `NODE_ENV` no longer reaches the commands it starts** (#293). `runtime-env.ts` sets
   `NODE_ENV=production` before React loads, because the development renderer is 2-3x slower per
   pass, and every child inherited it: `npm install` in a project dropped its devDependencies, a

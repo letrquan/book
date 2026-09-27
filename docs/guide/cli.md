@@ -79,6 +79,7 @@ writing bad JSON.
 | `-q, --quiet`                         | Print mode: no progress lines on stderr                                                                                         |
 | `--include-hook-events`               | Include hook lifecycle events in stream-JSON output                                                                             |
 | `--include-partial-messages`          | Include partial assistant text deltas in stream-JSON output                                                                     |
+| `--include-result-messages`           | Include the full message history in the stream-JSON result event                                                                |
 | `--prompt-suggestions`                | Ask for follow-up prompt suggestions after completion                                                                           |
 
 ## Print mode
@@ -128,6 +129,21 @@ errors as `retry` and `error` records on stdout instead. Every format writes `wa
 slash command whose shell substitution failed) and `⚠` startup notices to stderr. The SDK's
 `query()` runs quiet: no progress or `retry:` lines reach the host's stderr, since every tool call
 reaches it as an event, but `error:` and `warning:` lines still do.
+
+**The `result` record.** The last line of a `stream-json` run carries the terminal outcome at the
+top level, beside `stopReason`, so a supervisor reads it without reaching into the payload:
+
+```json
+{ "type": "result", "stopReason": "normal_completion",
+  "outcome": { "status": "completed", "reason": "normal_completion", "partialOutput": false },
+  "result": { "usage": { … }, "accounting": { … }, "answer": "…", "outcome": { … } } }
+```
+
+`result.outcome` and `result.stopReason` carry the same values for hosts already reading them there.
+The message history is **not** in `result` by default: a long run's conversation is hundreds of
+kilobytes on this one line, which every reader has to buffer before it can look at the field it came
+for. Pass `--include-result-messages` to get `result.messages` back. `--output-format json` and the
+SDK's own `result` are unaffected and always carry the conversation.
 
 A closed reasoning block the reply opens with (`<think>…</think>`,
 `<reasoning_context>…</reasoning_context>`, several in a row, or an empty one) is stored as

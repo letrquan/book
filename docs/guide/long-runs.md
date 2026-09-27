@@ -179,6 +179,10 @@ ID=$(uuidgen)
 while ! book -p --session-id "$ID" --output-format stream-json         --max-budget-usd 500 "$OBJECTIVE"      | jq -e 'select(.type=="result") | .outcome.reason=="objective_complete"'; do sleep 30; done
 ```
 
+The `result` record carries `outcome` at its top level, beside `stopReason`, which is what that
+selector reads. It leaves the conversation out, so the last line of a multi-hour run stays small
+however long the session grew; add `--include-result-messages` if the loop wants the history too.
+
 `--max-budget-usd` accumulates across restarts of the same session, so the cap bounds the objective
 rather than each process.
 

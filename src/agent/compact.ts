@@ -1672,34 +1672,46 @@ function splitUserLedBundles(messages: readonly Message[]): {
   return { leading, bundles };
 }
 
+/**
+ * Clamp every oversized tool result to `maxTokens`, leaving the rest alone.
+ *
+ * A message whose results all fit comes back as the very same object, carrying
+ * the very same `toolResults` array: callers decide whether anything was cut by
+ * comparing identities (`clippedHistory.some((message, index) => message !==
+ * newHistory[index])` in the agent loop), and rebuilding an uncut message made
+ * that check read a clip that never happened — the request was rebuilt and
+ * `preflight tool outputs clipped` was logged for an unchanged history. The
+ * returned array is always a new one; only its elements are preserved.
+ */
 export function clipHistoryToolResults(
   bundle: readonly Message[],
   maxTokens = RETAINED_TOOL_RESULT_MAX_TOKENS,
 ): Message[] {
   return bundle.map((message) => {
     if (!message.toolResults?.length) return message;
-    return {
-      ...message,
-      toolResults: message.toolResults.map((result) => {
-        const content = result.content;
-        if (estimateTextTokens(content) <= maxTokens) return result;
-        const maxChars = maxTokens * 4;
-        const half = Math.floor((maxChars - 100) / 2);
-        const ref =
-          result.artifacts?.outputPath ??
-          result.artifacts?.eventRef ??
-          `session://current/tool-result/${message.id}/${result.toolCallId}`;
-        const clipped = `${content.slice(0, half)}\n[... compacted tool output; retrieve ${ref} ...]\n${content.slice(-half)}`;
-        return {
-          ...result,
-          content: clipped,
-          presentation: result.presentation
-            ? { ...result.presentation, details: clipped }
-            : result.presentation,
-          artifacts: { ...result.artifacts, eventRef: ref },
-        };
-      }),
-    };
+    let clippedAny = false;
+    const toolResults = message.toolResults.map((result) => {
+      const content = result.content;
+      if (estimateTextTokens(content) <= maxTokens) return result;
+      clippedAny = true;
+      const maxChars = maxTokens * 4;
+      const half = Math.floor((maxChars - 100) / 2);
+      const ref =
+        result.artifacts?.outputPath ??
+        result.artifacts?.eventRef ??
+        `session://current/tool-result/${message.id}/${result.toolCallId}`;
+      const clipped = `${content.slice(0, half)}\n[... compacted tool output; retrieve ${ref} ...]\n${content.slice(-half)}`;
+      return {
+        ...result,
+        content: clipped,
+        presentation: result.presentation
+          ? { ...result.presentation, details: clipped }
+          : result.presentation,
+        artifacts: { ...result.artifacts, eventRef: ref },
+      };
+    });
+    if (!clippedAny) return message;
+    return { ...message, toolResults };
   });
 }
 

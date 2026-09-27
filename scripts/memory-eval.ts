@@ -104,6 +104,21 @@ interface SessionResult {
   inputTokens: number;
 }
 
+/**
+ * The `book` command line one eval session runs.
+ *
+ * `--include-result-messages` asks for the conversation in the stream-json
+ * `result` event, which is where this harness reads the answer from: #307 made
+ * that field opt-in to keep a long run's last line small, and without the flag
+ * every session scored an empty answer.
+ */
+export function sessionArgs(model: string, resume: boolean): string[] {
+  const args = [CLI, '--print', '--model', model, '--permission-mode', 'bypassPermissions'];
+  args.push('--output-format', 'stream-json', '--include-result-messages');
+  if (resume) args.push('--continue');
+  return args;
+}
+
 /** One `book --print` conversation turn; `resume` continues the workspace's latest session. */
 async function session(
   model: string,
@@ -113,9 +128,7 @@ async function session(
   resume: boolean,
   timeoutMs: number,
 ): Promise<SessionResult> {
-  const args = [CLI, '--print', '--model', model, '--permission-mode', 'bypassPermissions'];
-  args.push('--output-format', 'stream-json');
-  if (resume) args.push('--continue');
+  const args = sessionArgs(model, resume);
   return new Promise((resolvePromise, reject) => {
     // `--model` decides the model; an inherited BOOK_MODEL must not.
     const { BOOK_MODEL: _ignored, ...inherited } = process.env;
