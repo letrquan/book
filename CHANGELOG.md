@@ -397,6 +397,40 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Read, Grep and tool-result presentation: five defects** (#308, #309, #310, #311, #316).
+  - **A `Read` no longer numbers a phantom line past a file's final newline** (#309). `lineCount`
+    already excluded the empty element `split('\n')` leaves after a trailing newline, but the page
+    loop was bounded by the array, so `a\nb\n` read as `1: a`, `2: b`, `3: ` and an empty file as
+    `1: `. The loop is bounded by `lineCount` now, so `"a\n"` and `"a\n\n"` are finally two
+    different reads, and offset 1 still reads an empty file — as the single notice line
+    `[Empty file: 0 lines.]`, because an empty tool result reads as a call that produced no output
+    at all. A file of exactly `"\n"` still reads as its one blank line, `1: `. The row's line count
+    matches the numbered lines shown, and results persisted by an older build — which do carry the
+    phantom line — still reconstruct correctly.
+  - **A fractional `offset` or `limit` is refused, and floored if it reaches the tool anyway** (#310).
+    `offset: 2.5` printed `2.5: undefined` and offered `Continue with offset: 4.5`. Both are
+    `type: 'integer'` in `Read`'s schema now, so a fraction is rejected as `invalid_arguments`
+    before the tool runs, and `readFile` floors both defensively for a direct caller. This is a
+    tool-schema change and so costs one prompt-cache miss the first time a session runs it.
+  - **Four outline defects** (#316). A conditional `noexcept(noexcept(a.swap(b)))` and a
+    `GUARDED_BY(mu_.lock())`-style macro argument both dropped their C++ member, because the
+    qualifier pattern's `[^()]*` could not hold a nested `(`; it nests as deep as the generic-argument
+    pattern does now. `u8'a'` was read as the `1'000` digit separator, which unbalanced the
+    signature and dropped `void f(char8_t c = u8'a') {`; the encoding prefix now tells the two apart.
+    A nested `union` hid its members, so `union` joined the keyword list. And the generic test-chain
+    arm listed any `it.<name>('title')`, so `it.next('resume');` was taken for a test block; it now
+    also requires the call to open a body, which `it.custom('titled', () => {` does.
+  - **A `Grep` row counts in the unit `output_mode` asks for** (#311). The structured presentation
+    counted `/:\d+:/` lines whatever the mode, so a `count` page holding 57 matches across two
+    files read `2 matches` and a `files_with_matches` page read `3 matches` rather than `3 files`.
+    One exported function now derives both the row's count and the `Found N …` summary from the
+    mode, and the TUI's own fallback calls it rather than keeping a second copy.
+  - **A failed command keeps the tail of its output** (#308). Only a killed command did: any other
+    failure was head-clipped, so the model read the `act()` warnings at the top of a test run and
+    never the `Tests 2 failed | 10 passed` every runner prints last. Every non-success result is now
+    clipped like a timeout — error line and remediation at the head, the tail of the output after,
+    with a notice naming the full output file — in the structured message, in the row's details, and
+    in the renderer fallback. A successful result keeps the head clip.
 - **Malformed tool-call arguments are repaired conservatively instead of refused** (#242). Three
   shapes repair to the arguments the model sent: a control character written literally inside a
   string is escaped, a comma directly before a `}` or `]` is dropped, and closing brackets missing

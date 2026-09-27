@@ -8,6 +8,7 @@ import { fileTools } from './file.js';
 import {
   normalizeToolResult,
   readLineMetadata,
+  readResultMetadata,
   boundToolResultOutput,
   replaceToolResult,
   toolFailure,
@@ -197,7 +198,8 @@ describe('ToolResult V2', () => {
       );
 
       expect(Buffer.byteLength(toolResultModelContent(result))).toBeLessThanOrEqual(50 * 1024);
-      expect(result.structuredError?.message).toContain('Output truncated');
+      // A failure keeps its tail (#308), so its notice is the tail's notice.
+      expect(result.structuredError?.message).toContain('Earlier output truncated');
       expect(result.artifacts?.outputPath).toBeTruthy();
     } finally {
       rmSync(workspace, { recursive: true, force: true });
@@ -366,6 +368,139 @@ describe('ToolResult V2', () => {
   it('keeps Read row counts whole for a fractional offset', () => {
     expect(readLineMetadata(2.5, 3.5)).toEqual(['3 lines', '2-4']);
     expect(readLineMetadata(1, 0.5)).toEqual(['empty']);
+  });
+
+  // #311: the row counted `/:\d+:/` lines whatever `output_mode` asked for, so
+  // a `count` page of two files holding 57 matches read as `2 matches`, and
+  // three files read as `3 matches` rather than `3 files`.
+  it.each([
+    {
+      name: 'content',
+      args: { pattern: 'needle', output_mode: 'content' },
+      content: 'src/a.ts:12: const needle = 1;\nsrc/b.ts:45: const needle = 2;\n',
+      metadata: ['2 matches'],
+      summary: 'Found 2 matches',
+    },
+    {
+      name: 'count',
+      args: { pattern: 'needle', output_mode: 'count' },
+      content: 'src/a.ts:30\nsrc/b.ts:27\n',
+      metadata: ['57 matches'],
+      summary: 'Found 57 matches',
+    },
+    {
+      name: 'files_with_matches',
+      args: { pattern: 'needle', output_mode: 'files_with_matches' },
+      content: 'src/a.ts\nsrc/b.ts\nsrc/c.ts\n',
+      metadata: ['3 files'],
+      summary: 'Found 3 files',
+    },
+    {
+      name: 'a search with no matches',
+      args: { pattern: 'needle' },
+      content: 'No matches found',
+      metadata: ['0 matches'],
+      summary: 'Found 0 matches',
+    },
+  ])(
+    'counts a Grep row in the units of $name (#311)',
+    async ({ args, content, metadata, summary }) => {
+      const registry = createRegistry();
+      registry.register({
+        name: 'Grep',
+        description: 'Search file contents',
+        parameters: {
+          type: 'object',
+          properties: { pattern: { type: 'string' }, output_mode: { type: 'string' } },
+          required: ['pattern'],
+        },
+        execute: async () => toolSuccess(content),
+      });
+
+      const result = await registry.execute({ id: 'grep', name: 'Grep', arguments: args }, context);
+
+      expect(result.presentation?.metadata).toEqual(metadata);
+      expect(result.presentation?.summary).toBe(summary);
+    },
+  );
+
+  // A result persisted by a build that numbered the empty element `split`
+  // leaves after a final newline still carries it, so the reconstruction keeps
+  // reading past a trailing `N: `.
+  it('still reads a legacy Read row past the phantom line a final newline left (#309)', () => {
+    expect(readResultMetadata({ filePath: 'a.ts' }, '1: a\n2: b\n3: ')).toEqual(['2 lines']);
+  });
+
+  // #308: only a killed command kept its tail. A failed run was head-clipped, so
+  // the model read the act() warnings at the top and never the summary that
+  // says which tests failed, which every test runner prints last.
+  const failedRun = () => {
+    const output = `START-OF-TEST-RUN\n${'act() call-order warning\n'.repeat(9_000)}Tests  2 failed | 10 passed\n`;
+    expect(Buffer.byteLength(output)).toBeGreaterThan(50 * 1024);
+    return toolFailure('Command failed with exit code 1', {
+      code: 'command_failed',
+      remediation: 'Read the failing test names and fix them.',
+      content: output,
+      presentation: { details: output },
+    });
+  };
+
+  it('keeps the tail of a failed result through the bounding step (#308)', async () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'book-failed-tail-'));
+    try {
+      const bounded = await boundToolResultOutput(
+        failedRun(),
+        process.cwd(),
+        undefined,
+        artifactRoot,
+      );
+      const content = toolResultModelContent(bounded);
+
+      expect(Buffer.byteLength(content)).toBeLessThanOrEqual(50 * 1024);
+      expect(content).toContain('ERROR [command_failed]: Command failed with exit code 1');
+      // What a head clip drops: the act() warnings at the top of the run. What
+      // it kept by dropping them: the verdict every test runner prints last.
+      expect(content).not.toContain('START-OF-TEST-RUN');
+      expect(content).toContain('Tests  2 failed | 10 passed');
+      expect(content).toContain('Full output:');
+      expect(content).toContain('Fix: Read the failing test names and fix them.');
+      // The transcript row reads the same way the model does.
+      const details = bounded.presentation!.details!;
+      expect(Buffer.byteLength(details)).toBeLessThanOrEqual(50 * 1024);
+      expect(details).not.toContain('START-OF-TEST-RUN');
+      expect(details).toContain('Tests  2 failed | 10 passed');
+      expect(details).toContain('Full output:');
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the tail of a failed result for a caller that renders without bounding (#308)', () => {
+    const content = toolResultModelContent(failedRun());
+
+    expect(Buffer.byteLength(content)).toBeLessThanOrEqual(50 * 1024);
+    expect(content).toContain('ERROR [command_failed]: Command failed with exit code 1');
+    expect(content).toContain('Tests  2 failed | 10 passed');
+  });
+
+  it('still head-clips a successful result (#308)', async () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'book-success-head-'));
+    const output = `HEAD-OF-OUTPUT\n${'x'.repeat(200_000)}`;
+    try {
+      const bounded = await boundToolResultOutput(
+        toolSuccess(output, { presentation: { details: output } }),
+        process.cwd(),
+        undefined,
+        artifactRoot,
+      );
+      const content = toolResultModelContent(bounded);
+
+      expect(Buffer.byteLength(content)).toBeLessThanOrEqual(50 * 1024);
+      expect(content).toContain('HEAD-OF-OUTPUT');
+      expect(content).toContain('Output truncated');
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
   });
 
   it('upgrades persisted legacy results without retaining legacy projections', () => {
