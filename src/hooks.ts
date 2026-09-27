@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { buildChildEnv } from './child-env.js';
 import type { HookEntry, HookEvent } from './settings.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { parsePatch } from './tools/patch.js';
@@ -292,13 +293,12 @@ async function runSingleHook(
     const child = spawn(entry.command, {
       shell: true,
       detached: process.platform !== 'win32',
-      env: {
-        ...process.env,
+      env: buildChildEnv(process.env, {
         ...entry.env,
         BOOK_WORKSPACE: ctx.workspace,
         ...(ctx.sessionId ? { BOOK_SESSION_ID: ctx.sessionId } : {}),
         ...(ctx.agentId ? { BOOK_AGENT_ID: ctx.agentId } : {}),
-      },
+      }),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     // Decode as UTF-8 text rather than per-chunk: a multibyte character split across two pipe

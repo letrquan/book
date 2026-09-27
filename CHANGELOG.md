@@ -19,7 +19,11 @@ All notable changes to this project are documented in this file.
   descriptions now say the todo list is the one shown in every turn's `<session-state>`.
   `MemorySave` no longer asks for conventions the code already shows, matching the kernel's memory
   rules. A subagent, or a session with `agents.mode: "off"`, no longer gets the line about
-  batching `AgentSpawn` calls it cannot make. The `Bash` description is a complete sentence.
+  batching `AgentSpawn` calls it cannot make. The `Bash` description is a complete sentence, and it
+  and `BashOutput`'s now say what actually happens to a command that reaches its `timeout` (it moves
+  to a background shell rather than being killed, and `wait_ms` waits for one instead of polling) —
+  a description that said a command is killed while the tool no longer killed it was the worst kind
+  of wrong.
 - **`ApplyPatch` matches hunks in order.** A hunk whose context occurs more than once in the file
   is now accepted when exactly one occurrence lies at or after the end of the previous hunk. This
   is the shape of most real `ambiguous_patch_context` failures: a later hunk whose context is a
@@ -420,6 +424,53 @@ All notable changes to this project are documented in this file.
   every message that had tool results, so the loop's identity check read a clip on a history where
   nothing crossed the cap, rebuilt the request, and logged `preflight tool outputs clipped` for an
   unchanged conversation. A message with nothing to cut is now handed back as the same object.
+- **Book's own `NODE_ENV` no longer reaches the commands it starts** (#293). `runtime-env.ts` sets
+  `NODE_ENV=production` before React loads, because the development renderer is 2-3x slower per
+  pass, and every child inherited it: `npm install` in a project dropped its devDependencies, a
+  test runner read a production build flag, and a framework refused to serve a source map — none
+  of it visible, because the user who set nothing had no way to see why. The default is now marked
+  as one Book invented, and `buildChildEnv` keeps it off every child on every spawn path: `Bash`
+  foreground and background, hooks, MCP stdio servers, a `Check` command, slash-command expansion,
+  clipboard and git helpers, and Book's own detached job runner and supervisor — the last being the
+  one a persistent job's command would otherwise inherit through. A `NODE_ENV` the user exported
+  before starting Book still passes through, as does one set explicitly in `ToolContext.env`, a
+  hook's own `env`, or an MCP server's `env` — including one declaring `NODE_ENV=production`, which
+  is the single value an explicit request and Book's default agree on. An override carrying the
+  marker is a copy of Book's own environment and so counts as no choice, which matters because
+  `ToolContext.env` _is_ `process.env` in the agent.
+- **Session shells end with Book, process tree and all** (#314). `dispose()` sent `SIGTERM` to the
+  direct child, which is the shell wrapper rather than the command: on macOS and Linux the session
+  shell leads its own process group, so the group survived Book, and on Windows the worker it
+  started kept running with the console still attached. Dispose now runs the same tree escalation
+  `KillShell` uses — the process group on POSIX, `taskkill /T /F` on Windows — and never the direct
+  kill first, because `taskkill /T` walks the tree from a root that has to still be alive. A child
+  whose teardown is already under way is marked as such and skipped by dispose, so an abort in the
+  same tick as a `dispose()` cannot kill the root out from under its own teardown. A
+  `lifetime: "persistent"` job is untouched: it exists to outlive Book. `dispose()` still returns
+  before the trees are down, because it cannot promise otherwise; the teardown's own children and
+  timers hold an exit open until they finish, which is what a host that ends by letting Node
+  process its handles needs.
+- **A foreground command that reaches its timeout is not killed** (#302). It used to die at the
+  deadline, and the model got `timed_out` with no result and usually a re-run of the whole gate that
+  took five minutes to time out. The running process is now handed to the session's
+  `ShellJobManager` as a session background shell: the same record shape, events, stream handling
+  and buffer cap as `run_in_background`, and a success result carrying the output so far plus the
+  `shell_id` to read it with `BashOutput` or stop it with `KillShell`. Adoption is refused, and the
+  old kill-and-report happens instead, when it is impossible — no manager for the context, a
+  disposed one, or a process that exited as the deadline arrived. Not on cancellation, not at the
+  10 MB buffer cap, and never with a deadline of its own: a detached command is not on a clock it
+  never agreed to. It is always session lifetime, and a session shell's tree ends with Book.
+- **`BashOutput` can wait for a shell instead of being polled** (#313). Without `wait_ms` a slow
+  command cost one tool call per turn, each learning only "still running", so a four-minute test
+  suite took eight turns. `wait_ms` waits for the shell to reach a terminal status or for the
+  requested time, whichever comes first, and reports the status either way. It does not return early
+  on new output, so a chatty runner costs the same wait as a silent one; it ends early when the turn
+  is cancelled and kills nothing, leaving the shell to be waited on again; a `wait_ms` above
+  `toolTimeoutCeilingMs` is refused rather than quietly shortened, as `Bash` refuses an over-limit
+  `timeout`; and a still-running shell with nothing new to say names the call that would wait
+  instead of polling. A session shell is subscribed to, and a persistent job — which lives in
+  another process — is polled. A `BashOutput` naming a shell that does not exist is refused rather
+  than reported as an empty read.
 - **Read, Grep and tool-result presentation: five defects** (#308, #309, #310, #311, #316).
   - **A `Read` no longer numbers a phantom line past a file's final newline** (#309). `lineCount`
     already excluded the empty element `split('\n')` leaves after a trailing newline, but the page

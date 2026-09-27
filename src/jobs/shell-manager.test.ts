@@ -1,8 +1,8 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BackgroundShellStore } from '../types/runtime.js';
 import { persistentJobPaths } from './persistent-store.js';
 import { isProcessAlive } from './process-tree.js';
@@ -488,4 +488,129 @@ describe('ShellJobManager session jobs', () => {
     expect(manager.get(started.id)?.status).toBe('killed');
     await waitForWorkerToDisappear(workerPid);
   }, 15_000);
+
+  // `dispose()` used to `kill()` the direct child only. On Windows that child is the `cmd.exe`
+  // wrapper, so the worker it started kept running with the console still attached; on POSIX the
+  // session shell leads its own process group, and a SIGTERM to the wrapper left the group alive.
+  // Either way a session background command outlived Book (#314), which is exactly what session
+  // lifetime promises it will not do.
+  it('ends a session shell’s whole process tree on dispose', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'book-session-shell-'));
+    const pidPath = join(directory, 'grandchild.pid');
+    // A grandchild that sleeps forever and writes its own pid, so its survival is observable
+    // after the wrapper and the worker behind it are both gone.
+    const script = join(directory, 'grandchild.cjs');
+    writeFileSync(
+      script,
+      `const { spawn } = require('child_process');
+const grandchild = spawn(${JSON.stringify(process.execPath)}, ['-e', ${JSON.stringify(
+        `require('fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid)); setInterval(() => {}, 1000);`,
+      )}], { stdio: 'ignore' });
+grandchild.unref();
+console.log('tree-started');
+setInterval(() => {}, 1000);\n`,
+    );
+    const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+    const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+    managers.push(manager);
+    await manager.start({
+      command,
+      effectiveCommand: command,
+      workdir: directory,
+      env: process.env,
+      sandboxed: false,
+    });
+    await waitFor(() => existsSync(pidPath), 'grandchild pid file');
+    const grandchildPid = Number(readFileSync(pidPath, 'utf8'));
+    expect(isProcessAlive(grandchildPid)).toBe(true);
+
+    manager.dispose();
+    managers = [];
+
+    // A direct kill of the wrapper leaves the grandchild running, so this is the assertion that
+    // failed before: taskkill /T on Windows, and the process group on POSIX.
+    await waitFor(
+      () => {
+        try {
+          process.kill(grandchildPid, 0);
+          return false;
+        } catch {
+          return true;
+        }
+      },
+      'the grandchild to be ended by dispose()',
+      5_000,
+    );
+  }, 30_000);
+
+  it('ends a session process that never reported a pid', () => {
+    // No pid is no tree to walk, so the tree teardown has nothing to address and resolves without
+    // touching anything. The process itself is still running, and leaving it behind is the one
+    // outcome dispose cannot accept.
+    const kill = vi.fn();
+    const store = { nextId: 1, shells: new Map() };
+    const manager = new ShellJobManager(store);
+    store.shells.set('shell-pidless', {
+      id: 'shell-pidless',
+      command: 'started somewhere else',
+      effectiveCommand: 'started somewhere else',
+      workdir: '.',
+      process: { killed: false, kill } as unknown as ChildProcess,
+      status: 'running',
+      output: '',
+      readOffset: 0,
+      truncatedBytes: 0,
+      startedAt: 1,
+    });
+
+    manager.dispose();
+
+    expect(kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a persistent job running after dispose', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
+    const persistentRoot = join(directory, 'jobs');
+    const script = join(directory, 'survivor.cjs');
+    const pidPath = join(directory, 'survivor.pid');
+    writeFileSync(
+      script,
+      `require('fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`,
+    );
+    const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+    const manager = new ShellJobManager(
+      { nextId: 1, shells: new Map() },
+      { persistentRoot, ...ciBudgets },
+    );
+    managers.push(manager);
+    manager.configureWorkspace(directory);
+    const started = await manager.start({
+      command,
+      effectiveCommand: command,
+      workdir: directory,
+      env: process.env,
+      envOverrides: {},
+      sandboxed: false,
+      lifetime: 'persistent',
+      workspace: directory,
+    });
+    await waitFor(() => existsSync(pidPath), 'persistent worker pid file', 30_000);
+    const workerPid = Number(readFileSync(pidPath, 'utf8'));
+
+    manager.dispose();
+    managers = [];
+    // A persistent job is explicitly a job that survives Book, so dispose must not reach it.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+
+    expect(isProcessAlive(workerPid)).toBe(true);
+
+    // Re-attach and stop it so the temp tree is not left behind running.
+    const next = new ShellJobManager(
+      { nextId: 1, shells: new Map() },
+      { persistentRoot, ...ciBudgets },
+    );
+    managers.push(next);
+    next.configureWorkspace(directory);
+    expect(await next.stop(started.id)).toBe(true);
+  }, 60_000);
 });

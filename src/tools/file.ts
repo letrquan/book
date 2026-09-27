@@ -4,6 +4,7 @@ import { basename, extname } from 'node:path';
 import fg from 'fast-glob';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
+import { buildChildEnv } from '../child-env.js';
 import { markdownContentStart } from '../frontmatter.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { findRelaxedMatch } from './fuzzy-match.js';
@@ -1877,6 +1878,7 @@ async function grepSearchWithRipgrep(
       cwd: ctx.workspaceRoot,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'ignore'],
+      env: buildChildEnv(process.env, ctx.env),
     });
     let settled = false;
     let pending = '';

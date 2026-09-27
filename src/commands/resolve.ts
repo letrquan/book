@@ -1,4 +1,5 @@
 import { exec } from 'child_process';
+import { buildChildEnv } from '../child-env.js';
 import { assertProjectCommandApproved, type ProjectCommandStore } from '../command-approvals.js';
 import type { CommandContext, SlashCommand } from '../types/commands.js';
 import {
@@ -245,6 +246,9 @@ function executeInjection(
       {
         cwd: workspace,
         encoding: 'utf8',
+        // A `!command` in a slash command is a command the user wrote, not one Book chose, so it
+        // must not inherit the NODE_ENV Book defaulted for its own renderer.
+        env: buildChildEnv(),
         timeout: 5_000,
         maxBuffer: 1024 * 1024,
         signal,
