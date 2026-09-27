@@ -75,6 +75,16 @@ describe('payloadExpandHint', () => {
     expect(payloadExpandHint({ ...cut, totalRows: 7, expandedRows: 23 })).toBe('all');
   });
 
+  it('says all for a payload of exactly the expanded budget, and more for one row over', () => {
+    // The inclusive boundary. `wrapPayload` shows every row with no marker when
+    // the payload is no longer than the budget it is given, so a payload of
+    // exactly `expandedRows` rows is one `D` already shows whole. Reserving the
+    // marker's row on both sides of the comparison made a payload that fitted
+    // claim to be cut, which is the promise the marker must be able to keep.
+    expect(payloadExpandHint({ ...cut, totalRows: 7, expandedRows: 7 })).toBe('all');
+    expect(payloadExpandHint({ ...cut, totalRows: 8, expandedRows: 7 })).toBe('more');
+  });
+
   it('says nothing once the payload is open, or when nothing was cut', () => {
     expect(payloadExpandHint({ ...cut, expanded: true, expandedRows: 7 })).toBe('none');
     expect(payloadExpandHint({ ...cut, hiddenRows: 0, expandedRows: 7 })).toBe('none');

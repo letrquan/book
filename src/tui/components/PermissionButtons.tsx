@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from 'ink';
-import { useCallback, useMemo, useRef, useEffect, useLayoutEffect, useState } from 'react';
+import { useCallback, useMemo, useRef, useEffect, useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
+import { useReportLayout } from '../hooks/useReportLayout.js';
 import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN, PANEL_CHROME, frameGrid } from '../layout.js';
 import { useDensityMetrics } from '../density.js';
@@ -183,6 +184,10 @@ export function payloadExpandHint(payload: {
 }): 'none' | 'all' | 'more' {
   if (payload.expanded || payload.hiddenRows <= 0) return 'none';
   if (payload.expandedRows <= payload.collapsedRows) return 'none';
+  // `all` is a promise the key has to be able to keep, so the test is the
+  // inclusive one: a payload of exactly the expanded budget fits, and only a
+  // payload longer than the budget is still going to be cut after `D`. One row
+  // of slack here claimed `D shows all` for a command that lost a row anyway.
   return payload.expandedRows >= payload.totalRows ? 'all' : 'more';
 }
 
@@ -290,7 +295,11 @@ export function PermissionButtons({
     expanded,
     totalRows: totalCommandRows,
     collapsedRows: Math.max(1, COLLAPSED_COMMAND_ROWS - 1),
-    expandedRows: Math.max(1, rowBudget - 1),
+    // The expanded budget, not one less. `wrapPayload` keeps every row when the
+    // payload is no longer than the budget it is given, so a payload of exactly
+    // `rowBudget` rows is one `D` already shows whole; reserving the marker's row
+    // on both sides made a payload that fit claim to be cut.
+    expandedRows: Math.max(1, rowBudget),
   });
 
   // File mutations show the diff they would make, computed from the pending
@@ -323,10 +332,9 @@ export function PermissionButtons({
     return () => controller.abort();
   }, [canonical, previewable, toolCall.id, workspaceRoot]);
 
-  useLayoutEffect(() => {
-    onLayoutChange?.();
-    return () => onLayoutChange?.();
-  }, [expanded, onLayoutChange, preview]);
+  useReportLayout([expanded ? 'expanded' : 'collapsed', preview ? 'preview' : 'none'].join(':'), {
+    onLayoutChange,
+  });
 
   // Row counts are constant for the life of a preview; the card re-renders on
   // every keypress and must not re-split a large diff each time.

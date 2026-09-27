@@ -23,7 +23,7 @@ import { stripSgrMouseSequences } from '../mouse.js';
 import { useTheme } from '../theme.js';
 import { DecisionSheet } from './chrome.js';
 import { truncateDisplay } from './word-wrap.js';
-import { LABEL_COLUMN_WIDTH, frameGrid, sheetContentWidth } from '../layout.js';
+import { LABEL_COLUMN_WIDTH, panelGrid, sheetContentWidth } from '../layout.js';
 
 export interface ByokWizardProps {
   retry: RetryConfig;
@@ -399,11 +399,30 @@ export function ByokWizard({
   );
   const visibleModels = filteredModels.slice(modelWindowStart, modelWindowStart + maxVisibleModels);
   const showOptionalHelp = !compact && density.showOptionalHelp;
-  // The same geometry every other sheet uses: the rule spans the sheet and the
-  // body sits two columns in, so the wizard's text lands on the transcript's
-  // content column instead of one column left of it inside a box of its own.
-  const sheetWidth = frameGrid(terminalWidth).width;
+  // The rule spans the sheet and the body sits two columns in, so the wizard's
+  // text lands on the transcript's content column instead of one column left of
+  // it inside a box of its own.
+  //
+  // `panelGrid`, not `frameGrid`: the wizard opens from the model picker and
+  // sits beside its other panels, so it is a floating surface and takes the same
+  // `MAX_PANEL_MEASURE` cap. `frameGrid` would let it run the width of a
+  // 200-column terminal, and the picker it opened from would be 80 columns
+  // narrower than the surface that replaced it.
+  const sheetWidth = panelGrid(terminalWidth).width;
   const contentWidth = sheetContentWidth(sheetWidth);
+
+  // One model row: the cursor column, the tick, the label, then the id in a
+  // quieter tone after it. The two text columns split what is left over *after*
+  // those four leading columns and the two between the label and the id, so the
+  // row is exactly `contentWidth` wide. Budgeting each column a share of the
+  // whole width instead let a long label and a long id add up to more than the
+  // row, and Ink wrapped them: the highlighted row split in two and the list
+  // grew past the `maxVisibleModels` it was supposed to hold.
+  const modelRowLead = 4;
+  const modelRowGap = 2;
+  const modelTextWidth = Math.max(8, contentWidth - modelRowLead - modelRowGap);
+  const modelLabelWidth = Math.ceil(modelTextWidth * 0.6);
+  const modelIdWidth = modelTextWidth - modelLabelWidth;
 
   return (
     <DecisionSheet
@@ -510,9 +529,9 @@ export function ByokWizard({
                 >
                   {absoluteIndex === modelCursor ? '›' : ' '}{' '}
                   {selectedIds.includes(model.id) ? '◉' : '○'}{' '}
-                  {truncateDisplay(model.label ?? model.id, contentWidth - 4)}
+                  {truncateDisplay(model.label ?? model.id, modelLabelWidth)}
                   {model.label && model.label !== model.id
-                    ? `  ${truncateDisplay(model.id, Math.max(8, contentWidth / 2))}`
+                    ? `${' '.repeat(modelRowGap)}${truncateDisplay(model.id, modelIdWidth)}`
                     : ''}
                 </Text>
               );

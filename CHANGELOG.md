@@ -403,21 +403,41 @@ All notable changes to this project are documented in this file.
   at the moment the key arrived — InputBox's own Ctrl+U may have emptied the field before any other
   handler runs — so it now reports the chords it cannot spend, and the transcript scrolls from that
   hand-off rather than from a second, order-dependent reading of the draft. With a draft in hand
-  the chords only edit; with the composer empty, or not taking keys while a sheet owns them, they
-  still scroll. `TextInputField` also consumes Ctrl+U and clears the field instead of inserting a
-  literal `u`: ink-text-input keeps its cursor internal, so "kill to the left of the cursor" is not
-  reachable from a wrapper, and clearing the field is the only honest Ctrl+U it can offer.
+  the chords only edit; with the composer empty, or with no editor on screen at all, they still
+  scroll. The same hand-off now covers the sheets' own editors: plan approval's feedback field,
+  AskUserQuestion's `Other` answer and an MCP text field report that they hold an editor the way
+  they report their height, and the app stops the transcript reading Ctrl+U and Ctrl+D as pages
+  while one is open. A sheet that is a list of choices, with no editor, still pages.
+- **Text fields are the project's own single-line editor** (#296). `TextInputField` wrapped
+  `ink-text-input`, which has no readline keys at all: it spliced anything it did not recognise
+  straight into the value, so every chord arrived as the bare letter it stands for and Ctrl+U in a
+  wizard's prefilled base URL produced `u`. Filtering in front of it could not fix that, because Ink
+  delivers one stdin chunk to every handler in turn and after a Left the inner component
+  re-subscribed and inserted its `u` _after_ the wrapper had cleared the field —
+  `https://abc.example/v1`, Left, Ctrl+U gave `https://abc.example/vu1`. Every Book text field now
+  uses a small editor of the project's own, sharing the composer's cursor arithmetic
+  (`src/tui/line-edit.ts`): Ctrl+A/E for the start and end of the line, Ctrl+U kill to the cursor,
+  Ctrl+K kill to the end, Ctrl+W kill the word to the left, Ctrl+D delete the character under the
+  cursor, and Left/Right/Home/End/Backspace/Delete moving by grapheme. Any other Ctrl chord is
+  ignored rather than typed. Masked fields, the placeholder's look, pasted chunks and the SGR
+  mouse-sequence stripping are unchanged, and the cursor no longer needs re-seating after a dropped
+  report. `ink-text-input` has no importer left; it is still in `package.json`.
 - **The bottom sheets stop covering the transcript rows behind them** (#304). A question, a plan
   approval, an MCP elicitation form and the add-provider wizard all changed height while the
   transcript above it kept the viewport it had measured on its own last layout change, so the sheet
   landed on top of the last rows of the turn that raised it. `AskUserQuestionWizard`,
   `PlanApprovalActions` and `McpElicitationForm` now report a change of rendered shape — a different
   question, an editor opening or closing, a filter that left a different number of rows, an error
-  row, the width the body wraps to — and the app re-measures the transcript from that, never once
-  per keystroke. The add-provider wizard is now a sheet like every other decision: a labelled rule
-  reading `Add BYOK provider` with its `Step N/9` counter set at the far end, sized by
-  `frameGrid`/`sheetContentWidth` and sitting on the same content column as the rest of the screen,
-  instead of the one surface that still drew a box of its own.
+  row, the width the body wraps to, the number of rows a wrapping editor's text takes — and the app
+  re-measures the transcript from that, never once per keystroke. The report is one shared hook
+  (`useReportLayout`) that fires once on mount, once per change of shape and once on unmount, so a
+  change no longer costs two layout measurements. The add-provider wizard is now a sheet like every
+  other decision: a labelled rule reading `Add BYOK provider` with its `Step N/9` counter set at
+  the far end, sitting on the same content column as the rest of the screen, instead of the one
+  surface that still drew a box of its own. It takes the model picker's `panelGrid` rather than
+  `frameGrid`, so it cannot run wider than the panels around it, and a model row's label and id
+  split the content width between them instead of each taking a share of the whole, which had the
+  two add up to more than the row and wrap the highlighted model in two lines.
 - **The permission prompt says whether `D` shows everything** (#304). It claimed to show all when
   the expanded command still wrapped past the terminal, so pressing it changed nothing the user
   could see. The hint now reports `D shows all` only when the expansion fits every wrapped row and

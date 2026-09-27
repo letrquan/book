@@ -5,6 +5,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { DensityContext, type TuiDensity } from '../density.js';
 import { defaultConfig } from '../../test/fixtures.js';
+import { MAX_PANEL_MEASURE } from '../layout.js';
 import { ByokWizard } from './ByokWizard.js';
 
 function withTheme(children: React.ReactElement): React.ReactElement {
@@ -98,6 +99,39 @@ async function advanceToModelChoice(view: ReturnType<typeof render>, key = 'supe
 afterEach(cleanup);
 
 describe('ByokWizard', () => {
+  it('renders one model row per model when the label and the id are both long', async () => {
+    // A row is `› ◉ ` plus the label plus two spaces plus the id. Budgeting each
+    // column a share of the whole content width let the two add up to more than
+    // the row, Ink wrapped the highlighted row in two, and the list grew past
+    // the `maxVisibleModels` it was supposed to hold. 80 columns of terminal is
+    // a content width of 75, which is the width the row has to fit.
+    const label = 'L'.repeat(70);
+    const id = 'm'.repeat(40);
+    const { view } = createWizard({
+      discover: vi.fn(async () => [{ id, label }]),
+      terminalWidth: 80,
+    });
+    await advanceToModelChoice(view, 'super-secret-key');
+
+    const rows = stripAnsi(view.lastFrame())
+      .split('\n')
+      .filter((line) => line.includes('LLLLL'));
+    expect(rows).toHaveLength(1);
+    // One row, so the id is on it rather than wrapped onto a line of its own.
+    expect(rows[0]).toContain('mmmmm');
+  });
+
+  it('stays within the panel measure its picker is drawn in', () => {
+    // The wizard opens from the model picker and sits beside its other panels,
+    // so it takes the same `MAX_PANEL_MEASURE` cap. Sized with `frameGrid` it
+    // ran the width of a 200-column terminal, and the picker it opened from was
+    // 80 columns narrower than the surface that replaced it.
+    const { view } = createWizard({ terminalWidth: 200 });
+    for (const line of stripAnsi(view.lastFrame()).split('\n')) {
+      expect(line.length).toBeLessThanOrEqual(MAX_PANEL_MEASURE);
+    }
+  });
+
   it('removes optional guidance in tight terminals', () => {
     const { view } = createWizard({}, 'tight');
     const output = stripAnsi(view.lastFrame());
