@@ -491,4 +491,79 @@ describe('separateInlineReasoning', () => {
       '<reasoning_context>\nand it was never closed.\n</think>\nThe fix: stop at the first </reasoning_context>\nDone.',
     );
   });
+
+  // A reply the provider cut short — the output cap, or a stream that dropped
+  // before its terminal event — may have had no line break left after its
+  // closing tag, so that one requirement is the only one `truncated` drops
+  // (#312). Everything else `endsBlock` demands, and the settled reading,
+  // stand.
+  describe('a reply the provider cut short', () => {
+    const CUT = '<think>plan</think>Answer text';
+
+    it('splits a block the cut left mid-line', () => {
+      expect(separateInlineReasoning(CUT, { truncated: true })).toEqual({
+        content: 'Answer text',
+        reasoning: 'plan',
+        found: true,
+      });
+    });
+
+    it('leaves a settled reply of the same shape as written', () => {
+      // The pin for the relaxed rule: it reads a fragment, never an answer that
+      // ran to its end, where a tag on the same line is one the answer quoted.
+      const unchanged = { content: CUT, reasoning: '', found: false };
+      expect(separateInlineReasoning(CUT, { truncated: false })).toEqual(unchanged);
+      expect(separateInlineReasoning(CUT)).toEqual(unchanged);
+    });
+
+    it("still refuses a cut reply whose answer got past the closing tag's line", () => {
+      // The relaxation is for the answer after the tag having had no line of its
+      // own — the cut landed before it could start one. A reply that *did* get
+      // past that line is a finished answer that opened by quoting the tags
+      // inline, cut off later, and moving that quote into reasoning deletes the
+      // words around it for good.
+      const quoted =
+        '<think> and </think> are the tags DeepSeek wraps its reasoning in.\n\n' +
+        'Here is a long explanation that the cut landed in the middle of';
+      expect(separateInlineReasoning(quoted, { truncated: true })).toEqual({
+        content: quoted,
+        reasoning: '',
+        found: false,
+      });
+    });
+
+    it('still refuses a block holding another reasoning tag', () => {
+      // A cut answer is no more licence to guess than a settled one: the block
+      // holds a second tag, so which of them ends it is unknowable, and what a
+      // split moves leaves the answer for good.
+      const chain = '<think>a <think> b</think>rest';
+      expect(separateInlineReasoning(chain, { truncated: true })).toEqual({
+        content: chain,
+        reasoning: '',
+        found: false,
+      });
+    });
+
+    it('still refuses a block the cut answer never closed', () => {
+      // A reply cut off *inside* the block never closes it, so it is not a
+      // block to move: the thought stays answer text, as it does for a
+      // settled reply and as `isUnclosedReasoningOnly` reads it.
+      const unclosed = '<think>still thinking';
+      expect(separateInlineReasoning(unclosed, { truncated: true })).toEqual({
+        content: unclosed,
+        reasoning: '',
+        found: false,
+      });
+    });
+
+    it('splits an empty block either way', () => {
+      // The `<think></think>` a model emits with thinking off carries no
+      // reasoning to keep, but its tags still have to leave the answer.
+      const empty = '<think></think>Answer text';
+      const split = { content: 'Answer text', reasoning: '', found: true };
+      for (const options of [{ truncated: true }, { truncated: false }, undefined]) {
+        expect(separateInlineReasoning(empty, options)).toEqual(split);
+      }
+    });
+  });
 });
