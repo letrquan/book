@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { win32 } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import {
   decodePowerShellCommand,
   describeShell,
@@ -201,12 +201,21 @@ describe('shellPromptLine', () => {
   });
 });
 
-function run(exec: {
-  file: string;
-  args: string[];
-}): Promise<{ code: number | null; out: string }> {
+function run(
+  exec: {
+    file: string;
+    args: string[];
+  },
+  timeoutMs?: number,
+): Promise<{ code: number | null; out: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(exec.file, exec.args, { stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+    const child = spawn(exec.file, exec.args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+      // A deadline is a kill, not a warning: a shell that never returns must
+      // not outlive the hook that waited for it.
+      timeout: timeoutMs,
+    });
     let out = '';
     child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
     child.stderr.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
@@ -216,6 +225,26 @@ function run(exec: {
 }
 
 describe.runIf(process.platform === 'win32')('real Windows shells', () => {
+  // The first powershell.exe on a cold Windows runner pays for module auto-load
+  // and a Defender scan, which on its own can outlast a test timeout — the run
+  // below spawns the same executable four times. So the cold start is paid here,
+  // on the same executable the test measures rather than a path assumed to be
+  // it, and the measured test does not pay it. The child gets its own deadline
+  // shorter than the hook's, so a shell that never comes back is killed instead
+  // of being left running; a warm-up that fails is not this suite's finding to
+  // report, and the test that needs it will say so in its own right.
+  beforeAll(async () => {
+    const shell = resolveShell({ requested: 'powershell' });
+    if (shell.kind !== 'powershell' || !shell.file) return;
+    await run(
+      {
+        file: shell.file,
+        args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'exit 0'],
+      },
+      150_000,
+    ).catch(() => undefined);
+  }, 180_000);
+
   it('runs Windows PowerShell 5.1 with the exit code of the last statement', async () => {
     const shell = resolveShell({ requested: 'powershell' });
     expect(shell.kind).toBe('powershell');
@@ -231,7 +260,7 @@ describe.runIf(process.platform === 'win32')('real Windows shells', () => {
     // 5.1 would otherwise hand the model a CLIXML document on stderr.
     expect(failed.out).toContain('Cannot find path');
     expect(failed.out).not.toContain('CLIXML');
-  }, 60_000);
+  }, 120_000);
 
   it('runs Git Bash as a POSIX shell when one is installed', async () => {
     const shell = resolveShell({ requested: 'bash' });

@@ -68,7 +68,9 @@ describe('PermissionButtons', () => {
     );
 
     view.stdin.write('\r');
-    await waitForImmediate();
+    // The second prompt lands in the same slot, so the first Enter has to have
+    // been handled before the rerender replaces the call under it.
+    await vi.waitFor(() => expect(onResolveRead).toHaveBeenCalledOnce());
 
     view.rerender(
       withTheme(
@@ -80,11 +82,10 @@ describe('PermissionButtons', () => {
     );
     await waitForImmediate();
     view.stdin.write('\r');
-    await waitForImmediate();
+    await vi.waitFor(() => expect(onResolveGlob).toHaveBeenCalledOnce());
 
     expect(onResolveRead).toHaveBeenCalledOnce();
     expect(onResolveRead).toHaveBeenCalledWith('allow');
-    expect(onResolveGlob).toHaveBeenCalledOnce();
     expect(onResolveGlob).toHaveBeenCalledWith('allow');
   });
 
@@ -172,18 +173,22 @@ describe('PermissionButtons', () => {
       ),
     );
 
+    // The second `a` steps the scope only if the first one has been rendered,
+    // so each key waits for the frame it produced rather than for a fixed
+    // number of event-loop turns a loaded runner can spend elsewhere.
     view.stdin.write('a'); // arm
-    await waitForImmediate();
+    await vi.waitFor(() => expect(stripAnsi(view.lastFrame() ?? '')).toContain('› Always allow'));
     view.stdin.write('a'); // widen once
-    await waitForImmediate();
-    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Bash(npm run *)');
+    await vi.waitFor(() => expect(stripAnsi(view.lastFrame() ?? '')).toContain('Bash(npm run *)'));
     expect(onResolve).not.toHaveBeenCalled();
 
     view.stdin.write('\r');
-    expect(onResolve).toHaveBeenCalledExactlyOnceWith({
-      result: 'always',
-      rule: 'Bash(npm run *)',
-    });
+    await vi.waitFor(() =>
+      expect(onResolve).toHaveBeenCalledExactlyOnceWith({
+        result: 'always',
+        rule: 'Bash(npm run *)',
+      }),
+    );
   });
 
   it('wraps back to the exact rule rather than committing one', async () => {
@@ -197,12 +202,29 @@ describe('PermissionButtons', () => {
       ),
     );
 
-    // Arm, then a full cycle back round to the exact rule.
-    for (let i = 0; i < 4; i++) {
-      view.stdin.write('a');
-      await waitForImmediate();
-    }
-    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Bash(npm run check)');
+    // Each press waits for the frame it produces, rung by rung. The idle frame
+    // already shows the exact rule, so waiting on that would prove nothing: a
+    // lost press leaves the card on a rung it was never asked for, and the hint
+    // that names a widened rung is what tells the rungs apart.
+    const widenedRung = (rule: string) => {
+      const frame = stripAnsi(view.lastFrame() ?? '');
+      expect(frame).toContain(rule);
+      expect(frame).toContain('Covers every command');
+    };
+
+    view.stdin.write('a'); // arm
+    await vi.waitFor(() => expect(stripAnsi(view.lastFrame() ?? '')).toContain('› Always allow'));
+    view.stdin.write('a'); // widen
+    await vi.waitFor(() => widenedRung('Bash(npm run *)'));
+    view.stdin.write('a'); // widen to the broadest rung
+    await vi.waitFor(() => widenedRung('Bash(npm *)'));
+    view.stdin.write('a'); // and back round to the exact rule
+    await vi.waitFor(() => {
+      const frame = stripAnsi(view.lastFrame() ?? '');
+      expect(frame).toContain('Bash(npm run check)');
+      // The exact rung is the only one that needs no caption.
+      expect(frame).not.toContain('Covers every command');
+    });
     expect(onResolve).not.toHaveBeenCalled();
   });
 
@@ -229,9 +251,7 @@ describe('PermissionButtons', () => {
     expect(armed(stripAnsi(view.lastFrame() ?? ''))).toContain('› Run once');
 
     view.stdin.write('\u001b[C');
-    await waitForImmediate();
-    const moved = armed(stripAnsi(view.lastFrame() ?? ''));
-    expect(moved).toContain('› Skip');
+    await vi.waitFor(() => expect(armed(stripAnsi(view.lastFrame() ?? ''))).toContain('› Skip'));
     // Exactly one marker: two would read as two armed buttons.
     expect((stripAnsi(view.lastFrame() ?? '').match(/›/g) ?? []).length).toBe(1);
   });
