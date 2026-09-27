@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
-import { PlanApprovalButtons } from './PlanApprovalButtons.js';
+import { PlanApprovalActions, PlanApprovalButtons } from './PlanApprovalButtons.js';
 
 function withTheme(children: React.ReactElement): React.ReactElement {
   return <ThemeContext.Provider value={DEFAULT_THEME}>{children}</ThemeContext.Provider>;
@@ -9,6 +9,14 @@ function withTheme(children: React.ReactElement): React.ReactElement {
 
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+/** Polls rather than sleeps: returns on the first frame that shows `text`. */
+async function waitForText(view: ReturnType<typeof render>, text: string) {
+  await vi.waitFor(() => expect(stripAnsi(view.lastFrame())).toContain(text), {
+    timeout: 2_000,
+    interval: 20,
+  });
 }
 
 afterEach(() => cleanup());
@@ -133,5 +141,75 @@ describe('PlanApprovalButtons', () => {
     // reach.
     view.stdin.write('\u001b[C\r');
     await vi.waitFor(() => expect(onResolve).toHaveBeenCalledWith('approve-fresh'));
+  });
+
+  // The sheet shares the screen with the transcript, which re-measures its
+  // viewport only when the app hears that the footer's height changed. The
+  // feedback editor is a different shape from the choices, and its one-row
+  // error is another, and either one landed on top of a transcript row that
+  // was there a moment earlier.
+  it('reports a height change for the feedback editor and its error row', async () => {
+    const onLayoutChange = vi.fn();
+    const view = render(
+      withTheme(
+        <PlanApprovalActions
+          plan={'1. Step one\n2. Step two'}
+          onResolve={vi.fn()}
+          onLayoutChange={onLayoutChange}
+        />,
+      ),
+    );
+    // Opening the sheet is a change of height too.
+    expect(onLayoutChange).toHaveBeenCalled();
+
+    const onChoices = onLayoutChange.mock.calls.length;
+    view.stdin.write('e');
+    await waitForText(view, 'Adjust the plan');
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(onChoices);
+
+    const onEditor = onLayoutChange.mock.calls.length;
+    view.stdin.write('\r');
+    await waitForText(view, 'Add feedback before requesting changes.');
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(onEditor);
+
+    // The error row is the one that grows the sheet, and editing hands the row
+    // back — the sheet reports the way back down, not only the way up.
+    const withError = onLayoutChange.mock.calls.length;
+    view.stdin.write('x');
+    await vi.waitFor(() =>
+      expect(stripAnsi(view.lastFrame())).not.toContain('Add feedback before requesting changes.'),
+    );
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(withError);
+
+    // With no error row, typing is not a height change.
+    const whileTyping = onLayoutChange.mock.calls.length;
+    view.stdin.write('y');
+    await waitForText(view, 'xy');
+    expect(onLayoutChange.mock.calls.length).toBe(whileTyping);
+  });
+
+  it('reports the editor taking and giving up the readline chords', async () => {
+    // While the feedback editor has the focus, Ctrl+U clears it and Ctrl+D
+    // deletes under the cursor. The app gates the transcript's paging chords on
+    // this, the same way the sheet reports its height.
+    const onEditorFocusChange = vi.fn();
+    const view = render(
+      withTheme(
+        <PlanApprovalActions
+          plan={'1. Step one'}
+          onResolve={vi.fn()}
+          onEditorFocusChange={onEditorFocusChange}
+        />,
+      ),
+    );
+    expect(onEditorFocusChange).toHaveBeenLastCalledWith(false);
+
+    view.stdin.write('e');
+    await waitForText(view, 'Adjust the plan');
+    expect(onEditorFocusChange).toHaveBeenLastCalledWith(true);
+
+    view.stdin.write('\x1b');
+    await waitForText(view, 'Approve');
+    expect(onEditorFocusChange).toHaveBeenLastCalledWith(false);
   });
 });
