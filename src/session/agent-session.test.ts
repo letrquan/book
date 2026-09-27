@@ -1820,6 +1820,129 @@ describe('AgentSession usage records across runs sharing a root', () => {
       })),
     );
   });
+
+  it('leaves a skipped record for the next writer instead of marking it persisted', async () => {
+    // A run that is no longer the current session, or that has nowhere to write,
+    // appends nothing. Marking its spend persisted anyway would hand it to no
+    // record at all: the tokens would be counted as written for every later run
+    // under that root and never reach disk, so the next process restored a carry
+    // short by exactly the abandoned turn.
+    const runtime = new SessionRuntime();
+    const spendPerRun = [turnUsage(100, 10), turnUsage(20, 2)];
+    let run = 0;
+    const runLoop: AgentLoopRunner = async (
+      _config,
+      _registry,
+      _prompt,
+      _history,
+      callbacks,
+      _mode,
+      options,
+    ) => {
+      const turn = spendPerRun[run++];
+      if (options?.runContext) runtime.runAccounting.record(options.runContext, turn, meta);
+      callbacks.onUsage?.(turn, meta);
+      return [];
+    };
+    const session = new AgentSession({ runtime, runLoop });
+    const records: SessionRecord[] = [];
+    const shared = { sessionId: 'session-1', rootRunId: 'shared-root', source: 'tui' as const };
+
+    // The first run's turn is abandoned: the session moved on before it reported.
+    await session.run({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      prompt: 'prompt',
+      history: [],
+      sessionId: 'session-1',
+      runContext: createAgentRunContext({ ...shared, runId: 'abandoned-turn', startedAt: 1 }),
+      timelineStore: { append: (_id, record) => records.push(record) },
+      isCurrent: () => false,
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+    expect(records).toEqual([]);
+
+    // The next run under the same root writes both turns: the skipped one is
+    // still unpersisted spend.
+    await session.run({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      prompt: 'prompt',
+      history: [],
+      sessionId: 'session-1',
+      runContext: createAgentRunContext({ ...shared, runId: 'later-turn', startedAt: 2 }),
+      timelineStore: { append: (_id, record) => records.push(record) },
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+
+    const persisted = records
+      .filter((record) => record.type === 'usage')
+      .map((record) => (record.data as { usage: Usage }).usage);
+    expect(persisted).toEqual([
+      {
+        promptTokens: 120,
+        completionTokens: 12,
+        totalTokens: 132,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+    ]);
+  });
+
+  it('persists root spend the run never reported when the caller passed no runContext', async () => {
+    // `run()` mints a run context for a caller that passed none, and the loop
+    // charges that root. Keying the record off the request's (absent) context
+    // skipped the root's watermark and wrote only the reported turn, so a managed
+    // agent's spend — routed to the root, never through `onUsage` — reached no
+    // record and no later process restored it.
+    const runtime = new SessionRuntime();
+    const runLoop: AgentLoopRunner = async (
+      _config,
+      _registry,
+      _prompt,
+      _history,
+      callbacks,
+      _mode,
+      options,
+    ) => {
+      const turn = turnUsage(40, 4);
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, turn, meta);
+        // A managed agent's spend: in the root, never reported to `onUsage`.
+        runtime.runAccounting.record(options.runContext, turnUsage(70, 7), {
+          ...meta,
+          responseId: 'response-agent',
+        } as unknown as ProviderResponseMetadata);
+      }
+      callbacks.onUsage?.(turn, meta);
+      return [];
+    };
+    const session = new AgentSession({ runtime, runLoop });
+    const records: SessionRecord[] = [];
+
+    await session.run({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      prompt: 'prompt',
+      history: [],
+      sessionId: 'session-1',
+      timelineStore: { append: (_id, record) => records.push(record) },
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+
+    const persisted = records
+      .filter((record) => record.type === 'usage')
+      .map((record) => (record.data as { usage: Usage }).usage);
+    expect(persisted).toEqual([
+      {
+        promptTokens: 110,
+        completionTokens: 11,
+        totalTokens: 121,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+    ]);
+  });
 });
 
 describe('AgentSession deferred compaction', () => {

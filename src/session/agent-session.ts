@@ -1079,12 +1079,13 @@ export class AgentSession {
           // process, so the honest number is the part of its inclusive total that
           // no `usage` record covers yet — the root owns that watermark, seeded
           // from the carry the session resumed with, so neither a restart nor a
-          // second run under the same root writes a token twice. Cost is still not
-          // stored: it is re-derived from tokens at bootstrap, deliberately at the
-          // most expensive model involved.
-          const unpersisted = request.runContext
-            ? runtime.runAccounting.takeUnpersistedUsage(request.runContext.rootRunId)
-            : null;
+          // second run under the same root writes a token twice. Read the run
+          // context this run resolved, not the request's: a caller that passed none
+          // is still charged to the root minted above, and keying off the request
+          // skipped the watermark and wrote only the reported turn. Cost is still
+          // not stored: it is re-derived from tokens at bootstrap, deliberately at
+          // the most expensive model involved.
+          const unpersisted = runtime.runAccounting.peekUnpersistedUsage(runContext.rootRunId);
           const recordUsage = unpersisted ?? nextUsage;
           // A full cache hit leaves `promptTokens` at 0 on a provider that omits
           // `total_tokens`; the record still carries spend.
@@ -1098,8 +1099,14 @@ export class AgentSession {
           // SessionRecord type was already declared with no writers; this is it.
           // Cost is not stored — pricing can change between processes, so it is
           // re-derived from tokens at bootstrap.
-          if (request.isCurrent?.() !== false) {
-            request.timelineStore?.append(request.sessionId, {
+          //
+          // The watermark moves only here, where the record really lands. A turn
+          // that reaches no store — a session that moved on, a run with nowhere to
+          // write — leaves its spend unpersisted instead, for the next writer under
+          // this root to record; counted as written, no record would ever hold it.
+          const store = request.isCurrent?.() === false ? undefined : request.timelineStore;
+          if (store) {
+            store.append(request.sessionId, {
               type: 'usage',
               timestamp: Date.now(),
               data: {
@@ -1109,6 +1116,7 @@ export class AgentSession {
                 responseModel: metadata?.responseModel,
               },
             } satisfies SessionRecord);
+            runtime.runAccounting.commitPersistedUsage(runContext.rootRunId);
           }
           callbacks.onUsage?.(nextUsage, metadata);
         },

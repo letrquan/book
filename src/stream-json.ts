@@ -1,3 +1,5 @@
+import type { AgentTerminalOutcome } from './types/terminal.js';
+
 /** Known event types in the stream-json wire format. */
 export type StreamJsonEvent =
   | { type: 'user'; content: string }
@@ -57,23 +59,20 @@ export type StreamJsonEvent =
    *
    * `outcome` and `stopReason` sit at the top level: a supervised loop reads the
    * outcome from here (see the `jq` selector in `docs/guide/long-runs.md`), and
-   * `result.outcome` / `result.stopReason` are kept for hosts already reading
-   * them there. `result.messages` is absent unless the run asked for
-   * `--include-result-messages` — a long run's conversation is hundreds of
-   * kilobytes on this one line.
+   * `result.outcome` / `result.stopReason` are kept for hosts already reading them
+   * there. It is the run's own `AgentTerminalOutcome`, not a restatement of it, so
+   * a status the run cannot emit cannot typecheck into this record.
+   *
+   * `result` is the host-performed part of the record — the answer, the usage, the
+   * accounting, and the conversation when the run passed
+   * `--include-result-messages`, which #307 made opt-in to keep a long run's last
+   * line small. Nothing in the parser reads into it, so it stays `unknown` here.
    */
   | {
       type: 'result';
       stopReason?: string;
-      outcome?: { status?: string; reason?: string; partialOutput?: boolean };
-      result?: {
-        messages?: unknown[];
-        usage?: unknown;
-        accounting?: unknown;
-        outcome?: { status?: string; reason?: string; partialOutput?: boolean };
-        stopReason?: string;
-        [key: string]: unknown;
-      };
+      outcome?: AgentTerminalOutcome;
+      result?: unknown;
     }
   | { type: 'done' };
 

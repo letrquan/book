@@ -16,6 +16,7 @@ import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
 import { createScriptedProvider, sseResponse } from './test/scripted-provider.js';
 import type { StreamJsonEvent } from './stream-json.js';
+import type { AgentTerminalOutcome } from './types/terminal.js';
 
 let workspace: string;
 let tempHome: string;
@@ -136,5 +137,16 @@ describe('stream-json result event (#307)', () => {
 
     expect(Array.isArray(document.result.messages)).toBe(true);
     expect(document.result.outcome.reason).toBe('normal_completion');
+  });
+
+  it("types the top-level outcome as the run's own terminal outcome", async () => {
+    const event = resultEvent(await runStreamJson());
+    // The wire type restates the outcome's shape as three optional strings when it
+    // can name it instead, so a `status` the run never emits cannot typecheck into
+    // this record. Assigning to the real type is the assertion.
+    const outcome: AgentTerminalOutcome | undefined = event.outcome;
+
+    expect(outcome?.status).toBe('completed');
+    expect(outcome?.reason).toBe('normal_completion');
   });
 });

@@ -17,7 +17,10 @@ import { SessionStore } from './session/store.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
 import { createRepeatingScriptedProvider, sseResponse } from './test/scripted-provider.js';
+import { RunAccounting } from './session/run-accounting.js';
 import type { AgentConfig } from './types/runtime.js';
+import type { AgentRunContext } from './types/runs.js';
+import type { ProviderResponseMetadata } from './types/providers.js';
 import type { Usage } from './types/messages.js';
 import type { HeadlessOptions } from './types/public-sdk.js';
 
@@ -35,6 +38,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   if (previousBookHome === undefined) delete process.env.BOOK_HOME;
   else process.env.BOOK_HOME = previousBookHome;
   for (const dir of [workspace, tempHome]) rmSync(dir, { recursive: true, force: true });
@@ -239,6 +243,79 @@ describe('print-mode usage records across a resume (#294)', () => {
       promptTokens: 3_000,
       completionTokens: 300,
       totalTokens: 3_300,
+    });
+  });
+
+  it("writes the first prompt's late spend from the second prompt's first record", async () => {
+    // The second prompt's root is seeded with the first root's inclusive total,
+    // which is not all of it on disk: a background agent or a compaction judge can
+    // spend after the root's last `onUsage`, and a continuation refused by the
+    // budget gate is charged but never reported. Treating the whole carry as
+    // already written skipped that remainder permanently — no record ever held it,
+    // and no process restored it.
+    const store = new SessionStore(workspace);
+    const sessionId = store.create({ cwd: workspace });
+    const LATE: Usage = { promptTokens: 50, completionTokens: 5, totalTokens: 55 };
+    const lateMeta = {
+      provider: 'openai-compatible',
+      requestedModel: 'gpt-5',
+      responseModel: 'gpt-5',
+      responseId: 'response-late-agent',
+    } as unknown as ProviderResponseMetadata;
+
+    // The accounting is owned by a runtime `runHeadless` builds for itself, so the
+    // spy is how the test reaches the root the loop is charging.
+    const record = vi.spyOn(RunAccounting.prototype, 'record');
+
+    let turn = 0;
+    const provider = createRepeatingScriptedProvider(() => {
+      turn++;
+      if (turn === 1) return toolCallTurn('call-1', 10, 1);
+      if (turn === 2) return settledTurn('first answer', 100, 10);
+      return settledTurn('second answer', 200, 20);
+    });
+    vi.stubGlobal('fetch', provider.fetch);
+
+    let lateRecorded = false;
+    await runHeadless(freshConfig(), createDefaultRegistry(), {
+      inputFormat: 'stream-json',
+      outputFormat: 'text',
+      history: [],
+      stdin: Readable.from([
+        `${JSON.stringify({ type: 'user', content: 'first' })}\n`,
+        `${JSON.stringify({ type: 'user', content: 'second' })}\n`,
+      ]),
+      sessionStore: store,
+      sessionId,
+      mode: 'bypassPermissions',
+      stdout: { write: () => true },
+      onAgentEvent: (event) => {
+        // The first prompt's terminal record: its last response has been reported,
+        // and the carry for the next root has not been folded yet.
+        if (event.type !== 'result' || lateRecorded) return;
+        lateRecorded = true;
+        const accounting = record.mock.instances.at(-1) as RunAccounting | undefined;
+        const root = record.mock.calls.at(-1)?.[0];
+        // A managed agent answering now: charged to root 1, long after root 1's
+        // last `onUsage`, so no record of root 1's own can cover it.
+        accounting?.record(root as AgentRunContext, LATE, lateMeta);
+      },
+    });
+
+    expect(provider.requests).toHaveLength(3);
+    expect(lateRecorded).toBe(true);
+    // Root 2's first record carries root 1's unwritten remainder plus its own turn.
+    expect(persistedRecords(store, sessionId)).toMatchObject([
+      { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
+      { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+      { promptTokens: 250, completionTokens: 25, totalTokens: 275 },
+    ]);
+    // Nothing the session spent is missing from the record set.
+    expect(persistedTotals(store, sessionId)).toEqual({
+      count: 3,
+      promptTokens: 360,
+      completionTokens: 36,
+      totalTokens: 396,
     });
   });
 });

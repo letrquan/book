@@ -101,6 +101,17 @@ export interface CarriedSpend {
   usage: Usage | null;
   /** Null when a prior process could not price some of its spend. */
   costUsd: number | null;
+  /**
+   * How much of `usage` a durable `usage` record already covers.
+   *
+   * Omitted for a carry restored from disk, where the two are the same figure by
+   * construction. A carry handed over in process by a previous root is its
+   * in-memory total, which can exceed what that root wrote: a background agent or
+   * a compaction judge can spend after the root's last `onUsage`. Passing the
+   * root's watermark along leaves the difference unpersisted, so the next root's
+   * first record writes it instead of skipping it for good.
+   */
+  persistedUsage?: Usage;
 }
 
 function addUsage(current: Usage | null, next: Usage): Usage {
@@ -232,15 +243,17 @@ export class RunAccounting {
       executions: new Map<string, ExecutionState>(),
     };
     root.carried = carried;
-    // The carry is what earlier processes already wrote as `usage` records, so it
-    // is the first thing the root must not hand back to a writer.
-    root.persistedUsage = carried.usage ?? undefined;
+    // A carry restored from disk is all of it already written, which is the whole
+    // watermark; a carry handed over in process names the part its writer got
+    // through, and the remainder stays this root's to record.
+    root.persistedUsage = carried.persistedUsage ?? carried.usage ?? undefined;
     this.roots.set(rootRunId, root);
   }
 
   /**
    * The part of a root's inclusive spend that no durable `usage` record covers
-   * yet, advancing the root to having covered all of it.
+   * yet. Does not advance the watermark: pair it with `commitPersistedUsage` once
+   * the figure has really been written.
    *
    * `snapshotRoot().inclusiveUsage` is a running total, so a writer that persists
    * it whole re-writes the tokens of every record before it: the first response
@@ -250,25 +263,45 @@ export class RunAccounting {
    * again. Either way the next process restored an inflated carry and
    * `--max-budget-usd` ran out against an objective it had barely started.
    *
-   * The watermark starts at the carry `seedRoot` restored and advances by
-   * whatever the caller persists. Advancing rather than subtracting a per-run
-   * baseline is also what keeps spend recorded *after* a run's last read from
-   * being dropped: a background agent that answers between two runs is above the
-   * watermark, so the next read carries it.
+   * Measuring from a watermark rather than from a per-run baseline is also what
+   * keeps spend recorded *after* a run's last read from being dropped: a
+   * background agent that answers between two runs is above the watermark, so the
+   * next read carries it.
    *
-   * Null when the root holds no inclusive usage to record.
+   * Null when the root has never been started here, or holds no inclusive usage to
+   * record.
    */
-  takeUnpersistedUsage(rootRunId: string): Usage | null {
+  peekUnpersistedUsage(rootRunId: string): Usage | null {
     const root = this.roots.get(rootRunId);
     if (!root) return null;
-    let inclusive: Usage | null = root.carried?.usage ?? null;
-    for (const execution of root.executions.values()) {
-      if (execution.usage) inclusive = addUsage(inclusive, execution.usage);
-    }
+    const inclusive = this.inclusiveUsage(root, root.executions.values());
     if (!inclusive) return null;
-    const unpersisted = subtractUsage(inclusive, root.persistedUsage);
-    root.persistedUsage = inclusive;
-    return unpersisted;
+    return subtractUsage(inclusive, root.persistedUsage);
+  }
+
+  /**
+   * Mark the root's whole inclusive spend as written.
+   *
+   * Call this only once a record has really reached a store. A writer that
+   * decided not to append — the session moved on, or it had nowhere to write —
+   * must leave the watermark alone, or those tokens count as written for every
+   * later writer under this root while no record holds them and no restart
+   * restores them.
+   */
+  commitPersistedUsage(rootRunId: string): void {
+    const root = this.roots.get(rootRunId);
+    if (!root) return;
+    root.persistedUsage = this.inclusiveUsage(root, root.executions.values()) ?? undefined;
+  }
+
+  /**
+   * How much of the root's inclusive spend a durable record already covers.
+   *
+   * Carried into the next root of a multi-prompt session, whose carry is an
+   * in-process total rather than a restored one.
+   */
+  persistedUsage(rootRunId: string): Usage | undefined {
+    return this.roots.get(rootRunId)?.persistedUsage;
   }
 
   startExecution(context: AgentRunContext): void {
@@ -461,12 +494,29 @@ export class RunAccounting {
     };
   }
 
+  /**
+   * A root's carry plus the usage of the executions handed in.
+   *
+   * The one inclusive sum, shared by `makeSnapshot` (what the budget rail and the
+   * cost display read) and the unpersisted-usage watermark (what the session
+   * records are written from). Computing it a second time for the writer let the
+   * two drift, and the `usage` records then stopped adding up to what the budget
+   * believed had been spent.
+   */
+  private inclusiveUsage(root: RootState, executions: Iterable<ExecutionState>): Usage | null {
+    let inclusive: Usage | null = root.carried?.usage ?? null;
+    for (const execution of executions) {
+      if (execution.usage) inclusive = addUsage(inclusive, execution.usage);
+    }
+    return inclusive;
+  }
+
   private makeSnapshot(
     root: RootState,
     executions: ExecutionState[],
     direct?: ExecutionState,
   ): AgentRunAccounting {
-    let inclusiveUsage: Usage | null = root.carried?.usage ?? null;
+    const inclusiveUsage = this.inclusiveUsage(root, executions);
     let inclusiveCost = root.carried?.costUsd ?? 0;
     let costStatus: AgentRunAccounting['costStatus'] = 'known';
     // A carry we could not price is NOT zero spend. Treating it as `estimated`
@@ -480,7 +530,6 @@ export class RunAccounting {
     const modelIdentities = new Map<string, AgentModelIdentity>();
     const missingSources = new Set<string>();
     for (const execution of executions) {
-      if (execution.usage) inclusiveUsage = addUsage(inclusiveUsage, execution.usage);
       if (execution.costUsd !== null) inclusiveCost += execution.costUsd;
       else costStatus = 'unknown';
       if (execution.costStatus === 'estimated' && costStatus === 'known') costStatus = 'estimated';

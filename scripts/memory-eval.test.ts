@@ -8,7 +8,7 @@ import {
   summarizeModel,
   type MemoryObservation,
 } from './memory-eval-score.js';
-import { parseArgs, selectScenarios } from './memory-eval.js';
+import { parseArgs, selectScenarios, sessionArgs } from './memory-eval.js';
 
 function obs(partial: Partial<MemoryObservation>): MemoryObservation {
   return {
@@ -201,5 +201,23 @@ describe('cli', () => {
     ]);
     expect(md).toContain('| m |');
     expect(md).toContain('Over-memory');
+  });
+});
+
+describe('sessionArgs', () => {
+  it('asks the print run for the message history the answer is read from', () => {
+    // The scenario's answer is read off the last assistant message in the
+    // stream-json `result` event, and #307 made that field opt-in: without the
+    // flag every session scored an empty answer and the whole eval read as a
+    // memory regression.
+    expect(sessionArgs('gpt-5', false)).toContain('--include-result-messages');
+    expect(sessionArgs('gpt-5', true)).toContain('--include-result-messages');
+  });
+
+  it('keeps the stream-json output and the resume flag', () => {
+    const fresh = sessionArgs('gpt-5', false);
+    expect(fresh).toContain('stream-json');
+    expect(fresh).not.toContain('--continue');
+    expect(sessionArgs('gpt-5', true)).toContain('--continue');
   });
 });
