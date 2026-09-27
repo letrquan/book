@@ -1102,3 +1102,97 @@ describe('project-declared additionalDirectories require approval', () => {
     expect(load().additionalDirectories).toEqual([normalize(own), realpathSync.native(outside)]);
   });
 });
+
+/**
+ * #300, PR #334. `projectDirectories` is the fifth key that records a decision *about* a
+ * repository, and it is the only one of the five that sits at the document root. That difference
+ * is only about where it lives, so the resolver has to treat it exactly as it treats the other
+ * four: stripped from both workspace layers, merged from a layer the user controls, and
+ * overridden key by key by the trust store, which has the final say.
+ *
+ * `book config set` refuses to write any of them (see `guardSettingWrite`), so the only way one
+ * reaches a layer is a hand-edited file — and a hand-edited user-global file is a decision the
+ * user made about their own machine, the same as `~/.book/settings.json` carrying an MCP approval.
+ */
+describe('projectDirectories is resolved exactly like its four sibling trust keys', () => {
+  function writeUserLayer(settings: unknown): void {
+    mkdirSync(join(userDir, '.book'), { recursive: true });
+    writeFileSync(join(userDir, '.book', 'settings.json'), JSON.stringify(settings));
+  }
+  function writeWorkspaceLayer(name: 'settings.json' | 'settings.local.json', settings: unknown) {
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(join(dir, '.book', name), JSON.stringify(settings));
+  }
+  const load = () => resolveSettings(dir, undefined, { home: userDir });
+
+  /** One decision per key, in the shape each key's schema declares. */
+  const decisions = {
+    permissions: { projectAllowRules: { 'Bash(curl *)': 'approved' } },
+    mcp: { projectServers: { evil: { fingerprint: 'abc123', choice: 'approved' } } },
+    hooks: { projectEntries: { 'fp-1': 'approved' } },
+    commands: { projectCommands: { deploy: { fingerprint: 'def456', choice: 'approved' } } },
+    projectDirectories: { '/opt/shared': 'approved' },
+  } as const;
+
+  const fromUserLayer = (settings: ResolvedSettings) => ({
+    allowRules: settings.permissions.projectAllowRules,
+    servers: settings.mcp.projectServers,
+    hooks: settings.hooks.projectEntries,
+    commands: settings.commands.projectCommands,
+    directories: settings.projectDirectories,
+  });
+
+  it('is merged from a user-global layer, exactly as each sibling is', () => {
+    writeUserLayer(decisions);
+
+    expect(fromUserLayer(load())).toEqual({
+      allowRules: { 'Bash(curl *)': 'approved' },
+      servers: { evil: { fingerprint: 'abc123', choice: 'approved' } },
+      hooks: { 'fp-1': 'approved' },
+      commands: { deploy: { fingerprint: 'def456', choice: 'approved' } },
+      directories: { '/opt/shared': 'approved' },
+    });
+  });
+
+  it('is stripped from both workspace layers, exactly as each sibling is', () => {
+    for (const name of ['settings.json', 'settings.local.json'] as const) {
+      // The document's unrelated half comes along, so the strip is on the five decision keys and
+      // not on the file.
+      writeWorkspaceLayer(name, { ...decisions, model: 'project-model' });
+
+      const settings = load();
+      expect(fromUserLayer(settings), name).toEqual({
+        allowRules: {},
+        servers: {},
+        hooks: {},
+        commands: {},
+        directories: {},
+      });
+      expect(settings.model, name).toBe('project-model');
+    }
+  });
+
+  it('is overridden key by key by the trust store, exactly as each sibling is', () => {
+    writeUserLayer(decisions);
+    updateWorkspaceTrust(
+      dir,
+      (trust) => {
+        trust.permissionAllowRules['Bash(curl *)'] = 'rejected';
+        trust.mcpServers.evil = { fingerprint: 'abc123', choice: 'rejected' };
+        trust.hookEntries['fp-1'] = 'rejected';
+        trust.projectCommands.deploy = { fingerprint: 'def456', choice: 'rejected' };
+        trust.projectDirectories['/opt/shared'] = 'rejected';
+      },
+      join(userDir, '.book', 'trust.json'),
+    );
+
+    // The store's entry wins over the file's for the key both carry, for all five.
+    expect(fromUserLayer(load())).toEqual({
+      allowRules: { 'Bash(curl *)': 'rejected' },
+      servers: { evil: { fingerprint: 'abc123', choice: 'rejected' } },
+      hooks: { 'fp-1': 'rejected' },
+      commands: { deploy: { fingerprint: 'def456', choice: 'rejected' } },
+      directories: { '/opt/shared': 'rejected' },
+    });
+  });
+});

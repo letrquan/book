@@ -9,6 +9,7 @@ import {
   type LocalRefusalKind,
 } from './refusal-remedies.js';
 import { toolFailure } from '../tools/result.js';
+import { CONTROL_CHARACTERS } from '../control-characters.js';
 import type { ToolResult } from '../types/tools.js';
 
 /** A blocked result carrying one refusal code, as a hook, gate or tool would return. */
@@ -158,5 +159,41 @@ describe('the outside-workspace refusal', () => {
     // a remedy that said "grant the permission" would be a dead end.
     expect(REFUSAL_REMEDIES.outside).toContain('additionalDirectories');
     expect(REFUSAL_REMEDIES.outside).not.toContain('--permission-mode auto');
+  });
+
+  /**
+   * PR #334. The target is whatever argument the model wrote, and `noteChildRefusal` pushes this
+   * message to the operator's terminal in print mode as an `agent_notice`. An ESC sequence there
+   * can retitle the line or repaint the screen, and a bidi override can display the text as
+   * something other than what it is — the same class the tool rows fold with the shared set
+   * (#283). The doc comment claimed `printableRule` did this; nothing called it.
+   */
+  it('folds control characters out of the target before it names it', () => {
+    const esc = String.fromCharCode(0x1b);
+    const bidi = String.fromCharCode(0x202e);
+    const result = outsideWorkspaceRefusal('Read', {
+      arguments: { filePath: `/etc/${esc}[31mred${esc}[0m/${bidi}gnp.exe` },
+    });
+
+    const shown = `${result.content}\n${JSON.stringify(result.structuredError?.details)}`;
+
+    expect(shown).not.toContain(esc);
+    expect(shown).not.toContain(bidi);
+    // Folded to spaces, not dropped: the model still needs to see which path it asked for.
+    expect(result.content).toContain('/etc/ [31mred [0m/ gnp.exe');
+  });
+
+  it('folds a Glob pattern and a Grep scope on the same terms', () => {
+    // Every branch of `readTargetOf` names a model-chosen string, so every one is folded. A Grep
+    // falls back to its pattern when it names no scope.
+    const anyControl = new RegExp(`[${CONTROL_CHARACTERS.source.slice(1, -2)}]`);
+    for (const [tool, args] of [
+      ['Glob', { pattern: `**/${String.fromCharCode(0x1b)}[2J*.ts` }],
+      ['Grep', { path: `/etc/${String.fromCharCode(0x202e)}gnp` }],
+      ['Grep', { pattern: `tok${String.fromCharCode(0x200e)}en` }],
+    ] as const) {
+      const result = outsideWorkspaceRefusal(tool, { arguments: args });
+      expect(result.content, tool).not.toMatch(anyControl);
+    }
   });
 });

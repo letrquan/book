@@ -1420,7 +1420,7 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
         code: 'binary_file_unsupported',
       });
     if (before.exists) {
-      const unobserved = requireObservationForMutation(ctx, relativePath, 'overwrite');
+      const unobserved = requireObservationForMutation(ctx, filePath, relativePath, 'overwrite');
       if (unobserved) return unobserved;
     }
     const inputContent = args.content as string;
@@ -1485,7 +1485,7 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
       return toolFailure(`Mixed line endings are unsupported for Edit: ${relativePath}`, {
         code: 'text_conflict',
       });
-    const unobserved = requireObservationForMutation(ctx, relativePath, 'edit');
+    const unobserved = requireObservationForMutation(ctx, filePath, relativePath, 'edit');
     if (unobserved) return unobserved;
     const content = snapshot.text;
     const oldStr = (args.oldString as string).replace(/\r\n/g, '\n');
@@ -1558,7 +1558,7 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
       return toolFailure(`Mixed line endings are unsupported for MultiEdit: ${relativePath}`, {
         code: 'text_conflict',
       });
-    const unobserved = requireObservationForMutation(ctx, relativePath, 'edits');
+    const unobserved = requireObservationForMutation(ctx, filePath, relativePath, 'edits');
     if (unobserved) return unobserved;
     const original = snapshot.text;
     let content = original;

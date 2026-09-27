@@ -28,7 +28,11 @@ All notable changes to this project are documented in this file.
 - **The trust store for repository-controlled input is version 3** (`TRUST_STORE_VERSION`), adding
   `projectDirectories` to the same treatment as hook, command, allow-rule and MCP decisions: the
   key is refused in every `book config` scope, the decision is keyed by workspace path, and a store
-  written by a newer build is never partially understood.
+  written by a newer build is never partially understood. `book config set projectDirectories …`
+  was **not** refused — the guard list predated the key — and the user-global scope is the default,
+  so `book config set projectDirectories '{"/opt/shared":"approved"}'` released a project's declared
+  directory with no `book trust dir` at all. It is now refused exactly like its four siblings, in
+  every scope, whether written at the document root or at a leaf of the map.
 - **Reads that no root can serve are refused, not prompted for** (#305). A `Read`, `Glob` or `Grep`
   whose target is outside the workspace and every approved root raised a prompt that nothing could
   answer — the tool returned `path_outside_workspace` whatever the user said, and an "Always allow"
@@ -42,6 +46,28 @@ All notable changes to this project are documented in this file.
   workspace — is not guarded by the home rule. A `Grep` or `Glob` names a _scope_, not a file, and
   is guarded when that scope contains a guarded home as well as when it lies inside one: `Grep
 {path: "/home"}` printed lines from `~/.ssh` and `~/.book` without naming a file under them.
+  Two follow-ups, both found in review:
+  - **`dontAsk` refused these the wrong way.** The mode does not judge reads, so an outside target
+    was refused as `permission_denied`, and the `all_tools_blocked` remedy for a streak of them
+    advises an allow rule — which no rule and no mode can grant for a path outside every root. An
+    outside target in `dontAsk` is now refused as `path_outside_workspace`, with the same message and
+    the same remedy the other modes give it. Only the _kind_ of refusal moved: a **workspace** read
+    with no allow rule is still refused in `dontAsk`, unchanged.
+  - **A target the tools _exclude_ fell through to a prompt.** `readToolTarget` already knew that a
+    path under a read-only root's `exclude` list (Book's own memory inbox) could not be read, and
+    said so, but nothing consumed the verdict, so the call fell through to the default `ask` and the
+    operator was prompted for something no answer could change. It is refused up front like an
+    outside target, with its own code `path_excluded` and a message saying the path is excluded — a
+    separate code because its remedy is not a directory: the parent is served already, and
+    `additionalDirectories` would not lift an exclusion. The verdict was right; the loop just never
+    read it.
+  - **A refused target reached the operator's terminal raw.** `readTargetOf`'s comment said the
+    target is printed through `printableRule`, but the refusal interpolated it into
+    `refusal.content` and `noteChildRefusal` pushed that text to the operator verbatim — so a
+    model-chosen path carrying an ESC sequence, a CR, a bidi override or U+2028/2029 could drive the
+    terminal of whoever ran a print-mode child. Every target the new refusal messages name is now
+    folded with the shared control-character set the tool rows already use (#283), which drops an
+    escape sequence and a bidi override rather than displaying it.
 - **`deny` and `ask` path rules match case-insensitively** (#305). `deny: ["Read(.env)"]` already
   blocked `.ENV` and `.Env` on Linux, but `ask: ["Read(.env)"]` did not prompt for them, so the
   model could ask for a spelling that a rule plainly meant to cover. Deny and ask now fold on every
@@ -65,7 +91,25 @@ All notable changes to this project are documented in this file.
 - **A managed child's refusal reaches the operator** (#305). A child runs unattended and its
   handoff is a summary, so a step that was refused and never ran was indistinguishable from one
   the model chose to skip. The child raises an `agent_notice` event, `AgentManager` forwards it,
-  and the TUI adds it to the transcript labelled with the child.
+  and the TUI adds it to the transcript labelled with the child. Both print-mode paths dropped it
+  on the floor: `src/headless.ts` ignored the event and `src/stream-json.ts` had no such event type,
+  so a print-mode operator — the one most likely to be reading a log rather than watching a
+  transcript — never learned the step had not happened. In `text` mode the message is now written
+  to stderr as a labelled `notice: …` line, the way the other operator notices are; in
+  `stream-json` it is emitted as an `agent_notice` event carrying the child's `agentId`. Like a
+  host `notice`, it is not silenced by `--quiet`: it is something that did not happen rather than
+  progress.
+- **A workspace root spelled through a symlink no longer breaks Read → Edit** (#300). The
+  resolution layer reports a workspace file relative to the root _after_ links whenever the path was
+  not written inside the root as given, but the observation ledger filed the Read under a _lexical_
+  `relative(resolve(workspaceRoot), absolutePath)`. A workspace root reached through a symlink — or
+  typed in 8.3 short form on Windows, the same disagreement — made the two spell different files, so
+  the Read filed `../real/a.txt`, the Edit looked up `a.txt`, and the write answered
+  `file_not_observed` for a file the model had just read. Both ends now derive the ledger key
+  canonically, on the one spelling under which they agree, and `requireObservationForMutation` is
+  keyed on the resolved absolute path rather than the display spelling (the message still names the
+  spelling the model wrote). A file in an honored root keeps its `../` prefix, so `notes.txt` in
+  `/srv/app` and `notes.txt` in the workspace still do not share an entry.
 
 ### Changed
 

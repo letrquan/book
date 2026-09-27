@@ -1,4 +1,5 @@
 import type { ToolResult } from '../types/tools.js';
+import { foldControlCharacters } from '../control-characters.js';
 import { toolFailure } from '../tools/result.js';
 import { networkPolicyRefusal, type NetworkPolicyRefusal } from '../tools/web-policy.js';
 
@@ -15,6 +16,7 @@ export type RefusalKind = LocalRefusalKind | NetworkPolicyRefusal;
 export type LocalRefusalKind =
   | 'permission'
   | 'outside'
+  | 'excluded'
   | 'hook'
   | 'inactive'
   | 'capability'
@@ -30,6 +32,17 @@ export type LocalRefusalKind =
  * for the model, and a streak of them must not have its stop message depend on how it is worded.
  */
 export const OUTSIDE_WORKSPACE_REFUSAL_CODE = 'path_outside_workspace';
+
+/**
+ * The code a read the file tools *exclude* is refused with — a path under a read-only root's
+ * `exclude` list, which is how Book's own memory inbox is kept closed.
+ *
+ * A code of its own, not the outside one: the two are refused for different reasons and have
+ * different remedies. `additionalDirectories` would not lift an exclusion, so a streak of them
+ * answered with the outside remedy would name a directory the user could add and still be refused
+ * (#305 item 3).
+ */
+export const EXCLUDED_PATH_REFUSAL_CODE = 'path_excluded';
 
 /** Whether a tool result is a refusal: the call was blocked, not run. */
 export function isRefusal(
@@ -52,6 +65,8 @@ export function refusalKind(
       return 'permission';
     case OUTSIDE_WORKSPACE_REFUSAL_CODE:
       return 'outside';
+    case EXCLUDED_PATH_REFUSAL_CODE:
+      return 'excluded';
     case 'hook_blocked':
       return 'hook';
     case 'tool_not_active':
@@ -81,6 +96,8 @@ export const REFUSAL_REMEDIES: Readonly<Record<LocalRefusalKind, string>> = {
     'grant the permission, add an allow rule, or change the permission mode (a permissions.deny rule is lifted only by changing that rule)',
   outside:
     'the path is outside the workspace and every directory in additionalDirectories, and no permission rule or mode lets Read, Glob or Grep serve it; add its directory to additionalDirectories (a project-declared one also needs `book trust dir <path>`), or start Book in a directory that contains it',
+  excluded:
+    "the path is under a subpath the file tools exclude (Book's memory inbox), which no permission rule, no directory in additionalDirectories and no permission mode reaches; work from what is outside that subpath",
   hook: 'a PreToolUse hook refused the calls, which no permission rule or mode lifts; change or remove that hook',
   inactive:
     "the calls named tools, or arguments, that this turn's tool surface does not allow, which no permission rule or mode changes; a deferred tool has to be activated with ToolSearch first, and the run's allowed tools (--allowedTools, or a skill's or command's allowed-tools) must cover the tool and its arguments",
@@ -101,7 +118,10 @@ export const REFUSAL_KIND_ORDER = Object.keys(REFUSAL_REMEDIES) as LocalRefusalK
 
 /**
  * The target a read tool call names, quoted back to the model: the path for `Read`, the pattern
- * for `Glob`, the scope for `Grep`. Printed through `printableRule` before it reaches a message.
+ * for `Glob`, the scope for `Grep`. Folded to a single line before it is named, so a model-chosen
+ * path cannot put an escape sequence or a bidi override in front of the operator's terminal —
+ * the refusal is pushed to them verbatim as a child's `agent_notice` in print mode, which is the
+ * same sink the tool rows fold for (#283).
  */
 function readTargetOf(toolName: string, args: Record<string, unknown>): string {
   // Every branch tolerates a missing argument. The refusal is built for a call that never ran,
@@ -114,7 +134,11 @@ function readTargetOf(toolName: string, args: Record<string, unknown>): string {
         ? (args.path ?? args.pattern)
         : args.filePath;
   const text = typeof value === 'string' ? value.trim() : '';
-  return text === '' ? toolName : text;
+  if (text === '') return toolName;
+  // Folded, not quoted: a path is read at a glance, and a `\u201c` around it would only make the
+  // model look for a name with quotes in it. The refusal names the tool when there is no target,
+  // so the same fold leaves that untouched.
+  return foldControlCharacters(text).trim();
 }
 
 export interface OutsideWorkspaceRefusalOptions {
@@ -157,5 +181,34 @@ export function outsideWorkspaceRefusal(
     // loop would retry the same path until the `all_tools_blocked` brake stopped it.
     content: message,
     details: { tool: toolName, target, honoredRoots: [...roots] },
+  });
+}
+
+/**
+ * The blocked result for a read of a path a root *excludes* — the `exclude` list of a read-only
+ * root, which is how Book's memory inbox stays closed while the rest of the memory directory
+ * stays readable.
+ *
+ * Not a permission question either, and not the outside refusal: the directory is served, this
+ * subpath under it is not, and the reason a prompt could not have satisfied the call is different
+ * from the outside one. The message says so, and says what is left: the rest of the directory.
+ */
+export function excludedPathRefusal(
+  toolName: string,
+  call: { arguments: Record<string, unknown> },
+  options: Pick<OutsideWorkspaceRefusalOptions, 'toolCallId'> = {},
+): ToolResult {
+  const target = readTargetOf(toolName, call.arguments);
+  const message =
+    `Refused: ${toolName} cannot open ${target}. It is excluded: a directory Book serves hides ` +
+    'this subpath from its file tools, and no permission rule, no directory in additionalDirectories ' +
+    'and no permission mode reaches inside an exclusion. Read what is outside the excluded subpath ' +
+    'instead.';
+  return toolFailure('SKIPPED: ' + message, {
+    toolCallId: options.toolCallId,
+    code: EXCLUDED_PATH_REFUSAL_CODE,
+    status: 'blocked',
+    content: message,
+    details: { tool: toolName, target },
   });
 }

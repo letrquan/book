@@ -361,8 +361,17 @@ it, so a prompt would be a question nothing could answer, and an "Always allow" 
 rule for a call that could never run. The result is `blocked` with the code `path_outside_workspace`
 and a message naming the path, the directories already honored, and the two ways through — add the
 directory to `additionalDirectories` (a project-declared one also needs `book trust dir <path>`), or
-start Book somewhere that contains it. This is the same in `default`, `accept-edits` and `plan`;
-`dontAsk` already refused these, and nothing was lost by not asking it to.
+start Book somewhere that contains it. This is the same in `default`, `accept-edits` and `plan` —
+and in `dontAsk`, which refused these anyway. What changed there is the kind of refusal: it used to
+be `permission_denied`, whose remedy says to add an allow rule, and no rule or mode can make `Read`
+serve a path outside every root. `dontAsk` still refuses a _workspace_ read with no allow rule, as
+before; only an outside target now gets the refusal that names the directory that would serve it.
+
+**Under an excluded subpath.** A path a root serves but whose subpath the file tools exclude — Book's
+own memory inbox — is refused the same way, for the same reason, with its own code
+`path_excluded` and a message that says the path is excluded. The two refusals are not
+interchangeable: the remedy for an outside target is a directory to add, and there is nothing to add
+for one the tools never open. Everything outside the excluded subpath stays served.
 
 **Writes in an approved directory.** An approved `additionalDirectories` entry is a root for the
 write tools too: `Write`, `Edit`, `MultiEdit`, `ApplyPatch` and `NotebookEdit` accept an absolute

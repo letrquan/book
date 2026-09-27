@@ -189,7 +189,7 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   const { filePath, relativePath } = resolved;
   const stale = await requireFreshObservation(ctx, filePath, relativePath);
   if (stale) return fail(stale);
-  const unobserved = requireObservationForMutation(ctx, relativePath, 'notebook edit');
+  const unobserved = requireObservationForMutation(ctx, filePath, relativePath, 'notebook edit');
   if (unobserved) return unobserved;
 
   let original: string;

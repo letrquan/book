@@ -48,13 +48,14 @@ import {
   permissionRuleMatchesCall,
   permissionRuleOf,
   WORKSPACE_READ_JUDGING_MODES,
+  WORKSPACE_READ_REFUSAL_MODES,
   WORKSPACE_READ_TOOLS,
 } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { realWorkspaceRoot } from '../tools/path-utils.js';
 import { homeGuards, resolveAdditionalRoots, rootHoldsHome } from '../additional-roots.js';
-import { outsideWorkspaceRefusal } from './refusal-remedies.js';
+import { excludedPathRefusal, outsideWorkspaceRefusal } from './refusal-remedies.js';
 import {
   isToolDefinitionAllowed,
   parseCapabilityRules,
@@ -2446,6 +2447,10 @@ export async function runAgentLoop(
             homeGuards: homeGuardPaths,
             judgeReads,
             autoAllowReads: judgeReads && !workspaceHoldsHome,
+            // Wider than `judgeReads`: `dontAsk` prompts for nothing, so a target no root serves
+            // is refused there anyway, and refusing it as the target it is gives the model the
+            // directory that would serve it instead of a permission no rule can grant.
+            refuseUnreachableReads: WORKSPACE_READ_REFUSAL_MODES.has(effectiveMode),
           },
         });
         if (verdict.decision === 'deny') {
@@ -2465,18 +2470,23 @@ export async function runAgentLoop(
         }
 
         // A Read, Glob or Grep the tool itself refuses (outside the workspace and every honored
-        // root) is not a permission question: no rule and no mode make the file tools serve it,
-        // so no prompt is raised and no "Always allow" rule is written for a call that could
-        // never work. The model gets a blocked result naming the remedy instead (#305 item 3).
+        // root, or under a subpath a root excludes) is not a permission question: no rule and no
+        // mode make the file tools serve it, so no prompt is raised and no "Always allow" rule is
+        // written for a call that could never work. The model gets a blocked result naming the
+        // remedy instead (#305 item 3).
         if (verdict.decision === 'refuse') {
           if (forceSkillPermission && invokedSkillName && skillActivationReason) {
             skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'permission_denied');
           }
           log.debug('refused a read the tool cannot serve', { tool: canonName });
-          const refusal = outsideWorkspaceRefusal(canonName, call, {
-            toolCallId: call.id,
-            additionalRoots,
-          });
+          // Two refusals, two messages: an unservable path is fixed by adding its directory, an
+          // excluded one is not, and naming a directory for it would be a dead end.
+          const refusal = verdict.excludedPath
+            ? excludedPathRefusal(canonName, call, { toolCallId: call.id })
+            : outsideWorkspaceRefusal(canonName, call, {
+                toolCallId: call.id,
+                additionalRoots,
+              });
           noteChildRefusal(canonName, refusal.content);
           toolResults[callIndex] = refusal;
           return undefined;

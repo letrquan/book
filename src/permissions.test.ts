@@ -624,7 +624,15 @@ describe('workspace reads need no prompt (#264)', () => {
   }
 
   function scope(root: string, extra: Partial<WorkspaceScope> = {}): { workspace: WorkspaceScope } {
-    return { workspace: { root, judgeReads: true, autoAllowReads: true, ...extra } };
+    return {
+      workspace: {
+        root,
+        judgeReads: true,
+        refuseUnreachableReads: true,
+        autoAllowReads: true,
+        ...extra,
+      },
+    };
   }
 
   function setup() {
@@ -773,13 +781,18 @@ describe('workspace reads need no prompt (#264)', () => {
         scope(workspace),
       ),
     ).toEqual({ decision: 'ask', source: 'ask', matchedRule: rule, outsideWorkspace: true });
-    // Only judged in the modes that judge reads.
+    // Only judged where a refusal may follow from it: `auto` and `bypassPermissions` set neither
+    // flag, and the target reaches the tool, which answers for itself.
     expect(
       evaluatePermissionDetail(
         'Read',
         { filePath: outsideFile },
         settings(),
-        scope(workspace, { judgeReads: false, autoAllowReads: false }),
+        scope(workspace, {
+          judgeReads: false,
+          autoAllowReads: false,
+          refuseUnreachableReads: false,
+        }),
       ),
     ).toEqual({ decision: 'ask', source: 'default' });
   });
@@ -848,11 +861,23 @@ describe('workspace reads need no prompt (#264)', () => {
     expect(evaluatePermission('Read', { filePath: join(memory, 'MEMORY.md') }, s, withMemory)).toBe(
       'allow',
     );
+    // Refused, not asked (#305 item 3, PR #334): the tool refuses this path whatever the user
+    // said, so a prompt is a question with no possible answer — and `excludedPath` is what keeps
+    // the streak remedy from answering it with "add its directory to additionalDirectories",
+    // which would not reach inside an exclusion either.
     expect(
-      evaluatePermission('Read', { filePath: join(memory, '.inbox', 'pending.md') }, s, withMemory),
-    ).toBe('ask');
-    // Grep and Glob reach only the workspace and the honored directories: the memory directory is
-    // a root `Read` alone may cross, so Grep on it is refused, not asked about.
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: join(memory, '.inbox', 'pending.md') },
+        s,
+        withMemory,
+      ),
+    ).toEqual({ decision: 'refuse', source: 'default', excludedPath: true });
+    // The directory itself is excluded too — an exclusion names the subpath, not what is under
+    // it — and the rest of the memory directory is still served.
+    expect(
+      evaluatePermissionDetail('Read', { filePath: join(memory, '.inbox') }, s, withMemory),
+    ).toEqual({ decision: 'refuse', source: 'default', excludedPath: true });
     expect(evaluatePermission('Grep', { pattern: 'x', path: memory }, s, withMemory)).toBe(
       'refuse',
     );
@@ -1004,15 +1029,76 @@ describe('workspace reads need no prompt (#264)', () => {
     expect(
       evaluatePermissionDetail('Read', named, settings({ allow: [rule] }), scope(workspace)),
     ).toEqual({ decision: 'allow', matchedRule: rule, source: 'allow' });
-    // Only the modes that judge reads refuse; the rest are unchanged.
+    // Only the modes that judge reads refuse; the rest are unchanged. `dontAsk` is the exception
+    // and is the case below: it judges nothing, but it still refuses what no root serves.
     expect(
       evaluatePermissionDetail(
         'Read',
         { filePath: outsideFile },
         s,
-        scope(workspace, { judgeReads: false, autoAllowReads: false }),
+        scope(workspace, {
+          judgeReads: false,
+          autoAllowReads: false,
+          refuseUnreachableReads: false,
+        }),
       ),
     ).toEqual({ decision: 'ask', source: 'default' });
+  });
+
+  /**
+   * PR #334. `dontAsk` does not change what it refuses — the owner decided a workspace read with
+   * no allow rule stays refused — so this is the half that must not move: the verdict is still
+   * the default `ask`, and the loop still denies it. What moves is only the *kind* of refusal an
+   * unservable target gets, below.
+   */
+  it('leaves a workspace read to be refused by dontAsk, not allowed', () => {
+    const { workspace } = setup();
+    const s = settings();
+    // `autoAllowReads` is what the mode turns off, and `refuseUnreachableReads` what it turns on;
+    // the first is the reason a servable target still asks, the second has no say about one that
+    // is served.
+    const dontAsk = scope(workspace, {
+      judgeReads: false,
+      autoAllowReads: false,
+      refuseUnreachableReads: true,
+    });
+
+    expect(evaluatePermissionDetail('Read', { filePath: 'notes.txt' }, s, dontAsk)).toEqual({
+      decision: 'ask',
+      source: 'default',
+    });
+    expect(evaluatePermission('Glob', { pattern: '**/*.txt' }, s, dontAsk)).toBe('ask');
+    expect(evaluatePermission('Grep', { pattern: 'hello' }, s, dontAsk)).toBe('ask');
+  });
+
+  it('refuses an unservable target in dontAsk, where the mode judges nothing', () => {
+    const { workspace, outside } = setup();
+    const s = settings();
+    const outsideFile = join(outside, 'secret.txt');
+    const dontAsk = scope(workspace, {
+      judgeReads: false,
+      autoAllowReads: false,
+      refuseUnreachableReads: true,
+    });
+
+    // The same `refuse` the judging modes return, so the streak remedy classifies it as
+    // `outside` and names a directory rather than an allow rule that could never serve it.
+    expect(evaluatePermissionDetail('Read', { filePath: outsideFile }, s, dontAsk)).toEqual({
+      decision: 'refuse',
+      source: 'default',
+      outsideWorkspace: true,
+    });
+    expect(evaluatePermission('Grep', { pattern: 'x', path: outside }, s, dontAsk)).toBe('refuse');
+    // An ask rule still outranks it: a user who named the target is asked, as everywhere else.
+    const rule = `Read(${outside.replace(/\\/g, '/')}/**)`;
+    expect(
+      evaluatePermissionDetail(
+        'Read',
+        { filePath: outsideFile.replace(/\\/g, '/') },
+        settings({ ask: [rule] }),
+        dontAsk,
+      ),
+    ).toEqual({ decision: 'ask', source: 'ask', matchedRule: rule, outsideWorkspace: true });
   });
 
   it('folds the case of a deny or ask path rule on every platform (#305 item 1)', () => {
@@ -1109,7 +1195,14 @@ describe('an honored additional directory reads like the workspace (#300)', () =
     additionalRoots: string[] = [],
   ): { workspace: WorkspaceScope } {
     return {
-      workspace: { root, judgeReads: true, autoAllowReads: true, additionalRoots, ...extra },
+      workspace: {
+        root,
+        judgeReads: true,
+        refuseUnreachableReads: true,
+        autoAllowReads: true,
+        additionalRoots,
+        ...extra,
+      },
     };
   }
 
@@ -1451,6 +1544,7 @@ describe('an honored additional directory reads like the workspace (#300)', () =
         workspace: {
           root: workspace,
           judgeReads: true,
+          refuseUnreachableReads: true,
           autoAllowReads: true,
           additionalRoots: [honored],
         },
@@ -1461,6 +1555,7 @@ describe('an honored additional directory reads like the workspace (#300)', () =
         workspace: {
           root: workspace,
           judgeReads: true,
+          refuseUnreachableReads: true,
           autoAllowReads: true,
           additionalRoots: [honored],
         },
@@ -1472,6 +1567,7 @@ describe('an honored additional directory reads like the workspace (#300)', () =
         workspace: {
           root: workspace,
           judgeReads: true,
+          refuseUnreachableReads: true,
           autoAllowReads: true,
           additionalRoots: [honored],
         },
@@ -1492,6 +1588,7 @@ describe('an honored additional directory reads like the workspace (#300)', () =
       workspace: {
         root: workspace,
         judgeReads: true,
+        refuseUnreachableReads: true,
         autoAllowReads: true,
         additionalRoots: [honored],
       },

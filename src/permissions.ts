@@ -41,10 +41,16 @@ export interface PermissionVerdict {
   source?: 'allow' | 'deny' | 'ask' | 'default' | 'sandbox' | 'workspace';
   /**
    * Set on a Read, Glob or Grep whose target the tool itself refuses (outside the workspace and
-   * every honored root, and for Read outside Book's memory directory too): no approval can make
-   * it work, so the loop blocks it instead of prompting. Only set where reads are judged.
+   * every honored root): no approval can make it work, so the loop blocks it instead of prompting.
+   * Only set where reads are judged.
    */
   outsideWorkspace?: boolean;
+  /**
+   * Set instead, on a target a root *serves* but whose subpath the tools exclude. A different
+   * reason and a different remedy from {@link outsideWorkspace}: the directory is reachable and
+   * this path under it is not, so naming a directory to add would be a dead end.
+   */
+  excludedPath?: boolean;
 }
 
 /** The workspace a call's path arguments are judged against (#264). */
@@ -81,6 +87,20 @@ export interface WorkspaceScope {
    * them (`WORKSPACE_READ_JUDGING_MODES`), so a refusal can say when no approval could help.
    */
   judgeReads: boolean;
+  /**
+   * Whether to judge what a Read, Glob or Grep reaches purely to refuse a target no root serves,
+   * whatever the mode does with a target it *can* serve (`WORKSPACE_READ_REFUSAL_MODES`).
+   *
+   * Wider than {@link judgeReads} by `dontAsk`, and deliberately so. That mode refuses every call
+   * that would need approval, so the refusal happens either way; what changes is what it says.
+   * Judged as `permission_denied` it told the model to ask for a rule, and the `all_tools_blocked`
+   * stop message for a streak of them advises an allow rule that can never make `Read` serve a
+   * path outside every root. Judged as a target, it is refused the way the other modes refuse it,
+   * with the directory that would serve it. Only the *kind* of refusal moves: a workspace read
+   * with no allow rule is still refused in `dontAsk`, because `autoAllowReads` is off there and
+   * the owner decided that is the right answer.
+   */
+  refuseUnreachableReads: boolean;
   /**
    * Whether a target the tool can serve runs without a prompt. Takes effect only with
    * `judgeReads`; false for a workspace that holds a home directory.
@@ -128,6 +148,24 @@ export const WORKSPACE_READ_JUDGING_MODES: ReadonlySet<string> = new Set([
   'default',
   'accept-edits',
   'plan',
+]);
+
+/**
+ * Modes in which a Read, Glob or Grep target no root serves — or one a root excludes — is refused
+ * rather than decided as a permission (#264, then #305 item 3, then PR #334).
+ *
+ * Every mode in {@link WORKSPACE_READ_JUDGING_MODES}, and `dontAsk` beside it. `dontAsk` prompts
+ * for nothing, so there is no prompt to raise for an unservable target, but the call is refused
+ * all the same — and refused as `permission_denied` it was told to ask for a permission, which no
+ * rule or mode can grant for a path outside every root. Refusing it as the target it is gives the
+ * same `path_outside_workspace` message, and the same remedy, the other modes give (#305 item 3).
+ *
+ * `auto` and `bypassPermissions` ask about nothing and reach every call, so there is nothing to
+ * refuse early: the file tools answer for themselves, as they always did.
+ */
+export const WORKSPACE_READ_REFUSAL_MODES: ReadonlySet<string> = new Set([
+  ...WORKSPACE_READ_JUDGING_MODES,
+  'dontAsk',
 ]);
 
 /**
@@ -875,10 +913,15 @@ export function evaluatePermissionDetail(
     }
     return pool.some((candidate) => ruleMatchesCandidate(rule, tool, candidate, fold));
   };
-  // What a Read, Glob or Grep reaches, judged only in the modes that judge reads, so a refusal
-  // can say when no approval could make the tool serve it.
+  // What a Read, Glob or Grep reaches. Judged wherever a refusal may follow from it: in the modes
+  // that judge reads, and in `dontAsk`, which refuses the call regardless and must refuse it with
+  // the reason that is actually the blocker. Where reads are not judged at all (`auto`,
+  // `bypassPermissions`) this stays undefined and nothing here can refuse early.
   const readTarget =
-    scope && paths && scope.judgeReads && WORKSPACE_READ_TOOLS.has(tool)
+    scope &&
+    paths &&
+    (scope.judgeReads || scope.refuseUnreachableReads) &&
+    WORKSPACE_READ_TOOLS.has(tool)
       ? readToolTarget(tool, args, paths)
       : undefined;
   const outside = readTarget === 'outside' ? { outsideWorkspace: true as const } : {};
@@ -940,6 +983,14 @@ export function evaluatePermissionDetail(
   // `ask` rule returned above, so a user who named the target still gets asked.
   if (readTarget === 'outside') {
     return { decision: 'refuse', source: 'default', outsideWorkspace: true };
+  }
+
+  // A target a root serves but excludes — Book's memory inbox. The tool refuses it whatever the
+  // user said, so a prompt here is a question with no possible answer, and the `hidden` verdict
+  // that already knew as much used to fall through to the default `ask` (#305 item 3). Refused
+  // with its own code, because the remedy is not a directory: the parent is served already.
+  if (readTarget === 'hidden') {
+    return { decision: 'refuse', source: 'default', excludedPath: true };
   }
 
   // No rule matched — default to asking.

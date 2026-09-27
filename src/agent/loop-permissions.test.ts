@@ -18,6 +18,7 @@ import type { AgentConfig } from '../types/runtime.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { PermissionDecision, ToolResult } from '../types/tools.js';
 import type { Provider } from '../provider/index.js';
+import type { LoadedMemoryContext } from '../memory-store.js';
 
 function noopCallbacks(overrides: Partial<AgentLoopCallbacks> = {}): AgentLoopCallbacks {
   return {
@@ -97,6 +98,20 @@ afterEach(() => {
 
 function byId(results: ToolResult[], id: string): ToolResult | undefined {
   return results.find((result) => result.toolCallId === id);
+}
+
+/** The loop turns a memory context into the read-only root whose `.inbox` it excludes. */
+function loadedMemory(dir: string): LoadedMemoryContext {
+  return {
+    dir,
+    indexFile: join(dir, 'MEMORY.md'),
+    indexLoaded: false,
+    indexLineCount: 0,
+    loadedLineCount: 0,
+    indexText: '',
+    files: [],
+    candidates: [],
+  };
 }
 
 describe('runAgentLoop workspace reads (#264)', () => {
@@ -457,6 +472,90 @@ describe('runAgentLoop workspace reads (#264)', () => {
     expect(result?.structuredError?.code).toBe('permission_denied');
     expect(result?.content).toContain('dontAsk');
     expect(result?.content).not.toContain('configured permission policy');
+  });
+
+  /**
+   * PR #334. `dontAsk` does not change what it refuses — the owner decided a workspace read with
+   * no allow rule stays refused — so only the *kind* of refusal moves. An outside target used to
+   * come back as `permission_denied`, and the `all_tools_blocked` stop message for a streak of
+   * those advises an allow rule, which can never make `Read` serve a path outside every root.
+   * It now gets the same `path_outside_workspace` refusal, and the same remedy, as `default`.
+   */
+  it('refuses an outside read in dontAsk as unreachable, not as a permission it could grant', async () => {
+    const prompt = vi.fn(async () => 'allow' as const);
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2 }),
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'dontAsk',
+      {
+        provider: toolsThenText([
+          { id: 'r1', name: 'Read', arguments: { filePath: join(outside, 'secret.txt') } },
+        ]),
+        isNewSession: false,
+      },
+    );
+
+    const result = byId(results, 'r1');
+    expect(prompt).not.toHaveBeenCalled();
+    expect(result?.status).toBe('blocked');
+    // The code the streak remedy classifies as `outside`, so the stop message names a directory
+    // rather than a rule. `permission_denied` would classify as `permission` and advise the rule.
+    expect(result?.structuredError?.code).toBe('path_outside_workspace');
+    expect(result?.content).toContain('additionalDirectories');
+    expect(result?.content).not.toContain('dontAsk mode refuses every call');
+  });
+
+  /**
+   * #305 item 3, second half. `readToolTarget` already judged an excluded path — a read-only
+   * root's `exclude` list, which is how Book's memory inbox is kept closed — and reported
+   * `hidden`, but nothing consumed that verdict: the call fell through to the default `ask`, and
+   * the prompt could not be satisfied because the tool refuses the path either way. Refused
+   * before the prompt, with a message that says the path is excluded.
+   */
+  it('refuses a read of an excluded path, rather than asking about a call the tool refuses', async () => {
+    // The memory directory is the read-only root that carries an `exclude` in production: `Read`
+    // may cross it, and `.inbox` inside it is the one subpath the tool itself refuses.
+    const memory = tempDir('book-loop-memory-');
+    mkdirSync(join(memory, '.inbox'), { recursive: true });
+    writeFileSync(join(memory, '.inbox', 'pending.md'), 'pending\n');
+    const prompt = vi.fn(async () => 'allow' as const);
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({
+        workspace,
+        maxTurns: 2,
+        memoryContext: loadedMemory(memory),
+      }),
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'default',
+      {
+        provider: toolsThenText([
+          {
+            id: 'r1',
+            name: 'Read',
+            arguments: { filePath: join(memory, '.inbox', 'pending.md') },
+          },
+        ]),
+        isNewSession: false,
+      },
+    );
+
+    // The approver is not consulted: "always allow" would have saved a rule for a path the tool
+    // never opens, which is the same dead end #305 item 3 was about.
+    expect(prompt).not.toHaveBeenCalled();
+    const result = byId(results, 'r1');
+    expect(result?.status).toBe('blocked');
+    expect(result?.structuredError?.code).toBe('path_excluded');
+    // Its own code, so the streak remedy does not answer an exclusion with "add its directory to
+    // additionalDirectories", which would not lift it either.
+    expect(result?.content).toContain('excluded');
   });
 
   it('refuses what nobody can approve, says why, and tells the operator once', async () => {

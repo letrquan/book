@@ -26,7 +26,7 @@ import {
 } from 'fs';
 import { writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
-import { dirname, join, resolve } from 'path';
+import { dirname, basename, join, resolve } from 'path';
 import { shortPathName, withLowercaseDriveLetter } from '../test/short-path.js';
 
 let dir: string;
@@ -3199,6 +3199,72 @@ describe('additionalRoots', () => {
 });
 
 /**
+ * PR #334. The observation ledger is keyed by a path relative to the workspace root, and the two
+ * ends of that key were derived differently: `observeFile` relativized the absolute path against
+ * `resolve(workspaceRoot)` — the root *as given* — while the mutation tools looked the file up
+ * under the `relativePath` a resolution produced, which is relative to the root *after links*.
+ * The two agree until the workspace root is itself reached through a link, and then every Read
+ * of the real directory licensed an Edit that answered `file_not_observed`. The same disagreement
+ * is what the 8.3 and long spellings of one root produce on Windows, and the tests below are
+ * written so the same fix covers both.
+ */
+describe('a workspace root reached through a link', () => {
+  let real: string;
+  let link: string;
+  let linkCtx: ToolContext;
+
+  beforeEach(() => {
+    real = realpathSync(dir);
+    link = join(dirname(dir), `${basename(dir)}-link`);
+    // A junction needs no symlink privilege on Windows; elsewhere the type is ignored.
+    symlinkSync(real, link, 'junction');
+    linkCtx = { ...ctx, workspaceRoot: link, fileObservationLedger: new Map() };
+  });
+  afterEach(() => rmSync(link, { force: true, maxRetries: 3 }));
+
+  it('edits a file the model read through the real directory', async () => {
+    writeFileSync(join(real, 'a.txt'), 'hello');
+    expect((await read.execute({ filePath: join(real, 'a.txt') }, linkCtx)).status).toBe('success');
+
+    const e = await edit.execute(
+      { filePath: join(real, 'a.txt'), oldString: 'hello', newString: 'edited' },
+      linkCtx,
+    );
+
+    expect(e.status).toBe('success');
+    expect(readFileSync(join(real, 'a.txt'), 'utf8')).toBe('edited');
+  });
+
+  it('edits a file the model read through the link, and the two spellings share one entry', async () => {
+    writeFileSync(join(real, 'a.txt'), 'hello');
+    expect((await read.execute({ filePath: join(link, 'a.txt') }, linkCtx)).status).toBe('success');
+    // One file, one observation: the ledger holds a single entry however the file was named, or
+    // the second Read would shadow the first under a key the Edit never consults.
+    expect(linkCtx.fileObservationLedger?.size).toBe(1);
+
+    const e = await edit.execute(
+      { filePath: join(real, 'a.txt'), oldString: 'hello', newString: 'edited' },
+      linkCtx,
+    );
+
+    expect(e.status).toBe('success');
+    expect(readFileSync(join(real, 'a.txt'), 'utf8')).toBe('edited');
+  });
+
+  it('still refuses a sibling the link does not serve', async () => {
+    // The key now goes through a link, and one that must not have widened what a root serves.
+    const sibling = mkdtempSync(join(tmpdir(), 'book-file-sibling-'));
+    try {
+      writeFileSync(join(sibling, 'a.txt'), 'sibling');
+      const r = await read.execute({ filePath: join(sibling, 'a.txt') }, linkCtx);
+      expect(r.structuredError?.code).toBe('path_outside_workspace');
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
  * #264, on Windows. One directory has more than one name: the long form a user reads
  * (`C:\Users\runneradmin\AppData\Local\Temp`) and the DOS 8.3 form (`C:\Users\RUNNER~1\AppData`),
  * plus a drive letter in either case and separators either way. GitHub's Windows runners put
@@ -3310,6 +3376,30 @@ describe.runIf(process.platform === 'win32')(
 
       expect(result.status).toBe('success');
       expect(Object.keys((result.data as { matches: object }).matches)).toEqual(['a.ts']);
+    });
+
+    /**
+     * The same disagreement PR #334 finding 6 reported for a symlinked root, on Windows: a root
+     * typed in 8.3 short form and a file named in the long form are one directory and one file,
+     * and the Read that licensed the Edit filed its observation under one spelling while the Edit
+     * looked it up under the other.
+     */
+    it('edits a file the model read by its long name under a root spelled short', async (test) => {
+      if (!shortDir) return test.skip();
+      writeFileSync(join(dir, 'a.txt'), 'hello');
+      const shortCtx: ToolContext = { ...ctx, workspaceRoot: shortDir };
+      // `dir` is the long form the runner gives for the same directory `shortDir` names.
+      expect((await read.execute({ filePath: join(dir, 'a.txt') }, shortCtx)).status).toBe(
+        'success',
+      );
+
+      const e = await edit.execute(
+        { filePath: join(dir, 'a.txt'), oldString: 'hello', newString: 'edited' },
+        shortCtx,
+      );
+
+      expect(e.status).toBe('success');
+      expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('edited');
     });
   },
 );
