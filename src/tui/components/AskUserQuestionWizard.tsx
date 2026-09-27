@@ -2,9 +2,10 @@ import { Box, Text, useInput } from 'ink';
 import TextInput from './TextInputField.js';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
+import { useReportLayout } from '../hooks/useReportLayout.js';
 import type { UserQuestion, UserQuestionRequest, UserQuestionResponse } from '../../types/tools.js';
 import { useTheme } from '../theme.js';
-import { truncateDisplay } from './word-wrap.js';
+import { truncateDisplay, wordWrap } from './word-wrap.js';
 import { ChoiceList, DecisionSheet, floatingFrameMetrics, type Choice } from './chrome.js';
 import { PILCROW } from '../marks.js';
 
@@ -14,6 +15,20 @@ interface AskUserQuestionWizardProps {
   terminalWidth?: number;
   onResolve: (response: UserQuestionResponse) => void;
   screenReader?: boolean;
+  /**
+   * Called when the sheet's height may have changed: when it opens, when the
+   * question changes, when the `Other` editor opens or closes, and when a notice
+   * appears or goes. The transcript above measures its viewport only on its own
+   * layout changes, so a taller question covered its last rows — the question
+   * the model asked and the tool row that asked it.
+   */
+  onLayoutChange?: () => void;
+  /**
+   * Called when the `Other` editor takes or gives up the focus. While it holds
+   * it, Ctrl+U and Ctrl+D are the editor's kills rather than the transcript's
+   * half-page scrolls.
+   */
+  onEditorFocusChange?: (focused: boolean) => void;
 }
 
 /**
@@ -76,6 +91,8 @@ export function AskUserQuestionWizard({
   terminalWidth = 80,
   onResolve,
   screenReader = false,
+  onLayoutChange,
+  onEditorFocusChange,
 }: AskUserQuestionWizardProps) {
   const theme = useTheme();
   const outerWidth = Math.max(20, Math.floor(terminalWidth));
@@ -295,6 +312,36 @@ export function AskUserQuestionWizard({
   const progress =
     request.questions.length > 1 ? ` · ${questionIndex + 1} of ${request.questions.length}` : '';
   const queueText = queueLength > 1 ? ` · ${queueLength - 1} waiting` : '';
+
+  // Everything the sheet draws that changes how many rows it takes: which
+  // question is up, whether the editor under the choices is open, the notice row
+  // and the width the question wraps to.
+  //
+  // The editor's *text* is not here but the number of rows it takes is: a
+  // 2000-character answer wraps, so a keystroke that pushes the value onto one
+  // more line grows the sheet, and the transcript above has to re-measure. What
+  // is reported is the row count, so a keystroke inside a wrapped line — the
+  // common case — reports nothing.
+  const otherRows = otherMode ? wordWrap(otherValue, contentWidth).split('\n').length : 0;
+  const layoutShape = [
+    questionIndex,
+    question.question,
+    question.options.length,
+    question.multiSelect,
+    otherMode ? 1 : 0,
+    otherRows,
+    notice ?? '',
+    contentWidth,
+    progress,
+    queueText,
+    fromAgent ? 1 : 0,
+  ].join(':');
+  useReportLayout(layoutShape, {
+    onLayoutChange,
+    editorFocused: otherMode,
+    onEditorFocusChange,
+  });
+
   const choiceRows: Choice[] = [
     ...question.options.map((option) => ({
       label: option.label,

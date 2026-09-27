@@ -70,6 +70,18 @@ result) or **enter model IDs manually** (comma-separate to add several at once).
 the answer for an endpoint that exposes no model-list API, and it is still offered as a fallback
 if discovery fails.
 
+The wizard is a sheet, like every other decision the TUI asks for: a rule reading
+`Add BYOK provider`, with the `Step N/9` counter set at the far end of it, and the step's body two
+columns in so its text lands on the same column as the transcript above. It draws no box of its
+own, and it is drawn at the same measure as the model picker it opens from, so the surface never
+jumps wider than the panel it replaced.
+
+Every text field in the wizard — and in every other sheet — is Book's own single-line editor, with
+the readline chords a terminal user expects: `Ctrl+A` and `Ctrl+E` for the start and end of the
+line, `Ctrl+U` to kill to the cursor, `Ctrl+K` to kill to the end, `Ctrl+W` to kill the word to
+the left, and `Ctrl+D` to delete the character under the cursor. Any other `Ctrl` chord is ignored
+rather than typed into the value.
+
 An already-configured provider keeps both routes. With one of its models selected in the picker,
 `Alt+R` re-reads the catalog from the endpoint and `Alt+M` adds model IDs by hand. A refresh
 replaces what discovery previously returned, but hand-entered models survive it — they exist

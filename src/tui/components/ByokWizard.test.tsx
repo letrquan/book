@@ -5,6 +5,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { DensityContext, type TuiDensity } from '../density.js';
 import { defaultConfig } from '../../test/fixtures.js';
+import { MAX_PANEL_MEASURE } from '../layout.js';
 import { ByokWizard } from './ByokWizard.js';
 
 function withTheme(children: React.ReactElement): React.ReactElement {
@@ -98,6 +99,39 @@ async function advanceToModelChoice(view: ReturnType<typeof render>, key = 'supe
 afterEach(cleanup);
 
 describe('ByokWizard', () => {
+  it('renders one model row per model when the label and the id are both long', async () => {
+    // A row is `› ◉ ` plus the label plus two spaces plus the id. Budgeting each
+    // column a share of the whole content width let the two add up to more than
+    // the row, Ink wrapped the highlighted row in two, and the list grew past
+    // the `maxVisibleModels` it was supposed to hold. 80 columns of terminal is
+    // a content width of 75, which is the width the row has to fit.
+    const label = 'L'.repeat(70);
+    const id = 'm'.repeat(40);
+    const { view } = createWizard({
+      discover: vi.fn(async () => [{ id, label }]),
+      terminalWidth: 80,
+    });
+    await advanceToModelChoice(view, 'super-secret-key');
+
+    const rows = stripAnsi(view.lastFrame())
+      .split('\n')
+      .filter((line) => line.includes('LLLLL'));
+    expect(rows).toHaveLength(1);
+    // One row, so the id is on it rather than wrapped onto a line of its own.
+    expect(rows[0]).toContain('mmmmm');
+  });
+
+  it('stays within the panel measure its picker is drawn in', () => {
+    // The wizard opens from the model picker and sits beside its other panels,
+    // so it takes the same `MAX_PANEL_MEASURE` cap. Sized with `frameGrid` it
+    // ran the width of a 200-column terminal, and the picker it opened from was
+    // 80 columns narrower than the surface that replaced it.
+    const { view } = createWizard({ terminalWidth: 200 });
+    for (const line of stripAnsi(view.lastFrame()).split('\n')) {
+      expect(line.length).toBeLessThanOrEqual(MAX_PANEL_MEASURE);
+    }
+  });
+
   it('removes optional guidance in tight terminals', () => {
     const { view } = createWizard({}, 'tight');
     const output = stripAnsi(view.lastFrame());
@@ -367,5 +401,27 @@ describe('ByokWizard', () => {
     await write(view, '\x1b[B\x1b[B\r');
     await waitForText(view, 'Base URL');
     expect(stripAnsi(view.lastFrame())).toContain('https://api.openai.com/v1');
+  });
+
+  // Every other decision the TUI asks for is a sheet: a rule with a label, no
+  // box around it. The wizard is the one that still drew its own border, so it
+  // was the only surface whose text sat a column left of everything around it.
+  it('is a sheet: a labelled rule with the step counter, not a box', async () => {
+    const { view } = createWizard();
+    const first = stripAnsi(view.lastFrame());
+
+    expect(first).not.toContain('╭');
+    expect(first).not.toContain('╰');
+    expect(first).toContain('Add BYOK provider');
+    expect(first).toContain('Step 1/9');
+
+    // The counter follows the step, and the sheet's geometry does not change
+    // what any step says.
+    await advanceToModelSource(view);
+    const later = stripAnsi(view.lastFrame());
+    expect(later).toContain('Add BYOK provider');
+    expect(later).toContain('Step 5/9');
+    expect(later).not.toContain('╭');
+    expect(later).not.toContain('╰');
   });
 });
