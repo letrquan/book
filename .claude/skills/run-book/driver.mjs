@@ -23,6 +23,8 @@
 import { spawn as ptySpawn } from 'node-pty';
 import { spawn as procSpawn } from 'node:child_process';
 import {
+  accessSync,
+  constants,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -200,6 +202,33 @@ function passthroughArgs() {
 
 const extraArgs = passthroughArgs();
 
+/**
+ * Refuse to start when a `--settings` path cannot be read.
+ *
+ * Book ignores an override file it cannot find, so a typo in one — the argument
+ * a script passes to pin a workspace's settings — would quietly test the
+ * default configuration and pass. The file's contents are Book's to parse; only
+ * its existence is the driver's business, and it costs one stat before the PTY
+ * opens rather than a wrong screenshot after.
+ */
+function checkSettingsReadable(args) {
+  for (let a = 0; a < args.length; a++) {
+    const path =
+      args[a] === '--settings' && args[a + 1] !== undefined
+        ? args[a + 1]
+        : args[a].startsWith('--settings=')
+          ? args[a].slice('--settings='.length)
+          : undefined;
+    if (path === undefined) continue;
+    try {
+      accessSync(path, constants.R_OK);
+    } catch (error) {
+      return { path, reason: error.code === 'ENOENT' ? 'no such file' : error.message };
+    }
+  }
+  return undefined;
+}
+
 // --bin <path> drives a different executable (e.g. the Go build, bin/book.exe)
 // instead of node dist/index.js; the same flags are passed through. A path is made
 // absolute (on POSIX node-pty enters the workspace before exec); a bare name uses PATH.
@@ -251,6 +280,16 @@ if (USE_MOCK) {
 // `--sessions` keeps session persistence on, so a pre-seeded
 // `<book-home>/.book/sessions/*.jsonl` shows up in /resume and on the title page.
 const PERSISTENCE = flag('sessions') ? [] : ['--no-session-persistence'];
+// Before the PTY opens, and on the same path as a missing executable: a run that
+// cannot honour its own arguments has nothing to show.
+const unreadableSettings = checkSettingsReadable(extraArgs);
+if (unreadableSettings) {
+  console.error(
+    `[driver] cannot read --settings ${unreadableSettings.path}: ${unreadableSettings.reason}`,
+  );
+  removeOwnedDirs();
+  process.exit(1);
+}
 let pty;
 try {
   pty = BIN
@@ -317,8 +356,13 @@ async function replay() {
 async function screen() {
   const term = await replay();
   try {
+    // From `viewportY`, as `screenHtml` reads: shrinking the rows on the main
+    // buffer pushes what was on screen into scrollback, and reading from line 0
+    // would then return the top of a longer run's history instead of what is
+    // visible now.
+    const top = term.buffer.active.viewportY;
     return Array.from({ length: rows }, (_, i) =>
-      (term.buffer.active.getLine(i)?.translateToString(true) ?? '').trimEnd(),
+      (term.buffer.active.getLine(top + i)?.translateToString(true) ?? '').trimEnd(),
     );
   } finally {
     term.dispose();
@@ -527,10 +571,15 @@ const KEYS = {
  * The bytes one `key` argument sends.
  *
  * `alt-<char>` is ESC then the character, the way a terminal sends Alt+A. A named
- * key has no such spelling, so Alt is carried the way xterm encodes it: a CSI
- * sequence takes modifier 3 (`\x1b[3~` -> `\x1b[3;3~`, `\x1b[A` -> `\x1b[1;3A`),
- * and every other key — backspace, enter, tab, esc — is ESC followed by the key
- * itself, which is what a terminal with no Alt+Delete encoding sends.
+ * key has no such spelling, so Alt is carried the way xterm encodes it: bit 2 of
+ * the modifier field, added to whatever modifier the key already asks for, which
+ * comes after the `;` — the number before it is the key's own (`5` in
+ * `\x1b[5~` is page up, not a modifier, and reading it as one asked for
+ * Ctrl+Alt). So Alt+Delete is `\x1b[3;3~`, Alt+PageUp `\x1b[5;3~`, Alt+Up
+ * `\x1b[1;3A`; a key that already carries a modifier keeps it, and back-tab,
+ * which is Shift with no number, becomes Alt+Shift: `\x1b[1;4Z`. Every other key
+ * — backspace, enter, tab, esc — is ESC followed by the key itself, which is
+ * what a terminal with no Alt+Delete encoding sends.
  */
 function keySequence(name) {
   const key = name.toLowerCase();
@@ -539,8 +588,14 @@ function keySequence(name) {
   if (named.length === 1) return `\x1b${named}`;
   const seq = KEYS[named];
   if (seq === undefined) return undefined;
-  const csi = /^\x1b\[(\d*)([A-Za-z~])$/.exec(seq);
-  return csi ? `\x1b[${csi[1] ? `${csi[1]};3` : '1;3'}${csi[2]}` : `\x1b${seq}`;
+  // Three parts: the key's number, a modifier only if one is written, and the
+  // final character.
+  const csi = /^\x1b\[(\d*)(?:;(\d+))?([A-Za-z~])$/.exec(seq);
+  if (!csi) return `\x1b${seq}`;
+  // Shift is the one modifier xterm spells without a number: back-tab is
+  // `\x1b[Z` for modifier 2, and every unmodified key stands at 1.
+  const existing = csi[2] ? Number(csi[2]) : csi[3] === 'Z' ? 2 : 1;
+  return `\x1b[${csi[1] || 1};${1 + ((existing - 1) | 2)}${csi[3]}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -845,15 +900,12 @@ async function run() {
         break;
       case 'resize': {
         [cols, rows] = rest.split(/\s+/).map(Number);
-        const mark = { at: raw.length, t: Date.now() - recordStart, cols, rows };
-        resizes.push(mark);
+        const t = Date.now() - recordStart;
+        resizes.push({ at: raw.length, t, cols, rows });
         // Into the recording at its own place in the stream, so a replay resizes
-        // where the run resized instead of at the end.
-        if (recorded) {
-          let i = recorded.length;
-          while (i > 0 && recorded[i - 1][0] > mark.t) i--;
-          recorded.splice(i, 0, [mark.t, { cols, rows }]);
-        }
+        // where the run resized instead of at the end. Every chunk already in
+        // `recorded` arrived before this, so appending keeps it in order.
+        recorded?.push([t, { cols, rows }]);
         pty.resize(cols, rows);
         break;
       }

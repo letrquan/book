@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, normalize } from 'path';
-import { resolveSettings, mergeSettings, loadSettingsFile } from './settings-loader.js';
+import {
+  resolveSettings,
+  mergeSettings,
+  loadSettingsFile,
+  applySettingsEnvOverrides,
+  startupAnimationEnvNote,
+} from './settings-loader.js';
 import { hookFingerprint } from './hook-approvals.js';
 import { updateWorkspaceTrust } from './workspace-trust.js';
 import { DEFAULT_SETTINGS, HOOK_EVENTS, type ResolvedSettings } from './settings.js';
@@ -203,6 +209,64 @@ describe('mergeSettings', () => {
 
       expect(result.hooks[event].map((hook) => hook.command)).toEqual(['user', 'later']);
     }
+  });
+});
+
+describe('applySettingsEnvOverrides', () => {
+  function withSplash(enabled: boolean): ResolvedSettings {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.ui.startupAnimation = enabled;
+    return settings;
+  }
+
+  it('outranks every layer, on and off', () => {
+    expect(
+      applySettingsEnvOverrides(withSplash(true), { BOOK_STARTUP_ANIMATION: '0' }).ui
+        .startupAnimation,
+    ).toBe(false);
+    expect(
+      applySettingsEnvOverrides(withSplash(false), { BOOK_STARTUP_ANIMATION: 'on' }).ui
+        .startupAnimation,
+    ).toBe(true);
+  });
+
+  it('leaves the resolved value alone when the variable says nothing', () => {
+    // An unset variable, an empty one, and a word that is not a spelling: all
+    // three mean "the file decides", and a wrong guess either delays the first
+    // render or hides the input bar a script is waiting for.
+    for (const env of [
+      {},
+      { BOOK_STARTUP_ANIMATION: '' },
+      { BOOK_STARTUP_ANIMATION: '  ' },
+      { BOOK_STARTUP_ANIMATION: 'maybe' },
+    ]) {
+      expect(applySettingsEnvOverrides(withSplash(true), env).ui.startupAnimation).toBe(true);
+      expect(applySettingsEnvOverrides(withSplash(false), env).ui.startupAnimation).toBe(false);
+    }
+  });
+
+  it('keeps the rest of the settings, and the object it was given', () => {
+    const original = withSplash(true);
+    const result = applySettingsEnvOverrides(original, { BOOK_STARTUP_ANIMATION: 'off' });
+
+    expect(result.ui.showThinking).toBe(DEFAULT_SETTINGS.ui.showThinking);
+    // A caller may hand the same object on to code that saves it, so the
+    // override cannot be allowed to rewrite what the caller still holds.
+    expect(original.ui.startupAnimation).toBe(true);
+  });
+});
+
+describe('startupAnimationEnvNote', () => {
+  it('names the variable and the value it is set to', () => {
+    expect(startupAnimationEnvNote({ BOOK_STARTUP_ANIMATION: '0' })).toContain(
+      'BOOK_STARTUP_ANIMATION is set to "0"',
+    );
+  });
+
+  it('says nothing when the variable is unset or unreadable', () => {
+    expect(startupAnimationEnvNote({})).toBeUndefined();
+    expect(startupAnimationEnvNote({ BOOK_STARTUP_ANIMATION: '' })).toBeUndefined();
+    expect(startupAnimationEnvNote({ BOOK_STARTUP_ANIMATION: 'maybe' })).toBeUndefined();
   });
 });
 

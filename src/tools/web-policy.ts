@@ -2,6 +2,7 @@ import { lookup as lookupCallback } from 'node:dns';
 import { lookup } from 'node:dns/promises';
 import { isIP, type LookupFunction } from 'node:net';
 import type { ToolResult } from '../types/tools.js';
+import { parseEnvBoolean } from '../env-boolean.js';
 
 export interface WebUrlPolicy {
   allowHttp: boolean;
@@ -163,7 +164,7 @@ export function networkPolicyRemedies(results: readonly RefusalResult[]): string
 }
 
 function envFlag(value: string | undefined): boolean {
-  return /^(1|true|yes|on)$/i.test(value?.trim() ?? '');
+  return parseEnvBoolean(value) === true;
 }
 
 function boundedInteger(

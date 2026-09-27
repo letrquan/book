@@ -204,6 +204,12 @@ after a failed run.
 | `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                                                        |
 | `BOOK_DEBUG_FILE` / `BOOK_DEBUG_STDERR` / `BOOK_DEBUG_MAX_BYTES` / `BOOK_DEBUG_BACKUPS`           | Debug log destination and rotation controls                                                |
 
+`BOOK_STARTUP_ANIMATION` holds wherever the effective settings are read, not only at startup:
+`book config get ui.startupAnimation` and `book config list` report the value in force and name the
+variable as its source, and the settings a provider removal re-reads keep it. It is never written
+into a settings file, so `/config` says the variable decides at every launch when the row is toggled
+while it is set — the saved value applies once it is unset.
+
 `WebFetch` requires HTTPS by default, validates DNS results and the address used by the network
 connection, blocks private/special-use destinations, and stops on cross-origin redirects so the
 new origin receives its own permission decision. A cross-origin redirect is reported before its

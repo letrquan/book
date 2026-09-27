@@ -105,8 +105,11 @@ Book, and `--startup-animation` sets it to `1` so the splash can be driven. The 
 `ui.startupAnimation` in every settings layer, so the workspace's `.book/settings.json` is never
 written and a value an older driver left there cannot win; a `--settings` or `--no-settings` of your
 own after `--` reaches Book untouched (Book takes one `--settings` layer, and a relative path in one
-is taken from the driver's cwd and made absolute for it). The Go build (`--bin`) reads a flat
-`startupAnimation` key and ignores the variable, as it did when the driver gave it no layer.
+is taken from the driver's cwd and made absolute for it). A `--settings` path that does not exist or
+cannot be read fails the run before the PTY opens, rather than leaving Book to ignore an override
+file it never found and the script to check a configuration it did not ask for. The Go build
+(`--bin`) reads a flat `startupAnimation` key and ignores the variable, as it did when the driver
+gave it no layer.
 The splash replaces the input bar that `ready` waits for, so such a script starts with `sleep` (the
 splash plays for about three seconds) and a key that dismisses it.
 

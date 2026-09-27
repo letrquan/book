@@ -1433,7 +1433,11 @@ All notable changes to this project are documented in this file.
   rather than uses it — a script, a capture, the run-book PTY driver — can turn the splash off
   without owning a settings layer it would have to merge with whatever the user passes. The
   resolved value lands on `config.settings.ui.startupAnimation`, so `shouldPlayStartupFire` and
-  `/config` read the same one.
+  `/config` read the same one. The override is applied wherever the effective settings are read,
+  not only at startup: `book config get`/`list` report the value in force and name the variable as
+  its source, the settings a provider removal re-reads keep it, and `/config` says the variable
+  decides at every launch so a value saved while it is set does not look like it took. It is never
+  applied to a value being written back to a settings file.
 - **Releases publish from CI with no token.** `.github/workflows/release.yml` publishes on a `v*`
   tag using npm trusted publishing, which proves the workflow's identity over OIDC instead of
   presenting a credential. 0.2.0 went out on a bypass-2FA granular token, the only thing that still
