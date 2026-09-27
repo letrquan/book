@@ -352,11 +352,15 @@ describe('hardening against a real git', () => {
     const credentials = join(root, 'credential.sh');
     writeFileSync(credentials, `#!/bin/sh\ntouch '${marker}'\n`);
     chmodSync(credentials, 0o755);
+    // Forward slashes, because a backslash in a config *value* is an escape character: a raw
+    // `C:\Users\...` is `fatal: bad config line 2`, and every git command in this repository
+    // fails before the tool under test is reached. `git config key value` would escape it for
+    // us, which is why the sibling tests here are safe; this one writes the file as text.
     writeFileSync(
       join(repo, '.git', 'config'),
       [
         '[credential]',
-        `\thelper = ${credentials}`,
+        `\thelper = ${credentials.replaceAll('\\', '/')}`,
         '[remote "origin"]',
         '\turl = https://example.invalid/repo.git',
         '',
