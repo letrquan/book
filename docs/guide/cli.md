@@ -155,6 +155,12 @@ A block ends at its first closing tag, and only when its shape leaves no doubt:
 - the closing tag ends its line, outside any code the block opened;
 - no other reasoning tag appears inside the block.
 
+One rule is relaxed for a reply the provider cut short (the output cap, or a stream that dropped
+before its terminal event): the closing tag need not end its line, because the answer after it never
+got to start one. Every other condition above still holds, and a reply cut off _inside_ the block
+never closes, so it stays answer text exactly as it does for a settled reply. Without this the
+thought was kept as answer text and re-sent as answer text on every later request of the run.
+
 An empty block (`<think></think>`) always splits. Otherwise the reply is left and printed exactly
 as the model wrote it, reasoning included, rather than risk cutting answer text. A reply that
 itself opens with an unfenced reasoning tag, such as a template, loses that block; fence or quote

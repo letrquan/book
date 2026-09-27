@@ -409,6 +409,14 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A reply cut off at the output cap no longer keeps its `<think>` block as answer text** (#312).
+  A settled reply's leading reasoning block is split into `reasoningContent`; a reply the provider
+  cut short (`finish_reason: length`, or a stream that dropped) was stored as written, so every
+  later request of the run re-sent the thought as answer text — which is what makes a model that
+  saw the convention start writing reasoning tags into its content. The same split now runs on a
+  truncated reply, with the one rule a fragment cannot raise relaxed (its closing tag need not end
+  its line). A reply cut off _inside_ an unclosed block is unchanged: it stays answer text, as
+  `isUnclosedReasoningOnly` reads it for a settled reply.
 - **A resumed print run no longer counts its restored spend twice** (#294). The `usage` record a
   run writes is how the next process restores what the objective has cost, and two things made it
   wrong: the first record of a resumed run wrote the restored total again instead of this run's

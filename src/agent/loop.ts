@@ -1437,7 +1437,19 @@ export async function runAgentLoop(
       {
         // Gate on the block, not on its text: the empty `<think></think>` a
         // model emits with thinking off still has to leave the answer.
-        const inline = separateInlineReasoning(assistantContent);
+        //
+        // A reply the provider cut short is split under the same rules, with the
+        // one exception the split takes for a fragment: the close tag no longer
+        // ends a line, because the answer after it never got to start one. Left
+        // as answer text it is re-sent to the model as answer text on every
+        // later request of the run, which is what makes a model that saw the
+        // convention start writing reasoning tags into its content.
+        const cutShort =
+          !streamDone ||
+          responseMetadata?.finishReasons?.some((reason) =>
+            TRUNCATION_FINISH_REASONS.has(reason),
+          ) === true;
+        const inline = separateInlineReasoning(assistantContent, { truncated: cutShort });
         if (inline.found) {
           reasoningContent = [reasoningContent, inline.reasoning].filter(Boolean).join('\n\n');
           assistantContent = inline.content;

@@ -239,7 +239,7 @@ const ANY_REASONING_TAG = /<\/?(?:think|thinking|reasoning|reasoning_context)>/i
  * Whether the closing tag at `start`..`end` of a block opened at `blockStart` ends that block.
  * An empty block ends at it. Otherwise the block must leave no doubt, because what a split moves
  * leaves the answer for good:
- * - the tag ends its line;
+ * - the tag ends its line (unless the reply was cut off — see `truncated`);
  * - the block sits on one line, or its opening tag ends its line and the closing tag starts one
  *   (Book's own replay format, and DeepSeek/Qwen output);
  * - no other reasoning tag appears inside it, which rules out quoted-tag chains and mismatched
@@ -248,10 +248,21 @@ const ANY_REASONING_TAG = /<\/?(?:think|thinking|reasoning|reasoning_context)>/i
  * Only the block's own text is consulted, so nothing in the answer can make a later tag look like
  * the end.
  */
-function endsBlock(content: string, blockStart: number, start: number, end: number): boolean {
+function endsBlock(
+  content: string,
+  blockStart: number,
+  start: number,
+  end: number,
+  truncated = false,
+): boolean {
   const text = content.slice(blockStart, start);
   if (text.trim() === '') return true;
-  if (!/^[ \t]*(?:\r?\n|$)/.test(content.slice(end))) return false;
+  // The one doubt a cut-off reply cannot raise. A finished answer can open by
+  // quoting a tag inline, which is what "ends its line" rules out; an answer the
+  // provider stopped writing part-way through is a fragment and is quoting
+  // nothing. Every other condition below is about the block's own shape, so a
+  // truncated reply still refuses a mismatched chain or an unclosed code span.
+  if (!truncated && !/^[ \t]*(?:\r?\n|$)/.test(content.slice(end))) return false;
   if (ANY_REASONING_TAG.test(text)) return false;
   const oneLine = !text.includes('\n');
   const ownLines = /^[ \t]*\r?\n/.test(text) && /\n[ \t]*$/.test(text);
@@ -270,12 +281,13 @@ function findBlockClose(
   content: string,
   tag: string,
   from: number,
+  truncated = false,
 ): { textEnd: number; after: number } | null {
   const closing = new RegExp(`</${tag}>`, 'gi');
   closing.lastIndex = from;
   const match = closing.exec(content);
   if (!match) return null;
-  if (!endsBlock(content, from, match.index, closing.lastIndex)) return null;
+  if (!endsBlock(content, from, match.index, closing.lastIndex, truncated)) return null;
   return { textEnd: match.index, after: closing.lastIndex };
 }
 
@@ -310,14 +322,26 @@ function answerStart(content: string, rest: number): number {
  * `found` says whether any block moved, even an empty one: the
  * `<think></think>` a model emits with thinking off has no reasoning to keep
  * but still has to leave the answer.
+ *
+ * `truncated` marks a reply the provider cut short — the output cap, or a stream
+ * that dropped before its terminal event. The block is the same and the split is
+ * the same; only the answer after it is a fragment rather than a finished one, so
+ * the "the closing tag ends its line" doubt does not apply and the block still
+ * moves (see `endsBlock`). A reply cut off *inside* the block never closes, so it
+ * is not a block to begin with and stays answer text, exactly as
+ * `isUnclosedReasoningOnly` reads a settled one.
  */
-export function separateInlineReasoning(content: string): {
+export function separateInlineReasoning(
+  content: string,
+  options?: { truncated?: boolean },
+): {
   content: string;
   reasoning: string;
   found: boolean;
 } {
   const unchanged = { content, reasoning: '', found: false };
   if (!content.includes('<')) return unchanged;
+  const truncated = options?.truncated === true;
   const blocks: string[] = [];
   let rest = 0;
   for (;;) {
@@ -326,7 +350,7 @@ export function separateInlineReasoning(content: string): {
     const at = blocks.length === 0 ? 0 : answerStart(content, rest);
     const open = LEADING_REASONING_TAG.exec(content.slice(at));
     if (!open) break;
-    const close = findBlockClose(content, open[1], at + open[0].length);
+    const close = findBlockClose(content, open[1], at + open[0].length, truncated);
     if (!close) break;
     blocks.push(content.slice(at + open[0].length, close.textEnd).trim());
     rest = close.after;

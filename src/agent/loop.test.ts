@@ -8191,3 +8191,189 @@ describe('runAgentLoop — a clip file stays readable for the rest of the sessio
     expect(read?.content).toContain('first line');
   });
 });
+
+describe('a reply cut off at the output cap (#312)', () => {
+  // A router that inlines thinking as `<think></think>` gets its own block echoed
+  // back as answer text when the reply is truncated: the close tag no longer ends
+  // a line, so the narrow reading declines the split, and every later request of
+  // the run carries the thought as the answer (which the model then imitates).
+  function echoRegistry() {
+    const registry = createRegistry();
+    registry.register({
+      name: 'Note',
+      description: 'Write a note',
+      parameters: { type: 'object', properties: { text: { type: 'string' } } },
+      execute: async (args) => toolSuccess(String(args.text ?? '')),
+    });
+    return registry;
+  }
+
+  it('splits a leading closed reasoning block out of a length-truncated reply', async () => {
+    let calls = 0;
+    const truncatedRun: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        if (calls === 1) {
+          yield { type: 'text', content: '<think>plan A: write the note</think>' };
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'w1', name: 'Note', arguments: { text: 'hi' } },
+          };
+          yield { type: 'done', finishReasons: ['stop'] };
+          return;
+        }
+        yield {
+          type: 'text',
+          content: '<think>plan B: summarize</think>Wrote the note and am summari',
+        };
+        yield { type: 'done', finishReasons: ['length'] };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 4 }),
+      echoRegistry(),
+      'write the note',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider: truncatedRun, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'output_cap' });
+
+    // The settled first turn splits as it always has.
+    const settled = history.find((message) => message.reasoningContent?.includes('plan A'));
+    expect(settled?.content).toBe('');
+
+    const cut = history.find((message) => message.content.includes('Wrote the note'));
+    expect(cut?.content).not.toContain('<think>');
+    expect(cut?.content).toBe('Wrote the note and am summari');
+    expect(cut?.reasoningContent).toContain('plan B: summarize');
+
+    // The next run's first request is built from that history, and must not carry
+    // the thought back as answer text.
+    const seen: string[] = [];
+    const nextRun: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        seen.push(messages.map((message) => `${message.role}: ${message.content}`).join('\n'));
+        yield { type: 'text', content: 'zing it now. MOCK-ONE' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      echoRegistry(),
+      'continue',
+      history,
+      noopCallbacks(),
+      'default',
+      { provider: nextRun, isNewSession: false },
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('Wrote the note and am summari');
+    expect(seen[0]).not.toContain('<think>plan B');
+  });
+
+  it('leaves a block the provider never closed as answer text, as a settled reply does', async () => {
+    // The conservative reading applies to a truncated reply too: an unclosed block
+    // is not a delimited thought, so `isUnclosedReasoningOnly` governs it exactly
+    // as it governs a settled one — it is never moved into reasoning.
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'text', content: '<think>plan B: summari' };
+        yield { type: 'done', finishReasons: ['length'] };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    const messages = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    // `length` is terminal, so the one retry a settled unclosed-reasoning-only
+    // reply spends is not spent here either.
+    expect(calls).toBe(1);
+    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'output_cap' });
+    expect(messages.at(-1)?.content).toBe('<think>plan B: summari');
+    expect(messages.at(-1)?.reasoningContent).toBeUndefined();
+  });
+
+  it('splits a leading closed reasoning block out of a reply whose stream dropped', async () => {
+    // The other way a reply gets cut short: the socket closed before the
+    // terminal event, so `streamDone` stays false and there is no finish reason
+    // to read. The fragment is all the provider will ever send, and it is the
+    // only thing this half of the run has — so it has to be read as a fragment.
+    // A dropped turn is also re-issued from the history below, which is what
+    // makes the stored content matter: a thought left in `content` is the echo
+    // the next request carries back, and what the model then imitates.
+    const reissued: Array<{ content: string; reasoningContent?: string }> = [];
+    let calls = 0;
+    const dropped: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        calls++;
+        if (calls === 1) {
+          yield { type: 'text', content: '<think>plan: finish the summary</think>Partial answ' };
+          yield {
+            type: 'error',
+            error: 'Provider stream ended before its terminal event.',
+            errorCode: 'transport_interrupted',
+          };
+          return;
+        }
+        const assistant = messages.find((message) => message.role === 'assistant');
+        reissued.push({
+          content: typeof assistant?.content === 'string' ? assistant.content : '',
+          reasoningContent: assistant?.reasoningContent,
+        });
+        yield { type: 'text', content: 'er. MOCK-ONE' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    // One turn, because a re-issue is not a turn of its own — which is the point:
+    // the request that continues the run is the one carrying this message.
+    const history = await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        retry: { ...defaultConfig().retry, streamReissueAttempts: 1 },
+      }),
+      createRegistry(),
+      'summarize the note',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider: dropped, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(outcomes.at(-1)).toMatchObject({ status: 'completed' });
+
+    const cut = history.find((message) => message.content.includes('Partial answ'));
+    expect(cut?.content).toBe('Partial answ');
+    expect(cut?.reasoningContent).toContain('plan: finish the summary');
+
+    // What the re-issued request carries: the fragment as the answer, the
+    // thought as reasoning, and the block never back as answer text.
+    expect(reissued).toHaveLength(1);
+    expect(reissued[0].content).toBe('Partial answ');
+    expect(reissued[0].content).not.toContain('<think>');
+    expect(reissued[0].reasoningContent).toContain('plan: finish the summary');
+  });
+});
