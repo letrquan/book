@@ -1757,6 +1757,44 @@ describe('ChatPanel Ink rendering', () => {
     expect(readIdx).toBeLessThan(grepIdx);
   });
 
+  it('never folds an answer into the turn a notification opened', () => {
+    // A background shell finishing posts a notification, and the agent's blank
+    // tool-only reply to it is a turn of its own. Merged into the answer above,
+    // that answer gained a working call, became a step of work, and greyed a
+    // reply you have already read.
+    const messages: Message[] = [
+      msg('u1', 'user', 'go'),
+      msg('a1', 'assistant', 'All done.'),
+      { ...msg('n1', 'user', 'shell 1 exited'), kind: 'agent-notification' },
+      {
+        ...msg('a2', 'assistant', ''),
+        toolCalls: [{ id: 'call-1', name: 'Read', arguments: { filePath: 'src/a.ts' } }],
+        toolResults: [successResult('call-1', 'a')],
+      },
+    ];
+
+    const level = chalk.level;
+    chalk.level = 3;
+    let raw: string;
+    try {
+      const view = render(
+        withTheme(
+          <ChatPanel messages={messages} terminalWidth={80} terminalHeight={24} reducedMotion />,
+        ),
+      );
+      raw = view.lastFrame() ?? '';
+    } finally {
+      chalk.level = level;
+    }
+
+    const answer = raw
+      .split('\n')
+      .find((line) => line.includes('All done.'))
+      ?.trimStart();
+    expect(answer).toContain(`${rgb(DEFAULT_THEME.text)}`);
+    expect(answer).not.toContain(`${rgb(DEFAULT_THEME.subtle)}`);
+  });
+
   it('renders structured local command output as a panel instead of markdown text', () => {
     const message: Message = {
       ...msg('local-usage', 'assistant', 'Session usage plain fallback'),

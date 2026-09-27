@@ -132,9 +132,8 @@ export function RewindPicker({
             return (
               <Text key={choice.id}>
                 <Text color={theme.brand}>{selected ? '› ' : '  '}</Text>
-                {/* Your own past prompts, in the ink the transcript sets them
-                    in, upright: a picker that italicised them set them like the
-                    agent's prose. */}
+                {/* Your own past prompts, set the way the transcript sets
+                    them: upright, in `userText`. */}
                 <Text color={selected ? theme.selectionText : theme.userText} bold={selected}>
                   {promptPreview(choice.prompt)}
                 </Text>

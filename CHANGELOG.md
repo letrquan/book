@@ -121,10 +121,13 @@ All notable changes to this project are documented in this file.
   that sentence is set in the secondary grey, so the final answer is the only full-ink text in a
   turn. A check is grey: success is the default, so only a failure takes colour. The collapsed
   `▸ thought · N lines` row is drawn at reading weight instead of the terminal's faint attribute.
-  Your turns are set upright in the brightest ink, a step above the agent's prose, and each one
-  opens after two blank rows rather than sitting a single row below the reply above it. And a
-  closing paragraph after a list finally gets the blank row that tells it apart from the last
-  bullet.
+  The sentence that justifies a call waiting for your approval stays in full ink, and a
+  notification (a background shell finishing, a child reporting) opens a turn of its own rather
+  than folding the agent's reply to it into the answer above. Your turns are set upright in the
+  brightest ink, a step above the agent's prose, and in the default density each one opens after
+  two blank rows rather than sitting a single row below the reply above it (tight density, on a
+  short terminal, keeps none). And a closing paragraph after a list finally gets the blank row
+  that tells it apart from the last bullet.
 - **A `Glob` pattern is anchored the way the other tools are.** A relative pattern searches the
   workspace alone, exactly as `Read` anchors a relative path and `Grep` anchors a relative scope;
   it used to be run once per root, so files from an approved directory appeared in answer to a

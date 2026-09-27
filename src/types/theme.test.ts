@@ -90,4 +90,18 @@ describe('Rubric reading contrast', () => {
       expect(theme.userText, name).toMatch(/^#[0-9A-Fa-f]{6}$/);
     }
   });
+
+  it('sets your prompt in ink of its own in every theme', () => {
+    // A prompt drawn in the body's ink has nothing to mark it with, so each
+    // turn you write reads as another paragraph of the reply above it.
+    const themes: Record<string, ThemeTokens> = {
+      DEFAULT_THEME,
+      FOLIO_THEME,
+      RUBRIC_THEME,
+    };
+
+    for (const [name, theme] of Object.entries(themes)) {
+      expect(theme.userText, name).not.toBe(theme.text);
+    }
+  });
 });

@@ -216,7 +216,7 @@ export const DEFAULT_THEME: ThemeTokens = {
   mdCheckboxUnchecked: '#6E6E73',
 
   userBg: '#202022',
-  userText: '#F5F5F7',
+  userText: '#FFFFFF',
 };
 
 /**

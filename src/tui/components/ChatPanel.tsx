@@ -624,8 +624,11 @@ function buildTimeline(
       flush();
       timeline.push(...markers.sort((a, b) => a.timestamp - b.timestamp));
     }
-    if (index < messages.length && messages[index].kind !== 'agent-notification') {
-      segment.push(messages[index]);
+    if (index < messages.length) {
+      // A notification opens a new turn: the agent's reply to it never folds
+      // into the answer that closed the turn before.
+      if (messages[index].kind === 'agent-notification') flush();
+      else segment.push(messages[index]);
     }
   }
   // A row placed past the last message, for a streaming message whose append never landed,

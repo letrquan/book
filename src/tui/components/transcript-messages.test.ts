@@ -55,8 +55,10 @@ describe('isWorkStep', () => {
     expect(isWorkStep(assistant('a1', ['Task']))).toBe(true);
   });
 
-  it('is an answer when the call opens plan mode', () => {
-    expect(isWorkStep(assistant('a1', ['EnterPlanMode']))).toBe(false);
+  it('is a step when the call opens plan mode, which is more work, not less', () => {
+    // Entering plan mode only flips the mode; the agent keeps working, so the
+    // sentence above it is narration.
+    expect(isWorkStep(assistant('a1', ['EnterPlanMode']))).toBe(true);
   });
 
   it('is an answer when the turn hands itself back to you', () => {

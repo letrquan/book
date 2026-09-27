@@ -26,16 +26,15 @@ export function delegatesWork(message: Message): boolean {
 }
 
 /** Calls that hand the conversation back to you, or save a memory: not in a catalog category of their own. */
-const HAND_BACK_TOOLS = new Set(['AskUserQuestion', 'MemorySave']);
+const HAND_BACK_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode', 'MemorySave']);
 
 /**
- * Whether a call leaves the prose before it an answer: plan and task bookkeeping (by catalog
- * category, so a new task tool is covered without editing this list), plan mode, and the calls
- * that hand the conversation back to you.
+ * Whether a call leaves the prose before it an answer: task bookkeeping (by
+ * catalog category, so a new task tool is covered without editing this list)
+ * and the calls that hand the conversation back to you.
  */
 function isNonStepTool(name: string): boolean {
-  const category = categoryFor(name);
-  return category === 'tasks' || category === 'planning' || HAND_BACK_TOOLS.has(name);
+  return categoryFor(name) === 'tasks' || HAND_BACK_TOOLS.has(name);
 }
 
 /**

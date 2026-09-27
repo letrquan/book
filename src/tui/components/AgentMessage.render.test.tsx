@@ -5,6 +5,7 @@ import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { AgentMessage } from './AgentMessage.js';
 import type { Message } from '../../types/messages.js';
 import type { ToolResult } from '../../types/tools.js';
+import type { PendingPermissionRequest } from '../../session/agent-interactions.js';
 
 /**
  * What the transcript does with a reasoning tag the provider opened and never
@@ -151,6 +152,7 @@ describe('AgentMessage work steps', () => {
     message: Message,
     screenReader?: boolean,
     transcriptMode?: 'compact' | 'detailed',
+    pendingPermission?: PendingPermissionRequest,
   ): string {
     const level = chalk.level;
     chalk.level = 3;
@@ -165,6 +167,7 @@ describe('AgentMessage work steps', () => {
             terminalWidth={80}
             screenReader={screenReader}
             transcriptMode={transcriptMode}
+            pendingPermission={pendingPermission}
           />
         </ThemeContext.Provider>,
       );
@@ -224,6 +227,27 @@ describe('AgentMessage work steps', () => {
 
     expect(frame).toContain(`${ink(DEFAULT_THEME.subtle)}${NARRATION}`);
     expect(frame).not.toContain(`${ink(DEFAULT_THEME.text)}${NARRATION}`);
+  });
+
+  it('keeps a step in full ink while its call waits for your approval', () => {
+    // The sentence behind a pending call is the one you are being asked to
+    // judge, so greying it hides it at the worst possible moment.
+    const frame = frameFor(
+      {
+        ...assistant(NARRATION, [
+          { id: 'bash-1', name: 'Bash', arguments: { command: 'npm test' } },
+        ]),
+        toolResults: [
+          { version: 2, toolCallId: 'bash-1', status: 'success', content: 'ok' } as ToolResult,
+        ],
+      },
+      undefined,
+      undefined,
+      { toolCall: { id: 'bash-1', name: 'Bash', arguments: { command: 'npm test' } } },
+    );
+
+    expect(frame).toContain(`${ink(DEFAULT_THEME.text)}${NARRATION}`);
+    expect(frame).not.toContain(`${ink(DEFAULT_THEME.subtle)}${NARRATION}`);
   });
 
   it('keeps an answer in full ink and one blank row above its bookkeeping', () => {

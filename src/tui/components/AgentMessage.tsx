@@ -580,8 +580,14 @@ export function AgentMessageInner({
   // them. The compact transcript only — the detailed transcript expands every
   // block and keeps the blank rows between them, which is what keeps one call's
   // output from running into the next call's header. Screen readers keep every
-  // mark, since a spoken stream has no whitespace to carry the distinction.
-  const workStep = !screenReader && transcriptMode !== 'detailed' && isWorkStep(message);
+  // mark, since a spoken stream has no whitespace to carry the distinction. A
+  // turn whose call waits for your approval is not a step either: that sentence
+  // is what you are being asked to judge.
+  const awaitsApproval = Boolean(
+    pendingPermission && toolCalls.some((call) => call.id === pendingPermission.toolCall.id),
+  );
+  const workStep =
+    !screenReader && transcriptMode !== 'detailed' && !awaitsApproval && isWorkStep(message);
   // A step's narration speaks in the secondary voice: every run of its prose
   // takes `subtle`, so the answer is the only full-ink text in a turn. Its
   // code blocks follow, keyword and string hues included — a snippet the step
@@ -603,6 +609,7 @@ export function AgentMessageInner({
       mdCodeNumber: theme.subtle,
       mdListMarker: theme.subtle,
       mdBlockquoteText: theme.subtle,
+      mdCheckboxChecked: theme.subtle,
     }),
     [theme],
   );

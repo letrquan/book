@@ -891,7 +891,9 @@ const MarkdownRenderer = React.memo(function MarkdownRenderer({
   density,
 }: MarkdownRendererProps) {
   const tokens = useMemo(
-    () => marked.lexer(content).filter((token) => token.type !== 'space'),
+    // A link definition draws nothing, so it must never be the neighbour a gap
+    // is measured from.
+    () => marked.lexer(content).filter((token) => token.type !== 'space' && token.type !== 'def'),
     [content],
   );
 
