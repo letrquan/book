@@ -19,6 +19,13 @@ interface ConfigMenuProps {
   defaultPermissionMode: string;
   terminalWidth?: number;
   /**
+   * Shown under the rows when something outside the settings file decides the
+   * startup animation. The row can be toggled to a value that will not apply,
+   * and a menu that shows the new value with no word about that is worse than
+   * one that refuses to change it.
+   */
+  startupAnimationWarning?: string;
+  /**
    * Row the cursor starts on. The menu closes while a sub-picker is open and
    * remounts when that picker hands control back, so without this the return
    * trip always landed on Model — the user pressed `S`, cancelled, and found
@@ -84,6 +91,7 @@ export function ConfigMenu({
   skillCount,
   defaultPermissionMode,
   terminalWidth = 80,
+  startupAnimationWarning,
   initialSelection = 0,
   onOpen,
   onToggleMemory,
@@ -218,6 +226,13 @@ export function ConfigMenu({
           );
         })}
       </Box>
+      {startupAnimationWarning ? (
+        <Box marginTop={1}>
+          <Text color={theme.warning ?? theme.subtle} dimColor wrap="truncate-end">
+            {`⚠ ${startupAnimationWarning}`}
+          </Text>
+        </Box>
+      ) : null}
       <Box marginTop={1}>
         <Text color={theme.inactive}>
           ↑↓ select · Enter choose · or press the letter · Esc close

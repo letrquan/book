@@ -568,15 +568,27 @@ describe('chatCompletionStream retry — callbacks', () => {
 describe('stall tolerance while reasoning', () => {
   // A stream whose first byte arrives after `delayMs` — an endpoint that buffers
   // the whole thinking block before emitting anything.
+  //
+  // A stall ceiling cancels the stream, and the client that would have read the
+  // answer is often gone before the delay elapses. So the timer is cancelled
+  // with the stream: `start` runs inside the constructor, which means the handle
+  // is always in hand by the time `cancel` can fire. Left to run, the callback
+  // enqueues into a closed controller and the `ERR_INVALID_STATE` throw lands
+  // inside the timer, where no test can see it — vitest calls it an unhandled
+  // error and fails the run.
   function quietThenAnswer(delayMs: number): ReadableStream {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     return new ReadableStream({
       start(c) {
         const enc = new TextEncoder();
-        setTimeout(() => {
+        timer = setTimeout(() => {
           c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"answer"}}]}\n\n'));
           c.enqueue(enc.encode('data: [DONE]\n\n'));
           c.close();
         }, delayMs);
+      },
+      cancel() {
+        clearTimeout(timer);
       },
     });
   }
@@ -648,6 +660,18 @@ describe('stall tolerance while reasoning', () => {
     expect(events).toContainEqual(
       expect.objectContaining({ type: 'error', errorCode: 'stream_stall' }),
     );
+  });
+
+  it('stops writing once the client has cancelled the stream', async () => {
+    // A stall ceiling is a cancel: the client gives up on a quiet stream while
+    // the fixture is still counting down to its first byte. Nothing may write
+    // after that. A pending timer that ignores the cancel fires against a closed
+    // controller, and the throw lands in the timer callback where no test can
+    // catch it — vitest reports it as an unhandled error and fails the whole
+    // run for a stream that was discarded on purpose.
+    const stream = quietThenAnswer(20);
+    await stream.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 80));
   });
 });
 
