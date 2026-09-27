@@ -2,11 +2,13 @@ import { Box, Text, useInput } from 'ink';
 import TextInput from './TextInputField.js';
 import { useCallback, useRef, useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
+import { useReportLayout } from '../hooks/useReportLayout.js';
 import { useTheme } from '../theme.js';
 import type { PlanApprovalResult } from '../../types/tools.js';
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
+import { wordWrap } from './word-wrap.js';
 import { ChoiceList, DecisionSheet, type Choice } from './chrome.js';
 import { PANEL_CHROME, frameGrid } from '../layout.js';
 import { PILCROW } from '../marks.js';
@@ -21,6 +23,19 @@ interface PlanApprovalProps {
 
 interface PlanApprovalActionsProps extends PlanApprovalProps {
   onResolve: (result: PlanApprovalResult) => void;
+  /**
+   * Called when the sheet's height may have changed: when it opens, when the
+   * feedback editor opens or closes, and when its error row appears or goes. The
+   * transcript above measures its viewport only on its own layout changes, so
+   * the one-row error landed on the plan row above it.
+   */
+  onLayoutChange?: () => void;
+  /**
+   * Called when the feedback editor takes or gives up the focus. While it holds
+   * it, Ctrl+U and Ctrl+D are the editor's kills rather than the transcript's
+   * half-page scrolls.
+   */
+  onEditorFocusChange?: (focused: boolean) => void;
 }
 
 const BUTTONS = [
@@ -89,6 +104,8 @@ export function PlanApprovalActions({
   onResolve,
   screenReader = false,
   terminalWidth,
+  onLayoutChange,
+  onEditorFocusChange,
 }: PlanApprovalActionsProps) {
   const theme = useTheme();
   // `useKeyState` rather than `useState`: both of these are read back by the
@@ -151,6 +168,37 @@ export function PlanApprovalActions({
     } else if (['r', 's'].includes(input.toLowerCase())) {
       resolveOnce('reject');
     }
+  });
+
+  // Everything that changes how many rows the sheet draws: the two sheets are
+  // different shapes, the error row is one row, and the width a plan wraps to is
+  // a different number of rows again.
+  //
+  // The plan itself is not in the shape, and cannot be: `PlanApprovalActions`
+  // draws the buttons and the hint only, never the plan — `PlanApprovalDetails`
+  // draws that, above. Its rows are the caller's business, not this sheet's.
+  //
+  // What replaces it is the feedback editor's row count. The editor takes up to
+  // 2000 characters, so it wraps, and a keystroke that pushes the value onto one
+  // more line grows the sheet. Reporting the count rather than the text keeps
+  // that from becoming a re-measure per keystroke.
+  const feedbackRows = feedbackMode
+    ? wordWrap(
+        feedback,
+        Math.max(12, frameGrid(Math.max(20, Math.floor(terminalWidth ?? 80))).width - PANEL_CHROME),
+      ).split('\n').length
+    : 0;
+  const layoutShape = [
+    feedbackMode ? 1 : 0,
+    feedbackRows,
+    feedbackError ?? '',
+    screenReader ? 1 : 0,
+    Math.floor(terminalWidth ?? 80),
+  ].join(':');
+  useReportLayout(layoutShape, {
+    onLayoutChange,
+    editorFocused: feedbackMode,
+    onEditorFocusChange,
   });
 
   if (screenReader && !feedbackMode) {

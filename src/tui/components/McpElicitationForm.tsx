@@ -2,6 +2,7 @@ import { Box, Text, useInput } from 'ink';
 import TextInput from './TextInputField.js';
 import { useCallback, useMemo, useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
+import { useReportLayout } from '../hooks/useReportLayout.js';
 import {
   coerceElicitationValue,
   elicitationDefaults,
@@ -14,7 +15,7 @@ import type {
   ElicitationValue,
 } from '../../types/tools.js';
 import { useTheme } from '../theme.js';
-import { truncateDisplay } from './word-wrap.js';
+import { truncateDisplay, wordWrap } from './word-wrap.js';
 import { ChoiceList, DecisionSheet, floatingFrameMetrics, type Choice } from './chrome.js';
 import { PILCROW } from '../marks.js';
 
@@ -24,6 +25,21 @@ interface McpElicitationFormProps {
   terminalWidth?: number;
   onResolve: (response: ElicitationResponse) => void;
   screenReader?: boolean;
+  /**
+   * Called when the sheet's height may have changed: when it opens, when a field
+   * editor opens or closes, when a filter narrows the option list to a different
+   * number of rows, and when the validation notice appears or goes. The
+   * transcript above measures its viewport only on its own layout changes, so
+   * each of those landed on top of a transcript row that was there a moment
+   * earlier.
+   */
+  onLayoutChange?: () => void;
+  /**
+   * Called when the field's editor takes or gives up the focus. While it holds
+   * it, Ctrl+U and Ctrl+D are the editor's kills rather than the transcript's
+   * half-page scrolls.
+   */
+  onEditorFocusChange?: (focused: boolean) => void;
 }
 
 /** Visible option rows for an enum field; longer lists scroll under the cursor. */
@@ -68,6 +84,8 @@ export function McpElicitationForm({
   terminalWidth = 80,
   onResolve,
   screenReader = false,
+  onLayoutChange,
+  onEditorFocusChange,
 }: McpElicitationFormProps) {
   const theme = useTheme();
   const outerWidth = Math.max(20, Math.floor(terminalWidth));
@@ -100,6 +118,33 @@ export function McpElicitationForm({
     () => (field?.kind === 'enum' ? matchingOptions(field, editing ? draft : '') : []),
     [field, editing, draft],
   );
+
+  // Everything that changes how many rows the sheet draws: the editor replaces
+  // the list, a filter leaves a different number of option rows, the notice is a
+  // row, and a different field kind draws a different row. `draft` is
+  // deliberately absent — the filter is measured by how many options it left,
+  // so typing a letter does not re-measure the transcript when the row count it
+  // produces has not moved.
+  // A text field's draft wraps like any other, so the number of rows it takes is
+  // part of the shape even though the text is not: a keystroke that pushes the
+  // value onto one more line grows the sheet.
+  const draftRows =
+    editing && field?.kind !== 'enum' ? wordWrap(draft, contentWidth).split('\n').length : 0;
+  const layoutShape = [
+    editing ? 1 : 0,
+    editing && field?.kind === 'enum' ? options.length : draftRows,
+    notice ?? '',
+    field?.name ?? '',
+    field?.kind ?? '',
+    compact ? 1 : 0,
+    contentWidth,
+    queueLength,
+  ].join(':');
+  useReportLayout(layoutShape, {
+    onLayoutChange,
+    editorFocused: editing,
+    onEditorFocusChange,
+  });
 
   const resolveOnce = useCallback(
     (response: ElicitationResponse) => {

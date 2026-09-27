@@ -358,6 +358,52 @@ describe('PermissionButtons payload', () => {
     expect(expanded).toContain('D less');
   });
 
+  // The card is bounded by the terminal, so on a short one `D` opens a bigger
+  // budget rather than the whole command. Saying "D shows all" there promised a
+  // key that only cut a different few rows out of the same payload.
+  it('says D shows more when the expanded budget still cuts the command', async () => {
+    // 24 rows leave an 8-row expanded budget: 7 of the 10 lines, not all 10.
+    const script = Array.from({ length: 10 }, (_, index) => `echo line ${index + 1}`).join('\n');
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-tall', name: 'Bash', arguments: { command: script } }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+          terminalRows={24}
+        />,
+      ),
+    );
+    const collapsed = stripAnsi(view.lastFrame() ?? '');
+    expect(collapsed).toMatch(/… \d+ more rows · D shows more/);
+    expect(collapsed).not.toContain('D shows all');
+    // The key is still worth offering: it opens more of the command than the
+    // collapsed card keeps.
+    expect(collapsed).toContain('D more');
+
+    view.stdin.write('d');
+    const expanded = await frameContaining(view, 'echo line 7');
+    expect(expanded).toMatch(/… 3 more rows/);
+    expect(expanded).not.toContain('D shows');
+  });
+
+  it('says D shows all only where D does show the whole command', () => {
+    // 40 rows leave a 24-row expanded budget, which holds every row of this one.
+    const script = Array.from({ length: 9 }, (_, index) => `echo row ${index + 1}`).join('\n');
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-fits', name: 'Bash', arguments: { command: script } }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+          terminalRows={40}
+        />,
+      ),
+    );
+
+    expect(stripAnsi(view.lastFrame() ?? '')).toMatch(/… \d+ more rows · D shows all/);
+  });
+
   it('shows the diff an Edit would make before anything is written', async () => {
     const root = makeWorkspace({ 'notes.txt': 'alpha\nbeta\ngamma\n' });
     const view = render(
