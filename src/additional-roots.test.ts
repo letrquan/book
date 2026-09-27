@@ -183,37 +183,52 @@ describe('pathHoldsHome', () => {
   // The guard the loop actually uses, and the reason it is keyed on the path rather than the
   // root: a home reached through a link inside an approved root is covered by neither the root
   // test nor a walk of the root, but it is exactly the read that must keep its prompt.
+  //
+  // The home list is a temp directory rather than the real OS home, because on Windows the OS home
+  // holds the temp directory — every `mkdtempSync` path in this file would be inside a home, and
+  // the "an ordinary directory holds no home" half of the rule could not be tested at all. Only
+  // the containment the rule reads matters, so a temp directory stands in for one.
+  /** Point `BOOK_HOME` at a directory for the duration, and hand back the way to undo it. */
+  function withBookHome(home: string): () => void {
+    const previous = process.env.BOOK_HOME;
+    process.env.BOOK_HOME = home;
+    return () => {
+      if (previous === undefined) delete process.env.BOOK_HOME;
+      else process.env.BOOK_HOME = previous;
+    };
+  }
+
   it('covers a home reached through a link inside an otherwise ordinary root', () => {
     const bookHome = tempDir('book-dirs-bookhome-');
     const holder = tempDir('book-dirs-holder-');
-    const previous = process.env.BOOK_HOME;
-    process.env.BOOK_HOME = bookHome;
+    const restore = withBookHome(bookHome);
     try {
       writeFileSync(join(bookHome, 'id_rsa'), 'PRIVATE KEY\n');
       symlinkSync(bookHome, join(holder, 'link'), 'junction');
+      // The OS home is deliberately left out: on Windows it holds this very temp directory, which
+      // is what the "an ordinary directory holds no home" assertions below are about.
+      const homes = homeGuards().filter((entry) => entry === realpathSync.native(bookHome));
+      expect(homes).toEqual([realpathSync.native(bookHome)]);
       // The root itself holds no home: only a symlink to one.
-      expect(rootHoldsHome(holder)).toBe(false);
-      expect(pathHoldsHome(join(bookHome, 'id_rsa'))).toBe(true);
-      expect(pathHoldsHome(join(holder, 'link', 'id_rsa'))).toBe(true);
-      expect(pathHoldsHome(join(shared, 'notes.txt'))).toBe(false);
+      expect(rootHoldsHome(holder, homes)).toBe(false);
+      expect(pathHoldsHome(join(bookHome, 'id_rsa'), homes)).toBe(true);
+      expect(pathHoldsHome(join(holder, 'link', 'id_rsa'), homes)).toBe(true);
+      expect(pathHoldsHome(join(shared, 'notes.txt'), homes)).toBe(false);
     } finally {
-      if (previous === undefined) delete process.env.BOOK_HOME;
-      else process.env.BOOK_HOME = previous;
+      restore();
     }
   });
 
   it('accepts a home list resolved once, so the per-call check touches no filesystem', () => {
     const bookHome = tempDir('book-dirs-bookhome-');
-    const previous = process.env.BOOK_HOME;
-    process.env.BOOK_HOME = bookHome;
+    const restore = withBookHome(bookHome);
     try {
-      const homes = homeGuards();
+      const homes = homeGuards().filter((entry) => entry === realpathSync.native(bookHome));
       expect(homes).toContain(realpathSync.native(bookHome));
       expect(pathHoldsHome(join(bookHome, '.ssh', 'id_rsa'), homes)).toBe(true);
       expect(pathHoldsHome(join(shared, 'notes.txt'), homes)).toBe(false);
     } finally {
-      if (previous === undefined) delete process.env.BOOK_HOME;
-      else process.env.BOOK_HOME = previous;
+      restore();
     }
   });
 });

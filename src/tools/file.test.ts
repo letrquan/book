@@ -19,6 +19,7 @@ import {
   mkdtempSync,
   lstatSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
   rmSync,
@@ -26,6 +27,7 @@ import {
 import { writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
+import { shortPathName, withLowercaseDriveLetter } from '../test/short-path.js';
 
 let dir: string;
 const ctx: ToolContext = { workspaceRoot: '', env: {} };
@@ -3195,3 +3197,119 @@ describe('additionalRoots', () => {
     expect(readFileSync(join(extra, 'matchme.txt'), 'utf8')).toBe('grepme\n');
   });
 });
+
+/**
+ * #264, on Windows. One directory has more than one name: the long form a user reads
+ * (`C:\Users\runneradmin\AppData\Local\Temp`) and the DOS 8.3 form (`C:\Users\RUNNER~1\AppData`),
+ * plus a drive letter in either case and separators either way. GitHub's Windows runners put
+ * `os.tmpdir()` in the short form, so every workspace root in this file is spelled short while
+ * `realpath`, fast-glob and ripgrep all answer in the long form.
+ *
+ * A root compared as given against a path in that form reads as outside the workspace, and every
+ * guard that keys on the root then cannot name its own file: the `.book/settings.local.json`
+ * exclusion missed and printed an API key, the workspace's own matches came back labelled as
+ * absolute paths, and a search in an honored directory searched the workspace tree instead. These
+ * tests spell each root the way the runner does and ask for the same answers as everywhere else
+ * in this file.
+ */
+describe.runIf(process.platform === 'win32')(
+  'a root spelled in another form of its own name',
+  () => {
+    /**
+     * The 8.3 name of a directory, or `undefined` when this volume has none to give.
+     *
+     * A volume with 8.3 name generation disabled echoes the long form back: there is no second
+     * spelling to disagree with, so the case would have nothing to prove and skips rather than
+     * passing vacuously.
+     */
+    async function shortOf(directory: string): Promise<string | undefined> {
+      const short = await shortPathName(directory);
+      return short && short !== realpathSync.native(directory) ? short : undefined;
+    }
+
+    let honored: string;
+    let shortDir: string | undefined;
+    let shortHonored: string | undefined;
+
+    beforeEach(async () => {
+      // The two forms are only in disagreement once the directories exist, so the lookup is per test
+      // rather than once for the file: the short name of a temp directory carries its own suffix.
+      honored = mkdtempSync(join(tmpdir(), 'book-shortroot-'));
+      [shortDir, shortHonored] = await Promise.all([shortOf(dir), shortOf(honored)]);
+    });
+    afterEach(() => rmSync(honored, { recursive: true, force: true }));
+
+    it('never searches the local settings of a workspace root spelled in 8.3 form', async (test) => {
+      if (!shortDir) return test.skip();
+      mkdirSync(join(dir, '.book'));
+      writeFileSync(join(dir, '.book', 'settings.local.json'), '{"apiKey":"sk-local-marker"}');
+      writeFileSync(join(dir, 'a.ts'), 'const note = "sk-visible-marker";\n');
+      // A link to `.book` is another way in; a junction needs no symlink privilege on Windows.
+      symlinkSync(join(dir, '.book'), join(dir, 'cfgdir'), 'junction');
+      const shortCtx: ToolContext = { ...ctx, workspaceRoot: shortDir };
+
+      for (const args of [
+        { pattern: 'sk-' },
+        { pattern: 'sk-', include: '.book/settings.local.json' },
+        { pattern: 'sk-', path: '.book' },
+        // A scope that is one file, and one reached through a link, are the two the glob's ignore
+        // list cannot cover — and the two the root-keyed guard exists for.
+        { pattern: 'sk-', path: '.book/settings.local.json' },
+        { pattern: 'sk-', path: 'cfgdir' },
+      ]) {
+        const result = await grep.execute(args, shortCtx);
+        expect(JSON.stringify(result)).not.toContain('sk-local-marker');
+      }
+      // An ordinary search still reaches an ordinary file, so the exclusions above are the guard
+      // doing its work rather than a search that finds nothing at all.
+      expect((await grep.execute({ pattern: 'sk-' }, shortCtx)).content).toContain(
+        'sk-visible-marker',
+      );
+    });
+
+    it('keys and lists a short-form workspace root relatively, as it does any other', async (test) => {
+      if (!shortDir) return test.skip();
+      mkdirSync(join(dir, 'sub'));
+      writeFileSync(join(dir, 'a.ts'), 'const note = "sk-visible-marker";\n');
+      writeFileSync(join(dir, 'sub', 'b.ts'), 'const note = "sk-visible-marker";\n');
+      const shortCtx: ToolContext = { ...ctx, workspaceRoot: shortDir };
+
+      const result = await grep.execute({ pattern: 'sk-visible-marker' }, shortCtx);
+
+      expect(result.status).toBe('success');
+      expect(Object.keys((result.data as { matches: object }).matches).sort()).toEqual([
+        'a.ts',
+        'sub/b.ts',
+      ]);
+      expect(result.content).toContain('a.ts:1:');
+      expect(result.content).toContain('sub/b.ts:1:');
+      // The listing is the workspace-relative spelling, never the root in whatever form it was given.
+      expect(result.content).not.toContain(shortDir);
+    });
+
+    it('searches an honored directory given in 8.3 form, and keeps its own guard', async (test) => {
+      if (!shortHonored) return test.skip();
+      mkdirSync(join(honored, '.book'));
+      writeFileSync(join(honored, '.book', 'settings.local.json'), '{"apiKey":"sk-local-marker"}');
+      writeFileSync(join(honored, 'matchme.txt'), 'grepme\n');
+      const shortCtx: ToolContext = { ...ctx, additionalRoots: [shortHonored] };
+
+      const found = await grep.execute({ pattern: 'grepme', path: shortHonored }, shortCtx);
+      expect(found.status).toBe('success');
+      expect(found.content).toContain('grepme');
+      // The honored root's own local settings stay closed, in whichever form the root was declared.
+      const guarded = await grep.execute({ pattern: 'sk-', path: shortHonored }, shortCtx);
+      expect(JSON.stringify(guarded)).not.toContain('sk-local-marker');
+    });
+
+    it('reads a workspace root whose drive letter is lowercase', async () => {
+      writeFileSync(join(dir, 'a.ts'), 'const note = 1;\n');
+      const lowerCtx: ToolContext = { ...ctx, workspaceRoot: withLowercaseDriveLetter(dir) };
+
+      const result = await grep.execute({ pattern: 'note' }, lowerCtx);
+
+      expect(result.status).toBe('success');
+      expect(Object.keys((result.data as { matches: object }).matches)).toEqual(['a.ts']);
+    });
+  },
+);

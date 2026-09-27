@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { basename, extname, join, resolve as resolvePath } from 'node:path';
 import fg from 'fast-glob';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
+import { fastGlobPattern } from './glob-regex.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { buildChildEnv } from '../child-env.js';
 import { markdownContentStart } from '../frontmatter.js';
@@ -13,7 +14,6 @@ import {
   pathOutsideWorkspaceResult,
   resolveMutationPath,
   resolveReadablePath,
-  resolveWorkspacePath,
   type PathRoots,
   type ResolvedReadablePath,
 } from './path-utils.js';
@@ -158,28 +158,24 @@ function grepRoots(ctx: ToolContext): PathRoots {
 
 /**
  * Which root of {@link grepRoots} a resolved file came from, so a caller can be told to search
- * there. Tried in the same order the resolution itself uses, so the two always agree.
+ * there. The resolved path answers it directly — the root that served it is the one it was
+ * resolved against — so no root is compared with a path from ripgrep or fast-glob here.
  */
-function grepRootFor(roots: PathRoots, canonicalPath: string): string {
-  const candidates = [roots.workspaceRoot, ...(roots.additionalRoots ?? [])];
-  return (
-    candidates.find((root) => resolveWorkspacePath(root, canonicalPath) !== null) ??
-    roots.workspaceRoot
-  );
+function grepRootFor(roots: PathRoots, resolved: ResolvedReadablePath): string {
+  return resolved.inWorkspace ? roots.workspaceRoot : resolved.root;
 }
 
 /**
  * How a matched file is labelled in Glob and Grep output.
  *
  * A workspace match is labelled workspace-relative, because that is the form Read accepts. A match
- * in an honored directory is labelled with its absolute path: its relative form would read as a
- * workspace path that does not exist, so the model would try it and be told the path is outside
- * the workspace (#300).
+ * in an honored directory is labelled with the absolute path it was found at: its relative form
+ * would read as a workspace path that does not exist, so the model would try it and be told the
+ * path is outside the workspace (#300). The spelling is the one the walk used — the root as the
+ * caller gave it — so the label is a path Read opens rather than one that only looks right.
  */
-function readableLabel(roots: PathRoots, resolved: ResolvedReadablePath): string {
-  return resolveWorkspacePath(roots.workspaceRoot, resolved.canonicalPath) !== null
-    ? resolved.relativePath
-    : resolved.canonicalPath;
+function readableLabel(resolved: ResolvedReadablePath): string {
+  return resolved.inWorkspace ? resolved.relativePath : resolved.filePath;
 }
 
 async function resolveGrepScope(
@@ -209,7 +205,7 @@ async function resolveGrepScope(
         relativePath: resolved.relativePath,
         absolutePath: resolved.filePath,
         isFile: info.isFile(),
-        root: grepRootFor(roots, resolved.canonicalPath),
+        root: grepRootFor(roots, resolved),
       },
     };
   } catch {
@@ -1638,7 +1634,10 @@ async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
   const roots = grepRoots(ctx);
   const files: string[] = [];
   for (const cwd of globSearchDir(ctx)) {
-    const found = await fg(pattern, {
+    // Converted for fast-glob, which reads `\` as an escape and so walks nothing at all for a
+    // Windows pattern (`C:\ws\**\*.ts`): an absolute Glob came back empty. Which root holds the
+    // base is then decided by the filter below, against the roots in canonical form.
+    const found = await fg(fastGlobPattern(pattern), {
       cwd,
       dot: true,
       ignore: ctx.gitignorePatterns ?? [],
@@ -1661,7 +1660,7 @@ async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
         truncated = true;
         break;
       }
-      output.push(readableLabel(roots, resolved));
+      output.push(readableLabel(resolved));
     }
     if (index > 0 && index % PATH_YIELD_INTERVAL === 0) await yieldToEventLoop(ctx.signal);
   }
@@ -1778,7 +1777,7 @@ async function grepSearchPortable(
       !isBookLocalSettingsUnderRoots(resolved.canonicalPath, roots)
     ) {
       seenFiles.add(resolved.canonicalPath);
-      inWorkspaceFiles.push({ file: readableLabel(roots, resolved), filePath: resolved.filePath });
+      inWorkspaceFiles.push({ file: readableLabel(resolved), filePath: resolved.filePath });
     }
     if (index > 0 && index % PATH_YIELD_INTERVAL === 0) await yieldToEventLoop(ctx.signal);
   }
@@ -2026,7 +2025,7 @@ async function grepSearchWithRipgrep(
       const resolved = resolveReadablePath(roots, join(scope.root, rawPath.replaceAll('\\', '/')));
       if (!resolved) return;
       if (isBookLocalSettingsUnderRoots(resolved.canonicalPath, roots)) return;
-      const file = readableLabel(roots, resolved);
+      const file = readableLabel(resolved);
 
       if (event.type === 'match') {
         const fileMatches = matchesByFile.get(file) ?? { matches: [] };

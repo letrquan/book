@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { join, normalize } from 'path';
+import { join } from 'path';
 import { runTrustCommand } from './trust-cmd.js';
 import { setExitFn } from './exit.js';
 import { hookFingerprint } from '../hook-approvals.js';
@@ -405,7 +405,10 @@ describe('book trust dir', () => {
 
     expect(result.exitCode ?? 0).toBe(0);
     expect(decisionFor(realpathSync.native(shared))).toBe('approved');
-    expect(roots()).toEqual([normalize(shared)]);
+    // Released as the real path, not as the text the repository wrote: a consumer resolves this
+    // list again later with no trust store in hand, so a relative or symlinked spelling would let
+    // a relink move a root the user approved as somewhere else (PR #334 finding 7).
+    expect(roots()).toEqual([realpathSync.native(shared)]);
   });
 
   it('shows the real path beside the declared text before approving', async () => {

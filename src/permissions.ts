@@ -1,6 +1,5 @@
 import { realpathSync } from 'fs';
 import { isAbsolute, relative, sep } from 'path';
-import fg from 'fast-glob';
 import type { ResolvedSettings } from './settings.js';
 import type {
   PermissionDecision,
@@ -10,10 +9,12 @@ import type {
 } from './types/tools.js';
 import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
-import { globToRegex } from './tools/glob-regex.js';
+import { globToRegex, fastGlobBases } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
 import {
+  canonicalizePath,
   isBookLocalSettingsPath,
+  isUnderRoot,
   resolveReadablePathDetail,
   resolveWorkspacePath,
   type PathRoots,
@@ -509,13 +510,12 @@ function resolvedPathScope(scope: WorkspaceScope): ResolvedPathScope {
   // Which root serves a canonical path, in the order the file tools resolve against them: the
   // workspace first, then the approved directories. The home guard is about the *serving* root,
   // not about every root that happens to contain the path — approving `/home/u` must not re-guard
-  // a workspace at `/home/u/proj` that it merely sits above (PR #334 finding 3).
+  // a workspace at `/home/u/proj` that it merely sits above (PR #334 finding 3). Compared in one
+  // canonical form on both sides, because the path came from `realpath` and the root is as given.
   const servingRootOf = (canonicalPath: string): string | undefined =>
     [realRootOf(scope), ...(scope.additionalRoots ?? [])].find(
       (root): root is string =>
-        typeof root === 'string' &&
-        root.length > 0 &&
-        resolveWorkspacePath(root, canonicalPath) !== null,
+        typeof root === 'string' && root.length > 0 && isUnderRoot(canonicalPath, root),
     );
   return {
     scope,
@@ -611,7 +611,10 @@ function spellingsOfPath(
     spellings.push(toPosix(resolved.filePath), toPosix(resolved.canonicalPath));
     if (restrictive) {
       for (const root of paths.scope.additionalRoots ?? []) {
-        const fromRoot = relative(root, resolved.canonicalPath);
+        // The root in the path's own canonical form: the path came from `realpath`, and a root as
+        // given is a second spelling of it (8.3 short form, drive-letter case, separators) rather
+        // than a different place — comparing the two spellings read every relative form as `..`.
+        const fromRoot = relative(canonicalizePath(root), resolved.canonicalPath);
         // `..` followed by a separator, not a bare prefix: a sibling directory whose name merely
         // starts with two dots (`..foo`) is inside the root, and `startsWith('..')` calls it
         // outside.
@@ -645,15 +648,13 @@ function pathRuleSpellings(
  * Where a Glob reaches: `outside` when fast-glob would start walking anywhere outside the roots the
  * tools serve (`../**`, `.{.,x}/*`, an absolute path elsewhere), `servable` otherwise. It asks
  * fast-glob for the directories it would walk rather than guessing from the pattern: `{..,src}/*`
- * walks the workspace and never climbs, while `.{.,x}/*` walks its parent.
+ * walks the workspace and never climbs, while `.{.,x}/*` walks its parent. A pattern fast-glob
+ * cannot read at all is `outside`: the walk it would do is unknown, so nothing it finds can be
+ * claimed to be inside.
  */
 function globTarget(pattern: string, paths: ResolvedPathScope): 'servable' | 'outside' {
-  let bases: string[];
-  try {
-    bases = fg.generateTasks([pattern]).map((task) => task.base);
-  } catch {
-    return 'outside';
-  }
+  const bases = fastGlobBases(pattern);
+  if (bases.length === 0) return 'outside';
   // Every base, including the ones that resolved nowhere: a pattern with an unresolvable base
   // walks outside the roots, and dropping that base before the test would make `every` vacuously
   // true and read as servable.
@@ -665,17 +666,12 @@ function globTarget(pattern: string, paths: ResolvedPathScope): 'servable' | 'ou
  *
  * fast-glob answers this better than a pattern could be parsed for: `{..,src}/*` walks the
  * workspace and never climbs, while `.{.,x}/*` walks its parent, and only the library knows which
- * before the walk happens. An unparseable pattern yields nothing, and the caller is already on the
- * `outside` branch by then.
+ * before the walk happens. The bases are read from the same converted pattern the walk uses, so
+ * the two name the same directory even on Windows, where an unconverted pattern reports `.` for
+ * every base and would make an absolute pattern look like it walked the workspace.
  */
 function globBases(pattern: string, paths: ResolvedPathScope): string[] {
-  let bases: string[];
-  try {
-    bases = fg.generateTasks([pattern]).map((task) => task.base);
-  } catch {
-    return [];
-  }
-  return bases
+  return fastGlobBases(pattern)
     .map((base) => paths.detail(base, false))
     .filter((detail): detail is Extract<typeof detail, { path: unknown }> => 'path' in detail)
     .map((detail) => detail.path.canonicalPath);

@@ -1086,18 +1086,19 @@ describe('project-declared additionalDirectories require approval', () => {
 
   it('releases the project directory between the user and local layers', () => {
     const outside = shared();
+    const own = shared();
     mkdirSync(join(userDir, '.book'), { recursive: true });
     writeFileSync(
       join(userDir, '.book', 'settings.json'),
-      JSON.stringify({ additionalDirectories: [mkdtempSync(join(tmpdir(), 'book-dirs-user-'))] }),
+      JSON.stringify({ additionalDirectories: [own] }),
     );
     writeProject([outside]);
     decide(realpathSync.native(outside), 'approved');
 
     // Layer order, so the position a released entry occupies is the one its layer would have had.
-    expect(load().additionalDirectories).toEqual([
-      normalize(load().additionalDirectories[0]),
-      normalize(outside),
-    ]);
+    // The user's own entry passes through as the text they wrote, and the released one is its
+    // **real** path: the user approved that, and a consumer with no trust store in hand must not
+    // be handed a spelling a relink could move (PR #334 finding 7).
+    expect(load().additionalDirectories).toEqual([normalize(own), realpathSync.native(outside)]);
   });
 });

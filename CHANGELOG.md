@@ -511,6 +511,24 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A Windows root and a path under it are compared in one spelling** (#300, #305). One directory
+  has more than one name: the long form a user reads and the DOS 8.3 short form
+  (`C:\Users\RUNNER~1\AppData\Local\Temp`), plus a drive letter in either case and separators either
+  way. A root was compared as it was given against a path `realpath`, fast-glob and ripgrep had
+  reported, so on a machine whose temp directory has a short name the two read as two places, and
+  everything that keys on the root stopped working: a `Grep` printed the API key in the
+  workspace's own `.book/settings.local.json` because the exclusion could no longer name the file,
+  the workspace's own matches came back labelled with absolute paths instead of relative ones, a
+  search scoped to an approved directory searched the workspace tree instead, and a read or write
+  into one was refused as outside every root. Every path-and-root comparison is now made on the
+  canonical form of both sides, so the guards hold for a root however it is spelled and the
+  relative spellings shown to the model are unchanged.
+- **`Glob` with an absolute Windows pattern walked nothing** (#300). fast-glob reads `\` as an
+  escape character, so `C:\ws\**\*.ts` parsed as one escaped token, reported its base as `.` and
+  matched no files at all — the same pattern worked with forward slashes. A pattern's static
+  leading directories are now converted with fast-glob's own `convertPathToPattern` before the walk,
+  and the directories it would walk are read from that same converted pattern, so the search and
+  the permission judgment of what it reaches name the same directory.
 - **A resumed print run no longer counts its restored spend twice** (#294). The `usage` record a
   run writes is how the next process restores what the objective has cost, and two things made it
   wrong: the first record of a resumed run wrote the restored total again instead of this run's

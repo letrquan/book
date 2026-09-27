@@ -21,7 +21,7 @@ import { homedir } from 'os';
 import { isAbsolute, relative, resolve, sep } from 'path';
 import { createDebugLogger } from './debug-log.js';
 import { resolveBookHome } from './book-home.js';
-import { realWorkspaceRoot, canonicalizePath, resolveWorkspacePath } from './tools/path-utils.js';
+import { realWorkspaceRoot, canonicalizePath } from './tools/path-utils.js';
 import type { ProjectDirectoryChoice } from './settings.js';
 import { updateWorkspaceTrust } from './workspace-trust.js';
 
@@ -221,13 +221,18 @@ export function pathHoldsHome(
 }
 
 /**
- * Whether `root` is `target` or contains it, both sides compared after following links.
+ * Whether `root` is `target` or contains it, both sides compared in one canonical form.
+ *
+ * The whole of that rule: a root as the caller spelled it and a path from `realpath` are two
+ * spellings of one directory at best, and two unrelated ones when the root was typed in 8.3 short
+ * form — so the root is put through the same canonicalization as the path before the two are
+ * compared. Both are canonicalized here rather than one of them assumed canonical, because a home
+ * list, a root list and a target all arrive from different places.
  *
  * Exported because a Grep or Glob *scope* has to be compared against a home the same way a file
- * is, and the comparison is the whole of that rule (PR #334 finding 4).
+ * is (PR #334 finding 4).
  */
 export function containsPath(root: string, target: string): boolean {
-  if (resolveWorkspacePath(root, target) !== null) return true;
   const fromRoot = relative(canonicalizePath(root), canonicalizePath(target));
   return !(fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot));
 }

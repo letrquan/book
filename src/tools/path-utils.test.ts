@@ -48,8 +48,22 @@ describe('resolveReadablePathDetail', () => {
         filePath: join(workspace, 'notes.txt'),
         canonicalPath: join(realWorkspaceRoot(workspace), 'notes.txt'),
         relativePath: 'notes.txt',
+        root: workspace,
+        inWorkspace: true,
       },
     });
+  });
+
+  it('names the root a file in an honored additional directory was served by', () => {
+    const detail = resolveReadablePathDetail(
+      roots({ additionalRoots: [extra] }),
+      join(extra, 'extra.txt'),
+    );
+
+    expect('path' in detail && detail.path.filePath).toBe(join(extra, 'extra.txt'));
+    // The label a Glob or Grep result shows is this root's own spelling of the path, not the
+    // root-relative one the resolution produced, and not the canonical one.
+    expect('path' in detail && detail.path).toMatchObject({ root: extra, inWorkspace: false });
   });
 
   it('serves a file in an honored additional directory', () => {
@@ -152,8 +166,15 @@ describe('canonicalizePath', () => {
     );
   });
 
-  it('leaves an ordinary path alone', () => {
-    expect(canonicalizePath(join(workspace, 'notes.txt'))).toBe(join(workspace, 'notes.txt'));
+  it('resolves an ordinary path to the form the file system calls it', () => {
+    // On Windows a path is not already canonical: a temp directory under `C:\Users\RUNNER~1` is
+    // reported by `realpath` as `C:\Users\runneradmin`, and a drive letter folds case freely. So
+    // the property is the one that matters — an already-canonical path is left alone, which is
+    // what lets a guarded path be compared against a root more than once for the price of one.
+    const canonical = canonicalizePath(join(workspace, 'notes.txt'));
+
+    expect(canonical).toBe(join(realWorkspaceRoot(workspace), 'notes.txt'));
+    expect(canonicalizePath(canonical)).toBe(canonical);
   });
 
   it('is idempotent, which is what lets a guarded path be compared twice', () => {

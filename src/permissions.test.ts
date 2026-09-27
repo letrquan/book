@@ -1,5 +1,13 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as pathUtils from './tools/path-utils.js';
@@ -978,33 +986,23 @@ describe('workspace reads need no prompt (#264)', () => {
         ),
       ).toEqual({ decision: 'refuse', source: 'default', outsideWorkspace: true });
     }
-    // An ask rule still asks: it is the user naming the target, so they may want to answer.
+    // An ask rule still asks: it is the user naming the target, so they may want to answer. The
+    // rule and the argument carry the same spelling, as they do above: a rule is matched against
+    // the argument and the spellings a resolution offers, never against a path re-parsed out of
+    // the rule, so a rule written with forward slashes does not cover a Windows argument spelled
+    // with backslashes.
     const rule = `Read(${outside.replace(/\\/g, '/')}/**)`;
+    const named = { filePath: outsideFile.replace(/\\/g, '/') };
     expect(
-      evaluatePermissionDetail(
-        'Read',
-        { filePath: outsideFile },
-        settings({ ask: [rule] }),
-        scope(workspace),
-      ),
+      evaluatePermissionDetail('Read', named, settings({ ask: [rule] }), scope(workspace)),
     ).toEqual({ decision: 'ask', source: 'ask', matchedRule: rule, outsideWorkspace: true });
     // Deny still denies, and reports the rule rather than the remedy.
     expect(
-      evaluatePermissionDetail(
-        'Read',
-        { filePath: outsideFile },
-        settings({ deny: [rule] }),
-        scope(workspace),
-      ),
+      evaluatePermissionDetail('Read', named, settings({ deny: [rule] }), scope(workspace)),
     ).toEqual({ decision: 'deny', matchedRule: rule, source: 'deny' });
     // Allow wins outright: the tool can open an honored root, and a rule says to.
     expect(
-      evaluatePermissionDetail(
-        'Read',
-        { filePath: outsideFile },
-        settings({ allow: [rule] }),
-        scope(workspace),
-      ),
+      evaluatePermissionDetail('Read', named, settings({ allow: [rule] }), scope(workspace)),
     ).toEqual({ decision: 'allow', matchedRule: rule, source: 'allow' });
     // Only the modes that judge reads refuse; the rest are unchanged.
     expect(
@@ -1050,10 +1048,15 @@ describe('workspace reads need no prompt (#264)', () => {
         off,
       ),
     ).toMatchObject({ decision: 'deny' });
-    // Allow keeps today's matching, so nothing is widened by the folding.
+    // Allow is not folded by the rule, so a rule that does not match the argument stays out of it.
+    // On a file system that folds case, though, `.ENV` *is* the `.env` this test wrote, and the
+    // spellings a resolution offers include the path relative to the real workspace root — which
+    // carries the name as it is stored on disk. So the rule matches on the second count there,
+    // and asking what the platform's own file system answers is the honest assertion.
+    const fileSystemFoldsCase = existsSync(join(workspace, '.ENV'));
     expect(
       evaluatePermission('Read', { filePath: '.ENV' }, settings({ allow: ['Read(.env)'] }), off),
-    ).toBe('ask');
+    ).toBe(fileSystemFoldsCase ? 'allow' : 'ask');
   });
 
   it('keeps Grep and Glob asking while a rule adjudicates reads, since a Read rule cannot see them', () => {
