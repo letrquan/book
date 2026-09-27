@@ -539,6 +539,14 @@ describe('AskUserQuestionWizard', () => {
     await waitForText(view, 'A note');
     expect(onLayoutChange.mock.calls.length).toBe(whileTyping);
 
+    // Growing the editor onto another line is a height change, though. The
+    // shape carries the editor's row count rather than its text, so this is one
+    // report when the answer wraps and none while it does not.
+    const whileWrapping = onLayoutChange.mock.calls.length;
+    await press(view, 'x'.repeat(120));
+    await waitForText(view, 'x'.repeat(20));
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(whileWrapping);
+
     // Leaving the editor takes both the editor and the notice back.
     const onAnswered = onLayoutChange.mock.calls.length;
     await press(view, '\x1b');

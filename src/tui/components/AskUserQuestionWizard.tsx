@@ -1,10 +1,11 @@
 import { Box, Text, useInput } from 'ink';
 import TextInput from './TextInputField.js';
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
+import { useReportLayout } from '../hooks/useReportLayout.js';
 import type { UserQuestion, UserQuestionRequest, UserQuestionResponse } from '../../types/tools.js';
 import { useTheme } from '../theme.js';
-import { truncateDisplay } from './word-wrap.js';
+import { truncateDisplay, wordWrap } from './word-wrap.js';
 import { ChoiceList, DecisionSheet, floatingFrameMetrics, type Choice } from './chrome.js';
 import { PILCROW } from '../marks.js';
 
@@ -22,6 +23,12 @@ interface AskUserQuestionWizardProps {
    * the model asked and the tool row that asked it.
    */
   onLayoutChange?: () => void;
+  /**
+   * Called when the `Other` editor takes or gives up the focus. While it holds
+   * it, Ctrl+U and Ctrl+D are the editor's kills rather than the transcript's
+   * half-page scrolls.
+   */
+  onEditorFocusChange?: (focused: boolean) => void;
 }
 
 /**
@@ -85,6 +92,7 @@ export function AskUserQuestionWizard({
   onResolve,
   screenReader = false,
   onLayoutChange,
+  onEditorFocusChange,
 }: AskUserQuestionWizardProps) {
   const theme = useTheme();
   const outerWidth = Math.max(20, Math.floor(terminalWidth));
@@ -307,25 +315,32 @@ export function AskUserQuestionWizard({
 
   // Everything the sheet draws that changes how many rows it takes: which
   // question is up, whether the editor under the choices is open, the notice row
-  // and the width the question wraps to. Typing in the editor is not here, so the
-  // app is asked to re-measure the transcript on a change of shape rather than
-  // on every keystroke.
+  // and the width the question wraps to.
+  //
+  // The editor's *text* is not here but the number of rows it takes is: a
+  // 2000-character answer wraps, so a keystroke that pushes the value onto one
+  // more line grows the sheet, and the transcript above has to re-measure. What
+  // is reported is the row count, so a keystroke inside a wrapped line — the
+  // common case — reports nothing.
+  const otherRows = otherMode ? wordWrap(otherValue, contentWidth).split('\n').length : 0;
   const layoutShape = [
     questionIndex,
     question.question,
     question.options.length,
     question.multiSelect,
     otherMode ? 1 : 0,
+    otherRows,
     notice ?? '',
     contentWidth,
     progress,
     queueText,
     fromAgent ? 1 : 0,
   ].join(':');
-  useLayoutEffect(() => {
-    onLayoutChange?.();
-    return () => onLayoutChange?.();
-  }, [layoutShape, onLayoutChange]);
+  useReportLayout(layoutShape, {
+    onLayoutChange,
+    editorFocused: otherMode,
+    onEditorFocusChange,
+  });
 
   const choiceRows: Choice[] = [
     ...question.options.map((option) => ({

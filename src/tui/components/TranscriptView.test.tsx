@@ -410,7 +410,13 @@ describe('TranscriptView chords with the composer', () => {
    * it had nothing to edit through `onGlobalShortcut` (its `forwardEmptyChord`),
    * and the app hands those back to the transcript as a scroll request.
    */
-  function Composer({ composerAcceptsInput = true }: { composerAcceptsInput?: boolean }) {
+  function Composer({
+    composerAcceptsInput = true,
+    pagerChordsAvailable,
+  }: {
+    composerAcceptsInput?: boolean;
+    pagerChordsAvailable?: boolean;
+  }) {
     const [scroll, setScroll] = useState<TranscriptScrollRequest>({ key: 0, direction: 'up' });
     return (
       <ThemeContext.Provider value={DEFAULT_THEME}>
@@ -418,7 +424,7 @@ describe('TranscriptView chords with the composer', () => {
           <TranscriptView
             height={5}
             width={20}
-            composerAcceptsInput={composerAcceptsInput}
+            pagerChordsAvailable={pagerChordsAvailable ?? !composerAcceptsInput}
             scrollRequest={scroll}
           >
             <Rows labels={labels} />
@@ -482,5 +488,41 @@ describe('TranscriptView chords with the composer', () => {
 
     act(() => app.stdin.write('\x04'));
     expect(visible(app)).toEqual(['C', 'D', 'E', 'F']);
+  });
+
+  it('stops paging while a sheet editor has the focus', () => {
+    // Plan approval's feedback editor, AskUserQuestion's `Other` field and an
+    // MCP text field are composers: Ctrl+U clears them and Ctrl+D deletes under
+    // the cursor. The app knows an editor is open and reports it the way it
+    // reports a sheet's height, so the transcript does not also read the chord
+    // as a half-page scroll — the same defect #296 was, one surface down.
+    const app = render(<Composer composerAcceptsInput={false} pagerChordsAvailable={false} />);
+
+    act(() => app.stdin.write('\x15'));
+    expect(visible(app)).toEqual(['C', 'D', 'E', 'F']);
+    expect(browsing(app)).toBe(false);
+
+    act(() => app.stdin.write('\x04'));
+    expect(visible(app)).toEqual(['C', 'D', 'E', 'F']);
+  });
+
+  it('does not replay an old scroll request when the session remounts', () => {
+    // `app.tsx` keys this component on the session, so /resume and /clear mount
+    // a new one while `scrollRequest` still carries the count from the session
+    // before. A ref seeded at zero rather than at the request in hand replays
+    // that count, and the new session opens scrolled half a page back and no
+    // longer following output.
+    const app = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <Box flexDirection="column" width={20} height={9}>
+          <TranscriptView height={5} width={20} scrollRequest={{ key: 7, direction: 'up' }}>
+            <Rows labels={labels} />
+          </TranscriptView>
+        </Box>
+      </ThemeContext.Provider>,
+    );
+
+    expect(visible(app)).toEqual(['C', 'D', 'E', 'F']);
+    expect(browsing(app)).toBe(false);
   });
 });

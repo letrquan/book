@@ -1,7 +1,8 @@
 import { Box, Text, useInput } from 'ink';
 import TextInput from './TextInputField.js';
-import { useCallback, useLayoutEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
+import { useReportLayout } from '../hooks/useReportLayout.js';
 import {
   coerceElicitationValue,
   elicitationDefaults,
@@ -14,7 +15,7 @@ import type {
   ElicitationValue,
 } from '../../types/tools.js';
 import { useTheme } from '../theme.js';
-import { truncateDisplay } from './word-wrap.js';
+import { truncateDisplay, wordWrap } from './word-wrap.js';
 import { ChoiceList, DecisionSheet, floatingFrameMetrics, type Choice } from './chrome.js';
 import { PILCROW } from '../marks.js';
 
@@ -33,6 +34,12 @@ interface McpElicitationFormProps {
    * earlier.
    */
   onLayoutChange?: () => void;
+  /**
+   * Called when the field's editor takes or gives up the focus. While it holds
+   * it, Ctrl+U and Ctrl+D are the editor's kills rather than the transcript's
+   * half-page scrolls.
+   */
+  onEditorFocusChange?: (focused: boolean) => void;
 }
 
 /** Visible option rows for an enum field; longer lists scroll under the cursor. */
@@ -78,6 +85,7 @@ export function McpElicitationForm({
   onResolve,
   screenReader = false,
   onLayoutChange,
+  onEditorFocusChange,
 }: McpElicitationFormProps) {
   const theme = useTheme();
   const outerWidth = Math.max(20, Math.floor(terminalWidth));
@@ -117,9 +125,14 @@ export function McpElicitationForm({
   // deliberately absent — the filter is measured by how many options it left,
   // so typing a letter does not re-measure the transcript when the row count it
   // produces has not moved.
+  // A text field's draft wraps like any other, so the number of rows it takes is
+  // part of the shape even though the text is not: a keystroke that pushes the
+  // value onto one more line grows the sheet.
+  const draftRows =
+    editing && field?.kind !== 'enum' ? wordWrap(draft, contentWidth).split('\n').length : 0;
   const layoutShape = [
     editing ? 1 : 0,
-    options.length,
+    editing && field?.kind === 'enum' ? options.length : draftRows,
     notice ?? '',
     field?.name ?? '',
     field?.kind ?? '',
@@ -127,10 +140,11 @@ export function McpElicitationForm({
     contentWidth,
     queueLength,
   ].join(':');
-  useLayoutEffect(() => {
-    onLayoutChange?.();
-    return () => onLayoutChange?.();
-  }, [layoutShape, onLayoutChange]);
+  useReportLayout(layoutShape, {
+    onLayoutChange,
+    editorFocused: editing,
+    onEditorFocusChange,
+  });
 
   const resolveOnce = useCallback(
     (response: ElicitationResponse) => {

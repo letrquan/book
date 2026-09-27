@@ -187,4 +187,29 @@ describe('PlanApprovalButtons', () => {
     await waitForText(view, 'xy');
     expect(onLayoutChange.mock.calls.length).toBe(whileTyping);
   });
+
+  it('reports the editor taking and giving up the readline chords', async () => {
+    // While the feedback editor has the focus, Ctrl+U clears it and Ctrl+D
+    // deletes under the cursor. The app gates the transcript's paging chords on
+    // this, the same way the sheet reports its height.
+    const onEditorFocusChange = vi.fn();
+    const view = render(
+      withTheme(
+        <PlanApprovalActions
+          plan={'1. Step one'}
+          onResolve={vi.fn()}
+          onEditorFocusChange={onEditorFocusChange}
+        />,
+      ),
+    );
+    expect(onEditorFocusChange).toHaveBeenLastCalledWith(false);
+
+    view.stdin.write('e');
+    await waitForText(view, 'Adjust the plan');
+    expect(onEditorFocusChange).toHaveBeenLastCalledWith(true);
+
+    view.stdin.write('\x1b');
+    await waitForText(view, 'Approve');
+    expect(onEditorFocusChange).toHaveBeenLastCalledWith(false);
+  });
 });

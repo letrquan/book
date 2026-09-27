@@ -1732,6 +1732,17 @@ export function App({
   // the transcript's viewport must be measured again.
   const [footerLayoutRevision, setFooterLayoutRevision] = useState(0);
   const bumpFooterLayout = useCallback(() => setFooterLayoutRevision((value) => value + 1), []);
+  // A sheet with a text editor open takes the readline chords, so the transcript
+  // must not read Ctrl+U and Ctrl+D as half-page scrolls while it is. The sheets
+  // report this the same way they report their height — see `useReportLayout`.
+  const [sheetEditorFocused, setSheetEditorFocused] = useState(false);
+  // Sheets come and go, so a sheet that unmounts while focused has to hand the
+  // chords back rather than leave them claimed for a surface that is gone.
+  useEffect(() => {
+    if (!pendingPlanApproval && !pendingUserQuestion && !pendingElicitation && !childQuestion) {
+      setSheetEditorFocused(false);
+    }
+  }, [childQuestion, pendingElicitation, pendingPlanApproval, pendingUserQuestion]);
   // Whether a composer menu is open, as of the last commit. Read by the Esc
   // handler below, which must not also act on the Esc that closes a menu.
   const composerMenuOpenRef = useRef(false);
@@ -2458,6 +2469,13 @@ export function App({
     detailTaskPickerOpen
   );
 
+  // Whether anything on screen is holding a text editor's focus: the composer,
+  // or one of the sheets' own editors. A sheet that is up without an editor is
+  // a list of choices, and there Ctrl+U and Ctrl+D can only mean paging; the
+  // moment its editor opens they are the editor's kills, and the transcript must
+  // stop reading them as scrolls — the same defect #296 was, one surface down.
+  const pagerChordsAvailable = composerAcceptsInput && !sheetEditorFocused;
+
   const pickerOwnsTranscript =
     showModelPicker ||
     showEffortPicker ||
@@ -2524,7 +2542,7 @@ export function App({
             isActive={!pickerOwnsTranscript && managedAgents.surface !== 'tasks'}
             followRequestKey={followRequestKey}
             layoutRevision={transcriptLayoutRevision}
-            composerAcceptsInput={composerAcceptsInput}
+            pagerChordsAvailable={pagerChordsAvailable}
             scrollRequest={transcriptScrollRequest}
             onToggleTool={toggleToolExpansion}
             onNotify={handleCopiedNotice}
@@ -2731,6 +2749,7 @@ export function App({
                 screenReader={screenReader}
                 terminalWidth={termWidth}
                 onLayoutChange={bumpFooterLayout}
+                onEditorFocusChange={setSheetEditorFocused}
               />
             ) : null}
             {pendingElicitation ? (
@@ -2742,6 +2761,7 @@ export function App({
                 onResolve={resolveElicitation}
                 screenReader={screenReader}
                 onLayoutChange={bumpFooterLayout}
+                onEditorFocusChange={setSheetEditorFocused}
               />
             ) : null}
             {pendingUserQuestion ? (
@@ -2753,6 +2773,7 @@ export function App({
                 onResolve={resolveUserQuestion}
                 screenReader={screenReader}
                 onLayoutChange={bumpFooterLayout}
+                onEditorFocusChange={setSheetEditorFocused}
               />
             ) : childQuestion ? (
               <AskUserQuestionWizard
@@ -2765,6 +2786,7 @@ export function App({
                 }
                 screenReader={screenReader}
                 onLayoutChange={bumpFooterLayout}
+                onEditorFocusChange={setSheetEditorFocused}
               />
             ) : null}
             {showSessionPicker ? (
