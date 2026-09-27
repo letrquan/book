@@ -122,16 +122,16 @@ it('keeps foreground delegation overhead small relative to the delegated work', 
     const { overheadMs, stallMs } = await measureRoundTrip(childRunMs);
     samples.push({ overheadMs, stallMs });
   }
-  const ordered = [...samples].sort((left, right) => left.overheadMs - right.overheadMs);
-  const best = ordered[0].overheadMs;
-  const median = ordered[Math.floor(ordered.length / 2)].overheadMs;
-  const worstSample = ordered[ordered.length - 1];
-  const worst = worstSample.overheadMs;
-  // The worst sample judged net of the lateness of its own timer: the same
-  // correction `bestHarnessOverheadMs` applies to a short sample, and for the
-  // same reason — the child's 200ms is supposed to last 200ms.
-  const worstNetOfStall = Math.max(0, worstSample.overheadMs - worstSample.stallMs);
-  const sorted = ordered.map((sample) => sample.overheadMs);
+  const sorted = samples.map((sample) => sample.overheadMs).sort((left, right) => left - right);
+  const best = sorted[0];
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const worst = sorted[sorted.length - 1];
+  // Every sample judged net of the lateness of its own timer, so the ceiling is
+  // the harness's cost and not the machine's: the child's 200ms is supposed to
+  // last 200ms, and the lateness is measured on the same cycle as the overhead.
+  const worstNetOfStall = Math.max(
+    ...samples.map((sample) => Math.max(0, sample.overheadMs - sample.stallMs)),
+  );
   const stall = Math.min(...samples.map((sample) => sample.stallMs));
 
   // Printed rather than only asserted: the absolute number is the finding, and a
@@ -140,16 +140,12 @@ it('keeps foreground delegation overhead small relative to the delegated work', 
     `[delegation] child ${childRunMs}ms · overhead best ${best}ms · median ${median}ms · worst ${worst}ms (${worstNetOfStall}ms net of stall) · samples ${sorted.join('/')}ms · timer stall ${stall}ms`,
   );
 
-  // Two ceilings, because one sample can be the machine and the rest are the
-  // harness. A loaded Windows runner stalled a whole cycle once — one sample of
-  // five at 2722ms — and a stall can only add to a sample, so judging the worst
-  // one alone measures the runner, not the handoff. The median still catches the
-  // regression that matters here: making every delegation pay a poll interval
-  // moves the median past the ceiling, not one sample in five. The worst is
-  // still judged, net of its own measured timer stall, so a handoff that really
-  // hangs is caught even when the machine is the one that stalled.
-  expect(median).toBeLessThan(2_000);
-  expect(worstNetOfStall).toBeLessThan(5_000);
+  // One ceiling, on every sample, so two slow handoffs in five cannot pass. The
+  // only thing forgiven is a cycle in which the machine itself stalled: a loaded
+  // Windows runner did that once — one sample of five at 2722ms — and a stall
+  // can only add to a sample, so judging the raw numbers alone measures the
+  // runner rather than the handoff.
+  expect(worstNetOfStall).toBeLessThan(2_000);
   if (stall > STALL_TOLERANCE_MS) {
     console.log(
       `[delegation] inconclusive: the machine fired a ${childRunMs}ms timer ${stall}ms late on its best cycle; the overhead ceiling is not measurable here`,

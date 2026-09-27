@@ -1,4 +1,3 @@
-import { setImmediate as waitForImmediate } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
@@ -133,8 +132,6 @@ describe('PlanApprovalButtons', () => {
     // repeating faster than a frame. It is the case a per-keypress test cannot
     // reach.
     view.stdin.write('\u001b[C\r');
-    await waitForImmediate();
-
-    expect(onResolve).toHaveBeenCalledWith('approve-fresh');
+    await vi.waitFor(() => expect(onResolve).toHaveBeenCalledWith('approve-fresh'));
   });
 });

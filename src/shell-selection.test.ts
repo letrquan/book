@@ -201,12 +201,21 @@ describe('shellPromptLine', () => {
   });
 });
 
-function run(exec: {
-  file: string;
-  args: string[];
-}): Promise<{ code: number | null; out: string }> {
+function run(
+  exec: {
+    file: string;
+    args: string[];
+  },
+  timeoutMs?: number,
+): Promise<{ code: number | null; out: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(exec.file, exec.args, { stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+    const child = spawn(exec.file, exec.args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+      // A deadline is a kill, not a warning: a shell that never returns must
+      // not outlive the hook that waited for it.
+      timeout: timeoutMs,
+    });
     let out = '';
     child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
     child.stderr.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
@@ -219,14 +228,21 @@ describe.runIf(process.platform === 'win32')('real Windows shells', () => {
   // The first powershell.exe on a cold Windows runner pays for module auto-load
   // and a Defender scan, which on its own can outlast a test timeout — the run
   // below spawns the same executable four times. So the cold start is paid here,
-  // in a hook with a deadline of its own, and the measured test does not pay it.
-  // A warm-up that fails is not this suite's finding to report: the test that
-  // needs it will fail in its own right and say so.
+  // on the same executable the test measures rather than a path assumed to be
+  // it, and the measured test does not pay it. The child gets its own deadline
+  // shorter than the hook's, so a shell that never comes back is killed instead
+  // of being left running; a warm-up that fails is not this suite's finding to
+  // report, and the test that needs it will say so in its own right.
   beforeAll(async () => {
-    await run({
-      file: POWERSHELL,
-      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'exit 0'],
-    }).catch(() => undefined);
+    const shell = resolveShell({ requested: 'powershell' });
+    if (shell.kind !== 'powershell' || !shell.file) return;
+    await run(
+      {
+        file: shell.file,
+        args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'exit 0'],
+      },
+      150_000,
+    ).catch(() => undefined);
   }, 180_000);
 
   it('runs Windows PowerShell 5.1 with the exit code of the last statement', async () => {

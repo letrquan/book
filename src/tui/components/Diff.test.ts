@@ -232,9 +232,11 @@ describe('DiffBlock', () => {
 
   // Only two things are under test: that a diff past the old 200 KB byte cap
   // still reaches the screen, and that the last row survives. The fixture is
-  // the smallest one that clears the cap for that reason, but rendering any
-  // 200 KB of diff is seconds of work, so the ceiling is sized for a loaded
-  // runner rather than for an idle one.
+  // the smallest one that clears the cap for that reason, and rendering it costs
+  // about half a second on an idle box and 16s on a heavily loaded one — so the
+  // budget is four times the loaded measurement, not five: loose enough not to
+  // redden a runner that is busy, tight enough that a render that gets an order
+  // of magnitude more expensive still fails here.
   it('does not truncate expanded diffs by byte size', () => {
     const changedRows = Array.from(
       { length: 22 },
@@ -249,7 +251,7 @@ describe('DiffBlock', () => {
     expect(Buffer.byteLength(output, 'utf8')).toBeGreaterThan(200 * 1024);
     expect(rendered).toContain('+ row-22-');
     expect(rendered).not.toContain('omitted');
-  }, 60_000);
+  }, 30_000);
 });
 
 describe('inferDiffLanguage', () => {

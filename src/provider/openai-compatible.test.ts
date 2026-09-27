@@ -570,25 +570,24 @@ describe('stall tolerance while reasoning', () => {
   // the whole thinking block before emitting anything.
   //
   // A stall ceiling cancels the stream, and the client that would have read the
-  // answer is often gone before the delay elapses. The timer therefore has to
-  // be cancelled with the stream: left to fire, it enqueues into a closed
-  // controller and the `ERR_INVALID_STATE` throw lands inside the timer, where
-  // no test can see it — vitest calls it an unhandled error and fails the run.
+  // answer is often gone before the delay elapses. So the timer is cancelled
+  // with the stream: `start` runs inside the constructor, which means the handle
+  // is always in hand by the time `cancel` can fire. Left to run, the callback
+  // enqueues into a closed controller and the `ERR_INVALID_STATE` throw lands
+  // inside the timer, where no test can see it — vitest calls it an unhandled
+  // error and fails the run.
   function quietThenAnswer(delayMs: number): ReadableStream {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let cancelled = false;
     return new ReadableStream({
       start(c) {
         const enc = new TextEncoder();
         timer = setTimeout(() => {
-          if (cancelled) return;
           c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"answer"}}]}\n\n'));
           c.enqueue(enc.encode('data: [DONE]\n\n'));
           c.close();
         }, delayMs);
       },
       cancel() {
-        cancelled = true;
         clearTimeout(timer);
       },
     });

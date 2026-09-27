@@ -65,6 +65,10 @@ jobs:
 
       - run: npm run check
 
+      # The integration tier drives the built CLI, so the release has to build
+      # it first — `npm run check` does not.
+      - run: npm run build
+
       - run: npm run test:integration
 
       # Packs, installs the tarball, and runs the installed CLI and SDK. This is
