@@ -450,6 +450,14 @@ All notable changes to this project are documented in this file.
     after the first fix. And the head is what carries a failure's framing: the Task tool's
     `Partial result (the child was stopped; nothing below is final):` was cut off, leaving
     unfinished output that read as final. A successful result keeps the head clip alone.
+- **Flaky tests stabilized** (#315, #297, #301, #317). The OpenAI-compatible stall fixture no
+  longer writes to a stream the client has already cancelled (#315), the Windows PowerShell 5.1
+  test warms the shell once so the measured spawns do not pay its cold start (#297), the
+  delegation-latency ceiling still applies its 2 s budget to every sample, judging each one net of
+  its own measured timer stall, and the TUI key-timing tests and the large-diff test wait for
+  rendered state instead of a fixed sleep (#301). The TUI integration suite now fails immediately
+  with a build hint when `dist/` is missing instead of timing out test after test, and the release
+  workflow builds before running that tier (#317).
 - **Malformed tool-call arguments are repaired conservatively instead of refused** (#242). Three
   shapes repair to the arguments the model sent: a control character written literally inside a
   string is escaped, a comma directly before a `}` or `]` is dropped, and closing brackets missing
