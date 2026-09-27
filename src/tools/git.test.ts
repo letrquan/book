@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import type { execFile as ExecFile } from 'child_process';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { execFileSync, type execFile as ExecFile } from 'child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { WORKSPACE_READ_ONLY_GIT_TOOLS } from '../permissions.js';
 import type { ToolContext } from '../types/tools.js';
 import { gitTools, hardenedGitArgs, READ_ONLY_GIT_ARGS, runGit } from './git.js';
@@ -34,21 +37,34 @@ describe('runGit', () => {
       invocation.callback(null, ' M src/app.ts\n', '');
     });
 
+    // `runGit` is the unhardened path, so a caller can pass whatever it means; the read-only
+    // tools go through `readOnlyGit` instead (see the "hardening against a real git" block).
     const result = await runGit(['status', '--short'], ctx, execute);
 
     expect(result).toEqual({ success: true, output: ' M src/app.ts\n' });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
       file: 'git',
-      // The caller's own arguments, with the hardening flags in front of them; see the next test
-      // for what those are and why.
-      args: hardenedGitArgs(['status', '--short']),
+      args: ['status', '--short'],
       options: {
         cwd: '/workspace',
         timeout: 30_000,
         env: expect.objectContaining({ TEST_ENV: 'yes' }),
       },
     });
+  });
+
+  it('puts the hardening in front of the read-only tools own arguments', () => {
+    // `readOnlyGit` is module-private, so what is asserted is what it builds with: the flags,
+    // then the tool's own arguments, in that order. The real-git block below checks the effect.
+    expect(hardenedGitArgs(READ_ONLY_GIT_ARGS.GitStatus)).toEqual([
+      ...hardenedGitArgs([]),
+      'status',
+      '--short',
+    ]);
+    for (const args of Object.values(READ_ONLY_GIT_ARGS)) {
+      expect(hardenedGitArgs(args)).toEqual([...hardenedGitArgs([]), ...args]);
+    }
   });
 
   it('maps no output and stderr failures consistently', async () => {
@@ -150,16 +166,6 @@ describe('git hardening', () => {
     expect(hardenedGitArgs(['status'])).toContain('--no-optional-locks');
   });
 
-  it('keeps a terminal prompt from hanging a headless run', async () => {
-    const calls: ExecInvocation[] = [];
-    const execute = fakeExecFile((invocation) => {
-      calls.push(invocation);
-      invocation.callback(null, '', '');
-    });
-    await runGit(['status'], { ...ctx, env: { GIT_TERMINAL_PROMPT: '1' } }, execute);
-    expect(calls[0].options.env?.GIT_TERMINAL_PROMPT).toBe('0');
-  });
-
   it('closes the two routes a checkout owns for producing a diff', () => {
     // `diff.external` names a program to produce the diff; a `.gitattributes` `textconv` line
     // names one per file. Both are repository settings read by a tool whose job is to report.
@@ -176,5 +182,191 @@ describe('git hardening', () => {
       [...WORKSPACE_READ_ONLY_GIT_TOOLS].sort(),
     );
     expect(gitTools.map((tool) => tool.name).sort()).toContain('GitCommit');
+  });
+});
+
+/**
+ * Findings on PR #334, checked against a real `git` rather than a fake exec.
+ *
+ * The argument assertions above can only show that a flag is *present*. Whether a flag is the
+ * right one is a question about a real Git, and Git's config surface is large enough that
+ * reading the list is not evidence: a reviewer reproduced `gpg.program` running under
+ * `log.showSignature` with no flag in the list covering it. So these build a repository whose
+ * `.git/config` points at a program that records having run, and ask Git itself.
+ */
+describe('hardening against a real git', () => {
+  let root: string;
+  let repo: string;
+  /** The program a malicious config points at; it creates this when it runs. */
+  let marker: string;
+  let program: string;
+
+  const git = (args: string[], cwd = repo): string =>
+    execFileSync('git', args, { cwd, encoding: 'utf8' });
+
+  const toolFor = (name: string) => gitTools.find((tool) => tool.name === name)!;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'book-git-hardening-'));
+    repo = join(root, 'repo');
+    marker = join(root, 'PROGRAM_RAN');
+    program = join(root, 'evil.sh');
+    writeFileSync(program, `#!/bin/sh\ntouch '${marker}'\nexit 0\n`);
+    chmodSync(program, 0o755);
+    mkdirSync(repo);
+    git(['init', '-q', '-b', 'main'], repo);
+    git(['config', 'user.email', 't@example.com'], repo);
+    git(['config', 'user.name', 'Test'], repo);
+    writeFileSync(join(repo, 'a.txt'), 'hello\n');
+    git(['add', 'a.txt'], repo);
+    git(['commit', '-qm', 'init'], repo);
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  /** A commit carrying a `gpgsig` header, so `git log` has a signature to try to verify. */
+  function addSignedCommit(): void {
+    const tree = git(['rev-parse', 'HEAD^{tree}']).trim();
+    const parent = git(['rev-parse', 'HEAD']).trim();
+    const object = [
+      `tree ${tree}`,
+      `parent ${parent}`,
+      'author T <t@example.com> 1700000000 +0000',
+      'committer T <t@example.com> 1700000000 +0000',
+      'gpgsig -----BEGIN PGP SIGNATURE-----',
+      ' ',
+      ' iQEzBAABCgAdFiEEDummySignature',
+      ' -----END PGP SIGNATURE-----',
+      '',
+      'signed commit',
+      '',
+    ].join('\n');
+    writeFileSync(join(root, 'commit-object'), object);
+    const commit = execFileSync(
+      'git',
+      ['hash-object', '-w', '-t', 'commit', join(root, 'commit-object')],
+      {
+        cwd: repo,
+        encoding: 'utf8',
+      },
+    ).trim();
+    git(['update-ref', 'refs/heads/signed', commit], repo);
+  }
+
+  it('does not run gpg.program when the repository configures signature checking', async () => {
+    // The reported hole: `log.showSignature` makes `git log` verify every signature it prints,
+    // and verification runs `gpg.program` — a program the repository's own `.git/config` names.
+    // `GitLog` is auto-allowed (see `permissions.ts`), so this runs with no prompt at all.
+    addSignedCommit();
+    git(['config', 'log.showSignature', 'true'], repo);
+    git(['config', 'gpg.program', program], repo);
+
+    // The config is genuinely capable of starting the program, or the rest of this test is
+    // asserting nothing: a bare `git log` over the same repo does start it. This is the
+    // reviewer's reproduction, and it is re-checked per test because these set repository config
+    // that a later test in the same repo would otherwise be able to lean on.
+    execFileSync('git', ['log', '--oneline', '-1', 'signed'], { cwd: repo, encoding: 'utf8' });
+    expect(existsSync(marker)).toBe(true);
+    expect(git(['config', '--get', 'log.showSignature']).trim()).toBe('true');
+
+    rmSync(marker);
+    await toolFor('GitLog').execute({}, { workspaceRoot: repo, env: {} });
+
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('names log.showSignature and gpg.program in the hardening', () => {
+    // Asserted directly as well as end to end: the end-to-end test passes for any reason that
+    // stops the program, and this says which switch is load-bearing.
+    const config = new Map<string, string>();
+    for (let index = 0; index < hardenedGitArgs([]).length - 1; index += 1) {
+      if (hardenedGitArgs([])[index] === '-c') {
+        const [key, value] = hardenedGitArgs([])[index + 1].split('=');
+        config.set(key, value);
+      }
+    }
+    expect(config.get('log.showSignature')).toBe('false');
+    // A `--no-show-signature` on the command itself, so the guarantee does not rest on the
+    // `-c` override being consulted for this subcommand.
+    expect(READ_ONLY_GIT_ARGS.GitLog).toContain('--no-show-signature');
+  });
+
+  it('leaves the operator commit hooks running', async () => {
+    // The other side of the same file: `-c core.hooksPath=` belongs to the *read-only* hardening
+    // only. Applied to `git commit` it silently disables a pre-commit hook the user installed,
+    // which is their code silently not running — a worse failure than the one the hardening
+    // prevents, and one they would have no way to see.
+    const hooks = join(repo, 'my-hooks');
+    mkdirSync(hooks);
+    const hook = join(hooks, 'pre-commit');
+    writeFileSync(hook, `#!/bin/sh\ntouch '${marker}'\n`);
+    chmodSync(hook, 0o755);
+    git(['config', 'core.hooksPath', hooks], repo);
+
+    await toolFor('GitCommit').execute({ message: 'with hook' }, { workspaceRoot: repo, env: {} });
+
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it('runs the mutating tool with exactly the arguments main runs it with', async () => {
+    // "Exactly as on main" is a stronger claim than "the hook still runs", and it is the one
+    // worth holding to: GitCommit's argv and environment are the user's business, not a security
+    // surface, and anything Book adds to them is Book changing a git command the user asked for.
+    const calls: ExecInvocation[] = [];
+    const execute = fakeExecFile((invocation) => {
+      calls.push(invocation);
+      invocation.callback(null, '', '');
+    });
+
+    await runGit(['commit', '-m', 'a message'], { workspaceRoot: '/w', env: {} }, execute);
+
+    expect(calls[0].args).toEqual(['commit', '-m', 'a message']);
+    // No `-c`, no `--no-optional-locks`, and none of the hardening's environment.
+    expect(calls[0].args).not.toContain('-c');
+    expect(calls[0].options.env?.GIT_PAGER).toBeUndefined();
+    expect(calls[0].options.env?.GIT_TERMINAL_PROMPT).toBeUndefined();
+  });
+
+  it('still holds the read-only tools against the keys that do fire', async () => {
+    // The rest of the surface, checked the same way rather than by reading the list. `fsmonitor`
+    // and the diff drivers are the ones Git actually executes on these subcommands; the pager and
+    // the column config are not reached through a non-TTY `execFile`, so the pager and hooksPath
+    // entries in `GIT_HARDENING_ARGS` are belt-and-braces rather than load-bearing, and this
+    // test says so by not claiming them.
+    git(['config', 'core.fsmonitor', program], repo);
+    await toolFor('GitStatus').execute({}, { workspaceRoot: repo, env: {} });
+    expect(existsSync(marker)).toBe(false);
+
+    rmSync(marker, { force: true });
+    git(['config', 'core.fsmonitor', ''], repo);
+    git(['config', 'diff.external', program], repo);
+    writeFileSync(join(repo, 'a.txt'), 'changed\n');
+    await toolFor('GitDiff').execute({}, { workspaceRoot: repo, env: {} });
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('keeps a credential prompt from hanging a headless read-only call', async () => {
+    // `readOnlyGit` is module-private, so this is observed through the tool. `GIT_TERMINAL_PROMPT=0`
+    // belongs to the read-only path alone: a `git commit` that legitimately needs a credential
+    // must still be able to ask for one, so the override cannot live in `runGit`.
+    const credentials = join(root, 'credential.sh');
+    writeFileSync(credentials, `#!/bin/sh\ntouch '${marker}'\n`);
+    chmodSync(credentials, 0o755);
+    writeFileSync(
+      join(repo, '.git', 'config'),
+      [
+        '[credential]',
+        `\thelper = ${credentials}`,
+        '[remote "origin"]',
+        '\turl = https://example.invalid/repo.git',
+        '',
+      ].join('\n'),
+    );
+
+    const result = await toolFor('GitStatus').execute({}, { workspaceRoot: repo, env: {} });
+
+    // A read-only status touches no remote, so the helper is never the answer here; what this
+    // pins is that the call returns at all rather than waiting on a stdin nobody will write to.
+    expect(result.status).toBe('success');
   });
 });

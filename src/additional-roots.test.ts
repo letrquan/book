@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join, relative } from 'path';
+import { dirname, join, relative } from 'path';
 import {
   collectDeclaredDirectories,
   homeGuards,
@@ -130,6 +130,22 @@ describe('resolveAdditionalRoots', () => {
     symlinkSync(shared, join(workspace, 'link'), 'junction');
 
     expect(resolveAdditionalRoots(workspace, ['link'])).toEqual([realpathSync.native(shared)]);
+  });
+
+  it('keeps a sibling whose name starts with two dots, which is outside', () => {
+    // `..cache` and `..foo` are ordinary directory names, and a bare `startsWith('..')` read them
+    // as the `..` parent marker and dropped them — so a project that declared one of them
+    // silently served nothing, with no error to show for it.
+    const parent = dirname(realpathSync.native(workspace));
+    const dotted = join(parent, '..cache');
+    mkdirSync(dotted, { recursive: true });
+    try {
+      expect(resolveAdditionalRoots(workspace, [dotted])).toEqual([realpathSync.native(dotted)]);
+      // And the workspace itself is still dropped: it is not outside itself.
+      expect(resolveAdditionalRoots(workspace, [workspace])).toEqual([]);
+    } finally {
+      rmSync(dotted, { recursive: true, force: true });
+    }
   });
 });
 

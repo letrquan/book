@@ -1544,23 +1544,29 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
 }
 
 /**
- * The `cwd` values a Glob may walk, in the order the roots are tried.
+ * The one `cwd` a Glob walks, and why there is only one.
  *
- * fast-glob resolves a relative pattern against its `cwd` and an absolute one against the file
- * system, so the workspace alone was enough to *find* nothing in an honored directory and the
- * filter below was never the only thing standing in the way. Each root is a cwd in turn, which
- * also keeps a relative pattern workspace-anchored: it produces the same matches in the honored
- * roots as the workspace walk, and the dedupe below drops them.
+ * fast-glob resolves a *relative* pattern against its `cwd` and an *absolute* one against the file
+ * system, so the two cases need different handling and neither benefits from a loop:
+ *
+ * - A relative pattern searches the **workspace only**. It is anchored there the way `Read`
+ *   anchors a relative path and the way `Grep` anchors a relative scope, so all three agree about
+ *   what a bare `*.ts` means. Searching the honored roots as well surfaced files from a root the
+ *   user approved for other work, in answer to a pattern that never named it (PR #334 finding 9).
+ * - An absolute pattern names its own root. It is walked **once**: `cwd` is ignored for it, so
+ *   running it per root repeated the identical walk and the duplicates were removed by a dedupe
+ *   that existed only to undo the loop. Which root holds the base is then checked by the filter
+ *   below, exactly as a Grep scope is resolved against the roots.
  */
-function globSearchDirs(ctx: ToolContext): string[] {
-  return [ctx.workspaceRoot, ...(ctx.additionalRoots ?? [])];
+function globSearchDir(ctx: ToolContext): string[] {
+  return [ctx.workspaceRoot];
 }
 
 async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const pattern = args.pattern as string;
   const roots = grepRoots(ctx);
   const files: string[] = [];
-  for (const cwd of globSearchDirs(ctx)) {
+  for (const cwd of globSearchDir(ctx)) {
     const found = await fg(pattern, {
       cwd,
       dot: true,

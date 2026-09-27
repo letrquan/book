@@ -39,20 +39,29 @@ All notable changes to this project are documented in this file.
   whose path lands inside a home directory still prompts, but only when a home lies inside the root
   that serves it: approving `/opt/stuff` must not become a standing key to `~/.ssh` through a link
   or a home held inside it. A root that merely sits below the home — which is nearly every
-  workspace — is not guarded by the home rule.
+  workspace — is not guarded by the home rule. A `Grep` or `Glob` names a _scope_, not a file, and
+  is guarded when that scope contains a guarded home as well as when it lies inside one: `Grep
+{path: "/home"}` printed lines from `~/.ssh` and `~/.book` without naming a file under them.
 - **`deny` and `ask` path rules match case-insensitively** (#305). `deny: ["Read(.env)"]` already
   blocked `.ENV` and `.Env` on Linux, but `ask: ["Read(.env)"]` did not prompt for them, so the
   model could ask for a spelling that a rule plainly meant to cover. Deny and ask now fold on every
   platform. `allow` is unchanged, so nothing is widened by the fold and a case-sensitive Linux mount
   still distinguishes the two the way it always did.
-- **`runGit` is hardened against the repository's own git configuration** (#305). The read-only Git
-  tools pass `-c core.fsmonitor=false`, `-c core.pager=cat`, an empty `-c core.hooksPath`,
-  `-c core.untrackedCache=false`, `-c gc.auto=0` and `--no-optional-locks`, and `GitDiff` adds
-  `--no-ext-diff --no-textconv`; `GIT_PAGER=cat` and `GIT_TERMINAL_PROMPT=0` are set in the
-  environment, so a checked-in `core.pager` or `core.sshCommand` cannot make a read-only call
-  execute a program. **Residual:** a repository's `.git/config` can still configure clean/smudge
-  filters, and those run on `status` and `diff`; Book does not suppress them, because doing so would
-  mean rewriting the command the user asked for.
+- **The read-only Git tools are hardened against the repository's own git configuration** (#305).
+  `GitStatus`, `GitDiff`, `GitLog` and `GitBranch` pass `-c core.fsmonitor=false`,
+  `-c core.pager=cat`, an empty `-c core.hooksPath`, `-c core.untrackedCache=false`,
+  `-c gc.auto=0`, `-c log.showSignature=false` and `--no-optional-locks`; `GitDiff` adds
+  `--no-ext-diff --no-textconv` and `GitLog` adds `--no-show-signature`; `GIT_PAGER=cat` and
+  `GIT_TERMINAL_PROMPT=0` are set in the environment. `log.showSignature` was the sharpest of
+  these: it makes `git log` verify every signature it prints, and verification runs `gpg.program`,
+  a program the repository's own `.git/config` names — and `GitLog` runs without a prompt at all.
+  Each flag was checked against a real `git` rather than read off the list.
+  **Scope:** the hardening is applied to the four read-only tools only. `GitCommit` runs with the
+  user's own `argv` and environment, exactly as before, so a `pre-commit` or `commit-msg` hook
+  still runs — an empty `core.hooksPath` on `git commit` would silently disable the user's code.
+  **Residual:** a repository's `.git/config` can still configure clean/smudge filters, and those run
+  on `status` and `diff`; Book does not suppress them, because doing so would mean rewriting the
+  command the user asked for.
 - **A managed child's refusal reaches the operator** (#305). A child runs unattended and its
   handoff is a summary, so a step that was refused and never ran was indistinguishable from one
   the model chose to skip. The child raises an `agent_notice` event, `AgentManager` forwards it,
@@ -60,11 +69,30 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **A `Glob` pattern is anchored the way the other tools are.** A relative pattern searches the
+  workspace alone, exactly as `Read` anchors a relative path and `Grep` anchors a relative scope;
+  it used to be run once per root, so files from an approved directory appeared in answer to a
+  pattern that never named them. An absolute pattern names its own root and is walked once, rather
+  than once per root with the duplicates removed afterwards.
+- **`deny` and `ask` rules match a path in an approved directory by its root-relative spelling**,
+  the same way a rule written against the workspace matches there: `deny: ["Write(.env)"]` stopped
+  the workspace's `.env` and let `/srv/app/.env` through. `allow` is deliberately not extended this
+  way — a rule that widens must not acquire a new meaning, so a workspace-shaped `Edit(src/**)`
+  does not silently cover `/srv/app/src/**`; an allow rule matches a path in an approved directory
+  only by its absolute spelling.
+- **A managed child's notices are queued, not overwritten.** The TUI held one notice at a time
+  while the drain waits for idle, so two children refusing something in the same turn left one
+  notice, and the operator never learned a step had not happened.
+- **An approved project directory is released by its real path, not by the text the repository
+  wrote.** The released list is resolved again later by a consumer that holds no trust store, so a
+  relative or symlinked spelling let a repointed link move a root the user had approved as
+  somewhere else.
 - **Plan mode judges reads like `default`** (#305). It auto-approved every read-only tool outside
   its small `PLAN_PERMISSION_REQUIRED_TOOLS` set, so a guarded `Read` ran with no prompt and an
   outside `Read` reached the tool. It now applies the same read rules — `ask` rules prompt, outside
-  reads are refused — while an unguarded workspace read still runs unprompted, which is what plan
-  mode is for. `dontAsk` is unchanged.
+  reads are refused, and a guarded read _prompts_ rather than running silently, which the verdict
+  alone did not achieve — the auto-approval skipped the whole permission block. An unguarded
+  workspace read still runs unprompted, which is what plan mode is for. `dontAsk` is unchanged.
 - **The four read-only Git tools run without a prompt** in `default` and `accept-edits`
   (`GitStatus`, `GitDiff`, `GitLog`, `GitBranch`): a repository's own git configuration cannot make
   these read-only calls execute programs, a `deny` rule still blocks them, an `ask` rule still

@@ -48,6 +48,7 @@ import {
   permissionRuleMatchesCall,
   permissionRuleOf,
   WORKSPACE_READ_JUDGING_MODES,
+  WORKSPACE_READ_TOOLS,
 } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
@@ -2453,12 +2454,30 @@ export async function runAgentLoop(
         );
         const userRuleAsked =
           toolPermissionRequired && verdict.decision === 'ask' && verdict.source === 'ask';
+        // A guarded read is not auto-safe in plan mode (decision C, PR #334 finding 5). The
+        // verdict is `ask` for exactly the targets that keep asking in `default` — a local
+        // settings file, a home the serving root holds, a search under a Read deny/ask rule — and
+        // `planAutoApproved` bypassed the prompt for every read-only tool, so those ran in a plan
+        // with no prompt at all. Keyed on the verdict, not on the tool, so an unguarded workspace
+        // read still runs unprompted, which is what plan mode is for.
+        // A guarded read is not auto-safe in plan mode (decision C, PR #334 finding 5). The
+        // verdict is `ask` for exactly the targets that keep asking in `default` — a local
+        // settings file, a home the serving root holds, a search scope that reaches one — and
+        // `planAutoApproved` bypassed the prompt for every read-only tool, so those ran in a plan
+        // with no prompt at all.
+        //
+        // Restricted to the tools that read the filesystem. `READ_ONLY_PLAN_TOOLS` also holds the
+        // plan-control and session tools, whose verdict is `ask` for an unrelated reason: a
+        // prompt for `ExitPlanMode` with no approver is "stop with the plan", which the loop
+        // already implements, and treating it as a guarded read turned one turn into five.
+        const guardedReadInPlan =
+          planAutoApproved && WORKSPACE_READ_TOOLS.has(canonName) && verdict.decision === 'ask';
 
         if (
           (forceSkillPermission || toolPermissionRequired) &&
           (persistentBackgroundShell ||
             !approveAllRules.some((rule) => permissionRuleMatchesCall(rule, call))) &&
-          (!autoSafeTool || userRuleAsked) &&
+          (!autoSafeTool || userRuleAsked || guardedReadInPlan) &&
           (effectiveMode !== 'plan' || planReadOnly)
         ) {
           const autoApproved = effectiveMode === 'accept-edits' && isFileMutatingTool(canonName);

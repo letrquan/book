@@ -358,9 +358,14 @@ export function resolveSettings(
       resolved.projectDirectories,
     );
     if (approved.length > 0) {
+      // The approved **real path**, never the declared text. A consumer resolves this list again
+      // later with no trust store in hand (see `resolveAdditionalRoots`), so a relative or
+      // symlinked spelling would let a relink move a root the user approved as somewhere else.
+      // The user saw the real path when the prompt named it; the repository's spelling is what
+      // would be dangerous to re-resolve (PR #334 finding 7).
       resolved.additionalDirectories = [
         ...(resolved.additionalDirectories ?? []),
-        ...approved.map((directory) => directory.declared),
+        ...approved.map((directory) => directory.realPath),
       ];
     }
   }

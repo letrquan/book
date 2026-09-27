@@ -153,12 +153,17 @@ export function resolveAdditionalRoots(
   const roots: string[] = [];
   const seen = new Set<string>();
   for (const entry of collectDeclaredDirectories(workspace, declared)) {
-    // Contained in the workspace, not merely equal to it: the workspace already serves
-    // everything under it, so listing a subdirectory adds a root that widens nothing.
+    // Inside the workspace — not merely equal to it: the workspace already serves everything under
+    // it, so listing a subdirectory adds a root that widens nothing. The test is `..` followed by
+    // a separator rather than a bare prefix, because a sibling whose name starts with two dots
+    // (`/home/u/..foo`) is *outside* the workspace and `startsWith('..')` read it as inside. An
+    // empty result means equal, and equal is inside.
     const fromWorkspace = relative(realWorkspace, entry.realPath);
-    if (!fromWorkspace || fromWorkspace.startsWith('..') || isAbsolute(fromWorkspace)) {
-      /* outside the workspace: a candidate root */
-    } else {
+    if (
+      !isAbsolute(fromWorkspace) &&
+      fromWorkspace !== '..' &&
+      !fromWorkspace.startsWith(`..${sep}`)
+    ) {
       log.debug('dropping declared directory the workspace already serves', {
         declared: entry.declared,
         realPath: entry.realPath,
@@ -215,8 +220,13 @@ export function pathHoldsHome(
   return homes.some((home) => containsPath(home, canonicalPath));
 }
 
-/** Whether `root` is `target` or contains it, both sides compared after following links. */
-function containsPath(root: string, target: string): boolean {
+/**
+ * Whether `root` is `target` or contains it, both sides compared after following links.
+ *
+ * Exported because a Grep or Glob *scope* has to be compared against a home the same way a file
+ * is, and the comparison is the whole of that rule (PR #334 finding 4).
+ */
+export function containsPath(root: string, target: string): boolean {
   if (resolveWorkspacePath(root, target) !== null) return true;
   const fromRoot = relative(canonicalizePath(root), canonicalizePath(target));
   return !(fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot));

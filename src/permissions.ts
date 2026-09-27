@@ -1,5 +1,5 @@
 import { realpathSync } from 'fs';
-import { relative } from 'path';
+import { isAbsolute, relative, sep } from 'path';
 import fg from 'fast-glob';
 import type { ResolvedSettings } from './settings.js';
 import type {
@@ -19,7 +19,7 @@ import {
   type PathRoots,
   type ReadablePathDetail,
 } from './tools/path-utils.js';
-import { pathHoldsHome, rootHoldsHome } from './additional-roots.js';
+import { containsPath, pathHoldsHome, rootHoldsHome } from './additional-roots.js';
 import { sandboxCoverage } from './sandbox.js';
 
 /**
@@ -98,7 +98,13 @@ export interface PermissionEvaluationOptions {
 }
 
 /** Read-only file tools whose targets inside the workspace need no prompt (#264). */
-const WORKSPACE_READ_TOOLS: ReadonlySet<string> = new Set(['Read', 'Glob', 'Grep']);
+/**
+ * The tools that read the filesystem, and so are judged by the read rules. Narrower than
+ * `READ_ONLY_PLAN_TOOLS` in `plan-mode.ts`, which also holds the plan-control and session tools:
+ * those return `ask` for reasons unrelated to what they would read, and a loop that treated any
+ * of them as a guarded read would prompt for `ExitPlanMode` (PR #334 finding 5).
+ */
+export const WORKSPACE_READ_TOOLS: ReadonlySet<string> = new Set(['Read', 'Glob', 'Grep']);
 
 /** Tools whose rules name one file path, so a rule must match the file however it is spelled. */
 const PATH_RULE_TOOLS: ReadonlySet<string> = new Set([
@@ -336,8 +342,8 @@ function patchOperations(args: Record<string, unknown>): PatchOperation[] {
   return 'operations' in parsed ? parsed.operations : [];
 }
 
-function ruleMatchesPatch(rule: ParsedRule, paths: readonly string[]): boolean {
-  return paths.some((path) => ruleMatches(rule, rule.toolName, path));
+function ruleMatchesPatch(rule: ParsedRule, paths: readonly string[], fold: boolean): boolean {
+  return paths.some((path) => ruleMatchesCandidate(rule, rule.toolName, path, fold));
 }
 
 function patchRuleSupportsOperation(rule: ParsedRule, operation: PatchOperation): boolean {
@@ -350,14 +356,15 @@ function patchRuleSupportsOperation(rule: ParsedRule, operation: PatchOperation)
 function compatiblePatchRuleMatches(
   rule: ParsedRule,
   operations: PatchOperation[],
-  spellingsOf: (path: string) => readonly string[],
+  spellingsOf: (path: string, restrictive: boolean) => readonly string[],
+  fold: boolean,
 ): boolean {
   if (!['ApplyPatch', 'Edit', 'Write'].includes(rule.toolName)) return false;
   if (rule.toolName === 'ApplyPatch' && rule.pattern === null) return true;
   return operations.some(
     (operation) =>
       patchRuleSupportsOperation(rule, operation) &&
-      (rule.pattern === null || ruleMatchesPatch(rule, spellingsOf(operation.path))),
+      (rule.pattern === null || ruleMatchesPatch(rule, spellingsOf(operation.path, fold), fold)),
   );
 }
 
@@ -470,6 +477,8 @@ interface ResolvedPathScope {
    * settings under any root, or a path inside a home directory held by the root that serves it.
    */
   isGuarded(canonicalPath: string): boolean;
+  /** Whether a Grep or Glob scope reaches a guarded home; see {@link ResolvedPathScope}. */
+  scopeReachesHome(canonicalScope: string): boolean;
 }
 
 /** Where a path lands: a resolved file, or the reason no tool may serve it. */
@@ -484,9 +493,30 @@ function resolvedPathScope(scope: WorkspaceScope): ResolvedPathScope {
   });
   // Fixed for the evaluation: the roots that hold a home directory of their own, and so may serve a
   // guarded path. Empty for the ordinary case, which is why the common read costs one check.
-  const guardedRoots = [scope.root, ...(scope.additionalRoots ?? [])].filter((root) =>
-    rootHoldsHome(root, scope.homeGuards ?? []),
-  );
+  // Computed once per root, where the roots are resolved, rather than per evaluation: each
+  // `rootHoldsHome` is a `realpath` walk, and a read is judged against a serving root on every
+  // call. The roots do not change while a scope lives.
+  const holdsHomeByRoot = new Map<string, boolean>();
+  const holdsHome = (root: string): boolean => {
+    let known = holdsHomeByRoot.get(root);
+    if (known === undefined) {
+      known = rootHoldsHome(root, scope.homeGuards ?? []);
+      holdsHomeByRoot.set(root, known);
+    }
+    return known;
+  };
+  const guardedRoots = [scope.root, ...(scope.additionalRoots ?? [])].filter(holdsHome);
+  // Which root serves a canonical path, in the order the file tools resolve against them: the
+  // workspace first, then the approved directories. The home guard is about the *serving* root,
+  // not about every root that happens to contain the path — approving `/home/u` must not re-guard
+  // a workspace at `/home/u/proj` that it merely sits above (PR #334 finding 3).
+  const servingRootOf = (canonicalPath: string): string | undefined =>
+    [realRootOf(scope), ...(scope.additionalRoots ?? [])].find(
+      (root): root is string =>
+        typeof root === 'string' &&
+        root.length > 0 &&
+        resolveWorkspacePath(root, canonicalPath) !== null,
+    );
   return {
     scope,
     roots: rootsFor,
@@ -511,16 +541,34 @@ function resolvedPathScope(scope: WorkspaceScope): ResolvedPathScope {
       if (roots.some((root) => isBookLocalSettingsPath(canonicalPath, root, { directory: true })))
         return true;
       // The home rule has two halves, and both are load-bearing. The path must land inside a home
-      // directory, and the root that serves it must *hold* that home. A root that merely sits
+      // directory, and the root that *serves* it must hold that home. A root that merely sits
       // below the home — which is nearly every workspace and nearly every project directory —
-      // holds nothing and guards nothing; without the second half a workspace under the home
-      // would ask for every file it owns, and without the first an approved directory holding a
-      // home would be guarded in its entirety, which is not what was approved.
+      // holds nothing and guards nothing; without the first half a workspace under the home would
+      // ask for every file it owns, and without the second an approved directory holding a home
+      // would be guarded in its entirety, which is not what was approved.
       if (guardedRoots.length === 0) return false;
-      return (
-        pathHoldsHome(canonicalPath, scope.homeGuards ?? []) &&
-        guardedRoots.some((root) => resolveWorkspacePath(root, canonicalPath) !== null)
-      );
+      if (!pathHoldsHome(canonicalPath, scope.homeGuards ?? [])) return false;
+      const serving = servingRootOf(canonicalPath);
+      return serving !== undefined && holdsHome(serving);
+    },
+    /**
+     * Whether a Grep or Glob *scope* can reach a guarded home. A scope is a subtree, not a file,
+     * so it is guarded when the guarded home is inside it as well as when it is inside the home:
+     * `Grep {path: "/home"}` reads `~/.ssh` without naming a single file under it (PR #334
+     * finding 4). Compared canonically, both ways, because either side may be reached by a link.
+     */
+    scopeReachesHome: (canonicalScope) => {
+      const homes = scope.homeGuards ?? [];
+      // The scope *contains* a guarded home, or *is* one. A scope that merely sits *below* a home
+      // — which is nearly every workspace and project directory — does not reach it:
+      // `containsPath` returning true for "home contains scope" is the descent case and is
+      // deliberately not consulted here, or the guard would fire on every ordinary read again.
+      // This is the reported walk: `Grep {path: "/home"}` prints lines from `~/.ssh` and
+      // `~/.book` without naming a file under them, and the scope reaches them by containing the
+      // home.
+      if (homes.some((home) => containsPath(canonicalScope, home))) return true;
+      // And the scope sits inside a root that holds a home, so every file it walks is guarded.
+      return guardedRoots.some((root) => containsPath(root, canonicalScope));
     },
   };
 }
@@ -532,11 +580,19 @@ function resolvedPathScope(scope: WorkspaceScope): ResolvedPathScope {
  * same relative form against the real workspace root. Outside it, the roots a tool may serve
  * contribute their two absolute spellings — and only the ones they serve, which is why a write
  * that lands in an honored directory gets spellings while a Read into the memory inbox does not.
+ *
+ * `restrictive` is true for `deny` and `ask`, and it adds the form relative to an honored root the
+ * path lands in. A rule written against the workspace — `Write(.env)` — means the `.env` of the
+ * root the call writes into, and without this the same rule matched in the workspace and silently
+ * did not in `/srv/app` (PR #334 finding 10). It is deliberately *not* added for `allow`: a rule
+ * that widens must not acquire a new meaning, or `Edit(src/**)` would come to cover
+ * `/srv/app/src/...` — a grant the user never wrote.
  */
 function spellingsOfPath(
   paths: ResolvedPathScope,
   raw: string,
   includeReadOnly: boolean,
+  restrictive: boolean,
 ): string[] {
   const spellings: string[] = [];
   const detail = paths.detail(raw, includeReadOnly);
@@ -553,6 +609,23 @@ function spellingsOfPath(
     if (realRoot) spellings.push(toPosix(relative(realRoot, resolved.canonicalPath)));
   } else {
     spellings.push(toPosix(resolved.filePath), toPosix(resolved.canonicalPath));
+    if (restrictive) {
+      for (const root of paths.scope.additionalRoots ?? []) {
+        const fromRoot = relative(root, resolved.canonicalPath);
+        // `..` followed by a separator, not a bare prefix: a sibling directory whose name merely
+        // starts with two dots (`..foo`) is inside the root, and `startsWith('..')` calls it
+        // outside.
+        if (
+          !fromRoot ||
+          isAbsolute(fromRoot) ||
+          fromRoot === '..' ||
+          fromRoot.startsWith(`..${sep}`)
+        ) {
+          continue;
+        }
+        spellings.push(toPosix(fromRoot));
+      }
+    }
   }
   return [...new Set(spellings)].filter((spelling) => spelling !== '' && spelling !== raw);
 }
@@ -562,9 +635,10 @@ function pathRuleSpellings(
   paths: ResolvedPathScope,
   toolName: string,
   args: Record<string, unknown>,
+  restrictive: boolean,
 ): string[] {
   const raw = pathArgument(toolName, args);
-  return raw ? spellingsOfPath(paths, raw, toolName === 'Read') : [];
+  return raw ? spellingsOfPath(paths, raw, toolName === 'Read', restrictive) : [];
 }
 
 /**
@@ -580,7 +654,31 @@ function globTarget(pattern: string, paths: ResolvedPathScope): 'servable' | 'ou
   } catch {
     return 'outside';
   }
+  // Every base, including the ones that resolved nowhere: a pattern with an unresolvable base
+  // walks outside the roots, and dropping that base before the test would make `every` vacuously
+  // true and read as servable.
   return bases.every((base) => 'path' in paths.detail(base, false)) ? 'servable' : 'outside';
+}
+
+/**
+ * The directories a Glob would walk, canonicalized.
+ *
+ * fast-glob answers this better than a pattern could be parsed for: `{..,src}/*` walks the
+ * workspace and never climbs, while `.{.,x}/*` walks its parent, and only the library knows which
+ * before the walk happens. An unparseable pattern yields nothing, and the caller is already on the
+ * `outside` branch by then.
+ */
+function globBases(pattern: string, paths: ResolvedPathScope): string[] {
+  let bases: string[];
+  try {
+    bases = fg.generateTasks([pattern]).map((task) => task.base);
+  } catch {
+    return [];
+  }
+  return bases
+    .map((base) => paths.detail(base, false))
+    .filter((detail): detail is Extract<typeof detail, { path: unknown }> => 'path' in detail)
+    .map((detail) => detail.path.canonicalPath);
 }
 
 /**
@@ -605,14 +703,22 @@ function readToolTarget(
   if (toolName === 'Glob') {
     const pattern = typeof args.pattern === 'string' ? args.pattern.trim() : '';
     if (!pattern) return 'none';
-    return globTarget(pattern, paths);
+    const target = globTarget(pattern, paths);
+    // A Glob is a subtree walk, so its bases are scopes, not files: guarded the same way a Grep
+    // scope is (PR #334 finding 4).
+    if (target === 'servable' && globBases(pattern, paths).some(paths.scopeReachesHome))
+      return 'guarded';
+    return target;
   }
   // Grep: no path, or `.`, searches the workspace. Grep never reads Book's memory directory.
   const raw = typeof args.path === 'string' ? args.path.trim() : '';
   if (raw === '' || raw === '.') return 'servable';
   const detail = paths.detail(raw, false);
   if (!('path' in detail)) return detail.reason === 'excluded' ? 'hidden' : 'outside';
-  return paths.isGuarded(detail.path.canonicalPath) ? 'guarded' : 'servable';
+  if (paths.isGuarded(detail.path.canonicalPath)) return 'guarded';
+  // The scope is a directory: guarding only the directory path itself would let `Grep
+  // {path: "/home"}` print lines from `~/.ssh` without naming a file under it.
+  return paths.scopeReachesHome(detail.path.canonicalPath) ? 'guarded' : 'servable';
 }
 
 /**
@@ -692,12 +798,16 @@ export function evaluatePermissionDetail(
   if (toolName === 'ApplyPatch') {
     const operations = patchOperations(args);
     // A Write or Edit rule applies however the patch spells the path (`src/../.env`, absolute).
+    // Two sets per target, because `deny`/`ask` are also offered the form relative to an approved
+    // root and `allow` is not — see `spellingsOfPath`.
     const spellings = new Map<string, readonly string[]>();
-    const spellingsOf = (path: string): readonly string[] => {
-      let known = spellings.get(path);
+    const restrictiveSpellings = new Map<string, readonly string[]>();
+    const spellingsOf = (path: string, restrictive: boolean): readonly string[] => {
+      const cache = restrictive ? restrictiveSpellings : spellings;
+      let known = cache.get(path);
       if (!known) {
-        known = paths ? [path, ...spellingsOfPath(paths, path, false)] : [path];
-        spellings.set(path, known);
+        known = paths ? [path, ...spellingsOfPath(paths, path, false, restrictive)] : [path];
+        cache.set(path, known);
       }
       return known;
     };
@@ -706,7 +816,10 @@ export function evaluatePermissionDetail(
     for (const list of ['deny', 'ask'] as const) {
       for (const entry of parsed[list]) {
         if (!isCompatible(entry.parsed)) continue;
-        if (compatiblePatchRuleMatches(entry.parsed, operations, spellingsOf)) {
+        // `deny` and `ask` fold case on a path, exactly as they do for a `Write` or `Read` that
+        // names the same file; `allow` below keeps exact matching, so the fold only ever restricts
+        // (PR #334 finding 6).
+        if (compatiblePatchRuleMatches(entry.parsed, operations, spellingsOf, true)) {
           return { decision: list, matchedRule: entry.text, source: list };
         }
       }
@@ -721,7 +834,8 @@ export function evaluatePermissionDetail(
         allowRules.some(
           ({ parsed: rule }) =>
             patchRuleSupportsOperation(rule, operation) &&
-            (rule.pattern === null || ruleMatchesPatch(rule, spellingsOf(operation.path))),
+            (rule.pattern === null ||
+              ruleMatchesPatch(rule, spellingsOf(operation.path, false), false)),
         ),
       )
     ) {
@@ -740,12 +854,20 @@ export function evaluatePermissionDetail(
   // `D:/ws/.env` and `src/../.env`, which the glob on the raw argument misses. Resolved only when
   // a rule names the tool, since resolving touches the file system.
   const candidates: string[] = [getPrimaryArg(args)];
+  let restrictiveCandidates: string[] = candidates;
   if (scope && paths && PATH_RULE_TOOLS.has(tool) && rulesName(parsed, tool)) {
-    candidates.push(...pathRuleSpellings(paths, tool, args));
+    restrictiveCandidates = [...candidates, ...pathRuleSpellings(paths, tool, args, true)];
+    // `allow` is offered only the spellings a `Write` would have written: the raw argument, the
+    // path as given, and its canonical form. It is not offered the form relative to an honored
+    // root, so a workspace-shaped allow such as `Edit(src/**)` cannot come to mean
+    // `/srv/app/src/**` — a grant the user never wrote (PR #334 finding 10).
+    candidates.push(...pathRuleSpellings(paths, tool, args, false));
   }
-  // `deny` and `ask` restrict, so they fold case for a path-rule tool; `allow` keeps exact
-  // matching, because folding there would widen what a rule permits (#305 item 1).
+  // `deny` and `ask` restrict, so they fold case for a path-rule tool and take the wider set of
+  // spellings; `allow` keeps exact matching, because folding there would widen what a rule
+  // permits (#305 item 1).
   const matchesRule = (rule: ParsedRule, fold: boolean): boolean => {
+    const pool = fold ? restrictiveCandidates : candidates;
     if (tool === 'WebFetch') {
       try {
         // URL.toString() gives origin roots a trailing slash, matching the remembered origin glob.
@@ -755,7 +877,7 @@ export function evaluatePermissionDetail(
         // Invalid URLs retain the normal raw-argument matching behavior.
       }
     }
-    return candidates.some((candidate) => ruleMatchesCandidate(rule, tool, candidate, fold));
+    return pool.some((candidate) => ruleMatchesCandidate(rule, tool, candidate, fold));
   };
   // What a Read, Glob or Grep reaches, judged only in the modes that judge reads, so a refusal
   // can say when no approval could make the tool serve it.

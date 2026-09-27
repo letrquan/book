@@ -837,7 +837,31 @@ describe('project-declared additionalDirectories require approval', () => {
     writeProject([outside]);
     decide(realpathSync.native(outside), 'approved');
 
-    expect(load().additionalDirectories).toEqual([normalize(outside)]);
+    // The *real path*, not the text the repository wrote. The approved key IS the real path, so
+    // releasing anything else would re-introduce a path the user never saw, resolvable again later
+    // by a consumer that holds no trust store (PR #334 finding 7).
+    expect(load().additionalDirectories).toEqual([realpathSync.native(outside)]);
+  });
+
+  it('releases an approved real path that a relinked declaration can no longer retarget', () => {
+    // The reported window: `./link` approved as `/opt/data`, then the link repointed mid-session.
+    // Releasing the *text* `./link` let the next `resolveAdditionalRoots` follow it to its new
+    // target with no approval at all. Releasing the approved real path closes it — the consumer
+    // resolves an absolute path, which no relink can move.
+    const target = shared();
+    symlinkSync(target, join(dir, 'link'), 'junction');
+    writeProject(['link']);
+    decide(realpathSync.native(target), 'approved');
+
+    expect(load().additionalDirectories).toEqual([realpathSync.native(target)]);
+
+    // The link now points somewhere else. The declaration resolves to the *new* real path, which
+    // carries no decision, so nothing is released — the new target is never served off the old
+    // approval, and the old target does not come back either. The user decides again.
+    rmSync(join(dir, 'link'), { force: true });
+    symlinkSync(tmpdir(), join(dir, 'link'), 'junction');
+
+    expect(load().additionalDirectories).toEqual([]);
   });
 
   it('keeps withholding a rejected directory', () => {
@@ -854,7 +878,7 @@ describe('project-declared additionalDirectories require approval', () => {
     writeProject([first, second]);
     decide(realpathSync.native(first), 'approved');
 
-    expect(load().additionalDirectories).toEqual([normalize(first)]);
+    expect(load().additionalDirectories).toEqual([realpathSync.native(first)]);
   });
 
   /**
@@ -867,7 +891,8 @@ describe('project-declared additionalDirectories require approval', () => {
     symlinkSync(first, join(dir, 'link'), 'junction');
     writeProject(['link']);
     decide(realpathSync.native(first), 'approved');
-    expect(load().additionalDirectories).toEqual([normalize('link')]);
+    // The approved real path, which is why the decision does not follow the link below.
+    expect(load().additionalDirectories).toEqual([realpathSync.native(first)]);
 
     rmSync(join(dir, 'link'), { force: true });
     symlinkSync(second, join(dir, 'link'), 'junction');

@@ -881,6 +881,84 @@ describe('runAgentLoop reads an approved additional directory (#300)', () => {
     }
   });
 
+  it('prompts for a guarded read in plan mode, as it does in default (PR #334 finding 5)', async () => {
+    // Decision C said plan mode would judge reads the way `default` does. The verdict did: these
+    // targets come back `ask`. The prompt did not, because `planAutoApproved` skipped the whole
+    // permission block for any read-only tool outside `PLAN_PERMISSION_REQUIRED_TOOLS`, so a
+    // guarded Read ran inside a plan with nobody asked. The guarded cases, not just an ask rule.
+    const results: ToolResult[] = [];
+    const prompt = vi.fn(async () => 'allow' as const);
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2 }),
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'plan',
+      {
+        provider: toolsThenText([
+          {
+            id: 'r1',
+            name: 'Read',
+            arguments: { filePath: join(workspace, '.book', 'settings.local.json') },
+          },
+        ]),
+        isNewSession: false,
+      },
+    );
+    expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat ExitPlanMode as a guarded read in plan mode (PR #334 finding 5)', async () => {
+    // The regression a first pass at finding 5 walked into. `ExitPlanMode` is in
+    // `READ_ONLY_PLAN_TOOLS` and its verdict is `ask`, so keying the new guard on the verdict
+    // alone prompted for it — and with no approver a prompt is "stop with the plan", which the
+    // loop already implements, so one turn became five ExitPlanMode retries. Only the tools that
+    // read the filesystem are guarded reads.
+    writeFileSync(join(workspace, 'notes.txt'), 'plan me\n');
+    const prompt = vi.fn(async () => 'deny' as const);
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 3 }),
+      createDefaultRegistry(),
+      'plan it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'plan',
+      {
+        provider: toolsThenText([{ id: 'r1', name: 'Read', arguments: { filePath: 'notes.txt' } }]),
+        isNewSession: false,
+      },
+    );
+    // The guarded-read prompt did not leak onto a tool that merely returns `ask`; an ordinary
+    // workspace read still runs unprompted, and the run ends on the text turn rather than
+    // retrying.
+    expect(prompt).not.toHaveBeenCalled();
+    expect(byId(results, 'r1')?.status).toBe('success');
+  });
+
+  it('still runs an unguarded workspace read in plan mode without a prompt', async () => {
+    // The other half of decision C, and the reason the fix keys on the verdict rather than on
+    // the tool: a plan is written by reading, so an ordinary workspace read must not prompt.
+    writeFileSync(join(workspace, 'notes.txt'), 'plan me\n');
+    const prompt = vi.fn(async () => 'deny' as const);
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2 }),
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'plan',
+      {
+        provider: toolsThenText([{ id: 'r1', name: 'Read', arguments: { filePath: 'notes.txt' } }]),
+        isNewSession: false,
+      },
+    );
+    expect(prompt).not.toHaveBeenCalled();
+    expect(byId(results, 'r1')?.status).toBe('success');
+  });
+
   it('still asks for a local settings file under an approved root', async () => {
     // Every root Book serves carries its own `.book/settings.local.json`, and a local one can hold
     // an API key exactly as the workspace's does.

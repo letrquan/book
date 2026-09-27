@@ -290,8 +290,10 @@ Modes differ only in what happens to calls that no `deny` rule matched:
 serve runs without a prompt: a target inside the workspace, or for `Read` inside Book's memory
 directory (but not its inbox). The target is resolved the way the tool resolves it: `..` is applied
 and symlinks and junctions are followed, so a link inside the workspace that points out of it still
-asks. A `Grep` with no `path` searches the workspace; a `Glob` that would start walking outside
-it (`../**`, `.{.,x}/*`, an absolute path elsewhere) still asks. Other read-only tools (`GitStatus`, `GitDiff`, `WebFetch`, …) still ask.
+asks. A `Grep` with no `path` searches the workspace, and so does a relative `Glob` pattern: a
+`pattern` is anchored to the workspace the same way a relative `Read` path is, and an absolute
+pattern names its own root. A `Glob` that would start walking outside the roots
+(`../**`, `.{.,x}/*`, an absolute path elsewhere) still asks. Other read-only tools (`GitStatus`, `GitDiff`, `WebFetch`, …) still ask.
 
 What still asks:
 
@@ -305,10 +307,35 @@ What still asks:
 - Everything, in a workspace that holds a home directory, yours or Book's own (`BOOK_HOME`),
   also when either is reached through a link: a session started in your home directory. A home
   holds SSH and provider keys and the trust store.
-- Any read whose resolved path lands inside a home directory **held by the root that serves it**. An
-  approved `additionalDirectories` entry that contains a home directory still prompts for every file
-  under that home. A root that merely sits _below_ a home — which is nearly every workspace — is not
-  guarded by it; the bullet above already covers that case by asking for everything.
+- Any read whose resolved path lands inside a home directory **held by the root that serves it**. The
+  root that serves it is the one the path resolved against, the workspace first. An approved
+  `additionalDirectories` entry that contains a home directory still prompts for every file under
+  that home, and approving a parent directory does not re-guard the workspace inside it: with the
+  workspace at `/home/u/proj` and `/home/u` approved, a plain `Read package.json` runs without a
+  prompt. A root that merely sits _below_ a home — which is nearly every workspace — is not guarded
+  by it; the bullet above already covers that case by asking for everything.
+- Any `Grep` or `Glob` whose **scope** reaches a guarded home. These two name a subtree rather than
+  a file, so a scope is judged on containment rather than on its own path: `Grep {path: "/home"}`
+  asks, because the scope holds a home it would otherwise print lines from. A scope that is merely
+  below a home, and holds none, is an ordinary read.
+
+**Plan mode.** `plan` judges reads the way `default` does. A guarded read — a target inside a home
+directory the serving root holds, a search whose scope reaches one, a call an `ask` rule covers —
+prompts exactly as it does outside plan mode, and a target outside every root is refused there too.
+An unguarded workspace read still runs without a prompt, which is what a plan is written with.
+
+**Git.** `GitStatus`, `GitDiff`, `GitLog` and `GitBranch` are the read-only Git tools, and they run
+without a prompt in `default` and `acceptEdits`. Because a repository's `.git/config` is a file the
+clone brings with it, all four pass `-c core.fsmonitor=false`, `-c core.pager=cat`, an empty
+`-c core.hooksPath`, `-c core.untrackedCache=false`, `-c gc.auto=0`, `-c log.showSignature=false`
+and `--no-optional-locks`, with `GitDiff` adding `--no-ext-diff --no-textconv` and `GitLog` adding
+`--no-show-signature`, and `GIT_PAGER=cat` / `GIT_TERMINAL_PROMPT=0` in the environment. The
+signature switches matter because `log.showSignature` makes `git log` verify every signature it
+prints, and verification runs `gpg.program` — a program the repository names. The hardening covers
+**these four tools only**: `GitCommit` runs with your own `argv` and environment, exactly as before,
+so your `pre-commit` and `commit-msg` hooks still run. A repository can still configure clean and
+smudge filters, and those run on `status` and `diff`; Book does not suppress them, because that
+would mean rewriting the command you asked for.
 
 **Outside every root.** A `Read`, `Glob` or `Grep` whose target is in the workspace, in a read-only
 root, or in an approved `additionalDirectories` entry is served as above. One that is not is
@@ -334,7 +361,16 @@ A path rule for `Read`, `Write`, `Edit`, `MultiEdit` or `NotebookEdit` is also m
 other spellings of the target — relative to the workspace and absolute, before and after following
 links — in every mode. So `deny: ["Read(.env)"]` also stops a `Read` of
 `/abs/path/to/workspace/.env` or `src/../.env`, and `deny: ["Write(.env)"]` holds under `auto` and
-`bypassPermissions` whatever the call writes it as, `ApplyPatch` included.
+`bypassPermissions` whatever the call writes it as, `ApplyPatch` included. `ApplyPatch` matches its
+targets' spellings the same way, and `deny` and `ask` fold case as they do for a single-path tool.
+
+A path inside an approved `additionalDirectories` entry is offered the same root-relative spelling
+to `deny` and `ask` — `deny: ["Write(.env)"]` stops `/srv/app/.env` as well as the workspace's own
+— and **not** to `allow`. That asymmetry is deliberate: `deny` and `ask` restrict, so a wider set of
+spellings can only narrow what a call may do, while `allow` widens and must not acquire a new
+meaning. A workspace-shaped `allow: ["Edit(src/**)"]` therefore does **not** cover
+`/srv/app/src/…`; to allow a write in an approved directory, write the rule with its absolute
+path.
 
 **When nobody can answer a prompt.** Print mode, the SDK, and a background agent with no
 interactive approver cannot show a prompt, so a call that would prompt is refused. The model is told

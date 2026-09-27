@@ -187,8 +187,9 @@ export async function runTrustCommand(
     // A directory is keyed by where it *really* is, not by the text the repository wrote, so the
     // target the user typed is resolved the same way the resolver resolves it and then matched
     // against the real paths: `./shared`, `shared` and the absolute path are one entry. Matching
-    // the declared text too means a path that has since been deleted can still be rejected, and
-    // a symlink repointed since approval can no longer be decided under its old name.
+    // the declared text too means a symlink repointed since approval can no longer be decided
+    // under its old name. A path that no longer exists is a different matter: `collectDeclaredDirectories`
+    // drops it, so it is simply not offered here — there is nothing left to decide about.
     const declared = collectDeclaredDirectories(
       workspace,
       projectSettings?.additionalDirectories ?? [],

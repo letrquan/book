@@ -2736,9 +2736,10 @@ describe('Read output budget', () => {
 });
 
 /**
- * #300. `additionalDirectories` is honored for reads and nothing else. Read, Glob and Grep serve
- * an approved directory; Write, Edit, MultiEdit, NotebookEdit and ApplyPatch do not, because a
- * repository that can choose where Book *reads* must not get to choose where it writes.
+ * #300. `additionalDirectories` is honored as a set of roots, and the tools agree about which.
+ * Read, Glob and Grep serve an approved directory, and so do Write, Edit, MultiEdit,
+ * NotebookEdit and ApplyPatch (decision A) — an approved directory widens what Book may reach,
+ * and a tool that could not read a root could still write into it, which is the worse gap.
  */
 describe('additionalRoots', () => {
   let extra: string;
@@ -2805,11 +2806,41 @@ describe('additionalRoots', () => {
     expect(r.status).toBe('error');
   });
 
-  it('globs into an honored directory', async () => {
-    const r = await glob.execute({ pattern: '*.txt' }, ctx);
+  it('globs into an honored directory with an absolute pattern', async () => {
+    // A relative pattern is workspace-anchored, exactly as `Read` anchors a relative path, so it
+    // searches the workspace alone; an absolute pattern names its own root and is walked once, in
+    // that root (PR #334 finding 9).
+    const r = await glob.execute({ pattern: join(extra, '*.txt') }, ctx);
 
     expect(r.status).toBe('success');
     expect(r.content).toContain(join(extra, 'shared.txt'));
+  });
+
+  it('searches only the workspace for a relative Glob pattern', async () => {
+    // `*.txt` matches in both roots, and it used to be run once per root with the honored root's
+    // matches listed too — so a relative pattern the model wrote for the workspace surfaced
+    // unrequested files from a root approved for other work. It agrees with `Read` and `Grep`,
+    // which both anchor a relative argument to the workspace.
+    writeFileSync(join(dir, 'local.txt'), 'workspace copy\n');
+
+    const r = await glob.execute({ pattern: '*.txt' }, ctx);
+
+    expect(r.status).toBe('success');
+    // A workspace match is labelled workspace-relative, the form `Read` accepts.
+    expect(r.content).toContain('local.txt');
+    expect(r.content).not.toContain('shared.txt');
+  });
+
+  it('walks an absolute Glob pattern once, not once per root', async () => {
+    // A relative pattern was run against every root in turn, and an absolute one was run against
+    // every root too — where it resolves to the same files each time, because fast-glob ignores
+    // `cwd` for an absolute pattern. The work was repeated per honored root, and a root that
+    // happened to hold a copy of the pattern's subtree was walked as well.
+    const r = await glob.execute({ pattern: join(extra, '**', '*.txt') }, ctx);
+
+    expect(r.status).toBe('success');
+    const listed = (r.data as { files?: string[] })?.files ?? [];
+    expect(listed.filter((file) => file === join(extra, 'shared.txt'))).toHaveLength(1);
   });
 
   it('greps a scope inside an honored directory, rather than the workspace tree', async () => {

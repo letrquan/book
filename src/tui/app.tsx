@@ -1128,11 +1128,11 @@ export function App({
   // to skip. Kept in the transcript rather than flashed, because it is a fact about the run the
   // operator needs after the fact. Consumption waits for idle, as above.
   useEffect(() => {
-    if (!managedAgents.noticeEvent) return;
+    const next = managedAgents.noticeQueue[0];
+    if (!next) return;
     if (isThinking || sendInFlight) return;
-    const { message } = managedAgents.noticeEvent;
-    managedAgents.clearNotice();
-    addLocalMessage(message);
+    managedAgents.takeNotice();
+    addLocalMessage(next.message);
   }, [managedAgents, isThinking, sendInFlight, addLocalMessage]);
 
   const queueDrainBlocked = Boolean(
