@@ -4,6 +4,7 @@ import {
   clampEffortToCatalog,
   freezeAgentConfig,
   loadConfig,
+  parseStartupAnimationEnv,
   resolveCompactModelConfig,
   resolveEffortExplicit,
   resolveModelProviderConfig,
@@ -127,6 +128,62 @@ describe('loadConfig permission defaults', () => {
 
     const config = loadConfig(workspace);
     expect(config.settings.defaultMode).toBe('plan');
+  });
+});
+
+/**
+ * The startup splash is on by default, so anything driving Book headlessly — the
+ * run-book PTY driver, a script, a CI capture — has to turn it off without owning
+ * a settings layer it would have to merge with whatever the user passes.
+ */
+describe('BOOK_STARTUP_ANIMATION', () => {
+  const setSplash = (startupAnimation: boolean) =>
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ ui: { startupAnimation } }),
+    );
+
+  it('reads the usual on and off spellings', () => {
+    for (const raw of ['0', 'false', 'off', 'no']) {
+      expect(parseStartupAnimationEnv(raw)).toBe(false);
+    }
+    for (const raw of ['1', 'true', 'on', 'yes']) {
+      expect(parseStartupAnimationEnv(raw)).toBe(true);
+    }
+    // Case and surrounding whitespace are a shell quoting accident, not a choice.
+    expect(parseStartupAnimationEnv('  OFF ')).toBe(false);
+    expect(parseStartupAnimationEnv('On')).toBe(true);
+  });
+
+  it('leaves the settings value alone when unset or unrecognised', () => {
+    expect(parseStartupAnimationEnv(undefined)).toBeUndefined();
+    expect(parseStartupAnimationEnv('')).toBeUndefined();
+    expect(parseStartupAnimationEnv('maybe')).toBeUndefined();
+  });
+
+  it('turns the splash off from the environment over the setting', () => {
+    setSplash(true);
+    process.env.BOOK_STARTUP_ANIMATION = '0';
+
+    expect(loadConfig(workspace).settings.ui.startupAnimation).toBe(false);
+  });
+
+  it('turns the splash on from the environment over the setting', () => {
+    setSplash(false);
+    process.env.BOOK_STARTUP_ANIMATION = 'on';
+
+    expect(loadConfig(workspace).settings.ui.startupAnimation).toBe(true);
+  });
+
+  it('keeps the setting when the environment says nothing', () => {
+    setSplash(false);
+    expect(loadConfig(workspace).settings.ui.startupAnimation).toBe(false);
+
+    process.env.BOOK_STARTUP_ANIMATION = 'maybe';
+    expect(loadConfig(workspace).settings.ui.startupAnimation).toBe(false);
+
+    setSplash(true);
+    expect(loadConfig(workspace).settings.ui.startupAnimation).toBe(true);
   });
 });
 

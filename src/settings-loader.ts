@@ -27,18 +27,10 @@ const CONCATENATED_ARRAY_PATHS = new Set([
   'permissions.allow',
   'permissions.ask',
   'permissions.deny',
-  ...[
-    'SessionStart',
-    'SessionEnd',
-    'UserPromptSubmit',
-    'PreToolUse',
-    'PostToolUse',
-    'Stop',
-    'PreCompact',
-    'PostCompact',
-    'SubagentStart',
-    'SubagentStop',
-  ].map((event) => `hooks.${event}`),
+  // Straight from the list the hooks schema is built from: a hand-written copy of
+  // it went stale the moment `Notification` was added, and a later layer's
+  // notification hooks then replaced the user layer's instead of appending (#295).
+  ...HOOK_EVENTS.map((event) => `hooks.${event}`),
 ]);
 
 function mergeObject(

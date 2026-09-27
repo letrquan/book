@@ -133,6 +133,17 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     }
   }
 
+  // The startup splash is on by default, so anything that drives Book rather
+  // than using it has to switch it off — and a settings layer is the wrong place
+  // to say so, since Book reads one and a driver would have to merge whatever the
+  // user passes. The variable outranks every layer, as `BOOK_MODEL` does for
+  // `model`, and lands on the resolved settings so `shouldPlayStartupFire` and
+  // `/config` read the same value.
+  const envStartupAnimation = parseStartupAnimationEnv(process.env.BOOK_STARTUP_ANIMATION);
+  if (envStartupAnimation !== undefined) {
+    settings = { ...settings, ui: { ...settings.ui, startupAnimation: envStartupAnimation } };
+  }
+
   // Load legacy .bookrc.json (deprecated) only after settings availability is accepted.
   const legacy = loadLegacyConfig(resolvedWorkspace);
 
@@ -563,4 +574,30 @@ function parsePositiveInt(raw: string | undefined, name: string): number | undef
     throw new Error(`${name} must be a positive integer`);
   }
   return n;
+}
+
+/**
+ * `BOOK_STARTUP_ANIMATION` as a boolean, or undefined when it says nothing.
+ *
+ * `0`/`false`/`off`/`no` and `1`/`true`/`on`/`yes` are the spellings a shell
+ * script, a CI job and a human reach for. Case and surrounding whitespace are
+ * ignored; anything else — an empty value, a typo — leaves the resolved
+ * `ui.startupAnimation` alone rather than guessing, since a wrong guess here
+ * either delays the first render or hides the input bar a script is waiting for.
+ */
+export function parseStartupAnimationEnv(raw: string | undefined): boolean | undefined {
+  switch (raw?.trim().toLowerCase()) {
+    case '0':
+    case 'false':
+    case 'off':
+    case 'no':
+      return false;
+    case '1':
+    case 'true':
+    case 'on':
+    case 'yes':
+      return true;
+    default:
+      return undefined;
+  }
 }

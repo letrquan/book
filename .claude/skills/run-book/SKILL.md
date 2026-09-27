@@ -68,7 +68,7 @@ EOF
 | `expect <regex>` | Assert the current screen matches now; fail otherwise. |
 | `send <text>` | Type text, then submit. Writes the text and `\r` as separate PTY reads — one chunk would be parsed as a paste and the submit dropped. |
 | `type <text>` | Type without submitting. |
-| `key <name>...` | `enter esc tab shift-tab up down left right backspace space ctrl-c ctrl-d ctrl-e ctrl-j ctrl-l ctrl-o ctrl-r ctrl-t ctrl-u home end pageup pagedown`, and `alt-<key>` (ESC then the key: `alt-a`) |
+| `key <name>...` | `enter esc tab shift-tab up down left right backspace delete insert space ctrl-c ctrl-d ctrl-e ctrl-j ctrl-l ctrl-o ctrl-r ctrl-t ctrl-u home end pageup pagedown`, plus `alt-<name>`: `alt-a` is ESC then the character, a named key in Alt is the xterm modifier form (Alt+Delete is `\x1b[3;3~`, Alt+Up `\x1b[1;3A`), and anything else is ESC then the key (Alt+Backspace is ESC `\x7f`) |
 | `sleep [ms]`, `resize <cols> <rows>` | Timing and layout. |
 | `screen`, `raw`, `shot <name>` | Dump the screen to stdout, dump the raw tail, or write the screen to `<shots>/<name>.txt`. |
 | `shotpng <name>` | Write the screen with colours and attributes kept, as `<shots>/<name>.html` and, via headless Edge or Chromium, `<name>.png` — which the Read tool can look at. The only way to judge a visual change (palette, weight, spacing): a text `shot` shows none of it. Block elements and rules are drawn edge to edge the way a terminal draws them, so a seam in the PNG is a real seam. |
@@ -100,17 +100,13 @@ turn, so a long history can arrive at once while only the turn under test is pac
 frame of a stream, such as the live tail at an exact cutoff, end the turn's `text` there and add
 `holdMs`.
 
-The driver turns the startup splash off with a `--settings` layer of its own (a temp file holding
-`ui.startupAnimation`), which outranks every settings file; it never writes the workspace's
-`.book/settings.json`, and a value an older driver left there cannot win. `--startup-animation`
-sets the layer's value to `true`, so the splash can be driven. A single `--settings <file>` of your
-own after `--` (a relative path is taken from the driver's cwd) is merged into that layer, its keys
-winning except `ui.startupAnimation`, which the driver sets. A file the driver cannot parse as Book
-would (a JSON object; no BOM, no comments) fails the run at once. The driver prints which temp file
-holds the merge, since Book's settings errors name it, and keeps that file when the run fails.
-`--no-settings` after `--` skips every layer, the driver's too; passing it with `--settings`, or
-`--settings` twice, is refused. `--bin` gets no layer (the Go build reads a flat `startupAnimation`
-key).
+The driver turns the startup splash off with `BOOK_STARTUP_ANIMATION=0` in the environment it gives
+Book, and `--startup-animation` sets it to `1` so the splash can be driven. The variable outranks
+`ui.startupAnimation` in every settings layer, so the workspace's `.book/settings.json` is never
+written and a value an older driver left there cannot win; a `--settings` or `--no-settings` of your
+own after `--` reaches Book untouched (Book takes one `--settings` layer, and a relative path in one
+is taken from the driver's cwd and made absolute for it). The Go build (`--bin`) reads a flat
+`startupAnimation` key and ignores the variable, as it did when the driver gave it no layer.
 The splash replaces the input bar that `ready` waits for, so such a script starts with `sleep` (the
 splash plays for about three seconds) and a key that dismisses it.
 
@@ -119,8 +115,11 @@ driver at once with the mock's own error, instead of after a 10 s wait. The mock
 response Book has closed (Esc, a timeout) and says so on stderr:
 `mock-provider: chatcmpl-mock-3 closed by the client after 14 chunks; stopped`.
 
-`--record <file>` writes every PTY chunk with its arrival time, as JSON, when the driver exits: the
-input to `record-gif.mjs` below.
+`--record <file>` writes every PTY chunk with its arrival time, plus every `resize` the script asked
+for, as JSON, when the driver exits: the input to `record-gif.mjs` below. The size recorded is the
+one the run started at, and a resize is an entry of its own in arrival order, so a recording
+replays the way the live terminal did rather than at the size the run happened to end at. The
+driver's own `screen`, `shot` and `shotpng` replay the same timeline, so they are right too.
 
 ### `mock-provider.mjs` — a provider without an API key
 
@@ -190,13 +189,17 @@ other runs.
 `node .claude/skills/run-book/record-gif.mjs <rec.json> <out.gif|out.webp|out.png> [options]`
 replays a `--record` file into headless xterm, samples it at `--fps` (12), draws each distinct
 screen the way `shotpng` does, screenshots the frames with headless Edge or Chromium, and joins them
-with sharp. Identical frames merge into one longer frame and a pause is cut to `--max-hold` ms;
-`--end-hold` sets the last frame's. `--start-at <regex>` starts at the first screen that matches,
-and `--until <regex> --after <ms>` stops that long after one does. A `.png` output is the final frame
-alone, which is how a screenshot of an exact moment is taken: `--until "Permission required"
---after 2000`. `--rows a:b` crops to screen rows a..b-1 (negative counts from the bottom), and
-`--title <text>` adds a window title bar. Chunks less than 6 ms apart are applied together, so a
-frame the renderer wrote in pieces is never sampled half-drawn.
+with sharp. A resize in the recording is applied to the replay terminal where it happened, so a
+script that resized mid-run replays correctly; every frame is drawn at its own size from the top
+left, on one canvas sized to the largest size the run drove. Identical frames merge into one longer
+frame and a pause is cut to `--max-hold` ms; `--end-hold` sets the last frame's. `--start-at <regex>`
+starts at the first screen that matches, and `--until <regex> --after <ms>` stops that long after one
+does. A `.png` output is the final frame alone, which is how a screenshot of an exact moment is
+taken: `--until "Permission required" --after 2000`. `--rows a:b` crops to screen rows a..b-1 of
+each frame (negative counts from that frame's own bottom, since a frame before a resize is shorter),
+and `--title <text>` adds a window title bar. Chunks less than 6 ms apart are applied together, so a
+frame the renderer wrote in pieces is never sampled half-drawn. A version-1 recording (no
+`version`, no resize entries) replays as it always did.
 
 ### `readme-media.sh` — the README's GIF and screenshots
 
