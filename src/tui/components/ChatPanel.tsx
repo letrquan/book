@@ -370,7 +370,9 @@ export function ChatPanelInner({
           const previous = visibleTimeline[index - 1];
           if (message.role === 'user') {
             row = (
-              <Box flexDirection="column" marginTop={index > 0 && density !== 'tight' ? 1 : 0}>
+              // Two blank rows, like the space before a new section: one left
+              // your turn reading as another paragraph of the reply above it.
+              <Box flexDirection="column" marginTop={index > 0 && density !== 'tight' ? 2 : 0}>
                 {screenReader ? (
                   <ScreenReaderRoleLabel role="user" timestamp={message.timestamp} />
                 ) : null}

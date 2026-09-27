@@ -5,7 +5,7 @@ import { MetaText, TargetText, ToolCallBlock } from './ToolCallBlock.js';
 import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { MarkdownBlock, useThrottledValue } from './MarkdownBlock.js';
 import { CommandPanel } from './CommandPanel.js';
-import { useTheme } from '../theme.js';
+import { ThemeContext, useTheme } from '../theme.js';
 import { useDensityMetrics } from '../density.js';
 import {
   CONTENT_COLUMN,
@@ -44,6 +44,7 @@ import {
   type QuietToolContext,
 } from '../quiet-tools.js';
 import { useDebugRender } from '../debug.js';
+import { isWorkStep } from './transcript-messages.js';
 
 const renderLog = createRenderDebugLogger('tui:agentmsg');
 
@@ -299,9 +300,10 @@ function ThinkBlock({
   if (!active && !expanded && !screenReader) {
     return (
       <Box>
-        <Text color={theme.mdThinkText} dimColor>
-          {`▸ thought · ${rowLabel}`}
-        </Text>
+        {/* `mdThinkText` plus the terminal's faint attribute put this row near
+            2.5:1 — below any reading threshold. The colour already steps it
+            down; the faint attribute on top of it only made it unreadable. */}
+        <Text color={theme.inactive}>{`▸ thought · ${rowLabel}`}</Text>
       </Box>
     );
   }
@@ -380,8 +382,9 @@ function MutationGroupRow({
   return (
     <Box height={1} marginLeft={CONTENT_COLUMN}>
       {/* The same mark as every other finished tool row: a mutation group is
-          work that completed, not a list item. */}
-      <Text color={theme.success}>{'✓ '}</Text>
+          work that completed, not a list item. Grey, because success is the
+          default and the exception is what takes colour. */}
+      <Text color={theme.inactive}>{'✓ '}</Text>
       {row.label ? <Text color={theme.inactive}>{row.label} </Text> : null}
       <TargetText target={row.target} failed={false} />
       <Text>{row.gap}</Text>
@@ -568,6 +571,30 @@ export function AgentMessageInner({
   );
   const selectedAutomaticToolId = automaticToolCallId ?? expandedToolCallId;
 
+  // A step of work reads as one quiet unit: its thought, the sentence it says
+  // before acting, and the tool rows sit together with no blank row between
+  // them. Screen readers keep every mark, since a spoken stream has no
+  // whitespace to carry the distinction.
+  const workStep = !screenReader && isWorkStep(message);
+  // A step's narration speaks in the secondary voice: every run of its prose
+  // takes `subtle`, so the answer is the only full-ink text in a turn. Memoized,
+  // because MarkdownRenderer is memoized on the theme object.
+  const stepTheme = useMemo(
+    () => ({
+      ...theme,
+      text: theme.subtle,
+      mdHeadingH1: theme.subtle,
+      mdHeadingH2: theme.subtle,
+      mdHeading: theme.subtle,
+      mdInlineCodeText: theme.subtle,
+      mdLink: theme.subtle,
+      mdCodeText: theme.subtle,
+      mdListMarker: theme.subtle,
+      mdBlockquoteText: theme.subtle,
+    }),
+    [theme],
+  );
+
   // A local note that opens with a status mark (`✕ Could not save…`, `✓
   // Background shell … exited`) is an event, so it is set like a tool row: the
   // mark in its colour, then the text in ink. As plain prose it read as a stray
@@ -640,7 +667,7 @@ export function AgentMessageInner({
       {/* Activity and content use separate rows so markdown keeps its full budget. */}
       {displayContent ? (
         <Box marginLeft={screenReader ? 0 : CONTENT_COLUMN} flexDirection="column">
-          {showThinking && reasoningContent && !embeddedThinking ? (
+          {showThinking && reasoningContent && !embeddedThinking && !workStep ? (
             <AnswerDivider screenReader={screenReader} />
           ) : null}
           {isStreaming && !hideStreamingSpinner && !isRetrying ? (
@@ -657,43 +684,45 @@ export function AgentMessageInner({
           {renderAsUnifiedDiff ? (
             <DiffBlock output={displayContent} terminalWidth={contentWidth} />
           ) : (
-            <Box flexDirection="column">
-              {contentParts.map((part, i) => {
-                if (part.kind === 'think') {
-                  if (!showThinking) return null;
-                  const answerHasStarted = contentParts
-                    .slice(i + 1)
-                    .some((candidate) => candidate.kind === 'markdown' && candidate.text.trim());
+            <ThemeContext.Provider value={workStep ? stepTheme : theme}>
+              <Box flexDirection="column">
+                {contentParts.map((part, i) => {
+                  if (part.kind === 'think') {
+                    if (!showThinking) return null;
+                    const answerHasStarted = contentParts
+                      .slice(i + 1)
+                      .some((candidate) => candidate.kind === 'markdown' && candidate.text.trim());
+                    return (
+                      <ThinkBlock
+                        key={`think-${i}`}
+                        text={part.text}
+                        terminalWidth={mdWidth}
+                        reducedMotion={reducedMotion}
+                        active={isStreaming && !answerHasStarted}
+                        expanded={transcriptMode === 'detailed'}
+                        screenReader={screenReader}
+                      />
+                    );
+                  }
+                  const hasEarlierThinking = contentParts
+                    .slice(0, i)
+                    .some((candidate) => candidate.kind === 'think');
                   return (
-                    <ThinkBlock
-                      key={`think-${i}`}
-                      text={part.text}
-                      terminalWidth={mdWidth}
-                      reducedMotion={reducedMotion}
-                      active={isStreaming && !answerHasStarted}
-                      expanded={transcriptMode === 'detailed'}
-                      screenReader={screenReader}
-                    />
+                    <React.Fragment key={`md-${i}`}>
+                      {showThinking && hasEarlierThinking && !workStep ? (
+                        <AnswerDivider screenReader={screenReader} />
+                      ) : null}
+                      <MarkdownBlock
+                        content={part.text}
+                        terminalWidth={mdWidth}
+                        isStreaming={isStreaming}
+                        trimTrailingMargin={trimTrailingSpacing && i === contentParts.length - 1}
+                      />
+                    </React.Fragment>
                   );
-                }
-                const hasEarlierThinking = contentParts
-                  .slice(0, i)
-                  .some((candidate) => candidate.kind === 'think');
-                return (
-                  <React.Fragment key={`md-${i}`}>
-                    {showThinking && hasEarlierThinking ? (
-                      <AnswerDivider screenReader={screenReader} />
-                    ) : null}
-                    <MarkdownBlock
-                      content={part.text}
-                      terminalWidth={mdWidth}
-                      isStreaming={isStreaming}
-                      trimTrailingMargin={trimTrailingSpacing && i === contentParts.length - 1}
-                    />
-                  </React.Fragment>
-                );
-              })}
-            </Box>
+                })}
+              </Box>
+            </ThemeContext.Provider>
           )}
         </Box>
       ) : null}
@@ -707,9 +736,11 @@ export function AgentMessageInner({
         // running into the next call's header.
         const marginTop =
           index === 0
-            ? showsContent || (showThinking && reasoningContent)
-              ? toolBlockGap
-              : 0
+            ? workStep
+              ? 0
+              : showsContent || (showThinking && reasoningContent)
+                ? toolBlockGap
+                : 0
             : transcriptMode === 'detailed' && !screenReader
               ? 1
               : toolRowGap;

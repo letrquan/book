@@ -113,6 +113,18 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **The transcript is easier on the eyes.** The Rubric palette is calmer: the body text comes
+  down one step, to about 12:1 on a dark terminal rather than near-white, so headings and your
+  own prompt have somewhere to stand above it; inline code takes a warm tone instead of the one
+  cool hue in a warm palette. A step of the agent's work — its thought, the sentence it says
+  before acting, and the tool rows — is drawn as one quiet unit with no blank rows inside it, and
+  that sentence is set in the secondary grey, so the final answer is the only full-ink text in a
+  turn. A check is grey: success is the default, so only a failure takes colour. The collapsed
+  `▸ thought · N lines` row is drawn at reading weight instead of the terminal's faint attribute.
+  Your turns are set upright in the brightest ink, a step above the agent's prose, and each one
+  opens after two blank rows rather than sitting a single row below the reply above it. And a
+  closing paragraph after a list finally gets the blank row that tells it apart from the last
+  bullet.
 - **A `Glob` pattern is anchored the way the other tools are.** A relative pattern searches the
   workspace alone, exactly as `Read` anchors a relative path and `Grep` anchors a relative scope;
   it used to be run once per root, so files from an approved directory appeared in answer to a

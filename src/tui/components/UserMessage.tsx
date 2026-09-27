@@ -184,13 +184,13 @@ export function userTurnRows(
 /**
  * A user turn, set the way a rubricated manuscript opens a paragraph.
  *
- * A red pilcrow hangs in the gutter and the prompt is set in italic, so your
- * words read as a different voice from the agent's roman prose without a band,
- * a box or a rule through the screen. The pilcrow is what a long transcript is
- * scanned by: it is the only red mark at the margin, and it is the same mark as
- * the composer's, so what you typed lands in the transcript under the glyph you
- * typed it after. The time sits at the right edge of the first row. @mentions
- * stay accented.
+ * A red pilcrow hangs in the gutter and the prompt is set upright in the
+ * brightest ink on screen, a step above the agent's prose, so your words read as
+ * a different voice without a band, a box or a rule through the screen. The
+ * pilcrow is what a long transcript is scanned by: it is the only red mark at
+ * the margin, and it is the same mark as the composer's, so what you typed
+ * lands in the transcript under the glyph you typed it after. The time sits at
+ * the right edge of the first row. @mentions stay accented.
  */
 function UserMessageInner({
   content,
@@ -243,13 +243,11 @@ function UserMessageInner({
             {row.attachment !== undefined ? (
               <Text color={theme.userAccent}>{row.attachment}</Text>
             ) : (
-              <Text italic>
-                {row.pieces.map((piece, i) => (
-                  <Text key={i} color={piece.isMention ? theme.userAccent : theme.text}>
-                    {piece.text}
-                  </Text>
-                ))}
-              </Text>
+              row.pieces.map((piece, i) => (
+                <Text key={i} color={piece.isMention ? theme.userAccent : theme.userText}>
+                  {piece.text}
+                </Text>
+              ))
             )}
             {index === 0 && time ? (
               <>

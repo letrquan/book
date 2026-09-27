@@ -531,9 +531,10 @@ describe('ChatPanel Ink rendering', () => {
     const answerLine = lines.findIndex((line) => line.includes('FIRST_ANSWER_MARKER'));
     const nextQuestionLine = lines.findIndex((line) => line.includes('SECOND_QUESTION_MARKER'));
 
-    // Blank row, then the prompt: the pilcrow marks the boundary itself, so the
-    // next turn needs no separate rule row.
-    expect(nextQuestionLine - answerLine).toBe(2);
+    // Two blank rows, then the prompt: the pilcrow marks the boundary itself, so
+    // the next turn needs no separate rule row — and it opens like a new
+    // section rather than another paragraph of the reply above it.
+    expect(nextQuestionLine - answerLine).toBe(3);
     expect(lines[nextQuestionLine]).toContain(`${PILCROW} SECOND_QUESTION_MARKER`);
   });
 
@@ -707,7 +708,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output.indexOf('src/b.ts')).toBeLessThan(output.indexOf('src/c.ts'));
   });
 
-  it('adds one blank row between narration and sibling actions in compact density', () => {
+  it("runs a step's narration into its actions in compact density", () => {
     const message: Message = {
       ...msg('a1', 'assistant', 'I will inspect both files.'),
       toolCalls: [
@@ -727,10 +728,42 @@ describe('ChatPanel Ink rendering', () => {
     const first = lines.findIndex((line) => /Read\s+src\/a\.ts/.test(line));
     const second = lines.findIndex((line) => /Read\s+src\/b\.ts/.test(line));
 
-    // One blank row separates prose from the block; the rows inside it run
-    // together so they read as a single aligned column.
-    expect(lines.slice(narration + 1, first)).toEqual(['']);
+    // A step of work is one quiet unit: the sentence it says before acting runs
+    // straight into the rows it acts on, with no blank row in between. The rows
+    // inside it run together so they read as a single aligned column.
+    expect(lines.slice(narration + 1, first)).toEqual([]);
     expect(lines.slice(first + 1, second)).toEqual([]);
+  });
+
+  it('opens each of your turns after two blank rows, like a new section', () => {
+    // Your turn is the landmark in a long transcript. One blank row left it
+    // reading as another paragraph of the reply above it.
+    const messages = [
+      msg('u1', 'user', 'first question'),
+      msg('a1', 'assistant', 'The answer is 42.'),
+      msg('u2', 'user', 'second question'),
+    ];
+
+    for (const [density, gap] of [
+      ['compact', ['', '']],
+      ['tight', []],
+    ] as const) {
+      const view = render(
+        withDensity(
+          <ChatPanel messages={messages} terminalWidth={80} terminalHeight={24} reducedMotion />,
+          density,
+        ),
+      );
+      const lines = frame(view.lastFrame).split('\n');
+      const answer = lines.findIndex((line) => line.includes('The answer is 42.'));
+      const turns = lines
+        .map((line, index) => (line.includes(PILCROW) ? index : -1))
+        .filter((index) => index >= 0);
+
+      expect(turns).toHaveLength(2);
+      expect(lines.slice(answer + 1, turns[1]!)).toEqual([...gap]);
+      cleanup();
+    }
   });
 
   it('runs actions together in tight density', () => {

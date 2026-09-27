@@ -107,6 +107,8 @@ export interface ThemeTokens {
 
   /** User message background */
   userBg: string;
+  /** Your own prompt in the transcript: the brightest ink, so each turn is a landmark. */
+  userText: string;
 }
 
 /**
@@ -214,6 +216,7 @@ export const DEFAULT_THEME: ThemeTokens = {
   mdCheckboxUnchecked: '#6E6E73',
 
   userBg: '#202022',
+  userText: '#F5F5F7',
 };
 
 /**
@@ -319,6 +322,7 @@ export const FOLIO_THEME: ThemeTokens = {
   mdCheckboxUnchecked: '#6F6A61',
 
   userBg: '#24221E',
+  userText: '#F6F1E7',
 };
 
 /**
@@ -349,9 +353,23 @@ export const RUBRIC_THEME: ThemeTokens = {
   usageMeterHigh: '#E3A84E',
   usageMeterCritical: '#EF6F95',
 
-  mdHeadingH1: '#F6F1E7',
+  // The ink ramp, re-tuned for a long read. Folio's body is a warm ivory at
+  // roughly 15:1 on a near-black terminal, which glares; Rubric's body comes
+  // down one step to about 12:1, so the headings above it — and your own
+  // prompt — have somewhere to stand. Inline code and links take a warm tone
+  // rather than Folio's cool one, which sat beside the cinnabar as a third hue
+  // in a two-colour palette, and `inactive` clears 4.5:1 so a dimmed row is
+  // still readable rather than merely present.
+  text: '#CFC9BE',
+  mdCodeText: '#CFC9BE',
+  mdHeadingH1: '#F4EFE6',
   mdHeadingH2: '#EFE9DE',
-  mdHeading: '#BDB6AA',
+  mdHeading: '#E2DCD0',
+  mdInlineCodeText: '#CDB791',
+  mdLink: '#CDB791',
+  inactive: '#857F74',
+  userText: '#F4EFE6',
+
   mdListMarker: '#E4573D',
 
   subagentColors: [

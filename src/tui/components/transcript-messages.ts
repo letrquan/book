@@ -24,6 +24,31 @@ export function delegatesWork(message: Message): boolean {
   return Boolean(message.toolCalls?.some((call) => call.name === 'AgentSpawn'));
 }
 
+/**
+ * Tools whose call does not turn the prose before it into a step of work: plan and
+ * memory bookkeeping, and the calls that hand the conversation back to you. An answer
+ * that ends by updating the plan is still the answer.
+ */
+const NON_STEP_TOOLS = new Set([
+  'TodoWrite',
+  'TaskCreate',
+  'TaskUpdate',
+  'TaskList',
+  'TaskGet',
+  'TaskStop',
+  'MemorySave',
+  'AskUserQuestion',
+  'EnterPlanMode',
+  'ExitPlanMode',
+]);
+
+/** Whether an assistant entry is a step of work rather than an answer. */
+export function isWorkStep(message: Message): boolean {
+  if (message.role !== 'assistant' || message.kind === 'local' || message.localCommand)
+    return false;
+  return (message.toolCalls ?? []).some((call) => !NON_STEP_TOOLS.has(call.name));
+}
+
 /** Merge completed tool-only assistant messages into the preceding assistant turn for display. */
 export function mergeAssistantMessages(
   messages: Message[],

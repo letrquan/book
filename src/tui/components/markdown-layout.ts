@@ -24,6 +24,11 @@ export function markdownBlockGap(
   if (previous === 'heading') return 0;
   if (next === 'heading') return density === 'compact' ? 1 : 0;
   if (previous === 'paragraph' && next === 'paragraph') return 1;
+  // A closing paragraph is a new thought, not one more bullet: with no gap
+  // "All 3 tests pass." read as the last item of the list above it. The other
+  // direction keeps its 0 — a paragraph that leads into a list belongs with
+  // what follows.
+  if (previous === 'list' && next === 'paragraph') return 1;
 
   const major = new Set(['code', 'table', 'blockquote', 'hr']);
   if (major.has(previous) || major.has(next)) return density === 'compact' ? 1 : 0;

@@ -27,6 +27,19 @@ describe('markdownBlockGap', () => {
     expect(markdownBlockGap('code', 'paragraph', 'tight')).toBe(0);
     expect(markdownBlockGap('paragraph', 'paragraph', 'tight')).toBe(1);
   });
+
+  it('separates a closing paragraph from the list above it', () => {
+    // A summary after a list is a new thought, not one more item: glued to the
+    // last bullet, "All 3 tests pass." read as part of the list.
+    for (const density of ['compact', 'tight'] as const) {
+      expect(markdownBlockGap('list', 'paragraph', density)).toBe(1);
+    }
+    // The other direction stays: a paragraph that leads into a list belongs
+    // with what follows it.
+    for (const density of ['compact', 'tight'] as const) {
+      expect(markdownBlockGap('paragraph', 'list', density)).toBe(0);
+    }
+  });
 });
 
 function maxLineWidth(text: string): number {
