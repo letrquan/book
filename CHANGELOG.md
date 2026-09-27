@@ -397,6 +397,32 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Ctrl+U and Ctrl+D edit the draft instead of scrolling the transcript** (#296). Ink hands every
+  key to every input handler, so the composer cleared the draft and the transcript jumped half a
+  page in the same keystroke. The composer is the only thing that knows whether there was a draft
+  at the moment the key arrived — InputBox's own Ctrl+U may have emptied the field before any other
+  handler runs — so it now reports the chords it cannot spend, and the transcript scrolls from that
+  hand-off rather than from a second, order-dependent reading of the draft. With a draft in hand
+  the chords only edit; with the composer empty, or not taking keys while a sheet owns them, they
+  still scroll. `TextInputField` also consumes Ctrl+U and clears the field instead of inserting a
+  literal `u`: ink-text-input keeps its cursor internal, so "kill to the left of the cursor" is not
+  reachable from a wrapper, and clearing the field is the only honest Ctrl+U it can offer.
+- **The bottom sheets stop covering the transcript rows behind them** (#304). A question, a plan
+  approval, an MCP elicitation form and the add-provider wizard all changed height while the
+  transcript above it kept the viewport it had measured on its own last layout change, so the sheet
+  landed on top of the last rows of the turn that raised it. `AskUserQuestionWizard`,
+  `PlanApprovalActions` and `McpElicitationForm` now report a change of rendered shape — a different
+  question, an editor opening or closing, a filter that left a different number of rows, an error
+  row, the width the body wraps to — and the app re-measures the transcript from that, never once
+  per keystroke. The add-provider wizard is now a sheet like every other decision: a labelled rule
+  reading `Add BYOK provider` with its `Step N/9` counter set at the far end, sized by
+  `frameGrid`/`sheetContentWidth` and sitting on the same content column as the rest of the screen,
+  instead of the one surface that still drew a box of its own.
+- **The permission prompt says whether `D` shows everything** (#304). It claimed to show all when
+  the expanded command still wrapped past the terminal, so pressing it changed nothing the user
+  could see. The hint now reports `D shows all` only when the expansion fits every wrapped row and
+  `D shows more` otherwise, and `D` is not offered at all when the expansion would not add a row
+  the collapsed command does not already have — the same rule the diff view already followed.
 - **Malformed tool-call arguments are repaired conservatively instead of refused** (#242). Three
   shapes repair to the arguments the model sent: a control character written literally inside a
   string is escaped, a comma directly before a `}` or `]` is dropped, and closing brackets missing

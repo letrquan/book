@@ -70,6 +70,11 @@ result) or **enter model IDs manually** (comma-separate to add several at once).
 the answer for an endpoint that exposes no model-list API, and it is still offered as a fallback
 if discovery fails.
 
+The wizard is a sheet, like every other decision the TUI asks for: a rule reading
+`Add BYOK provider`, with the `Step N/9` counter set at the far end of it, and the step's body two
+columns in so its text lands on the same column as the transcript above. It draws no box of its
+own.
+
 An already-configured provider keeps both routes. With one of its models selected in the picker,
 `Alt+R` re-reads the catalog from the endpoint and `Alt+M` adds model IDs by hand. A refresh
 replaces what discovery previously returned, but hand-entered models survive it — they exist
