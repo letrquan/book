@@ -1,5 +1,6 @@
 import type { Message } from '../../types/messages.js';
 import { splitReasoningParts } from '../../reasoning-tags.js';
+import { categoryFor } from '../../tools/catalog.js';
 
 /**
  * Whether assistant content draws nothing.
@@ -24,29 +25,29 @@ export function delegatesWork(message: Message): boolean {
   return Boolean(message.toolCalls?.some((call) => call.name === 'AgentSpawn'));
 }
 
-/**
- * Tools whose call does not turn the prose before it into a step of work: plan and
- * memory bookkeeping, and the calls that hand the conversation back to you. An answer
- * that ends by updating the plan is still the answer.
- */
-const NON_STEP_TOOLS = new Set([
-  'TodoWrite',
-  'TaskCreate',
-  'TaskUpdate',
-  'TaskList',
-  'TaskGet',
-  'TaskStop',
-  'MemorySave',
-  'AskUserQuestion',
-  'EnterPlanMode',
-  'ExitPlanMode',
-]);
+/** Calls that hand the conversation back to you, or save a memory: not in a catalog category of their own. */
+const HAND_BACK_TOOLS = new Set(['AskUserQuestion', 'MemorySave']);
 
-/** Whether an assistant entry is a step of work rather than an answer. */
+/**
+ * Whether a call leaves the prose before it an answer: plan and task bookkeeping (by catalog
+ * category, so a new task tool is covered without editing this list), plan mode, and the calls
+ * that hand the conversation back to you.
+ */
+function isNonStepTool(name: string): boolean {
+  const category = categoryFor(name);
+  return category === 'tasks' || category === 'planning' || HAND_BACK_TOOLS.has(name);
+}
+
+/**
+ * Whether an assistant entry is a step of work rather than an answer. The
+ * bookkeeping and hand-back calls are classified by the tool catalog, which is
+ * the same source the capability rules read. An answer that ends by updating
+ * the plan is still the answer.
+ */
 export function isWorkStep(message: Message): boolean {
   if (message.role !== 'assistant' || message.kind === 'local' || message.localCommand)
     return false;
-  return (message.toolCalls ?? []).some((call) => !NON_STEP_TOOLS.has(call.name));
+  return (message.toolCalls ?? []).some((call) => !isNonStepTool(call.name));
 }
 
 /** Merge completed tool-only assistant messages into the preceding assistant turn for display. */

@@ -147,7 +147,11 @@ describe('AgentMessage work steps', () => {
 
   // Ink styles through chalk, which emits nothing off a TTY; force truecolor
   // so the ink a turn is set in is visible in the frame.
-  function frameFor(message: Message, screenReader?: boolean): string {
+  function frameFor(
+    message: Message,
+    screenReader?: boolean,
+    transcriptMode?: 'compact' | 'detailed',
+  ): string {
     const level = chalk.level;
     chalk.level = 3;
     try {
@@ -160,6 +164,7 @@ describe('AgentMessage work steps', () => {
             reducedMotion
             terminalWidth={80}
             screenReader={screenReader}
+            transcriptMode={transcriptMode}
           />
         </ThemeContext.Provider>,
       );
@@ -169,7 +174,7 @@ describe('AgentMessage work steps', () => {
     }
   }
 
-  function stepFrame(screenReader?: boolean): string {
+  function stepFrame(screenReader?: boolean, transcriptMode?: 'compact' | 'detailed'): string {
     return frameFor(
       {
         ...assistant('step-1', [
@@ -182,6 +187,7 @@ describe('AgentMessage work steps', () => {
         ],
       },
       screenReader,
+      transcriptMode,
     );
   }
 
@@ -269,5 +275,54 @@ describe('AgentMessage work steps', () => {
 
     expect(thought).toContain(ink(DEFAULT_THEME.inactive));
     expect(thought).not.toContain('\u001b[2m');
+  });
+
+  it('draws the expanded thought header at reading weight too', () => {
+    // The detailed transcript reopens a thought; its header was still dimmed, so
+    // the one mode that shows more of a turn printed its least important line
+    // in the faintest ink on screen.
+    const header = stepFrame(false, 'detailed')
+      .split('\n')
+      .find((line) => stripAnsi(line).includes('Thought'))!;
+
+    expect(header).not.toContain('\u001b[2m');
+  });
+
+  it('leaves a step to the detailed transcript, which needs its blank rows', () => {
+    // Ctrl+O expands every block in a turn, and the blank rows between them are
+    // what keeps one call's output from running into the next call's header.
+    const frame = stepFrame(false, 'detailed');
+    const lines = stripAnsi(frame).split('\n');
+    const narration = lines.findIndex((line) => line.includes(NARRATION));
+
+    expect(frame).toContain(`${ink(DEFAULT_THEME.text)}${NARRATION}`);
+    expect(frame).not.toContain(`${ink(DEFAULT_THEME.subtle)}${NARRATION}`);
+    expect(lines[narration + 1]).toBe('');
+  });
+
+  it('quiets the code inside a step, since a fenced block is part of its prose', () => {
+    // Only `mdCodeText` was muted: the highlight tokens kept full colour, so a
+    // snippet a step showed to explain its step was the loudest thing in a turn.
+    const frame = frameFor({
+      ...assistant('step-2', [{ id: 'bash-1', name: 'Bash', arguments: { command: 'npm test' } }]),
+      content: 'Patching:\n\n```ts\nconst answer = 42;\n```',
+      toolResults: [
+        { version: 2, toolCallId: 'bash-1', status: 'success', content: 'ok' } as ToolResult,
+      ],
+    });
+
+    expect(frame).toContain(ink(DEFAULT_THEME.subtle));
+    expect(frame).not.toContain(ink(DEFAULT_THEME.mdCodeKeyword));
+  });
+
+  it('greys the check on a local event row, since success is the default there too', () => {
+    const frame = frameFor({
+      ...assistant('local-1'),
+      kind: 'local',
+      content: '✓ Background shell 1 exited',
+    });
+
+    expect(frame).toContain(`${ink(DEFAULT_THEME.inactive)}✓`);
+    expect(frame).not.toContain(`${ink(DEFAULT_THEME.success)}✓`);
   });
 });

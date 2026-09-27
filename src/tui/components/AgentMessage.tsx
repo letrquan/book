@@ -323,10 +323,14 @@ function ThinkBlock({
         {active && !screenReader ? (
           <Spinner active color={theme.mdThinkText} reducedMotion={reducedMotion} />
         ) : null}
-        <Text color={theme.mdThinkText} bold={active} dimColor={!active}>
+        {/* A finished thought is set like a collapsed one: grey at reading
+            weight. The faint attribute on top of an already-muted grey put this
+            header near 2.5:1, and it is the one row the expanded view cannot
+            skip past. */}
+        <Text color={active ? theme.mdThinkText : theme.inactive} bold={active}>
           {active ? 'Thinking' : 'Thought'}
         </Text>
-        {!active ? <Text color={theme.subtle} dimColor>{` - ${rowLabel}`}</Text> : null}
+        {!active ? <Text color={theme.inactive}>{` - ${rowLabel}`}</Text> : null}
       </Box>
       <Box marginLeft={screenReader ? 0 : CONTENT_COLUMN}>
         {active ? (
@@ -573,12 +577,16 @@ export function AgentMessageInner({
 
   // A step of work reads as one quiet unit: its thought, the sentence it says
   // before acting, and the tool rows sit together with no blank row between
-  // them. Screen readers keep every mark, since a spoken stream has no
-  // whitespace to carry the distinction.
-  const workStep = !screenReader && isWorkStep(message);
+  // them. The compact transcript only — the detailed transcript expands every
+  // block and keeps the blank rows between them, which is what keeps one call's
+  // output from running into the next call's header. Screen readers keep every
+  // mark, since a spoken stream has no whitespace to carry the distinction.
+  const workStep = !screenReader && transcriptMode !== 'detailed' && isWorkStep(message);
   // A step's narration speaks in the secondary voice: every run of its prose
-  // takes `subtle`, so the answer is the only full-ink text in a turn. Memoized,
-  // because MarkdownRenderer is memoized on the theme object.
+  // takes `subtle`, so the answer is the only full-ink text in a turn. Its
+  // code blocks follow, keyword and string hues included — a snippet the step
+  // shows to explain itself is still the step. Memoized, because
+  // MarkdownRenderer is memoized on the theme object.
   const stepTheme = useMemo(
     () => ({
       ...theme,
@@ -589,6 +597,10 @@ export function AgentMessageInner({
       mdInlineCodeText: theme.subtle,
       mdLink: theme.subtle,
       mdCodeText: theme.subtle,
+      mdCodeKeyword: theme.subtle,
+      mdCodeString: theme.subtle,
+      mdCodeFunction: theme.subtle,
+      mdCodeNumber: theme.subtle,
       mdListMarker: theme.subtle,
       mdBlockquoteText: theme.subtle,
     }),
@@ -598,7 +610,8 @@ export function AgentMessageInner({
   // A local note that opens with a status mark (`✕ Could not save…`, `✓
   // Background shell … exited`) is an event, so it is set like a tool row: the
   // mark in its colour, then the text in ink. As plain prose it read as a stray
-  // line of white text.
+  // line of white text. Only a failure takes colour: a check is the default
+  // state of the row, the same as on a tool row.
   const localEvent =
     message.kind === 'local' && !message.localCommand && !screenReader
       ? /^([✕✓]) ([\s\S]+)$/.exec(displayContent)
@@ -609,7 +622,7 @@ export function AgentMessageInner({
         marginLeft={CONTENT_COLUMN}
         width={Math.max(8, (terminalWidth ?? 80) - CONTENT_COLUMN - 1)}
       >
-        <Text color={localEvent[1] === '✕' ? theme.error : theme.success}>{localEvent[1]} </Text>
+        <Text color={localEvent[1] === '✕' ? theme.error : theme.inactive}>{localEvent[1]} </Text>
         <Box flexGrow={1} flexShrink={1}>
           <Text color={theme.text} wrap="wrap">
             {localEvent[2]}

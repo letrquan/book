@@ -5,6 +5,7 @@ import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { DensityContext, type TuiDensity } from '../density.js';
 import { ChatPanel, getCompletedTimelineWindow, getStreamingTimelineWindow } from './ChatPanel.js';
 import { AgentMessage } from './AgentMessage.js';
+import { userTurnRows } from './UserMessage.js';
 import { DROP_CAP } from './WelcomeScreen.js';
 import { PILCROW } from '../marks.js';
 import type { FileMutationSummary, ToolCall, ToolResult } from '../../types/tools.js';
@@ -67,6 +68,16 @@ function failureResult(toolCallId: string, message: string, content = ''): ToolR
     content,
     structuredError: { code: 'test_error', message, retryable: false },
   };
+}
+
+/** The truecolor escape chalk writes for a `#RRGGBB` token. */
+function rgb(token: string): string {
+  const [r, g, b] = [1, 3, 5].map((offset) => parseInt(token.slice(offset, offset + 2), 16)) as [
+    number,
+    number,
+    number,
+  ];
+  return `\u001b[38;2;${r};${g};${b}m`;
 }
 
 afterEach(() => {
@@ -289,6 +300,44 @@ describe('ChatPanel Ink rendering', () => {
     expect(lines[boundary - 1]!.trim()).toBe('');
     expect(lines[boundary + 1]!.trim()).toBe('');
     expect(lines[boundary + 2]).toContain('answer after the compaction');
+  });
+
+  it('greys the check on a compact boundary, which is a transcript event', () => {
+    // Ink styles through chalk, which emits nothing off a TTY; force truecolor
+    // so the mark's ink is visible in the frame.
+    const level = chalk.level;
+    chalk.level = 3;
+    let raw: string;
+    try {
+      const view = render(
+        withTheme(
+          <ChatPanel
+            messages={[msg('u1', 'user', 'go'), msg('a1', 'assistant', 'first answer')]}
+            compactBoundaries={[
+              {
+                id: 'c1',
+                trigger: 'auto',
+                transcriptOrdinal: 1,
+                preContextCount: 8,
+                postContextCount: 3,
+                preContextTokens: 10_300,
+                postContextTokens: 3_800,
+                generation: 1,
+                checkpointVersion: 2,
+                timestamp: 2,
+              },
+            ]}
+            terminalWidth={80}
+            reducedMotion
+          />,
+        ),
+      );
+      raw = view.lastFrame() ?? '';
+    } finally {
+      chalk.level = level;
+    }
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}✓`);
+    expect(raw).not.toContain(`${rgb(DEFAULT_THEME.success)}✓`);
   });
 
   it('sets a compact boundary flush left for a screen reader, like the assistant rows', () => {
@@ -762,6 +811,38 @@ describe('ChatPanel Ink rendering', () => {
 
       expect(turns).toHaveLength(2);
       expect(lines.slice(answer + 1, turns[1]!)).toEqual([...gap]);
+      cleanup();
+    }
+  });
+
+  it('estimates your turn with the blank rows above it', () => {
+    // The virtual transcript sizes its spacers from the estimate until a row is
+    // measured. Leaving the two blank rows out made every unmeasured turn two
+    // rows short, so the scroll offset jumped the moment a row was measured.
+    const messages = [
+      msg('u1', 'user', 'first question'),
+      msg('a1', 'assistant', 'The answer is 42.'),
+      msg('u2', 'user', 'second question'),
+    ];
+
+    for (const [density, margin] of [
+      ['compact', 2],
+      ['tight', 0],
+    ] as const) {
+      const view = render(
+        withDensity(
+          <ChatPanel messages={messages} terminalWidth={80} terminalHeight={24} reducedMotion />,
+          density,
+        ),
+      );
+      const { estimateRows } = virtualTranscriptOptionsSpy.mock.lastCall![0];
+      const turn = messages[2]!;
+
+      // The prompt, exactly as `userTurnRows` sets it, plus its margin.
+      expect(estimateRows(turn)).toBe(
+        userTurnRows(turn.content, 80, turn.timestamp, turn.attachments?.length ?? 0) + margin,
+      );
+      expect(view.lastFrame()).toBeDefined();
       cleanup();
     }
   });

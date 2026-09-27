@@ -45,7 +45,18 @@ describe('isWorkStep', () => {
   });
 
   it('is an answer when the only calls are bookkeeping', () => {
+    // Task bookkeeping is classified by the tool catalog, so a task tool added
+    // later is covered without a second list here.
     expect(isWorkStep(assistant('a1', ['TodoWrite']))).toBe(false);
+    expect(isWorkStep(assistant('a1', ['TaskOutput']))).toBe(false);
+  });
+
+  it('is a step when the call is a subagent, which is a category of its own', () => {
+    expect(isWorkStep(assistant('a1', ['Task']))).toBe(true);
+  });
+
+  it('is an answer when the call opens plan mode', () => {
+    expect(isWorkStep(assistant('a1', ['EnterPlanMode']))).toBe(false);
   });
 
   it('is an answer when the turn hands itself back to you', () => {

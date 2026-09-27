@@ -256,7 +256,7 @@ The layout follows the same idea. Your turns hang a red `¶` in the margin and a
 
 Each step of the agent's work — its thought, the sentence it says before acting, and the tool rows — is drawn as one unit with no blank rows inside, and that sentence is in the secondary grey, so the final answer is the only full-ink text in a turn. Bookkeeping calls (the plan, memory) and calls that hand the turn back to you (a question, plan approval) do not make an answer a step: those turns keep their blank rows and their full ink.
 
-The transcript keeps the agent's reading out of the way. In the default compact transcript, a run of read-only calls (`Read`, `Glob`, `Grep`, the git read tools, `ToolSearch`, task lookups, `BashOutput`, session history) collapses into one row: `✓ Read config.ts, loader.ts   2 files · 3 searches`. Every check is grey: success is the default, so only a failure (a rose `×`) or a pending prompt takes colour. The run can span one parallel batch or several turns in a row. Edits, `Bash` (even a read-only command, since the transcript cannot tell), web and MCP calls, delegation, failures, anything awaiting permission, and reads that reach outside the workspace keep their own rows. Ctrl+O's detailed transcript shows every call, and so does screen-reader mode. A row you have expanded is never folded.
+The transcript keeps the agent's reading out of the way. In the default compact transcript, a run of read-only calls (`Read`, `Glob`, `Grep`, the git read tools, `ToolSearch`, task lookups, `BashOutput`, session history) collapses into one row: `✓ Read config.ts, loader.ts   2 files · 3 searches`. Every check on a tool row or transcript event is grey: success is the default, so only a failure (a rose `×`) or a pending prompt takes colour. The run can span one parallel batch or several turns in a row. Edits, `Bash` (even a read-only command, since the transcript cannot tell), web and MCP calls, delegation, failures, anything awaiting permission, and reads that reach outside the workspace keep their own rows. Ctrl+O's detailed transcript shows every call, and so does screen-reader mode. A row you have expanded is never folded.
 
 The ink itself is tuned for a long read: on a dark terminal the body text sits at about 12:1 rather than near-white, the headings and your own prompt are brighter than the body, and inline code takes a warm tone rather than a cool hue.
 
@@ -276,6 +276,8 @@ Project themes can override any token in `.book/themes/<name>.json`, starting fr
   "toolRail": "#6B7164"
 }
 ```
+
+A theme that sets `text` but not `userText` uses its `text` for your prompt too.
 
 ## Tool-use telemetry
 
