@@ -5,7 +5,15 @@ How Book reads and changes files, runs shell commands, and decides what it may d
 ## Reading files
 
 `Read` returns a whole file by default, up to 2000 lines or 50 KB of output, whichever comes
-first; `offset`/`limit` are for files larger than that. A Read that stops before the end of the
+first; `offset`/`limit` are for files larger than that, and both are integers of at least 1 — a
+fractional or zero value is rejected as an invalid argument rather than printing `2.5: undefined`
+or `0: undefined`. The numbered lines are
+the file's own lines and nothing else: a final newline ends the last line rather than starting
+another, so `a\nb\n` reads as `1: a` and `2: b` and a file of exactly one newline reads as its one
+blank line, `1: `. A file with no lines at all returns the notice `[Empty file: 0 lines.]` rather
+than an empty result, which would read as a call that produced no output.
+
+A Read that stops before the end of the
 file ends with a notice naming where to continue, such as `[Lines 1-1163 of 1894 shown, the most
 one Read returns (50 KB). Continue with offset: 1164.]`, so the shared 50 KB clip on tool results,
 whose notice names a file in Book's `tool-output` directory that `Read` can open in the same run,
@@ -38,7 +46,9 @@ can decide what to read in full.
   - a `function`/`class`/`def`/`fn`/`fun`-style keyword line, unless the keyword is an object key,
     an import-list member or a property access (`enum: [...]`, `describe,`, `set.add(x)`,
     `it.skip;`); in JavaScript and TypeScript, also a test block reached through a modifier
-    (`it.skip('later', () => {`, `it.each` tables);
+    (`it.skip('later', () => {`, `it.each` tables) or a chain called with a title **and** a second
+    argument, which is the callback a test call passes (`it.custom('titled', () => {`,
+    `it.effect('adds', () => …`);
   - a method named first whose parameter list closes into a body, on the same line or a later one
     (`async *entries() {`, `*values() {`, `#secret(): string {`, `async send(` …
     `): Promise<void> {`, or `}: Args): Promise<void> {` after a destructured parameter);
@@ -49,12 +59,15 @@ can decide what to read in full.
     method with no body (`double area();`);
   - an arrow-function member (`handle = (event) => {`);
   - in C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx`, `.h` and the like), inside a class body
-    (under `class`, `struct` or an access specifier such as `public:`), every member function,
-    constructor, destructor and operator, declared (`void set(int v);`,
+    (under `class`, `struct`, a nested `union` or an access specifier such as `public:`), every
+    member function, constructor, destructor and operator, declared (`void set(int v);`,
     `virtual void draw() = 0;`) or defined (`int get() const { return n_; }`), with qualifier
-    macros and `[[attributes]]` allowed; elsewhere a function whose body is on its line or opens
-    below it, qualified names included (`std::string Foo::name() {`). `int x(5);` and
+    macros and `[[attributes]]` allowed — including one whose argument nests, as a conditional
+    `noexcept` and a `GUARDED_BY(mu_.lock())` do; elsewhere a function whose body is on its line or
+    opens below it, qualified names included (`std::string Foo::name() {`). `int x(5);` and
     `Foo f(1);` outside a class are variables and stay out, and so does `static_assert(…)`. A
+    `union` is a type only when a name or the anonymous form's brace follows it, never an argument
+    list, so `union(a, b)` and `union(setA, setB);` are calls and stay out. A
     capitalised call with an underscore (`Q_PROPERTY(…)`, `GENERATED_BODY()`, a field's
     `ABSL_GUARDED_BY(mu_)`) or a builtin such as `__attribute__((…))` is a macro, not a member,
     unless a body follows it (`BOOST_AUTO_TEST_CASE(works) {`); `RGB(int r, int g, int b);` is a
@@ -65,19 +78,23 @@ can decide what to read in full.
   (`@Override public String toString() {`, `@HostListener('click') onClick() {`,
   `[HttpGet] public IActionResult Get() {`) in languages that have them (Java, Kotlin, Scala,
   Groovy, C#, Dart, Swift, TypeScript and JavaScript). A parenthesis inside a quoted default value
-  (`paren(s = '(') {`, a C# verbatim string, a C++ `1'000`) does not unbalance a signature, and
-  neither does a trailing comment (`void set(int v);  // Sets it.`) or a block comment before the
-  body (`run() /* entry */ {`). A line deeper than four spaces counts when it declares a member of
-  a type the outline lists: a Java inner class's methods, a nested C# or C++ class's, an `impl`
-  inside a Rust `mod`.
+  (`paren(s = '(') {`, a C# verbatim string, a C++ `1'000` or `u8'a'`) does not unbalance a
+  signature, and neither does a trailing comment (`void set(int v);  // Sets it.`) or a block
+  comment before the body (`run() /* entry */ {`). A line deeper than four spaces counts when it
+  declares a member of a type the outline lists: a Java inner class's methods, a nested C# class's
+  or C++ `class`/`struct`/`union`'s, an `impl` inside a Rust `mod`.
 
   Lines shaped like these that are not declarations stay out: control flow (`if (`, `else if (`,
   `for (`, `foreach (`, `using (`, `lock (`, `switch (`, `catch (`; in Java and C# also with no
   space, as in `foreach(` and `lock(`, which elsewhere may be method names), `assert x;`,
   `return foo(`, `new Foo(`, `go func() {`, `defer func() {`, a call that closes into a callback
   (`useEffect(() => {`, `).then(() => {`), a chained call (`foo(x).then(`), a call on an object
-  named like a keyword (`it.next()`, `impl->value = f(`, Kotlin's `it.split(",")`), and a
-  statement followed by another on the same line (`foo(x); if (y) {`). In `.ts`, `.mts`, `.cts`,
+  named like a keyword (`it.next('resume')`, `impl->value = f(`, Kotlin's `it.split(",")`), and a
+  statement followed by another on the same line (`foo(x); if (y) {`). A `describe`/`it`/`test`
+  chain counts when it is reached through a test modifier (`it.skip`, `test.extend({})('z', …)`,
+  `it.each` tables) or when it is called with a title and a second argument — the comma before the
+  callback is what says so, and a title alone (`it.next('resume');`) or a body further along the
+  line (`it.next('resume').then(() => {`) is a plain call on a variable named `it`. In `.ts`, `.mts`, `.cts`,
   `.mjs` and `.cjs` files, the text of a multi-line template literal, and of a string continued
   with a trailing backslash, is skipped at any indentation, and a `/` right after a condition's
   `)` (`if (ok) /\d+/.test(s)`) opens a regex. `.tsx`, `.jsx` and `.js` files are not scanned for
@@ -479,6 +496,17 @@ A killed command reports itself as killed rather than failed, and returns whatev
 stdout and stderr before the kill. The two outcomes call for different next moves — retrying a
 killed command identically is pointless; retrying with a larger `timeout` is not — so the failure
 message names the deadline it hit and the ways past it.
+
+**A failure keeps both ends of its output; a success keeps the head.** Any tool result over 50 KB
+is clipped, and a notice names the file in Book's user-local `tool-output` directory that holds it
+in full, so a `Read` in the same run can open it. What survives the clip depends on the status. A
+failed result — a non-zero exit, a refused plan, anything but success — keeps its first few KB
+**and** its last, with the count of what sits between them in the notice, because a failed run
+puts something worth reading at each end: the `act()` warnings at the top, and the
+`Tests 2 failed | 10 passed` every runner prints last. The head is also what carries a failure's
+framing, such as the Task tool's `Partial result (the child was stopped; nothing below is
+final):`, which is what says the output after it is not finished. A successful result keeps the
+**head** alone, where the first thing the command did is.
 
 ## Bash sandbox
 
