@@ -389,8 +389,16 @@ const OUTLINE_TYPE = `[A-Za-z_$][\\w$.]*(?:${OUTLINE_GENERIC})?(?:\\[\\])*\\??`;
 // `.`, `->` or the end of the line is an object key, an import-list member or a
 // property access (`set.add(x)`, `it.skip;`, `impl->value`) instead.
 const OUTLINE_KEYWORD = new RegExp(
-  `^\\s+${OUTLINE_MODIFIERS}(?:function|class|interface|enum|namespace|def|func|fn|fun|struct|union|impl|trait|describe|it|test|constructor|get|set)\\b(?!\\s*(?:[:,;=?).]|->)|\\s*$)`,
+  `^\\s+${OUTLINE_MODIFIERS}(?:function|class|interface|enum|namespace|def|func|fn|fun|struct|impl|trait|describe|it|test|constructor|get|set)\\b(?!\\s*(?:[:,;=?).]|->)|\\s*$)`,
 );
+/**
+ * A `union` at the indentation its class members sit at, which the keyword
+ * list cannot hold: listed there it would also match a call or an assignment
+ * named `union`, so what follows the word decides — a name (`union U {`) or the
+ * anonymous form's brace (`union {`), never an argument list, a `=`, or the
+ * punctuation that makes `union,` an import-list member.
+ */
+const OUTLINE_UNION_DECLARATION = /^\s+union\b(?!\s*(?:[:,;=?.]|->|\())/;
 // A test block reached through a modifier: `it.skip('later', () => {`,
 // `describe.each(cases)('x', …)`, `it.each<[number]>([[1]])('x', …)`,
 // `it.for([1, 2])('x', …)`, `test.extend({})('z', …)`, and Jest's table form,
@@ -401,22 +409,27 @@ const OUTLINE_TEST_MODIFIER_CHAIN = new RegExp(
   `^\\s+(?:describe|it|test)(?:\\.${OUTLINE_TEST_MODIFIERS})+\\s*(?:(?:${OUTLINE_GENERIC})?\\s*\\(|\`)`,
 );
 /**
- * A chain of any other name counts when it is called with a title
- * (`it.custom('titled', …)`) *and* opens a body. A title alone is not enough:
- * `it.next('resume');` has one, and a test call has something a plain call on
- * an object named `it` does not (#316).
+ * A chain of any other name counts when it is called with a title *and* a
+ * second argument: `it.custom('titled', () => {`, `it.effect('adds', () => …`.
+ * The callback is the second argument, and the comma before it is what says
+ * so. A title alone does not (`it.next('resume');`), and neither does a body
+ * somewhere on the line (`it.next('resume').then(() => {`) — a test call
+ * passes the callback to the chain member itself (#316).
  */
 const OUTLINE_TEST_TITLE_CHAIN =
-  /^\s+(?:describe|it|test)(?=\s*\.[A-Za-z_$][\w$]*[^\n]*\(\s*['"`])(?=[^\n]*=>\s*\{\s*$)/;
+  /^\s+(?:describe|it|test)(?:\.[A-Za-z_$][\w$]*)+\s*\(\s*(['"`])[^'"`\n]*\1\s*,/;
 const OUTLINE_TEST_CHAIN = new RegExp(
   `${OUTLINE_TEST_MODIFIER_CHAIN.source}|${OUTLINE_TEST_TITLE_CHAIN.source}`,
 );
-// A type whose members may sit deeper than OUTLINE_MAX_INDENT: a Java inner
-// class, a nested C# class, a nested C++ `union`, an `impl` inside a Rust
-// `mod`. Its keyword is followed by a name or type arguments, so
-// `impl->value = f(` is not one.
+/**
+ * A type whose members may sit deeper than OUTLINE_MAX_INDENT: a Java inner
+ * class, a nested C# class, a nested C++ `union`, an `impl` inside a Rust
+ * `mod`. Its keyword is followed by a name, type arguments, or — for the
+ * anonymous C/C++ forms — a brace, but never a `(`, so `union(a, b)` and
+ * `union(setA, setB);` are calls and not declarations.
+ */
 const OUTLINE_TYPE_DECLARATION = new RegExp(
-  `^\\s*${OUTLINE_MODIFIERS}(?:class|interface|enum|record|struct|union|trait|impl|object|namespace)(?:\\s+[A-Za-z_$@[]|\\s*<)`,
+  `^\\s*${OUTLINE_MODIFIERS}(?:(?:class|interface|enum|record|struct|union|trait|impl|object|namespace)(?:\\s+[A-Za-z_$@[]|\\s*<)|(?:struct|union)\\s*\\{)`,
 );
 // A method named first: `name(`, `async *entries(`, `#secret(`, `map<K extends Record<string, V>>(`.
 function outlineNameFirst(statement: string): RegExp {
@@ -640,16 +653,23 @@ function quoteEnd(line: string, start: number, quote: string): number | undefine
   return undefined;
 }
 
-/** What may stand immediately before a character literal's opening quote. */
-const CHARACTER_LITERAL_PREFIX = /(?:u8|U8|[uUL])$/;
+/**
+ * What may stand immediately before a character literal's opening quote. Only
+ * `u8` needs naming: a `'` between digits (`1'000`, a C++14 separator) opens
+ * nothing, and the digit check below already rejects `U'x'` and `L'y'` because
+ * no hex digit follows their quote. `u8'a'` is the one shape where a letter
+ * does, and `U8` is not a C++ prefix, so the encoding prefix is what tells them
+ * apart (#316).
+ */
+const CHARACTER_LITERAL_PREFIX = /u8$/;
 
 /**
  * Where the quoted text opening at `index` ends: the index of its closing
  * quote, or -1 when it runs past the line. A C# verbatim string (`@"C:\"`)
  * takes no backslash escapes, only a doubled quote, and a `'` between digits
  * (`1'000`, a C++14 separator) opens nothing, so its own index comes back —
- * unless the quote carries an encoding prefix, which is what tells `u8'a'`,
- * `U'x'` and `L'y'` apart from `1'000` (#316).
+ * unless the quote carries an encoding prefix, which is what tells `u8'a'`
+ * from `1'000` (#316).
  */
 function quotedEnd(line: string, index: number): number {
   const quote = line[index];
@@ -885,7 +905,11 @@ function isShallowDeclaration(
   inCppClass: boolean,
 ): boolean {
   const line = declarationText(lines[index], profile);
-  if (OUTLINE_KEYWORD.test(line) || (profile.testChains && OUTLINE_TEST_CHAIN.test(line)))
+  if (
+    OUTLINE_KEYWORD.test(line) ||
+    OUTLINE_UNION_DECLARATION.test(line) ||
+    (profile.testChains && OUTLINE_TEST_CHAIN.test(line))
+  )
     return true;
   if (profile.cpp) return isCppMember(lines, index, indent, inCppClass);
   if (profile.keywordsOnly) return false;
@@ -1225,10 +1249,10 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   const resolved = resolveReadablePath(ctx, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath } = resolved;
-  // Floored as well as validated: the schema rejects a fraction, but a caller
-  // that reaches the tool directly must never be handed `2.5: undefined` or
-  // offered `offset: 4.5` as the next page (#310).
-  const offset = Math.floor((args.offset as number) || 1);
+  // Floored as well as validated, and clamped: the schema rejects a fraction
+  // and anything below 1, but a caller that reaches the tool directly must
+  // never be handed `0: undefined` or `offset: -2.5` as the next page (#310).
+  const offset = Math.max(1, Math.floor((args.offset as number) || 1));
   const limit = Math.max(1, Math.floor((args.limit as number) || 2000));
 
   let content: string;
@@ -1583,6 +1607,39 @@ interface GrepFileMatches {
   lines?: string[];
 }
 
+/** The structured counts a Grep result carries, in every `output_mode`. */
+interface GrepCounts {
+  mode: 'content' | 'files_with_matches' | 'count';
+  totalMatches?: number;
+  matches?: Record<string, GrepFileMatches>;
+  files?: string[];
+}
+
+/**
+ * A Grep row's count, from the counts Grep already collected rather than by
+ * re-reading its own page. The text cannot be counted back: a context line's
+ * own text can hold a `12:30` of its own, and a match spanning several lines
+ * is several lines of the page (#311). In the unit `output_mode` asks for —
+ * matches in `content` and `count` mode, files in `files_with_matches` — and
+ * the summary follows the same count and noun.
+ */
+function grepPresentation(data: GrepCounts): {
+  kind: 'search';
+  metadata: string[];
+  summary: string;
+} {
+  const files = data.mode === 'files_with_matches';
+  const count = files ? (data.files?.length ?? 0) : (data.totalMatches ?? sumMatches(data.matches));
+  const noun = files ? 'file' : 'match';
+  const label = `${count} ${count === 1 ? noun : files ? 'files' : 'matches'}`;
+  return { kind: 'search', metadata: [label], summary: `Found ${label}` };
+}
+
+function sumMatches(matches: Record<string, GrepFileMatches> | undefined): number {
+  if (!matches) return 0;
+  return Object.values(matches).reduce((total, file) => total + file.matches.length, 0);
+}
+
 async function grepSearchPortable(
   args: Record<string, unknown>,
   ctx: ToolContext,
@@ -1716,15 +1773,19 @@ async function grepSearchPortable(
     const lines = Array.from(matchesByFile.entries()).map(
       ([file, result]) => `${file}:${result.matches.length}`,
     );
+    const data: GrepCounts = { mode: outputMode, totalMatches, matches: serializedMatches };
     return toolSuccess(lines.join('\n') || 'No matches found', {
-      data: { mode: outputMode, matches: serializedMatches },
+      data,
+      presentation: grepPresentation(data),
     });
   }
 
   if (outputMode === 'files_with_matches') {
     const matchedFiles = Array.from(matchesByFile.keys());
+    const data: GrepCounts = { mode: outputMode, files: matchedFiles };
     return toolSuccess(matchedFiles.join('\n') || 'No matches found', {
-      data: { mode: outputMode, files: matchedFiles },
+      data,
+      presentation: grepPresentation(data),
     });
   }
 
@@ -1761,9 +1822,11 @@ async function grepSearchPortable(
   const truncationNotice = outputTruncated
     ? '\n... (truncated at 50 KB; refine pattern or include)'
     : '';
+  const data: GrepCounts = { mode: outputMode, totalMatches, matches: serializedMatches };
   return toolSuccess((output.join('\n') || 'No matches found') + truncationNotice, {
-    data: { mode: outputMode, totalMatches, matches: serializedMatches },
+    data,
     pagination: { truncated: totalMatches >= headLimit || outputTruncated },
+    presentation: grepPresentation(data),
   });
 }
 
@@ -1939,22 +2002,26 @@ async function grepSearchWithRipgrep(
         const lines = Array.from(matchesByFile.entries()).map(
           ([file, result]) => `${file}:${result.matches.length}`,
         );
+        const data: GrepCounts = { mode: outputMode, totalMatches, matches: serializedMatches };
         finish({
           kind: 'success',
           result: toolSuccess(lines.join('\n') || 'No matches found', {
-            data: { mode: outputMode, matches: serializedMatches },
+            data,
             pagination: { truncated: totalMatches >= headLimit },
+            presentation: grepPresentation(data),
           }),
         });
         return;
       }
       if (outputMode === 'files_with_matches') {
         const matchedFiles = Array.from(matchesByFile.keys());
+        const data: GrepCounts = { mode: outputMode, files: matchedFiles };
         finish({
           kind: 'success',
           result: toolSuccess(matchedFiles.join('\n') || 'No matches found', {
-            data: { mode: outputMode, files: matchedFiles },
+            data,
             pagination: { truncated: totalMatches >= headLimit },
+            presentation: grepPresentation(data),
           }),
         });
         return;
@@ -1962,11 +2029,13 @@ async function grepSearchWithRipgrep(
       const truncationNotice = outputTruncated
         ? '\n... (truncated at 50 KB; refine pattern or include)'
         : '';
+      const data: GrepCounts = { mode: outputMode, totalMatches, matches: serializedMatches };
       finish({
         kind: 'success',
         result: toolSuccess((output.join('\n') || 'No matches found') + truncationNotice, {
-          data: { mode: outputMode, totalMatches, matches: serializedMatches },
+          data,
           pagination: { truncated: totalMatches >= headLimit || outputTruncated },
+          presentation: grepPresentation(data),
         }),
       });
     });
@@ -2004,12 +2073,14 @@ export const fileTools: ToolDefinition[] = [
         },
         offset: {
           type: 'integer',
+          minimum: 1,
           description:
             'Line number to start reading from (1-indexed). Leave unset unless the file is larger than one Read returns (2000 lines or 50 KB); a Read that stops early names the offset to continue from.',
           default: 1,
         },
         limit: {
           type: 'integer',
+          minimum: 1,
           description:
             'Maximum number of lines to read. Leave unset to read the whole file; only set it for a file larger than 2000 lines or 50 KB.',
           default: 2000,

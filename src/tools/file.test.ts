@@ -531,6 +531,39 @@ describe('read_file', () => {
       '[Lines 2-3 of 5 shown. Continue with offset: 4.]',
     ]);
   });
+
+  // #310, C: `Math.floor` ran after the `|| 1` fallback, so `offset: 0.5`
+  // floored to 0 and printed `0: undefined`, and a schema-valid negative
+  // integer printed `-3: undefined` lines.
+  it.each([
+    { name: 'a fraction below one', offset: 0.5 },
+    { name: 'a negative integer', offset: -3 },
+  ])('starts at line 1 for $name (#310)', async ({ offset }) => {
+    writeFileSync(join(dir, 'lines.txt'), '1\n2\n3\n4\n5');
+
+    const result = await read.execute({ filePath: 'lines.txt', offset }, ctx);
+
+    expect(result.status).toBe('success');
+    expect(result.content.split('\n')[0]).toBe('1: 1');
+  });
+
+  it.each([
+    { field: 'offset', value: 0 },
+    { field: 'limit', value: 0 },
+  ])('rejects $field of 0 before the tool runs (#310)', async ({ field, value }) => {
+    writeFileSync(join(dir, 'lines.txt'), '1\n2\n3');
+    const registry = createRegistry();
+    registry.register(read);
+
+    const result = await registry.execute(
+      { id: 'zero', name: 'Read', arguments: { filePath: 'lines.txt', [field]: value } },
+      ctx,
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.code).toBe('invalid_arguments');
+    expect(result.structuredError?.message).toContain(`arguments.${field}`);
+  });
 });
 
 describe('readOnlyRoots', () => {
@@ -1084,6 +1117,22 @@ describe('grep', () => {
     });
     expect(data.matches['a.ts']).not.toHaveProperty('lines');
     expect(JSON.stringify(result.data)).not.toContain('unrelated secret');
+  });
+
+  it('counts a content-mode row from its own data, not by re-parsing the page (#311)', async () => {
+    // A context line carries `path:line- text`, and the text itself holds a
+    // `12:30` timestamp. Counting `/:\d+:/` lines took that context line for a
+    // match; Grep's own data knows there is only one.
+    writeFileSync(join(dir, 'a.ts'), "const found = 1;\nconst at = '10:12:30';\n");
+    const context = { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' } };
+
+    const result = await grep.execute({ pattern: 'found', include: '*.ts', C: 1 }, context);
+
+    expect(result.status).toBe('success');
+    // The context line is in the page, so the text alone would count two.
+    expect(result.content).toContain('a.ts:2- const at');
+    expect(result.presentation?.metadata).toEqual(['1 match']);
+    expect(result.presentation?.summary).toBe('Found 1 match');
   });
 
   it('skips binary files even when their bytes contain the pattern', async () => {
@@ -2710,6 +2759,65 @@ const OUTLINE_CONTRACT: Array<{ shape: string; file: string; lines: string[]; ou
       file: 'drive.ts',
       lines: ['export function drive(it: Iterator<string>) {', "  it.next('resume');", '}'],
       outline: ['1: export function drive(it: Iterator<string>) {'],
+    },
+    {
+      // #316, item 4, both directions. Requiring the line to end in `=> {`
+      // listed any call whose callback opened a body, and a title with anything
+      // after it on the line. A test call is a member chain called with a title
+      // *and* a second argument: the callback. The comma is what says so.
+      shape: 'TypeScript: a test chain is a titled call with a second argument',
+      file: 'suite.ts',
+      lines: [
+        "describe('suite', () => {",
+        "  it.effect('adds', () => Effect.gen(function* () {",
+        '  }));',
+        "  it.custom('titled', function () {",
+        '  });',
+        "  it.custom('titled',",
+        '    () => {',
+        '    });',
+        "  test.extend({})('z', () => {",
+        '  });',
+        "  it.next('resume');",
+        "  it.next('resume').then(() => {",
+        "  it.value = run('x', () => {",
+        '});',
+      ],
+      outline: [
+        "1: describe('suite', () => {",
+        "2:   it.effect('adds', () => Effect.gen(function* () {",
+        "4:   it.custom('titled', function () {",
+        "6:   it.custom('titled',",
+        "9:   test.extend({})('z', () => {",
+      ],
+    },
+    {
+      // #316, D: `union` in the language-agnostic keyword list made a call
+      // named `union` a declaration. It is a type only when a name or `{`
+      // follows, never a `(`.
+      shape: 'Python: a call named union is a call',
+      file: 'sets.py',
+      lines: [
+        'def combine(set_a, set_b):',
+        '    union = 1',
+        '    total = union(set_a, {1, 2})',
+        '    other = set_a.union(set_b)',
+      ],
+      outline: ['1: def combine(set_a, set_b):'],
+    },
+    {
+      // #316, D: the same call in JavaScript, where the keyword list applies
+      // too (`const u = union(a, b);` is an assignment, not a declaration).
+      shape: 'JavaScript: a call named union is a call',
+      file: 'sets.js',
+      lines: [
+        'function combine(setA, setB) {',
+        '  union(setA, setB);',
+        '  const total = union(setA, { 1, 2 });',
+        '  return total;',
+        '}',
+      ],
+      outline: ['1: function combine(setA, setB) {'],
     },
   ];
 

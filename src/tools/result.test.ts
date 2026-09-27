@@ -103,14 +103,19 @@ describe('ToolResult V2', () => {
     });
   };
 
-  const expectTailKept = (content: string) => {
+  // A failure is judged on both ends: the head carries the error line and
+  // whatever framed the output (a `Partial result …` caveat, the first
+  // diagnostics), and the tail carries the verdict a runner prints last. A
+  // clip that kept only one of the two lost whichever end the model needed.
+  const expectHeadAndTailKept = (content: string) => {
     expect(Buffer.byteLength(content)).toBeLessThanOrEqual(50 * 1024);
+    expect(content).toContain('START-OF-BUILD');
     expect(content).toContain('suite 41 of 42 passed');
-    expect(content).not.toContain('START-OF-BUILD');
-    expect(content).toContain('Earlier output truncated');
+    // The gap is named, with the file holding the rest where there is one.
+    expect(content).toMatch(/\[\.\.\. \d+ bytes omitted\. Full output( unavailable\.|: )/);
   };
 
-  it('keeps the tail of a timed-out result through the bounding step', async () => {
+  it('keeps the head and the tail of a timed-out result through the bounding step', async () => {
     const artifactRoot = mkdtempSync(join(tmpdir(), 'book-timeout-tail-'));
     try {
       const bounded = await boundToolResultOutput(
@@ -121,20 +126,20 @@ describe('ToolResult V2', () => {
       );
       const content = toolResultModelContent(bounded);
 
-      expectTailKept(content);
+      expectHeadAndTailKept(content);
       expect(content).toContain('ERROR [tool_timeout]: Command was killed after 300000ms');
       expect(content).toContain('Fix: Re-run with a larger timeout.');
       // The transcript row reads the same way the model does.
-      expectTailKept(bounded.presentation!.details!);
+      expectHeadAndTailKept(bounded.presentation!.details!);
     } finally {
       rmSync(artifactRoot, { recursive: true, force: true });
     }
   });
 
-  it('keeps the tail for a caller that renders without bounding', () => {
+  it('keeps the head and the tail for a caller that renders without bounding', () => {
     const content = toolResultModelContent(killedResult());
 
-    expectTailKept(content);
+    expectHeadAndTailKept(content);
     expect(content).toContain('ERROR [tool_timeout]: Command was killed after 300000ms');
   });
 
@@ -145,7 +150,140 @@ describe('ToolResult V2', () => {
       content: 'tail content',
     });
 
-    expect(Buffer.byteLength(toolResultModelContent(huge))).toBeLessThanOrEqual(50 * 1024);
+    const content = toolResultModelContent(huge);
+
+    expect(Buffer.byteLength(content)).toBeLessThanOrEqual(50 * 1024);
+    // The message overflows on its own, so the tail is all there is to keep.
+    expect(content).toContain('tail content');
+  });
+
+  // #308, the Bash shape: a non-zero exit puts all of stderr in the message
+  // and stdout in the content (`fail(stderr || …, stdout)`). A tail-only clip
+  // head-clipped the oversized stderr, dropped stdout entirely — and stdout is
+  // where vitest prints `Tests  2 failed | 10 passed`.
+  it('keeps both the stderr head and the stdout tail of a failed command', async () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'book-bash-failure-'));
+    const stderr = 'Warning: An update to Root inside a test was not wrapped in act(...).\n'.repeat(
+      1_100,
+    );
+    const stdout = `  ✓ renders the page\n`.repeat(420) + 'Tests  2 failed | 10 passed\n';
+    expect(Buffer.byteLength(stderr)).toBeGreaterThan(50 * 1024);
+    try {
+      const bounded = await boundToolResultOutput(
+        toolFailure(stderr, {
+          code: 'command_failed',
+          remediation: 'Fix the two failing tests, then re-run.',
+          content: stdout,
+        }),
+        process.cwd(),
+        undefined,
+        artifactRoot,
+      );
+      const content = toolResultModelContent(bounded);
+
+      expect(Buffer.byteLength(content)).toBeLessThanOrEqual(50 * 1024);
+      expect(content).toContain('ERROR [command_failed]');
+      // The first diagnostics, so the model can see what the run was doing.
+      expect(content).toContain('not wrapped in act(...)');
+      // The verdict, which lives in stdout and which a tail-of-the-message
+      // clip threw away.
+      expect(content).toContain('Tests  2 failed | 10 passed');
+      expect(content).toMatch(/\[\.\.\. \d+ bytes omitted\. Full output: /);
+      expect(content).toContain('Fix: Fix the two failing tests, then re-run.');
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
+  });
+
+  // #308, the framed shape: the Task tool's `subagent_timeout` result opens
+  // with a caveat that everything below is unfinished. A tail-only clip cut
+  // the caveat off, so the model read a partial result as final.
+  it('keeps the caveat a failed result opens with', async () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'book-partial-result-'));
+    const caveat = 'Partial result (the child was stopped; nothing below is final):';
+    const body =
+      'working through the migration step by step\n'.repeat(6_000) + 'unfinished: step 6 of 11\n';
+    expect(Buffer.byteLength(body)).toBeGreaterThan(50 * 1024);
+    try {
+      const bounded = await boundToolResultOutput(
+        toolFailure(caveat, {
+          code: 'subagent_timeout',
+          status: 'timed_out',
+          remediation: 'Re-run the subagent with a larger budget.',
+          content: body,
+        }),
+        process.cwd(),
+        undefined,
+        artifactRoot,
+      );
+      const content = toolResultModelContent(bounded);
+
+      expect(Buffer.byteLength(content)).toBeLessThanOrEqual(50 * 1024);
+      expect(content).toContain(caveat);
+      expect(content).toContain('unfinished: step 6 of 11');
+      expect(content).toMatch(/\[\.\.\. \d+ bytes omitted\. Full output: /);
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
+  });
+
+  // #308: the notice said how much was left out, and counted the tail that was
+  // kept as left out. So a 200 KB failure whose last 40 KB survived read as if
+  // 190 KB had gone, and a model budgeting a `Read` of the full output from
+  // that number read it wrong. What was actually dropped is what sits between
+  // the head and the tail.
+  const omittedNotice = /\[\.\.\. (\d+) bytes omitted\. Full output(?: unavailable\.|: [^\]]+)\]/;
+  const parseClipped = (clipped: string) => {
+    const notice = omittedNotice.exec(clipped);
+    expect(notice).not.toBeNull();
+    // The three parts are joined by one newline each, which belong to the
+    // clipping rather than to the text, so the arithmetic below leaves them out.
+    const head = clipped.slice(0, notice!.index);
+    const tail = clipped.slice(notice!.index + notice![0].length);
+    return {
+      omitted: Number(notice![1]),
+      head: head.endsWith('\n') ? head.slice(0, -1) : head,
+      tail: tail.startsWith('\n') ? tail.slice(1) : tail,
+    };
+  };
+
+  it.each([
+    {
+      name: 'a tail cut at a line break',
+      // Many short lines, so the tail window holds many whole lines and starts
+      // part-way into one.
+      body: 'a line of build output\n'.repeat(9_000) + 'done\n',
+    },
+    {
+      name: 'a tail with no line break in it',
+      // One line longer than the tail window, so the window cannot be aligned
+      // to a line and every byte of it is kept.
+      body: 'a line of build output\n'.repeat(4_000) + 'z'.repeat(60_000),
+    },
+  ])('counts only the bytes it dropped, for $name (#308)', async ({ body }) => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'book-omitted-count-'));
+    const original = `Command failed\n${body}`;
+    const originalBytes = Buffer.byteLength(original);
+    expect(originalBytes).toBeGreaterThan(50 * 1024);
+    try {
+      const bounded = await boundToolResultOutput(
+        toolFailure('Command failed', { code: 'command_failed', content: body }),
+        process.cwd(),
+        undefined,
+        artifactRoot,
+      );
+      // The clipped text of the message and the output, before the `ERROR`
+      // prefix and the `Fix:` line that wrap it for the model.
+      const clipped = bounded.structuredError!.message;
+      const { omitted, head, tail } = parseClipped(clipped);
+
+      expect(Buffer.byteLength(clipped)).toBeLessThanOrEqual(50 * 1024);
+      // The head and the tail are kept, so the notice may not count either.
+      expect(omitted).toBeLessThan(originalBytes);
+      expect(Buffer.byteLength(head) + Buffer.byteLength(tail) + omitted).toBe(originalBytes);
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
   });
 
   it('keeps model content independent from structured data', () => {
@@ -198,8 +336,8 @@ describe('ToolResult V2', () => {
       );
 
       expect(Buffer.byteLength(toolResultModelContent(result))).toBeLessThanOrEqual(50 * 1024);
-      // A failure keeps its tail (#308), so its notice is the tail's notice.
-      expect(result.structuredError?.message).toContain('Earlier output truncated');
+      // A failure keeps its head and its tail, so its notice names the gap.
+      expect(result.structuredError?.message).toMatch(/\[\.\.\. \d+ bytes omitted\./);
       expect(result.artifacts?.outputPath).toBeTruthy();
     } finally {
       rmSync(workspace, { recursive: true, force: true });
@@ -365,6 +503,59 @@ describe('ToolResult V2', () => {
     expect(result.presentation?.metadata).toEqual(metadata);
   });
 
+  // #311, E1: a failed Grep has no matches to count. An invalid regex showed
+  // `Found 0 matches` beside the error, which reads as a search that ran and
+  // found nothing rather than one that never ran.
+  it('counts nothing for a failed Grep, the way the Read branch does (#311)', async () => {
+    const registry = createRegistry();
+    registry.register({
+      name: 'Grep',
+      description: 'Search file contents',
+      parameters: {
+        type: 'object',
+        properties: { pattern: { type: 'string' } },
+        required: ['pattern'],
+      },
+      execute: async () => toolFailure('Invalid regex: [unclosed', { code: 'invalid_regex' }),
+    });
+
+    const result = await registry.execute(
+      { id: 'grep', name: 'Grep', arguments: { pattern: '[unclosed' } },
+      context,
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.presentation?.metadata).toEqual([]);
+    expect(result.presentation?.summary).not.toMatch(/^Found \d+ matches/);
+  });
+
+  // #311, E2: an exact count from Grep's own data beats re-parsing the page.
+  // The enricher must keep it rather than re-deriving one.
+  it('keeps an explicit Grep count instead of re-deriving one (#311)', async () => {
+    const registry = createRegistry();
+    registry.register({
+      name: 'Grep',
+      description: 'Search file contents',
+      parameters: {
+        type: 'object',
+        properties: { pattern: { type: 'string' } },
+        required: ['pattern'],
+      },
+      execute: async () =>
+        toolSuccess('src/a.ts:9:\n  at 10:12:30\n', {
+          presentation: { metadata: ['1 match'], summary: 'Found 1 match' },
+        }),
+    });
+
+    const result = await registry.execute(
+      { id: 'grep', name: 'Grep', arguments: { pattern: 'needle' } },
+      context,
+    );
+
+    expect(result.presentation?.metadata).toEqual(['1 match']);
+    expect(result.presentation?.summary).toBe('Found 1 match');
+  });
+
   it('keeps Read row counts whole for a fractional offset', () => {
     expect(readLineMetadata(2.5, 3.5)).toEqual(['3 lines', '2-4']);
     expect(readLineMetadata(1, 0.5)).toEqual(['empty']);
@@ -458,18 +649,15 @@ describe('ToolResult V2', () => {
 
       expect(Buffer.byteLength(content)).toBeLessThanOrEqual(50 * 1024);
       expect(content).toContain('ERROR [command_failed]: Command failed with exit code 1');
-      // What a head clip drops: the act() warnings at the top of the run. What
-      // it kept by dropping them: the verdict every test runner prints last.
-      expect(content).not.toContain('START-OF-TEST-RUN');
+      // The verdict every test runner prints last, after the act() warnings.
       expect(content).toContain('Tests  2 failed | 10 passed');
-      expect(content).toContain('Full output:');
+      expect(content).toMatch(/\[\.\.\. \d+ bytes omitted\. Full output: /);
       expect(content).toContain('Fix: Read the failing test names and fix them.');
       // The transcript row reads the same way the model does.
       const details = bounded.presentation!.details!;
       expect(Buffer.byteLength(details)).toBeLessThanOrEqual(50 * 1024);
-      expect(details).not.toContain('START-OF-TEST-RUN');
       expect(details).toContain('Tests  2 failed | 10 passed');
-      expect(details).toContain('Full output:');
+      expect(details).toMatch(/\[\.\.\. \d+ bytes omitted\. Full output: /);
     } finally {
       rmSync(artifactRoot, { recursive: true, force: true });
     }

@@ -360,7 +360,13 @@ export function deriveToolPresentation(
     }
   } else if (canonicalName === 'Grep') {
     target = stringArg(args, 'pattern') ?? target;
-    if (result?.status === 'success') metadata = [grepResultMetadata(args, result.content)];
+    if (result?.status === 'success') {
+      // Grep counts from its own data, which the text cannot be counted back
+      // into; only a result persisted by a build that did not have it needs the
+      // text fallback (#311).
+      const own = result.presentation?.metadata;
+      metadata = own?.length ? [...own] : [grepResultMetadata(args, result.content)];
+    }
   } else if (canonicalName === 'WebFetch') {
     target = domainFor(stringArg(args, 'url'));
     previewType = result?.content ? 'markdown' : 'none';
