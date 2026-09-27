@@ -81,6 +81,15 @@ describe('buildMessages', () => {
     const prompt = await buildSystemPrompt(offConfig, undefined);
     expect(prompt).not.toContain('Managed delegation');
     expect(prompt).not.toContain('**explorer**');
+    // The kernel sentence specifically: this repo's own CLAUDE.md is rendered into the prompt and
+    // legitimately mentions AgentSpawn.
+    expect(prompt).not.toContain('issue AgentSpawn calls together');
+  });
+
+  it('keeps a hideAgents prompt (a subagent) free of AgentSpawn guidance', async () => {
+    const prompt = await buildSystemPrompt(defaultConfig(), undefined, { hideAgents: true });
+    expect(prompt).not.toContain('issue AgentSpawn calls together');
+    expect(prompt).toContain('Batch independent read-only calls in one response');
   });
 
   it('emits tool_calls on assistant messages and a tool role message per result', async () => {

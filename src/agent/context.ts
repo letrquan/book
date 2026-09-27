@@ -354,7 +354,7 @@ function mutationGuidanceLines(editFormat: EditFormat): string[] {
  * model's own defaults — work as an agent, solve root causes, keep context lean
  * — dilute the ones that carry information the model cannot infer.
  */
-function operatingPrinciplesSection(editFormat: EditFormat): string {
+function operatingPrinciplesSection(editFormat: EditFormat, delegation: boolean): string {
   return [
     '## Operating principles',
     '- Interpret short engineering requests in workspace context. Locate and act on the relevant code instead of replying with a literal transformation. Let the user decide whether a task is too large; do not silently narrow requested scope.',
@@ -363,7 +363,11 @@ function operatingPrinciplesSection(editFormat: EditFormat): string {
     '- Make reasonable, reversible assumptions and keep moving. Ask only when a missing decision would materially change the result, expand scope, or create significant risk.',
     "- Prefer the smallest complete change that follows the project's existing architecture, conventions, and style. Reuse existing files, utilities, and patterns; avoid unrelated cleanup, speculative abstractions, impossible-state fallbacks, and incomplete implementations.",
     '- Batch independent read-only calls in one response so the harness can run parallel-capable tools concurrently. Prefer Read, Glob, Grep, and dedicated Git read tools over Bash for concurrent exploration. Keep dependent calls, mutations, permission-sensitive actions, user interactions, mode changes, and synchronization tools sequential.',
-    '- For independent managed-agent work, issue AgentSpawn calls together. AgentSpawn returns after queueing each child; use AgentWait only at a real dependency barrier. If one sibling tool fails, preserve successful sibling results and retry only the failed call.',
+    ...(delegation
+      ? [
+          '- For independent managed-agent work, issue AgentSpawn calls together. AgentSpawn returns after queueing each child; use AgentWait only at a real dependency barrier. If one sibling tool fails, preserve successful sibling results and retry only the failed call.',
+        ]
+      : []),
     ...mutationGuidanceLines(editFormat),
     '- Use the strongest practical feedback loop available: exercise the affected behavior when possible, then run focused tests, type checks, lint, builds, or visual checks as relevant. Fix failures caused by your changes.',
     '- Before finishing, review the changed files or diff for requested scope, edge cases, security issues, and accidental edits. Do not claim success without evidence; if verification is incomplete or blocked, state what ran and what remains uncertain.',
@@ -521,13 +525,19 @@ export async function buildSystemPromptZones(
   const kernel = (text: string): PromptSection => ({ zone: 'kernel', text });
   const sessionContext = (text: string): PromptSection => ({ zone: 'session-context', text });
 
+  // One condition for every delegation surface: a prompt must not describe a tool it cannot call.
+  const delegation = !overrides?.hideAgents && config.settings.agents.mode !== 'off';
+
   const staticSections: PromptSection[] = [
     kernel(
       `You are Book, an AI coding agent working directly in the user's workspace. Help users understand, change, and verify software.`,
     ),
     kernel(harnessSection(config.shell ?? resolveShell({ requested: config.settings.shell }))),
     kernel(
-      operatingPrinciplesSection(resolveEditFormat(config.model, config.modelInfo?.editFormat)),
+      operatingPrinciplesSection(
+        resolveEditFormat(config.model, config.modelInfo?.editFormat),
+        delegation,
+      ),
     ),
     kernel(trustBoundarySection(Boolean(projectInstructions))),
     sessionContext(projectInstructions),
@@ -544,11 +554,11 @@ export async function buildSystemPromptZones(
     ),
     sessionContext(generateCommandListing(cmdList, 1536)),
     sessionContext(
-      overrides?.hideAgents || config.settings.agents.mode === 'off'
-        ? ''
-        : generateAgentListing(config, discovery?.agents ?? discoverAgents(config.workspace), 1536),
+      delegation
+        ? generateAgentListing(config, discovery?.agents ?? discoverAgents(config.workspace), 1536)
+        : '',
     ),
-    sessionContext(overrides?.hideAgents ? '' : agentRoutingSection(config)),
+    sessionContext(delegation ? agentRoutingSection(config) : ''),
     sessionContext(memorySection(config, overrides)),
     sessionContext(overrides?.append ?? ''),
     kernel(guardrailsSection()),

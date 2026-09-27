@@ -82,6 +82,10 @@ function parsePatchUnsafe(patch: unknown): ParsedPatch | ToolResult {
   if (lines[0] !== '*** Begin Patch' || lines.at(-1) !== '*** End Patch')
     return invalid('Patch must start with *** Begin Patch and end with *** End Patch');
 
+  // A model sometimes repeats an envelope marker; the extra copy carries nothing.
+  while (lines.length > 2 && lines[1] === '*** Begin Patch') lines.splice(1, 1);
+  while (lines.length > 2 && lines.at(-2) === '*** End Patch') lines.splice(-2, 1);
+
   const operations: PatchOperation[] = [];
   let index = 1;
   let hunkCount = 0;
@@ -173,20 +177,14 @@ function linesOf(text: string): string[] {
   return lines;
 }
 
-function findUniqueSequence(
-  haystack: string[],
-  needle: string[],
-): { index: number; count: number } {
-  if (needle.length === 0) return { index: 0, count: 0 };
-  let index = -1;
-  let count = 0;
+/** Every start index at which `needle` occurs in `haystack`, in order. */
+function sequenceMatches(haystack: string[], needle: string[]): number[] {
+  if (needle.length === 0) return [];
+  const matches: number[] = [];
   for (let start = 0; start <= haystack.length - needle.length; start++) {
-    if (needle.every((line, offset) => haystack[start + offset] === line)) {
-      index = start;
-      count++;
-    }
+    if (needle.every((line, offset) => haystack[start + offset] === line)) matches.push(start);
   }
-  return { index, count };
+  return matches;
 }
 
 function candidateLine(haystack: string[], line: string): number | undefined {
@@ -203,12 +201,18 @@ export function applyHunks(
 ): { text: string; mismatch?: ToolResult } {
   let lines = linesOf(text);
   let trailingNewline = text.endsWith('\n');
+  // Where the previous hunk ended, in the text as already patched. A hunk whose context repeats
+  // in the file is still unambiguous when exactly one occurrence lies at or after this point.
+  let cursor = 0;
   for (let hunkIndex = 0; hunkIndex < hunks.length; hunkIndex++) {
     const hunk = hunks[hunkIndex];
     const oldLines = hunk.lines.filter((line) => line.kind !== 'add').map((line) => line.text);
     const newLines = hunk.lines.filter((line) => line.kind !== 'remove').map((line) => line.text);
-    const match = findUniqueSequence(lines, oldLines);
-    if (match.count === 0)
+    const matches = sequenceMatches(lines, oldLines);
+    const afterPrevious = matches.filter((start) => start >= cursor);
+    const index =
+      matches.length === 1 ? matches[0] : afterPrevious.length === 1 ? afterPrevious[0] : -1;
+    if (matches.length === 0)
       return {
         text,
         mismatch: toolFailure(`Hunk ${hunkIndex + 1}: patch context not found`, {
@@ -230,21 +234,24 @@ export function applyHunks(
           },
         }),
       };
-    if (match.count > 1)
+    if (index < 0)
       return {
         text,
         mismatch: toolFailure(`Hunk ${hunkIndex + 1}: patch context is ambiguous`, {
           code: 'ambiguous_patch_context',
-          remediation: 'Reread a narrower range and include more exact context lines.',
-          details: { hunkIndex: hunkIndex + 1, header: hunk.header, matches: match.count },
+          remediation:
+            'Add surrounding lines, such as the enclosing function signature, until the hunk occurs once in the file or once after the previous hunk, then regenerate the patch.',
+          details: {
+            hunkIndex: hunkIndex + 1,
+            header: hunk.header,
+            matches: matches.length,
+            matchesAfterPreviousHunk: afterPrevious.length,
+          },
         }),
       };
-    const touchesEndOfFile = match.index + oldLines.length === lines.length;
-    lines = [
-      ...lines.slice(0, match.index),
-      ...newLines,
-      ...lines.slice(match.index + oldLines.length),
-    ];
+    const touchesEndOfFile = index + oldLines.length === lines.length;
+    lines = [...lines.slice(0, index), ...newLines, ...lines.slice(index + oldLines.length)];
+    cursor = index + newLines.length;
     if (touchesEndOfFile) {
       const oldNoNewline = hunk.lines.some((line) => line.kind !== 'add' && line.noNewline);
       const newNoNewline = hunk.lines.some((line) => line.kind !== 'remove' && line.noNewline);

@@ -18,6 +18,63 @@ export interface EvalTask {
 
 const CRLF = '\r\n';
 
+const STORE_GO = [
+  'package store',
+  '',
+  'import (',
+  '\t"errors"',
+  '\t"os"',
+  ')',
+  '',
+  'var errNotOpen = errors.New("store: not open")',
+  '',
+  'type Store struct {',
+  '\tfile *os.File',
+  '}',
+  '',
+  '// Save writes pending changes to disk.',
+  'func (s *Store) Save() error {',
+  '\tif s.file == nil {',
+  '\t\treturn errNotOpen',
+  '\t}',
+  '\tif err := s.flush(); err != nil {',
+  '\t\treturn err',
+  '\t}',
+  '\treturn nil',
+  '}',
+  '',
+  '// Sync flushes the file without clearing the dirty flag.',
+  'func (s *Store) Sync() error {',
+  '\tif s.file == nil {',
+  '\t\treturn errNotOpen',
+  '\t}',
+  '\treturn s.file.Sync()',
+  '}',
+  '',
+  '// Close flushes and releases the file.',
+  'func (s *Store) Close() error {',
+  '\tif s.file == nil {',
+  '\t\treturn errNotOpen',
+  '\t}',
+  '\tdefer s.file.Close()',
+  '\tif err := s.flush(); err != nil {',
+  '\t\treturn err',
+  '\t}',
+  '\treturn nil',
+  '}',
+  '',
+].join('\n');
+
+const STORE_GO_EXPECTED = (() => {
+  const close = STORE_GO.indexOf('func (s *Store) Close');
+  const head = STORE_GO.slice(0, close).replace(
+    '// Sync flushes the file without clearing the dirty flag.',
+    '// Sync flushes pending writes to disk.',
+  );
+  const tail = STORE_GO.slice(close).replace('\treturn nil\n}', '\ts.file = nil\n\treturn nil\n}');
+  return head + tail;
+})();
+
 export const EVAL_TASKS: EvalTask[] = [
   {
     name: 'exact-replace-simple',
@@ -364,5 +421,17 @@ export const EVAL_TASKS: EvalTask[] = [
         text.includes("router.get('/c', handlerC);")
       );
     },
+  },
+  {
+    // The shape of most real `ambiguous_patch_context` failures: a later hunk whose context is a
+    // function tail that also ends an earlier function, while the hunk before it is unique.
+    name: 'repeated-tail-second-hunk',
+    category: 'multi-site',
+    files: { 'store.go': STORE_GO },
+    instruction:
+      'In store.go, make two changes and nothing else: (1) change the doc comment above Sync to ' +
+      '`// Sync flushes pending writes to disk.`; (2) in Close, add the line `s.file = nil`, ' +
+      "indented like its neighbours, immediately before Close's final `return nil`.",
+    verify: (read) => read('store.go') === STORE_GO_EXPECTED,
   },
 ];

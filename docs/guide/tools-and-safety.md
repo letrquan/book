@@ -138,11 +138,15 @@ format with the best cross-model compliance in published evals. Override per mod
 ```
 
 Use `*** Add File: path` with `+`-prefixed lines for new files and `*** Delete File: path` for
-deletions. Update hunks use exact, unique context; reread the affected range and regenerate the
-hunk after a `patch_context_not_found` or `ambiguous_patch_context` error. Patches preserve an
-existing file's LF/CRLF convention and UTF-8 BOM, validate all files before writing, verify the
-post-state, and roll back earlier files if a later commit fails. Binary and mixed-line-ending
-updates are rejected rather than guessed.
+deletions. Each update hunk starts with a bare `@@` line (line numbers in a unified-diff header are
+accepted but not used) and applies in order: its context and removed lines must occur exactly once
+in the file, or exactly once at or after the end of the previous hunk, so a function tail such as
+`return nil` / `}` that also ends an earlier function is still found when an earlier hunk sits
+between the two. Book never picks between several candidates. Reread the affected range and
+regenerate the hunk after a `patch_context_not_found` or `ambiguous_patch_context` error. Patches
+preserve an existing file's LF/CRLF convention and UTF-8 BOM, validate all files before writing,
+verify the post-state, and roll back earlier files if a later commit fails. Binary and
+mixed-line-ending updates are rejected rather than guessed.
 
 Mutation reliability guardrails, tuned for heterogeneous models:
 
