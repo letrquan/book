@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { buildChildEnv } from './child-env.js';
 import {
   appendFileSync,
   existsSync,
@@ -264,9 +265,13 @@ function failStartup(what: string, error: unknown): never {
  * inspector and write "Debugger listening..." into the job's log, which the runner appends to the
  * command's own output. It is therefore taken out here and carried beside it, under a name of this
  * runner's own, which the supervisor puts back for the command alone.
+ *
+ * This process inherited Book's environment, so a `NODE_ENV` Book defaulted for its own renderer
+ * travels the whole chain: it is not the job's, and a persistent job outlives Book to be the one
+ * that most certainly must not carry it.
  */
 function supervisorEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, ...spec.env };
+  const env: NodeJS.ProcessEnv = buildChildEnv(process.env, spec.env);
   const nodeOptions = env.NODE_OPTIONS;
   delete env.NODE_OPTIONS;
   if (nodeOptions !== undefined) env.BOOK_SUPERVISED_NODE_OPTIONS = nodeOptions;

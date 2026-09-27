@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { persistentEnvironmentOverrides, shellTools } from './shell.js';
 import { createDefaultRegistry } from './registry.js';
 import { getPrimaryArg } from './primary-arg.js';
+import { ShellJobManager } from '../jobs/shell-manager.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from '../settings.js';
 import type { BackgroundShellStore, ResolvedShell } from '../types/runtime.js';
@@ -35,6 +36,18 @@ function ctx(): ToolContext {
   return c;
 }
 
+/**
+ * A context with overrides, applied in place.
+ *
+ * `{ ...ctx() }` is the trap: the shell manager caches itself on the context object it is given, so
+ * a copy gets a manager of its own and the `afterEach` — which walks the registered contexts — has
+ * no record of the shell. A command left running then keeps the temp directory open, and on Windows
+ * the cleanup fails with EPERM instead of quietly leaving a process behind.
+ */
+function ctxWith(overrides: Partial<ToolContext>): ToolContext {
+  return Object.assign(ctx(), overrides);
+}
+
 function tool(name: string): ToolDefinition {
   const found = shellTools.find((t) => t.name === name);
   if (!found) throw new Error(`Missing tool ${name}`);
@@ -61,6 +74,38 @@ function shellIdFrom(result: ToolResult): string {
   const match = result.content.match(/shell_\d+/);
   if (!match) throw new Error(`No shell ID in output: ${result.content}`);
   return match[0];
+}
+
+/**
+ * Wait for a pid to stop existing. `kill(pid, 0)` still succeeds for a zombie that has exited but
+ * not yet been reaped, so this waits for the pid to go rather than asserting instantly.
+ */
+async function waitForPidGone(pid: number, timeoutMs = 5_000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Process ${pid} is still running after ${timeoutMs}ms`);
+}
+
+/**
+ * A context whose shell manager has already been disposed, so a foreground command that reaches
+ * its timeout cannot be moved to the background and is killed exactly as it was before #302.
+ *
+ * The refusal is a real one, not a mock: the session is ending, the manager is gone, and there
+ * is nowhere to hand the process to.
+ */
+function ctxWithUnusableShellManager(): ToolContext {
+  const store: BackgroundShellStore = { nextId: 1, shells: new Map() };
+  const c = ctxWith({ workspaceRoot: process.cwd(), backgroundShells: store });
+  c.shellManager = new ShellJobManager(store);
+  c.shellManager.dispose();
+  return c;
 }
 
 async function waitForOutput(
@@ -127,7 +172,7 @@ describe('Bash shell tools', () => {
 
   it('cancels a foreground Bash process through the tool signal', async () => {
     const controller = new AbortController();
-    const c = { ...ctx(), workspaceRoot: process.cwd(), signal: controller.signal };
+    const c = ctxWith({ workspaceRoot: process.cwd(), signal: controller.signal });
     const marker = join(dir, 'cancelled-process-survived.txt');
     const command = nodeCommand(
       'cancel-foreground.cjs',
@@ -146,8 +191,11 @@ describe('Bash shell tools', () => {
     expect(existsSync(marker)).toBe(false);
   });
 
-  it('terminates the foreground process tree after a timeout', async () => {
-    const c = { ...ctx(), workspaceRoot: process.cwd() };
+  // A timed-out command now moves to the background where it can be watched (#302), so the kill
+  // path is reached only when there is nowhere to hand it to. The tree still has to be ended on
+  // that path, or the command outlives the session that was supposed to own it.
+  it('terminates the foreground process tree when the move to the background is refused', async () => {
+    const c = ctxWithUnusableShellManager();
     const marker = join(dir, 'timed-out-process-survived.txt');
     const command = nodeCommand(
       'timeout-foreground.cjs',
@@ -164,7 +212,7 @@ describe('Bash shell tools', () => {
   });
 
   it('hands back what a killed command printed, and says it was killed not failed', async () => {
-    const c = { ...ctx(), workspaceRoot: process.cwd() };
+    const c = ctxWithUnusableShellManager();
     // Prints on both streams and then hangs forever. The 2s deadline is
     // generous on purpose: the point is the output that survives the kill, so
     // the child must have finished starting up well before the timer fires.
@@ -192,7 +240,7 @@ describe('Bash shell tools', () => {
   // range can still be over the limit in force. Shrinking it quietly is the
   // failure this whole change set out to remove.
   it('refuses a timeout over the operator limit instead of quietly shrinking it', async () => {
-    const c = { ...ctx(), workspaceRoot: process.cwd(), env: { BOOK_TOOL_TIMEOUT_MS: '30000' } };
+    const c = ctxWith({ workspaceRoot: process.cwd(), env: { BOOK_TOOL_TIMEOUT_MS: '30000' } });
     const command = nodeCommand('over-ceiling.cjs', `console.log('never-runs');\n`);
 
     const result = await bash.execute({ command, timeout: 600_000 }, c);
@@ -204,8 +252,7 @@ describe('Bash shell tools', () => {
 
   it('honors the operator BOOK_TOOL_TIMEOUT_MS override', async () => {
     const c = {
-      ...ctx(),
-      workspaceRoot: process.cwd(),
+      ...ctxWithUnusableShellManager(),
       env: { BOOK_TOOL_TIMEOUT_MS: '50' },
     };
     const command = nodeCommand('env-timeout.cjs', `setInterval(() => {}, 1000);\n`);
@@ -223,7 +270,7 @@ describe('Bash shell tools', () => {
     // 120s, and the registry arms its timer first, so its contentless
     // `tool_timeout` always replaced the shell's report — output and all.
     const registry = createDefaultRegistry();
-    const c = { ...ctx(), workspaceRoot: process.cwd(), env: { BOOK_TOOL_TIMEOUT_MS: '2000' } };
+    const c = { ...ctxWithUnusableShellManager(), env: { BOOK_TOOL_TIMEOUT_MS: '2000' } };
     const command = nodeCommand(
       'registry-timeout.cjs',
       `console.log('progress-before-the-kill');\nsetInterval(() => {}, 1000);\n`,
@@ -453,6 +500,402 @@ describe('Bash shell tools', () => {
   it('uses shell IDs as primary args', () => {
     expect(getPrimaryArg({ shell_id: 'shell_7' })).toBe('shell_7');
     expect(getPrimaryArg({ shellId: 'shell_8' })).toBe('shell_8');
+  });
+
+  // Session lifetime promises a command ends with Book. Disposing the runtime used to abort the
+  // controllers and then `child.kill()` every tracked child in the same tick — on Windows that
+  // killed the shell wrapper before `taskkill /T` could walk the tree, so the tree was orphaned
+  // rather than ended (#314).
+  it('ends a foreground command’s whole tree when the session runtime is disposed', async () => {
+    // Through the registry, which is how the agent loop calls a tool: it owns the abort
+    // controller the runtime disposes, so the call really is in flight when the dispose lands.
+    const registry = createDefaultRegistry();
+    const runtime = new SessionRuntime();
+    const c = ctxWith({ workspaceRoot: process.cwd(), runtime });
+    const pidPath = join(dir, 'foreground-grandchild.pid');
+    const command = nodeCommand(
+      'foreground-tree.cjs',
+      `const { spawn } = require('child_process');
+const grandchild = spawn(${JSON.stringify(process.execPath)}, ['-e', ${JSON.stringify(
+        `require('fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid)); setInterval(() => {}, 1000);`,
+      )}], { stdio: 'ignore' });
+grandchild.unref();
+console.log('tree-started');
+setInterval(() => {}, 1000);\n`,
+    );
+
+    const pending = registry.execute({ id: 'bash-tree', name: 'Bash', arguments: { command } }, c);
+    const startedAt = Date.now();
+    while (!existsSync(pidPath)) {
+      if (Date.now() - startedAt > 10_000) throw new Error('grandchild never started');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const grandchildPid = Number(readFileSync(pidPath, 'utf8'));
+
+    await runtime.disposeAsync();
+    const result = await pending;
+
+    expect(result.structuredError?.message).toMatch(/cancel/i);
+    await waitForPidGone(grandchildPid);
+  }, 30_000);
+});
+
+/**
+ * A foreground command that reaches its timeout used to be killed and reported `timed_out`, which
+ * left the model with no result at all and a re-run of the whole gate. It now moves to the
+ * background, where the rest of the run is one BashOutput away (#302).
+ */
+describe('Bash foreground timeout', () => {
+  /** Prints `before`, outlives the deadline, then prints `after` and exits 0. */
+  function slowCommand(name = 'adopted.cjs'): string {
+    return nodeCommand(
+      name,
+      `console.log('before');
+setTimeout(() => { console.log('after'); process.exit(0); }, 1500);\n`,
+    );
+  }
+
+  it('moves a timed-out command to the background instead of killing it', async () => {
+    const c = ctxWith({ workspaceRoot: process.cwd() });
+
+    const result = await bash.execute({ command: slowCommand(), timeout: 300 }, c);
+
+    expect(result.status).toBe('success');
+    const shellId = shellIdFrom(result);
+    expect(result.content).toContain('before');
+    expect(result.content).toContain(shellId);
+    expect(result.content).toMatch(/still running after 300ms/i);
+    expect(result.content).toMatch(/not killed/i);
+    expect(result.content).toMatch(new RegExp(`BashOutput with shell_id="${shellId}"`));
+    expect(result.content).toMatch(new RegExp(`KillShell with shell_id="${shellId}"`));
+    // Structured data has to say this is a background job, or a host that renders the result as
+    // a plain command output would read it as a command that finished.
+    expect(result.data).toMatchObject({ backgrounded: true, shell: { id: shellId } });
+  });
+
+  it('returns only what the command printed after the move, with its exit status', async () => {
+    const c = ctxWith({ workspaceRoot: process.cwd() });
+    const started = await bash.execute(
+      { command: slowCommand('adopted-wait.cjs'), timeout: 300 },
+      c,
+    );
+    const shellId = shellIdFrom(started);
+
+    // `before` was already in the foreground result; the adopted buffer starts past it.
+    const firstRead = await bashOutput.execute({ shell_id: shellId, wait_ms: 5_000 }, c);
+
+    expect(firstRead.status).toBe('success');
+    expect(firstRead.content).not.toContain('before');
+    expect(firstRead.content).toContain('after');
+    expect(firstRead.content).toMatch(/exit=0/);
+  });
+
+  it('seeds the adopted shell buffer with what the command had already printed', async () => {
+    const c = ctxWith({ workspaceRoot: process.cwd() });
+    const started = await bash.execute(
+      { command: slowCommand('adopted-seed.cjs'), timeout: 300 },
+      c,
+    );
+    const shellId = shellIdFrom(started);
+
+    const quiet = await bashOutput.execute({ shell_id: shellId }, c);
+
+    expect(quiet.content).toContain('(no new output)');
+  });
+
+  it('gives the adopted shell the default background lifetime and notify policy', async () => {
+    const c = ctxWith({ workspaceRoot: process.cwd() });
+    const started = await bash.execute(
+      { command: slowCommand('adopted-lifetime.cjs'), timeout: 300 },
+      c,
+    );
+    const record = c.backgroundShells?.shells.get(shellIdFrom(started));
+
+    expect(record?.lifetime).toBe('session');
+    expect(record?.notify).toBe('ui');
+    expect(record?.timeoutMs).toBeUndefined();
+    expect(record?.status).toBe('running');
+  });
+
+  it('keeps the adopted shell a session shell, so it ends with Book', async () => {
+    const c = ctxWith({ workspaceRoot: process.cwd() });
+    const started = await bash.execute(
+      { command: slowCommand('adopted-dispose.cjs'), timeout: 300 },
+      c,
+    );
+    const shellId = shellIdFrom(started);
+    const adoptedPid = c.backgroundShells?.shells.get(shellId)?.pid;
+    expect(adoptedPid).toBeDefined();
+
+    await (c.shellManager as ShellJobManager).disposeAsync();
+
+    expect(c.backgroundShells?.shells.has(shellId)).toBe(false);
+    // Session lifetime is a promise the record alone cannot keep: the process has to be gone.
+    await waitForPidGone(adoptedPid!);
+  }, 15_000);
+
+  it('stops the adopted shell’s whole tree on KillShell', async () => {
+    const c = ctxWith({ workspaceRoot: process.cwd() });
+    const pidPath = join(dir, 'adopted-grandchild.pid');
+    const command = nodeCommand(
+      'adopted-tree.cjs',
+      `const { spawn } = require('child_process');
+const grandchild = spawn(${JSON.stringify(process.execPath)}, ['-e', ${JSON.stringify(
+        `require('fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid)); setInterval(() => {}, 1000);`,
+      )}], { stdio: 'ignore' });
+grandchild.unref();
+setInterval(() => {}, 1000);\n`,
+    );
+    const started = await bash.execute({ command, timeout: 300 }, c);
+    const shellId = shellIdFrom(started);
+    const start = Date.now();
+    while (!existsSync(pidPath)) {
+      if (Date.now() - start > 10_000) throw new Error('grandchild never started');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const grandchildPid = Number(readFileSync(pidPath, 'utf8'));
+
+    const killed = await killShell.execute({ shell_id: shellId }, c);
+
+    expect(killed.status).toBe('success');
+    expect(killed.content).toContain(`Killed shell ${shellId}`);
+    await waitForPidGone(grandchildPid);
+  }, 30_000);
+
+  it('does not let the registry backstop fire during the move', async () => {
+    // The registry arms its timer before `execute` is reached and adds
+    // SELF_TIMEOUT_GRACE_MS on top of a tool that declares its own deadline, so it has to stay
+    // behind the detach — a contentless `tool_timeout` here would lose the shell id entirely.
+    const registry = createDefaultRegistry();
+    const c = ctxWith({ workspaceRoot: process.cwd() });
+
+    const result = await registry.execute(
+      {
+        id: 'bash-bg',
+        name: 'Bash',
+        arguments: { command: slowCommand('adopted-registry.cjs'), timeout: 300 },
+      },
+      c,
+    );
+
+    expect(result.status).toBe('success');
+    expect(result.content).toMatch(/moved to background shell shell_\d+/);
+    // The backstop's own report is a contentless `Tool timeout` failure; seeing neither the code
+    // nor the text is what proves the tool's own result is the one that came back.
+    expect(result.structuredError).toBeUndefined();
+    expect(result.content).not.toMatch(/Tool timeout/);
+  });
+
+  it('still cancels rather than backgrounding when the call is aborted', async () => {
+    const controller = new AbortController();
+    const c = ctxWith({ workspaceRoot: process.cwd(), signal: controller.signal });
+    const command = nodeCommand('adopted-cancel.cjs', `setInterval(() => {}, 1000);\n`);
+    const pending = bash.execute({ command, timeout: 2_000 }, c);
+
+    setTimeout(() => controller.abort('stop foreground shell'), 100);
+    const result = await pending;
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toMatch(/cancelled/i);
+    expect(result.content).not.toMatch(/moved to background shell/);
+    expect(c.backgroundShells?.shells.size ?? 0).toBe(0);
+  });
+
+  it('kills the command as before when no shell manager can take it', async () => {
+    // A disposed shell manager is the realistic refusal: the session is ending and there is
+    // nowhere to hand the command to, so the model gets the old kill-and-timed_out result.
+    const c = ctxWithUnusableShellManager();
+    const marker = join(dir, 'refused-timeout-survived.txt');
+    const command = nodeCommand(
+      'adopted-refused.cjs',
+      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 1500);
+setInterval(() => {}, 1000);\n`,
+    );
+
+    const result = await bash.execute({ command, timeout: 300 }, c);
+
+    expect(result.status).toBe('timed_out');
+    expect(result.structuredError?.code).toBe('tool_timeout');
+    expect(result.structuredError?.message).toMatch(/killed after 300ms/i);
+    expect(result.content).not.toMatch(/moved to background shell/);
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    expect(existsSync(marker)).toBe(false);
+  }, 15_000);
+});
+
+/**
+ * `BashOutput` returned at once, so waiting on a long gate cost a whole turn per poll (#313).
+ * `wait_ms` trades one turn for a wait.
+ */
+describe('BashOutput wait_ms', () => {
+  it('returns as soon as a shell finishes, well inside the wait it was given', async () => {
+    const c = ctx();
+    const command = nodeCommand(
+      'wait-exits.cjs',
+      `setTimeout(() => { console.log('finished'); process.exit(0); }, 300);\n`,
+    );
+    const started = await bash.execute({ command, run_in_background: true }, c);
+    const shellId = shellIdFrom(started);
+
+    const began = Date.now();
+    const result = await bashOutput.execute({ shell_id: shellId, wait_ms: 5_000 }, c);
+    const elapsed = Date.now() - began;
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('finished');
+    expect(result.content).toMatch(/exit=0/);
+    expect(elapsed).toBeLessThan(4_000);
+  });
+
+  it('returns after the wait, with no new output and advice, when the shell is still running', async () => {
+    const c = ctx();
+    const command = nodeCommand('wait-silent.cjs', `setInterval(() => {}, 1000);\n`);
+    const started = await bash.execute({ command, run_in_background: true }, c);
+    const shellId = shellIdFrom(started);
+
+    const began = Date.now();
+    const result = await bashOutput.execute({ shell_id: shellId, wait_ms: 400 }, c);
+    const elapsed = Date.now() - began;
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('(no new output)');
+    expect(result.content).toMatch(/wait_ms/);
+    expect(elapsed).toBeGreaterThanOrEqual(350);
+    expect(elapsed).toBeLessThan(3_000);
+  });
+
+  it('stops waiting and leaves the shell running when the call is aborted', async () => {
+    const controller = new AbortController();
+    const c = ctxWith({ signal: controller.signal });
+    const command = nodeCommand(
+      'wait-abort.cjs',
+      `console.log('alive-still'); setInterval(() => {}, 1000);\n`,
+    );
+    const started = await bash.execute({ command, run_in_background: true }, c);
+    const shellId = shellIdFrom(started);
+    await waitForOutput(c, shellId, /alive-still/);
+
+    const began = Date.now();
+    setTimeout(() => controller.abort('stop waiting'), 150);
+    const result = await bashOutput.execute({ shell_id: shellId, wait_ms: 30_000 }, c);
+    const elapsed = Date.now() - began;
+
+    expect(elapsed).toBeLessThan(5_000);
+    // Nothing was killed: the shell is still there to be waited on again.
+    expect(c.backgroundShells?.shells.get(shellId)?.status).toBe('running');
+    expect(result.status).toBe('success');
+  }, 20_000);
+
+  it('refuses a wait over the limit in force here', async () => {
+    const c = ctxWith({ env: { BOOK_TOOL_TIMEOUT_MS: '30000' } });
+    const command = nodeCommand('wait-ceiling.cjs', `setInterval(() => {}, 1000);\n`);
+    const started = await bash.execute({ command, run_in_background: true }, c);
+    const shellId = shellIdFrom(started);
+
+    const result = await bashOutput.execute({ shell_id: shellId, wait_ms: 600_000 }, c);
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toMatch(/exceeds the 30000ms limit/);
+  });
+
+  it('waits out a persistent job until it exits', async () => {
+    const c = ctxWith({ workspaceRoot: dir });
+    // Pinned under the temp dir rather than <BOOK_HOME>/jobs: this test starts a detached runner
+    // and writes its record files.
+    const store: BackgroundShellStore = { nextId: 1, shells: new Map() };
+    c.backgroundShells = store;
+    c.shellManager = new ShellJobManager(store, { persistentRoot: join(dir, 'jobs') });
+    const command = nodeCommand(
+      'wait-persistent.cjs',
+      `setTimeout(() => { console.log('persistent-done'); process.exit(0); }, 400);\n`,
+    );
+    const started = await bash.execute(
+      { command, run_in_background: true, lifetime: 'persistent' },
+      c,
+    );
+    // A persistent job's id is a UUID rather than the sequential `shell_N`, so it is read from
+    // the record the tool returned rather than scraped out of the message.
+    const shellId = (started.data as { id?: string } | undefined)?.id;
+    expect(
+      shellId,
+      `persistent start failed: ${started.content || started.structuredError?.message}`,
+    ).toBeDefined();
+
+    const began = Date.now();
+    const result = await bashOutput.execute({ shell_id: shellId!, wait_ms: 20_000 }, c);
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('persistent-done');
+    expect(result.content).toMatch(/exit=0/);
+    expect(Date.now() - began).toBeLessThan(15_000);
+  }, 60_000);
+});
+
+/**
+ * Book defaults NODE_ENV=production for its own renderer, and every command used to inherit it,
+ * so `npm install` in a project dropped devDependencies. `runtime-env.ts` marks the default it
+ * invents; a command handed that marked environment must not see it.
+ */
+describe('Bash child environment', () => {
+  const saved = { ...process.env };
+
+  beforeEach(() => {
+    process.env.BOOK_DEFAULTED_NODE_ENV = '1';
+    process.env.NODE_ENV = 'production';
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) delete process.env[key];
+    Object.assign(process.env, saved);
+  });
+
+  const reportEnv = (name: string): string =>
+    nodeCommand(
+      name,
+      `console.log(JSON.stringify({ nodeEnv: process.env.NODE_ENV ?? null, marker: process.env.BOOK_DEFAULTED_NODE_ENV ?? null }));\n`,
+    );
+
+  it('does not hand a foreground command the NODE_ENV Book defaulted', async () => {
+    const c = ctxWith({ workspaceRoot: process.cwd() });
+
+    const result = await bash.execute({ command: reportEnv('fg-node-env.cjs') }, c);
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('"nodeEnv":null');
+    expect(result.content).toContain('"marker":null');
+  });
+
+  it('does not hand a background command the NODE_ENV Book defaulted', async () => {
+    const c = ctx();
+
+    const start = await bash.execute(
+      { command: reportEnv('bg-node-env.cjs'), run_in_background: true },
+      c,
+    );
+    const output = await waitForOutput(c, shellIdFrom(start), /nodeEnv/);
+
+    expect(output.content).toContain('"nodeEnv":null');
+    expect(output.content).toContain('"marker":null');
+  });
+
+  it('passes a NODE_ENV the user set before Book started', async () => {
+    delete process.env.BOOK_DEFAULTED_NODE_ENV;
+    process.env.NODE_ENV = 'development';
+    const c = ctxWith({ workspaceRoot: process.cwd() });
+
+    const result = await bash.execute({ command: reportEnv('fg-user-node-env.cjs') }, c);
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('"nodeEnv":"development"');
+  });
+
+  it('passes a NODE_ENV the context sets explicitly', async () => {
+    const c = ctxWith({ workspaceRoot: process.cwd(), env: { NODE_ENV: 'test' } });
+
+    const result = await bash.execute({ command: reportEnv('fg-ctx-node-env.cjs') }, c);
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('"nodeEnv":"test"');
   });
 });
 

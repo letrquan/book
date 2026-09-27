@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { systemClock, type Clock } from '../clock.js';
+import { buildChildEnv } from '../child-env.js';
 import { createDebugLogger } from '../debug-log.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -34,6 +35,12 @@ const TERMINAL_SHELL_TTL_MS = 15 * 60_000;
 const PERSISTENT_HEARTBEAT_STALE_MS = 10_000;
 /** How long a lost-job record that could not be written waits before the next attempt. */
 const LOST_WRITE_RETRY_MS = 5_000;
+/**
+ * How long `disposeAsync` waits for session-shell trees to come down before giving up on them.
+ * `terminateProcessTree` spends at most `TERMINATE_GRACE_MS` twice, so a tree that can be ended
+ * is; this is the ceiling on the ones that cannot.
+ */
+const DISPOSE_TEARDOWN_BUDGET_MS = 5_000;
 const log = createDebugLogger('jobs');
 
 export type ShellJobEvent =
@@ -60,6 +67,33 @@ export interface ShellStartOptions {
   lifetime?: 'session' | 'persistent';
   workspace?: string;
   envOverrides?: Record<string, string>;
+  parentSessionId?: string;
+  rootRunId?: string;
+  parentRunId?: string;
+}
+
+/**
+ * A running session command that was started elsewhere — a foreground `Bash` that reached its
+ * deadline and is being handed over rather than killed (#302).
+ *
+ * Deliberately narrower than `ShellStartOptions`: an adopted process was not spawned here, so it
+ * has no workdir, environment, or runtime to configure, and pretending otherwise would let a
+ * caller set fields that describe a spawn this manager never performed.
+ */
+export interface ShellAdoptOptions {
+  process: ChildProcess;
+  command: string;
+  effectiveCommand: string;
+  workdir: string;
+  sandboxed: boolean;
+  title?: string;
+  /** When the command really started, not when it was adopted. */
+  startedAt?: number;
+  /**
+   * What the command printed before it was adopted, in the order the two streams were read.
+   * Seeded into the buffer and read past, so `BashOutput` reports only what comes next.
+   */
+  initialOutput?: string;
   parentSessionId?: string;
   rootRunId?: string;
   parentRunId?: string;
@@ -147,6 +181,10 @@ export class ShellJobManager {
     string,
     { lost: PersistentShellState; retryAt: number }
   >();
+  /** In-flight tree teardowns started by `dispose()`, for `disposeAsync` to await. */
+  private readonly teardowns: Promise<boolean>[] = [];
+  /** Set by `dispose()`: a disposed manager takes on no new work. */
+  private disposed = false;
 
   constructor(
     private readonly store: BackgroundShellStore,
@@ -281,22 +319,7 @@ export class ShellJobManager {
     };
     this.store.shells.set(id, shell);
 
-    proc.stdout?.on('data', (data) => this.appendOutput(shell, data));
-    proc.stderr?.on('data', (data) => this.appendOutput(shell, data));
-    proc.on('error', (error) => {
-      this.appendOutput(shell, `${error.message}\n`);
-      this.finish(shell, 'failed');
-    });
-    proc.on('close', (code, signal) => {
-      if (shell.status === 'stopping') {
-        shell.exitCode = code;
-        shell.signal = signal;
-        shell.finishedAt = Date.now();
-        this.clearTimer(shell);
-        return;
-      }
-      this.finish(shell, code === 0 ? 'exited' : 'failed', code, signal);
-    });
+    this.attachProcessHandlers(shell, proc);
 
     const startupError = await startup;
     if (startupError) {
@@ -318,6 +341,73 @@ export class ShellJobManager {
       }, options.timeoutMs);
     }
 
+    this.emit({ type: 'background_job_start', job: cloneRecord(shell) });
+    return cloneRecord(shell);
+  }
+
+  /**
+   * Take over a process that is already running as a session shell.
+   *
+   * A foreground `Bash` that reached its deadline used to be killed (#302), which left the model
+   * with no result and usually a re-run of the whole gate. This registers the running process
+   * exactly as `start()` would — same record shape, same events, same stream handling and buffer
+   * cap — so from here on it is an ordinary session background shell: KillShell ends its whole
+   * tree, and dispose ends it with Book.
+   *
+   * No timer: a detached command is not on a deadline, and giving it one would make a long gate
+   * die on a clock it never agreed to. The default notify policy of a `run_in_background` call
+   * with no `notify` is used instead, since the model did not choose one.
+   *
+   * Returns `undefined` rather than throwing when it cannot take the process — a disposed
+   * manager, a process that has already exited, or one that never got a pid. A caller that gets
+   * `undefined` still owns the process and has to deal with it.
+   *
+   * The caller's own stream listeners are attached before this returns, so a caller that wants
+   * to stop reading should do so straight after, in the same tick: no output can be delivered in
+   * between.
+   */
+  adopt(options: ShellAdoptOptions): BackgroundShellRecord | undefined {
+    if (this.disposed) return undefined;
+    const proc = options.process;
+    if (proc.pid === undefined) return undefined;
+    if (proc.exitCode !== null || proc.signalCode !== null) return undefined;
+
+    const id = `shell_${this.store.nextId++}`;
+    const shell: BackgroundShellRecord = {
+      id,
+      command: options.command,
+      effectiveCommand: options.effectiveCommand,
+      title: options.title?.trim() || options.command,
+      workdir: options.workdir,
+      pid: proc.pid,
+      process: proc,
+      status: 'running',
+      lifetime: 'session',
+      notify: 'ui',
+      output: '',
+      readOffset: 0,
+      truncatedBytes: 0,
+      outputRevision: 0,
+      completionSequence: 0,
+      completionAcknowledgedSequence: 0,
+      completionDeliveredSequence: 0,
+      // When the command really started, not when it changed hands: the job panel's age is the
+      // only visible difference, and an adopted command that claims to be new is a lie.
+      startedAt: options.startedAt ?? Date.now(),
+      sandboxed: options.sandboxed,
+      parentSessionId: options.parentSessionId,
+      rootRunId: options.rootRunId,
+      parentRunId: options.parentRunId,
+    };
+    this.store.shells.set(id, shell);
+    // Deliberately not `unref()`ing the process or its streams the way `start()` does. This one
+    // was spawned for a tool call that is still open, and the tool call resolves on these very
+    // pipes; unref'ing them could let the loop drain out from under it. The manager's dispose
+    // still ends the process, so it cannot outlive the session either way.
+    this.attachProcessHandlers(shell, proc);
+    // Seeded last, so the cursor lands past everything the command had already printed and
+    // `BashOutput` reports only what comes after the move.
+    this.seedOutput(shell, options.initialOutput ?? '');
     this.emit({ type: 'background_job_start', job: cloneRecord(shell) });
     return cloneRecord(shell);
   }
@@ -403,7 +493,49 @@ export class ShellJobManager {
     this.emit({ type: 'background_job_update', job: cloneRecord(shell) });
   }
 
+  /**
+   * End every session shell, and return once the trees are down (or the bound elapsed).
+   *
+   * `dispose()` used to `kill()` the direct child, which is the wrapper rather than the command:
+   * on Windows the worker it started kept running with the console still attached, and on POSIX
+   * the session shell leads its own process group that a SIGTERM to the wrapper left alive (#314).
+   * `terminateProcessTree` is what already does this properly for KillShell, so the same call is
+   * used here — the group on POSIX, `taskkill /T /F` on Windows, which needs the root process
+   * still alive to find the tree, so the direct kill must not come first.
+   *
+   * Persistent jobs are untouched: a job started with `lifetime: "persistent"` is explicitly one
+   * that outlives Book, and it is stopped through its runner's control file instead.
+   *
+   * The teardown is started by `dispose()` itself, so a caller that never awaits is still held
+   * open by it: the escalation and the poll run on the loop. `disposeAsync` is for a caller that
+   * has to know the trees are down before it does something else.
+   */
+  async disposeAsync(timeoutMs = DISPOSE_TEARDOWN_BUDGET_MS): Promise<void> {
+    this.dispose();
+    await this.awaitTeardowns(timeoutMs);
+  }
+
+  /** Wait for the tree teardowns `dispose()` started, bounded by `timeoutMs`. */
+  async awaitTeardowns(timeoutMs = DISPOSE_TEARDOWN_BUDGET_MS): Promise<void> {
+    if (!this.teardowns.length) return;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled(this.teardowns),
+        new Promise<void>((resolve) => {
+          // Bounded: a tree that cannot be ended is already reported by the job it belonged to,
+          // and an exit that waits forever is worse than one command that outlived it.
+          timer = setTimeout(resolve, timeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   dispose(): void {
+    this.disposed = true;
     if (this.monitor) clearInterval(this.monitor);
     this.monitor = undefined;
     for (const shell of this.store.shells.values()) {
@@ -415,7 +547,17 @@ export class ShellJobManager {
         shell.process &&
         !shell.process.killed
       ) {
-        shell.process.kill();
+        // No pid is no tree to walk, and `terminateProcessTree` reads that as nothing to do.
+        // The process itself is still running, so it is ended directly rather than left behind.
+        if (shell.pid === undefined) {
+          shell.process.kill();
+          continue;
+        }
+        this.teardowns.push(
+          terminateProcessTree(shell.process, shell.pid, (timeoutMs) =>
+            waitForShellClose(shell, timeoutMs),
+          ),
+        );
       }
     }
     this.store.shells.clear();
@@ -491,7 +633,10 @@ export class ShellJobManager {
     let runnerError = '';
     const runner = spawn(process.execPath, [...invocation, specPath], {
       cwd: options.workdir,
-      env: process.env,
+      // The runner is Book's own detached process. It reads its environment back to build the
+      // job's, so a NODE_ENV Book defaulted for its own renderer has to be off the runner too --
+      // and this is also where the runner is launched directly, with no tool call to set an env.
+      env: buildChildEnv(),
       detached: true,
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,
@@ -765,6 +910,48 @@ export class ShellJobManager {
     };
     this.applyPersistentState(shell, state);
     return shell;
+  }
+
+  /**
+   * Read a session shell's output and status into its record.
+   *
+   * Shared by `start()` and `adopt()` so an adopted command is observed exactly as one this
+   * manager spawned: the same two-stream buffer, the same cap, the same terminal transitions and
+   * the same events a host already renders.
+   */
+  private attachProcessHandlers(shell: BackgroundShellRecord, proc: ChildProcess): void {
+    proc.stdout?.on('data', (data) => this.appendOutput(shell, data));
+    proc.stderr?.on('data', (data) => this.appendOutput(shell, data));
+    proc.on('error', (error) => {
+      this.appendOutput(shell, `${error.message}\n`);
+      this.finish(shell, 'failed');
+    });
+    proc.on('close', (code, signal) => {
+      if (shell.status === 'stopping') {
+        shell.exitCode = code;
+        shell.signal = signal;
+        shell.finishedAt = Date.now();
+        this.clearTimer(shell);
+        return;
+      }
+      this.finish(shell, code === 0 ? 'exited' : 'failed', code, signal);
+    });
+  }
+
+  /**
+   * Preload a record's buffer with output that was already read elsewhere, leaving the read
+   * cursor past it.
+   *
+   * A seed is not a new event: the caller has already shown this text to whoever is reading, so
+   * counting it as fresh output would report it a second time. It does still count against the
+   * buffer cap, and it does shift the cursor down if the cap ate the front of it, so a
+   * `BashOutput` after a long pre-adoption run reads "(no new output)" rather than a tail of
+   * what the model has already been shown.
+   */
+  private seedOutput(shell: BackgroundShellRecord, text: string): void {
+    if (!text) return;
+    this.appendOutput(shell, text);
+    shell.readOffset = shell.output.length;
   }
 
   private appendOutput(shell: BackgroundShellRecord, data: unknown): void {

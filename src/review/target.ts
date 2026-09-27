@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { ReviewScope } from './types.js';
+import { buildChildEnv } from '../child-env.js';
 
 interface GitResult {
   stdout: string;
@@ -25,7 +26,12 @@ function git(workspace: string, args: string[], allowExitCodes: number[] = []): 
     execFile(
       'git',
       args,
-      { cwd: workspace, encoding: 'utf8', maxBuffer: 50 * 1024 * 1024 },
+      {
+        cwd: workspace,
+        encoding: 'utf8',
+        maxBuffer: 50 * 1024 * 1024,
+        env: buildChildEnv(),
+      },
       (error, stdout, stderr) => {
         const code = typeof error?.code === 'number' ? error.code : error ? 1 : 0;
         if (!error || allowExitCodes.includes(code)) {

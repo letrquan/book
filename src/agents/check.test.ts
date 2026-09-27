@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { checkTools } from './check.js';
 import { defaultConfig } from '../test/fixtures.js';
 import type { AgentConfig } from '../types/runtime.js';
@@ -65,5 +65,43 @@ describe('Check', () => {
     const result = await run(contextWith({ ok: 'node -e ""' }), 'nope');
     expect(result.status).not.toBe('success');
     expect(result.structuredError?.message).toContain('Unknown check');
+  });
+});
+
+/**
+ * Book defaults NODE_ENV=production for its own renderer. A check command is a project-supplied
+ * command, so it must not inherit a default nobody asked for.
+ */
+describe('Check child environment', () => {
+  const saved = { ...process.env };
+
+  beforeEach(() => {
+    process.env.BOOK_DEFAULTED_NODE_ENV = '1';
+    process.env.NODE_ENV = 'production';
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) delete process.env[key];
+    Object.assign(process.env, saved);
+  });
+
+  const reportEnv = (): string =>
+    `node -e "console.log(JSON.stringify({ nodeEnv: process.env.NODE_ENV ?? null, marker: process.env.BOOK_DEFAULTED_NODE_ENV ?? null }))"`;
+
+  it('does not hand a check the NODE_ENV Book defaulted', async () => {
+    const result = await run(contextWith({ env: reportEnv() }), 'env');
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('"nodeEnv":null');
+    expect(result.content).toContain('"marker":null');
+  });
+
+  it('passes a NODE_ENV the context sets explicitly', async () => {
+    const ctx = contextWith({ env: reportEnv() });
+    ctx.env = { NODE_ENV: 'test' };
+
+    const result = await run(ctx, 'env');
+
+    expect(result.content).toContain('"nodeEnv":"test"');
   });
 });

@@ -1,5 +1,5 @@
 import type { ChildProcess } from 'child_process';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { connectMcpServers, disconnectMcpServers } from './mcp.js';
 import type { McpDiagnostic } from './mcp-config.js';
 import { createMcpStdioFixture, type McpStdioFixture } from './test/mcp-stdio-fixture.js';
@@ -397,5 +397,65 @@ describe('MCP stdio transport lifecycle', () => {
     vi.restoreAllMocks();
     await disconnectMcpServers(result.connections);
     await waitForExit(connection.process!);
+  });
+});
+
+/**
+ * Book defaults NODE_ENV=production for its own renderer. A stdio server is a project- or
+ * user-supplied command, so it must not inherit a default nobody asked for — and an `env` the
+ * server declares is an explicit request, so it must survive.
+ */
+describe('MCP stdio server environment', () => {
+  const saved = { ...process.env };
+
+  beforeEach(() => {
+    process.env.BOOK_DEFAULTED_NODE_ENV = '1';
+    process.env.NODE_ENV = 'production';
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) delete process.env[key];
+    Object.assign(process.env, saved);
+  });
+
+  async function reportedEnv(
+    server: Parameters<typeof createMcpStdioFixture>[0][string],
+  ): Promise<Record<string, string | null>> {
+    const item = fixture({ fixture: server });
+    const result = await connectMcpServers(item.workspace, {
+      home: item.workspace,
+      initializationTimeoutMs: 2_000,
+      requestTimeoutMs: 2_000,
+    });
+    try {
+      const description = result.connections[0].tools[0]?.description;
+      if (!description) throw new Error('fixture reported no tool description');
+      return JSON.parse(description);
+    } finally {
+      await disconnectMcpServers(result.connections);
+      await waitForExit(result.connections[0].process!);
+    }
+  }
+
+  it('does not hand a stdio server the NODE_ENV Book defaulted', async () => {
+    const reported = await reportedEnv('report-env');
+
+    expect(reported.nodeEnv).toBeNull();
+    expect(reported.marker).toBeNull();
+  });
+
+  it('passes a NODE_ENV the server declares in its own env', async () => {
+    const reported = await reportedEnv({ mode: 'report-env', env: { NODE_ENV: 'staging' } });
+
+    expect(reported.nodeEnv).toBe('staging');
+  });
+
+  it('passes a NODE_ENV the user set before Book started', async () => {
+    delete process.env.BOOK_DEFAULTED_NODE_ENV;
+    process.env.NODE_ENV = 'development';
+
+    const reported = await reportedEnv('report-env');
+
+    expect(reported.nodeEnv).toBe('development');
   });
 });

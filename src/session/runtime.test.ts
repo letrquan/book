@@ -92,6 +92,51 @@ describe('SessionRuntime', () => {
     }
   });
 
+  /**
+   * A child whose tree teardown is already under way must not be killed directly first: on Windows
+   * `taskkill /T` walks the tree from a root that has to still be alive, and the direct kill used
+   * to land in the same tick as the abort that began the teardown, so the wrapper died first and
+   * the tree was orphaned instead of ended (#314).
+   */
+  it('does not kill a child whose tree teardown is already under way', () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = new SessionRuntime();
+      const kill = vi.fn();
+      const child = { killed: false, kill, pid: undefined } as unknown as ChildProcess;
+      runtime.trackChildProcess(child);
+      runtime.trackTreeTermination(child);
+
+      runtime.dispose('test');
+
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('kills an ordinary child on dispose and forgets it once released', () => {
+    const runtime = new SessionRuntime();
+    const kill = vi.fn();
+    const child = { killed: false, kill } as unknown as ChildProcess;
+    runtime.trackChildProcess(child);
+    runtime.releaseChildProcess(child);
+
+    runtime.dispose('test');
+
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('resolves disposeAsync once the shell manager reports its teardowns settled', async () => {
+    const runtime = new SessionRuntime();
+    const awaitTeardowns = vi.spyOn(runtime.shellManager, 'awaitTeardowns');
+
+    await runtime.disposeAsync('test');
+
+    expect(runtime.isDisposed).toBe(true);
+    expect(awaitTeardowns).toHaveBeenCalledTimes(1);
+  });
+
   it('owns one normalized skill registry and invalidates context on reload', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'book-runtime-skills-'));
     try {

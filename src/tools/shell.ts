@@ -1,5 +1,10 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import type { BackgroundShellNotify, CommandExecution, ResolvedShell } from '../types/runtime.js';
+import type {
+  BackgroundShellNotify,
+  BackgroundShellRecord,
+  CommandExecution,
+  ResolvedShell,
+} from '../types/runtime.js';
 import { resolveShell, shellExecution } from '../shell-selection.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import {
@@ -8,6 +13,7 @@ import {
   unsandboxedRefusalMessage,
   type SandboxSkipReason,
 } from '../sandbox.js';
+import { buildChildEnv } from '../child-env.js';
 import { isTerminalShellStatus, ShellJobManager } from '../jobs/shell-manager.js';
 import { terminateForegroundProcess } from '../jobs/process-tree.js';
 import { resolveWorkspacePath } from './path-utils.js';
@@ -231,7 +237,9 @@ async function bashForeground(
     try {
       proc = spawnEffective(built, {
         cwd: built.workdir,
-        env: { ...process.env, ...ctx.env },
+        // A NODE_ENV Book defaulted for its own renderer is not the command's, and `npm install`
+        // reading one drops devDependencies. `ctx.env` is an explicit request, so it wins.
+        env: buildChildEnv(process.env, ctx.env),
       });
       ctx.runtime?.trackChildProcess(proc);
     } catch (error) {
@@ -244,9 +252,12 @@ async function bashForeground(
     let settled = false;
     let cancelled = false;
     let timedOut = false;
+    let backgrounded = false;
     let bufferExceeded = false;
     let closed = false;
     let termination: Promise<void> | undefined;
+    /** When the command was spawned, which is what an adopted shell records as its start. */
+    const startedAt = Date.now();
     /** Resolve once the child's stdio is closed, or after a bounded wait. */
     const drainStdio = () =>
       new Promise<void>((resolveDrain) => {
@@ -268,13 +279,87 @@ async function bashForeground(
     // on independent schedules and gluing them together presents the model with
     // a timeline that never happened.
     const capturedOutput = () => labelStreams(stdout, stderr);
+
+    /**
+     * Begin ending the process's whole tree.
+     *
+     * Marked on the runtime first, and synchronously: a `dispose()` in the same tick has to be
+     * able to tell this tree apart from one it would have to kill itself, and killing the wrapper
+     * before `taskkill /T` has walked it orphans the tree instead of ending it (#314).
+     */
+    const beginTeardown = (): Promise<void> => {
+      ctx.runtime?.trackTreeTermination(proc);
+      return terminateForegroundProcess(proc);
+    };
+
+    /**
+     * Hand the still-running command to the session's shell manager instead of killing it.
+     *
+     * A foreground command that reaches its deadline used to die there, and the model got
+     * `timed_out` with no result and usually a re-run of the whole gate (#302). Moving it to the
+     * background costs the model nothing it was not already paying, and everything after it is
+     * one `BashOutput` away.
+     *
+     * Returns `undefined` when the move is impossible — no manager for this context, a disposed
+     * one, or a process that has already exited — and the caller then kills the command and
+     * reports the timeout exactly as before.
+     */
+    const adoptAsBackground = (): BackgroundShellRecord | undefined => {
+      if (ctx.runtime?.isDisposed) return undefined;
+      let record: BackgroundShellRecord | undefined;
+      try {
+        record = manager(ctx).adopt({
+          process: proc,
+          command: built.command,
+          effectiveCommand: built.effectiveCommand,
+          workdir: built.workdir,
+          sandboxed: built.sandboxed,
+          startedAt,
+          initialOutput: labelStreams(stdout, stderr),
+          parentSessionId: ctx.parentSessionId,
+          rootRunId: ctx.runContext?.rootRunId,
+          parentRunId: ctx.runContext?.runId,
+        });
+      } catch {
+        // A manager that cannot take it leaves the process to the caller, which is the old
+        // behaviour. It is not a failure of the command.
+        return undefined;
+      }
+      if (!record) return undefined;
+      // The manager is reading now. This call's own readers go, in the same tick, so no output
+      // can be delivered to one of them and lost between the two.
+      proc.stdout?.off('data', onStdout);
+      proc.stderr?.off('data', onStderr);
+      return record;
+    };
+
     const timer = setTimeout(() => {
+      const adopted = adoptAsBackground();
+      if (adopted) {
+        backgrounded = true;
+        // Success, not failure: nothing failed, the command simply outlived the deadline the
+        // caller gave it. The result says where it went and how to pick it up.
+        void finish(
+          ok(
+            [
+              // The output so far, as the buffer-cap path reports it, so the model has the
+              // progress the command made before the move and not only a shell id.
+              labelStreams(tail(stdout), tail(stderr)),
+              `Command still running after ${timeout}ms; moved to background shell ${adopted.id}${
+                adopted.pid ? ` (pid ${adopted.pid})` : ''
+              }, not killed. Its output so far is above. Next: BashOutput with shell_id="${adopted.id}" and wait_ms to wait for it to finish, or KillShell with shell_id="${adopted.id}" to stop it.`,
+            ].join('\n'),
+            { backgrounded: true, shell: adopted },
+          ),
+        );
+        return;
+      }
       timedOut = true;
       // Wait for the pipes as well as the process. On POSIX the tree teardown
       // only confirms the process group is gone, so without this the last chunk
       // a batching runner flushed on the way out can still be in flight — and
       // that tail is the only progress the model ever sees.
-      termination ??= terminateForegroundProcess(proc).then(() => drainStdio());
+      termination ??= beginTeardown().then(() => drainStdio());
       // Built after termination settles rather than at kill time, so the result
       // carries that flush.
       void finish(() => {
@@ -296,6 +381,9 @@ async function bashForeground(
     const cleanup = () => {
       clearTimeout(timer);
       ctx.signal?.removeEventListener('abort', onAbort);
+      // An adopted process belongs to the shell manager now, not to this call. Releasing it
+      // stops the runtime from killing it on dispose: dispose ends session shells through the
+      // manager, which walks the whole tree.
       ctx.runtime?.releaseChildProcess(proc);
     };
     const finish = async (result: ToolResult | (() => ToolResult)) => {
@@ -312,16 +400,18 @@ async function bashForeground(
     const onAbort = () => {
       if (cancelled) return;
       cancelled = true;
-      termination = terminateForegroundProcess(proc);
+      termination = beginTeardown();
       void finish(fail('Command cancelled'));
     };
+    const onStdout = (data: unknown) => append('stdout', data);
+    const onStderr = (data: unknown) => append('stderr', data);
     const append = (target: 'stdout' | 'stderr', data: unknown) => {
       const chunk = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
       if (target === 'stdout') stdout += chunk;
       else stderr += chunk;
       if (stdout.length + stderr.length <= MAX_FOREGROUND_BUFFER || bufferExceeded) return;
       bufferExceeded = true;
-      termination ??= terminateForegroundProcess(proc);
+      termination ??= beginTeardown();
       // Bounded tails, not the whole buffer. This path fires at the 10MB cap,
       // and composing both streams in full would allocate a second copy of it
       // exactly when the process is already at its output ceiling — and then
@@ -334,11 +424,11 @@ async function bashForeground(
       );
     };
 
-    proc.stdout?.on('data', (data) => append('stdout', data));
-    proc.stderr?.on('data', (data) => append('stderr', data));
+    proc.stdout?.on('data', onStdout);
+    proc.stderr?.on('data', onStderr);
     proc.on('close', (code) => {
       closed = true;
-      if (cancelled || timedOut || bufferExceeded) return;
+      if (cancelled || timedOut || backgrounded || bufferExceeded) return;
       void finish(
         code === 0
           ? ok((built.sandboxed ? '[sandboxed] ' : '') + (stdout || '(no output)'))
@@ -346,7 +436,8 @@ async function bashForeground(
       );
     });
     proc.on('error', (error) => {
-      if (!cancelled && !timedOut && !bufferExceeded) void finish(fail(error.message));
+      if (!cancelled && !timedOut && !backgrounded && !bufferExceeded)
+        void finish(fail(error.message));
     });
     ctx.signal?.addEventListener('abort', onAbort, { once: true });
     if (ctx.signal?.aborted) onAbort();
@@ -377,7 +468,7 @@ async function bashBackground(
       effectiveCommand: built.effectiveCommand,
       exec: built.exec,
       workdir: built.workdir,
-      env: { ...process.env, ...ctx.env },
+      env: buildChildEnv(process.env, ctx.env),
       sandboxed: built.sandboxed,
       title: readString(args, 'title'),
       notify: readNotify(args),
@@ -405,10 +496,80 @@ async function bashBackground(
   }
 }
 
+/** How often a waiting `BashOutput` checks a persistent job's state and output file. */
+const WAIT_POLL_INTERVAL_MS = 250;
+
+/**
+ * Resolve once `shellId` is terminal, or `waitMs` elapses, or the call is aborted.
+ *
+ * A session shell reports its transitions as events, so it is subscribed rather than polled. A
+ * persistent job lives in another process, so its record file is the only thing to read and it
+ * is polled — 250ms is well under the 500ms a status change takes to be worth noticing, and a
+ * wait that ends a few hundred milliseconds late costs nothing next to the turn it saved.
+ */
+function waitForShell(
+  shells: ShellJobManager,
+  shellId: string,
+  waitMs: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  return new Promise((resolve) => {
+    let poll: NodeJS.Timeout | undefined;
+    const timer = setTimeout(() => done(), waitMs);
+    const unsubscribe = shells.subscribe((event) => {
+      if (event.type === 'background_job_result' && event.job.id === shellId) done();
+    });
+    function done() {
+      clearTimeout(timer);
+      clearInterval(poll);
+      unsubscribe();
+      signal?.removeEventListener('abort', done);
+      resolve();
+    }
+    const terminalNow = () => {
+      const shell = shells.get(shellId);
+      return shell === undefined || isTerminalShellStatus(shell.status);
+    };
+    if (terminalNow()) {
+      done();
+      return;
+    }
+    if (signal) {
+      if (signal.aborted) {
+        done();
+        return;
+      }
+      // An aborted wait ends early and kills nothing: the shell is still there, and a second
+      // call can wait on it again.
+      signal.addEventListener('abort', done, { once: true });
+    }
+    if (shells.get(shellId)?.lifetime === 'persistent') {
+      poll = setInterval(() => {
+        if (terminalNow()) done();
+      }, WAIT_POLL_INTERVAL_MS);
+    }
+  });
+}
+
 async function bashOutput(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const shellId = readString(args, 'shell_id', 'shellId')?.trim();
   if (!shellId) return fail('shell_id must be a non-empty string');
-  const result = manager(ctx).readOutput(shellId);
+  const shells = manager(ctx);
+  if (!shells.get(shellId)) return fail(`Shell ${shellId} not found`);
+  const requestedWait = readNumber(args, 'wait_ms') ?? readNumber(args, 'waitMs');
+  // Refused rather than clamped, exactly as Bash refuses an over-limit `timeout`: the model would
+  // otherwise believe it had a ten-minute wait and get a shorter one.
+  const ceiling = toolTimeoutCeilingMs(ctx.env);
+  if (requestedWait !== undefined && requestedWait > ceiling) {
+    return fail(
+      `wait_ms ${requestedWait}ms exceeds the ${ceiling}ms limit in force here (BOOK_TOOL_TIMEOUT_MS). ` +
+        `Re-run with a wait_ms at or below ${ceiling}ms.`,
+    );
+  }
+  if (requestedWait !== undefined && requestedWait > 0) {
+    await waitForShell(shells, shellId, requestedWait, ctx.signal);
+  }
+  const result = shells.readOutput(shellId);
   if (!result) return fail(`Shell ${shellId} not found`);
   const parts = [`Shell ${result.shell.id}: ${result.shell.status}`];
   if (result.shell.pid !== undefined) parts.push(`pid=${result.shell.pid}`);
@@ -425,6 +586,14 @@ async function bashOutput(args: Record<string, unknown>, ctx: ToolContext): Prom
       ? `${result.output}\n[${result.remaining} more characters available; call BashOutput again]`
       : result.output,
   );
+  // A shell that is still running and has said nothing new is the case where polling costs the
+  // most and helps the least, so the result names the cheaper call rather than leaving the model
+  // to infer it from a status line.
+  if (!isTerminalShellStatus(result.shell.status) && result.output === '(no new output)') {
+    lines.push(
+      `Still running with no new output. Call BashOutput with wait_ms (up to ${ceiling}ms) to wait for it to finish instead of polling again.`,
+    );
+  }
   return ok(lines.join('\n'), result);
 }
 
@@ -457,7 +626,7 @@ export const shellTools: ToolDefinition[] = [
     name: 'Bash',
     argumentAliases: { runInBackground: 'run_in_background' },
     description:
-      'Execute a command in the workspace, in the session shell named by the Harness section of the system prompt (Git Bash, PowerShell, /bin/sh, or cmd.exe).',
+      'Execute a command in the workspace, in the session shell named by the Harness section of the system prompt (Git Bash, PowerShell, /bin/sh, or cmd.exe). A foreground command that reaches its timeout is not killed: it moves to a background shell and the result names the shell_id to read it with BashOutput.',
     timeoutMs: DEFAULT_BASH_TIMEOUT_MS,
     parameters: {
       type: 'object',
@@ -468,7 +637,7 @@ export const shellTools: ToolDefinition[] = [
           type: 'number',
           minimum: 1,
           maximum: MAX_TOOL_TIMEOUT_MS,
-          description: `How long a foreground command may run, in milliseconds (default ${DEFAULT_BASH_TIMEOUT_MS}, maximum ${MAX_TOOL_TIMEOUT_MS}). Raise it for a known-slow command such as a full build or test suite. Background commands use max_runtime_ms instead.`,
+          description: `How long a foreground command may run, in milliseconds (default ${DEFAULT_BASH_TIMEOUT_MS}, maximum ${MAX_TOOL_TIMEOUT_MS}). Raise it for a known-slow command such as a full build or test suite. A command still running when this elapses is moved to a background shell rather than killed, and the result names its shell_id; use run_in_background: true to get one up front instead. Background commands use max_runtime_ms instead.`,
         },
         run_in_background: {
           type: 'boolean',
@@ -500,13 +669,24 @@ export const shellTools: ToolDefinition[] = [
   },
   {
     name: 'BashOutput',
-    argumentAliases: { shellId: 'shell_id' },
+    argumentAliases: { shellId: 'shell_id', waitMs: 'wait_ms' },
     description:
-      'Read new output and status from a background shell started by Bash(run_in_background)',
+      'Read new output and status from a background shell started by Bash(run_in_background), or by a foreground command that reached its timeout. Pass wait_ms to wait for the shell to finish instead of polling it once per turn.',
+    // The wait is this tool's own deadline, so the registry's backstop has to sit behind it. A
+    // constant declaration is what the registry adds SELF_TIMEOUT_GRACE_MS to; the model's
+    // `wait_ms` is separately capped at `toolTimeoutCeilingMs`, which is at most this value, so
+    // the backstop cannot fire first even under an operator's lower BOOK_TOOL_TIMEOUT_MS.
+    timeoutMs: MAX_TOOL_TIMEOUT_MS,
     parameters: {
       type: 'object',
       properties: {
         shell_id: { type: 'string', description: 'Background shell ID returned by Bash' },
+        wait_ms: {
+          type: 'number',
+          minimum: 1,
+          maximum: MAX_TOOL_TIMEOUT_MS,
+          description: `Optional wait, in milliseconds, for the shell to reach a terminal status before this returns (maximum ${MAX_TOOL_TIMEOUT_MS}). It returns as soon as the shell finishes, and it does not return early on new output, so a chatty test runner costs the same wait as a silent one. Omit it to read the current output and status at once.`,
+        },
       },
       required: ['shell_id'],
     },

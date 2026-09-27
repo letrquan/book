@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'fs';
 import { exec } from 'child_process';
 import { createHash } from 'crypto';
+import { buildChildEnv } from '../child-env.js';
 import type { FileObservation } from '../types/tools.js';
 import { workspaceIdentity } from '../tools/file-provenance.js';
 import { resolveWorkspaceMentionPath } from './file-mentions.js';
@@ -411,6 +412,9 @@ function executeShellExpansion(
       {
         cwd: workspace,
         encoding: 'utf8',
+        // The `!command` the user typed is theirs, so it must not inherit the NODE_ENV Book
+        // defaulted for its own renderer.
+        env: buildChildEnv(),
         timeout: 10_000,
         maxBuffer: 1024 * 1024,
         signal,

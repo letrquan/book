@@ -18,6 +18,13 @@ import type { DiscoverSkillsOptions } from '../skills.js';
 import type { Message } from '../types/messages.js';
 
 /**
+ * How long `disposeAsync` waits for process trees to come down. A tree that can be ended is ended
+ * inside `TERMINATE_GRACE_MS` twice over; this is the ceiling on the ones that cannot, so a
+ * command that refuses to die delays an exit rather than wedging it.
+ */
+const DISPOSE_TEARDOWN_MS = 5_000;
+
+/**
  * Canonical names of the tools a conversation actually ran.
  *
  * `usedToolNames` gates memory quarantine: a conversation that fetched the web,
@@ -131,6 +138,16 @@ export class SessionRuntime {
   private readonly abortControllers = new Set<AbortController>();
   private readonly timers = new Set<NodeJS.Timeout>();
   private readonly childProcesses = new Set<ChildProcess>();
+  /**
+   * Children whose whole process tree is already being torn down, by the tool that started it.
+   *
+   * `dispose()` must not kill these directly: on Windows `taskkill /T` walks the tree from a root
+   * that has to still be alive, and the direct kill landed in the same tick as the abort that
+   * began the teardown, so the wrapper died first and the tree was orphaned instead of ended
+   * (#314). The mark is taken synchronously by the abort listener, before the teardown is
+   * awaited, which is why it beats the loop in `dispose()`.
+   */
+  private readonly terminatingChildren = new Set<ChildProcess>();
   private disposed = false;
 
   constructor(options: SessionRuntimeOptions = {}) {
@@ -285,8 +302,20 @@ export class SessionRuntime {
     return child;
   }
 
+  /**
+   * Record that this tool has begun ending a child's whole process tree.
+   *
+   * Taken synchronously at the moment the teardown starts — inside an abort listener, before the
+   * teardown promise is awaited — so `dispose()` in the same tick can tell a tree already on its
+   * way down from a child it has to kill itself.
+   */
+  trackTreeTermination(child: ChildProcess): void {
+    this.terminatingChildren.add(child);
+  }
+
   releaseChildProcess(child: ChildProcess): void {
     this.childProcesses.delete(child);
+    this.terminatingChildren.delete(child);
   }
 
   recordRunAmbientSnapshot(
@@ -307,6 +336,25 @@ export class SessionRuntime {
     return this.disposed;
   }
 
+  /**
+   * Dispose every resource, then wait for the process trees to actually come down.
+   *
+   * `dispose()` alone is synchronous and cannot promise that anything is gone: a session shell's
+   * tree is ended by an external `taskkill` on Windows and by a signal to the process group on
+   * POSIX, and both take longer than the tick dispose runs in. A host that ends by letting Node
+   * exit once its handles close is held open by the teardown's own handles anyway, but an exit
+   * path that has something to do between the abort and the process going away — a final render,
+   * a last write — needs a promise to await. The wait is bounded, so a tree that refuses to die
+   * costs a few seconds and not a hung exit.
+   */
+  async disposeAsync(
+    reason = 'session_runtime_disposed',
+    timeoutMs = DISPOSE_TEARDOWN_MS,
+  ): Promise<void> {
+    this.dispose(reason);
+    await this.shellManager.awaitTeardowns(timeoutMs);
+  }
+
   /** Dispose every resource registered by this session exactly once. */
   dispose(reason = 'session_runtime_disposed'): void {
     if (this.disposed) return;
@@ -322,6 +370,10 @@ export class SessionRuntime {
     );
     for (const child of this.childProcesses) {
       if (shellProcesses.has(child)) continue;
+      // A child whose tree is already being torn down is not killed here. The teardown needs a
+      // live root — `taskkill /T` on Windows, the group leader on POSIX — and killing the wrapper
+      // first is what left whole trees running after Book exited (#314).
+      if (this.terminatingChildren.has(child)) continue;
       if (!child.killed) child.kill();
     }
     this.shellManager.dispose();
