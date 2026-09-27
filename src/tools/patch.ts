@@ -7,7 +7,7 @@ import type {
 import { throwIfAborted } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { observeFile, requireFreshObservation } from './file-provenance.js';
-import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
+import { pathOutsideWorkspaceResult, resolveMutationPath } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
 import {
   readTextSnapshot,
@@ -286,7 +286,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
   if (!('operations' in parsed)) return parsed;
   const paths = parsed.operations.map((operation) => operation.path);
   const resolved = parsed.operations.map((operation) => {
-    const result = resolveWorkspacePath(ctx.workspaceRoot, operation.path);
+    const result = resolveMutationPath(ctx, operation.path);
     return result ? { operation, ...result } : null;
   });
   if (resolved.some((entry) => !entry))

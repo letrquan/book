@@ -42,6 +42,10 @@ const TRUST_OWNED_KEYS: Record<string, string> = {
   'hooks.projectEntries': 'Record it with: book trust hook <fingerprint>',
   'permissions.projectAllowRules': 'Record it with: book trust rule <rule>',
   'mcp.projectServers': 'Approve the server when Book prompts for it.',
+  // At the document root, because the setting it decides about (`additionalDirectories`) is itself
+  // top-level; `WORKSPACE_FORBIDDEN_PATHS` names it as `['', 'projectDirectories']` for the same
+  // reason (#300).
+  projectDirectories: 'Record it with: book trust dir <path>',
 };
 
 /**

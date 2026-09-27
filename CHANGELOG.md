@@ -4,8 +4,154 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **`additionalDirectories` is honored for reads and writes, and gated like every other
+  project-declared authority** (#300). The setting was accepted from a checked-in `.book/settings.json`
+  and did nothing, so the fix had to make it both real and safe. `Read`, `Glob` and `Grep` now serve
+  an approved directory without a prompt, and the write tools accept an absolute path inside one —
+  `Write`, `Edit`, `MultiEdit`, `ApplyPatch` and `NotebookEdit` treat an approved directory as a
+  root, so the same write is judged, guarded and observed exactly as the same write in the workspace
+  is. An approved directory carries the same protections the workspace does: its own
+  `.book/settings.local.json` and `.book` directory are guarded, a write into a home directory held
+  inside it still asks, and a relative path stays anchored to the workspace. A project-declared
+  entry is withheld until it is
+  approved with the new `book trust dir <path>` (or `book trust dir --all-pending`), and
+  `book doctor` lists what is in effect and what is waiting. The decision is keyed — and shown —
+  by the directory's **real path**, never the text the repository wrote: `./shared`, `shared` and
+  the absolute path are one decision, a symlink is displayed as what it actually points at, and
+  retargeting a link makes the entry pending again. User-global, local and `--settings` entries
+  need no approval. The trust store is **version 3**: a v2 build would write the store without a
+  workspace's directory approvals and silently put them back to pending, so the bump makes that
+  failure loud — an older build reads a v3 store as unreadable, withholds every gated declaration,
+  and declines to write.
+- **The trust store for repository-controlled input is version 3** (`TRUST_STORE_VERSION`), adding
+  `projectDirectories` to the same treatment as hook, command, allow-rule and MCP decisions: the
+  key is refused in every `book config` scope, the decision is keyed by workspace path, and a store
+  written by a newer build is never partially understood. `book config set projectDirectories …`
+  was **not** refused — the guard list predated the key — and the user-global scope is the default,
+  so `book config set projectDirectories '{"/opt/shared":"approved"}'` released a project's declared
+  directory with no `book trust dir` at all. It is now refused exactly like its four siblings, in
+  every scope, whether written at the document root or at a leaf of the map.
+- **Reads that no root can serve are refused, not prompted for** (#305). A `Read`, `Glob` or `Grep`
+  whose target is outside the workspace and every approved root raised a prompt that nothing could
+  answer — the tool returned `path_outside_workspace` whatever the user said, and an "Always allow"
+  saved a rule for a call that could never run. It is now refused up front, in `default`,
+  `accept-edits` and `plan`, as `blocked` with the code `path_outside_workspace` and a message
+  naming the path, the directories already honored, and the two ways through. The `all_tools_blocked`
+  remedy for a streak of them names `additionalDirectories` rather than a permission rule. A read
+  whose path lands inside a home directory still prompts, but only when a home lies inside the root
+  that serves it: approving `/opt/stuff` must not become a standing key to `~/.ssh` through a link
+  or a home held inside it. A root that merely sits below the home — which is nearly every
+  workspace — is not guarded by the home rule. A `Grep` or `Glob` names a _scope_, not a file, and
+  is guarded when that scope contains a guarded home as well as when it lies inside one: `Grep
+{path: "/home"}` printed lines from `~/.ssh` and `~/.book` without naming a file under them.
+  Two follow-ups, both found in review:
+  - **`dontAsk` refused these the wrong way.** The mode does not judge reads, so an outside target
+    was refused as `permission_denied`, and the `all_tools_blocked` remedy for a streak of them
+    advises an allow rule — which no rule and no mode can grant for a path outside every root. An
+    outside target in `dontAsk` is now refused as `path_outside_workspace`, with the same message and
+    the same remedy the other modes give it. Only the _kind_ of refusal moved: a **workspace** read
+    with no allow rule is still refused in `dontAsk`, unchanged.
+  - **A target the tools _exclude_ fell through to a prompt.** `readToolTarget` already knew that a
+    path under a read-only root's `exclude` list (Book's own memory inbox) could not be read, and
+    said so, but nothing consumed the verdict, so the call fell through to the default `ask` and the
+    operator was prompted for something no answer could change. It is refused up front like an
+    outside target, with its own code `path_excluded` and a message saying the path is excluded — a
+    separate code because its remedy is not a directory: the parent is served already, and
+    `additionalDirectories` would not lift an exclusion. The verdict was right; the loop just never
+    read it.
+  - **A refused target reached the operator's terminal raw.** `readTargetOf`'s comment said the
+    target is printed through `printableRule`, but the refusal interpolated it into
+    `refusal.content` and `noteChildRefusal` pushed that text to the operator verbatim — so a
+    model-chosen path carrying an ESC sequence, a CR, a bidi override or U+2028/2029 could drive the
+    terminal of whoever ran a print-mode child. Every target the new refusal messages name is now
+    folded with the shared control-character set the tool rows already use (#283), which drops an
+    escape sequence and a bidi override rather than displaying it.
+- **`deny` and `ask` path rules match case-insensitively** (#305). `deny: ["Read(.env)"]` already
+  blocked `.ENV` and `.Env` on Linux, but `ask: ["Read(.env)"]` did not prompt for them, so the
+  model could ask for a spelling that a rule plainly meant to cover. Deny and ask now fold on every
+  platform. `allow` is unchanged, so nothing is widened by the fold and a case-sensitive Linux mount
+  still distinguishes the two the way it always did.
+- **The read-only Git tools are hardened against the repository's own git configuration** (#305).
+  `GitStatus`, `GitDiff`, `GitLog` and `GitBranch` pass `-c core.fsmonitor=false`,
+  `-c core.pager=cat`, an empty `-c core.hooksPath`, `-c core.untrackedCache=false`,
+  `-c gc.auto=0`, `-c log.showSignature=false` and `--no-optional-locks`; `GitDiff` adds
+  `--no-ext-diff --no-textconv` and `GitLog` adds `--no-show-signature`; `GIT_PAGER=cat` and
+  `GIT_TERMINAL_PROMPT=0` are set in the environment. `log.showSignature` was the sharpest of
+  these: it makes `git log` verify every signature it prints, and verification runs `gpg.program`,
+  a program the repository's own `.git/config` names — and `GitLog` runs without a prompt at all.
+  Each flag was checked against a real `git` rather than read off the list.
+  **Scope:** the hardening is applied to the four read-only tools only. `GitCommit` runs with the
+  user's own `argv` and environment, exactly as before, so a `pre-commit` or `commit-msg` hook
+  still runs — an empty `core.hooksPath` on `git commit` would silently disable the user's code.
+  **Residual:** a repository's `.git/config` can still configure clean/smudge filters, and those run
+  on `status` and `diff`; Book does not suppress them, because doing so would mean rewriting the
+  command the user asked for.
+- **A managed child's refusal reaches the operator** (#305). A child runs unattended and its
+  handoff is a summary, so a step that was refused and never ran was indistinguishable from one
+  the model chose to skip. The child raises an `agent_notice` event, `AgentManager` forwards it,
+  and the TUI adds it to the transcript labelled with the child. Both print-mode paths dropped it
+  on the floor: `src/headless.ts` ignored the event and `src/stream-json.ts` had no such event type,
+  so a print-mode operator — the one most likely to be reading a log rather than watching a
+  transcript — never learned the step had not happened. In `text` mode the message is now written
+  to stderr as a labelled `notice: …` line, the way the other operator notices are; in
+  `stream-json` it is emitted as an `agent_notice` event carrying the child's `agentId`. Like a
+  host `notice`, it is not silenced by `--quiet`: it is something that did not happen rather than
+  progress.
+- **A workspace root spelled through a symlink no longer breaks Read → Edit** (#300). The
+  resolution layer reports a workspace file relative to the root _after_ links whenever the path was
+  not written inside the root as given, but the observation ledger filed the Read under a _lexical_
+  `relative(resolve(workspaceRoot), absolutePath)`. A workspace root reached through a symlink — or
+  typed in 8.3 short form on Windows, the same disagreement — made the two spell different files, so
+  the Read filed `../real/a.txt`, the Edit looked up `a.txt`, and the write answered
+  `file_not_observed` for a file the model had just read. Both ends now derive the ledger key
+  canonically, on the one spelling under which they agree, and `requireObservationForMutation` is
+  keyed on the resolved absolute path rather than the display spelling (the message still names the
+  spelling the model wrote). A file in an honored root keeps its `../` prefix, so `notes.txt` in
+  `/srv/app` and `notes.txt` in the workspace still do not share an entry.
+
 ### Changed
 
+- **A `Glob` pattern is anchored the way the other tools are.** A relative pattern searches the
+  workspace alone, exactly as `Read` anchors a relative path and `Grep` anchors a relative scope;
+  it used to be run once per root, so files from an approved directory appeared in answer to a
+  pattern that never named them. An absolute pattern names its own root and is walked once, rather
+  than once per root with the duplicates removed afterwards.
+- **`deny` and `ask` rules match a path in an approved directory by its root-relative spelling**,
+  the same way a rule written against the workspace matches there: `deny: ["Write(.env)"]` stopped
+  the workspace's `.env` and let `/srv/app/.env` through. `allow` is deliberately not extended this
+  way — a rule that widens must not acquire a new meaning, so a workspace-shaped `Edit(src/**)`
+  does not silently cover `/srv/app/src/**`; an allow rule matches a path in an approved directory
+  only by its absolute spelling.
+- **A managed child's notices are queued, not overwritten.** The TUI held one notice at a time
+  while the drain waits for idle, so two children refusing something in the same turn left one
+  notice, and the operator never learned a step had not happened.
+- **An approved project directory is released by its real path, not by the text the repository
+  wrote.** The released list is resolved again later by a consumer that holds no trust store, so a
+  relative or symlinked spelling let a repointed link move a root the user had approved as
+  somewhere else.
+- **Plan mode judges reads like `default`** (#305). It auto-approved every read-only tool outside
+  its small `PLAN_PERMISSION_REQUIRED_TOOLS` set, so a guarded `Read` ran with no prompt and an
+  outside `Read` reached the tool. It now applies the same read rules — `ask` rules prompt, outside
+  reads are refused, and a guarded read _prompts_ rather than running silently, which the verdict
+  alone did not achieve — the auto-approval skipped the whole permission block. An unguarded
+  workspace read still runs unprompted, which is what plan mode is for. `dontAsk` is unchanged.
+- **The four read-only Git tools run without a prompt** in `default` and `accept-edits`
+  (`GitStatus`, `GitDiff`, `GitLog`, `GitBranch`): a repository's own git configuration cannot make
+  these read-only calls execute programs, a `deny` rule still blocks them, an `ask` rule still
+  prompts, and `dontAsk` still refuses.
+- **A `Read` evaluation resolves its path once** (#305). Every path a call is judged by was
+  resolved per rule candidate, so a single read with a handful of spellings walked the root list
+  with `realpath` a dozen times. The decisions are identical; only the work changed.
+- **A `Glob` or `Grep` result outside the workspace is listed absolutely.** A file in an approved
+  additional directory was labelled with its relative form, which reads as a workspace path that
+  does not exist — the model would try it and be told the path was outside the workspace. A
+  `Grep` `path` argument inside an approved directory now searches that directory rather than the
+  workspace tree, which does not contain it.
+- **`book trust` gains `dir`**, alongside `hook`, `rule` and `command`. It takes `--workspace`,
+  `--all-pending` and `--reject`, prints the real path beside the declared text before recording
+  anything, and leaves every other decision in every workspace untouched.
 - **The stream-JSON `result` event no longer carries the conversation by default** (#307). This is
   a **breaking change for hosts that read `result.messages` from stream-JSON output**: the field is
   absent unless the new `--include-result-messages` flag is passed, because a long run's history is
@@ -409,6 +555,24 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A Windows root and a path under it are compared in one spelling** (#300, #305). One directory
+  has more than one name: the long form a user reads and the DOS 8.3 short form
+  (`C:\Users\RUNNER~1\AppData\Local\Temp`), plus a drive letter in either case and separators either
+  way. A root was compared as it was given against a path `realpath`, fast-glob and ripgrep had
+  reported, so on a machine whose temp directory has a short name the two read as two places, and
+  everything that keys on the root stopped working: a `Grep` printed the API key in the
+  workspace's own `.book/settings.local.json` because the exclusion could no longer name the file,
+  the workspace's own matches came back labelled with absolute paths instead of relative ones, a
+  search scoped to an approved directory searched the workspace tree instead, and a read or write
+  into one was refused as outside every root. Every path-and-root comparison is now made on the
+  canonical form of both sides, so the guards hold for a root however it is spelled and the
+  relative spellings shown to the model are unchanged.
+- **`Glob` with an absolute Windows pattern walked nothing** (#300). fast-glob reads `\` as an
+  escape character, so `C:\ws\**\*.ts` parsed as one escaped token, reported its base as `.` and
+  matched no files at all — the same pattern worked with forward slashes. A pattern's static
+  leading directories are now converted with fast-glob's own `convertPathToPattern` before the walk,
+  and the directories it would walk are read from that same converted pattern, so the search and
+  the permission judgment of what it reaches name the same directory.
 - **A reply cut off at the output cap no longer keeps its `<think>` block as answer text** (#312).
   A settled reply's leading reasoning block is split into `reasoningContent`; a reply the provider
   cut short (`finish_reason: length`, or a stream that dropped) was stored as written, so every

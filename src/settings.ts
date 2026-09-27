@@ -425,6 +425,20 @@ export const commandSettingsSchema = z.object({
 
 export type CommandSettings = z.infer<typeof commandSettingsSchema>;
 
+/**
+ * Per-directory trust decisions for `additionalDirectories` declared by the checked-in project
+ * layer, keyed by the directory's real path.
+ *
+ * `additionalDirectories` widens the set of roots the file tools serve, so honouring one from a
+ * clone would hand that clone a read (and a write path) over whatever the path resolves to. A
+ * project directory with no `approved` entry here is withheld, exactly as a project allow rule
+ * is. Unlike a rule, the key cannot be the declared text: a repository controls that text and
+ * could declare a link, so the decision is recorded against where the path really goes.
+ */
+export const projectDirectoryChoiceSchema = z.enum(['approved', 'rejected']);
+
+export type ProjectDirectoryChoice = z.infer<typeof projectDirectoryChoiceSchema>;
+
 export const uiSettingsSchema = z.object({
   /** Show provider-native and embedded model reasoning in the interactive transcript. */
   showThinking: z.boolean().default(true),
@@ -491,7 +505,20 @@ export const bookSettingsSchema = z.object({
     .enum(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'])
     .optional(),
   disableBypassPermissionsMode: z.boolean().optional(),
+  /**
+   * Extra roots the file tools serve, for paths outside the workspace. An honored entry is a root
+   * for reads *and* writes: `Write`, `Edit`, `MultiEdit`, `ApplyPatch` and `NotebookEdit` accept an
+   * absolute path inside one and treat the entry as they would the workspace, while a relative path
+   * stays anchored to the workspace. A project-declared entry is withheld until `book trust dir`.
+   */
   additionalDirectories: z.array(z.string()).default([]),
+  /**
+   * Decisions about `additionalDirectories` the project layer declared, keyed by the directory's
+   * real path (the declared text is only what the repository wrote; the path is what the file
+   * tools would serve). A project directory with no `approved` entry here is withheld, exactly
+   * as a project allow rule with no entry is.
+   */
+  projectDirectories: z.record(z.string(), projectDirectoryChoiceSchema).default({}),
   env: z.record(z.string(), z.string()).default({}),
   provider: z.record(z.string(), providerConfigSchema).default({}),
   permissions: permissionsSchema.prefault({}),
@@ -574,6 +601,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     projectEntries: {},
   },
   additionalDirectories: [],
+  projectDirectories: {},
   env: {},
   provider: {},
   ui: { showThinking: true, startupAnimation: true },

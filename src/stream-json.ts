@@ -26,6 +26,13 @@ export type StreamJsonEvent =
   | { type: 'agent_message'; agentId?: string; message?: unknown }
   | { type: 'agent_completion'; notification?: unknown }
   | { type: 'agent_permission'; agentId?: string; request?: unknown }
+  /**
+   * A managed child's own line for the operator: a refusal it hit, with the child's label already
+   * on the text. Not part of the child's record and not part of the parent's transcript, so a
+   * print-mode host that read only `tool_result` and `agent_*` records had no way to learn a
+   * delegated step did not run (#305 item 4).
+   */
+  | { type: 'agent_notice'; agentId?: string; message?: string }
   | { type: 'evidence_update'; evidence?: unknown }
   /**
    * The turn is being retried; discard every `assistant`/`reasoning` delta
@@ -115,6 +122,7 @@ const EVENT_TYPES = new Set<StreamJsonEvent['type']>([
   'agent_message',
   'agent_completion',
   'agent_permission',
+  'agent_notice',
   'evidence_update',
   'attempt_discarded',
   'retry',

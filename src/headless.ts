@@ -1265,6 +1265,21 @@ function emitAgentEvent(
     else console.warn(event.message);
     return;
   }
+  // A managed child's own line for the operator (#305 item 4). A child runs unattended and its
+  // result is summarised into a handoff, so a step that was refused and never ran is
+  // indistinguishable from one it chose to skip — and only the TUI was rendering this, so a
+  // print-mode operator learned nothing. The label is already on the text, because the child's
+  // prompt is the delegating model's. Unlike the progress lines, and like `notice`, this is not
+  // silenced by `--quiet`: it is not progress, it is something that did not happen, and the
+  // answer alone would not show it.
+  if (event.type === 'agent_notice') {
+    if (opts.outputFormat === 'stream-json') {
+      emit({ type: 'agent_notice', agentId: event.agentId, message: event.message });
+    } else {
+      process.stderr.write(`notice: ${progressLine(event.message, PROGRESS_NOTICE_MAX)}\n`);
+    }
+    return;
+  }
   if (event.type === 'error') {
     state.errorReported = true;
     if (opts.outputFormat === 'stream-json') emit({ type: 'error', error: event.error });
@@ -1340,6 +1355,12 @@ function emitAgentEvent(
 const PROGRESS_ARG_MAX = 120;
 /** Longest error a `--verbose` result line shows. */
 const PROGRESS_ERROR_MAX = 160;
+/**
+ * Longest child-notice line. A notice carries a refusal message, which quotes a model-chosen
+ * path, so the line is folded and capped exactly as a progress line is — the operator's terminal
+ * is the last place an escape sequence from a model argument should reach.
+ */
+const PROGRESS_NOTICE_MAX = 400;
 
 /**
  * The first non-blank line of `text`, cut to `max` characters, so a plan, an

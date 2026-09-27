@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import type { ToolContext } from '../types/tools.js';
+import { fileTools } from './file.js';
 import { notebookTools } from './notebook.js';
 
 let dir: string;
@@ -377,6 +378,44 @@ describe('NotebookEdit', () => {
       expect(result.structuredError?.message).toMatch(/outside workspace/);
     } finally {
       rmSync(outside, { force: true });
+    }
+  });
+
+  it('edits a notebook in an honored directory, and refuses it without one', async () => {
+    const extra = mkdtempSync(join(tmpdir(), 'book-notebook-extra-'));
+    const target = join(extra, 'shared.ipynb');
+    writeFileSync(target, JSON.stringify(notebook([markdownCell('md-1')])), 'utf-8');
+    try {
+      ctx.additionalRoots = [extra];
+      // The same fresh-observation requirement the workspace has: the notebook is outside the
+      // workspace, so it was not covered by anything read earlier in this session.
+      ctx.fileObservationLedger = new Map();
+      const unobserved = await edit.execute(
+        { notebook_path: target, cell_id: 'md-1', new_source: 'x' },
+        ctx,
+      );
+      expect(unobserved.structuredError?.code).toBe('file_not_observed');
+
+      // Reading it through the read tools is what licenses the edit, exactly as in the workspace.
+      await fileTools.find((tool) => tool.name === 'Read')!.execute({ filePath: target }, ctx);
+      const applied = await edit.execute(
+        { notebook_path: target, cell_id: 'md-1', new_source: '# Edited' },
+        ctx,
+      );
+      expect(applied.status).toBe('success');
+      expect(readFileSync(target, 'utf-8')).toContain('Edited');
+
+      ctx.additionalRoots = [];
+      const refused = await edit.execute(
+        { notebook_path: target, cell_id: 'md-1', new_source: '# Again' },
+        ctx,
+      );
+      expect(refused.structuredError?.code).toBe('path_outside_workspace');
+      expect(readFileSync(target, 'utf-8')).toContain('Edited');
+    } finally {
+      delete ctx.additionalRoots;
+      delete ctx.fileObservationLedger;
+      rmSync(extra, { recursive: true, force: true });
     }
   });
 

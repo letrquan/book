@@ -19,13 +19,15 @@ import {
   mkdtempSync,
   lstatSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
   rmSync,
 } from 'fs';
 import { writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
-import { dirname, join, resolve } from 'path';
+import { dirname, basename, join, resolve } from 'path';
+import { shortPathName, withLowercaseDriveLetter } from '../test/short-path.js';
 
 let dir: string;
 const ctx: ToolContext = { workspaceRoot: '', env: {} };
@@ -2999,3 +3001,405 @@ describe('Read output budget', () => {
     expect(note).toContain(`the rest start at line ${shownCount + 1}.`);
   });
 });
+
+/**
+ * #300. `additionalDirectories` is honored as a set of roots, and the tools agree about which.
+ * Read, Glob and Grep serve an approved directory, and so do Write, Edit, MultiEdit,
+ * NotebookEdit and ApplyPatch (decision A) — an approved directory widens what Book may reach,
+ * and a tool that could not read a root could still write into it, which is the worse gap.
+ */
+describe('additionalRoots', () => {
+  let extra: string;
+  let outside: string;
+
+  beforeEach(() => {
+    extra = mkdtempSync(join(tmpdir(), 'book-additional-'));
+    outside = mkdtempSync(join(tmpdir(), 'book-notadditional-'));
+    writeFileSync(join(extra, 'shared.txt'), 'shared directory content\n');
+    writeFileSync(join(extra, 'matchme.txt'), 'grepme\n');
+    writeFileSync(join(outside, 'secret.txt'), 'not yours\n');
+    ctx.additionalRoots = [extra];
+  });
+
+  afterEach(() => {
+    rmSync(extra, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+    delete ctx.additionalRoots;
+  });
+
+  it('reads a file in an honored directory', async () => {
+    const r = await read.execute({ filePath: join(extra, 'shared.txt') }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('shared directory content');
+  });
+
+  it('refuses a file in a directory that is not honored', async () => {
+    const r = await read.execute({ filePath: join(outside, 'secret.txt') }, ctx);
+
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/outside workspace/i);
+  });
+
+  it('refuses a file in a sibling of an honored directory, which is not a root', async () => {
+    const sibling = mkdtempSync(join(tmpdir(), 'book-additional-sibling-'));
+    try {
+      writeFileSync(join(sibling, 'sneaky.txt'), 'not covered\n');
+
+      const r = await read.execute({ filePath: join(sibling, 'sneaky.txt') }, ctx);
+
+      expect(r.status).toBe('error');
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+
+  it('anchors a relative path to the workspace, not to the honored directory', async () => {
+    // `shared.txt` exists in both. A bare filename must name the workspace's, or a model could
+    // read a file from a root the user only approved for other work.
+    writeFileSync(join(dir, 'shared.txt'), 'workspace copy\n');
+
+    const r = await read.execute({ filePath: 'shared.txt' }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('workspace copy');
+  });
+
+  it('refuses a symlink out of an honored directory', async () => {
+    symlinkSync(outside, join(extra, 'escape'), 'junction');
+
+    const r = await read.execute({ filePath: join(extra, 'escape', 'secret.txt') }, ctx);
+
+    expect(r.status).toBe('error');
+  });
+
+  it('globs into an honored directory with an absolute pattern', async () => {
+    // A relative pattern is workspace-anchored, exactly as `Read` anchors a relative path, so it
+    // searches the workspace alone; an absolute pattern names its own root and is walked once, in
+    // that root (PR #334 finding 9).
+    const r = await glob.execute({ pattern: join(extra, '*.txt') }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain(join(extra, 'shared.txt'));
+  });
+
+  it('searches only the workspace for a relative Glob pattern', async () => {
+    // `*.txt` matches in both roots, and it used to be run once per root with the honored root's
+    // matches listed too — so a relative pattern the model wrote for the workspace surfaced
+    // unrequested files from a root approved for other work. It agrees with `Read` and `Grep`,
+    // which both anchor a relative argument to the workspace.
+    writeFileSync(join(dir, 'local.txt'), 'workspace copy\n');
+
+    const r = await glob.execute({ pattern: '*.txt' }, ctx);
+
+    expect(r.status).toBe('success');
+    // A workspace match is labelled workspace-relative, the form `Read` accepts.
+    expect(r.content).toContain('local.txt');
+    expect(r.content).not.toContain('shared.txt');
+  });
+
+  it('walks an absolute Glob pattern once, not once per root', async () => {
+    // A relative pattern was run against every root in turn, and an absolute one was run against
+    // every root too — where it resolves to the same files each time, because fast-glob ignores
+    // `cwd` for an absolute pattern. The work was repeated per honored root, and a root that
+    // happened to hold a copy of the pattern's subtree was walked as well.
+    const r = await glob.execute({ pattern: join(extra, '**', '*.txt') }, ctx);
+
+    expect(r.status).toBe('success');
+    const listed = (r.data as { files?: string[] })?.files ?? [];
+    expect(listed.filter((file) => file === join(extra, 'shared.txt'))).toHaveLength(1);
+  });
+
+  it('greps a scope inside an honored directory, rather than the workspace tree', async () => {
+    // The scope is not in the workspace tree at all, so a search rooted at the workspace would
+    // find nothing — the root is what a Grep `path` argument now resolves against.
+    const r = await grep.execute({ pattern: 'grepme', path: extra }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('grepme');
+  });
+
+  it('writes a file in an honored directory', async () => {
+    await observeFirst(join(extra, 'shared.txt'));
+
+    const w = await write.execute({ filePath: join(extra, 'shared.txt'), content: 'changed' }, ctx);
+
+    expect(w.status).toBe('success');
+    expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toBe('changed');
+  });
+
+  it('refuses the same write once the directory is not honored', async () => {
+    delete ctx.additionalRoots;
+    try {
+      const w = await write.execute(
+        { filePath: join(extra, 'shared.txt'), content: 'changed' },
+        ctx,
+      );
+
+      expect(w.status).toBe('error');
+      expect(w.structuredError?.code).toBe('path_outside_workspace');
+      expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toContain('shared directory content');
+    } finally {
+      ctx.additionalRoots = [extra];
+    }
+  });
+
+  it('edits a file in an honored directory', async () => {
+    await observeFirst(join(extra, 'shared.txt'));
+
+    const e = await edit.execute(
+      { filePath: join(extra, 'shared.txt'), oldString: 'shared', newString: 'edited' },
+      ctx,
+    );
+
+    expect(e.status).toBe('success');
+    expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toContain('edited');
+  });
+
+  it('multi-edits a file in an honored directory', async () => {
+    await observeFirst(join(extra, 'shared.txt'));
+
+    const m = await multiEditTool.execute(
+      {
+        filePath: join(extra, 'shared.txt'),
+        edits: [{ oldString: 'shared', newString: 'edited' }],
+      },
+      ctx,
+    );
+
+    expect(m.status).toBe('success');
+    expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toContain('edited');
+  });
+
+  it('anchors a relative write to the workspace, not to the honored directory', async () => {
+    // The write tools get the same anchoring the read tools do: a bare filename is the
+    // workspace's, never a root the user approved for other work.
+    writeFileSync(join(dir, 'shared.txt'), 'workspace copy\n');
+    await observeFirst('shared.txt');
+
+    const w = await write.execute({ filePath: 'shared.txt', content: 'written' }, ctx);
+
+    expect(w.status).toBe('success');
+    expect(readFileSync(join(dir, 'shared.txt'), 'utf8')).toBe('written');
+    expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toContain('shared directory content');
+  });
+
+  it('still requires a write into an honored directory to be read first', async () => {
+    // The same fresh-observation requirement the workspace has: a file in an honored root is a
+    // different resolved path from a workspace file of the same name, not a way around the check.
+    const w = await write.execute(
+      { filePath: join(extra, 'matchme.txt'), content: 'changed' },
+      ctx,
+    );
+
+    expect(w.status).toBe('error');
+    expect(w.structuredError?.code).toBe('file_not_observed');
+    expect(readFileSync(join(extra, 'matchme.txt'), 'utf8')).toBe('grepme\n');
+  });
+});
+
+/**
+ * PR #334. The observation ledger is keyed by a path relative to the workspace root, and the two
+ * ends of that key were derived differently: `observeFile` relativized the absolute path against
+ * `resolve(workspaceRoot)` — the root *as given* — while the mutation tools looked the file up
+ * under the `relativePath` a resolution produced, which is relative to the root *after links*.
+ * The two agree until the workspace root is itself reached through a link, and then every Read
+ * of the real directory licensed an Edit that answered `file_not_observed`. The same disagreement
+ * is what the 8.3 and long spellings of one root produce on Windows, and the tests below are
+ * written so the same fix covers both.
+ */
+describe('a workspace root reached through a link', () => {
+  let real: string;
+  let link: string;
+  let linkCtx: ToolContext;
+
+  beforeEach(() => {
+    real = realpathSync(dir);
+    link = join(dirname(dir), `${basename(dir)}-link`);
+    // A junction needs no symlink privilege on Windows; elsewhere the type is ignored.
+    symlinkSync(real, link, 'junction');
+    linkCtx = { ...ctx, workspaceRoot: link, fileObservationLedger: new Map() };
+  });
+  afterEach(() => rmSync(link, { force: true, maxRetries: 3 }));
+
+  it('edits a file the model read through the real directory', async () => {
+    writeFileSync(join(real, 'a.txt'), 'hello');
+    expect((await read.execute({ filePath: join(real, 'a.txt') }, linkCtx)).status).toBe('success');
+
+    const e = await edit.execute(
+      { filePath: join(real, 'a.txt'), oldString: 'hello', newString: 'edited' },
+      linkCtx,
+    );
+
+    expect(e.status).toBe('success');
+    expect(readFileSync(join(real, 'a.txt'), 'utf8')).toBe('edited');
+  });
+
+  it('edits a file the model read through the link, and the two spellings share one entry', async () => {
+    writeFileSync(join(real, 'a.txt'), 'hello');
+    expect((await read.execute({ filePath: join(link, 'a.txt') }, linkCtx)).status).toBe('success');
+    // One file, one observation: the ledger holds a single entry however the file was named, or
+    // the second Read would shadow the first under a key the Edit never consults.
+    expect(linkCtx.fileObservationLedger?.size).toBe(1);
+
+    const e = await edit.execute(
+      { filePath: join(real, 'a.txt'), oldString: 'hello', newString: 'edited' },
+      linkCtx,
+    );
+
+    expect(e.status).toBe('success');
+    expect(readFileSync(join(real, 'a.txt'), 'utf8')).toBe('edited');
+  });
+
+  it('still refuses a sibling the link does not serve', async () => {
+    // The key now goes through a link, and one that must not have widened what a root serves.
+    const sibling = mkdtempSync(join(tmpdir(), 'book-file-sibling-'));
+    try {
+      writeFileSync(join(sibling, 'a.txt'), 'sibling');
+      const r = await read.execute({ filePath: join(sibling, 'a.txt') }, linkCtx);
+      expect(r.structuredError?.code).toBe('path_outside_workspace');
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * #264, on Windows. One directory has more than one name: the long form a user reads
+ * (`C:\Users\runneradmin\AppData\Local\Temp`) and the DOS 8.3 form (`C:\Users\RUNNER~1\AppData`),
+ * plus a drive letter in either case and separators either way. GitHub's Windows runners put
+ * `os.tmpdir()` in the short form, so every workspace root in this file is spelled short while
+ * `realpath`, fast-glob and ripgrep all answer in the long form.
+ *
+ * A root compared as given against a path in that form reads as outside the workspace, and every
+ * guard that keys on the root then cannot name its own file: the `.book/settings.local.json`
+ * exclusion missed and printed an API key, the workspace's own matches came back labelled as
+ * absolute paths, and a search in an honored directory searched the workspace tree instead. These
+ * tests spell each root the way the runner does and ask for the same answers as everywhere else
+ * in this file.
+ */
+describe.runIf(process.platform === 'win32')(
+  'a root spelled in another form of its own name',
+  () => {
+    /**
+     * The 8.3 name of a directory, or `undefined` when this volume has none to give.
+     *
+     * A volume with 8.3 name generation disabled echoes the long form back: there is no second
+     * spelling to disagree with, so the case would have nothing to prove and skips rather than
+     * passing vacuously.
+     */
+    async function shortOf(directory: string): Promise<string | undefined> {
+      const short = await shortPathName(directory);
+      return short && short !== realpathSync.native(directory) ? short : undefined;
+    }
+
+    let honored: string;
+    let shortDir: string | undefined;
+    let shortHonored: string | undefined;
+
+    beforeEach(async () => {
+      // The two forms are only in disagreement once the directories exist, so the lookup is per test
+      // rather than once for the file: the short name of a temp directory carries its own suffix.
+      honored = mkdtempSync(join(tmpdir(), 'book-shortroot-'));
+      [shortDir, shortHonored] = await Promise.all([shortOf(dir), shortOf(honored)]);
+    });
+    afterEach(() => rmSync(honored, { recursive: true, force: true }));
+
+    it('never searches the local settings of a workspace root spelled in 8.3 form', async (test) => {
+      if (!shortDir) return test.skip();
+      mkdirSync(join(dir, '.book'));
+      writeFileSync(join(dir, '.book', 'settings.local.json'), '{"apiKey":"sk-local-marker"}');
+      writeFileSync(join(dir, 'a.ts'), 'const note = "sk-visible-marker";\n');
+      // A link to `.book` is another way in; a junction needs no symlink privilege on Windows.
+      symlinkSync(join(dir, '.book'), join(dir, 'cfgdir'), 'junction');
+      const shortCtx: ToolContext = { ...ctx, workspaceRoot: shortDir };
+
+      for (const args of [
+        { pattern: 'sk-' },
+        { pattern: 'sk-', include: '.book/settings.local.json' },
+        { pattern: 'sk-', path: '.book' },
+        // A scope that is one file, and one reached through a link, are the two the glob's ignore
+        // list cannot cover — and the two the root-keyed guard exists for.
+        { pattern: 'sk-', path: '.book/settings.local.json' },
+        { pattern: 'sk-', path: 'cfgdir' },
+      ]) {
+        const result = await grep.execute(args, shortCtx);
+        expect(JSON.stringify(result)).not.toContain('sk-local-marker');
+      }
+      // An ordinary search still reaches an ordinary file, so the exclusions above are the guard
+      // doing its work rather than a search that finds nothing at all.
+      expect((await grep.execute({ pattern: 'sk-' }, shortCtx)).content).toContain(
+        'sk-visible-marker',
+      );
+    });
+
+    it('keys and lists a short-form workspace root relatively, as it does any other', async (test) => {
+      if (!shortDir) return test.skip();
+      mkdirSync(join(dir, 'sub'));
+      writeFileSync(join(dir, 'a.ts'), 'const note = "sk-visible-marker";\n');
+      writeFileSync(join(dir, 'sub', 'b.ts'), 'const note = "sk-visible-marker";\n');
+      const shortCtx: ToolContext = { ...ctx, workspaceRoot: shortDir };
+
+      const result = await grep.execute({ pattern: 'sk-visible-marker' }, shortCtx);
+
+      expect(result.status).toBe('success');
+      expect(Object.keys((result.data as { matches: object }).matches).sort()).toEqual([
+        'a.ts',
+        'sub/b.ts',
+      ]);
+      expect(result.content).toContain('a.ts:1:');
+      expect(result.content).toContain('sub/b.ts:1:');
+      // The listing is the workspace-relative spelling, never the root in whatever form it was given.
+      expect(result.content).not.toContain(shortDir);
+    });
+
+    it('searches an honored directory given in 8.3 form, and keeps its own guard', async (test) => {
+      if (!shortHonored) return test.skip();
+      mkdirSync(join(honored, '.book'));
+      writeFileSync(join(honored, '.book', 'settings.local.json'), '{"apiKey":"sk-local-marker"}');
+      writeFileSync(join(honored, 'matchme.txt'), 'grepme\n');
+      const shortCtx: ToolContext = { ...ctx, additionalRoots: [shortHonored] };
+
+      const found = await grep.execute({ pattern: 'grepme', path: shortHonored }, shortCtx);
+      expect(found.status).toBe('success');
+      expect(found.content).toContain('grepme');
+      // The honored root's own local settings stay closed, in whichever form the root was declared.
+      const guarded = await grep.execute({ pattern: 'sk-', path: shortHonored }, shortCtx);
+      expect(JSON.stringify(guarded)).not.toContain('sk-local-marker');
+    });
+
+    it('reads a workspace root whose drive letter is lowercase', async () => {
+      writeFileSync(join(dir, 'a.ts'), 'const note = 1;\n');
+      const lowerCtx: ToolContext = { ...ctx, workspaceRoot: withLowercaseDriveLetter(dir) };
+
+      const result = await grep.execute({ pattern: 'note' }, lowerCtx);
+
+      expect(result.status).toBe('success');
+      expect(Object.keys((result.data as { matches: object }).matches)).toEqual(['a.ts']);
+    });
+
+    /**
+     * The same disagreement PR #334 finding 6 reported for a symlinked root, on Windows: a root
+     * typed in 8.3 short form and a file named in the long form are one directory and one file,
+     * and the Read that licensed the Edit filed its observation under one spelling while the Edit
+     * looked it up under the other.
+     */
+    it('edits a file the model read by its long name under a root spelled short', async (test) => {
+      if (!shortDir) return test.skip();
+      writeFileSync(join(dir, 'a.txt'), 'hello');
+      const shortCtx: ToolContext = { ...ctx, workspaceRoot: shortDir };
+      // `dir` is the long form the runner gives for the same directory `shortDir` names.
+      expect((await read.execute({ filePath: join(dir, 'a.txt') }, shortCtx)).status).toBe(
+        'success',
+      );
+
+      const e = await edit.execute(
+        { filePath: join(dir, 'a.txt'), oldString: 'hello', newString: 'edited' },
+        shortCtx,
+      );
+
+      expect(e.status).toBe('success');
+      expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('edited');
+    });
+  },
+);

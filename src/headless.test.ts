@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { runHeadless } from './headless.js';
 import { SessionStore } from './session/store.js';
 import { createDefaultRegistry, createRegistry } from './tools/registry.js';
@@ -18,10 +18,35 @@ import type { AgentCompletionNotification } from './agents/types.js';
 const config = defaultConfig({ baseUrl: 'http://localhost/v1' });
 let tempDirs: string[] = [];
 
+/**
+ * `debug-log.ts` reads `BOOK_DEBUG*` once, at module load, into module-level
+ * constants, so a `beforeEach` stub arrives too late to switch logging off — the
+ * loggers handed out by then have already been built. Clearing here instead, in a
+ * `vi.hoisted` block that Vitest lifts above the imports above it, is what makes
+ * this file independent of a developer's debugging session: otherwise a
+ * developer with `BOOK_DEBUG=1` gets `[provider] [DEBUG] …` lines on stderr and
+ * every exact-stderr assertion below fails, while a developer without it passes.
+ * The developer's values are put back in `afterAll` so the rest of the run is
+ * unaffected.
+ */
+const savedDebugEnv = vi.hoisted(() => {
+  const saved: Record<string, string> = {};
+  for (const name of Object.keys(process.env)) {
+    if (!name.startsWith('BOOK_DEBUG')) continue;
+    saved[name] = process.env[name] as string;
+    delete process.env[name];
+  }
+  return saved;
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   tempDirs = [];
+});
+
+afterAll(() => {
+  for (const [name, value] of Object.entries(savedDebugEnv)) process.env[name] = value;
 });
 
 function makeWorkspace(): string {
@@ -2130,6 +2155,107 @@ describe('runHeadless — managed child progress on stderr (#248)', () => {
     await runDelegation({ outputFormat: 'stream-json' });
 
     expect(stderrWrites.some((line) => line.includes('[explorer]'))).toBe(false);
+  });
+});
+
+/**
+ * #305 item 4. A managed child's refusal raises an `agent_notice`, and the TUI was the only host
+ * that rendered it — a print-mode operator never learned a delegated step had been refused, which
+ * is the whole point of the notice. The child's own words are the content, so the line is passed
+ * through rather than summarized.
+ */
+describe('runHeadless — a child refusal reaches the operator (#305 item 4)', () => {
+  const notice = '[explorer] Refused: Read cannot open /etc/hostname.';
+
+  let stderrWrites: string[];
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stderrWrites = [];
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderrWrites.push(
+        typeof chunk === 'string' ? chunk : Buffer.from(chunk as Uint8Array).toString('utf8'),
+      );
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+  });
+
+  /** A tool that reports a managed child refusing a call, as the agent manager does. */
+  function refusingChildRegistry() {
+    const registry = createRegistry();
+    registry.register({
+      name: 'FakeRefusingChild',
+      description: 'Report a managed child that had a call refused.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, context) => {
+        context.onAgentEvent?.({ type: 'agent_notice', agentId: 'child-1', message: notice });
+        return toolSuccess('delegated');
+      },
+    });
+    return registry;
+  }
+
+  async function runChildRefusal(
+    options: { outputFormat?: 'text' | 'stream-json'; quiet?: boolean } = {},
+  ): Promise<Array<{ type: string; message?: string; agentId?: string }>> {
+    const writes: string[] = [];
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount += 1;
+        if (requestCount === 1) return sse([toolDelta('call-1', 'FakeRefusingChild', {})]);
+        return sse([textDelta('done')]);
+      }),
+    );
+    await runHeadless(freshConfig({ workspace: makeWorkspace() }), refusingChildRegistry(), {
+      prompt: 'delegate',
+      inputFormat: 'text',
+      outputFormat: options.outputFormat ?? 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      quiet: options.quiet,
+      stdout: { write: (value) => (writes.push(value), true) },
+    });
+    return writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line) as { type: string; message?: string; agentId?: string };
+        } catch {
+          return { type: 'text', message: line };
+        }
+      });
+  }
+
+  it('writes the notice to stderr as a labelled line in text mode', async () => {
+    await runChildRefusal();
+
+    // One stderr line, newline-terminated like every other operator line, and carrying the child's
+    // label so the refusal is attributable.
+    expect(stderrWrites).toContain(`notice: ${notice}\n`);
+  });
+
+  it('keeps the notice under --quiet, as it is not progress', async () => {
+    await runChildRefusal({ quiet: true });
+
+    // `--quiet` turns off progress. A refusal is the opposite of progress: the answer says a step
+    // ran, so what did not is the operator's business whatever the verbosity.
+    expect(stderrWrites).toContain(`notice: ${notice}\n`);
+  });
+
+  it('emits the notice as an event in stream-json mode', async () => {
+    const events = await runChildRefusal({ outputFormat: 'stream-json' });
+
+    expect(events).toContainEqual({ type: 'agent_notice', agentId: 'child-1', message: notice });
+    // The wire copy is the record; stderr stays empty in stream-json, as it is for every event.
+    expect(stderrWrites).toEqual([]);
   });
 });
 

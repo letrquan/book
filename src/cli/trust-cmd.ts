@@ -40,6 +40,13 @@ import {
   persistProjectHookChoice,
 } from '../hook-approvals.js';
 import {
+  collectDeclaredDirectories,
+  partitionProjectDirectories,
+  persistProjectDirectoryChoice,
+  realPathOfDirectory,
+  type DeclaredDirectory,
+} from '../additional-roots.js';
+import {
   partitionProjectAllowRules,
   persistProjectAllowRuleChoice,
 } from '../permission-approvals.js';
@@ -47,7 +54,7 @@ import { loadSettingsFile, resolveSettings } from '../settings-loader.js';
 import type { SlashCommand } from '../types/commands.js';
 import { exit } from './exit.js';
 
-export type TrustKind = 'hook' | 'rule' | 'command';
+export type TrustKind = 'hook' | 'rule' | 'command' | 'dir';
 
 export interface TrustCommandOptions {
   workspace: string;
@@ -95,6 +102,9 @@ export async function runTrustCommand(
   // A command decision carries the fingerprint of the shell it was made
   // against, so the body cannot change under an approval already on file.
   const decisions: Array<{ key: string; label: string; fingerprint?: string }> = [];
+  // Directories carry their real path as the key (see `additional-roots.ts`), so they get their
+  // own list rather than borrowing the `{key, label}` shape whose key is a fingerprint.
+  const directoryDecisions: DeclaredDirectory[] = [];
 
   if (kind === 'command') {
     // Commands are discovered from disk, not declared in settings: the gated
@@ -173,6 +183,46 @@ export async function runTrustCommand(
       }
       decisions.push({ key: target!, label: describeDeclaredHook(hook).headline });
     }
+  } else if (kind === 'dir') {
+    // A directory is keyed by where it *really* is, not by the text the repository wrote, so the
+    // target the user typed is resolved the same way the resolver resolves it and then matched
+    // against the real paths: `./shared`, `shared` and the absolute path are one entry. Matching
+    // the declared text too means a symlink repointed since approval can no longer be decided
+    // under its old name. A path that no longer exists is a different matter: `collectDeclaredDirectories`
+    // drops it, so it is simply not offered here — there is nothing left to decide about.
+    const declared = collectDeclaredDirectories(
+      workspace,
+      projectSettings?.additionalDirectories ?? [],
+    );
+    const partition = partitionProjectDirectories(declared, settings.projectDirectories);
+    const targetRealPath = realPathOfDirectory(workspace, target ?? '');
+    const entry = declared.find(
+      (candidate) => candidate.realPath === targetRealPath || candidate.declared === target,
+    );
+
+    if (options.allPending) {
+      if (partition.pending.length === 0) {
+        console.log(`No project-declared directories are awaiting a decision in ${workspace}.`);
+        return;
+      }
+      for (const pending of partition.pending) {
+        console.log(`${pending.declared} is really:`);
+        console.log(`  ${pending.realPath}`);
+        directoryDecisions.push(pending);
+      }
+    } else if (!entry) {
+      const known = partition.pending.map((pending) => `  ${pending.realPath}`).join('\n');
+      return fail(
+        `book trust dir: ${workspace} declares no project additionalDirectories entry at "${target}".` +
+          (known ? `\nAwaiting a decision:\n${known}` : '\nNothing is awaiting a decision.'),
+      );
+    } else {
+      if (!options.reject) {
+        console.log(`${entry.declared} is really:`);
+        console.log(`  ${entry.realPath}`);
+      }
+      directoryDecisions.push(entry);
+    }
   } else {
     const declared = projectSettings?.permissions?.allow ?? [];
     const partition = partitionProjectAllowRules(declared, settings.permissions.projectAllowRules);
@@ -196,6 +246,11 @@ export async function runTrustCommand(
   }
 
   const failures: string[] = [];
+  for (const directory of directoryDecisions) {
+    const result = persistProjectDirectoryChoice(workspace, directory.realPath, choice);
+    if (result.ok) console.log(`${verb} ${directory.realPath}`);
+    else failures.push(`${directory.realPath}: ${result.error ?? 'unknown error'}`);
+  }
   for (const decision of decisions) {
     const result =
       kind === 'command'

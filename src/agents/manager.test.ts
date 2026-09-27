@@ -2624,3 +2624,79 @@ describe('children re-driven after a restart', () => {
     expect(record).toMatchObject({ runSequence: 3, spawnerClaim: { throughRunSequence: 2 } });
   });
 });
+
+/**
+ * #305 item 4. A managed child runs unattended, and its handoff is a summary of what it did —
+ * not a transcript. A step that was refused and never ran is therefore indistinguishable from one
+ * the model chose to skip, so the manager lifts the child's own notice to the operator.
+ */
+describe("a managed child's refusal reaches the operator", () => {
+  it('emits agent_notice for the child, with the child id and its own words', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const events: AgentRuntimeEvent[] = [];
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, prompt, history, callbacks) => {
+        callbacks.onNotice?.(
+          'Refused: Read /etc/hostname is outside the workspace. Add the directory to additionalDirectories.',
+        );
+        return [
+          ...history,
+          {
+            id: 'assistant-0',
+            role: 'assistant',
+            content: `Looked around ${prompt}`,
+            includeInContext: true,
+            timestamp: Date.now(),
+          },
+        ];
+      },
+    });
+    manager.subscribe((event) => events.push(event));
+
+    const spawned = await manager.spawn({ agent: 'explorer', prompt: 'look around' });
+    await vi.waitFor(() => expect(events.some((e) => e.type === 'agent_result')).toBe(true));
+
+    const notice = events.find((e) => e.type === 'agent_notice');
+    expect(notice).toBeDefined();
+    expect(notice).toMatchObject({ agentId: spawned.id });
+    expect(notice && 'message' in notice ? notice.message : '').toContain('additionalDirectories');
+    manager.dispose();
+  });
+
+  it('carries the notice to a subscriber that attaches after the child was spawned', async () => {
+    // The subscription is a live event stream, not a replay, so this documents the boundary: a
+    // late subscriber reads the agent record and its transcript, and must not expect a notice
+    // that was raised before it was listening.
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history, callbacks) => {
+        callbacks.onNotice?.('Refused: Read /etc/hostname is outside the workspace.');
+        return [
+          ...history,
+          {
+            id: 'assistant-0',
+            role: 'assistant',
+            content: 'done',
+            includeInContext: true,
+            timestamp: Date.now(),
+          },
+        ];
+      },
+    });
+    await manager.spawn({ agent: 'explorer', prompt: 'look around' });
+    const late: AgentRuntimeEvent[] = [];
+    manager.subscribe((event) => late.push(event));
+
+    expect(late.some((e) => e.type === 'agent_notice')).toBe(false);
+    expect(await manager.list()).toHaveLength(1);
+    manager.dispose();
+  });
+});

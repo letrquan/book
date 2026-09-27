@@ -31,6 +31,18 @@ export interface ManagedAgentState {
   }>;
   pendingCompletions: QueuedAgentCompletion[];
   persistenceEvent?: Extract<AgentRuntimeEvent, { type: 'agent_persistence' }>;
+  /**
+   * The lines managed children have raised for the operator, each already carrying the child's
+   * name, oldest first. Held rather than pushed straight into the transcript, because this hook
+   * does not own the transcript: `app.tsx` takes them, and only when the session is idle.
+   *
+   * A queue and not a single slot, because the drain waits for idle and children run
+   * concurrently: two children refusing something in the same turn would otherwise leave one
+   * notice, and the operator would never learn a step did not happen.
+   */
+  noticeQueue: Extract<AgentRuntimeEvent, { type: 'agent_notice' }>[];
+  /** Take the next held notice, leaving the rest for the following drain. */
+  takeNotice: () => void;
   setSurface: (surface: ManagedAgentSurface) => void;
   selectAgent: (agentId?: string) => void;
   send: (message: string) => Promise<void>;
@@ -65,6 +77,9 @@ export function useManagedAgents(
   const [persistenceEvent, setPersistenceEvent] = useState<
     Extract<AgentRuntimeEvent, { type: 'agent_persistence' }> | undefined
   >();
+  const [noticeQueue, setNoticeQueue] = useState<
+    Extract<AgentRuntimeEvent, { type: 'agent_notice' }>[]
+  >([]);
   const seenCompletions = useRef(new Set<string>());
   const deferredDismissals = useRef(new Set<string>());
   const visibleAgentIds = useRef(new Set<string>());
@@ -131,6 +146,7 @@ export function useManagedAgents(
     setSurface('main');
     setPendingCompletions([]);
     setPersistenceEvent(undefined);
+    setNoticeQueue([]);
     seenCompletions.current.clear();
     deferredDismissals.current.clear();
     visibleAgentIds.current.clear();
@@ -139,6 +155,13 @@ export function useManagedAgents(
       (event) => {
         if (event.type === 'agent_persistence') {
           setPersistenceEvent(event);
+          return;
+        }
+        if (event.type === 'agent_notice') {
+          // Only a child of this session, and only one the operator can see the row for: a
+          // notice about an agent from another session would name something they cannot open.
+          if (!visibleAgentIds.current.has(event.agentId)) return;
+          setNoticeQueue((queued) => [...queued, event]);
           return;
         }
         if (event.type === 'agent_status') {
@@ -401,6 +424,8 @@ export function useManagedAgents(
     pendingPermissions,
     pendingQuestions,
     pendingCompletions,
+    noticeQueue,
+    takeNotice: () => setNoticeQueue((queued) => queued.slice(1)),
     persistenceEvent,
     setSurface: changeSurface,
     selectAgent: setSelectedAgentId,

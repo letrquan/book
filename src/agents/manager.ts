@@ -1682,6 +1682,13 @@ export class AgentManager {
           onToolResult: (result) => {
             finishActivity(result);
           },
+          // A refusal inside the child is otherwise invisible here: the child runs unattended by
+          // default, its result is summarised into a handoff, and a step that never ran reads the
+          // same as a step it decided not to take. The notice carries the child's own words
+          // (#305 item 4).
+          onNotice: (notice) => {
+            this.emit({ type: 'agent_notice', agentId: record.id, message: notice });
+          },
           onError: (error) => {
             loopError = error;
           },

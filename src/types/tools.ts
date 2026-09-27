@@ -326,6 +326,14 @@ export interface ToolContext {
    * today only the project memory directory.
    */
   readOnlyRoots?: readonly (string | ReadOnlyRoot)[];
+  /**
+   * Honored `additionalDirectories`, as resolved real roots the file tools may serve alongside
+   * the workspace: Read, Glob and Grep reach them, and so do the write tools' root check. A read
+   * there is auto-allowed exactly as a workspace read is; a write goes through the ordinary
+   * permission flow for its mode. Populated by the agent loop from resolved settings, so a
+   * managed child and a subagent see the same roots as their parent.
+   */
+  additionalRoots?: readonly string[];
   env: Record<string, string>;
   /** Explicit environment overrides safe to persist for opt-in persistent jobs. */
   envOverrides?: Record<string, string>;

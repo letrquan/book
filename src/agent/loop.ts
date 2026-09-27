@@ -1,8 +1,6 @@
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import { systemClock, type Clock } from '../clock.js';
 import { createHash } from 'node:crypto';
-import { homedir } from 'node:os';
-import { isAbsolute, relative, sep } from 'node:path';
 import type {
   ImageAttachment,
   Message,
@@ -41,7 +39,6 @@ import {
   LEARNED_WINDOW_SAFETY_MARGIN,
   type ModelWindowStore,
 } from '../model-window-store.js';
-import { resolveBookHome } from '../book-home.js';
 import {
   ALWAYS_ALLOWED_TOOLS,
   evaluatePermissionDetail,
@@ -50,11 +47,15 @@ import {
   permissionRuleForToolCall,
   permissionRuleMatchesCall,
   permissionRuleOf,
-  WORKSPACE_READ_AUTO_ALLOW_MODES,
+  WORKSPACE_READ_JUDGING_MODES,
+  WORKSPACE_READ_REFUSAL_MODES,
+  WORKSPACE_READ_TOOLS,
 } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
-import { realWorkspaceRoot, resolveWorkspacePath } from '../tools/path-utils.js';
+import { realWorkspaceRoot } from '../tools/path-utils.js';
+import { homeGuards, resolveAdditionalRoots, rootHoldsHome } from '../additional-roots.js';
+import { excludedPathRefusal, outsideWorkspaceRefusal } from './refusal-remedies.js';
 import {
   isToolDefinitionAllowed,
   parseCapabilityRules,
@@ -172,6 +173,23 @@ function needsPermissionCheck(mode: string): boolean {
 
 function requiresToolPermission(mode: string, persistentBackgroundShell: boolean): boolean {
   return needsPermissionCheck(mode) || (persistentBackgroundShell && mode !== 'bypassPermissions');
+}
+
+/**
+ * The managed child this run belongs to, as a name an operator can act on, or `undefined` in the
+ * root run. Prefers the nested agent path (which a `Task` subagent builds from the agent
+ * definition's name), then the role, then the bare id — the deepest name the run actually
+ * carries, because a notice naming "explorer" is actionable and one naming `agent-3f2` is not.
+ */
+function childRefusalLabel(options: { isSubagent?: boolean; agentPath?: string[] } | undefined) {
+  if (!options?.isSubagent) return undefined;
+  const name = options.agentPath?.[options.agentPath.length - 1]?.trim();
+  return name === undefined || name === '' ? undefined : name;
+}
+
+/** Prefixes a notice with the child it came from, so a refused step names its author. */
+function labelNotice(childLabel: string | undefined, notice: string): string {
+  return childLabel ? `[${childLabel}] ${notice}` : notice;
 }
 
 const AGENT_TERMINAL_STATUSES = new Set(['completed', 'failed', 'stopped', 'interrupted']);
@@ -364,13 +382,38 @@ export async function runAgentLoop(
   const ownsRuntime = !options?.runtime;
   const runtime = options?.runtime ?? new SessionRuntime({ history });
   runtime.toolExecutionScheduler.setLimit(config.settings.toolExecution.maxConcurrent);
-  /** Tell the operator, once per session per tool and remedy, what would let a refused call through. */
+  /**
+   * The managed child this loop is, named for an operator notice: the profile or role first,
+   * then the agent id, because "the operator was refused something" is only actionable once it
+   * says who. `undefined` in the root loop, where the notice is about this session.
+   */
+  const childLabel = childRefusalLabel(options);
+  /**
+   * Tell the operator, once per session per tool and remedy, what would let a refused call through.
+   *
+   * A child's refusals are labelled with the child (#305 item 4): a managed agent's prompt is
+   * written by the delegating model, so the operator sees the refusal arrive with no indication
+   * of which agent produced it — a blocked step looks exactly like a blocked plan.
+   */
   const noteUnattendedRefusal = (toolName: string, remedy: UnattendedRemedy): void => {
     const key = `${toolName}:${remedy.kind}`;
     if (runtime.unattendedRefusalNotices.has(key)) return;
     runtime.unattendedRefusalNotices.add(key);
     const notice = unattendedRefusalNotice(toolName, remedy);
-    if (notice) callbacks.onNotice?.(notice);
+    if (notice) callbacks.onNotice?.(labelNotice(childLabel, notice));
+  };
+  /**
+   * The operator's line for a read the file tools cannot serve, in a child's run only: the root
+   * session shows the refusal in its own transcript, where the model and the operator are reading
+   * the same thing, but a child's result is summarised into a handoff, so the refusal has to be
+   * carried out of it or the operator never learns the step could not happen.
+   */
+  const noteChildRefusal = (toolName: string, message: string): void => {
+    if (!childLabel) return;
+    const key = `${childLabel}:${toolName}:outside`;
+    if (runtime.unattendedRefusalNotices.has(key)) return;
+    runtime.unattendedRefusalNotices.add(key);
+    callbacks.onNotice?.(labelNotice(childLabel, message));
   };
   runtime.agentContextCache.beginTurn();
   if (!registry.getTool('ToolSearch')) registry.registerAll(toolSearchTools);
@@ -581,9 +624,29 @@ export async function runAgentLoop(
       : []),
     ...runtime.clippedOutputPaths,
   ];
+  /**
+   * The honored `additionalDirectories` (#300), resolved once for the run: the real paths of the
+   * declared directories, which is what a trust decision was recorded against. The file tools and
+   * the permission scope both read this list, so the two judge the same path the same way — and a
+   * managed child or subagent inherits it through the context it is given, exactly as its parent
+   * has it.
+   */
+  const additionalRoots = resolveAdditionalRoots(
+    config.workspace,
+    config.settings.additionalDirectories,
+  );
+  /**
+   * The home directories under which a read keeps asking, resolved once per run: a home holds SSH
+   * and provider keys and Book's own trust store, and the one thing `additionalDirectories` widens
+   * is exactly which paths a read may reach without a prompt. Guarding on the resolved target
+   * rather than on the declaring root covers a home held inside a root or reached through a link
+   * in one, and keeps the per-call check a string comparison.
+   */
+  const homeGuardPaths = homeGuards();
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
     readOnlyRoots,
+    additionalRoots,
     env: process.env as Record<string, string>,
     envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,
@@ -865,11 +928,7 @@ export async function runAgentLoop(
      * Compared as written and after following links, so a workspace that is a link to a home, or
      * a home reached through a link, still counts.
      */
-    const workspaceHoldsHome = [resolveBookHome(), homedir()].some((home) => {
-      if (resolveWorkspacePath(config.workspace, home) !== null) return true;
-      const fromRoot = relative(workspaceRealRoot, realWorkspaceRoot(home));
-      return !(fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot));
-    });
+    const workspaceHoldsHome = rootHoldsHome(config.workspace);
     // Monotonic, and never leaves this function as a stamp. Over a run measured
     // in days a wall-clock correction would silently rewrite how long the model
     // is told it has been working, in either direction.
@@ -2375,14 +2434,23 @@ export async function runAgentLoop(
         // while `deny: ["Write(.env)"]` in the same list held. Modes decide
         // whether the user is *asked*; they do not decide whether a rule the user
         // already wrote applies.
-        const judgeReads = WORKSPACE_READ_AUTO_ALLOW_MODES.has(effectiveMode);
+        const judgeReads = WORKSPACE_READ_JUDGING_MODES.has(effectiveMode);
         const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings, {
           workspace: {
             root: toolContext.workspaceRoot,
             realRoot: workspaceRealRoot,
             readOnlyRoots: toolContext.readOnlyRoots,
+            additionalRoots,
+            // A home directory, or anything containing one, keeps the prompt even where it was
+            // honored: that is the whole of what `additionalDirectories` widens, and a home holds
+            // SSH and provider keys and Book's own trust store.
+            homeGuards: homeGuardPaths,
             judgeReads,
             autoAllowReads: judgeReads && !workspaceHoldsHome,
+            // Wider than `judgeReads`: `dontAsk` prompts for nothing, so a target no root serves
+            // is refused there anyway, and refusing it as the target it is gives the model the
+            // directory that would serve it instead of a permission no rule can grant.
+            refuseUnreachableReads: WORKSPACE_READ_REFUSAL_MODES.has(effectiveMode),
           },
         });
         if (verdict.decision === 'deny') {
@@ -2398,6 +2466,29 @@ export async function runAgentLoop(
             status: 'blocked',
             content: permissionDeniedError(canonName, { kind: 'rule', rule: verdict.matchedRule }),
           });
+          return undefined;
+        }
+
+        // A Read, Glob or Grep the tool itself refuses (outside the workspace and every honored
+        // root, or under a subpath a root excludes) is not a permission question: no rule and no
+        // mode make the file tools serve it, so no prompt is raised and no "Always allow" rule is
+        // written for a call that could never work. The model gets a blocked result naming the
+        // remedy instead (#305 item 3).
+        if (verdict.decision === 'refuse') {
+          if (forceSkillPermission && invokedSkillName && skillActivationReason) {
+            skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'permission_denied');
+          }
+          log.debug('refused a read the tool cannot serve', { tool: canonName });
+          // Two refusals, two messages: an unservable path is fixed by adding its directory, an
+          // excluded one is not, and naming a directory for it would be a dead end.
+          const refusal = verdict.excludedPath
+            ? excludedPathRefusal(canonName, call, { toolCallId: call.id })
+            : outsideWorkspaceRefusal(canonName, call, {
+                toolCallId: call.id,
+                additionalRoots,
+              });
+          noteChildRefusal(canonName, refusal.content);
+          toolResults[callIndex] = refusal;
           return undefined;
         }
 
@@ -2422,12 +2513,30 @@ export async function runAgentLoop(
         );
         const userRuleAsked =
           toolPermissionRequired && verdict.decision === 'ask' && verdict.source === 'ask';
+        // A guarded read is not auto-safe in plan mode (decision C, PR #334 finding 5). The
+        // verdict is `ask` for exactly the targets that keep asking in `default` — a local
+        // settings file, a home the serving root holds, a search under a Read deny/ask rule — and
+        // `planAutoApproved` bypassed the prompt for every read-only tool, so those ran in a plan
+        // with no prompt at all. Keyed on the verdict, not on the tool, so an unguarded workspace
+        // read still runs unprompted, which is what plan mode is for.
+        // A guarded read is not auto-safe in plan mode (decision C, PR #334 finding 5). The
+        // verdict is `ask` for exactly the targets that keep asking in `default` — a local
+        // settings file, a home the serving root holds, a search scope that reaches one — and
+        // `planAutoApproved` bypassed the prompt for every read-only tool, so those ran in a plan
+        // with no prompt at all.
+        //
+        // Restricted to the tools that read the filesystem. `READ_ONLY_PLAN_TOOLS` also holds the
+        // plan-control and session tools, whose verdict is `ask` for an unrelated reason: a
+        // prompt for `ExitPlanMode` with no approver is "stop with the plan", which the loop
+        // already implements, and treating it as a guarded read turned one turn into five.
+        const guardedReadInPlan =
+          planAutoApproved && WORKSPACE_READ_TOOLS.has(canonName) && verdict.decision === 'ask';
 
         if (
           (forceSkillPermission || toolPermissionRequired) &&
           (persistentBackgroundShell ||
             !approveAllRules.some((rule) => permissionRuleMatchesCall(rule, call))) &&
-          (!autoSafeTool || userRuleAsked) &&
+          (!autoSafeTool || userRuleAsked || guardedReadInPlan) &&
           (effectiveMode !== 'plan' || planReadOnly)
         ) {
           const autoApproved = effectiveMode === 'accept-edits' && isFileMutatingTool(canonName);

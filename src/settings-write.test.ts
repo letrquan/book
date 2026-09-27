@@ -66,6 +66,30 @@ describe('guard order', () => {
     expect(guardSettingWrite('commands')).toContain('book trust command');
   });
 
+  /**
+   * #300. `projectDirectories` is the fifth trust-owned key, and the guard list predated it, so
+   * `book config set projectDirectories …` was accepted. The user scope is the default and the
+   * user layer is trusted, so the written value released a project's declared directory with no
+   * `book trust dir` at all — the exact decision the gate exists to withhold.
+   */
+  it('refuses projectDirectories in every scope, exactly like its four siblings', () => {
+    const refusal = guardSettingWrite('projectDirectories');
+
+    expect(refusal).toContain('book trust dir');
+    expect(refusal).toContain('decision about repository-declared configuration');
+    // The same write, spelled as a leaf of the map: a deeper path reaches the key.
+    expect(guardSettingWrite('projectDirectories./shared')).toContain('book trust dir');
+
+    for (const scope of ['user', 'project', 'local'] as const) {
+      const result = write('projectDirectories', { '/opt/shared': 'approved' }, scope);
+      expect(result.ok, scope).toBe(false);
+    }
+    // Nothing reached any layer, so nothing a later load could read was changed.
+    expect(existsSync(join(bookHome, 'settings.json'))).toBe(false);
+    expect(existsSync(join(workspace, '.book', 'settings.json'))).toBe(false);
+    expect(existsSync(join(workspace, '.book', 'settings.local.json'))).toBe(false);
+  });
+
   it('rejects an unknown top-level key before anything is written', () => {
     expect(guardSettingWrite('maxTruns')).toContain('Unknown top-level key');
     expect(write('maxTruns', 12).ok).toBe(false);
