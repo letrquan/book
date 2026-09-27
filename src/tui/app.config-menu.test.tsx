@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { App } from './app.js';
 import type { AgentConfig } from '../types/runtime.js';
@@ -265,5 +265,60 @@ describe('the /config menu survives the picker it opens', () => {
     view.stdin.write('\x1b');
     await settle();
     expect(frameOf(view)).not.toContain('Choose a setting to change');
+  });
+});
+
+/**
+ * The startup-animation row writes to `~/.book/settings.json`, and
+ * `BOOK_STARTUP_ANIMATION` outranks that file at every launch. Without a word
+ * about it the save reads as the change taking effect — which it will not, for
+ * as long as the variable is set.
+ */
+describe('toggling the startup animation under BOOK_STARTUP_ANIMATION', () => {
+  let previous: string | undefined;
+
+  beforeEach(() => {
+    previous = process.env.BOOK_STARTUP_ANIMATION;
+  });
+
+  afterEach(() => {
+    if (previous === undefined) delete process.env.BOOK_STARTUP_ANIMATION;
+    else process.env.BOOK_STARTUP_ANIMATION = previous;
+  });
+
+  it('says in the reply that the variable decides, not the value just saved', async () => {
+    process.env.BOOK_STARTUP_ANIMATION = '0';
+    const view = startApp(vi.fn());
+    await settle();
+
+    await submit(view, '/config ui.startupAnimation=true');
+    await settle();
+
+    const frame = frameOf(view);
+    expect(frame).toContain('Startup animation on');
+    expect(frame).toContain('BOOK_STARTUP_ANIMATION is set to "0"');
+  });
+
+  it('warns on the row itself while the menu is open', async () => {
+    process.env.BOOK_STARTUP_ANIMATION = '0';
+    const view = startApp(vi.fn());
+    await settle();
+
+    await submit(view, '/config');
+
+    expect(frameOf(view)).toContain('BOOK_STARTUP_ANIMATION is set to "0"');
+  });
+
+  it('says nothing when the variable is not set', async () => {
+    delete process.env.BOOK_STARTUP_ANIMATION;
+    const view = startApp(vi.fn());
+    await settle();
+
+    await submit(view, '/config ui.startupAnimation=true');
+    await settle();
+
+    const frame = frameOf(view);
+    expect(frame).toContain('Startup animation on');
+    expect(frame).not.toContain('BOOK_STARTUP_ANIMATION');
   });
 });
