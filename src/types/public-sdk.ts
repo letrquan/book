@@ -61,6 +61,13 @@ export interface HeadlessOptions {
   includeHookEvents?: boolean;
   /** Emit partial assistant text deltas as stream-json lines (default: true for stream-json). */
   includePartialMessages?: boolean;
+  /**
+   * Include the full message history in the stream-json `result` event
+   * (`--include-result-messages`). Off by default: the record is one JSONL line
+   * and a long run's conversation is hundreds of kilobytes of it. The `json`
+   * output format and the SDK's own result are unaffected.
+   */
+  includeResultMessages?: boolean;
   /** Forward high-volume managed-agent text deltas. Defaults to false. */
   forwardSubagentText?: boolean;
   /** After completion, ask the model for follow-up prompt suggestions. */

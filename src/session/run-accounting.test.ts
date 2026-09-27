@@ -404,4 +404,65 @@ describe('spend attribution across snapshot kinds', () => {
     accounting.startRoot(context('r2', 'r2'), 10);
     expect(accounting.budgetedRootRunId()).toBeUndefined();
   });
+
+  describe('takeUnpersistedUsage', () => {
+    const meta = {
+      provider: 'anthropic',
+      requestedModel: 'claude-sonnet-5',
+      responseModel: 'claude-sonnet-5',
+      responseId: 'r1',
+      status: 'verified',
+    } as unknown as ProviderResponseMetadata;
+
+    it('never hands back the carry a seeded root restored', () => {
+      // The carry is what earlier processes already wrote as `usage` records.
+      // Handing it back would write those tokens again on this process's first
+      // response, and the next restart would restore an inflated total.
+      const accounting = new RunAccounting();
+      accounting.startRoot(context('root-g', 'root-g'));
+      accounting.seedRoot('root-g', { usage: usage(1_000, 100), costUsd: 0.5 });
+      accounting.record(context('root-g', 'root-g'), usage(10, 1), meta);
+
+      expect(accounting.takeUnpersistedUsage('root-g')).toMatchObject(usage(10, 1));
+      expect(accounting.takeUnpersistedUsage('root-g')).toMatchObject(usage(0, 0));
+    });
+
+    it('records a second run under a shared root only for what that run spent', () => {
+      // A managed agent's completion is delivered to the model as a new run under
+      // the root the spawning turn already used, in the same process. The spawn's
+      // spend is on disk; re-persisting the root's whole inclusive total would
+      // bill it twice.
+      const accounting = new RunAccounting();
+      const root = context('parent-run', 'shared-root');
+      accounting.startRoot(root, 5);
+      accounting.record(root, usage(100, 10), meta);
+      expect(accounting.takeUnpersistedUsage('shared-root')).toMatchObject(usage(100, 10));
+
+      const continuation = context('continuation-run', 'shared-root');
+      accounting.startExecution(continuation);
+      accounting.record(continuation, usage(20, 2), meta);
+
+      expect(accounting.takeUnpersistedUsage('shared-root')).toMatchObject(usage(20, 2));
+    });
+
+    it('picks up spend recorded after the last read, never dropping it', () => {
+      // A background agent that answers between two runs: its usage reaches the
+      // root's total without any `usage` record of its own, so the next read has
+      // to carry it or the restored carry is short by exactly that much.
+      const accounting = new RunAccounting();
+      const root = context('root-h', 'root-h');
+      accounting.startRoot(root, 5);
+      accounting.record(root, usage(10, 1), meta);
+      expect(accounting.takeUnpersistedUsage('root-h')).toMatchObject(usage(10, 1));
+
+      accounting.startExecution(context('late-agent', 'root-h'));
+      accounting.record(context('late-agent', 'root-h'), usage(7, 3), meta);
+
+      expect(accounting.takeUnpersistedUsage('root-h')).toMatchObject(usage(7, 3));
+    });
+
+    it('reports nothing for a root it has never seen', () => {
+      expect(new RunAccounting().takeUnpersistedUsage('missing')).toBeNull();
+    });
+  });
 });

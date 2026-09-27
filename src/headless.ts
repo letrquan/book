@@ -1122,9 +1122,18 @@ export async function runHeadless(
     } else if (opts.outputFormat === 'stream-json') {
       emit({
         type: 'result',
+        // At the top level, beside `stopReason`, because that is where a
+        // supervised loop reads the outcome from: `jq -e 'select(.type=="result")
+        // | .outcome.reason=="objective_complete"'` was written against this
+        // record and read a null. `result.outcome` stays for hosts already
+        // reading it there.
         stopReason: outcome.reason,
+        outcome,
         result: {
-          messages: contextHistory,
+          // Off by default: a long run's conversation is half a megabyte of JSONL
+          // on one line, which every reader has to buffer before it can look at
+          // the field it came for. `--include-result-messages` asks for it back.
+          ...(opts.includeResultMessages ? { messages: contextHistory } : {}),
           usage: reportedUsage,
           accounting: result.accounting,
           outcome,

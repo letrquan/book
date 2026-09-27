@@ -95,6 +95,10 @@ program
   .option('--fork-session', 'On resume, create a new session id instead of reusing')
   .option('--include-hook-events', 'Emit hook lifecycle events in stream-json output')
   .option('--include-partial-messages', 'Emit partial assistant text deltas in stream-json output')
+  .option(
+    '--include-result-messages',
+    'Include the full message history in the stream-json result event',
+  )
   .option('--prompt-suggestions', 'Ask model for follow-up prompt suggestions after completion')
   .option('--agents <mode>', 'Managed agents: adaptive, manual, off')
   .option('--scrollback', 'Use terminal-native scrollback instead of the full-screen TUI')

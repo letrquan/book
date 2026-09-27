@@ -16,11 +16,13 @@ import {
   carriedTurnsNotice,
   applyCompactResult,
   judgeCompaction,
+  clipHistoryToolResults,
 } from './compact.js';
 import { CARRIED_LEDGER_NOTICE_MAX_TOKENS } from './carried-ledger.js';
 import { DEFAULT_CONTEXT_WINDOW, resolveContextLimit } from '../models.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message, Usage } from '../types/messages.js';
+import type { ToolResult } from '../types/tools.js';
 import type { ConversationCheckpointV2 } from '../types/sessions.js';
 import { toolResult } from '../test/fixtures.js';
 import { compactTestConfig } from '../test/compact-fixture.js';
@@ -2884,5 +2886,68 @@ describe('compaction a request cannot be sent without, review round 3 (#238, #24
       reason: 'provider-error',
       providerCode: 'auth',
     });
+  });
+});
+
+describe('clipHistoryToolResults identity (#306)', () => {
+  // The loop decides whether a clip changed anything with
+  // `clippedHistory.some((message, index) => message !== newHistory[index])`, so a
+  // message rebuilt when no result in it crossed the cap reads as a clip: the
+  // request is rebuilt and `preflight tool outputs clipped` is logged for a history
+  // that was never cut. Element identity is therefore the whole contract; the
+  // array itself is always a fresh one, which is what the loop's callers expect.
+  const underCap = 'x'.repeat(4_000);
+  const overCap = 'y'.repeat(40_000);
+
+  const userTurn: Message = {
+    id: 'u1',
+    role: 'user',
+    content: 'go',
+    includeInContext: true,
+    timestamp: 0,
+  };
+  const toolTurn = (id: string, results: ToolResult[]): Message => ({
+    id,
+    role: 'assistant',
+    content: '',
+    includeInContext: true,
+    toolResults: results,
+    timestamp: 1,
+  });
+
+  it('hands back every message unchanged when nothing crossed the cap', () => {
+    const messages = [userTurn, toolTurn('a1', [toolResult('t1', underCap)])];
+
+    const clipped = clipHistoryToolResults(messages);
+
+    // A new array, as every caller expects; nothing inside it moved.
+    expect(clipped).not.toBe(messages);
+    clipped.forEach((message, index) => expect(message).toBe(messages[index]));
+    expect(clipped[1]?.toolResults).toBe(messages[1]?.toolResults);
+    // The loop's own check, verbatim.
+    expect(clipped.some((message, index) => message !== messages[index])).toBe(false);
+  });
+
+  it('returns a new object for the one message holding an oversized result', () => {
+    const kept = toolResult('t1', underCap);
+    const cut = toolResult('t2', overCap);
+    const messages = [
+      userTurn,
+      toolTurn('a1', [kept]),
+      toolTurn('a2', [kept, cut]),
+      toolTurn('a3', [kept]),
+    ];
+
+    const clipped = clipHistoryToolResults(messages);
+
+    expect(clipped[0]).toBe(messages[0]);
+    expect(clipped[1]).toBe(messages[1]);
+    expect(clipped[3]).toBe(messages[3]);
+    expect(clipped[2]).not.toBe(messages[2]);
+    // The result that was under the cap is the same object; the other is cut.
+    expect(clipped[2]?.toolResults?.[0]).toBe(kept);
+    expect(clipped[2]?.toolResults?.[1]?.content).toContain('compacted tool output');
+    expect(cut.content).toBe(overCap);
+    expect(clipped.some((message, index) => message !== messages[index])).toBe(true);
   });
 });

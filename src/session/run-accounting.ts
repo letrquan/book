@@ -87,6 +87,13 @@ interface RootState {
    * rather than "for this objective".
    */
   carried?: CarriedSpend;
+  /**
+   * The root's inclusive spend already written to the session as `usage` records.
+   *
+   * Writer-side bookkeeping only: it never enters a snapshot, so no budget, cost
+   * figure or status is computed from it. See `takeUnpersistedUsage`.
+   */
+  persistedUsage?: Usage;
   readonly executions: Map<string, ExecutionState>;
 }
 
@@ -105,6 +112,25 @@ function addUsage(current: Usage | null, next: Usage): Usage {
     cacheCreationInputTokens:
       (current?.cacheCreationInputTokens ?? 0) + (next.cacheCreationInputTokens ?? 0),
     cacheReadInputTokens: (current?.cacheReadInputTokens ?? 0) + (next.cacheReadInputTokens ?? 0),
+  };
+}
+
+/**
+ * What `total` adds beyond `already`, never below zero.
+ *
+ * Clamped because the two are read at different instants: a root whose spend was
+ * re-seeded under a writer that had already read it must not report negative
+ * spend, and a negative figure would be written to disk as one.
+ */
+function subtractUsage(total: Usage, already: Usage | undefined): Usage {
+  const at = (left: number | undefined, right: number | undefined): number =>
+    Math.max(0, (left ?? 0) - (right ?? 0));
+  return {
+    promptTokens: at(total.promptTokens, already?.promptTokens),
+    completionTokens: at(total.completionTokens, already?.completionTokens),
+    totalTokens: at(total.totalTokens, already?.totalTokens),
+    cacheReadInputTokens: at(total.cacheReadInputTokens, already?.cacheReadInputTokens),
+    cacheCreationInputTokens: at(total.cacheCreationInputTokens, already?.cacheCreationInputTokens),
   };
 }
 
@@ -206,7 +232,43 @@ export class RunAccounting {
       executions: new Map<string, ExecutionState>(),
     };
     root.carried = carried;
+    // The carry is what earlier processes already wrote as `usage` records, so it
+    // is the first thing the root must not hand back to a writer.
+    root.persistedUsage = carried.usage ?? undefined;
     this.roots.set(rootRunId, root);
+  }
+
+  /**
+   * The part of a root's inclusive spend that no durable `usage` record covers
+   * yet, advancing the root to having covered all of it.
+   *
+   * `snapshotRoot().inclusiveUsage` is a running total, so a writer that persists
+   * it whole re-writes the tokens of every record before it: the first response
+   * of a resumed process wrote the whole restored carry again, and a second run
+   * under a shared root — a delivered managed-agent completion, which the TUI
+   * runs under the root its spawning turn already used — wrote that turn's spend
+   * again. Either way the next process restored an inflated carry and
+   * `--max-budget-usd` ran out against an objective it had barely started.
+   *
+   * The watermark starts at the carry `seedRoot` restored and advances by
+   * whatever the caller persists. Advancing rather than subtracting a per-run
+   * baseline is also what keeps spend recorded *after* a run's last read from
+   * being dropped: a background agent that answers between two runs is above the
+   * watermark, so the next read carries it.
+   *
+   * Null when the root holds no inclusive usage to record.
+   */
+  takeUnpersistedUsage(rootRunId: string): Usage | null {
+    const root = this.roots.get(rootRunId);
+    if (!root) return null;
+    let inclusive: Usage | null = root.carried?.usage ?? null;
+    for (const execution of root.executions.values()) {
+      if (execution.usage) inclusive = addUsage(inclusive, execution.usage);
+    }
+    if (!inclusive) return null;
+    const unpersisted = subtractUsage(inclusive, root.persistedUsage);
+    root.persistedUsage = inclusive;
+    return unpersisted;
   }
 
   startExecution(context: AgentRunContext): void {

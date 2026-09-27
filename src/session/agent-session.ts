@@ -300,25 +300,6 @@ export type AgentSessionTransitionResult =
 type AgentSessionListener = (snapshot: AgentSessionSnapshot) => void;
 
 /** Shared owner for agent-loop execution, interaction promises, and operation lifetime. */
-/**
- * Usage written since the last record, so a stream of deltas still sums correctly.
- *
- * Clamped at zero per field: a compaction or a re-priced retry can make an
- * inclusive total move backwards, and a negative delta would silently refund
- * spend the run actually made.
- */
-function subtractUsage(total: Usage, already: Usage): Usage {
-  const at = (left: number | undefined, right: number | undefined): number =>
-    Math.max(0, (left ?? 0) - (right ?? 0));
-  return {
-    promptTokens: at(total.promptTokens, already.promptTokens),
-    completionTokens: at(total.completionTokens, already.completionTokens),
-    totalTokens: at(total.totalTokens, already.totalTokens),
-    cacheReadInputTokens: at(total.cacheReadInputTokens, already.cacheReadInputTokens),
-    cacheCreationInputTokens: at(total.cacheCreationInputTokens, already.cacheCreationInputTokens),
-  };
-}
-
 export class AgentSession {
   readonly interactions = new AgentInteractionController();
   readonly operations = new AgentSessionOperations();
@@ -1006,14 +987,6 @@ export class AgentSession {
        * leave half a plan on disk. The signature check keeps a per-wave callback
        * from appending an identical record on every tool result.
        */
-      /** Inclusive usage already written to the timeline for this run. */
-      let persistedUsage: Usage = {
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
-      };
       let lastPlanSignature = '';
       const persistPlan = (): void => {
         if (!request.timelineStore) return;
@@ -1103,14 +1076,16 @@ export class AgentSession {
           // is precisely the delegated money a budget is supposed to bound.
           //
           // `RunAccounting` already tracks every execution under this root in
-          // process, so the honest number is its inclusive total minus whatever has
-          // already been written. Cost is still not stored: it is re-derived from
-          // tokens at bootstrap, deliberately at the most expensive model involved.
-          const inclusive = request.runContext
-            ? runtime.runAccounting.snapshotRoot(request.runContext.rootRunId).inclusiveUsage
+          // process, so the honest number is the part of its inclusive total that
+          // no `usage` record covers yet — the root owns that watermark, seeded
+          // from the carry the session resumed with, so neither a restart nor a
+          // second run under the same root writes a token twice. Cost is still not
+          // stored: it is re-derived from tokens at bootstrap, deliberately at the
+          // most expensive model involved.
+          const unpersisted = request.runContext
+            ? runtime.runAccounting.takeUnpersistedUsage(request.runContext.rootRunId)
             : null;
-          const recordUsage = inclusive ? subtractUsage(inclusive, persistedUsage) : nextUsage;
-          if (inclusive) persistedUsage = inclusive;
+          const recordUsage = unpersisted ?? nextUsage;
           // A full cache hit leaves `promptTokens` at 0 on a provider that omits
           // `total_tokens`; the record still carries spend.
           if (

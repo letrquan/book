@@ -52,7 +52,29 @@ export type StreamJsonEvent =
   | { type: 'prompt_suggestions'; suggestions?: string[] }
   | { type: 'notice'; message?: string }
   | { type: 'error'; error?: string }
-  | { type: 'result'; result?: unknown; stopReason?: string }
+  /**
+   * The run's terminal record, and the last line of the stream.
+   *
+   * `outcome` and `stopReason` sit at the top level: a supervised loop reads the
+   * outcome from here (see the `jq` selector in `docs/guide/long-runs.md`), and
+   * `result.outcome` / `result.stopReason` are kept for hosts already reading
+   * them there. `result.messages` is absent unless the run asked for
+   * `--include-result-messages` — a long run's conversation is hundreds of
+   * kilobytes on this one line.
+   */
+  | {
+      type: 'result';
+      stopReason?: string;
+      outcome?: { status?: string; reason?: string; partialOutput?: boolean };
+      result?: {
+        messages?: unknown[];
+        usage?: unknown;
+        accounting?: unknown;
+        outcome?: { status?: string; reason?: string; partialOutput?: boolean };
+        stopReason?: string;
+        [key: string]: unknown;
+      };
+    }
   | { type: 'done' };
 
 export type StreamJsonDiagnosticCode = 'invalid-json' | 'invalid-shape' | 'oversized-line';
