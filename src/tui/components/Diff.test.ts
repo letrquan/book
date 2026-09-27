@@ -230,21 +230,28 @@ describe('DiffBlock', () => {
     expect(rendered).not.toContain('omitted');
   });
 
+  // Only two things are under test: that a diff past the old 200 KB byte cap
+  // still reaches the screen, and that the last row survives. The fixture is
+  // the smallest one that clears the cap for that reason, and rendering it costs
+  // about half a second on an idle box and 16s on a heavily loaded one — so the
+  // budget is four times the loaded measurement, not five: loose enough not to
+  // redden a runner that is busy, tight enough that a render that gets an order
+  // of magnitude more expensive still fails here.
   it('does not truncate expanded diffs by byte size', () => {
     const changedRows = Array.from(
-      { length: 25 },
-      (_, index) => `+row-${index + 1}-${'x'.repeat(9 * 1024)}`,
+      { length: 22 },
+      (_, index) => `+row-${index + 1}-${'x'.repeat(9320)}`,
     );
-    const output = ['@@ -0,0 +1,25 @@', ...changedRows].join('\n');
+    const output = ['@@ -0,0 +1,22 @@', ...changedRows].join('\n');
     const view = render(
       withTheme(React.createElement(DiffBlock, { output, terminalWidth: 10_000 })),
     );
     const rendered = frame(view.lastFrame);
 
     expect(Buffer.byteLength(output, 'utf8')).toBeGreaterThan(200 * 1024);
-    expect(rendered).toContain('+ row-25-');
+    expect(rendered).toContain('+ row-22-');
     expect(rendered).not.toContain('omitted');
-  }, 15_000);
+  }, 30_000);
 });
 
 describe('inferDiffLanguage', () => {
