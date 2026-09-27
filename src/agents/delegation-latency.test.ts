@@ -126,15 +126,26 @@ it('keeps foreground delegation overhead small relative to the delegated work', 
   const best = sorted[0];
   const median = sorted[Math.floor(sorted.length / 2)];
   const worst = sorted[sorted.length - 1];
+  // Every sample judged net of the lateness of its own timer, so the ceiling is
+  // the harness's cost and not the machine's: the child's 200ms is supposed to
+  // last 200ms, and the lateness is measured on the same cycle as the overhead.
+  const worstNetOfStall = Math.max(
+    ...samples.map((sample) => Math.max(0, sample.overheadMs - sample.stallMs)),
+  );
   const stall = Math.min(...samples.map((sample) => sample.stallMs));
 
   // Printed rather than only asserted: the absolute number is the finding, and a
   // ceiling that passes tells you nothing about where the real cost sits.
   console.log(
-    `[delegation] child ${childRunMs}ms · overhead best ${best}ms · median ${median}ms · worst ${worst}ms · samples ${sorted.join('/')}ms · timer stall ${stall}ms`,
+    `[delegation] child ${childRunMs}ms · overhead best ${best}ms · median ${median}ms · worst ${worst}ms (${worstNetOfStall}ms net of stall) · samples ${sorted.join('/')}ms · timer stall ${stall}ms`,
   );
 
-  expect(worst).toBeLessThan(2_000);
+  // One ceiling, on every sample, so two slow handoffs in five cannot pass. The
+  // only thing forgiven is a cycle in which the machine itself stalled: a loaded
+  // Windows runner did that once — one sample of five at 2722ms — and a stall
+  // can only add to a sample, so judging the raw numbers alone measures the
+  // runner rather than the handoff.
+  expect(worstNetOfStall).toBeLessThan(2_000);
   if (stall > STALL_TOLERANCE_MS) {
     console.log(
       `[delegation] inconclusive: the machine fired a ${childRunMs}ms timer ${stall}ms late on its best cycle; the overhead ceiling is not measurable here`,
