@@ -15,6 +15,12 @@
  * longer frame; a pause longer than `--max-hold` is cut to it. `--rows` crops
  * to screen rows a..b-1 (negative from the bottom) and `--title` adds a window
  * title bar. A `.png` is the final frame alone: `--until` picks the moment.
+ *
+ * A recording's resize events are applied to the replay terminal where they
+ * happened, so a script that resized mid-run replays the way the live terminal
+ * did; each frame is then drawn at its own size, from the top left, on a canvas
+ * sized to the largest size the run drove. A version-1 recording (no `version`,
+ * no resize entries) replays exactly as it always did.
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -33,7 +39,9 @@ const opt = (name, fallback) => {
   const i = argv.indexOf(`--${name}`);
   return i === -1 ? fallback : argv[i + 1];
 };
-const [recPath, outPath] = argv.filter((a, i) => !a.startsWith('--') && !argv[i - 1]?.startsWith('--'));
+const [recPath, outPath] = argv.filter(
+  (a, i) => !a.startsWith('--') && !argv[i - 1]?.startsWith('--'),
+);
 const FPS = Number(opt('fps', '12'));
 const MAX_HOLD = Number(opt('max-hold', '1800'));
 const END_HOLD = Number(opt('end-hold', '3500'));
@@ -44,12 +52,60 @@ const SCALE = Number(opt('scale', '1'));
 const COLOURS = Number(opt('colours', '96'));
 
 const rec = JSON.parse(readFileSync(recPath, 'utf8'));
-const { cols, rows } = rec;
+// Version 2 records the size the run started at and interleaves `[t, {cols, rows}]`
+// resize entries with the `[t, data]` output (#268); a version 1 record has neither
+// and replays exactly as it always did.
+const startCols = rec.cols;
+const startRows = rec.rows;
+
+// --- the replay timeline ------------------------------------------------------
+// A frame the renderer writes in several chunks must not be sampled half-drawn:
+// chunks closer than BURST_MS belong to one burst, and a sample takes whole bursts.
+// A resize is its own event, never merged into a burst: it has to land between the
+// output before it and the output that followed it, at its own moment in the run.
+const BURST_MS = 6;
+const events = [];
+for (const [t, payload] of rec.chunks) {
+  if (payload !== null && typeof payload === 'object') {
+    events.push({ start: t, end: t, resize: payload });
+    continue;
+  }
+  const last = events.at(-1);
+  if (last && !last.resize && t - last.end < BURST_MS) {
+    last.data += payload;
+    last.end = t;
+  } else {
+    events.push({ start: t, end: t, data: payload });
+  }
+}
+
+// Every size the run drove the terminal to: the one it started at and every resize.
+// One canvas covers all of them, so a frame drawn at a smaller size sits from the top
+// left on the background instead of being cropped to whatever the run ended at.
+const SIZES = [
+  [startCols, startRows],
+  ...events.filter((event) => event.resize).map((event) => [event.resize.cols, event.resize.rows]),
+];
+const maxCols = Math.max(...SIZES.map(([cols]) => cols));
 
 // --- screen -> HTML (the driver's shotpng rendering) -------------------------
 const ANSI16 = [
-  '#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5',
-  '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff',
+  '#000000',
+  '#cd3131',
+  '#0dbc79',
+  '#e5e510',
+  '#2472c8',
+  '#bc3fbc',
+  '#11a8cd',
+  '#e5e5e5',
+  '#666666',
+  '#f14c4c',
+  '#23d18b',
+  '#f5f543',
+  '#3b8eea',
+  '#d670d6',
+  '#29b8db',
+  '#ffffff',
 ];
 function paletteColor(i) {
   if (i < 16) return ANSI16[i];
@@ -72,37 +128,55 @@ function blockElementStyle(ch, fg, bg) {
   const strip = (w, h, x, y) =>
     `background:${bg} linear-gradient(${fg},${fg}) no-repeat ${x} ${y}/${w} ${h}`;
   switch (ch) {
-    case '█': return `background:${fg}`;
-    case '▀': return `background:linear-gradient(${fg} 50%,${bg} 50%)`;
-    case '▄': return `background:linear-gradient(${bg} 50%,${fg} 50%)`;
-    case '▌': return `background:linear-gradient(to right,${fg} 50%,${bg} 50%)`;
-    case '▐': return `background:linear-gradient(to right,${bg} 50%,${fg} 50%)`;
-    case '│': return strip('1px', '100%', '50%', '0');
-    case '─': return strip('100%', '1px', '0', '50%');
-    case '━': return strip('100%', '2px', '0', '50%');
-    default: return null;
+    case '█':
+      return `background:${fg}`;
+    case '▀':
+      return `background:linear-gradient(${fg} 50%,${bg} 50%)`;
+    case '▄':
+      return `background:linear-gradient(${bg} 50%,${fg} 50%)`;
+    case '▌':
+      return `background:linear-gradient(to right,${fg} 50%,${bg} 50%)`;
+    case '▐':
+      return `background:linear-gradient(to right,${bg} 50%,${fg} 50%)`;
+    case '│':
+      return strip('1px', '100%', '50%', '0');
+    case '─':
+      return strip('100%', '1px', '0', '50%');
+    case '━':
+      return strip('100%', '2px', '0', '50%');
+    default:
+      return null;
   }
 }
 const DEFAULT_FG = '#d4d4d4';
 const DEFAULT_BG = '#0c0c0c';
-// `--rows a:b` draws only screen rows a..b-1 (negative counts from the bottom).
-const [ROW_FIRST, ROW_END] = (() => {
-  const spec = opt('rows', null);
-  if (!spec) return [0, rows];
-  const [a, b] = spec.split(':').map((v) => (v === '' ? null : Number(v)));
-  const at = (v, fallback) => (v === null ? fallback : v < 0 ? rows + v : v);
-  return [at(a, 0), at(b, rows)];
-})();
-const shownRows = ROW_END - ROW_FIRST;
+// `--rows a:b` draws only screen rows a..b-1 (negative counts from the bottom). The
+// bounds resolve against the frame's own rows: a frame recorded before a resize is
+// shorter than the canvas, so a negative bound has to count from its bottom.
+const ROW_SPEC = opt('rows', null);
+const rowRange = (frameRows) => {
+  if (!ROW_SPEC) return [0, frameRows];
+  const [a, b] = ROW_SPEC.split(':').map((v) => (v === '' ? null : Number(v)));
+  const at = (v, fallback) => (v === null ? fallback : v < 0 ? frameRows + v : v);
+  return [at(a, 0), at(b, frameRows)];
+};
+// The canvas is as tall as the tallest cropped frame the record can produce.
+const maxShownRows = Math.max(
+  ...SIZES.map(([, size]) => {
+    const [first, end] = rowRange(size);
+    return end - first;
+  }),
+);
 
-function screenRowsHtml(term) {
+function screenRowsHtml(term, frameCols, frameRows) {
+  const [rowFirst, rowEnd] = rowRange(frameRows);
   const out = [];
   const buffer = term.buffer.active;
   const cell = buffer.getNullCell();
-  for (let y = ROW_FIRST; y < ROW_END; y++) {
+  for (let y = rowFirst; y < rowEnd; y++) {
     const line = buffer.getLine(buffer.viewportY + y);
     let html = '';
-    for (let x = 0; x < cols; x++) {
+    for (let x = 0; x < frameCols; x++) {
       if (!line) break;
       line.getCell(x, cell);
       if (cell.getWidth() === 0) continue;
@@ -130,46 +204,55 @@ function screenRowsHtml(term) {
 }
 
 // --- sample the stream --------------------------------------------------------
-// A frame the renderer writes in several chunks must not be sampled half-drawn:
-// chunks closer than BURST_MS belong to one burst, and a sample takes whole bursts.
-const BURST_MS = 6;
-const bursts = [];
-for (const [t, d] of rec.chunks) {
-  const last = bursts.at(-1);
-  if (last && t - last.end < BURST_MS) {
-    last.data += d;
-    last.end = t;
-  } else bursts.push({ start: t, end: t, data: d });
-}
-
 // `--start-at <regex>` starts sampling once the screen first matches it, and
 // `--until <regex>` stops `--after` ms after the screen first matches that.
 const START_AT = opt('start-at', null) && new RegExp(opt('start-at', null));
 const UNTIL = opt('until', null) && new RegExp(opt('until', null));
 const AFTER = Number(opt('after', '0'));
+// The size of the frame being sampled: the terminal starts at the recorded size and
+// changes where the run resized, so a frame is drawn at the size it was drawn at.
+let frameCols = startCols;
+let frameRows = startRows;
 const screenText = () =>
-  Array.from({ length: rows }, (_, y) =>
-    term.buffer.active.getLine(term.buffer.active.viewportY + y)?.translateToString(true) ?? '',
+  Array.from(
+    { length: frameRows },
+    (_, y) =>
+      term.buffer.active.getLine(term.buffer.active.viewportY + y)?.translateToString(true) ?? '',
   ).join('\n');
 
-const term = new Terminal({ cols, rows, allowProposedApi: true, convertEol: true });
+const term = new Terminal({
+  cols: startCols,
+  rows: startRows,
+  allowProposedApi: true,
+  convertEol: true,
+});
 const write = (s) => new Promise((res) => term.write(s, res));
 const frames = []; // { html, ms }
 const step = 1000 / FPS;
-let endTime = Math.min(TO, bursts.at(-1).end);
+const lastEventTime = events.at(-1).end;
+let endTime = Math.min(TO, lastEventTime);
 let started = !START_AT;
 let next = 0;
 for (let t = 0; t <= endTime + step; t += step) {
-  while (next < bursts.length && bursts[next].end <= t) await write(bursts[next++].data);
+  while (next < events.length && events[next].end <= t) {
+    const event = events[next++];
+    if (event.resize) {
+      term.resize(event.resize.cols, event.resize.rows);
+      frameCols = event.resize.cols;
+      frameRows = event.resize.rows;
+    } else {
+      await write(event.data);
+    }
+  }
   if (t < FROM) continue;
   if (!started) {
     if (!START_AT.test(screenText())) continue;
     started = true;
   }
-  if (UNTIL && endTime === Math.min(TO, bursts.at(-1).end) && UNTIL.test(screenText())) {
+  if (UNTIL && endTime === Math.min(TO, lastEventTime) && UNTIL.test(screenText())) {
     endTime = t + AFTER;
   }
-  const html = screenRowsHtml(term);
+  const html = screenRowsHtml(term, frameCols, frameRows);
   const last = frames.at(-1);
   if (last && last.html === html) last.ms += step;
   else frames.push({ html, ms: step });
@@ -177,16 +260,18 @@ for (let t = 0; t <= endTime + step; t += step) {
 term.dispose();
 for (const frame of frames) frame.ms = Math.min(frame.ms / SPEED, MAX_HOLD);
 frames.at(-1).ms = END_HOLD;
-console.log(`[gif] ${frames.length} distinct frames, ${Math.round(frames.reduce((a, f) => a + f.ms, 0))}ms`);
+console.log(
+  `[gif] ${frames.length} distinct frames, ${Math.round(frames.reduce((a, f) => a + f.ms, 0))}ms`,
+);
 
 // --- render ---------------------------------------------------------------------
 // Cascadia Mono advances 0.586em: 8.79px a column at 15px.
 const PAD = 14;
-const width = Math.ceil(cols * 8.79 + PAD * 2);
+const width = Math.ceil(maxCols * 8.79 + PAD * 2);
 // `--title <text>` adds a window title bar, so the image reads as a terminal.
 const TITLE = opt('title', null);
 const BAR = TITLE ? 30 : 0;
-const frameH = shownRows * 18 + PAD * 2 + BAR;
+const frameH = maxShownRows * 18 + PAD * 2 + BAR;
 const browser = [
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
   'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
@@ -202,9 +287,14 @@ function screenshot(htmlPath, pngPath, height) {
     const child = spawn(
       browser,
       [
-        '--headless=new', '--disable-gpu', '--hide-scrollbars', '--disable-lcd-text',
-        `--force-device-scale-factor=${SCALE}`, `--user-data-dir=${profile}`,
-        `--screenshot=${resolve(pngPath)}`, `--window-size=${width},${height}`,
+        '--headless=new',
+        '--disable-gpu',
+        '--hide-scrollbars',
+        '--disable-lcd-text',
+        `--force-device-scale-factor=${SCALE}`,
+        `--user-data-dir=${profile}`,
+        `--screenshot=${resolve(pngPath)}`,
+        `--window-size=${width},${height}`,
         `file:///${resolve(htmlPath).replace(/\\/g, '/')}`,
       ],
       { stdio: 'ignore' },
@@ -247,7 +337,12 @@ body{margin:0;background:${DEFAULT_BG}}
   for (let j = 0; j < batch.length; j++) {
     pngs.push(
       await sharp(pngPath)
-        .extract({ left: 0, top: Math.round(j * frameH * SCALE), width: Math.round(width * SCALE), height: Math.round(frameH * SCALE) })
+        .extract({
+          left: 0,
+          top: Math.round(j * frameH * SCALE),
+          width: Math.round(width * SCALE),
+          height: Math.round(frameH * SCALE),
+        })
         .png()
         .toBuffer(),
     );
@@ -270,7 +365,9 @@ if (format === 'gif') {
     .gif({ delay: delays, loop: 0, colours: COLOURS, effort: 10, dither: 0, interFrameMaxError: 4 })
     .toFile(outPath);
 } else {
-  await pipeline.webp({ delay: delays, loop: 0, quality: 90, effort: 6, smartSubsample: true }).toFile(outPath);
+  await pipeline
+    .webp({ delay: delays, loop: 0, quality: 90, effort: 6, smartSubsample: true })
+    .toFile(outPath);
 }
 // The last frame, as a still for a poster or a fallback.
 writeFileSync(outPath.replace(/\.(gif|webp)$/, '.last.png'), pngs.at(-1));

@@ -15,6 +15,7 @@ import { partitionProjectAllowRules } from './permission-approvals.js';
 import { collectDeclaredHooks, partitionProjectHooks } from './hook-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { normalizeRemovedSettings } from './settings-removed.js';
+import { parseEnvBoolean } from './env-boolean.js';
 
 const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
 
@@ -27,18 +28,10 @@ const CONCATENATED_ARRAY_PATHS = new Set([
   'permissions.allow',
   'permissions.ask',
   'permissions.deny',
-  ...[
-    'SessionStart',
-    'SessionEnd',
-    'UserPromptSubmit',
-    'PreToolUse',
-    'PostToolUse',
-    'Stop',
-    'PreCompact',
-    'PostCompact',
-    'SubagentStart',
-    'SubagentStop',
-  ].map((event) => `hooks.${event}`),
+  // Straight from the list the hooks schema is built from: a hand-written copy of
+  // it went stale the moment `Notification` was added, and a later layer's
+  // notification hooks then replaced the user layer's instead of appending (#295).
+  ...HOOK_EVENTS.map((event) => `hooks.${event}`),
 ]);
 
 function mergeObject(
@@ -345,6 +338,44 @@ export function resolveSettings(
 
   const settings = bookSettingsSchema.parse(resolved) as ResolvedSettings;
   return settings;
+}
+
+/**
+ * The environment's say over the merged layers, applied to settings that are
+ * about to be used rather than saved.
+ *
+ * `BOOK_STARTUP_ANIMATION` is here, and not in `loadConfig`, because the layers
+ * are only half the answer: a reader that resolved the files and stopped would
+ * report the file's value while Book acts on the variable's. So every path that
+ * produces the *effective* settings calls this — the startup config, the
+ * re-read after a provider is removed, `book config get`/`list`. A path that
+ * computes what gets written back to a settings file must not: the variable
+ * decides the next launch, and baking it into a file would make a later
+ * `unset` look like it had failed.
+ *
+ * The returned object is a new one; the input is left as the caller resolved it.
+ */
+export function applySettingsEnvOverrides(
+  settings: ResolvedSettings,
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedSettings {
+  const startupAnimation = parseEnvBoolean(env.BOOK_STARTUP_ANIMATION);
+  if (startupAnimation === undefined) return settings;
+  return { ...settings, ui: { ...settings.ui, startupAnimation } };
+}
+
+/**
+ * What to tell a user whose read or save is being decided by the environment
+ * rather than by their settings — the `BOOK_MODEL` warning in one sentence, or
+ * nothing when the variable is unset or unreadable.
+ */
+export function startupAnimationEnvNote(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env.BOOK_STARTUP_ANIMATION;
+  if (parseEnvBoolean(raw) === undefined) return undefined;
+  return (
+    `BOOK_STARTUP_ANIMATION is set to "${raw}" — it decides the splash at every ` +
+    'launch, so ui.startupAnimation will not apply while it is set.'
+  );
 }
 
 export { loadSettingsFile };

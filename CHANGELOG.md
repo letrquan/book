@@ -420,6 +420,21 @@ All notable changes to this project are documented in this file.
   every message that had tool results, so the loop's identity check read a clip on a history where
   nothing crossed the cap, rebuilt the request, and logged `preflight tool outputs clipped` for an
   unchanged conversation. A message with nothing to cut is now handed back as the same object.
+- **A later layer's notification hooks replaced the user layer's** (#295). The hook arrays that
+  concatenate across settings layers were spelled out by hand, and `Notification` was never added to
+  that list when the event was, so declaring one in a project or local layer silently took away the
+  ntfy, Slack or SMS push the user had wired to every event in `~/.book/settings.json`. The
+  concatenating paths are now built from `HOOK_EVENTS` — the same list `hooksSchema` is generated
+  from — so the next event added there is covered by construction, and a test loops the list so a
+  regression names the event it lost.
+- **Flaky tests stabilized** (#315, #297, #301, #317). The OpenAI-compatible stall fixture no
+  longer writes to a stream the client has already cancelled (#315), the Windows PowerShell 5.1
+  test warms the shell once so the measured spawns do not pay its cold start (#297), the
+  delegation-latency ceiling still applies its 2 s budget to every sample, judging each one net of
+  its own measured timer stall, and the TUI key-timing tests and the large-diff test wait for
+  rendered state instead of a fixed sleep (#301). The TUI integration suite now fails immediately
+  with a build hint when `dist/` is missing instead of timing out test after test, and the release
+  workflow builds before running that tier (#317).
 - **Malformed tool-call arguments are repaired conservatively instead of refused** (#242). Three
   shapes repair to the arguments the model sent: a control character written literally inside a
   string is escaped, a comma directly before a `}` or `]` is dropped, and closing brackets missing
@@ -1442,6 +1457,18 @@ All notable changes to this project are documented in this file.
   baseline and labelled an estimate, since it assumes identical token counts on a different model.
   A model with no known pricing reports its tokens and suppresses the total rather than guessing.
 
+- **`BOOK_STARTUP_ANIMATION` switches the startup splash** (#303). `0`, `false`, `off` or `no` turns
+  it off and `1`, `true`, `on` or `yes` turns it on, matched case-insensitively and ignoring
+  surrounding whitespace; unset, empty or any other value leaves `ui.startupAnimation` alone. It
+  outranks every settings layer, as `BOOK_MODEL` does for `model`, so anything that drives Book
+  rather than uses it — a script, a capture, the run-book PTY driver — can turn the splash off
+  without owning a settings layer it would have to merge with whatever the user passes. The
+  resolved value lands on `config.settings.ui.startupAnimation`, so `shouldPlayStartupFire` and
+  `/config` read the same one. The override is applied wherever the effective settings are read,
+  not only at startup: `book config get`/`list` report the value in force and name the variable as
+  its source, the settings a provider removal re-reads keep it, and `/config` says the variable
+  decides at every launch so a value saved while it is set does not look like it took. It is never
+  applied to a value being written back to a settings file.
 - **Releases publish from CI with no token.** `.github/workflows/release.yml` publishes on a `v*`
   tag using npm trusted publishing, which proves the workflow's identity over OIDC instead of
   presenting a credential. 0.2.0 went out on a bypass-2FA granular token, the only thing that still
@@ -1449,6 +1476,23 @@ All notable changes to this project are documented in this file.
   bypass-2FA tokens in January 2027, so that path was already on a clock. The workflow refuses a tag
   that disagrees with `package.json`, runs the full gate and the installed-artifact smoke test
   before publishing, and gets provenance attached automatically.
+- **The run-book driver drives resizes** (Refs #268). `--record` writes the size the run started at
+  plus every `resize` as an entry of its own, interleaved with the output in arrival order, and the
+  driver's `screen`, `shot` and `shotpng` replay that same timeline, so a script that resized
+  mid-run is read at the size each frame was drawn at instead of being wrapped into the size the run
+  happened to end at. `record-gif.mjs` applies each resize to its replay terminal, draws every frame
+  at its own size from the top left on one canvas sized to the largest size the run drove, and crops
+  `--rows a:b` against the frame's own rows; a version-1 recording replays as it always did.
+- **The run-book driver takes `delete` and `insert`, and sends Alt with a named key** (#298). Alt
+  plus a single character is still ESC then the character; Alt plus a named key is now the xterm
+  modifier form (Alt+Delete is `\x1b[3;3~`, Alt+Up `\x1b[1;3A`), and a key with no Alt encoding —
+  backspace, enter, tab, Esc — is ESC then the key itself, as a terminal sends it.
+- **The run-book driver turns the splash off from the environment** (#303). It sets
+  `BOOK_STARTUP_ANIMATION=0` (`1` with `--startup-animation`) instead of writing a temporary
+  `--settings` layer and merging a user's own settings file into it, which a single `--settings`
+  layer made necessary. A user's `--settings` or `--no-settings` after `--` now reaches Book
+  untouched, the refusals that stood in its way are gone, and the temp directory the layer lived in
+  is no longer created or kept on failure.
 
 ## [0.2.0] - 2026-09-08
 

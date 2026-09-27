@@ -1,4 +1,3 @@
-import { setImmediate as waitForImmediate } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
@@ -69,16 +68,19 @@ describe('PlanApprovalButtons', () => {
       withTheme(<PlanApprovalButtons plan="Review the proposed changes." onResolve={onResolve} />),
     );
 
+    // Each key waits for the frame it produced. A fixed sleep is a race with the
+    // render, and on a loaded runner the composer can still be closed when the
+    // feedback is typed, or unanswered when Enter arrives.
     view.stdin.write('e');
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(stripAnsi(view.lastFrame())).toContain('Adjust the plan');
+    await vi.waitFor(() => expect(stripAnsi(view.lastFrame())).toContain('Adjust the plan'));
 
     view.stdin.write('Keep the migration backward compatible.');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() =>
+      expect(stripAnsi(view.lastFrame())).toContain('Keep the migration backward compatible.'),
+    );
     view.stdin.write('\r');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() => expect(onResolve).toHaveBeenCalledOnce());
 
-    expect(onResolve).toHaveBeenCalledOnce();
     expect(onResolve).toHaveBeenCalledWith({
       decision: 'revise',
       feedback: 'Keep the migration backward compatible.',
@@ -130,8 +132,6 @@ describe('PlanApprovalButtons', () => {
     // repeating faster than a frame. It is the case a per-keypress test cannot
     // reach.
     view.stdin.write('\u001b[C\r');
-    await waitForImmediate();
-
-    expect(onResolve).toHaveBeenCalledWith('approve-fresh');
+    await vi.waitFor(() => expect(onResolve).toHaveBeenCalledWith('approve-fresh'));
   });
 });
