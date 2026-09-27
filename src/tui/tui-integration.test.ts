@@ -12,9 +12,9 @@
  * elsewhere. Keep them sequential because parallel ConPTY sessions can emit
  * non-fatal "AttachConsole failed" helper errors and interfere with each other.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { beforeAll, describe, it, expect, afterEach } from 'vitest';
 import { spawn } from 'node-pty';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -298,6 +298,16 @@ const keys = {
 // ---------------------------------------------------------------------------
 // Test lifecycle — sequential, with delay between spawns
 // ---------------------------------------------------------------------------
+
+// Every test here spawns the built CLI. Without `dist/` each one waits out its
+// own PTY timeout and reports a symptom — a TUI that never painted — instead of
+// the reason, so the suite burns about three minutes saying nothing. One check,
+// at the top, names the missing build.
+beforeAll(() => {
+  if (!existsSync(DIST_INDEX)) {
+    throw new Error('dist/index.js is missing: run npm run build before the TUI integration tests');
+  }
+});
 
 let session: TuiSession | null = null;
 

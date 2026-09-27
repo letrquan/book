@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { win32 } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import {
   decodePowerShellCommand,
   describeShell,
@@ -216,6 +216,19 @@ function run(exec: {
 }
 
 describe.runIf(process.platform === 'win32')('real Windows shells', () => {
+  // The first powershell.exe on a cold Windows runner pays for module auto-load
+  // and a Defender scan, which on its own can outlast a test timeout — the run
+  // below spawns the same executable four times. So the cold start is paid here,
+  // in a hook with a deadline of its own, and the measured test does not pay it.
+  // A warm-up that fails is not this suite's finding to report: the test that
+  // needs it will fail in its own right and say so.
+  beforeAll(async () => {
+    await run({
+      file: POWERSHELL,
+      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'exit 0'],
+    }).catch(() => undefined);
+  }, 180_000);
+
   it('runs Windows PowerShell 5.1 with the exit code of the last statement', async () => {
     const shell = resolveShell({ requested: 'powershell' });
     expect(shell.kind).toBe('powershell');
@@ -231,7 +244,7 @@ describe.runIf(process.platform === 'win32')('real Windows shells', () => {
     // 5.1 would otherwise hand the model a CLIXML document on stderr.
     expect(failed.out).toContain('Cannot find path');
     expect(failed.out).not.toContain('CLIXML');
-  }, 60_000);
+  }, 120_000);
 
   it('runs Git Bash as a POSIX shell when one is installed', async () => {
     const shell = resolveShell({ requested: 'bash' });

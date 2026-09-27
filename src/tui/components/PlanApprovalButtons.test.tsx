@@ -69,16 +69,19 @@ describe('PlanApprovalButtons', () => {
       withTheme(<PlanApprovalButtons plan="Review the proposed changes." onResolve={onResolve} />),
     );
 
+    // Each key waits for the frame it produced. A fixed sleep is a race with the
+    // render, and on a loaded runner the composer can still be closed when the
+    // feedback is typed, or unanswered when Enter arrives.
     view.stdin.write('e');
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(stripAnsi(view.lastFrame())).toContain('Adjust the plan');
+    await vi.waitFor(() => expect(stripAnsi(view.lastFrame())).toContain('Adjust the plan'));
 
     view.stdin.write('Keep the migration backward compatible.');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() =>
+      expect(stripAnsi(view.lastFrame())).toContain('Keep the migration backward compatible.'),
+    );
     view.stdin.write('\r');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() => expect(onResolve).toHaveBeenCalledOnce());
 
-    expect(onResolve).toHaveBeenCalledOnce();
     expect(onResolve).toHaveBeenCalledWith({
       decision: 'revise',
       feedback: 'Keep the migration backward compatible.',

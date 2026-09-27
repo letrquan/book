@@ -172,18 +172,22 @@ describe('PermissionButtons', () => {
       ),
     );
 
+    // The second `a` steps the scope only if the first one has been rendered,
+    // so each key waits for the frame it produced rather than for a fixed
+    // number of event-loop turns a loaded runner can spend elsewhere.
     view.stdin.write('a'); // arm
-    await waitForImmediate();
+    await vi.waitFor(() => expect(stripAnsi(view.lastFrame() ?? '')).toContain('› Always allow'));
     view.stdin.write('a'); // widen once
-    await waitForImmediate();
-    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Bash(npm run *)');
+    await vi.waitFor(() => expect(stripAnsi(view.lastFrame() ?? '')).toContain('Bash(npm run *)'));
     expect(onResolve).not.toHaveBeenCalled();
 
     view.stdin.write('\r');
-    expect(onResolve).toHaveBeenCalledExactlyOnceWith({
-      result: 'always',
-      rule: 'Bash(npm run *)',
-    });
+    await vi.waitFor(() =>
+      expect(onResolve).toHaveBeenCalledExactlyOnceWith({
+        result: 'always',
+        rule: 'Bash(npm run *)',
+      }),
+    );
   });
 
   it('wraps back to the exact rule rather than committing one', async () => {

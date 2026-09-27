@@ -114,12 +114,16 @@ describe('ModelPicker', () => {
     const { view, onPick } = renderPicker();
     await write(view, 'gateway');
 
-    expect(view.lastFrame()).toContain('¶ gateway');
-    expect(view.lastFrame()).toContain('Custom  gateway  BYOK');
-    expect(view.lastFrame()).not.toContain('Built In');
+    // A fixed wait here is a race with the next frame, not a wait for it: on a
+    // loaded runner the keystroke can still be in flight when the sleep ends.
+    await vi.waitFor(() => {
+      expect(view.lastFrame()).toContain('¶ gateway');
+      expect(view.lastFrame()).toContain('Custom  gateway  BYOK');
+      expect(view.lastFrame()).not.toContain('Built In');
+    });
 
     await write(view, '\r');
-    expect(onPick).toHaveBeenCalledWith('gateway/custom', true);
+    await vi.waitFor(() => expect(onPick).toHaveBeenCalledWith('gateway/custom', true));
   });
 
   it('opens the BYOK wizard with Alt+A', async () => {
