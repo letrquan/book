@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { runHeadless } from './headless.js';
 import { SessionStore } from './session/store.js';
 import { createDefaultRegistry, createRegistry } from './tools/registry.js';
@@ -18,10 +18,35 @@ import type { AgentCompletionNotification } from './agents/types.js';
 const config = defaultConfig({ baseUrl: 'http://localhost/v1' });
 let tempDirs: string[] = [];
 
+/**
+ * `debug-log.ts` reads `BOOK_DEBUG*` once, at module load, into module-level
+ * constants, so a `beforeEach` stub arrives too late to switch logging off — the
+ * loggers handed out by then have already been built. Clearing here instead, in a
+ * `vi.hoisted` block that Vitest lifts above the imports above it, is what makes
+ * this file independent of a developer's debugging session: otherwise a
+ * developer with `BOOK_DEBUG=1` gets `[provider] [DEBUG] …` lines on stderr and
+ * every exact-stderr assertion below fails, while a developer without it passes.
+ * The developer's values are put back in `afterAll` so the rest of the run is
+ * unaffected.
+ */
+const savedDebugEnv = vi.hoisted(() => {
+  const saved: Record<string, string> = {};
+  for (const name of Object.keys(process.env)) {
+    if (!name.startsWith('BOOK_DEBUG')) continue;
+    saved[name] = process.env[name] as string;
+    delete process.env[name];
+  }
+  return saved;
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   tempDirs = [];
+});
+
+afterAll(() => {
+  for (const [name, value] of Object.entries(savedDebugEnv)) process.env[name] = value;
 });
 
 function makeWorkspace(): string {
