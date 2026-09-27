@@ -20,7 +20,7 @@ import type {
 } from '../types/tools.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import { createProvider, type Provider } from '../provider/index.js';
-import { TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
+import { isTruncationFinishReason, TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
 import { buildMessages } from './context.js';
 import type { PreparedToolCall, ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
@@ -140,6 +140,25 @@ const SHARED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'stream_stall',
   'transport_interrupted',
 ]);
+
+/**
+ * The finish reasons that say something about how a turn ended; anything outside this
+ * list is an ordinary stop (`stop`, `tool_calls`, `end_turn`) and says nothing.
+ *
+ * A response can report more than one of them — `content_filter` alongside `length` on a
+ * router that filters and then runs out of room — and the loop reads exactly one, the
+ * first the response itself listed. Resolving it through one `find` in one place is what
+ * keeps a reply's classification and the reasoning-block split from reaching two
+ * different verdicts off the same array. The spellings live in `TRUNCATION_FINISH_REASONS`
+ * rather than being written out again here.
+ */
+const SETTLED_FINISH_REASONS: readonly string[] = [
+  ...TRUNCATION_FINISH_REASONS,
+  'model_context_window_exceeded',
+  'content_filter',
+  'refusal',
+  'error',
+];
 
 /**
  * Check whether a tool call should be evaluated against permission rules,
@@ -1492,10 +1511,37 @@ export async function runAgentLoop(
       }
 
       assistantContent = textBuffer;
+      // Resolved once, here, because the split below and the classification that
+      // follows it have to agree on what this reply was. A response can report
+      // more than one reason (`content_filter` alongside `length` on a router that
+      // filters and then runs out of room), so a reader of the raw array could end
+      // the run as an output-cap continuation while the split read a filter.
+      const finishReason = responseMetadata?.finishReasons?.find((reason) =>
+        SETTLED_FINISH_REASONS.includes(reason),
+      );
+      const truncatedFinish = isTruncationFinishReason(finishReason);
       {
         // Gate on the block, not on its text: the empty `<think></think>` a
         // model emits with thinking off still has to leave the answer.
-        const inline = separateInlineReasoning(assistantContent);
+        //
+        // A reply the provider cut short is split under the same rules, with the
+        // one exception the split takes for a fragment: the close tag no longer
+        // ends a line, because the answer after it never got to start one. Left
+        // as answer text it is re-sent to the model as answer text on every
+        // later request of the run, which is what makes a model that saw the
+        // convention start writing reasoning tags into its content.
+        //
+        // "Cut short" is those two ways a run ends holding a fragment and nothing
+        // else: the output cap, and a stream that dropped before its terminal
+        // event — the transport fault the loop re-issues further down. An
+        // interrupt ends the run as `caller_cancelled` and every other stream
+        // error is a fault to re-send rather than a reply the provider meant to
+        // leave unfinished, so neither may have answer text moved into reasoning.
+        const streamDropped =
+          !streamDone && !signal?.aborted && streamErrorCode === 'transport_interrupted';
+        const inline = separateInlineReasoning(assistantContent, {
+          truncated: truncatedFinish || streamDropped,
+        });
         if (inline.found) {
           reasoningContent = [reasoningContent, inline.reasoning].filter(Boolean).join('\n\n');
           assistantContent = inline.content;
@@ -1514,18 +1560,8 @@ export async function runAgentLoop(
         );
       }
 
-      const finishReason = responseMetadata?.finishReasons?.find((reason) =>
-        [
-          'length',
-          'max_tokens',
-          'model_context_window_exceeded',
-          'content_filter',
-          'refusal',
-          'error',
-        ].includes(reason),
-      );
       if (!streamError && streamDone && finishReason) {
-        if (TRUNCATION_FINISH_REASONS.has(finishReason)) {
+        if (truncatedFinish) {
           // Not a protocol error. On a migration or a generated file, hitting the
           // output cap is the shape of the work, not an anomaly — and classifying
           // it as a protocol error made it unrecoverable.
