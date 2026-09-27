@@ -5,6 +5,7 @@ import {
   getTranscriptHalfPageRows,
   getTranscriptPageRows,
   getTranscriptWheelDrainRows,
+  pagerChordsAvailable,
   reconcileTranscriptScroll,
   scrollTranscriptBy,
   scrollTranscriptToEnd,
@@ -92,5 +93,36 @@ describe('transcript scroll model', () => {
     expect(getTranscriptWheelDrainRows(-3, 20)).toBe(-3);
     expect(getTranscriptWheelDrainRows(99, 20)).toBe(10);
     expect(getTranscriptWheelDrainRows(-99, 5)).toBe(-3);
+  });
+});
+
+describe('pagerChordsAvailable', () => {
+  // The whole rule, in the four cases it has. An editor that holds the chord
+  // spends it; one that has nothing to edit hands it back as a scroll request.
+  // So the transcript's own branch may act only in the last row.
+  it('pages directly only when no editor on screen is taking the keys', () => {
+    expect(pagerChordsAvailable({ composerAcceptsInput: false, sheetEditorFocused: false })).toBe(
+      true,
+    );
+    expect(pagerChordsAvailable({ composerAcceptsInput: true, sheetEditorFocused: false })).toBe(
+      false,
+    );
+    expect(pagerChordsAvailable({ composerAcceptsInput: false, sheetEditorFocused: true })).toBe(
+      false,
+    );
+    expect(pagerChordsAvailable({ composerAcceptsInput: true, sheetEditorFocused: true })).toBe(
+      false,
+    );
+  });
+
+  it('is not the composer-free question read the other way round', () => {
+    // The regression this exists to prevent: reading the flag as "the composer
+    // is free to page" and negating only the composer. With a live composer and
+    // no sheet editor that is `true`, and a draft-clearing Ctrl+U then scrolls
+    // the transcript as well — issue #296, back again.
+    const draft = { composerAcceptsInput: true, sheetEditorFocused: false };
+    const inverted = draft.composerAcceptsInput && !draft.sheetEditorFocused;
+    expect(inverted).toBe(true);
+    expect(pagerChordsAvailable(draft)).toBe(false);
   });
 });

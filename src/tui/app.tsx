@@ -88,7 +88,7 @@ import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewScope } from '../review/types.js';
 import { join } from 'path';
 import { selectExpandedToolId, selectLatestToolId } from './tool-traces.js';
-import { halfPageScrollDirection } from './transcript-scroll.js';
+import { halfPageScrollDirection, pagerChordsAvailable } from './transcript-scroll.js';
 import {
   getTranscriptShortcutAction,
   isShortcutsToggleKey,
@@ -2469,12 +2469,15 @@ export function App({
     detailTaskPickerOpen
   );
 
-  // Whether anything on screen is holding a text editor's focus: the composer,
-  // or one of the sheets' own editors. A sheet that is up without an editor is
-  // a list of choices, and there Ctrl+U and Ctrl+D can only mean paging; the
-  // moment its editor opens they are the editor's kills, and the transcript must
-  // stop reading them as scrolls — the same defect #296 was, one surface down.
-  const pagerChordsAvailable = composerAcceptsInput && !sheetEditorFocused;
+  // Whether the transcript may read Ctrl+U and Ctrl+D as its own half-page
+  // scrolls. The rule is "no editor on screen is taking the keys", not "the
+  // composer is free": the composer spends those chords on the draft and a
+  // sheet's editor spends them on its field, and either one hands back a chord
+  // it cannot spend as `transcriptScrollRequest` instead. A sheet that is up with
+  // no editor open is a list of choices, and there the chords can only mean
+  // paging. `pagerChordsAvailable` is that rule as one function, so it cannot be
+  // restated — and read backwards — at a second call site.
+  const pagerChordsFree = pagerChordsAvailable({ composerAcceptsInput, sheetEditorFocused });
 
   const pickerOwnsTranscript =
     showModelPicker ||
@@ -2542,7 +2545,7 @@ export function App({
             isActive={!pickerOwnsTranscript && managedAgents.surface !== 'tasks'}
             followRequestKey={followRequestKey}
             layoutRevision={transcriptLayoutRevision}
-            pagerChordsAvailable={pagerChordsAvailable}
+            pagerChordsAvailable={pagerChordsFree}
             scrollRequest={transcriptScrollRequest}
             onToggleTool={toggleToolExpansion}
             onNotify={handleCopiedNotice}

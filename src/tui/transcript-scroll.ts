@@ -86,3 +86,30 @@ export function halfPageScrollDirection(
   if (chord === 'd') return 'down';
   return null;
 }
+
+/**
+ * Whether the transcript's own Ctrl+U / Ctrl+D branch may scroll, or has to
+ * leave the keys to whoever has them.
+ *
+ * The transcript may act only when *nothing* on screen is taking these keys.
+ * An editor that has one spends the chord itself: the composer's Ctrl+U kills
+ * the text before the cursor, and a sheet editor's kills its own field. When an
+ * editor is live and has nothing to edit it reports the chord as a scroll
+ * request instead, because by the time the transcript's handler runs the editor
+ * has already spent the key and a draft that Ctrl+U itself emptied looks
+ * exactly like one that was empty all along.
+ *
+ * So: true only when the composer is *not* accepting input and no sheet editor
+ * holds the focus. Reading this as "the composer is free" instead of "no editor
+ * is taking the keys" is the inversion that let a draft-clearing Ctrl+U scroll
+ * the transcript as well, which is why the whole rule is this one function and
+ * the four cases it has are tabulated in `transcript-scroll.test.ts`.
+ */
+export function pagerChordsAvailable(editors: {
+  /** Whether the composer is accepting keys at all. */
+  composerAcceptsInput: boolean;
+  /** Whether a sheet's own text editor currently holds the focus. */
+  sheetEditorFocused: boolean;
+}): boolean {
+  return !editors.composerAcceptsInput && !editors.sheetEditorFocused;
+}

@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import { act, Profiler } from 'react';
 import { useState } from 'react';
-import { render } from 'ink-testing-library';
+import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { TranscriptView, type TranscriptScrollRequest } from './TranscriptView.js';
@@ -13,7 +13,7 @@ import { toolSuccess } from '../../tools/result.js';
 import type { Message } from '../../types/messages.js';
 import { useTranscriptHistoryLoader, type TranscriptHistoryLoader } from '../transcript-layout.js';
 import { setFrameSnapshotForTesting } from '../frame-buffer.js';
-import { halfPageScrollDirection } from '../transcript-scroll.js';
+import { halfPageScrollDirection, pagerChordsAvailable } from '../transcript-scroll.js';
 
 const { setTranscriptScrollHintSpy, writeClipboardMock } = vi.hoisted(() => ({
   setTranscriptScrollHintSpy: vi.fn(),
@@ -412,10 +412,10 @@ describe('TranscriptView chords with the composer', () => {
    */
   function Composer({
     composerAcceptsInput = true,
-    pagerChordsAvailable,
+    sheetEditorFocused = false,
   }: {
     composerAcceptsInput?: boolean;
-    pagerChordsAvailable?: boolean;
+    sheetEditorFocused?: boolean;
   }) {
     const [scroll, setScroll] = useState<TranscriptScrollRequest>({ key: 0, direction: 'up' });
     return (
@@ -424,7 +424,12 @@ describe('TranscriptView chords with the composer', () => {
           <TranscriptView
             height={5}
             width={20}
-            pagerChordsAvailable={pagerChordsAvailable ?? !composerAcceptsInput}
+            // The derivation `app.tsx` uses, so this harness cannot drift from it
+            // the way a hand-written `!composerAcceptsInput` did.
+            pagerChordsAvailable={pagerChordsAvailable({
+              composerAcceptsInput,
+              sheetEditorFocused,
+            })}
             scrollRequest={scroll}
           >
             <Rows labels={labels} />
@@ -467,6 +472,27 @@ describe('TranscriptView chords with the composer', () => {
     expect(browsing(app)).toBe(false);
   });
 
+  it('does not scroll while a draft is in hand, whatever the sheet state', () => {
+    // The regression the truth table exists for. The composer is live and holds
+    // a draft, and no sheet editor is open — the exact case the inverted
+    // derivation read as "page directly", so Ctrl+U cleared the draft and jumped
+    // the transcript half a page in the same keystroke. With the composer taking
+    // the keys the transcript's own branch stays out of the way, and a sheet
+    // editor being open is no reason for it to step in either.
+    for (const sheetEditorFocused of [false, true]) {
+      const app = render(<Composer sheetEditorFocused={sheetEditorFocused} />);
+      expect(visible(app)).toEqual(['C', 'D', 'E', 'F']);
+
+      act(() => app.stdin.write('fix the bug'));
+      act(() => app.stdin.write('\x15'));
+
+      expect(app.lastFrame()).not.toContain('fix the bug');
+      expect(visible(app)).toEqual(['C', 'D', 'E', 'F']);
+      expect(browsing(app)).toBe(false);
+      cleanup();
+    }
+  });
+
   it('scrolls half a page once the composer has nothing left to edit', () => {
     const app = render(<Composer />);
 
@@ -496,7 +522,7 @@ describe('TranscriptView chords with the composer', () => {
     // the cursor. The app knows an editor is open and reports it the way it
     // reports a sheet's height, so the transcript does not also read the chord
     // as a half-page scroll — the same defect #296 was, one surface down.
-    const app = render(<Composer composerAcceptsInput={false} pagerChordsAvailable={false} />);
+    const app = render(<Composer composerAcceptsInput={false} sheetEditorFocused />);
 
     act(() => app.stdin.write('\x15'));
     expect(visible(app)).toEqual(['C', 'D', 'E', 'F']);

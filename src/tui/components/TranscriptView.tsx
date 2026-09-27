@@ -58,7 +58,9 @@ interface TranscriptViewProps {
   /** Structural layout changes outside transcript components that self-report height updates. */
   layoutRevision?: unknown;
   /**
-   * True while nothing on screen is holding a text editor's focus.
+   * True while nothing on screen is holding a text editor's focus, and only then
+   * may this transcript read Ctrl+U and Ctrl+D as its own half-page scrolls.
+   * Derive it with `pagerChordsAvailable` from `../transcript-scroll.js`.
    *
    * Ctrl+U and Ctrl+D are readline's kills, and Ink hands every key to every
    * handler, so this transcript cannot decide the question on its own: by the
