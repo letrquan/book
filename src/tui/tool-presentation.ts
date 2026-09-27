@@ -3,7 +3,7 @@ import { foldControlCharacters as foldShared } from '../control-characters.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
-import { readResultMetadata } from '../tools/result.js';
+import { grepResultMetadata, readResultMetadata } from '../tools/result.js';
 import { displayWidth, truncateDisplay } from './components/word-wrap.js';
 import { LABEL_COLUMN_WIDTH, MIN_TARGET_WIDTH, type TranscriptGrid } from './layout.js';
 import { isRenderableFileMutationDiff } from './file-mutation-display.js';
@@ -361,23 +361,11 @@ export function deriveToolPresentation(
   } else if (canonicalName === 'Grep') {
     target = stringArg(args, 'pattern') ?? target;
     if (result?.status === 'success') {
-      const outputMode = stringArg(args, 'output_mode') ?? 'content';
-      if (/^No matches found$/i.test(result.content.trim())) metadata = ['0 matches'];
-      else if (outputMode === 'files_with_matches') {
-        const files = countNonEmptyOutputLines(result.content);
-        metadata = [`${files} ${files === 1 ? 'file' : 'files'}`];
-      } else if (outputMode === 'count') {
-        const matches = result.content.split('\n').reduce((total, line) => {
-          const count = /:(\d+)\s*$/.exec(line)?.[1];
-          return total + (count ? Number(count) : 0);
-        }, 0);
-        metadata = [`${matches} ${matches === 1 ? 'match' : 'matches'}`];
-      } else {
-        const contentLines = result.content.split('\n');
-        const structuredMatches = contentLines.filter((line) => /:\d+:/.test(line)).length;
-        const matches = structuredMatches || contentLines.filter((line) => line.trim()).length;
-        metadata = [`${matches} ${matches === 1 ? 'match' : 'matches'}`];
-      }
+      // Grep counts from its own data, which the text cannot be counted back
+      // into; only a result persisted by a build that did not have it needs the
+      // text fallback (#311).
+      const own = result.presentation?.metadata;
+      metadata = own?.length ? [...own] : [grepResultMetadata(args, result.content)];
     }
   } else if (canonicalName === 'WebFetch') {
     target = domainFor(stringArg(args, 'url'));
