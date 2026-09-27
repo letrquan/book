@@ -8376,4 +8376,42 @@ describe('a reply cut off at the output cap (#312)', () => {
     expect(reissued[0].content).not.toContain('<think>');
     expect(reissued[0].reasoningContent).toContain('plan: finish the summary');
   });
+
+  it('leaves a reply the user interrupted mid-stream exactly as the model wrote it', async () => {
+    // An interrupt is not the provider cutting the reply short. The run ends as
+    // `caller_cancelled` and the fragment is what the user was reading when they
+    // stopped it — and it has to stay answer text, because the only thing that
+    // separates this reply from the cut-off ones is where the stop came from.
+    // The shape below is the one the output-cap rule *does* split, so if the
+    // split ever reads a bare `!streamDone` again, the whole answer after the
+    // tag is moved into reasoning and deleted from the session.
+    const controller = new AbortController();
+    const partial = '<think>plan B: summarize</think>Wrote the note and am summari';
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: partial };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 2 }),
+      createRegistry(),
+      'write the note',
+      [],
+      noopCallbacks({
+        onText: () => controller.abort(),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { provider, signal: controller.signal, isNewSession: false },
+    );
+
+    expect(outcomes.at(-1)).toMatchObject({ status: 'cancelled', reason: 'caller_cancelled' });
+    const stored = history.find((message) => message.role === 'assistant');
+    expect(stored?.content).toBe(partial);
+    expect(stored?.reasoningContent).toBeUndefined();
+  });
 });

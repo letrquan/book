@@ -24,7 +24,7 @@ import type { ToolDefinition } from '../types/tools.js';
 import { createProvider, type Provider } from '../provider/index.js';
 import { isEffortChosen, resolveEffortExplicit, resolveReducerModelConfig } from '../config.js';
 import { isContextOverflowError } from '../provider/reliability.js';
-import { TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
+import { isTruncationFinish } from '../provider/finish-reasons.js';
 import { runHooks } from '../hooks.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { resolveContextLimit } from '../models.js';
@@ -1970,9 +1970,7 @@ async function generateCheckpoint(
             responseId: event.responseId,
             finishReasons: event.finishReasons,
           };
-          truncated = (event.finishReasons ?? []).some((reason) =>
-            TRUNCATION_FINISH_REASONS.has(reason),
-          );
+          truncated = isTruncationFinish(event.finishReasons);
           if (event.usage) options?.onUsage?.(event.usage, metadata);
           else options?.onUsageMissing?.(metadata);
         }

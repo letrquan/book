@@ -493,9 +493,10 @@ describe('separateInlineReasoning', () => {
   });
 
   // A reply the provider cut short — the output cap, or a stream that dropped
-  // before its terminal event — never got to start the line after its closing
-  // tag, so that one requirement is the only one `truncated` drops (#312).
-  // Everything else `endsBlock` demands, and the settled reading, stand.
+  // before its terminal event — may have had no line break left after its
+  // closing tag, so that one requirement is the only one `truncated` drops
+  // (#312). Everything else `endsBlock` demands, and the settled reading,
+  // stand.
   describe('a reply the provider cut short', () => {
     const CUT = '<think>plan</think>Answer text';
 
@@ -513,6 +514,22 @@ describe('separateInlineReasoning', () => {
       const unchanged = { content: CUT, reasoning: '', found: false };
       expect(separateInlineReasoning(CUT, { truncated: false })).toEqual(unchanged);
       expect(separateInlineReasoning(CUT)).toEqual(unchanged);
+    });
+
+    it("still refuses a cut reply whose answer got past the closing tag's line", () => {
+      // The relaxation is for the answer after the tag having had no line of its
+      // own — the cut landed before it could start one. A reply that *did* get
+      // past that line is a finished answer that opened by quoting the tags
+      // inline, cut off later, and moving that quote into reasoning deletes the
+      // words around it for good.
+      const quoted =
+        '<think> and </think> are the tags DeepSeek wraps its reasoning in.\n\n' +
+        'Here is a long explanation that the cut landed in the middle of';
+      expect(separateInlineReasoning(quoted, { truncated: true })).toEqual({
+        content: quoted,
+        reasoning: '',
+        found: false,
+      });
     });
 
     it('still refuses a block holding another reasoning tag', () => {
