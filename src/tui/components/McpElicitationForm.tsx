@@ -1,6 +1,6 @@
 import { Box, Text, useInput } from 'ink';
 import TextInput from './TextInputField.js';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
 import {
   coerceElicitationValue,
@@ -24,6 +24,15 @@ interface McpElicitationFormProps {
   terminalWidth?: number;
   onResolve: (response: ElicitationResponse) => void;
   screenReader?: boolean;
+  /**
+   * Called when the sheet's height may have changed: when it opens, when a field
+   * editor opens or closes, when a filter narrows the option list to a different
+   * number of rows, and when the validation notice appears or goes. The
+   * transcript above measures its viewport only on its own layout changes, so
+   * each of those landed on top of a transcript row that was there a moment
+   * earlier.
+   */
+  onLayoutChange?: () => void;
 }
 
 /** Visible option rows for an enum field; longer lists scroll under the cursor. */
@@ -68,6 +77,7 @@ export function McpElicitationForm({
   terminalWidth = 80,
   onResolve,
   screenReader = false,
+  onLayoutChange,
 }: McpElicitationFormProps) {
   const theme = useTheme();
   const outerWidth = Math.max(20, Math.floor(terminalWidth));
@@ -100,6 +110,27 @@ export function McpElicitationForm({
     () => (field?.kind === 'enum' ? matchingOptions(field, editing ? draft : '') : []),
     [field, editing, draft],
   );
+
+  // Everything that changes how many rows the sheet draws: the editor replaces
+  // the list, a filter leaves a different number of option rows, the notice is a
+  // row, and a different field kind draws a different row. `draft` is
+  // deliberately absent — the filter is measured by how many options it left,
+  // so typing a letter does not re-measure the transcript when the row count it
+  // produces has not moved.
+  const layoutShape = [
+    editing ? 1 : 0,
+    options.length,
+    notice ?? '',
+    field?.name ?? '',
+    field?.kind ?? '',
+    compact ? 1 : 0,
+    contentWidth,
+    queueLength,
+  ].join(':');
+  useLayoutEffect(() => {
+    onLayoutChange?.();
+    return () => onLayoutChange?.();
+  }, [layoutShape, onLayoutChange]);
 
   const resolveOnce = useCallback(
     (response: ElicitationResponse) => {

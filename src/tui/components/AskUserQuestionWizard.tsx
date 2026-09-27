@@ -1,6 +1,6 @@
 import { Box, Text, useInput } from 'ink';
 import TextInput from './TextInputField.js';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
 import type { UserQuestion, UserQuestionRequest, UserQuestionResponse } from '../../types/tools.js';
 import { useTheme } from '../theme.js';
@@ -14,6 +14,14 @@ interface AskUserQuestionWizardProps {
   terminalWidth?: number;
   onResolve: (response: UserQuestionResponse) => void;
   screenReader?: boolean;
+  /**
+   * Called when the sheet's height may have changed: when it opens, when the
+   * question changes, when the `Other` editor opens or closes, and when a notice
+   * appears or goes. The transcript above measures its viewport only on its own
+   * layout changes, so a taller question covered its last rows — the question
+   * the model asked and the tool row that asked it.
+   */
+  onLayoutChange?: () => void;
 }
 
 /**
@@ -76,6 +84,7 @@ export function AskUserQuestionWizard({
   terminalWidth = 80,
   onResolve,
   screenReader = false,
+  onLayoutChange,
 }: AskUserQuestionWizardProps) {
   const theme = useTheme();
   const outerWidth = Math.max(20, Math.floor(terminalWidth));
@@ -295,6 +304,29 @@ export function AskUserQuestionWizard({
   const progress =
     request.questions.length > 1 ? ` · ${questionIndex + 1} of ${request.questions.length}` : '';
   const queueText = queueLength > 1 ? ` · ${queueLength - 1} waiting` : '';
+
+  // Everything the sheet draws that changes how many rows it takes: which
+  // question is up, whether the editor under the choices is open, the notice row
+  // and the width the question wraps to. Typing in the editor is not here, so the
+  // app is asked to re-measure the transcript on a change of shape rather than
+  // on every keystroke.
+  const layoutShape = [
+    questionIndex,
+    question.question,
+    question.options.length,
+    question.multiSelect,
+    otherMode ? 1 : 0,
+    notice ?? '',
+    contentWidth,
+    progress,
+    queueText,
+    fromAgent ? 1 : 0,
+  ].join(':');
+  useLayoutEffect(() => {
+    onLayoutChange?.();
+    return () => onLayoutChange?.();
+  }, [layoutShape, onLayoutChange]);
+
   const choiceRows: Choice[] = [
     ...question.options.map((option) => ({
       label: option.label,

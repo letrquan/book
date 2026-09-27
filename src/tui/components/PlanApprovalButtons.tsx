@@ -1,6 +1,6 @@
 import { Box, Text, useInput } from 'ink';
 import TextInput from './TextInputField.js';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import type { PlanApprovalResult } from '../../types/tools.js';
@@ -21,6 +21,13 @@ interface PlanApprovalProps {
 
 interface PlanApprovalActionsProps extends PlanApprovalProps {
   onResolve: (result: PlanApprovalResult) => void;
+  /**
+   * Called when the sheet's height may have changed: when it opens, when the
+   * feedback editor opens or closes, and when its error row appears or goes. The
+   * transcript above measures its viewport only on its own layout changes, so
+   * the one-row error landed on the plan row above it.
+   */
+  onLayoutChange?: () => void;
 }
 
 const BUTTONS = [
@@ -89,6 +96,7 @@ export function PlanApprovalActions({
   onResolve,
   screenReader = false,
   terminalWidth,
+  onLayoutChange,
 }: PlanApprovalActionsProps) {
   const theme = useTheme();
   // `useKeyState` rather than `useState`: both of these are read back by the
@@ -152,6 +160,22 @@ export function PlanApprovalActions({
       resolveOnce('reject');
     }
   });
+
+  // Everything that changes how many rows the sheet draws: the two sheets are
+  // different shapes, the error row is one row, and the width a plan wraps to is
+  // a different number of rows again. The feedback text is not here — typing a
+  // plan change must not re-measure the transcript on every keystroke.
+  const layoutShape = [
+    feedbackMode ? 1 : 0,
+    feedbackError ?? '',
+    screenReader ? 1 : 0,
+    Math.floor(terminalWidth ?? 80),
+    plan,
+  ].join(':');
+  useLayoutEffect(() => {
+    onLayoutChange?.();
+    return () => onLayoutChange?.();
+  }, [layoutShape, onLayoutChange]);
 
   if (screenReader && !feedbackMode) {
     return (
