@@ -505,14 +505,18 @@ const OUTLINE_ONE_LINE_BODY = /^\s*(?:throws\s[^{;]*)?\{.*\}\s*;?\s*$/;
 // with an optional return type (`int`, `static std::string`,
 // `const std::vector<int>&`, `Foo*`), then its name: a destructor (`~Foo`), an
 // operator, or a qualified name (`Foo::name`).
-// The `template<...>` prefix is here rather than inside the repeated word because a repeated
-// unit whose prefix is optional splits two ways — `template<a> ` is either that prefix or the
-// word `template` plus the generic `<a>` — and every repetition doubles the work, so a line of
-// them backtracks exponentially (#326). A second `template<...>` in front of the return type
-// (`template<class T> template<class U> static ...`) is still read: as a word plus a generic.
-const CPP_TYPE_WORD = `[A-Za-z_][\\w:]*(?:${OUTLINE_GENERIC})?`;
+// The return type is a sequence of two units, and a template head is one of them rather than an
+// optional prefix of the other: a prefix inside a repeated unit splits two ways — `template<a> `
+// is either that prefix or the word `template` plus the generic `<a>` — and every repetition
+// doubles the work, so a line of them backtracked exponentially (#326). A type word refuses to
+// start where a head starts, so each unit has exactly one parse and the repetition stays linear,
+// and because the head is a unit it is read at any position, in either spelling:
+// `template<typename T> template <typename U> void bar(U u) {` outlines as it should.
+const CPP_STATEMENT_GUARD = `(?!${OUTLINE_STATEMENT_TYPE}|(?:static_assert|co_await|co_return|co_yield)\\b)`;
+const CPP_TEMPLATE_UNIT = `template\\s*${OUTLINE_GENERIC}\\s*${CPP_STATEMENT_GUARD}`;
+const CPP_TYPE_UNIT = `(?!template\\s*<)[A-Za-z_][\\w:]*(?:${OUTLINE_GENERIC})?[\\s*&]+`;
 const CPP_METHOD_HEAD = new RegExp(
-  `^\\s+(?:\\[\\[[^\\]]*\\]\\]\\s*)*(?:template\\s*${OUTLINE_GENERIC}\\s*)?(?!${OUTLINE_STATEMENT_TYPE}|(?:static_assert|co_await|co_return|co_yield)\\b)(?<returnType>(?:${CPP_TYPE_WORD}[\\s*&]+)*)(?<name>(?:[A-Za-z_]\\w*::)*(?:~?[A-Za-z_]\\w*|operator\\s*(?:\\(\\)|[^\\s(]+)))\\s*\\(`,
+  `^\\s+(?:\\[\\[[^\\]]*\\]\\]\\s*)*${CPP_STATEMENT_GUARD}(?<returnType>(?:${CPP_TEMPLATE_UNIT}|${CPP_TYPE_UNIT})*)(?<name>(?:[A-Za-z_]\\w*::)*(?:~?[A-Za-z_]\\w*|operator\\s*(?:\\(\\)|[^\\s(]+)))\\s*\\(`,
 );
 // A C++ class body opens on a type definition's head: `class Foo {`,
 // `template <typename T> struct Vec : Base<T>`, `class EXPORT Foo final {`,
@@ -1951,11 +1955,17 @@ export interface RipgrepArgOptions {
  * on every file it searches (#324) — with no prompt, because workspace Grep is auto-allowed. The
  * pattern and the include are behind `--regexp` and `--glob` for the same reason: a value that
  * starts with `-` stays data.
+ *
+ * `--no-config` closes what the environment rather than the model can add: a `RIPGREP_CONFIG_PATH`
+ * handed down in this process is a file of flags read ahead of the command line, so a `--pre`
+ * there lands in front of the separator, and a `--json` of its own would leave Book parsing
+ * output it did not ask for.
  */
 export function buildRipgrepArgs(options: RipgrepArgOptions): string[] {
   const argv = [
     '--json',
     '--hidden',
+    '--no-config',
     '--regexp',
     options.pattern,
     '--glob',
@@ -1965,7 +1975,9 @@ export function buildRipgrepArgs(options: RipgrepArgOptions): string[] {
   if (options.contextBefore > 0) argv.push('--before-context', String(options.contextBefore));
   if (options.contextAfter > 0) argv.push('--after-context', String(options.contextAfter));
   if (options.multiline) argv.push('--multiline', '--multiline-dotall');
-  argv.push('--', options.relativePath || '.');
+  // A bare `-` is ripgrep's own spelling of stdin, separator or not, and this rg has stdin
+  // ignored — so a workspace file named `-` would report no matches at all. `./-` is that file.
+  argv.push('--', options.relativePath === '-' ? './-' : options.relativePath || '.');
   return argv;
 }
 

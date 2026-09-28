@@ -119,8 +119,10 @@ All notable changes to this project are documented in this file.
   that ends it with `--`, so the path is the only thing after the separator, and the pattern and
   the include stay behind `--regexp` and `--glob`. Two other places that shape is kept: `/review`
   refuses a ref that starts with `-` (`Invalid git ref: …`) before it reaches `git merge-base` or
-  `git rev-parse`, and a test holds the read-only Git tools to declaring no parameters at all, so a
-  parameter added to one has to be reviewed rather than inherited.
+  `git rev-parse` — git reads such an argument as an option rather than a ref, which is defense in
+  depth rather than a known code-execution path — and a test holds the read-only Git tools to
+  declaring no parameters at all, so a parameter added to one has to be reviewed rather than
+  inherited.
 
 ### Changed
 
@@ -586,10 +588,10 @@ All notable changes to this project are documented in this file.
   word, so `template<a> ` read two ways — as that prefix, or as the word `template` plus the generic
   `<a>` — and every repetition doubled the work. A line of forty of them took tens of seconds and
   blocked the event loop while it did, and a model only had to be pointed at such a file to get
-  there. The prefix is out of the repeated word and sits once, in front of the return type: a
-  second `template<class T> template<class U>` in front of it still reads, as a word plus a
-  generic, so a member template and a template member of a template outline exactly as before, and
-  the neighbouring outline patterns — which have no such two-way unit — are unchanged.
+  there. A template head is a unit of the return type now, and a type word refuses to start where a
+  head starts, so each unit has exactly one parse and the repetition is linear. Because the head is
+  a unit rather than a prefix, it is read at any position and in either spelling, so
+  `template<typename T> template <typename U> void bar(U u) {` outlines as it should.
 - **A Windows root and a path under it are compared in one spelling** (#300, #305). One directory
   has more than one name: the long form a user reads and the DOS 8.3 short form
   (`C:\Users\RUNNER~1\AppData\Local\Temp`), plus a drive letter in either case and separators either

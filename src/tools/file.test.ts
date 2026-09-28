@@ -13,7 +13,7 @@ import { buildRipgrepArgs, fileTools } from './file.js';
 import { createRegistry } from './registry.js';
 import { boundToolResultOutput, TOOL_RESULT_MAX_BYTES } from './result.js';
 import type { ToolContext } from '../types/tools.js';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import {
   chmodSync,
   existsSync,
@@ -52,7 +52,28 @@ const grep = fileTools.find((t) => t.name === 'Grep')!;
 const observeFirst = (name: string) => read.execute({ filePath: name }, ctx);
 
 /** Grep's default backend spawns `rg`, which is not installed everywhere. */
-const hasRipgrep = () => spawnSync('rg', ['--version'], { stdio: 'ignore' }).status === 0;
+const hasRipgrep = () =>
+  spawnSync('rg', ['--version'], { stdio: 'ignore', timeout: 5000 }).status === 0;
+
+/**
+ * One `rg` call, so a test can ask ripgrep itself rather than the tool that wraps it: the
+ * tool falls back to a portable backend on an rg error, which reports the same matches and
+ * runs no program, so a passing tool call proves nothing about what argv ripgrep received.
+ */
+function runRipgrep(
+  argv: string[],
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolvePromise) => {
+    const proc = spawn('rg', argv, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.setEncoding('utf8');
+    proc.stderr.setEncoding('utf8');
+    proc.stdout.on('data', (chunk: string) => (stdout += chunk));
+    proc.stderr.on('data', (chunk: string) => (stderr += chunk));
+    proc.on('close', (code) => resolvePromise({ code, stdout, stderr }));
+  });
+}
 
 describe('read_file', () => {
   it('reads a file by workspace-relative path', async () => {
@@ -1297,7 +1318,7 @@ describe('grep', () => {
   // covers the separator itself on every platform.
   it.skipIf(process.platform === 'win32' || !hasRipgrep())(
     'searches a path that starts with - instead of reading it as a ripgrep option (#324)',
-    async () => {
+    async (test) => {
       const marker = join(dir, 'PREPROCESSOR_RAN');
       // A directory named `--pre=.` (the dot is part of the name, so the path `--pre=./x`
       // resolves to the entry `x` inside it) and, beside it, the program rg would run.
@@ -1306,8 +1327,37 @@ describe('grep', () => {
       const preprocessor = join(dir, 'x');
       writeFileSync(preprocessor, `#!/bin/sh\ntouch "${marker}"\nexit 0\n`);
       chmodSync(preprocessor, 0o755);
+      const scope = {
+        pattern: 'preprocessor-marker',
+        includePattern: '**/*',
+        relativePath: '--pre=./x',
+      };
 
-      const result = await grep.execute({ pattern: 'preprocessor-marker', path: '--pre=./x' }, ctx);
+      // The tool falls back to the portable backend whenever rg errors, and that backend
+      // reports the same match without ever running a preprocessor — so the tool call alone
+      // would pass whether or not the fix works. What the tool cannot show is that `./x` can
+      // run here at all, so the vulnerable argv is run first and has to create the marker.
+      const vulnerable = await runRipgrep([
+        '--json',
+        '--hidden',
+        '--regexp',
+        scope.pattern,
+        scope.relativePath,
+      ]);
+      if (!existsSync(marker)) {
+        test.skip(`rg honored nothing here: ${vulnerable.stderr || 'no output'}`);
+      }
+      rmSync(marker);
+
+      // And now the argv the tool builds: the same search, still matching, no preprocessor.
+      const fixed = await runRipgrep(
+        buildRipgrepArgs({ ...scope, contextBefore: 0, contextAfter: 0, multiline: false }),
+      );
+      expect(fixed.code).toBe(0);
+      expect(fixed.stdout).toContain('preprocessor-marker');
+      expect(existsSync(marker)).toBe(false);
+
+      const result = await grep.execute({ pattern: scope.pattern, path: scope.relativePath }, ctx);
 
       expect(existsSync(marker)).toBe(false);
       expect(result.status).toBe('success');
@@ -1396,9 +1446,10 @@ describe('buildRipgrepArgs', () => {
       multiline: true,
     });
 
-    expect(argv.slice(0, 6)).toEqual([
+    expect(argv.slice(0, 7)).toEqual([
       '--json',
       '--hidden',
+      '--no-config',
       '--regexp',
       'needle',
       '--glob',
@@ -1409,6 +1460,25 @@ describe('buildRipgrepArgs', () => {
     expect(argv).toContain('--multiline');
     // The separator is last: everything after it is a path, whatever it looks like.
     expect(argv.slice(-2)).toEqual(['--', 'sub']);
+  });
+
+  // An inherited `RIPGREP_CONFIG_PATH` is a file of flags read before anything on the command
+  // line, and every flag in it lands ahead of the separator — including a `--pre`, and one that
+  // turns `--json` off, which would leave Book parsing output that is not the format it asked for.
+  it('refuses an inherited config file', () => {
+    const argv = buildRipgrepArgs({ ...base, relativePath: 'sub' });
+    expect(argv).toContain('--no-config');
+    // Ahead of the first operand it could add flags to, and so ahead of the separator.
+    expect(argv.indexOf('--no-config')).toBeLessThan(argv.indexOf('--'));
+  });
+
+  // A bare `-` is ripgrep's spelling of stdin, separator or not, and Book's rg has stdin
+  // ignored — so a file named `-` in the workspace would report no matches at all.
+  it('spells a path named - as ./- so it is a file and not stdin', () => {
+    expect(buildRipgrepArgs({ ...base, relativePath: '-' }).at(-1)).toBe('./-');
+    // Only that one name: a path that merely starts with a dash is already a path.
+    expect(buildRipgrepArgs({ ...base, relativePath: '--pre=./x' }).at(-1)).toBe('--pre=./x');
+    expect(buildRipgrepArgs({ ...base, relativePath: '' }).at(-1)).toBe('.');
   });
 
   // #324: the path is the one operand a model chooses, so it is the one thing after `--`.
@@ -2970,6 +3040,36 @@ describe('Read outline contract', () => {
     // No parenthesis on the line, so it declares nothing whatever the cost of deciding that.
     expect(outlined.content.split('\n').slice(1)).toEqual([]);
   });
+
+  it('outlines repeated template units in linear time at 2000 of them', async () => {
+    // The same line an order of magnitude longer. Any two-way split left in a repeated unit
+    // cannot survive this: it is quadratic or worse from here, and the budget is the one the
+    // 40-unit case above set.
+    writeFileSync(join(dir, 'many-units.hpp'), `  ${'template<a> '.repeat(2000)}x\n`);
+
+    const started = performance.now();
+    const outlined = await read.execute({ filePath: 'many-units.hpp', outline: true }, ctx);
+
+    expect(performance.now() - started).toBeLessThan(5000);
+    expect(outlined.content.split('\n').slice(1)).toEqual([]);
+  });
+
+  // #326, the regression: reading the head as one optional prefix of the return type left a
+  // second, spaced `template <...>` unreadable, because the repetition cannot come back to it.
+  // A template head is a unit of its own now, at any position, in either spelling.
+  for (const member of [
+    '  template<typename T> template <typename U> void bar(U u) {',
+    '  template <typename T> template <typename U> void bar(U u) {',
+    '  export template <class T> void f(int);',
+  ]) {
+    it(`outlines ${member.trim()}`, async () => {
+      writeFileSync(join(dir, 'heads.hpp'), ['class Bag {', ' public:', member, '};'].join('\n'));
+
+      const outlined = await read.execute({ filePath: 'heads.hpp', outline: true }, ctx);
+
+      expect(outlined.content.split('\n').slice(1)).toEqual(['1: class Bag {', `3: ${member}`]);
+    });
+  }
 
   // The same units with a signature after them: the unambiguous reading still has to cover a
   // member template and a template member of a template.
