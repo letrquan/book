@@ -110,6 +110,17 @@ All notable changes to this project are documented in this file.
   keyed on the resolved absolute path rather than the display spelling (the message still names the
   spelling the model wrote). A file in an honored root keeps its `../` prefix, so `notes.txt` in
   `/srv/app` and `notes.txt` in the workspace still do not share an entry.
+- **`Grep` now ends its options with `--`, so a path starting with `-` can't be read as a ripgrep
+  option** (#324). The scope's path went to `rg` as an operand with nothing separating it from the
+  options, and ripgrep's `--pre` names a program to run on every file it searches. A repository
+  that commits a directory named `--pre=.` beside an executable `x` therefore turned a model call of
+  `Grep { path: "--pre=./x" }` into `--pre=./x`, and `rg` ran `./x` over everything it searched —
+  with no prompt, because a workspace `Grep` is auto-allowed. The argv is now built by one function
+  that ends it with `--`, so the path is the only thing after the separator, and the pattern and
+  the include stay behind `--regexp` and `--glob`. Two other places that shape is kept: `/review`
+  refuses a ref that starts with `-` (`Invalid git ref: …`) before it reaches `git merge-base` or
+  `git rev-parse`, and a test holds the read-only Git tools to declaring no parameters at all, so a
+  parameter added to one has to be reviewed rather than inherited.
 
 ### Changed
 
@@ -570,6 +581,15 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The C++ outline no longer backtracks exponentially on repeated `template<…>` units** (#326). The
+  pattern behind `Read { outline: true }` allowed a `template<…>` prefix on each repeated return-type
+  word, so `template<a> ` read two ways — as that prefix, or as the word `template` plus the generic
+  `<a>` — and every repetition doubled the work. A line of forty of them took tens of seconds and
+  blocked the event loop while it did, and a model only had to be pointed at such a file to get
+  there. The prefix is out of the repeated word and sits once, in front of the return type: a
+  second `template<class T> template<class U>` in front of it still reads, as a word plus a
+  generic, so a member template and a template member of a template outline exactly as before, and
+  the neighbouring outline patterns — which have no such two-way unit — are unchanged.
 - **A Windows root and a path under it are compared in one spelling** (#300, #305). One directory
   has more than one name: the long form a user reads and the DOS 8.3 short form
   (`C:\Users\RUNNER~1\AppData\Local\Temp`), plus a drive letter in either case and separators either

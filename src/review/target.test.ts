@@ -116,4 +116,26 @@ describe('resolveReviewTarget', () => {
       resolveReviewTarget(root, scope({ target: `${initial}...does-not-exist` })),
     ).rejects.toThrow();
   });
+
+  /**
+   * #324: a ref that starts with `-` is an option to git, not a ref — `--upload-pack=<program>`
+   * makes `merge-base` run one. The refs here are typed by the user rather than by a model,
+   * which is why this is defense in depth rather than the fix itself, so it is rejected at the
+   * door: before the path check that shells out, and before any ref reaches argv.
+   */
+  it('rejects a ref that git would read as an option, before any git call', async () => {
+    const plain = mkdtempSync(join(tmpdir(), 'book-review-plain-'));
+    roots.push(plain);
+    // `plain` is not a repository, so a git call from there fails with "not a git repository":
+    // an error that is not that one says the ref never reached argv.
+    await expect(
+      resolveReviewTarget(plain, scope({ base: '--upload-pack=touch' })),
+    ).rejects.toThrow('Invalid git ref: --upload-pack=touch');
+    await expect(
+      resolveReviewTarget(root, scope({ target: '--upload-pack=touch...HEAD' })),
+    ).rejects.toThrow('Invalid git ref: --upload-pack=touch');
+    await expect(resolveReviewTarget(root, scope({ target: 'HEAD...-x' }))).rejects.toThrow(
+      'Invalid git ref: -x',
+    );
+  });
 });

@@ -68,6 +68,17 @@ async function resolveCommit(workspace: string, ref: string): Promise<string> {
   return (await git(workspace, ['rev-parse', '--verify', `${ref}^{commit}`])).stdout.trim();
 }
 
+/**
+ * A ref that starts with `-` is an option to git, not a ref: `merge-base HEAD --upload-pack=<program>`
+ * runs the program. These refs are typed by the operator rather than chosen by a model, so this is
+ * defense in depth behind the Grep fix (#324) rather than the fix itself — but a ref is a ref, and
+ * nothing about this one needs the escape. Checked before anything is spawned.
+ */
+function gitRef(ref: string): string {
+  if (ref.startsWith('-')) throw new Error(`Invalid git ref: ${ref}`);
+  return ref;
+}
+
 function targetPath(scope: ReviewScope): string | undefined {
   if (!scope.target || scope.target.includes('...')) return undefined;
   return scope.target;
@@ -118,6 +129,7 @@ export async function resolveReviewTarget(
   scope: ReviewScope,
 ): Promise<ReviewTarget> {
   if (scope.error) throw new Error(scope.error);
+  if (scope.base) gitRef(scope.base);
   const rawPath = targetPath(scope);
   const path = rawPath ? normalizePath(workspace, rawPath) : undefined;
   if (path && path !== '.') await validatePath(workspace, path);
@@ -130,8 +142,10 @@ export async function resolveReviewTarget(
       throw new Error(`Invalid review range: ${scope.target}`);
     }
     const [baseRef, headRef] = parts as [string, string];
-    const baseSha = (await git(workspace, ['merge-base', baseRef, headRef])).stdout.trim();
-    const headSha = await resolveCommit(workspace, headRef);
+    const base = gitRef(baseRef);
+    const head = gitRef(headRef);
+    const baseSha = (await git(workspace, ['merge-base', base, head])).stdout.trim();
+    const headSha = await resolveCommit(workspace, head);
     const [files, diff] = await Promise.all([
       git(workspace, ['diff', '--name-only', '-z', baseSha, headSha, ...pathArgs]),
       git(workspace, [

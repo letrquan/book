@@ -9,11 +9,13 @@ vi.mock('../async.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../async.js')>();
   return { ...actual, yieldToEventLoop: vi.fn(actual.yieldToEventLoop) };
 });
-import { fileTools } from './file.js';
+import { buildRipgrepArgs, fileTools } from './file.js';
 import { createRegistry } from './registry.js';
 import { boundToolResultOutput, TOOL_RESULT_MAX_BYTES } from './result.js';
 import type { ToolContext } from '../types/tools.js';
+import { spawnSync } from 'child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -48,6 +50,9 @@ const grep = fileTools.find((t) => t.name === 'Grep')!;
 
 /** Mutations require a prior observation; tests Read once to satisfy the contract. */
 const observeFirst = (name: string) => read.execute({ filePath: name }, ctx);
+
+/** Grep's default backend spawns `rg`, which is not installed everywhere. */
+const hasRipgrep = () => spawnSync('rg', ['--version'], { stdio: 'ignore' }).status === 0;
 
 describe('read_file', () => {
   it('reads a file by workspace-relative path', async () => {
@@ -1285,6 +1290,31 @@ describe('grep', () => {
     expect(result.content).not.toContain('two.ts');
   });
 
+  // #324: ripgrep's `--pre` names a program to run on every file it searches. A repository can
+  // commit a directory named `--pre=.` beside an executable `x`, so a path of `--pre=./x` used
+  // to be read as the option and run `./x` — with no prompt, because workspace Grep is
+  // auto-allowed. Skipped where a `./x` preprocessor cannot be exercised; the argv test below
+  // covers the separator itself on every platform.
+  it.skipIf(process.platform === 'win32' || !hasRipgrep())(
+    'searches a path that starts with - instead of reading it as a ripgrep option (#324)',
+    async () => {
+      const marker = join(dir, 'PREPROCESSOR_RAN');
+      // A directory named `--pre=.` (the dot is part of the name, so the path `--pre=./x`
+      // resolves to the entry `x` inside it) and, beside it, the program rg would run.
+      mkdirSync(join(dir, '--pre=.', 'x'), { recursive: true });
+      writeFileSync(join(dir, '--pre=.', 'x', 'a.txt'), 'preprocessor-marker\n');
+      const preprocessor = join(dir, 'x');
+      writeFileSync(preprocessor, `#!/bin/sh\ntouch "${marker}"\nexit 0\n`);
+      chmodSync(preprocessor, 0o755);
+
+      const result = await grep.execute({ pattern: 'preprocessor-marker', path: '--pre=./x' }, ctx);
+
+      expect(existsSync(marker)).toBe(false);
+      expect(result.status).toBe('success');
+      expect(result.content).toContain('a.txt:1: preprocessor-marker');
+    },
+  );
+
   it('rejects a path outside the workspace and reports unknown paths', async () => {
     const outside = await grep.execute({ pattern: 'x', path: '..' }, ctx);
     expect(outside.structuredError?.code).toBe('path_outside_workspace');
@@ -1344,6 +1374,53 @@ describe('grep', () => {
     );
     setTimeout(() => controller.abort(new Error('grep cancelled')), 0);
     await expect(pending).rejects.toThrow('grep cancelled');
+  });
+});
+
+describe('buildRipgrepArgs', () => {
+  const base = {
+    pattern: 'needle',
+    includePattern: '**/*',
+    contextBefore: 0,
+    contextAfter: 0,
+    multiline: false,
+    relativePath: '',
+  };
+
+  it('puts the pattern behind --regexp and the include behind --glob', () => {
+    const argv = buildRipgrepArgs({
+      ...base,
+      relativePath: 'sub',
+      contextBefore: 2,
+      contextAfter: 3,
+      multiline: true,
+    });
+
+    expect(argv.slice(0, 6)).toEqual([
+      '--json',
+      '--hidden',
+      '--regexp',
+      'needle',
+      '--glob',
+      '**/*',
+    ]);
+    expect(argv[argv.indexOf('--before-context') + 1]).toBe('2');
+    expect(argv[argv.indexOf('--after-context') + 1]).toBe('3');
+    expect(argv).toContain('--multiline');
+    // The separator is last: everything after it is a path, whatever it looks like.
+    expect(argv.slice(-2)).toEqual(['--', 'sub']);
+  });
+
+  // #324: the path is the one operand a model chooses, so it is the one thing after `--`.
+  it('never puts the path before --, whatever it looks like', () => {
+    for (const relativePath of ['--pre=./x', '']) {
+      const argv = buildRipgrepArgs({ ...base, relativePath });
+      const separator = argv.indexOf('--');
+
+      expect(separator).toBeGreaterThanOrEqual(0);
+      expect(argv.slice(separator + 1)).toEqual([relativePath || '.']);
+      expect(argv.slice(0, separator)).not.toContain(relativePath);
+    }
   });
 });
 
@@ -2876,6 +2953,46 @@ describe('Read outline contract', () => {
     const outlined = await read.execute({ filePath: 'slow.h', outline: true }, ctx);
     expect(performance.now() - started).toBeLessThan(5000);
     expect(outlined.content.split('\n').slice(1)).toEqual(['1: class Cache {']);
+  });
+
+  // #326: `template<a> ` was both the optional `template<...>` prefix of a return-type word
+  // and a word plus a generic of its own, so every repetition split two ways and a line of
+  // them backtracked exponentially. N=40 keeps a regression bounded to tens of seconds — a
+  // synchronous match cannot be interrupted — and the budget stays generous because the
+  // fixed pattern is linear and a slow runner should not be blamed for it.
+  it('outlines repeated template units in linear time', async () => {
+    writeFileSync(join(dir, 'units.hpp'), `  ${'template<a> '.repeat(40)}x\n`);
+
+    const started = performance.now();
+    const outlined = await read.execute({ filePath: 'units.hpp', outline: true }, ctx);
+
+    expect(performance.now() - started).toBeLessThan(5000);
+    // No parenthesis on the line, so it declares nothing whatever the cost of deciding that.
+    expect(outlined.content.split('\n').slice(1)).toEqual([]);
+  });
+
+  // The same units with a signature after them: the unambiguous reading still has to cover a
+  // member template and a template member of a template.
+  it('outlines a member template and a template member of a class body', async () => {
+    writeFileSync(
+      join(dir, 'members.hpp'),
+      [
+        'class Bag {',
+        ' public:',
+        '  template <typename U> void assign(U value) {',
+        '  }',
+        '  template<class T> template<class U> static std::vector<T> make(U u);',
+        '};',
+      ].join('\n'),
+    );
+
+    const outlined = await read.execute({ filePath: 'members.hpp', outline: true }, ctx);
+
+    expect(outlined.content.split('\n').slice(1)).toEqual([
+      '1: class Bag {',
+      '3:   template <typename U> void assign(U value) {',
+      '5:   template<class T> template<class U> static std::vector<T> make(U u);',
+    ]);
   });
 });
 

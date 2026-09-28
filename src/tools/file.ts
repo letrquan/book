@@ -505,9 +505,14 @@ const OUTLINE_ONE_LINE_BODY = /^\s*(?:throws\s[^{;]*)?\{.*\}\s*;?\s*$/;
 // with an optional return type (`int`, `static std::string`,
 // `const std::vector<int>&`, `Foo*`), then its name: a destructor (`~Foo`), an
 // operator, or a qualified name (`Foo::name`).
-const CPP_TYPE_WORD = `(?:template\\s*${OUTLINE_GENERIC}\\s*)?[A-Za-z_][\\w:]*(?:${OUTLINE_GENERIC})?`;
+// The `template<...>` prefix is here rather than inside the repeated word because a repeated
+// unit whose prefix is optional splits two ways — `template<a> ` is either that prefix or the
+// word `template` plus the generic `<a>` — and every repetition doubles the work, so a line of
+// them backtracks exponentially (#326). A second `template<...>` in front of the return type
+// (`template<class T> template<class U> static ...`) is still read: as a word plus a generic.
+const CPP_TYPE_WORD = `[A-Za-z_][\\w:]*(?:${OUTLINE_GENERIC})?`;
 const CPP_METHOD_HEAD = new RegExp(
-  `^\\s+(?:\\[\\[[^\\]]*\\]\\]\\s*)*(?!${OUTLINE_STATEMENT_TYPE}|(?:static_assert|co_await|co_return|co_yield)\\b)(?<returnType>(?:${CPP_TYPE_WORD}[\\s*&]+)*)(?<name>(?:[A-Za-z_]\\w*::)*(?:~?[A-Za-z_]\\w*|operator\\s*(?:\\(\\)|[^\\s(]+)))\\s*\\(`,
+  `^\\s+(?:\\[\\[[^\\]]*\\]\\]\\s*)*(?:template\\s*${OUTLINE_GENERIC}\\s*)?(?!${OUTLINE_STATEMENT_TYPE}|(?:static_assert|co_await|co_return|co_yield)\\b)(?<returnType>(?:${CPP_TYPE_WORD}[\\s*&]+)*)(?<name>(?:[A-Za-z_]\\w*::)*(?:~?[A-Za-z_]\\w*|operator\\s*(?:\\(\\)|[^\\s(]+)))\\s*\\(`,
 );
 // A C++ class body opens on a type definition's head: `class Foo {`,
 // `template <typename T> struct Vec : Base<T>`, `class EXPORT Foo final {`,
@@ -1927,6 +1932,43 @@ function stopSearchProcess(proc: ChildProcess): void {
   if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGTERM');
 }
 
+export interface RipgrepArgOptions {
+  pattern: string;
+  includePattern: string;
+  contextBefore: number;
+  contextAfter: number;
+  multiline: boolean;
+  /** The scope's path relative to the root ripgrep runs in; '' for the root itself. */
+  relativePath: string;
+}
+
+/**
+ * The argv of one `rg` call, as a pure function of the search's options.
+ *
+ * The path is the one operand here that a model chooses, so it goes last, behind a `--`. Without
+ * the separator a repository that commits a directory named `--pre=.` beside an executable `x`
+ * turns `path: "--pre=./x"` into the option `--pre=./x`, and ripgrep runs `./x` as a preprocessor
+ * on every file it searches (#324) — with no prompt, because workspace Grep is auto-allowed. The
+ * pattern and the include are behind `--regexp` and `--glob` for the same reason: a value that
+ * starts with `-` stays data.
+ */
+export function buildRipgrepArgs(options: RipgrepArgOptions): string[] {
+  const argv = [
+    '--json',
+    '--hidden',
+    '--regexp',
+    options.pattern,
+    '--glob',
+    options.includePattern,
+  ];
+  for (const ignored of GREP_DEFAULT_IGNORES) argv.push('--glob', `!${ignored}`);
+  if (options.contextBefore > 0) argv.push('--before-context', String(options.contextBefore));
+  if (options.contextAfter > 0) argv.push('--after-context', String(options.contextAfter));
+  if (options.multiline) argv.push('--multiline', '--multiline-dotall');
+  argv.push('--', options.relativePath || '.');
+  return argv;
+}
+
 async function grepSearchWithRipgrep(
   args: Record<string, unknown>,
   ctx: ToolContext,
@@ -1947,12 +1989,14 @@ async function grepSearchWithRipgrep(
   const scope = scoped.scope;
   const roots = grepRoots(ctx);
 
-  const rgArgs = ['--json', '--hidden', '--regexp', pattern, '--glob', includePattern];
-  for (const ignored of GREP_DEFAULT_IGNORES) rgArgs.push('--glob', `!${ignored}`);
-  if (contextBefore > 0) rgArgs.push('--before-context', String(contextBefore));
-  if (contextAfter > 0) rgArgs.push('--after-context', String(contextAfter));
-  if (multiline) rgArgs.push('--multiline', '--multiline-dotall');
-  rgArgs.push(scope.relativePath || '.');
+  const rgArgs = buildRipgrepArgs({
+    pattern,
+    includePattern,
+    contextBefore,
+    contextAfter,
+    multiline,
+    relativePath: scope.relativePath,
+  });
 
   return new Promise<RipgrepOutcome>((resolve, reject) => {
     const proc = spawn('rg', rgArgs, {
