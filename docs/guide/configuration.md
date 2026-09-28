@@ -35,7 +35,10 @@ it.
 
 Two groups of keys are refused in every scope. Trust decisions
 (`mcp.projectServers`, `permissions.projectAllowRules`, `hooks.projectEntries`,
-`commands.projectCommands`) live in `<BOOK_HOME>/trust.json` and are recorded with `book trust`.
+`commands.projectCommands`, `projectDirectories`) live in `<BOOK_HOME>/trust.json` and are recorded
+with `book trust`. The store is version 3; an older build reads a v3 store as unreadable and
+withholds every gated declaration until it is upgraded, rather than silently writing over the
+decisions it does not understand.
 The `shell` setting is not writable by `book config` in a workspace scope — it names the program
 every `Bash` command is handed to, so edit the user-global file directly, pass `--settings`, or
 use `BOOK_SHELL`.
@@ -71,6 +74,31 @@ is learned or applied over it. `book doctor` lists every learned window with how
 learned, and `/context` and the status line mark which source the current window came from
 (`declared`, `learned`, `family`, or `default`). To discard one, delete its entry from
 `model-windows.json`, or delete the file to forget them all — it is rebuilt on demand.
+
+### Prompt caching on OpenAI-compatible providers
+
+On the Anthropic Messages API, Book places its own cache breakpoints: the last tool, the cached
+system block, and the last message. On an OpenAI-compatible endpoint it sends no cache markers.
+OpenAI and DeepSeek cache without them, and 9router's Claude routes place their own; a router that
+needs a client's markers before it caches an Anthropic model (OpenRouter documents this) caches
+nothing for Book today. What Book does on that path is read the cache counts a provider reports:
+`prompt_tokens_details.cached_tokens`, DeepSeek's `prompt_cache_hit_tokens`, Moonshot's top-level
+`cached_tokens`, OpenRouter's `cache_write_tokens`, 9router's `cache_creation_tokens`, DashScope's
+`prompt_tokens_details.cache_creation_input_tokens`, and LiteLLM's top-level
+`cache_read_input_tokens` / `cache_creation_input_tokens`. `/cost`, `/usage` and
+`--max-budget-usd` then price cached input at the model's cache rates. A cache read on a model with
+no listed cache-read rate is priced at its input rate, and a cache write with no listed rate at
+twice it, the highest write premium a provider charges: both are upper bounds, so
+`--max-budget-usd` keeps working.
+
+**9router** (checked against 0.5.91): its Claude routes (`cc/claude-*`) do cache. 9router adds its
+own breakpoints on the system prompt, the last tool and the last message, and drops the ones a
+client sends. In a five-turn Book session on `cc/claude-opus-5`, all but about 1,000 of the
+roughly 60,000 input tokens were read from or written to the cache upstream. 9router's streamed
+usage reports neither count, though, and adds about 2,000 tokens to `prompt_tokens` on every
+request. So Book shows every input token as uncached on those routes, and its dollar estimate runs
+about three times the real cost. The real counts are on 9router's own usage dashboard. The `cmc/`
+and `ag/` routes report no caching at all, and `prompt_cache_key` changes nothing on them.
 
 ## Example `.book/settings.json`
 
@@ -157,26 +185,33 @@ after a failed run.
 
 ## Environment variables
 
-| Variable                                                                                          | Purpose                                                                            |
-| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `BOOK_API_KEY`                                                                                    | Default API key (or `{env:VAR}` in provider settings)                              |
-| `BOOK_BASE_URL`                                                                                   | Default OpenAI-compatible base URL                                                 |
-| `BOOK_MODEL`                                                                                      | Default model                                                                      |
-| `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                                                  |
-| `BOOK_EFFORT`                                                                                     | Thinking effort level                                                              |
-| `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                                                |
-| `BOOK_SHELL`                                                                                      | Shell for `Bash`: `bash`, `pwsh`, `powershell`, `cmd`, or a path                   |
-| `BOOK_WORKSPACE`                                                                                  | Default workspace                                                                  |
-| `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                                           |
-| `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                                         |
-| `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                                           |
-| `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout (`Bash` included) and telemetry location                              |
-| `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)                           |
-| `BOOK_WEB_ALLOW_PRIVATE_NETWORK`                                                                  | Opt into local/private web destinations for every `WebFetch` (disabled by default) |
-| `BOOK_WEB_MAX_REDIRECTS`                                                                          | Same-origin redirect limit for `WebFetch` (default 5, maximum 10)                  |
-| `BOOK_TUI_RENDERER`                                                                               | `safe`, `incremental`, or experimental scroll renderer                             |
-| `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                                                |
-| `BOOK_DEBUG_FILE` / `BOOK_DEBUG_STDERR` / `BOOK_DEBUG_MAX_BYTES` / `BOOK_DEBUG_BACKUPS`           | Debug log destination and rotation controls                                        |
+| Variable                                                                                          | Purpose                                                                                    |
+| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `BOOK_API_KEY`                                                                                    | Default API key (or `{env:VAR}` in provider settings)                                      |
+| `BOOK_BASE_URL`                                                                                   | Default OpenAI-compatible base URL                                                         |
+| `BOOK_MODEL`                                                                                      | Default model                                                                              |
+| `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                                                          |
+| `BOOK_EFFORT`                                                                                     | Thinking effort level                                                                      |
+| `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                                                        |
+| `BOOK_SHELL`                                                                                      | Shell for `Bash`: `bash`, `pwsh`, `powershell`, `cmd`, or a path                           |
+| `BOOK_WORKSPACE`                                                                                  | Default workspace                                                                          |
+| `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                                                   |
+| `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                                                 |
+| `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                                                   |
+| `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout (`Bash` included) and telemetry location                                      |
+| `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)                                   |
+| `BOOK_WEB_ALLOW_PRIVATE_NETWORK`                                                                  | Opt into local/private web destinations for every `WebFetch` (disabled by default)         |
+| `BOOK_WEB_MAX_REDIRECTS`                                                                          | Same-origin redirect limit for `WebFetch` (default 5, maximum 10)                          |
+| `BOOK_TUI_RENDERER`                                                                               | `safe`, `incremental`, or experimental scroll renderer                                     |
+| `BOOK_STARTUP_ANIMATION`                                                                          | Startup splash on or off; outranks `ui.startupAnimation`, as `BOOK_MODEL` does for `model` |
+| `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                                                        |
+| `BOOK_DEBUG_FILE` / `BOOK_DEBUG_STDERR` / `BOOK_DEBUG_MAX_BYTES` / `BOOK_DEBUG_BACKUPS`           | Debug log destination and rotation controls                                                |
+
+`BOOK_STARTUP_ANIMATION` holds wherever the effective settings are read, not only at startup:
+`book config get ui.startupAnimation` and `book config list` report the value in force and name the
+variable as its source, and the settings a provider removal re-reads keep it. It is never written
+into a settings file, so `/config` says the variable decides at every launch when the row is toggled
+while it is set — the saved value applies once it is unset.
 
 `WebFetch` requires HTTPS by default, validates DNS results and the address used by the network
 connection, blocks private/special-use destinations, and stops on cross-origin redirects so the
@@ -217,9 +252,13 @@ during deep transcript scrolling. Other interactive terminals default to `increm
 
 Book uses the `rubric` theme by default. It is set like a rubricated manuscript: the body is in ink (warm ivory and greys), and one cinnabar red is kept for the marks you navigate by. Those marks are the pilcrow `¶` that opens each of your turns and prompts the composer, the section sign `§` before a heading, list markers, the drop cap on an empty page, and the ink of Book's spinner: a quill that writes a flourish, `∞`, dot by dot while the agent works, the ink fresh in red at the nib and drying to grey behind it. The agent writes in ink, so red never reads as an alarm. Errors are rose and warnings amber, to stay distinct from the rubric.
 
-The layout follows the same idea. Your turns hang a red `¶` in the margin and are set in italic, so your words read as a different voice from the agent's. The composer and the menus that open above it are drawn as hairlines rather than boxes. Tables are ruled the way a book sets them, with no vertical lines. The status line carries a folio, the turn count in lowercase Roman numerals, at its right edge. An empty session opens on a title page: a five-row drop cap B in rubric, the rest of the word, a rule and a table of contents. The contents list this workspace's five most recent sessions as chapters, with Roman numerals, dot leaders and each one's age where a book prints the page, and `/resume` opens one. Before a first session, the contents list what a new reader needs, with the key to press as the page. When a menu shrinks the transcript, the page folds to its drop cap and never cuts through a glyph. Decision prompts such as the permission prompt are headed by a rule led by the same `¶` rather than drawn as boxes.
+The layout follows the same idea. Your turns hang a red `¶` in the margin and are set upright in the brightest ink, a step above the agent's prose, with two blank rows before each new turn in the default density (tight density, on a short terminal, keeps none). The composer and the menus that open above it are drawn as hairlines rather than boxes. Tables are ruled the way a book sets them, with no vertical lines. The status line carries a folio, the turn count in lowercase Roman numerals, at its right edge. An empty session opens on a title page: a five-row drop cap B in rubric, the rest of the word, a rule and a table of contents. The contents list this workspace's five most recent sessions as chapters, with Roman numerals, dot leaders and each one's age where a book prints the page, and `/resume` opens one. Before a first session, the contents list what a new reader needs, with the key to press as the page. When a menu shrinks the transcript, the page folds to its drop cap and never cuts through a glyph. Decision prompts such as the permission prompt are headed by a rule led by the same `¶` rather than drawn as boxes.
 
-The transcript keeps the agent's reading out of the way. In the default compact transcript, a run of read-only calls (`Read`, `Glob`, `Grep`, the git read tools, `ToolSearch`, task lookups, `BashOutput`, session history) collapses into one row: `✓ Read config.ts, loader.ts   2 files · 3 searches`. The check is grey because nothing changed. The run can span one parallel batch or several turns in a row. Edits, `Bash` (even a read-only command, since the transcript cannot tell), web and MCP calls, delegation, failures, anything awaiting permission, and reads that reach outside the workspace keep their own rows. Ctrl+O's detailed transcript shows every call, and so does screen-reader mode. A row you have expanded is never folded.
+Each step of the agent's work — its thought, the sentence it says before acting, and the tool rows — is drawn as one unit with no blank rows inside, and that sentence is in the secondary grey, so the final answer is the only full-ink text in a turn. Bookkeeping calls (the plan, memory) and calls that hand the turn back to you (a question, plan approval) do not make an answer a step: those turns keep their blank rows and their full ink.
+
+The transcript keeps the agent's reading out of the way. In the default compact transcript, a run of read-only calls (`Read`, `Glob`, `Grep`, the git read tools, `ToolSearch`, task lookups, `BashOutput`, session history) collapses into one row: `✓ Read config.ts, loader.ts   2 files · 3 searches`. Every check on a tool row or transcript event is grey: success is the default, so only a failure (a rose `×`) or a pending prompt takes colour. The run can span one parallel batch or several turns in a row. Edits, `Bash` (even a read-only command, since the transcript cannot tell), web and MCP calls, delegation, failures, anything awaiting permission, and reads that reach outside the workspace keep their own rows. Ctrl+O's detailed transcript shows every call, and so does screen-reader mode. A row you have expanded is never folded.
+
+The ink itself is tuned for a long read: on a dark terminal the body text sits at about 12:1 rather than near-white, the headings and your own prompt are brighter than the body, and inline code takes a warm tone rather than a cool hue.
 
 The agent's plan is not a standing block. While a step is in flight, the working line names it and the status line shows `step 3/7` beside the folio. Each TodoWrite row in the transcript names the step it started and where the plan stands (`✓ Steps  Fix the parser   2 of 7 done`), so scrolling back shows how the plan moved. Ctrl+T opens the whole list as a `§ Steps` sheet, marked `◌` to do, `◔` in hand and `✓` done, and Ctrl+T closes it again. A bare `/task` shows your own task list.
 
@@ -239,6 +278,8 @@ Project themes can override any token in `.book/themes/<name>.json`, starting fr
   "toolRail": "#6B7164"
 }
 ```
+
+A theme that sets `text` but not `userText` uses its `text` for your prompt too.
 
 ## Tool-use telemetry
 

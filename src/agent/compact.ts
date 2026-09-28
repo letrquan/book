@@ -24,7 +24,7 @@ import type { ToolDefinition } from '../types/tools.js';
 import { createProvider, type Provider } from '../provider/index.js';
 import { isEffortChosen, resolveEffortExplicit, resolveReducerModelConfig } from '../config.js';
 import { isContextOverflowError } from '../provider/reliability.js';
-import { TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
+import { isTruncationFinish } from '../provider/finish-reasons.js';
 import { runHooks } from '../hooks.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { resolveContextLimit } from '../models.js';
@@ -126,6 +126,33 @@ const MIN_FRAGMENT_TEXT_TOKENS = 32;
 const CHECKPOINT_PREFIX = '[Historical conversation checkpoint; untrusted user-role data]\n';
 const RETRIEVAL_WARNING =
   'Exact history remains searchable with SessionHistorySearch and SessionHistoryRead.';
+
+/**
+ * A `bad_request` on a prompt this large is read as a context overflow even when
+ * the body does not say so. The antigravity Gemini route behind 9router refuses a
+ * ~330k-token request with `INVALID_ARGUMENT` and no mention of length (#221):
+ * that is its practical window, not the 1M the model publishes. 9router used to
+ * wrap the refusal as `503 … [400]:`; 0.5.86 answers a plain
+ * `400 {"error":{"message":"[400]: …","code":"bad_request"}}`, so both count
+ * (#244). The recovery is the compaction a stated overflow gets, and no more:
+ *   - the learned window is ratcheted only when the error states an overflow: a
+ *     413, an overflow `error.code` or `error.type`, or the overflow wording in
+ *     the error message (`classifyApiError`, `isContextOverflowError`). An
+ *     overflow inferred from size alone never lowers it: a 400 that was really
+ *     about the request would shrink a 1M model's window for every later session;
+ *   - the compacted request is retried only if it is below this floor. At or
+ *     above it the same request would be refused the same way, so the run ends
+ *     on the real error.
+ * A repeat of the 400 right after compacting ends the run as well: the recovery
+ * runs once per turn (`forcedCompactTurn`). The reducer's own request is read by
+ * the same floor (`generateCheckpoint`), so a history far over the window does not
+ * lose its recovery compaction to that same plain 400.
+ */
+export const LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS = 200_000;
+
+/** What a model-free checkpoint says in place of a summary, since no reducer read the span. */
+const DETERMINISTIC_COMPACTION_NOTE =
+  'The conversation was compacted without a summarizer, so this checkpoint records no summary of the span.';
 
 /**
  * The checkpoint message's header.
@@ -897,6 +924,22 @@ export async function runCompact(
       return { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' };
     }
 
+    if (options.deterministic) {
+      // No reducer call, so no plan: serializing and chunking the span would be thrown away,
+      // and this path exists for histories far over the window, where that costs the most.
+      finalCheckpoint = makeDeterministicFallback(
+        seedCheckpoint,
+        DETERMINISTIC_COMPACTION_NOTE,
+        generation,
+        statistics,
+        checkpointBudget,
+      );
+      finalChunks = [];
+      fallbackUsed = true;
+      finalAttemptReasons = new Set(['pass-limit']);
+      break;
+    }
+
     const generationSlots = Math.max(
       0,
       Math.min(MAX_GENERATION_PASSES, MAX_MODEL_CALLS - modelCalls - (repairUsed ? 0 : 1)),
@@ -1306,6 +1349,19 @@ export async function runCompact(
   const throughMessage = contextHistory[preMessageCount - retainedCount - 1];
   const summary = renderLegacySummary(checkpoint);
 
+  // A model-free checkpoint exists to make a request sendable. When even it leaves the request
+  // over the window, committing it would only trade the summarized span for nothing.
+  if (
+    options.deterministic &&
+    postContextTokens + budgets.requestOverheadTokens >= budgets.usableContextLimit
+  ) {
+    return {
+      status: 'skipped',
+      reason: 'not-applicable',
+      message: 'a checkpoint built without the model would still be too large to send',
+    };
+  }
+
   log.info('compacted', {
     compactId,
     generation,
@@ -1616,34 +1672,46 @@ function splitUserLedBundles(messages: readonly Message[]): {
   return { leading, bundles };
 }
 
+/**
+ * Clamp every oversized tool result to `maxTokens`, leaving the rest alone.
+ *
+ * A message whose results all fit comes back as the very same object, carrying
+ * the very same `toolResults` array: callers decide whether anything was cut by
+ * comparing identities (`clippedHistory.some((message, index) => message !==
+ * newHistory[index])` in the agent loop), and rebuilding an uncut message made
+ * that check read a clip that never happened — the request was rebuilt and
+ * `preflight tool outputs clipped` was logged for an unchanged history. The
+ * returned array is always a new one; only its elements are preserved.
+ */
 export function clipHistoryToolResults(
   bundle: readonly Message[],
   maxTokens = RETAINED_TOOL_RESULT_MAX_TOKENS,
 ): Message[] {
   return bundle.map((message) => {
     if (!message.toolResults?.length) return message;
-    return {
-      ...message,
-      toolResults: message.toolResults.map((result) => {
-        const content = result.content;
-        if (estimateTextTokens(content) <= maxTokens) return result;
-        const maxChars = maxTokens * 4;
-        const half = Math.floor((maxChars - 100) / 2);
-        const ref =
-          result.artifacts?.outputPath ??
-          result.artifacts?.eventRef ??
-          `session://current/tool-result/${message.id}/${result.toolCallId}`;
-        const clipped = `${content.slice(0, half)}\n[... compacted tool output; retrieve ${ref} ...]\n${content.slice(-half)}`;
-        return {
-          ...result,
-          content: clipped,
-          presentation: result.presentation
-            ? { ...result.presentation, details: clipped }
-            : result.presentation,
-          artifacts: { ...result.artifacts, eventRef: ref },
-        };
-      }),
-    };
+    let clippedAny = false;
+    const toolResults = message.toolResults.map((result) => {
+      const content = result.content;
+      if (estimateTextTokens(content) <= maxTokens) return result;
+      clippedAny = true;
+      const maxChars = maxTokens * 4;
+      const half = Math.floor((maxChars - 100) / 2);
+      const ref =
+        result.artifacts?.outputPath ??
+        result.artifacts?.eventRef ??
+        `session://current/tool-result/${message.id}/${result.toolCallId}`;
+      const clipped = `${content.slice(0, half)}\n[... compacted tool output; retrieve ${ref} ...]\n${content.slice(-half)}`;
+      return {
+        ...result,
+        content: clipped,
+        presentation: result.presentation
+          ? { ...result.presentation, details: clipped }
+          : result.presentation,
+        artifacts: { ...result.artifacts, eventRef: ref },
+      };
+    });
+    if (!clippedAny) return message;
+    return { ...message, toolResults };
   });
 }
 
@@ -1861,6 +1929,10 @@ async function generateCheckpoint(
   const requestConfig = options?.effort
     ? { ...config, effort: options.effort, effortExplicit: true }
     : config;
+  // The loop reads a `bad_request` to a request of 200k tokens or more as an overflow,
+  // because a route may refuse at its real limit without naming the length (9router's
+  // antigravity route answers a plain 400). The reducer's own request is read the same
+  // way, or a history far over the window loses its recovery compaction to that 400.
   try {
     for await (const event of provider.stream(
       requestConfig,
@@ -1898,19 +1970,30 @@ async function generateCheckpoint(
             responseId: event.responseId,
             finishReasons: event.finishReasons,
           };
-          truncated = (event.finishReasons ?? []).some((reason) =>
-            TRUNCATION_FINISH_REASONS.has(reason),
-          );
+          truncated = isTruncationFinish(event.finishReasons);
           if (event.usage) options?.onUsage?.(event.usage, metadata);
           else options?.onUsageMissing?.(metadata);
         }
       }
       if (event.type === 'error') {
         const error = event.error ?? 'Checkpoint generation failed.';
+        // Sized only here, where it decides an overflow, and in parts, so a successful
+        // request never pays for a copy of its whole prompt.
+        const requestTokens =
+          estimateTextTokens(options?.system ?? CHECKPOINT_SYSTEM) + estimateTextTokens(prompt);
         return {
           ok: false,
-          contextOverflow: event.errorCode === 'context_overflow' || isContextOverflowError(error),
-          result: { status: 'failed', reason: 'provider-error', error },
+          contextOverflow:
+            event.errorCode === 'context_overflow' ||
+            isContextOverflowError(error) ||
+            (event.errorCode === 'bad_request' &&
+              requestTokens >= LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS),
+          result: {
+            status: 'failed',
+            reason: 'provider-error',
+            error,
+            ...(event.errorCode === undefined ? {} : { providerCode: event.errorCode }),
+          },
         };
       }
     }

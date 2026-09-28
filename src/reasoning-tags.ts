@@ -235,11 +235,27 @@ function endsInsideInlineCode(text: string): boolean {
 /** A reasoning tag of any of the four names, opening or closing. */
 const ANY_REASONING_TAG = /<\/?(?:think|thinking|reasoning|reasoning_context)>/i;
 
+/** How a block's closing tag is judged when the reply it came from was cut short. */
+interface BlockCloseOptions {
+  /**
+   * The reply is a fragment: the provider stopped writing it, so the answer after
+   * the closing tag never got to start a line of its own.
+   *
+   * That is the one doubt "the closing tag ends its line" stands in for — a
+   * finished answer may open by quoting a tag inline — so a fragment drops that
+   * requirement, and only while nothing after the tag ever reached a newline. A
+   * fragment that did get a line break past its closing tag is a finished answer
+   * that quoted the tags and was cut off later, and the quote stays.
+   */
+  fragment?: boolean;
+}
+
 /**
  * Whether the closing tag at `start`..`end` of a block opened at `blockStart` ends that block.
  * An empty block ends at it. Otherwise the block must leave no doubt, because what a split moves
  * leaves the answer for good:
- * - the tag ends its line;
+ * - the tag ends its line, unless the reply is a fragment that never got past that line (see
+ *   `BlockCloseOptions.fragment`);
  * - the block sits on one line, or its opening tag ends its line and the closing tag starts one
  *   (Book's own replay format, and DeepSeek/Qwen output);
  * - no other reasoning tag appears inside it, which rules out quoted-tag chains and mismatched
@@ -248,10 +264,23 @@ const ANY_REASONING_TAG = /<\/?(?:think|thinking|reasoning|reasoning_context)>/i
  * Only the block's own text is consulted, so nothing in the answer can make a later tag look like
  * the end.
  */
-function endsBlock(content: string, blockStart: number, start: number, end: number): boolean {
+function endsBlock(
+  content: string,
+  blockStart: number,
+  start: number,
+  end: number,
+  options: BlockCloseOptions = {},
+): boolean {
   const text = content.slice(blockStart, start);
   if (text.trim() === '') return true;
-  if (!/^[ \t]*(?:\r?\n|$)/.test(content.slice(end))) return false;
+  const after = content.slice(end);
+  // A cut-off reply may leave the closing tag mid-line, which is a fragment and
+  // is quoting nothing. It may not do so *and* run several lines past it: that
+  // is a finished answer that opened by quoting the tags inline and was cut off
+  // later, and every condition below is about the block's own shape, so a
+  // fragment still refuses a mismatched chain or an unclosed code span.
+  const fragment = options.fragment === true && !after.includes('\n');
+  if (!fragment && !/^[ \t]*(?:\r?\n|$)/.test(after)) return false;
   if (ANY_REASONING_TAG.test(text)) return false;
   const oneLine = !text.includes('\n');
   const ownLines = /^[ \t]*\r?\n/.test(text) && /\n[ \t]*$/.test(text);
@@ -270,12 +299,13 @@ function findBlockClose(
   content: string,
   tag: string,
   from: number,
+  options: BlockCloseOptions = {},
 ): { textEnd: number; after: number } | null {
   const closing = new RegExp(`</${tag}>`, 'gi');
   closing.lastIndex = from;
   const match = closing.exec(content);
   if (!match) return null;
-  if (!endsBlock(content, from, match.index, closing.lastIndex)) return null;
+  if (!endsBlock(content, from, match.index, closing.lastIndex, options)) return null;
   return { textEnd: match.index, after: closing.lastIndex };
 }
 
@@ -288,13 +318,14 @@ function answerStart(content: string, rest: number): number {
 
 /**
  * Split the closed reasoning blocks a settled reply opens with out of it, so
- * they are stored and re-sent as reasoning rather than as answer text.
+ * they are stored as reasoning rather than as answer text, and re-sent as
+ * reasoning while their turn is in progress.
  *
- * Book renders earlier assistant turns to OpenAI-compatible providers as
- * `<reasoning_context>…</reasoning_context>` followed by the answer, and some
- * routers inline thinking the same way, so models start every reply with that
- * block themselves. Left in `content`, it is what print mode prints and what a
- * `--resume` shows as the answer.
+ * Book renders the assistant steps of the turn in progress to OpenAI-compatible
+ * providers as `<reasoning_context>…</reasoning_context>` followed by the
+ * answer, and some routers inline thinking the same way, so models start
+ * replies with that block themselves. Left in `content`, it is what print mode
+ * prints and what a `--resume` shows as the answer.
  *
  * What moves here leaves the answer for good — print mode, json `messages`, a
  * managed agent's result and every later request see only what is left — so
@@ -309,14 +340,29 @@ function answerStart(content: string, rest: number): number {
  * `found` says whether any block moved, even an empty one: the
  * `<think></think>` a model emits with thinking off has no reasoning to keep
  * but still has to leave the answer.
+ *
+ * `truncated` marks a reply the provider cut short — the output cap, or a stream
+ * that dropped before its terminal event. The block is the same and the split is
+ * the same; the only difference is that the answer after the closing tag is a
+ * fragment rather than a finished one, so while nothing after that tag reached a
+ * newline the "the closing tag ends its line" doubt does not apply and the block
+ * still moves (see `BlockCloseOptions.fragment`). A fragment that did get a line
+ * past the tag is a finished answer that quoted the tags inline and was cut off
+ * later, and it is left as written. A reply cut off *inside* the block never
+ * closes, so it is not a block to begin with and stays answer text, exactly as
+ * `isUnclosedReasoningOnly` reads a settled one.
  */
-export function separateInlineReasoning(content: string): {
+export function separateInlineReasoning(
+  content: string,
+  options?: { truncated?: boolean },
+): {
   content: string;
   reasoning: string;
   found: boolean;
 } {
   const unchanged = { content, reasoning: '', found: false };
   if (!content.includes('<')) return unchanged;
+  const closeOptions: BlockCloseOptions = { fragment: options?.truncated === true };
   const blocks: string[] = [];
   let rest = 0;
   for (;;) {
@@ -325,7 +371,7 @@ export function separateInlineReasoning(content: string): {
     const at = blocks.length === 0 ? 0 : answerStart(content, rest);
     const open = LEADING_REASONING_TAG.exec(content.slice(at));
     if (!open) break;
-    const close = findBlockClose(content, open[1], at + open[0].length);
+    const close = findBlockClose(content, open[1], at + open[0].length, closeOptions);
     if (!close) break;
     blocks.push(content.slice(at + open[0].length, close.textEnd).trim());
     rest = close.after;

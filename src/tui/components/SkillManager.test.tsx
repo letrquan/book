@@ -82,9 +82,9 @@ function renderManager(overrides: Partial<React.ComponentProps<typeof SkillManag
   };
 }
 
-async function write(view: ReturnType<typeof render>, value: string) {
+async function write(view: ReturnType<typeof render>, value: string, delayMs = 20) {
   view.stdin.write(value);
-  await wait(20);
+  await wait(delayMs);
 }
 
 afterEach(cleanup);
@@ -161,7 +161,8 @@ describe('SkillManager', () => {
   it('reloads and closes from keyboard shortcuts', async () => {
     const { view, onReload, onCancel } = renderManager();
     await write(view, 'r');
-    await write(view, '\x1b');
+    // Ink 7 flushes a lone Esc only after 20 ms, so a 20 ms wait is a coin flip.
+    await write(view, '\x1b', 60);
     expect(onReload).toHaveBeenCalledOnce();
     expect(onCancel).toHaveBeenCalledOnce();
   });

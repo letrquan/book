@@ -6,17 +6,49 @@ import type {
 } from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
 import type { Usage } from '../types/messages.js';
-import { createDebugLogger } from '../debug-log.js';
+import { createDebugLogger, isDebugEnabled } from '../debug-log.js';
+import { escapeInvisibleCharacters } from '../control-characters.js';
+import { RAW_ARGUMENTS_KEY } from '../tools/unparsed-arguments.js';
 import {
   classifyApiError,
   classifyProviderError,
   fetchWithRetry,
   formatApiError,
+  readErrorBody,
   readStreamChunk,
   wrappedUpstreamStatus,
 } from './reliability.js';
 
 const log = createDebugLogger('provider:anthropic');
+
+/**
+ * The error code for an Anthropic mid-stream `error` event. Its `type` is Anthropic's error
+ * class; the classes that name a verdict the loop already handles are mapped onto the codes it
+ * reads, so a re-send never reproduces them: a rejected key parks the run, a missing model ends
+ * it, and an oversized request goes through the overflow recovery. A billing refusal parks the
+ * run like an HTTP 402, and a rate limit and a timeout are re-sent like their HTTP statuses.
+ * Other types (`invalid_request_error`, `overloaded_error`, `api_error`, …) pass through
+ * unchanged.
+ */
+function streamErrorCode(type: string | undefined): string {
+  switch (type) {
+    case 'authentication_error':
+    case 'permission_error':
+      return 'auth';
+    case 'not_found_error':
+      return 'not_found';
+    case 'request_too_large':
+      return 'context_overflow';
+    case 'rate_limit_error':
+      return 'rate_limited';
+    case 'billing_error':
+      return 'quota';
+    case 'timeout_error':
+      return 'timeout';
+    default:
+      return type ?? 'provider_error';
+  }
+}
 
 // ── Message format conversion (OpenAI → Anthropic) ──────────────────────────
 
@@ -334,12 +366,17 @@ export function convertMessages(messages: ProviderMessage[]): {
           id: string;
           function?: { name: string; arguments: string };
         }>) {
-          const input = parseToolArguments(tc.function?.arguments ?? '{}');
+          const { arguments: parsed, unparsedArguments } = parseToolArguments(
+            tc.function?.arguments ?? '{}',
+          );
           content.push({
             type: 'tool_use',
             id: tc.id,
             name: tc.function?.name ?? '',
-            input,
+            // `tool_use.input` must be a JSON object, so unparseable text cannot go
+            // back verbatim: `{__raw}` is its wire encoding, and reloading it is a
+            // parse failure again.
+            input: unparsedArguments ? { [RAW_ARGUMENTS_KEY]: unparsedArguments.raw } : parsed,
           });
         }
       }
@@ -387,13 +424,21 @@ export function convertTools(tools: ToolDefinition[]): AnthropicTool[] {
   }));
 }
 
-function parseToolArguments(raw: string): Record<string, unknown> {
-  if (!raw.trim()) return {};
+function parseToolArguments(raw: string): {
+  arguments: Record<string, unknown>;
+  unparsedArguments?: { raw: string; error: string };
+} {
+  if (!raw.trim()) return { arguments: {} };
   try {
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return { __raw: raw };
+    return {
+      arguments: parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {},
+    };
+  } catch (error) {
+    return {
+      arguments: {},
+      unparsedArguments: { raw, error: error instanceof Error ? error.message : String(error) },
+    };
   }
 }
 
@@ -504,7 +549,7 @@ export async function* chatCompletionStream(
   log.debug('response received', { status: response.status, ok: response.ok });
 
   if (!response.ok) {
-    const errorText = await response.text();
+    const errorText = await readErrorBody(response, signal);
     yield {
       type: 'error',
       error: formatApiError(response.status, errorText),
@@ -646,22 +691,48 @@ export async function* chatCompletionStream(
                   (currentContentBlock.signature ?? '') + String(delta.signature);
               }
             } else if (delta.type === 'input_json_delta' && delta.partial_json) {
+              // The head of each call's first fragment, not of every one: a call that arrives
+              // missing its opening `{"filePath": ` is visible here (#260) and nowhere else.
+              // Behind the flag, so a large streamed Write does no string work and writes no
+              // lines when debugging is off.
+              if (currentToolArgs === '' && isDebugEnabled()) {
+                log.debug('stream tool input delta', {
+                  id: currentToolId,
+                  length: String(delta.partial_json).length,
+                  head: escapeInvisibleCharacters(String(delta.partial_json).slice(0, 120)),
+                });
+              }
               currentToolArgs += delta.partial_json as string;
             }
             break;
           }
 
           case 'content_block_stop': {
+            const { arguments: parsedInput, unparsedArguments } =
+              parseToolArguments(currentToolArgs);
             if (currentContentBlock?.type === 'tool_use') {
-              currentContentBlock.input = parseToolArguments(currentToolArgs);
+              // The block keeps the wire encoding of unparseable text, as `convertMessages`
+              // sends it, while the emitted call carries the typed field.
+              currentContentBlock.input = unparsedArguments
+                ? { [RAW_ARGUMENTS_KEY]: unparsedArguments.raw }
+                : parsedInput;
             }
             if (currentContentBlock) assistantContentBlocks.push(currentContentBlock);
             // Emit completed tool call
             if (currentToolId && currentToolName) {
+              if (unparsedArguments) {
+                log.warn('tool call arguments are not valid JSON', {
+                  id: currentToolId,
+                  name: escapeInvisibleCharacters(currentToolName),
+                  length: currentToolArgs.length,
+                  head: escapeInvisibleCharacters(currentToolArgs.slice(0, 120)),
+                });
+              }
               const toolCall = {
                 id: currentToolId,
                 name: currentToolName,
-                arguments: parseToolArguments(currentToolArgs),
+                arguments: parsedInput,
+                ...(unparsedArguments ? { unparsedArguments } : {}),
               };
               yield { type: 'tool_call', toolCall };
             }
@@ -714,7 +785,7 @@ export async function* chatCompletionStream(
             yield {
               type: 'error',
               error: err?.message ?? 'Unknown Anthropic API error',
-              errorCode: err?.type ?? 'provider_error',
+              errorCode: streamErrorCode(err?.type),
             };
             return;
           }

@@ -10,6 +10,7 @@
  * lives here so there is one wording and one read.
  */
 import { join } from 'path';
+import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
 import { collectDeclaredHooks, partitionProjectHooks } from './hook-approvals.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
 import { loadSettingsFile } from './settings-loader.js';
@@ -60,6 +61,20 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
     notices.push(
       `⚠  Ignoring ${hooks.pending.length} project-declared hook(s) (${summary}):` +
         ' hooks require approval. Run `book doctor` to approve them.',
+    );
+  }
+
+  // A withheld `additionalDirectories` entry is the one that has no other symptom: the run
+  // simply cannot see the directory, and the model reports the file as missing rather than as
+  // un-approved. The notice names the real path, because that is what the decision is keyed by.
+  const directories = partitionProjectDirectories(
+    collectDeclaredDirectories(input.workspace, projectSettings?.additionalDirectories ?? []),
+    input.settings.projectDirectories,
+  );
+  for (const directory of directories.pending) {
+    notices.push(
+      `⚠  Ignoring project-declared additionalDirectories entry "${directory.declared}"` +
+        ` (really ${directory.realPath}): it requires approval. Run \`book doctor\` to see how to grant it.`,
     );
   }
 

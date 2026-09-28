@@ -11,10 +11,12 @@ import {
 } from './settings.js';
 import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
 import { resolveBookHome } from './book-home.js';
+import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
 import { collectDeclaredHooks, partitionProjectHooks } from './hook-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { normalizeRemovedSettings } from './settings-removed.js';
+import { parseEnvBoolean } from './env-boolean.js';
 
 const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
 
@@ -27,18 +29,10 @@ const CONCATENATED_ARRAY_PATHS = new Set([
   'permissions.allow',
   'permissions.ask',
   'permissions.deny',
-  ...[
-    'SessionStart',
-    'SessionEnd',
-    'UserPromptSubmit',
-    'PreToolUse',
-    'PostToolUse',
-    'Stop',
-    'PreCompact',
-    'PostCompact',
-    'SubagentStart',
-    'SubagentStop',
-  ].map((event) => `hooks.${event}`),
+  // Straight from the list the hooks schema is built from: a hand-written copy of
+  // it went stale the moment `Notification` was added, and a later layer's
+  // notification hooks then replaced the user layer's instead of appending (#295).
+  ...HOOK_EVENTS.map((event) => `hooks.${event}`),
 ]);
 
 function mergeObject(
@@ -49,7 +43,11 @@ function mergeObject(
   const result = structuredClone(base);
 
   for (const [key, value] of Object.entries(override)) {
-    if (value === undefined) continue;
+    // JSON.parse keeps `"__proto__"` as an ordinary own key, but `result[key] = …`
+    // below would go through the prototype setter: a repository layer could then
+    // supply inherited `shell` or `defaultMode` values that sanitizeLayer, which
+    // deletes own keys, never sees. No setting has that name, so drop it.
+    if (value === undefined || key === '__proto__') continue;
     const path = prefix ? `${prefix}.${key}` : key;
     const existing = result[key];
 
@@ -108,12 +106,17 @@ export type SettingsLayerTrust = 'trusted' | 'local' | 'repository';
  * workspace layers are therefore stripped. Trust decisions come from the
  * user-global store; experimental flags come from a trusted user-global or
  * explicit settings document (or from a process environment opt-in).
+ *
+ * An empty `parent` names a key at the document root, which is how the
+ * `additionalDirectories` decisions map is expressed: the setting it decides
+ * about is itself top-level, so there is no container object to put it in.
  */
 const WORKSPACE_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
   ['mcp', 'projectServers'],
   ['permissions', 'projectAllowRules'],
   ['hooks', 'projectEntries'],
   ['commands', 'projectCommands'],
+  ['', 'projectDirectories'],
 ];
 
 function stripPaths(
@@ -121,6 +124,10 @@ function stripPaths(
   paths: ReadonlyArray<readonly [string, string]>,
 ): void {
   for (const [parent, key] of paths) {
+    if (parent === '') {
+      delete (settings as Record<string, unknown>)[key];
+      continue;
+    }
     const container = (settings as Record<string, unknown>)[parent];
     if (container && typeof container === 'object' && !Array.isArray(container)) {
       delete (container as Record<string, unknown>)[key];
@@ -265,7 +272,12 @@ export function resolveSettings(
   // Project-declared hook entries are held back the same way: each one is a
   // shell command the repository would otherwise get Book to run.
   const declaredProjectHooks = collectDeclaredHooks(project);
-  // Released hooks belong between the user and local layers, matching the
+  // `additionalDirectories` widens the roots the file tools serve, so a checked-in
+  // declaration is held back for the same reason a project allow rule is: it
+  // grants authority, and the decisions that release it live in the local layer,
+  // which has not been merged yet. Released after the trust store loads, by real path.
+  const declaredProjectDirectories = project?.additionalDirectories ?? [];
+  // Released declarations belong between the user and local layers, matching the
   // relative merge order ungated layers still produce.
   const userHookCounts = Object.fromEntries(
     HOOK_EVENTS.map((event) => [event, resolved.hooks[event].length]),
@@ -274,6 +286,9 @@ export function resolveSettings(
     let withheld: BookSettings = project;
     if (declaredProjectAllow.length > 0) {
       withheld = { ...withheld, permissions: { ...withheld.permissions, allow: [] } };
+    }
+    if (declaredProjectDirectories.length > 0) {
+      withheld = { ...withheld, additionalDirectories: [] };
     }
     if (declaredProjectHooks.length > 0) {
       withheld = { ...withheld, hooks: structuredClone(DEFAULT_SETTINGS.hooks) };
@@ -310,6 +325,10 @@ export function resolveSettings(
     ...resolved.commands.projectCommands,
     ...trust.projectCommands,
   };
+  resolved.projectDirectories = {
+    ...resolved.projectDirectories,
+    ...trust.projectDirectories,
+  };
 
   // Every decision source is in place now, so the withheld repository rules can
   // be released — approved ones only.
@@ -320,6 +339,27 @@ export function resolveSettings(
     );
     if (approved.length > 0) {
       resolved.permissions.allow = [...(resolved.permissions.allow ?? []), ...approved];
+    }
+  }
+
+  if (declaredProjectDirectories.length > 0) {
+    // Released by real path, not by the text the repository wrote: see `additional-roots.ts`.
+    // Approved entries join the resolved list as their declared text, which is what the merge
+    // above normalizes and deduplicates; the file tools resolve it again to the same place.
+    const { approved } = partitionProjectDirectories(
+      collectDeclaredDirectories(workspace, declaredProjectDirectories),
+      resolved.projectDirectories,
+    );
+    if (approved.length > 0) {
+      // The approved **real path**, never the declared text. A consumer resolves this list again
+      // later with no trust store in hand (see `resolveAdditionalRoots`), so a relative or
+      // symlinked spelling would let a relink move a root the user approved as somewhere else.
+      // The user saw the real path when the prompt named it; the repository's spelling is what
+      // would be dangerous to re-resolve (PR #334 finding 7).
+      resolved.additionalDirectories = [
+        ...(resolved.additionalDirectories ?? []),
+        ...approved.map((directory) => directory.realPath),
+      ];
     }
   }
 
@@ -341,6 +381,44 @@ export function resolveSettings(
 
   const settings = bookSettingsSchema.parse(resolved) as ResolvedSettings;
   return settings;
+}
+
+/**
+ * The environment's say over the merged layers, applied to settings that are
+ * about to be used rather than saved.
+ *
+ * `BOOK_STARTUP_ANIMATION` is here, and not in `loadConfig`, because the layers
+ * are only half the answer: a reader that resolved the files and stopped would
+ * report the file's value while Book acts on the variable's. So every path that
+ * produces the *effective* settings calls this — the startup config, the
+ * re-read after a provider is removed, `book config get`/`list`. A path that
+ * computes what gets written back to a settings file must not: the variable
+ * decides the next launch, and baking it into a file would make a later
+ * `unset` look like it had failed.
+ *
+ * The returned object is a new one; the input is left as the caller resolved it.
+ */
+export function applySettingsEnvOverrides(
+  settings: ResolvedSettings,
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedSettings {
+  const startupAnimation = parseEnvBoolean(env.BOOK_STARTUP_ANIMATION);
+  if (startupAnimation === undefined) return settings;
+  return { ...settings, ui: { ...settings.ui, startupAnimation } };
+}
+
+/**
+ * What to tell a user whose read or save is being decided by the environment
+ * rather than by their settings — the `BOOK_MODEL` warning in one sentence, or
+ * nothing when the variable is unset or unreadable.
+ */
+export function startupAnimationEnvNote(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env.BOOK_STARTUP_ANIMATION;
+  if (parseEnvBoolean(raw) === undefined) return undefined;
+  return (
+    `BOOK_STARTUP_ANIMATION is set to "${raw}" — it decides the splash at every ` +
+    'launch, so ui.startupAnimation will not apply while it is set.'
+  );
 }
 
 export { loadSettingsFile };

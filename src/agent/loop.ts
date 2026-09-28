@@ -10,6 +10,7 @@ import type {
 import type { ProviderResponseMetadata } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
 import type {
+  ReadOnlyRoot,
   ToolCall,
   ToolResult,
   ToolContext,
@@ -19,7 +20,7 @@ import type {
 } from '../types/tools.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import { createProvider, type Provider } from '../provider/index.js';
-import { TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
+import { isTruncationFinishReason, TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
 import { buildMessages } from './context.js';
 import type { PreparedToolCall, ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
@@ -27,6 +28,7 @@ import {
   clipHistoryToolResults,
   estimateHistoryTokens,
   estimateProviderRequestTokens,
+  LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS,
   resolveCompactBudgets,
   shouldCompact,
   usagePressureTokens,
@@ -40,13 +42,20 @@ import {
 import {
   ALWAYS_ALLOWED_TOOLS,
   evaluatePermissionDetail,
+  permissionReasonOf,
   permissionResultOf,
   permissionRuleForToolCall,
   permissionRuleMatchesCall,
   permissionRuleOf,
+  WORKSPACE_READ_JUDGING_MODES,
+  WORKSPACE_READ_REFUSAL_MODES,
+  WORKSPACE_READ_TOOLS,
 } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
+import { realWorkspaceRoot } from '../tools/path-utils.js';
+import { homeGuards, resolveAdditionalRoots, rootHoldsHome } from '../additional-roots.js';
+import { excludedPathRefusal, outsideWorkspaceRefusal } from './refusal-remedies.js';
 import {
   isToolDefinitionAllowed,
   parseCapabilityRules,
@@ -60,11 +69,15 @@ import {
 } from '../reasoning-tags.js';
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
+import { refusedBeforeRun } from '../tools/pre-execution-codes.js';
 import {
-  networkPolicyRefusal,
-  networkPolicyRemedies,
-  type NetworkPolicyRefusal,
-} from '../tools/web-policy.js';
+  REFUSAL_KIND_ORDER,
+  REFUSAL_REMEDIES,
+  isRefusal,
+  refusalKind,
+  type LocalRefusalKind,
+} from './refusal-remedies.js';
+import { networkPolicyRefusal, networkPolicyRemedies } from '../tools/web-policy.js';
 import {
   formatUserQuestionAnswers,
   validateUserQuestionResponse,
@@ -79,15 +92,22 @@ import {
   toolResultSucceeded,
 } from '../tools/result.js';
 import { toolSearchTools } from '../tools/tool-search.js';
-import { appendToolUseRecords } from '../tool-telemetry.js';
+import { appendToolUseRecords, telemetryProviderOf } from '../tool-telemetry.js';
 import type { ToolUseRecord } from '../types/tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
-import { permissionDeniedError } from './actionable-errors.js';
+import {
+  permissionDeniedError,
+  unattendedRefusalNotice,
+  type PermissionDenialCause,
+  type UnattendedRemedy,
+} from './actionable-errors.js';
 import {
   isContextOverflowError,
   isErrorEnvelopeShape,
+  isOversizedForRateLimit,
   isUpstreamErrorEnvelope,
+  statedRateLimit,
 } from '../provider/reliability.js';
 import {
   classifyAbortReason,
@@ -109,26 +129,37 @@ import {
 const log = createDebugLogger('agent');
 const SKILL_INFRASTRUCTURE_TOOLS = new Set(['InvokeSkill', 'ReadSkillResource', 'ToolSearch']);
 
+/** Provider error codes every request shares, so a model-free compaction cannot route around them. */
+const SHARED_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'auth',
+  'quota',
+  'network',
+  'timeout',
+  'rate_limited',
+  'overloaded',
+  'server_error',
+  'stream_stall',
+  'transport_interrupted',
+]);
+
 /**
- * A `bad_request` on a prompt this large is read as a context overflow even when
- * the body does not say so. The antigravity Gemini route behind 9router refuses a
- * ~330k-token request with `INVALID_ARGUMENT` and no mention of length (#221):
- * that is its practical window, not the 1M the model publishes. 9router used to
- * wrap the refusal as `503 … [400]:`; 0.5.86 answers a plain
- * `400 {"error":{"message":"[400]: …","code":"bad_request"}}`, so both count
- * (#244). The recovery is the compaction a stated overflow gets, and no more:
- *   - the learned window is ratcheted only when the error states an overflow: a
- *     413, an overflow `error.code` or `error.type`, or the overflow wording in
- *     the error message (`classifyApiError`, `isContextOverflowError`). An
- *     overflow inferred from size alone never lowers it: a 400 that was really
- *     about the request would shrink a 1M model's window for every later session;
- *   - the compacted request is retried only if it is below this floor. At or
- *     above it the same request would be refused the same way, so the run ends
- *     on the real error.
- * A repeat of the 400 right after compacting ends the run as well: the recovery
- * runs once per turn (`forcedCompactTurn`).
+ * The finish reasons that say something about how a turn ended; anything outside this
+ * list is an ordinary stop (`stop`, `tool_calls`, `end_turn`) and says nothing.
+ *
+ * A response can report more than one of them — `content_filter` alongside `length` on a
+ * router that filters and then runs out of room — and the loop reads exactly one, the
+ * first the response itself listed. Resolving it through one `find` in one place is what
+ * keeps a reply's classification and the reasoning-block split from reaching two
+ * different verdicts off the same array. The spellings live in `TRUNCATION_FINISH_REASONS`
+ * rather than being written out again here.
  */
-const LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS = 200_000;
+const SETTLED_FINISH_REASONS: readonly string[] = [
+  ...TRUNCATION_FINISH_REASONS,
+  'model_context_window_exceeded',
+  'content_filter',
+  'refusal',
+  'error',
+];
 
 /**
  * Check whether a tool call should be evaluated against permission rules,
@@ -142,6 +173,23 @@ function needsPermissionCheck(mode: string): boolean {
 
 function requiresToolPermission(mode: string, persistentBackgroundShell: boolean): boolean {
   return needsPermissionCheck(mode) || (persistentBackgroundShell && mode !== 'bypassPermissions');
+}
+
+/**
+ * The managed child this run belongs to, as a name an operator can act on, or `undefined` in the
+ * root run. Prefers the nested agent path (which a `Task` subagent builds from the agent
+ * definition's name), then the role, then the bare id — the deepest name the run actually
+ * carries, because a notice naming "explorer" is actionable and one naming `agent-3f2` is not.
+ */
+function childRefusalLabel(options: { isSubagent?: boolean; agentPath?: string[] } | undefined) {
+  if (!options?.isSubagent) return undefined;
+  const name = options.agentPath?.[options.agentPath.length - 1]?.trim();
+  return name === undefined || name === '' ? undefined : name;
+}
+
+/** Prefixes a notice with the child it came from, so a refused step names its author. */
+function labelNotice(childLabel: string | undefined, notice: string): string {
+  return childLabel ? `[${childLabel}] ${notice}` : notice;
 }
 
 const AGENT_TERMINAL_STATUSES = new Set(['completed', 'failed', 'stopped', 'interrupted']);
@@ -334,6 +382,39 @@ export async function runAgentLoop(
   const ownsRuntime = !options?.runtime;
   const runtime = options?.runtime ?? new SessionRuntime({ history });
   runtime.toolExecutionScheduler.setLimit(config.settings.toolExecution.maxConcurrent);
+  /**
+   * The managed child this loop is, named for an operator notice: the profile or role first,
+   * then the agent id, because "the operator was refused something" is only actionable once it
+   * says who. `undefined` in the root loop, where the notice is about this session.
+   */
+  const childLabel = childRefusalLabel(options);
+  /**
+   * Tell the operator, once per session per tool and remedy, what would let a refused call through.
+   *
+   * A child's refusals are labelled with the child (#305 item 4): a managed agent's prompt is
+   * written by the delegating model, so the operator sees the refusal arrive with no indication
+   * of which agent produced it — a blocked step looks exactly like a blocked plan.
+   */
+  const noteUnattendedRefusal = (toolName: string, remedy: UnattendedRemedy): void => {
+    const key = `${toolName}:${remedy.kind}`;
+    if (runtime.unattendedRefusalNotices.has(key)) return;
+    runtime.unattendedRefusalNotices.add(key);
+    const notice = unattendedRefusalNotice(toolName, remedy);
+    if (notice) callbacks.onNotice?.(labelNotice(childLabel, notice));
+  };
+  /**
+   * The operator's line for a read the file tools cannot serve, in a child's run only: the root
+   * session shows the refusal in its own transcript, where the model and the operator are reading
+   * the same thing, but a child's result is summarised into a handoff, so the refusal has to be
+   * carried out of it or the operator never learns the step could not happen.
+   */
+  const noteChildRefusal = (toolName: string, message: string): void => {
+    if (!childLabel) return;
+    const key = `${childLabel}:${toolName}:outside`;
+    if (runtime.unattendedRefusalNotices.has(key)) return;
+    runtime.unattendedRefusalNotices.add(key);
+    callbacks.onNotice?.(labelNotice(childLabel, message));
+  };
   runtime.agentContextCache.beginTurn();
   if (!registry.getTool('ToolSearch')) registry.registerAll(toolSearchTools);
 
@@ -381,6 +462,7 @@ export async function runAgentLoop(
         id: crypto.randomUUID(),
         role: 'assistant',
         content: `[UserPromptSubmit hook blocked the prompt${r.message ? `: ${r.message}` : ''}]`,
+        hostNotice: true,
         includeInContext: false,
         timestamp: Date.now(),
       });
@@ -423,6 +505,8 @@ export async function runAgentLoop(
     };
     const activationPolicy = skillRegistry.activationPolicy(skillName, 'user');
     let approved = activationPolicy !== 'deny';
+    let noApprover = false;
+    let dismissed = false;
     if (activationPolicy === 'ask') {
       skillRegistry.requestConsent(skillName, 'user');
       const verdict = evaluatePermissionDetail(call.name, call.arguments, config.settings);
@@ -434,10 +518,16 @@ export async function runAgentLoop(
         const decision = await callbacks.onPermissionRequired(call);
         permission = permissionResultOf(decision);
         chosenRule = permissionRuleOf(decision);
+        const reason = permissionReasonOf(decision);
+        noApprover = reason === 'no_approver';
+        dismissed = reason === 'dismissed';
       }
       approved = permission === 'allow' || permission === 'always';
       if (permission === 'always' && callbacks.onPersistPermissionRule) {
-        callbacks.onPersistPermissionRule(chosenRule ?? permissionRuleForToolCall(call));
+        // No rule, no write: a call with no primary argument has nothing to scope one
+        // to, and the bare tool rule would allow every call of that tool afterwards.
+        const rule = chosenRule ?? permissionRuleForToolCall(call);
+        if (rule) callbacks.onPersistPermissionRule(rule);
       }
     }
     if (!approved) {
@@ -446,8 +536,26 @@ export async function runAgentLoop(
       const message =
         activationPolicy === 'deny'
           ? `Skill activation is denied: ${skillName}`
-          : `Explicit skill activation was denied: ${skillName}`;
-      if (activationPolicy === 'ask') skillRegistry.denyConsent(skillName, 'user');
+          : noApprover
+            ? `Explicit skill activation needs approval, and nothing in this run can answer a permission prompt: ${skillName}`
+            : dismissed
+              ? `Explicit skill activation was not answered before its prompt was dismissed: ${skillName}`
+              : `Explicit skill activation was denied: ${skillName}`;
+      if (activationPolicy === 'ask') {
+        skillRegistry.denyConsent(
+          skillName,
+          'user',
+          noApprover ? 'no_approver' : dismissed ? 'dismissed' : 'user_denied',
+        );
+      }
+      if (noApprover) {
+        noteUnattendedRefusal('InvokeSkill', {
+          kind: 'allow_rule_only',
+          // A call with nothing to scope a rule to is covered only by the bare tool
+          // name, which is the rule the remedy then quotes.
+          rule: permissionRuleForToolCall(call) ?? 'InvokeSkill',
+        });
+      }
       skillRegistry.recordActivationBlocked(skillName, 'user', code, message);
       explicitSkillFailures.push(message);
       continue;
@@ -505,11 +613,40 @@ export async function runAgentLoop(
   });
 
   const initialMode = mode as PermissionMode;
+  // Read may open the memory directory (minus its inbox) and, below, every file this
+  // session clipped a result into: a clip notice's "Full output: <path>" (#248). Never the
+  // whole tool-output directory, which holds every project's clipped output. The earlier
+  // prompts' files come from the runtime, so a notice the model was given one turn ago
+  // stays readable for the rest of the session.
+  const readOnlyRoots: Array<string | ReadOnlyRoot> = [
+    ...(config.memoryContext?.dir
+      ? [{ root: config.memoryContext.dir, exclude: ['.inbox'] } as const]
+      : []),
+    ...runtime.clippedOutputPaths,
+  ];
+  /**
+   * The honored `additionalDirectories` (#300), resolved once for the run: the real paths of the
+   * declared directories, which is what a trust decision was recorded against. The file tools and
+   * the permission scope both read this list, so the two judge the same path the same way — and a
+   * managed child or subagent inherits it through the context it is given, exactly as its parent
+   * has it.
+   */
+  const additionalRoots = resolveAdditionalRoots(
+    config.workspace,
+    config.settings.additionalDirectories,
+  );
+  /**
+   * The home directories under which a read keeps asking, resolved once per run: a home holds SSH
+   * and provider keys and Book's own trust store, and the one thing `additionalDirectories` widens
+   * is exactly which paths a read may reach without a prompt. Guarding on the resolved target
+   * rather than on the declaring root covers a home held inside a root or reached through a link
+   * in one, and keeps the per-call check a string comparison.
+   */
+  const homeGuardPaths = homeGuards();
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
-    readOnlyRoots: config.memoryContext?.dir
-      ? [{ root: config.memoryContext.dir, exclude: ['.inbox'] }]
-      : undefined,
+    readOnlyRoots,
+    additionalRoots,
     env: process.env as Record<string, string>,
     envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,
@@ -661,6 +798,39 @@ export async function runAgentLoop(
       log.info('deferred compaction started', { messages: snapshot.length });
     };
     /**
+     * Replace the history with a compacted one, and clear what the old size
+     * made stale. Every site that applies a compaction goes through this, so
+     * the three statements it takes cannot drift apart between them.
+     */
+    const applyCompaction = (
+      result: CompactResult,
+    ): result is Extract<CompactResult, { status: 'compacted' }> => {
+      if (result.status !== 'compacted') return false;
+      newHistory.length = 0;
+      newHistory.push(...result.replacementHistory);
+      lastUsage = null;
+      lastCompactAttemptKey = null;
+      return true;
+    };
+    /** What a compaction that did not compact says about why, for the gate's refusal. */
+    const shortfallOf = (result: CompactResult): string | undefined =>
+      result.status === 'failed'
+        ? result.error
+        : result.status === 'skipped'
+          ? (result.message ?? result.reason)
+          : undefined;
+    /**
+     * Whether a failed model compaction may be followed by one without the model. Only a failure
+     * of the reducer's own request qualifies: a cancel, a run budget that refuses any model call,
+     * or a failure the main request would share (a rejected key, an outage, a rate limit) leaves
+     * the history alone, since the request would fail after the degraded checkpoint anyway.
+     */
+    const modelFreeMayFollow = (result: CompactResult): boolean =>
+      result.status === 'failed' &&
+      result.reason !== 'aborted' &&
+      result.reason !== 'budget-overflow' &&
+      !(result.providerCode !== undefined && SHARED_FAILURE_CODES.has(result.providerCode));
+    /**
      * Commit a prepared compaction against the history as it stands. Returns
      * true when history was replaced; false when there was nothing prepared,
      * the judge rejected it, or it no longer applies -- the caller then falls
@@ -690,11 +860,7 @@ export async function runAgentLoop(
       }
       try {
         const result = await callbacks.commitCompact!(settled, [...newHistory], { signal });
-        if (result.status === 'compacted') {
-          newHistory.length = 0;
-          newHistory.push(...result.replacementHistory);
-          lastUsage = null;
-          lastCompactAttemptKey = null;
+        if (applyCompaction(result)) {
           log.info('deferred compaction committed', {
             verdict: result.judge?.verdict,
             delta: result.judge?.deltaMessages,
@@ -720,6 +886,14 @@ export async function runAgentLoop(
     let streamReissues = 0;
     /** Continuations after an output cap; budgeted separately from transport faults. */
     let outputCapContinues = 0;
+    /**
+     * Whether the host is currently showing a retry label. The TUI clears that
+     * label on `onStreamResume`, which no provider calls after a re-sent turn,
+     * so the loop reports the resume itself the first time the retried stream
+     * answers. Run-level: a turn that retries after another one has already
+     * spoken still owes the host the same single resume.
+     */
+    let retryLabelShown = false;
     /** Host-authored continuations spent, and the witnesses they were taken at. */
     let continuationCount = 0;
     const continuationWitnesses: string[] = [];
@@ -739,13 +913,22 @@ export async function runAgentLoop(
      */
     const blockedTurnTools = new Set<string>();
     /**
-     * What refused the streak's calls: a kind of network-policy refusal, or `other` for a
-     * permission or any other refusal. Kept over every turn of the streak, not only the last,
-     * because each kind names a different remedy in the terminal message.
+     * What refused the streak's calls, as the kind of refusal that decides what lifts it. Kept
+     * over every turn of the streak, not only the last, because each kind names a different
+     * remedy in the terminal message.
      */
-    const blockedStreakCauses = new Set<NetworkPolicyRefusal | 'other'>();
+    const blockedStreakCauses = new Set<LocalRefusalKind>();
     /** The network-policy refusals of the streak, so each remedy can name what was refused. */
     const blockedStreakNetworkRefusals: ToolResult[] = [];
+    /** The workspace root after following links, resolved once for the run. */
+    const workspaceRealRoot = realWorkspaceRoot(config.workspace);
+    /**
+     * A workspace that holds a home directory — the OS home, or Book's own (`BOOK_HOME`) — keeps
+     * prompting for reads: a home carries SSH and provider keys and Book's trust store (#264).
+     * Compared as written and after following links, so a workspace that is a link to a home, or
+     * a home reached through a link, still counts.
+     */
+    const workspaceHoldsHome = rootHoldsHome(config.workspace);
     // Monotonic, and never leaves this function as a stamp. Over a run measured
     // in days a wall-clock correction would silently rewrite how long the model
     // is told it has been working, in either direction.
@@ -757,6 +940,8 @@ export async function runAgentLoop(
     let contentFilterRetryTurn = -1;
     let upstreamErrorRetryTurn = -1;
     let forcedCompactTurn: number | null = null;
+    /** The size-inferred retry awaiting its verdict: which turn, how large, and how it was shrunk. */
+    let sizeInferredRetry: { turn: number; tokens: number; compacted: boolean } | null = null;
     let effectiveMode = initialMode;
     /** Set when the user approves a plan with fresh context; ends the turn so the host can reseed. */
     let handoffRequested: { plan: string; mode: PermissionMode } | null = null;
@@ -843,12 +1028,7 @@ export async function runAgentLoop(
             });
             try {
               const result = await callbacks.onCompact(newHistory, lastUsage, hints);
-              if (result.status === 'compacted') {
-                newHistory.length = 0;
-                newHistory.push(...result.replacementHistory);
-                lastUsage = null;
-                lastCompactAttemptKey = null;
-              }
+              applyCompaction(result);
               // skipped/failed: keep lastUsage so the host can still act; do not retry same snapshot
             } catch {
               // non-fatal: continue with full history this turn
@@ -965,6 +1145,17 @@ export async function runAgentLoop(
         );
         requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
       };
+      /** An estimated usage record for a compaction the loop asks for before sending. */
+      const estimatedUsageFor = (tokens: number): Usage => ({
+        promptTokens: tokens,
+        completionTokens: 0,
+        totalTokens: tokens,
+        contextTokens: tokens,
+      });
+      /** Why the model compaction at this gate did not compact, for the refusal's message. */
+      let compactionShortfall: string | undefined;
+      /** The model compaction failed outright (not skipped, not cancelled): the last resort may run. */
+      let modelCompactionFailed = false;
       // Everything in the request that is not history: system prompt, tool schemas, session
       // state. Compaction sizes its target against the gate, which counts all of it.
       const requestOverheadTokens = Math.max(0, requestTokens - estimateHistoryTokens(newHistory));
@@ -1002,29 +1193,35 @@ export async function runAgentLoop(
         const attemptKey = `preflight:${requestTokens}:${newHistory.length}`;
         if (attemptKey !== lastCompactAttemptKey) {
           lastCompactAttemptKey = attemptKey;
-          const estimatedUsage: Usage = {
-            promptTokens: requestTokens,
-            completionTokens: 0,
-            totalTokens: requestTokens,
-            contextTokens: requestTokens,
-          };
           log.info('preflight compact triggered', { requestTokens, contextLimit });
           try {
-            const result = await callbacks.onCompact(newHistory, estimatedUsage, {
+            const result = await callbacks.onCompact(newHistory, estimatedUsageFor(requestTokens), {
               requestOverheadTokens,
             });
-            if (result.status === 'compacted') {
-              newHistory.length = 0;
-              newHistory.push(...result.replacementHistory);
-              lastUsage = null;
-              lastCompactAttemptKey = null;
+            if (applyCompaction(result)) {
               await rebuildRequest();
+            } else {
+              // The refusal below names this, so a run that ends here says why the
+              // compaction did not help.
+              compactionShortfall = shortfallOf(result);
+              modelCompactionFailed = modelFreeMayFollow(result);
             }
-          } catch {
+          } catch (error) {
             // Deterministic clipping below remains available if model-assisted compaction fails.
+            // A throw is not the reducer's own request failing, and this call would throw the
+            // same way, so it does not call for a model-free compaction either.
+            compactionShortfall = error instanceof Error ? error.message : String(error);
+            log.warn('preflight compaction failed', { error: compactionShortfall });
           }
         }
       }
+
+      // The model-free compaction below reads the history as it stood before these
+      // clips: its own selection keeps the results it retains at its own cap, where
+      // the flat cap applied here would have cut the evidence it keeps. A successful
+      // compaction replaces the history, so the clips go with it. Taken only when the
+      // clips can run, and handed back uncut when the gate refuses below.
+      const beforeClips = preflightEligible ? [...newHistory] : undefined;
 
       if (preflightEligible) {
         // The scaled cap keeps what compaction just retained intact.
@@ -1055,9 +1252,75 @@ export async function runAgentLoop(
         }
       }
 
-      if (requestTokens >= usableContextLimit && hasToolResultsNow) {
+      const autoCompactOn = config.autoCompactEnabled !== false;
+      /** Whether the last resort replaced the history, so the clips it discards do not need restoring. */
+      let lastResortCompacted = false;
+      // The last resort (#238). The model compaction above failed, and the clip cannot
+      // shrink a request that is still over the window: after resuming a long session on
+      // a model with a smaller window, the tool results are already small. A checkpoint
+      // built without the model needs no provider call, so it is made here rather than
+      // refusing a request compaction can always bring under the limit. A skipped or
+      // blocked model compaction does not get a second attempt: a PreCompact hook that
+      // blocked the first would run, and block, again.
+      if (
+        modelCompactionFailed &&
+        !signal?.aborted &&
+        requestTokens >= usableContextLimit &&
+        hasToolResultsNow &&
+        autoCompactOn &&
+        callbacks.onCompact
+      ) {
+        log.warn('preflight: compacting without the model', { requestTokens, usableContextLimit });
+        try {
+          // The history it compacts is the one before the clips, so the size recorded is that
+          // of the history, not of the request the gate was measuring.
+          const compactionHistory = beforeClips ?? newHistory;
+          const result = await callbacks.onCompact(
+            compactionHistory,
+            estimatedUsageFor(estimateHistoryTokens(compactionHistory) + requestOverheadTokens),
+            {
+              requestOverheadTokens,
+              deterministic: true,
+            },
+          );
+          if (applyCompaction(result)) {
+            lastResortCompacted = true;
+            await rebuildRequest();
+            // A checkpoint that did compact can still leave the request over the
+            // window; the reducer's own error is not why, so the refusal must not
+            // name it.
+            compactionShortfall = 'a checkpoint built without the model was still too large';
+          } else {
+            compactionShortfall = shortfallOf(result);
+          }
+        } catch (error) {
+          // The refusal below reports it.
+          compactionShortfall = error instanceof Error ? error.message : String(error);
+          log.warn('preflight compaction without the model failed', { error: compactionShortfall });
+        }
+      }
+
+      if (signal?.aborted) break;
+
+      // Recounted after compaction: the gate refuses requests that carry tool results,
+      // and a history the compaction turned into text no longer does.
+      const toolResultsRemain = newHistory.some(
+        (message) => (message.toolResults?.length ?? 0) > 0,
+      );
+      if (requestTokens >= usableContextLimit && toolResultsRemain) {
+        // Nothing is sent, so the clips bought nothing: hand back the history uncut.
+        if (beforeClips && !lastResortCompacted) {
+          newHistory.length = 0;
+          newHistory.push(...beforeClips);
+        }
+        const sizes = `${requestTokens} estimated input tokens, ${usableContextLimit} available input tokens after reserving output space`;
+        const shortfall = compactionShortfall ? ` (${compactionShortfall})` : '';
         callbacks.onError(
-          `Request is too large for ${effectiveConfig.model} (${requestTokens} estimated input tokens, ${usableContextLimit} available input tokens after reserving output space). Start a new session or reduce the current prompt.`,
+          !autoCompactOn
+            ? `Request is too large for ${effectiveConfig.model} (${sizes}), and auto-compaction is off (autoCompactEnabled: false). Turn it on, run /compact, or start a new session.`
+            : !callbacks.onCompact
+              ? `Request is too large for ${effectiveConfig.model} (${sizes}). Start a new session or reduce the current prompt.`
+              : `Request is too large for ${effectiveConfig.model} (${sizes}). Compaction could not bring it under the limit${shortfall}. Start a new session or reduce the current prompt.`,
         );
         finishTerminal(
           createTerminalOutcome('failed', 'context_overflow', {
@@ -1097,6 +1360,18 @@ export async function runAgentLoop(
 
       const provider = options?.provider ?? createProvider(effectiveConfig);
       let usageRecorded = false;
+      /**
+       * Charge the run before anyone is told about the response.
+       *
+       * `onUsage` is the seam that persists this turn's spend, and it works out
+       * what to write by snapshotting the root: reported first, it saw a total
+       * that excluded the request it was being called for, so every run wrote its
+       * first request's usage twice and lost its last. The same order the
+       * compactor's model calls already use (`accountedOptions` in agent-session).
+       * Nothing that runs inside the callback reads the total expecting this turn
+       * to be missing from it — the budget gate runs before the next call, and the
+       * cost display runs at the turn boundary.
+       */
       const recordTurnUsage = (): void => {
         if (!turnUsage || usageRecorded) return;
         usageRecorded = true;
@@ -1104,9 +1379,10 @@ export async function runAgentLoop(
           provider: provider.id,
           requestedModel: effectiveConfig.model,
         };
-        callbacks.onUsage?.(turnUsage, metadata);
-        if (options?.runContext)
+        if (options?.runContext) {
           runtime.runAccounting.record(options.runContext, turnUsage, metadata);
+        }
+        callbacks.onUsage?.(turnUsage, metadata);
       };
       if (options?.runContext) {
         const budget = runtime.runAccounting.checkBeforeModelCall(
@@ -1135,9 +1411,11 @@ export async function runAgentLoop(
             );
           }
           callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
+          retryLabelShown = true;
         },
         onStreamStall: (countdownMs) => {
           callbacks.onStreamStall?.(countdownMs);
+          retryLabelShown = true;
         },
         onStreamResume: () => {
           callbacks.onStreamResume?.();
@@ -1151,6 +1429,16 @@ export async function runAgentLoop(
 
       try {
         for await (const event of stream) {
+          // The retry label a re-sent turn left up ends with the answer, not with
+          // the run: the host is told the stream resumed on the first content of
+          // the retried attempt.
+          if (
+            retryLabelShown &&
+            (event.type === 'text' || event.type === 'reasoning' || event.type === 'tool_call')
+          ) {
+            retryLabelShown = false;
+            callbacks.onStreamResume?.();
+          }
           if (event.type === 'reasoning' && event.reasoning) {
             reasoningContent += event.reasoning;
             if (reasoningStreamingStarted) callbacks.onReasoning?.(event.reasoning);
@@ -1224,10 +1512,37 @@ export async function runAgentLoop(
       }
 
       assistantContent = textBuffer;
+      // Resolved once, here, because the split below and the classification that
+      // follows it have to agree on what this reply was. A response can report
+      // more than one reason (`content_filter` alongside `length` on a router that
+      // filters and then runs out of room), so a reader of the raw array could end
+      // the run as an output-cap continuation while the split read a filter.
+      const finishReason = responseMetadata?.finishReasons?.find((reason) =>
+        SETTLED_FINISH_REASONS.includes(reason),
+      );
+      const truncatedFinish = isTruncationFinishReason(finishReason);
       {
         // Gate on the block, not on its text: the empty `<think></think>` a
         // model emits with thinking off still has to leave the answer.
-        const inline = separateInlineReasoning(assistantContent);
+        //
+        // A reply the provider cut short is split under the same rules, with the
+        // one exception the split takes for a fragment: the close tag no longer
+        // ends a line, because the answer after it never got to start one. Left
+        // as answer text it is re-sent to the model as answer text on every
+        // later request of the run, which is what makes a model that saw the
+        // convention start writing reasoning tags into its content.
+        //
+        // "Cut short" is those two ways a run ends holding a fragment and nothing
+        // else: the output cap, and a stream that dropped before its terminal
+        // event — the transport fault the loop re-issues further down. An
+        // interrupt ends the run as `caller_cancelled` and every other stream
+        // error is a fault to re-send rather than a reply the provider meant to
+        // leave unfinished, so neither may have answer text moved into reasoning.
+        const streamDropped =
+          !streamDone && !signal?.aborted && streamErrorCode === 'transport_interrupted';
+        const inline = separateInlineReasoning(assistantContent, {
+          truncated: truncatedFinish || streamDropped,
+        });
         if (inline.found) {
           reasoningContent = [reasoningContent, inline.reasoning].filter(Boolean).join('\n\n');
           assistantContent = inline.content;
@@ -1246,18 +1561,8 @@ export async function runAgentLoop(
         );
       }
 
-      const finishReason = responseMetadata?.finishReasons?.find((reason) =>
-        [
-          'length',
-          'max_tokens',
-          'model_context_window_exceeded',
-          'content_filter',
-          'refusal',
-          'error',
-        ].includes(reason),
-      );
       if (!streamError && streamDone && finishReason) {
-        if (TRUNCATION_FINISH_REASONS.has(finishReason)) {
+        if (truncatedFinish) {
           // Not a protocol error. On a migration or a generated file, hitting the
           // output cap is the shape of the work, not an anomaly — and classifying
           // it as a protocol error made it unrecoverable.
@@ -1421,17 +1726,29 @@ export async function runAgentLoop(
       // any partial assistant text/tool call metadata in returned history so
       // callers that persist sessions do not lose what was already rendered.
       if (streamError && !signal?.aborted) {
+        // OpenAI's per-minute cap on one request that can never fit under it (`429 Request too
+        // large … tokens per min (TPM)`): compaction lets it through, but it says nothing about
+        // the model's window, so it must not lower the learned window for good — the same rule
+        // the retry layer applies, on the same text. It is read from the text whatever status
+        // carried it, since a route may answer it as a 413 or a 503, and no rate-limit error
+        // ever states an overflow of the model's window.
+        const rateLimitedBySize = isOversizedForRateLimit(streamError);
         const statedOverflow =
-          streamErrorCode === 'context_overflow' || isContextOverflowError(streamError);
+          !rateLimitedBySize &&
+          streamErrorCode !== 'rate_limited' &&
+          (streamErrorCode === 'context_overflow' || isContextOverflowError(streamError));
         const overflowBySize =
           !statedOverflow &&
+          !rateLimitedBySize &&
           streamErrorCode === 'bad_request' &&
           requestTokens >= LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS;
         const canRecoverContextOverflow =
           forcedCompactTurn !== turn &&
           assistantContent.length === 0 &&
           toolCalls.length === 0 &&
-          (statedOverflow || overflowBySize);
+          (statedOverflow || overflowBySize || rateLimitedBySize);
+        /** The recovery ended without a retry because auto-compaction was off, not on a verdict. */
+        let recoveryNeededCompaction = false;
         if (canRecoverContextOverflow) {
           forcedCompactTurn = turn;
           log.warn('provider context overflow; forcing compaction before retry', {
@@ -1439,6 +1756,7 @@ export async function runAgentLoop(
             historyLength: newHistory.length,
             error: streamError,
             inferredFromSize: overflowBySize,
+            rateLimitedBySize,
             requestTokens,
             upstreamStatus: streamUpstreamStatus,
           });
@@ -1478,45 +1796,46 @@ export async function runAgentLoop(
             }
           }
 
+          // Planned below the size just refused. A size-inferred overflow leaves the learned
+          // window alone, so without this the reducer's first request would be nearly as large
+          // as the refused one. A TPM refusal states a smaller per-request limit than the
+          // window ever showed, so the recovery plans under whichever is lower.
+          const rateLimitCeiling = rateLimitedBySize ? statedRateLimit(streamError) : undefined;
+          const planningWindowCap = Math.floor(
+            Math.min(requestTokens, rateLimitCeiling ?? requestTokens) *
+              LEARNED_WINDOW_SAFETY_MARGIN,
+          );
+          const recoveryUsage = estimatedUsageFor(requestTokens);
           let compactedTokens: number | undefined;
           let compacted = false;
-          if (callbacks.onCompact) {
+          let recoveryCompactionFailed = false;
+          const takeCompaction = (result: CompactResult): boolean => {
+            if (!applyCompaction(result)) return false;
+            beforeTokens = Math.max(
+              beforeTokens,
+              result.preContextTokens ?? result.checkpoint.statistics.preTokens,
+            );
+            compactedTokens = result.postContextTokens;
+            compacted = true;
+            return true;
+          };
+          // The recovery compacts only when auto-compaction is on, like every other site.
+          if (autoCompactOn && callbacks.onCompact) {
             // The recovery replaces history outright, so a reducer still running
             // on a snapshot could never be applied afterwards; stop it now rather
             // than let it finish and bill the run for a checkpoint nobody reads.
             abortPendingCompaction('overflow recovery');
-            const estimatedUsage: Usage = {
-              promptTokens: requestTokens,
-              completionTokens: 0,
-              totalTokens: requestTokens,
-              contextTokens: requestTokens,
-            };
             try {
               // The provider has refused the request the residual tail was sized for; the
               // compactor keeps the short tail so the one retry fits any real window.
-              const result = await callbacks.onCompact(newHistory, estimatedUsage, {
+              const result = await callbacks.onCompact(newHistory, recoveryUsage, {
                 recovery: true,
                 requestOverheadTokens: lastRequestEstimate?.overheadTokens,
-                // Planned below the size just refused. A size-inferred overflow leaves
-                // the learned window alone, so without this the reducer's first request
-                // would be nearly as large as the refused one.
-                planningWindowCap: Math.floor(requestTokens * LEARNED_WINDOW_SAFETY_MARGIN),
+                planningWindowCap,
               });
-              if (result.status === 'compacted') {
-                newHistory.length = 0;
-                newHistory.push(...result.replacementHistory);
-                lastUsage = null;
-                lastCompactAttemptKey = null;
-                beforeTokens = Math.max(
-                  beforeTokens,
-                  result.preContextTokens ?? result.checkpoint.statistics.preTokens,
-                );
-                compactedTokens = result.postContextTokens;
-                compacted = true;
-              } else {
-                log.warn('context-overflow compaction did not complete', {
-                  status: result.status,
-                });
+              if (!takeCompaction(result)) {
+                recoveryCompactionFailed = modelFreeMayFollow(result);
+                log.warn('context-overflow compaction did not complete', { status: result.status });
               }
             } catch (error) {
               log.warn('context-overflow compaction failed', {
@@ -1524,18 +1843,59 @@ export async function runAgentLoop(
               });
             }
           }
+          // A clip is committed only when the turn is retried with it: a recovery that ends
+          // here leaves the history as the provider refused it, not cut for nothing.
+          let clippedHistory: Message[] | undefined;
           if (!compacted) {
-            const clippedHistory = clipHistoryToolResults(newHistory);
-            newHistory.length = 0;
-            newHistory.push(...clippedHistory);
+            clippedHistory = clipHistoryToolResults(newHistory);
+            // A size-inferred retry must also get under the floor that inferred it.
+            const retryCeiling = overflowBySize
+              ? Math.min(planningWindowCap, LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS)
+              : planningWindowCap;
+            const clipFits =
+              estimateHistoryTokens(clippedHistory) + requestOverheadTokens < retryCeiling;
+            if (
+              !clipFits &&
+              recoveryCompactionFailed &&
+              !signal?.aborted &&
+              autoCompactOn &&
+              callbacks.onCompact
+            ) {
+              // The reducer failed and the clip cannot bring the request under the size just
+              // refused. A checkpoint built without the model needs no provider call.
+              try {
+                const result = await callbacks.onCompact(newHistory, recoveryUsage, {
+                  recovery: true,
+                  requestOverheadTokens: lastRequestEstimate?.overheadTokens,
+                  planningWindowCap,
+                  deterministic: true,
+                });
+                if (takeCompaction(result)) clippedHistory = undefined;
+              } catch (error) {
+                log.warn('context-overflow compaction without the model failed', {
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+            }
           }
-          const afterTokens = compactedTokens ?? estimateHistoryTokens(newHistory);
+          const afterTokens =
+            compactedTokens ?? estimateHistoryTokens(clippedHistory ?? newHistory);
           // A size-inferred overflow is retried only below the floor that inferred it: at
-          // or above it the same request would be refused the same way.
+          // or above it the same request would be refused the same way. A TPM refusal is
+          // retried only under the limit it states.
           const retryRequestTokens = afterTokens + requestOverheadTokens;
           const belowInferenceFloor =
             !overflowBySize || retryRequestTokens < LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS;
-          if (afterTokens < beforeTokens && belowInferenceFloor) {
+          const belowRateLimit =
+            rateLimitCeiling === undefined || retryRequestTokens < rateLimitCeiling;
+          if (afterTokens < beforeTokens && belowInferenceFloor && belowRateLimit) {
+            if (clippedHistory) {
+              newHistory.length = 0;
+              newHistory.push(...clippedHistory);
+            }
+            if (overflowBySize) {
+              sizeInferredRetry = { turn, tokens: retryRequestTokens, compacted };
+            }
             log.warn('context overflow recovered; retrying with reduced history', {
               beforeTokens,
               afterTokens,
@@ -1543,6 +1903,8 @@ export async function runAgentLoop(
             retrySameTurn = true;
             continue;
           }
+          // Nothing retried, and the only reason the recovery had was the size: say which.
+          recoveryNeededCompaction = !autoCompactOn;
           if (!belowInferenceFloor) {
             log.warn('size-inferred overflow is still above the floor after compaction', {
               afterTokens,
@@ -1550,6 +1912,18 @@ export async function runAgentLoop(
             });
           }
         }
+        // Any `bad_request` of 200k tokens or more compacts once (the owner's rule). When the same
+        // verdict comes back on the smaller retry, either it was never about size, or the route's
+        // real limit sits below the floor, which a declared window fixes.
+        if (sizeInferredRetry?.turn === turn && streamErrorCode === 'bad_request') {
+          streamError = `${streamError} The request was refused again after ${sizeInferredRetry.compacted ? 'compacting it' : 'clipping its tool results'} to about ${Math.round(sizeInferredRetry.tokens / 1000)}k tokens: either the refusal is not about size, or this route's limit is lower, and declaring contextWindow for the model makes Book compact below it.`;
+        }
+        if (recoveryNeededCompaction) {
+          streamError = `${streamError} Auto-compaction is off (autoCompactEnabled: false), so the recovery could only clip tool results.`;
+        }
+        // A request larger than the rate limit allows at once is refused the same way however
+        // often it is re-sent; with its one recovery spent, the run ends on it.
+        if (rateLimitedBySize) streamErrorCode = 'context_overflow';
         log.warn('stream error', {
           error: streamError,
           contentLen: assistantContent.length,
@@ -1568,7 +1942,11 @@ export async function runAgentLoop(
           const abandonedResults = toolCalls.map<ToolResult>((call, callIndex) => {
             const result = toolFailure(
               'INTERRUPTED: the provider stream ended before this tool ran',
-              { toolCallId: call.id, code: 'cancelled', status: 'cancelled' },
+              {
+                toolCallId: call.id,
+                code: 'cancelled_before_start',
+                status: 'cancelled',
+              },
             );
             callbacks.onToolResult(result);
             const nestedTraceId = nestedTraceIds[callIndex];
@@ -1679,7 +2057,14 @@ export async function runAgentLoop(
             recovery === 'continue'
               ? 0
               : Math.min(config.retry.maxDelayMs, config.retry.baseDelayMs * 2 ** streamReissues);
-          callbacks.onRetry?.('transport', spent + 1, allowed, reissueDelayMs);
+          callbacks.onRetry?.(
+            recovery === 'continue' ? 'continue' : 'reissue',
+            spent + 1,
+            allowed,
+            reissueDelayMs,
+            streamOutcome.reason,
+          );
+          retryLabelShown = true;
           await delay(reissueDelayMs, signal);
           if (!signal?.aborted) {
             // Never re-send a request that ENDS with an assistant message.
@@ -1749,7 +2134,7 @@ export async function runAgentLoop(
         const cancelledResults = toolCalls.map<ToolResult>((call, callIndex) => {
           const result = toolFailure('CANCELLED: Agent execution was interrupted', {
             toolCallId: call.id,
-            code: 'cancelled',
+            code: 'cancelled_before_start',
             status: 'cancelled',
           });
           callbacks.onToolResult(result);
@@ -1821,6 +2206,7 @@ export async function runAgentLoop(
           content: [assistantContent, `[Tool batch rejected: ${message}]`]
             .filter(Boolean)
             .join('\n\n'),
+          hostNotice: true,
           reasoningContent: reasoningContent || undefined,
           providerMetadata: assistantProviderMetadata,
           includeInContext: true,
@@ -1891,9 +2277,36 @@ export async function runAgentLoop(
         if (signal?.aborted) {
           toolResults[callIndex] = toolFailure('CANCELLED: Agent execution was interrupted', {
             toolCallId: originalCall.id,
-            code: 'cancelled',
+            code: 'cancelled_before_start',
             status: 'cancelled',
           });
+          return undefined;
+        }
+
+        // A call that can never run however it is approved — an unknown tool, arguments that
+        // never parsed, or arguments that fail the tool's schema — is refused before PreToolUse
+        // hooks and the permission check see it, so a hook never judges it and the user is never
+        // asked to approve one (an 'Always' on a Bash call with no command would save a bare
+        // `Bash` rule). A tool that is merely not active, or active but refused on its
+        // arguments, is refused just before the permission prompt instead, once the
+        // mode-specific refusals below have named their mode.
+        syncHostMode();
+        const registeredTool = registry.getTool(originalCall.name);
+        const earlyName = canonicalToolName(registeredTool?.name ?? originalCall.name);
+        // Plan mode hides its mutating tools and dontAsk its question tool, and each refuses them
+        // below with a message that names the mode. "Not active; call ToolSearch" would send the
+        // model after a tool no search can activate, so those calls are left to the mode — but
+        // only a registered tool is the mode's to hide; an unknown one is `unknown_tool`, not a
+        // plan refusal.
+        const modeRefusesItself =
+          registeredTool !== undefined &&
+          ((effectiveMode === 'plan' && !READ_ONLY_PLAN_TOOLS.has(earlyName)) ||
+            (effectiveMode === 'dontAsk' && earlyName === 'AskUserQuestion'));
+        const unrunnable = modeRefusesItself
+          ? undefined
+          : registry.rejectBeforeGates(originalCall, toolContext);
+        if (unrunnable) {
+          toolResults[callIndex] = unrunnable;
           return undefined;
         }
 
@@ -2021,7 +2434,25 @@ export async function runAgentLoop(
         // while `deny: ["Write(.env)"]` in the same list held. Modes decide
         // whether the user is *asked*; they do not decide whether a rule the user
         // already wrote applies.
-        const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
+        const judgeReads = WORKSPACE_READ_JUDGING_MODES.has(effectiveMode);
+        const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings, {
+          workspace: {
+            root: toolContext.workspaceRoot,
+            realRoot: workspaceRealRoot,
+            readOnlyRoots: toolContext.readOnlyRoots,
+            additionalRoots,
+            // A home directory, or anything containing one, keeps the prompt even where it was
+            // honored: that is the whole of what `additionalDirectories` widens, and a home holds
+            // SSH and provider keys and Book's own trust store.
+            homeGuards: homeGuardPaths,
+            judgeReads,
+            autoAllowReads: judgeReads && !workspaceHoldsHome,
+            // Wider than `judgeReads`: `dontAsk` prompts for nothing, so a target no root serves
+            // is refused there anyway, and refusing it as the target it is gives the model the
+            // directory that would serve it instead of a permission no rule can grant.
+            refuseUnreachableReads: WORKSPACE_READ_REFUSAL_MODES.has(effectiveMode),
+          },
+        });
         if (verdict.decision === 'deny') {
           // Consent was requested a few lines up; close it out, or the registry
           // keeps an activation request that never resolves. The later
@@ -2033,9 +2464,47 @@ export async function runAgentLoop(
             toolCallId: call.id,
             code: 'permission_denied',
             status: 'blocked',
-            content: permissionDeniedError(canonName, verdict.matchedRule),
+            content: permissionDeniedError(canonName, { kind: 'rule', rule: verdict.matchedRule }),
           });
           return undefined;
+        }
+
+        // A Read, Glob or Grep the tool itself refuses (outside the workspace and every honored
+        // root, or under a subpath a root excludes) is not a permission question: no rule and no
+        // mode make the file tools serve it, so no prompt is raised and no "Always allow" rule is
+        // written for a call that could never work. The model gets a blocked result naming the
+        // remedy instead (#305 item 3).
+        if (verdict.decision === 'refuse') {
+          if (forceSkillPermission && invokedSkillName && skillActivationReason) {
+            skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'permission_denied');
+          }
+          log.debug('refused a read the tool cannot serve', { tool: canonName });
+          // Two refusals, two messages: an unservable path is fixed by adding its directory, an
+          // excluded one is not, and naming a directory for it would be a dead end.
+          const refusal = verdict.excludedPath
+            ? excludedPathRefusal(canonName, call, { toolCallId: call.id })
+            : outsideWorkspaceRefusal(canonName, call, {
+                toolCallId: call.id,
+                additionalRoots,
+              });
+          noteChildRefusal(canonName, refusal.content);
+          toolResults[callIndex] = refusal;
+          return undefined;
+        }
+
+        // A tool this turn does not expose, or an active tool whose arguments this run's
+        // allowed-tools rules do not cover, can never run, so the user is not asked to approve it
+        // (an 'Always' would save a rule for it). Plan mode hides its mutating tools too, and its
+        // own refusal below names the mode, which "call ToolSearch" would not.
+        if (!modeRefusesItself) {
+          const inactive = registry.rejectBeforePrompt(call, toolContext);
+          if (inactive) {
+            if (forceSkillPermission && invokedSkillName && skillActivationReason) {
+              skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'tool_not_active');
+            }
+            toolResults[callIndex] = inactive;
+            return undefined;
+          }
         }
 
         const toolPermissionRequired = requiresToolPermission(
@@ -2044,18 +2513,38 @@ export async function runAgentLoop(
         );
         const userRuleAsked =
           toolPermissionRequired && verdict.decision === 'ask' && verdict.source === 'ask';
+        // A guarded read is not auto-safe in plan mode (decision C, PR #334 finding 5). The
+        // verdict is `ask` for exactly the targets that keep asking in `default` — a local
+        // settings file, a home the serving root holds, a search under a Read deny/ask rule — and
+        // `planAutoApproved` bypassed the prompt for every read-only tool, so those ran in a plan
+        // with no prompt at all. Keyed on the verdict, not on the tool, so an unguarded workspace
+        // read still runs unprompted, which is what plan mode is for.
+        // A guarded read is not auto-safe in plan mode (decision C, PR #334 finding 5). The
+        // verdict is `ask` for exactly the targets that keep asking in `default` — a local
+        // settings file, a home the serving root holds, a search scope that reaches one — and
+        // `planAutoApproved` bypassed the prompt for every read-only tool, so those ran in a plan
+        // with no prompt at all.
+        //
+        // Restricted to the tools that read the filesystem. `READ_ONLY_PLAN_TOOLS` also holds the
+        // plan-control and session tools, whose verdict is `ask` for an unrelated reason: a
+        // prompt for `ExitPlanMode` with no approver is "stop with the plan", which the loop
+        // already implements, and treating it as a guarded read turned one turn into five.
+        const guardedReadInPlan =
+          planAutoApproved && WORKSPACE_READ_TOOLS.has(canonName) && verdict.decision === 'ask';
 
         if (
           (forceSkillPermission || toolPermissionRequired) &&
           (persistentBackgroundShell ||
             !approveAllRules.some((rule) => permissionRuleMatchesCall(rule, call))) &&
-          (!autoSafeTool || userRuleAsked) &&
+          (!autoSafeTool || userRuleAsked || guardedReadInPlan) &&
           (effectiveMode !== 'plan' || planReadOnly)
         ) {
           const autoApproved = effectiveMode === 'accept-edits' && isFileMutatingTool(canonName);
           if (!autoApproved || userRuleAsked) {
             let permission: 'allow' | 'deny' | 'always' | undefined;
             let chosenRule: string | undefined;
+            let noApprover = false;
+            let dismissed = false;
             // A tool on the always-allowed list is never prompted for in any
             // mode, so `dontAsk` — which refuses what it cannot ask about —
             // has nothing to refuse. A `deny` rule already returned above, and
@@ -2072,6 +2561,9 @@ export async function runAgentLoop(
               const decision = await callbacks.onPermissionRequired(call);
               permission = permissionResultOf(decision);
               chosenRule = permissionRuleOf(decision);
+              const reason = permissionReasonOf(decision);
+              noApprover = reason === 'no_approver';
+              dismissed = reason === 'dismissed';
             }
             permission ??= 'deny';
 
@@ -2081,23 +2573,63 @@ export async function runAgentLoop(
                 skillRegistry.denyConsent(
                   invokedSkillName,
                   skillActivationReason,
-                  effectiveMode === 'dontAsk' ? 'dont_ask' : 'user_denied',
+                  effectiveMode === 'dontAsk'
+                    ? 'dont_ask'
+                    : noApprover
+                      ? 'no_approver'
+                      : dismissed
+                        ? 'dismissed'
+                        : 'user_denied',
                 );
               }
+              const askRule = verdict.source === 'ask' ? verdict.matchedRule : undefined;
+              // What would actually let this call through if nobody could approve it. An
+              // outside target comes first: no rule or mode makes the tool serve it.
+              const remedy: UnattendedRemedy = persistentBackgroundShell
+                ? { kind: 'bypass_only' }
+                : verdict.outsideWorkspace
+                  ? { kind: 'outside_workspace' }
+                  : askRule
+                    ? { kind: 'ask_rule', rule: askRule }
+                    : forceSkillPermission
+                      ? {
+                          kind: 'allow_rule_only',
+                          rule: permissionRuleForToolCall(call) ?? canonName,
+                        }
+                      : {
+                          kind: 'rule_or_auto',
+                          rule: permissionRuleForToolCall(call) ?? canonName,
+                        };
+              const cause: PermissionDenialCause =
+                effectiveMode === 'dontAsk'
+                  ? { kind: 'dont_ask', askRule }
+                  : noApprover
+                    ? { kind: 'no_approver', remedy }
+                    : dismissed
+                      ? { kind: 'dismissed' }
+                      : { kind: 'user' };
+              if (cause.kind === 'no_approver') noteUnattendedRefusal(canonName, remedy);
               toolResults[callIndex] = toolFailure('SKIPPED: Permission denied', {
                 toolCallId: call.id,
                 code: 'permission_denied',
                 status: 'blocked',
-                content: permissionDeniedError(canonName, verdict.matchedRule),
+                content: permissionDeniedError(canonName, cause),
               });
               return undefined;
             }
             if (permission === 'always' && !persistentBackgroundShell) {
               log.debug('permission always', { tool: canonName });
+              // No rule, no write: a call with no primary argument has nothing to scope
+              // one to, and a bare `Bash` rule allows every shell command afterwards. The
+              // answer still stands for this one call.
               const rule = chosenRule ?? permissionRuleForToolCall(call);
-              approveAllRules.push(rule);
-              if (callbacks.onPersistPermissionRule) {
-                callbacks.onPersistPermissionRule(rule);
+              if (!rule) {
+                log.debug('permission always with no rule to save', { tool: canonName });
+              } else {
+                approveAllRules.push(rule);
+                if (callbacks.onPersistPermissionRule) {
+                  callbacks.onPersistPermissionRule(rule);
+                }
               }
             }
           }
@@ -2437,12 +2969,19 @@ export async function runAgentLoop(
           });
         }
 
-        return boundToolResultOutput(
+        const bounded = await boundToolResultOutput(
           enrichToolResultPresentation(result, canonName, call.arguments),
           context.workspaceRoot,
           undefined,
           options?.toolOutputRoot,
         );
+        const outputPath = bounded.artifacts?.outputPath;
+        if (bounded.pagination?.truncated && outputPath) {
+          if (!readOnlyRoots.includes(outputPath)) readOnlyRoots.push(outputPath);
+          // Session-scoped, so the next prompt of this session can still Read it.
+          runtime.clippedOutputPaths.add(outputPath);
+        }
+        return bounded;
       };
 
       const finishCall = async (entry: PreparedLoopCall, result: ToolResult): Promise<void> => {
@@ -2526,23 +3065,47 @@ export async function runAgentLoop(
       // policy or user decision and `cancelled` is an abort; neither ran, so neither
       // counts toward the witness. Everything that did run counts, including errors —
       // an error-spin is caught by the witness freezing on identical file hashes.
+      /**
+       * Whether a result feeds the refusal brake: a refusal, or a call refused before it ran
+       * (unknown tool, arguments that never parsed or failed the schema). In a mode that checks
+       * permissions those used to reach the prompt, which an unattended run answers `deny`, so a
+       * spin on them was stopped; refused ahead of the prompt now, they still must be. An abort
+       * that cancelled a call before it started is not a refusal.
+       *
+       * One carve-out: a mode that never asks (`auto`, `bypassPermissions`) runs a name no
+       * registry holds exactly as it runs a mutation — as a plain error, never a refusal — so
+       * `unknown_tool` does not feed the brake there and the run stops on its turn budget.
+       * Argument refusals (`invalid_json_arguments`, `invalid_arguments`) are the run's own
+       * gates, not the mode's, so they count in every mode.
+       */
+      const modeWouldHaveAsked = needsPermissionCheck(effectiveMode);
+      const countsAsRefusal = (result: ToolResult | undefined): boolean => {
+        if (isRefusal(result)) return true;
+        const code = result?.structuredError?.code ?? '';
+        if (code === 'cancelled_before_start') return false;
+        if (code === 'unknown_tool' && !modeWouldHaveAsked) return false;
+        return refusedBeforeRun(result);
+      };
       let refusedThisTurn = 0;
       for (let index = 0; index < toolCalls.length; index++) {
-        const status = orderedToolResults[index]?.status;
-        // Neither a refusal nor an abort ran, so neither counts as progress. Only a
-        // refusal feeds the spin streak though: an abort already ends the run by
-        // its own path, and counting it would attribute a user's Ctrl-C to policy.
-        if (status === 'blocked') refusedThisTurn++;
-        if (status === 'blocked' || status === 'cancelled') continue;
+        const result = orderedToolResults[index];
+        const status = result?.status;
+        if (countsAsRefusal(result)) refusedThisTurn++;
+        // A call refused before it started ran nothing, whatever its status: it is not progress.
+        const neverRan = refusedBeforeRun(result);
+        if (status === 'blocked' || status === 'cancelled' || neverRan) continue;
         executedToolCalls++;
       }
       if (toolCalls.length > 0 && refusedThisTurn === toolCalls.length) {
         blockedTurnStreak++;
         for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
         for (const result of orderedToolResults) {
-          const kind = networkPolicyRefusal(result);
-          blockedStreakCauses.add(kind ?? 'other');
-          if (kind && result) blockedStreakNetworkRefusals.push(result);
+          if (!countsAsRefusal(result)) continue;
+          if (networkPolicyRefusal(result)) {
+            if (result) blockedStreakNetworkRefusals.push(result);
+          } else {
+            blockedStreakCauses.add(refusalKind(result) as LocalRefusalKind);
+          }
         }
       } else {
         blockedTurnStreak = 0;
@@ -2574,10 +3137,14 @@ export async function runAgentLoop(
       // reliability failures and must not inflate the fail rate. Best-effort.
       if (config.settings.observability.toolTelemetry && toolCalls.length > 0) {
         const recordedAt = Date.now();
+        // The route the model was actually reached through: a bad router is the whole
+        // story behind a run of truncated tool calls, and the model id alone hides it.
+        const telemetryProvider = telemetryProviderOf(effectiveConfig);
         const records: ToolUseRecord[] = [];
         for (let index = 0; index < toolCalls.length; index++) {
           const result = orderedToolResults[index];
           const isFailure = result.status === 'error' || result.status === 'timed_out';
+          const details = result.structuredError?.details;
           records.push({
             ts: recordedAt,
             session: runtime.traceId,
@@ -2585,9 +3152,16 @@ export async function runAgentLoop(
             status: result.status,
             isFailure,
             errorCode: isFailure ? (result.structuredError?.code ?? result.status) : undefined,
+            errorShape:
+              isFailure &&
+              result.structuredError?.code === 'invalid_json_arguments' &&
+              typeof details?.shape === 'string'
+                ? details.shape
+                : undefined,
             durationMs: result.metrics?.durationMs,
             retries: Math.max(0, (result.metrics?.retryAttempt ?? 1) - 1),
             model: effectiveConfig.model,
+            provider: telemetryProvider,
             subagent: options?.isSubagent === true,
             agentRole: options?.agentRole,
           });
@@ -2675,18 +3249,14 @@ export async function runAgentLoop(
           turns: blockedTurnStreak,
           tools: refused,
         });
-        // Each kind of refusal has its own remedy, and a streak that mixes kinds names
-        // each one, because every refused call needs its own fix before anything can
-        // proceed. A permission refusal is lifted by a rule or a mode. A network-policy
-        // refusal is lifted by neither, bypassPermissions included: a refused WebFetch
-        // by the host's opt-in, a refused WebSearch only by fixing the host's DNS. Each network
-        // remedy names the destinations the streak refused, and the WebFetch one warns that its
-        // opt-in lifts the policy for every destination, not only those.
-        const remedies: string[] = [];
-        if (blockedStreakCauses.has('other') || blockedStreakCauses.size === 0) {
-          remedies.push('grant the permission, add an allow rule, or change the permission mode');
-        }
+        // Each kind of refusal has its own remedy, and a streak that mixes kinds names each one,
+        // because every refused call needs its own fix before anything can proceed. The
+        // network-policy remedies come last and name the destinations the streak refused.
+        const remedies: string[] = REFUSAL_KIND_ORDER.filter((kind) =>
+          blockedStreakCauses.has(kind),
+        ).map((kind) => REFUSAL_REMEDIES[kind]);
         remedies.push(...networkPolicyRemedies(blockedStreakNetworkRefusals));
+        if (remedies.length === 0) remedies.push(REFUSAL_REMEDIES.permission);
         const detail =
           `Every tool call was refused on ${blockedTurnStreak} consecutive turns (${refused}). ` +
           `Nothing can proceed: ${remedies.join('. Separately, ')}.`;

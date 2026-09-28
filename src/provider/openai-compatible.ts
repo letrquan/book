@@ -6,25 +6,35 @@ import type {
 } from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
 import type { Usage } from '../types/messages.js';
-import { createDebugLogger } from '../debug-log.js';
+import { createDebugLogger, isDebugEnabled } from '../debug-log.js';
+import { escapeInvisibleCharacters } from '../control-characters.js';
 import {
   classifyApiError,
   classifyProviderError,
   fetchWithRetry,
   formatApiError,
+  readErrorBody,
   readStreamChunk,
   wrappedUpstreamStatus,
 } from './reliability.js';
 
 const log = createDebugLogger('provider');
 
-function parseToolArguments(raw: string): Record<string, unknown> {
-  if (!raw.trim()) return {};
+function parseToolArguments(raw: string): {
+  arguments: Record<string, unknown>;
+  unparsedArguments?: { raw: string; error: string };
+} {
+  if (!raw.trim()) return { arguments: {} };
   try {
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return { __raw: raw };
+    return {
+      arguments: parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {},
+    };
+  } catch (error) {
+    return {
+      arguments: {},
+      unparsedArguments: { raw, error: error instanceof Error ? error.message : String(error) },
+    };
   }
 }
 
@@ -87,6 +97,96 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
               .join('\n')
           : msg.content,
   }));
+}
+
+/**
+ * Map an OpenAI-compatible `usage` object onto Book's `Usage`, prompt-cache tokens included.
+ *
+ * Book's `promptTokens` is the uncached input, as on the Anthropic path, with cache reads and
+ * writes counted separately. Where the cache counts sit depends on who reported them:
+ *
+ * - `prompt_tokens_details.cached_tokens` / `cache_creation_tokens` / `cache_write_tokens`
+ *   (OpenAI, xAI, 9router, OpenRouter) and DeepSeek's `prompt_cache_hit_tokens`, plus Moonshot's
+ *   top-level `cached_tokens` and DashScope's `prompt_tokens_details.cache_creation_input_tokens`,
+ *   are part of `prompt_tokens`, so they are subtracted from it. `total_tokens` already covers them,
+ *   so `contextTokens` stays unset and compaction pressure is `total_tokens`, as before.
+ * - Anthropic's own top-level names (`cache_read_input_tokens`, `cache_creation_input_tokens`)
+ *   from a proxy that sends no `prompt_tokens_details` are Anthropic's numbers passed through,
+ *   where the input count excludes the cache: they are added on top, and `contextTokens` carries
+ *   the whole prompt. A proxy that reports an OpenAI-style cache field beside
+ *   them, even at zero (LiteLLM's `prompt_tokens_details.cached_tokens`), has normalised
+ *   `prompt_tokens` to include them.
+ *
+ * Counts that cannot fit inside `prompt_tokens` are treated as on top of it whatever their
+ * source. A usage with no cache tokens maps exactly as before, with no cache fields.
+ */
+export function parseCompatibleUsage(raw: unknown): Usage | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const usage = raw as Record<string, unknown>;
+  const details =
+    usage.prompt_tokens_details && typeof usage.prompt_tokens_details === 'object'
+      ? (usage.prompt_tokens_details as Record<string, unknown>)
+      : {};
+  const tokens = (value: unknown): number =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+  const firstCount = (...values: unknown[]): number => {
+    for (const value of values) {
+      const count = tokens(value);
+      if (count > 0) return count;
+    }
+    return 0;
+  };
+  const prompt = tokens(usage.prompt_tokens);
+  const base: Usage = {
+    promptTokens: prompt,
+    completionTokens: tokens(usage.completion_tokens),
+    // A provider that omits `total_tokens` would otherwise read as zero context pressure.
+    totalTokens: tokens(usage.total_tokens) || prompt + tokens(usage.completion_tokens),
+  };
+  const topRead = tokens(usage.cache_read_input_tokens);
+  const topWrite = tokens(usage.cache_creation_input_tokens);
+  // Inside `prompt_tokens` by the OpenAI convention: OpenAI, xAI, 9router, OpenRouter, DeepSeek,
+  // Moonshot (top-level `cached_tokens`) and DashScope (`cache_creation_input_tokens` in details).
+  const normalisedRead = firstCount(
+    details.cached_tokens,
+    usage.prompt_cache_hit_tokens,
+    usage.cached_tokens,
+  );
+  const normalisedWrite = firstCount(
+    details.cache_creation_tokens,
+    details.cache_write_tokens,
+    details.cache_creation_input_tokens,
+  );
+  const read = normalisedRead || topRead;
+  const write = normalisedWrite || topWrite;
+  if (read === 0 && write === 0) return base;
+  // Anthropic's top-level names with no OpenAI-style cache field beside them (not even a zero)
+  // are Anthropic's numbers passed through, where the input count excludes the cache. A field
+  // beside them, even `cached_tokens: 0` on LiteLLM's cold turn, says `prompt_tokens` was
+  // normalised to include them.
+  const reportsOpenAiCacheField = [
+    details.cached_tokens,
+    details.cache_creation_tokens,
+    details.cache_write_tokens,
+    details.cache_creation_input_tokens,
+    usage.prompt_cache_hit_tokens,
+    usage.cached_tokens,
+  ].some((value) => typeof value === 'number');
+  const anthropicPassThrough = !reportsOpenAiCacheField && topRead + topWrite > 0;
+  if (!anthropicPassThrough && read + write <= prompt) {
+    return {
+      ...base,
+      promptTokens: prompt - read - write,
+      cacheReadInputTokens: read,
+      cacheCreationInputTokens: write,
+    };
+  }
+  return {
+    ...base,
+    cacheReadInputTokens: read,
+    cacheCreationInputTokens: write,
+    contextTokens: prompt + read + write,
+  };
 }
 
 export function convertTools(tools: ToolDefinition[]): Array<{
@@ -185,7 +285,7 @@ export async function* chatCompletionStream(
   log.debug('response received', { status: response.status, ok: response.ok });
 
   if (!response.ok) {
-    const errorText = await response.text();
+    const errorText = await readErrorBody(response, signal);
     yield {
       type: 'error',
       error: formatApiError(response.status, errorText),
@@ -203,7 +303,14 @@ export async function* chatCompletionStream(
 
   const decoder = new TextDecoder();
   let buffer = '';
-  const toolCallParts: Array<{ index: number; id: string; name: string; arguments: string }> = [];
+  const toolCallParts: Array<{
+    index: number;
+    id: string;
+    name: string;
+    arguments: string;
+    /** Deltas that carried an arguments fragment: a wire format that sends one, vs many. */
+    fragments: number;
+  }> = [];
   let currentUsage: Usage | null = null;
   let responseModel: string | undefined;
   let responseId: string | undefined;
@@ -212,12 +319,26 @@ export async function* chatCompletionStream(
   const emitToolCalls = function* (): Generator<ProviderStreamEvent> {
     for (const part of [...toolCallParts].sort((a, b) => a.index - b.index)) {
       if (!part.id && !part.name) continue;
+      const { arguments: arguments_, unparsedArguments } = parseToolArguments(part.arguments);
+      if (unparsedArguments) {
+        // The head, not the whole text: enough to see whether the call arrived with its
+        // first fragment missing (#260), which is a route's wire format, not the model's JSON.
+        log.warn('tool call arguments are not valid JSON', {
+          index: part.index,
+          id: part.id,
+          name: escapeInvisibleCharacters(part.name),
+          fragments: part.fragments,
+          length: part.arguments.length,
+          head: escapeInvisibleCharacters(part.arguments.slice(0, 120)),
+        });
+      }
       yield {
         type: 'tool_call',
         toolCall: {
           id: part.id || `tool-${part.index}`,
           name: part.name,
-          arguments: parseToolArguments(part.arguments),
+          arguments: arguments_,
+          ...(unparsedArguments ? { unparsedArguments } : {}),
         },
       };
     }
@@ -232,6 +353,8 @@ export async function* chatCompletionStream(
       promptTokens: currentUsage?.promptTokens ?? 0,
       completionTokens: currentUsage?.completionTokens ?? 0,
       totalTokens: currentUsage?.totalTokens ?? 0,
+      cacheReadInputTokens: currentUsage?.cacheReadInputTokens ?? 0,
+      cacheCreationInputTokens: currentUsage?.cacheCreationInputTokens ?? 0,
     });
     yield {
       type: 'done',
@@ -257,13 +380,8 @@ export async function* chatCompletionStream(
       if (typeof parsed.model === 'string') responseModel = parsed.model;
       if (typeof parsed.id === 'string') responseId = parsed.id;
       // OpenAI sends usage on the final chunk when stream_options.include_usage is set.
-      if (parsed.usage) {
-        currentUsage = {
-          promptTokens: parsed.usage.prompt_tokens ?? 0,
-          completionTokens: parsed.usage.completion_tokens ?? 0,
-          totalTokens: parsed.usage.total_tokens ?? 0,
-        };
-      }
+      const usage = parseCompatibleUsage(parsed.usage);
+      if (usage) currentUsage = usage;
       const choice = parsed.choices?.[0];
       if (!choice) return false;
       const finishReason: unknown = choice.finish_reason;
@@ -293,7 +411,6 @@ export async function* chatCompletionStream(
       }
 
       if (delta.tool_calls) {
-        log.debug('stream tool_call delta', { count: delta.tool_calls.length });
         for (const tc of delta.tool_calls) {
           const explicitIndex = Number.isInteger(tc.index) ? tc.index : undefined;
           let index = explicitIndex;
@@ -307,13 +424,30 @@ export async function* chatCompletionStream(
 
           let part = toolCallParts.find((p) => p.index === index);
           if (!part) {
-            part = { index, id: '', name: '', arguments: '' };
+            part = { index, id: '', name: '', arguments: '', fragments: 0 };
             toolCallParts.push(part);
           }
 
           if (tc.id) part.id = tc.id;
           if (tc.function?.name) part.name = tc.function.name;
-          if (tc.function?.arguments) part.arguments += tc.function.arguments;
+          if (tc.function?.arguments) {
+            // The head of each call's first fragment, not of every one: a call that arrives
+            // missing its opening `{"filePath": ` is visible here (#260) and nowhere else.
+            // Escaped, because the text is the model's and a debug log on stderr may be a
+            // terminal; behind the flag, so a large streamed Write does no string work and
+            // writes no lines when debugging is off.
+            if (part.fragments === 0 && isDebugEnabled()) {
+              log.debug('stream tool_call delta', {
+                index,
+                id: tc.id,
+                name: escapeInvisibleCharacters(tc.function.name ?? ''),
+                argumentsLength: tc.function.arguments.length,
+                argumentsHead: escapeInvisibleCharacters(tc.function.arguments.slice(0, 120)),
+              });
+            }
+            part.arguments += tc.function.arguments;
+            part.fragments++;
+          }
         }
       }
     } catch {

@@ -1,3 +1,5 @@
+import type { AgentTerminalOutcome } from './types/terminal.js';
+
 /** Known event types in the stream-json wire format. */
 export type StreamJsonEvent =
   | { type: 'user'; content: string }
@@ -24,6 +26,13 @@ export type StreamJsonEvent =
   | { type: 'agent_message'; agentId?: string; message?: unknown }
   | { type: 'agent_completion'; notification?: unknown }
   | { type: 'agent_permission'; agentId?: string; request?: unknown }
+  /**
+   * A managed child's own line for the operator: a refusal it hit, with the child's label already
+   * on the text. Not part of the child's record and not part of the parent's transcript, so a
+   * print-mode host that read only `tool_result` and `agent_*` records had no way to learn a
+   * delegated step did not run (#305 item 4).
+   */
+  | { type: 'agent_notice'; agentId?: string; message?: string }
   | { type: 'evidence_update'; evidence?: unknown }
   /**
    * The turn is being retried; discard every `assistant`/`reasoning` delta
@@ -31,7 +40,14 @@ export type StreamJsonEvent =
    * so a consumer that concatenates blindly would keep text no history records.
    */
   | { type: 'attempt_discarded'; reason?: string }
-  | { type: 'retry'; phase?: string; attempt?: number; max?: number; delay_ms?: number }
+  | {
+      type: 'retry';
+      phase?: string;
+      attempt?: number;
+      max?: number | null;
+      delay_ms?: number;
+      reason?: string;
+    }
   | { type: 'agent_apply'; agentId?: string; evidenceId?: string; status?: string }
   | { type: 'hook_event'; event?: string; [key: string]: unknown }
   | { type: 'mode_change'; mode?: string }
@@ -45,7 +61,26 @@ export type StreamJsonEvent =
   | { type: 'prompt_suggestions'; suggestions?: string[] }
   | { type: 'notice'; message?: string }
   | { type: 'error'; error?: string }
-  | { type: 'result'; result?: unknown; stopReason?: string }
+  /**
+   * The run's terminal record, and the last line of the stream.
+   *
+   * `outcome` and `stopReason` sit at the top level: a supervised loop reads the
+   * outcome from here (see the `jq` selector in `docs/guide/long-runs.md`), and
+   * `result.outcome` / `result.stopReason` are kept for hosts already reading them
+   * there. It is the run's own `AgentTerminalOutcome`, not a restatement of it, so
+   * a status the run cannot emit cannot typecheck into this record.
+   *
+   * `result` is the host-performed part of the record — the answer, the usage, the
+   * accounting, and the conversation when the run passed
+   * `--include-result-messages`, which #307 made opt-in to keep a long run's last
+   * line small. Nothing in the parser reads into it, so it stays `unknown` here.
+   */
+  | {
+      type: 'result';
+      stopReason?: string;
+      outcome?: AgentTerminalOutcome;
+      result?: unknown;
+    }
   | { type: 'done' };
 
 export type StreamJsonDiagnosticCode = 'invalid-json' | 'invalid-shape' | 'oversized-line';
@@ -87,6 +122,7 @@ const EVENT_TYPES = new Set<StreamJsonEvent['type']>([
   'agent_message',
   'agent_completion',
   'agent_permission',
+  'agent_notice',
   'evidence_update',
   'attempt_discarded',
   'retry',

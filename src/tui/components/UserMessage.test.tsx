@@ -25,9 +25,9 @@ afterEach(() => {
 });
 
 describe('UserMessage', () => {
-  it('opens the turn with a pilcrow and sets the prompt in italic', () => {
+  it("opens the turn with a pilcrow and sets the prompt upright in the user's ink", () => {
     // Ink styles through chalk, which emits nothing off a TTY; force truecolor
-    // so the italic is visible in the frame.
+    // so the prompt's ink is visible in the frame.
     const level = chalk.level;
     chalk.level = 3;
     let frame: string;
@@ -38,10 +38,16 @@ describe('UserMessage', () => {
       chalk.level = level;
     }
     const lines = frameLines(frame);
+    const [r, g, b] = [1, 3, 5].map((offset) =>
+      parseInt(DEFAULT_THEME.userText.slice(offset, offset + 2), 16),
+    );
 
     expect(lines).toHaveLength(1);
     expect(lines[0].startsWith(`${PILCROW} compact request`)).toBe(true);
-    expect(frame).toContain('\u001b[3m');
+    // Upright, and in the brightest ink on screen: italic monospace is the
+    // hardest style to read, least of all with diacritics.
+    expect(frame).not.toContain('\u001b[3m');
+    expect(frame).toContain(`\u001b[38;2;${r};${g};${b}mcompact request`);
     // No band: the row paints no background of its own.
     expect(frame).not.toMatch(/\u001b\[48;/);
     for (const line of lines) {
@@ -151,6 +157,18 @@ describe('user prompt wrapping', () => {
     const rows = wrapUserPrompt('please read @"docs/my notes.md" today', 20);
     const mention = rows.flat().find((piece) => piece.isMention);
     expect(mention?.text).toBe('@"docs/my notes.md"');
+  });
+
+  it('accents only the mentions Book expands, not an at-sign inside code', () => {
+    const rows = wrapUserPrompt('run `read @src/a.ts now` then @src/b.ts', 80);
+    const mentions = rows.flat().filter((piece) => piece.isMention);
+    expect(mentions.map((piece) => piece.text)).toEqual(['@src/b.ts']);
+  });
+
+  it('does not accent a mention inside a fenced block that spans lines', () => {
+    const rows = wrapUserPrompt('```\n@src/a.ts\n```\nthen @src/b.ts', 80);
+    const mentions = rows.flat().filter((piece) => piece.isMention);
+    expect(mentions.map((piece) => piece.text)).toEqual(['@src/b.ts']);
   });
 
   it('keeps blank lines between paragraphs', () => {

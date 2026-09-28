@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  payloadExpandHint,
   permissionPatternForDisplay,
   permissionPatternForTool,
   toolRiskLevel,
@@ -56,11 +57,42 @@ describe('permissionPatternForTool', () => {
   it('keeps long persisted rules intact while bounding their display form', () => {
     const command = `bash ${'x'.repeat(200)}`;
     const call: ToolCall = { id: 'bash', name: 'Bash', arguments: { command } };
-    const persisted = permissionPatternForTool(call, command);
+    const persisted = permissionPatternForTool(call, command) ?? '';
     const displayed = permissionPatternForDisplay(persisted);
 
     expect(persisted).toBe(`Bash(${command})`);
     expect(displayed).toHaveLength(40);
     expect(displayed.endsWith('...')).toBe(true);
+  });
+});
+
+describe('payloadExpandHint', () => {
+  const cut = { hiddenRows: 4, expanded: false, totalRows: 9, collapsedRows: 5 };
+
+  it('says all only where opening the payload leaves nothing cut', () => {
+    expect(payloadExpandHint({ ...cut, expandedRows: 7 })).toBe('more');
+    expect(payloadExpandHint({ ...cut, totalRows: 7, expandedRows: 7 })).toBe('all');
+    expect(payloadExpandHint({ ...cut, totalRows: 7, expandedRows: 23 })).toBe('all');
+  });
+
+  it('says all for a payload of exactly the expanded budget, and more for one row over', () => {
+    // The inclusive boundary. `wrapPayload` shows every row with no marker when
+    // the payload is no longer than the budget it is given, so a payload of
+    // exactly `expandedRows` rows is one `D` already shows whole. Reserving the
+    // marker's row on both sides of the comparison made a payload that fitted
+    // claim to be cut, which is the promise the marker must be able to keep.
+    expect(payloadExpandHint({ ...cut, totalRows: 7, expandedRows: 7 })).toBe('all');
+    expect(payloadExpandHint({ ...cut, totalRows: 8, expandedRows: 7 })).toBe('more');
+  });
+
+  it('says nothing once the payload is open, or when nothing was cut', () => {
+    expect(payloadExpandHint({ ...cut, expanded: true, expandedRows: 7 })).toBe('none');
+    expect(payloadExpandHint({ ...cut, hiddenRows: 0, expandedRows: 7 })).toBe('none');
+  });
+
+  it('offers no key at all when opening would show no more rows than now', () => {
+    // Nothing to open is not a cut worth marking, and a hint naming `D` here
+    // would be a key the card cannot act on.
+    expect(payloadExpandHint({ ...cut, expandedRows: 5 })).toBe('none');
   });
 });

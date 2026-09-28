@@ -38,6 +38,7 @@ export type AgentEvent =
           | 'agent_completion'
           | 'agent_permission'
           | 'agent_persistence'
+          | 'agent_notice'
           | 'skill_lifecycle';
       }
     >
@@ -59,6 +60,11 @@ export type AgentEvent =
        * would otherwise have no way to read a `/review` they paid for.
        */
       commandResults?: HostCommandResult[];
+      /**
+       * The model's final answer. Empty when the model did not answer, and empty
+       * on a plan stop, where the plan is the deliverable (`plan`).
+       */
+      answer?: string;
     }
   | { type: 'terminal'; outcome: AgentTerminalOutcome; runContext?: AgentRunContext }
   | { type: 'done' };
@@ -175,6 +181,11 @@ export function reduceAgentSessionSnapshot(
     case 'background_job_output':
     case 'background_job_result':
     case 'background_job_dismiss':
+      return snapshot;
+    // `agent_notice` is a child's own line for the operator (#305): it is not part of the
+    // child's record and not part of the parent's transcript, so the snapshot drops it and
+    // the TUI reads it from the manager subscription instead (see `useManagedAgents`).
+    case 'agent_notice':
       return snapshot;
     case 'evidence_update':
       return { ...snapshot, evidence: upsertById(snapshot.evidence, event.evidence) };

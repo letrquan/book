@@ -2,6 +2,7 @@ import { exec } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
+import { buildChildEnv } from '../child-env.js';
 import { toolFailure, toolSuccess } from '../tools/result.js';
 import { resolveToolTimeoutMs } from '../tools/timeouts.js';
 
@@ -89,7 +90,7 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
       command,
       {
         cwd: ctx.workspaceRoot,
-        env: { ...process.env, ...ctx.env },
+        env: buildChildEnv(process.env, ctx.env),
         timeout: timeoutMs,
         maxBuffer: 10 * 1024 * 1024,
       },

@@ -18,7 +18,13 @@ const PROCESS_EXIT_PATTERN = /\bprocess\.exit\s*\(/;
  * own process lifetime, and `cli/exit.ts` is the injectable seam itself. Everything
  * else must call `exit()` so tests can capture the code instead of dying.
  */
-const PROCESS_LIFETIME_OWNERS = new Set(['index.ts', 'sdk.ts', 'job-runner.ts', 'cli/exit.ts']);
+const PROCESS_LIFETIME_OWNERS = new Set([
+  'index.ts',
+  'sdk.ts',
+  'job-runner.ts',
+  'job-supervisor.ts',
+  'cli/exit.ts',
+]);
 
 /** True when the file really calls process.exit(), ignoring mentions in comments. */
 function callsProcessExit(text: string): boolean {

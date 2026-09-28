@@ -13,6 +13,16 @@ import { isFileMutatingTool } from './tool-capabilities.js';
 import { resolveBookHome } from '../book-home.js';
 
 export const TOOL_RESULT_MAX_BYTES = 50 * 1024;
+/**
+ * What `Read` returns for a file with no lines in it. It lives here because the
+ * row a transcript draws for a Read is reconstructed from its text as well as
+ * from Read's own metadata, and both have to agree on these words.
+ */
+export const READ_EMPTY_FILE_NOTICE = '[Empty file: 0 lines.]';
+/**
+ * Where clipped tool output is saved in full. The loop lets `Read` open each file
+ * it clipped a result into, never the whole directory.
+ */
 const TOOL_OUTPUT_DIRECTORY = join(resolveBookHome(), 'tool-output');
 
 interface ToolResultOptions<TData> {
@@ -136,15 +146,18 @@ export function toolResultModelContent(result: ToolResult): string {
   const raw = rawToolResultModelContent(result);
   if (Buffer.byteLength(raw) <= TOOL_RESULT_MAX_BYTES) return raw;
   // Reached only by callers that skipped `boundToolResultOutput`, which is
-  // where an agent-loop result is clipped. Both places keep the tail for a
-  // killed command, through the same helper.
-  if (result.status === 'timed_out') {
-    return tailPreview(
-      rawToolResultModelContent({ ...result, content: '' }),
-      result.content,
-      result.artifacts?.outputPath,
-      TOOL_RESULT_MAX_BYTES,
+  // where an agent-loop result is clipped. Both places clip a failure to its
+  // head and its tail, through the same helper.
+  if (!toolResultSucceeded(result)) {
+    const prefix = `ERROR [${result.structuredError?.code ?? result.status}]: `;
+    const fix = result.structuredError?.remediation
+      ? `\nFix: ${result.structuredError.remediation}`
+      : '';
+    const budget = Math.max(
+      1,
+      TOOL_RESULT_MAX_BYTES - Buffer.byteLength(prefix) - Buffer.byteLength(fix),
     );
+    return `${prefix}${headTailPreview(failureText(result), result.artifacts?.outputPath, budget)}${fix}`;
   }
   return clippedOutputPreview(raw, result.artifacts?.outputPath, TOOL_RESULT_MAX_BYTES);
 }
@@ -172,29 +185,59 @@ function utf8Suffix(text: string, maxBytes: number): string {
 }
 
 /**
- * A killed command is judged on its most recent output — the step it was on
- * when the deadline hit — so truncation keeps the tail rather than the head.
- * Head-clipping a timed-out build returns install and compile noise and drops
- * the progress the timeout report exists to deliver. `head` is composed first
- * so the error line and its remediation always survive.
+ * How much of a clipped failure's head survives: at most 8 KB, and never more
+ * than a fifth of the budget, so the tail always has room to be worth keeping.
  */
-function tailPreview(
-  head: string,
-  content: string,
-  outputPath: string | undefined,
-  maxBytes: number,
-): string {
-  const notice = outputPath
-    ? `\n[Earlier output truncated at ${maxBytes} bytes. Full output: ${outputPath}]\n`
-    : `\n[Earlier output truncated at ${maxBytes} bytes. Full output unavailable.]\n`;
-  const noticeBytes = Buffer.byteLength(notice);
-  // A head longer than the whole budget still has to be bounded; the caller
-  // treats this return value as final and does no further clipping.
-  if (Buffer.byteLength(head) + noticeBytes >= maxBytes) {
-    return `${utf8Prefix(head, Math.max(0, maxBytes - noticeBytes)).trimEnd()}${notice}`;
-  }
-  const budget = maxBytes - Buffer.byteLength(head) - noticeBytes;
-  return `${head}${notice}${utf8Suffix(content, budget).trimStart()}`;
+const FAILURE_HEAD_MAX_BYTES = 8 * 1024;
+
+/** A failure's message and its output, as the two are read when the pair is clipped. */
+function failureText(result: ToolResult): string {
+  const message = toolResultErrorMessage(result) ?? 'tool failed';
+  return result.content ? `${message}\n${result.content}` : message;
+}
+
+/**
+ * A failure is judged on both ends, so a clipped one keeps both. The head
+ * carries the error line, whatever framed the output — the Task tool's
+ * `Partial result (the child was stopped; nothing below is final):` — and the
+ * first diagnostics. The tail carries the verdict a test runner prints last.
+ * Clipping to one end loses the other: a non-zero exit puts all of stderr in
+ * the message and stdout in the content, and the summary is in the stdout, so a
+ * tail-only clip of a large stderr reported the head instead of the verdict
+ * (#308).
+ */
+function headTailPreview(text: string, outputPath: string | undefined, maxBytes: number): string {
+  const totalBytes = Buffer.byteLength(text);
+  const headWindow = Math.min(FAILURE_HEAD_MAX_BYTES, Math.floor(maxBytes * 0.2));
+  const window = utf8Prefix(text, headWindow);
+  if (Buffer.byteLength(window) >= totalBytes) return text;
+  // End the head on a whole line when one falls inside the kept window; a
+  // half-line of output is harder to read than one line fewer.
+  const lastBreak = window.lastIndexOf('\n');
+  const head = lastBreak >= 0 ? window.slice(0, lastBreak + 1) : window;
+  // The newline that closed that line is not shown — the one that follows the
+  // head here is a joiner — so it is part of what the notice has to count.
+  const headShown = head.trimEnd();
+  const headBytes = Buffer.byteLength(headShown);
+  const omittedNotice = (omitted: number): string =>
+    outputPath
+      ? `[... ${omitted} bytes omitted. Full output: ${outputPath}]`
+      : `[... ${omitted} bytes omitted. Full output unavailable.]`;
+  // How much sits between the head and the tail is not known until the tail is,
+  // but the notice's own width is: the widest count is the whole text, so that
+  // notice is the room reserved before the tail is measured. The two newlines
+  // that join the three parts are reserved with it, so the result stays inside
+  // the budget the caller treats as final.
+  const reserve = Buffer.byteLength(omittedNotice(totalBytes)) + 2;
+  const tailRoom = maxBytes - headBytes - reserve;
+  if (tailRoom <= 0) return [headShown, omittedNotice(totalBytes - headBytes)].join('\n');
+  // `utf8Suffix` lands on a character boundary; skip the rest of the line it
+  // landed in so the tail starts on a line of its own.
+  const tailWindow = utf8Suffix(text, tailRoom);
+  const breakAt = tailWindow.indexOf('\n');
+  const tail = breakAt >= 0 ? tailWindow.slice(breakAt + 1) : tailWindow;
+  const notice = omittedNotice(totalBytes - headBytes - Buffer.byteLength(tail));
+  return [headShown, notice, tail].join('\n');
 }
 
 function clippedOutputPreview(
@@ -252,7 +295,6 @@ export async function boundToolResultOutput(
       ? ''
       : result.content;
   const errorPrefix = `ERROR [${result.structuredError?.code ?? result.status}]: `;
-  const errorSource = `${toolResultErrorMessage(result) ?? 'tool failed'}${result.content ? `\n${result.content}` : ''}`;
   // Reserve room for the "\nFix: <remediation>" line appended at render time so
   // the remediation survives instead of being re-clipped off the tail.
   const fixReserve = result.structuredError?.remediation
@@ -262,24 +304,22 @@ export async function boundToolResultOutput(
   const structuredError = result.structuredError
     ? {
         ...result.structuredError,
+        // The message and the output are clipped as one text, so a failure
+        // keeps both ends: the error line and any framing at the top, and the
+        // verdict at the bottom. The room the `Fix:` line needs is reserved
+        // above, so the remediation is never what gets clipped.
         message: modelOverflow
-          ? // A killed command's output is folded into the message here, so this
-            // is the clip that decides what the model reads. Keeping the head
-            // hands back install and compile noise and drops the step the
-            // command died on, which is the whole point of the report.
-            result.status === 'timed_out'
-            ? tailPreview(result.structuredError.message, result.content, outputPath, errorBudget)
-            : clippedOutputPreview(errorSource, outputPath, errorBudget)
+          ? headTailPreview(failureText(result), outputPath, errorBudget)
           : result.structuredError.message,
       }
     : result.structuredError;
   const clippedDetails = details
     ? detailsBytes > maxBytes
-      ? // The transcript row reads the same way the model does: for a killed
-        // command that means the tail it died on, not the head it started with.
-        result.status === 'timed_out'
-        ? tailPreview('', details, outputPath, maxBytes)
-        : clippedOutputPreview(details, outputPath, maxBytes)
+      ? // The transcript row reads the same way the model does: a failure's
+        // head and tail, not one end of it — the same reason as above.
+        toolResultSucceeded(result)
+        ? clippedOutputPreview(details, outputPath, maxBytes)
+        : headTailPreview(details, outputPath, maxBytes)
       : details
     : toolResultSucceeded(result)
       ? content
@@ -394,6 +434,66 @@ function nonEmptyLines(content: string): number {
   return content.split('\n').filter((line) => line.trim()).length;
 }
 
+/** A Read row's line metadata: how many lines of the file, and their range when the read started partway in. */
+export function readLineMetadata(start: number, count: number): string[] {
+  // A row counts whole lines: the values reach this from Read's own floor and
+  // from a page reconstructed out of its text, and either can be fractional.
+  const first = Math.max(1, Math.floor(start));
+  const lines = Math.max(0, Math.floor(count));
+  if (lines <= 0) return ['empty'];
+  const size = lines === 1 ? '1 line' : `${lines} lines`;
+  // `121 lines · 1-121` says the same thing twice. The range earns its place only when the read
+  // started partway into the file.
+  return first > 1 ? [size, `${first}-${first + lines - 1}`] : [size];
+}
+
+/**
+ * A Read row's metadata reconstructed from its text, for results that carry none (outlines, and
+ * results persisted before tool results had a presentation): the lines of the file it returned
+ * and their range, or how many declarations an outline listed. A read that stops early ends with
+ * a notice (`[Lines 3-6 of 20 shown. …]`, `[Line 1 (60000 bytes) was cut …]`), which is not a
+ * line of the file, and an empty file is nothing but its notice. Read's own results carry exact
+ * metadata (readLineMetadata). Without Read's own count, a result persisted by a build that
+ * numbered the empty element after a final newline still reads one line long, so a trailing
+ * `N: ` is read past — a file ending in a blank line now returns the same text, and its phantom
+ * line is gone.
+ */
+export function readResultMetadata(args: Record<string, unknown>, content: string): string[] {
+  // An outline lists declarations under a header, not lines of the file.
+  if (args.outline === true) {
+    const entries = content.split('\n').filter((line) => /^\d+: /.test(line)).length;
+    return ['outline', entries === 1 ? '1 entry' : `${entries} entries`];
+  }
+  let body =
+    content === READ_EMPTY_FILE_NOTICE ? '' : content.replace(/\n\[Lines? \d[^\n]*\]$/, '');
+  if (body === content) body = body.replace(/(?:^|\n)\d+: $/, '');
+  const lineCount = body ? body.split('\n').length : 0;
+  const offset = Number(args.offset ?? 0);
+  const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 1;
+  return readLineMetadata(start, lineCount);
+}
+
+/**
+ * A Grep row's count re-derived from its text, for results that carry none: a
+ * result persisted by a build that did not have Grep set its own (#311). Grep
+ * itself counts from the data it collected, which is exact where this is not —
+ * a context line's text can hold a `12:30` of its own, and a match spanning
+ * lines is several lines. In the unit `output_mode` asks for: matches in
+ * `content` and `count` mode, files in `files_with_matches`.
+ */
+export function grepResultMetadata(args: Record<string, unknown>, content: string): string {
+  const noun = args.output_mode === 'files_with_matches' ? 'file' : 'match';
+  if (/^No matches found$/i.test(content.trim()))
+    return `0 ${noun === 'file' ? 'files' : 'matches'}`;
+  const lines = content.split('\n');
+  let count: number;
+  if (noun === 'file') count = lines.filter((line) => line.trim()).length;
+  else if (args.output_mode === 'count') {
+    count = lines.reduce((total, line) => total + (Number(/:(\d+)\s*$/.exec(line)?.[1]) || 0), 0);
+  } else count = lines.filter((line) => /:\d+:/.test(line)).length || nonEmptyLines(content);
+  return `${count} ${count === 1 ? noun : noun === 'file' ? 'files' : 'matches'}`;
+}
+
 /** Attach stable UI data while execution still has the tool name and arguments. */
 export function enrichToolResultPresentation(
   input: ToolResult,
@@ -431,8 +531,8 @@ export function enrichToolResultPresentation(
     }
   } else if (name === 'Read') {
     if (inferKind) kind = 'file';
-    const lines = content ? content.split('\n').length : 0;
-    if (inferMetadata) metadata.push(lines === 1 ? '1 line' : `${lines} lines`);
+    if (inferMetadata && result.status === 'success')
+      metadata.push(...readResultMetadata(args, content));
     if (inferSummary) summary = target ? `Read ${target}` : summary;
   } else if (name === 'Glob') {
     if (inferKind) kind = 'search';
@@ -443,11 +543,13 @@ export function enrichToolResultPresentation(
     if (inferSummary) summary = `Found ${count} ${count === 1 ? 'file' : 'files'}`;
   } else if (name === 'Grep') {
     if (inferKind) kind = 'search';
-    const count = /^No matches found$/i.test(content.trim())
-      ? 0
-      : content.split('\n').filter((line) => /:\d+:/.test(line)).length || nonEmptyLines(content);
-    if (inferMetadata) metadata.push(`${count} ${count === 1 ? 'match' : 'matches'}`);
-    if (inferSummary) summary = `Found ${count} ${count === 1 ? 'match' : 'matches'}`;
+    // Only a search that ran has matches to count; a failed one is a row with
+    // the error, the way Read's is.
+    if (result.status === 'success') {
+      const label = grepResultMetadata(args, content);
+      if (inferMetadata) metadata.push(label);
+      if (inferSummary) summary = `Found ${label}`;
+    }
   } else if (name === 'Bash' || name === 'BashOutput' || name === 'KillShell') {
     if (inferKind) kind = 'command';
     if (inferSummary) summary = target ? `${name}: ${target}` : summary;

@@ -21,7 +21,8 @@ fresh verification pass.
 - License: PolyForm Small Business 1.0.0 — source-available, commercial use limited to companies
   under 100 people and 1,000,000 USD (2019) revenue. See `LICENSE`.
 - Runtime: Node.js 22.19 or newer; CI exercises Node.js 22 and 24 on Ubuntu and Windows.
-- Build: `tsup` emits ESM CLI, SDK, and job-runner bundles plus declarations into `dist/`.
+- Build: `tsup` emits ESM CLI, SDK, job-runner and job-supervisor bundles plus declarations into
+  `dist/`.
 
 ## Shipped Surfaces
 
@@ -76,7 +77,7 @@ fresh verification pass.
   a run proceeds.
 - Anthropic Messages and OpenAI-compatible providers, provider auto-detection, model discovery,
   BYOK providers, configurable effort, retries, timeouts, and token/cost accounting.
-- System prompt v3 (`book-system-prompt-v3`): content split by volatility across a cached static
+- System prompt v5 (`book-system-prompt-v5`): content split by volatility across a cached static
   prefix, an uncached activation-class suffix, and a per-turn `<session-state>` block on the newest
   user turn; project instructions fenced and trust-labeled; three Anthropic cache breakpoints
   (last tool, system, moving last message) so the conversation itself is cached.
@@ -212,10 +213,10 @@ fresh verification pass.
   and expanding a row reveals structured details or output rather than the parameters.
 - Skills: discovered skills start in `manual` activation mode. Enable `auto` per skill only after
   representative evaluation.
-- TUI renderer: `safe` on Windows, `incremental` on other interactive terminals — and `safe`
-  anywhere the Ink patch is absent, which is every npm install under npm 11, since it blocks the
-  postinstall that applies it (`isInkIncrementalRendererPatched`). Windows users can
-  opt into incremental rendering with `BOOK_TUI_RENDERER=incremental`.
+- TUI renderer: `safe` on Windows and `incremental` on other interactive terminals, npm installs
+  included: Ink 7 ships the trailing-newline fix the old Ink 6 patch backported, and
+  `hasInkTrailingNewlineFix` (`src/cli/ink-renderer.ts`) still falls back to `safe` if it is
+  missing. Windows users can opt into incremental rendering with `BOOK_TUI_RENDERER=incremental`.
 - `Bash` shell: the platform default (`/bin/sh`) on macOS and Linux. On Windows, `BOOK_SHELL` or the
   `shell` setting, then Git Bash when Book was launched from one, then PowerShell 7, then Windows
   PowerShell 5.1, then an installed Git Bash, and `cmd.exe` only when nothing else exists

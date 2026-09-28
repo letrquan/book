@@ -3,7 +3,11 @@ import { getNestedValue } from './utils.js';
 import { redactSettingValue, redactSettingsForDisplay } from '../settings-redaction.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from '../settings.js';
 import { formatSettingsDiagnostics, SettingsRepository } from '../settings-repository.js';
-import { resolveSettings } from '../settings-loader.js';
+import {
+  resolveSettings,
+  applySettingsEnvOverrides,
+  startupAnimationEnvNote,
+} from '../settings-loader.js';
 import { settingsScopeLabel, type SettingsScope } from '../settings-scope.js';
 import { applySettingWrite, describeSettingShadow, readScopeDocument } from '../settings-write.js';
 
@@ -33,10 +37,16 @@ export async function runConfigCommand(
   // stopped working precisely when the config was wrong. The import itself is
   // static — `settings-write.js` pulls the loader in regardless, so a dynamic
   // one deferred nothing while reading as though it did.
+  //
+  // What it returns is the *effective* settings, environment included: a read
+  // that reported the file's value while Book acts on `BOOK_STARTUP_ANIMATION`
+  // would answer a question about a setting that is not in force.
   const resolveMergedSettings = (): ResolvedSettings =>
-    settingsOptions.noSettings
-      ? structuredClone(DEFAULT_SETTINGS)
-      : resolveSettings(workspace, settingsOptions.settingsOverridePath);
+    applySettingsEnvOverrides(
+      settingsOptions.noSettings
+        ? structuredClone(DEFAULT_SETTINGS)
+        : resolveSettings(workspace, settingsOptions.settingsOverridePath),
+    );
 
   // A scope narrows a read to one file. Without it a read reports the merge,
   // which is the right default but cannot answer "why is this not what I set" —
@@ -61,6 +71,10 @@ export async function runConfigCommand(
     }
     console.log('Resolved settings:');
     console.log(JSON.stringify(redactSettingsForDisplay(resolveMergedSettings()), null, 2));
+    // The dump can show a value the file does not hold, so it has to say so
+    // rather than let the reader go looking for a line that is not there.
+    const listNote = startupAnimationEnvNote();
+    if (listNote) console.log(`⚠  ${listNote}`);
     return;
   }
 
@@ -88,6 +102,12 @@ export async function runConfigCommand(
       );
     } else {
       console.log(JSON.stringify(redactSettingValue(key, val), null, 2));
+      // Only for the key the environment decides: on any other key the note
+      // would be noise about a setting the reader did not ask about.
+      if (!scopeRead && key === 'ui.startupAnimation') {
+        const note = startupAnimationEnvNote();
+        if (note) console.log(`⚠  ${note}`);
+      }
     }
     return;
   }

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { runHeadless } from './headless.js';
 import { SessionStore } from './session/store.js';
 import { createDefaultRegistry, createRegistry } from './tools/registry.js';
@@ -18,10 +18,35 @@ import type { AgentCompletionNotification } from './agents/types.js';
 const config = defaultConfig({ baseUrl: 'http://localhost/v1' });
 let tempDirs: string[] = [];
 
+/**
+ * `debug-log.ts` reads `BOOK_DEBUG*` once, at module load, into module-level
+ * constants, so a `beforeEach` stub arrives too late to switch logging off — the
+ * loggers handed out by then have already been built. Clearing here instead, in a
+ * `vi.hoisted` block that Vitest lifts above the imports above it, is what makes
+ * this file independent of a developer's debugging session: otherwise a
+ * developer with `BOOK_DEBUG=1` gets `[provider] [DEBUG] …` lines on stderr and
+ * every exact-stderr assertion below fails, while a developer without it passes.
+ * The developer's values are put back in `afterAll` so the rest of the run is
+ * unaffected.
+ */
+const savedDebugEnv = vi.hoisted(() => {
+  const saved: Record<string, string> = {};
+  for (const name of Object.keys(process.env)) {
+    if (!name.startsWith('BOOK_DEBUG')) continue;
+    saved[name] = process.env[name] as string;
+    delete process.env[name];
+  }
+  return saved;
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   tempDirs = [];
+});
+
+afterAll(() => {
+  for (const [name, value] of Object.entries(savedDebugEnv)) process.env[name] = value;
 });
 
 function makeWorkspace(): string {
@@ -1308,6 +1333,53 @@ describe('runHeadless — reasoning tags in text mode', () => {
     });
     expect(writes.join('')).toBe('Answer\n');
   });
+
+  // #237: routers that inline reasoning start the reply with `<think></think>`. The stored
+  // answer, the complete `assistant` record and the `result` messages all carry it split.
+  it('keeps an empty think block out of the stream-json and json answer too (#237)', async () => {
+    for (const outputFormat of ['stream-json', 'json'] as const) {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => sse([textDelta('<think></think>Answer')])),
+      );
+      const writes: string[] = [];
+
+      const result = await runHeadless(config, createDefaultRegistry(), {
+        prompt: 'say hi',
+        inputFormat: 'text',
+        outputFormat,
+        history: [],
+        mode: 'bypassPermissions',
+        stdout: {
+          write: (s: string) => {
+            writes.push(s);
+            return true;
+          },
+        },
+      });
+
+      expect(result.answer, outputFormat).toBe('Answer');
+      const records = writes
+        .join('')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      if (outputFormat === 'stream-json') {
+        const complete = records.find((record) => record.type === 'assistant' && record.complete);
+        expect(complete?.text).toBe('Answer');
+      }
+      const final = records.find((record) => 'result' in record) as
+        | { result: { answer?: string; messages?: Array<{ role: string; content: string }> } }
+        | undefined;
+      // The documents carry the answer too, so a json host need not rebuild it (#248).
+      expect(final?.result.answer, outputFormat).toBe('Answer');
+      if (outputFormat === 'json') {
+        // The stream-json result event leaves the conversation out by default
+        // (#307), so only the `json` document is read for its last message here.
+        expect(final?.result.messages?.at(-1)?.content, outputFormat).toBe('Answer');
+      }
+    }
+  });
 });
 
 describe('runHeadless — text progress on stderr', () => {
@@ -2083,5 +2155,208 @@ describe('runHeadless — managed child progress on stderr (#248)', () => {
     await runDelegation({ outputFormat: 'stream-json' });
 
     expect(stderrWrites.some((line) => line.includes('[explorer]'))).toBe(false);
+  });
+});
+
+/**
+ * #305 item 4. A managed child's refusal raises an `agent_notice`, and the TUI was the only host
+ * that rendered it — a print-mode operator never learned a delegated step had been refused, which
+ * is the whole point of the notice. The child's own words are the content, so the line is passed
+ * through rather than summarized.
+ */
+describe('runHeadless — a child refusal reaches the operator (#305 item 4)', () => {
+  const notice = '[explorer] Refused: Read cannot open /etc/hostname.';
+
+  let stderrWrites: string[];
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stderrWrites = [];
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderrWrites.push(
+        typeof chunk === 'string' ? chunk : Buffer.from(chunk as Uint8Array).toString('utf8'),
+      );
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+  });
+
+  /** A tool that reports a managed child refusing a call, as the agent manager does. */
+  function refusingChildRegistry() {
+    const registry = createRegistry();
+    registry.register({
+      name: 'FakeRefusingChild',
+      description: 'Report a managed child that had a call refused.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, context) => {
+        context.onAgentEvent?.({ type: 'agent_notice', agentId: 'child-1', message: notice });
+        return toolSuccess('delegated');
+      },
+    });
+    return registry;
+  }
+
+  async function runChildRefusal(
+    options: { outputFormat?: 'text' | 'stream-json'; quiet?: boolean } = {},
+  ): Promise<Array<{ type: string; message?: string; agentId?: string }>> {
+    const writes: string[] = [];
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requestCount += 1;
+        if (requestCount === 1) return sse([toolDelta('call-1', 'FakeRefusingChild', {})]);
+        return sse([textDelta('done')]);
+      }),
+    );
+    await runHeadless(freshConfig({ workspace: makeWorkspace() }), refusingChildRegistry(), {
+      prompt: 'delegate',
+      inputFormat: 'text',
+      outputFormat: options.outputFormat ?? 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      quiet: options.quiet,
+      stdout: { write: (value) => (writes.push(value), true) },
+    });
+    return writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line) as { type: string; message?: string; agentId?: string };
+        } catch {
+          return { type: 'text', message: line };
+        }
+      });
+  }
+
+  it('writes the notice to stderr as a labelled line in text mode', async () => {
+    await runChildRefusal();
+
+    // One stderr line, newline-terminated like every other operator line, and carrying the child's
+    // label so the refusal is attributable.
+    expect(stderrWrites).toContain(`notice: ${notice}\n`);
+  });
+
+  it('keeps the notice under --quiet, as it is not progress', async () => {
+    await runChildRefusal({ quiet: true });
+
+    // `--quiet` turns off progress. A refusal is the opposite of progress: the answer says a step
+    // ran, so what did not is the operator's business whatever the verbosity.
+    expect(stderrWrites).toContain(`notice: ${notice}\n`);
+  });
+
+  it('emits the notice as an event in stream-json mode', async () => {
+    const events = await runChildRefusal({ outputFormat: 'stream-json' });
+
+    expect(events).toContainEqual({ type: 'agent_notice', agentId: 'child-1', message: notice });
+    // The wire copy is the record; stderr stays empty in stream-json, as it is for every event.
+    expect(stderrWrites).toEqual([]);
+  });
+});
+
+describe('runHeadless — permission prompts it cannot show (#264)', () => {
+  interface StreamEvent {
+    type: string;
+    message?: string;
+    tool_result?: { status: string; content: string };
+  }
+
+  function streamEvents(writes: string[]): StreamEvent[] {
+    return writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as StreamEvent);
+  }
+
+  function callThenDone(name: string, args: Record<string, unknown>) {
+    let requests = 0;
+    return vi.fn(async () => {
+      requests += 1;
+      return requests === 1 ? sse([toolDelta('call-1', name, args)]) : sse([textDelta('DONE')]);
+    });
+  }
+
+  function readThenDone(filePath: string) {
+    return callThenDone('Read', { filePath });
+  }
+
+  async function runDefault(workspace: string): Promise<StreamEvent[]> {
+    const writes: string[] = [];
+    await runHeadless(freshConfig({ workspace }), createDefaultRegistry(), {
+      prompt: 'do it',
+      inputFormat: 'text',
+      outputFormat: 'stream-json',
+      history: [],
+      mode: 'default',
+      maxTurns: 3,
+      stdout: { write: (value) => (writes.push(value), true) },
+    });
+    return streamEvents(writes);
+  }
+
+  for (const mode of ['default', 'accept-edits'] as const) {
+    it(`reads a workspace file without asking in ${mode}`, async () => {
+      const workspace = makeWorkspace();
+      writeFileSync(join(workspace, 'notes.txt'), 'hello from notes\n');
+      vi.stubGlobal('fetch', readThenDone('notes.txt'));
+      const writes: string[] = [];
+
+      await runHeadless(freshConfig({ workspace }), createDefaultRegistry(), {
+        prompt: 'read notes.txt',
+        inputFormat: 'text',
+        outputFormat: 'stream-json',
+        history: [],
+        mode,
+        maxTurns: 3,
+        stdout: { write: (value) => (writes.push(value), true) },
+      });
+
+      const result = streamEvents(writes).find((event) => event.type === 'tool_result');
+      expect(result?.tool_result?.status).toBe('success');
+      expect(result?.tool_result?.content).toContain('hello from notes');
+    });
+  }
+
+  it('refuses a call it would have to ask about, and says why', async () => {
+    const workspace = makeWorkspace();
+    vi.stubGlobal('fetch', callThenDone('Bash', { command: 'echo hi' }));
+
+    const events = await runDefault(workspace);
+
+    const result = events.find((event) => event.type === 'tool_result');
+    expect(result?.tool_result?.status).toBe('blocked');
+    expect(result?.tool_result?.content).toContain('print mode');
+    expect(result?.tool_result?.content).toContain('--permission-mode auto');
+    expect(result?.tool_result?.content).not.toContain('configured permission policy');
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'notice',
+        message: expect.stringContaining('"Bash(echo hi)"'),
+      }),
+    );
+  });
+
+  it('says a read outside the workspace cannot be allowed, and prints no remedy', async () => {
+    const workspace = makeWorkspace();
+    const outside = makeWorkspace();
+    writeFileSync(join(outside, 'secret.txt'), 'secret\n');
+    vi.stubGlobal('fetch', readThenDone(join(outside, 'secret.txt')));
+
+    const events = await runDefault(workspace);
+
+    const result = events.find((event) => event.type === 'tool_result');
+    expect(result?.tool_result?.status).toBe('blocked');
+    expect(result?.tool_result?.content).toContain('outside the workspace');
+    expect(
+      events.filter(
+        (event) => event.type === 'notice' && event.message?.includes('needs approval'),
+      ),
+    ).toEqual([]);
   });
 });

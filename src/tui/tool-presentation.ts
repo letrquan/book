@@ -1,10 +1,12 @@
 import type { ToolResult } from '../types/tools.js';
+import { foldControlCharacters as foldShared } from '../control-characters.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
+import { grepResultMetadata, readResultMetadata } from '../tools/result.js';
 import { normalizePersistedTodos } from '../tools/todo.js';
 import { stepProgress } from './steps.js';
-import { foldControlCharacters, displayWidth, truncateDisplay } from './components/word-wrap.js';
+import { displayWidth, truncateDisplay } from './components/word-wrap.js';
 import { LABEL_COLUMN_WIDTH, MIN_TARGET_WIDTH, type TranscriptGrid } from './layout.js';
 import { isRenderableFileMutationDiff } from './file-mutation-display.js';
 
@@ -29,6 +31,11 @@ export interface ToolPresentation {
 export interface ToolPresentationOptions {
   isPending?: boolean;
   nestedActivityCount?: number;
+  /**
+   * The argument text of a call the provider could not parse. Its `arguments` are
+   * `{}`, so this is the only text there is to show for the row.
+   */
+  unparsedArguments?: { raw: string; error: string };
 }
 
 export function getTranscriptShortcutAction(
@@ -163,6 +170,18 @@ export function parseMcpToolName(name: string): { server: string; tool: string }
   return { server: match[1], tool: match[2].replace(/_/g, ' ') };
 }
 
+/**
+ * Fold a display target onto one line: every run of control characters (C0
+ * such as tab, CR and LF, DEL, C1, and the bidi marks and separators) becomes
+ * one space. Ordinary spaces are kept as they are, because the row shows what
+ * the call acted on: a Grep pattern `^    def ` or a commit message's double
+ * space is part of it. One linear pass, so a long raw argument costs its
+ * length.
+ */
+function foldControlCharacters(value: string | undefined): string | undefined {
+  return value === undefined ? undefined : foldShared(value);
+}
+
 function stringArg(args: Record<string, unknown>, ...names: string[]): string | undefined {
   for (const name of names) {
     const value = args[name];
@@ -253,18 +272,7 @@ function fileMutationPresentation(
 }
 
 function readMetadata(args: Record<string, unknown>, result: ToolResult | undefined): string[] {
-  if (result?.status !== 'success') return [];
-  // A Read that stops early ends with a notice (`[Lines 3-6 of 20 shown. …]`,
-  // `[Line 1 (60000 bytes) was cut …]`), which is not a line of the file.
-  const lineCount = countOutputLines(result.content.replace(/\n\[Lines? \d[^\n]*\]$/, ''));
-  const offset = Number(args.offset ?? 0);
-  const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 1;
-  const end = Math.max(start, start + Math.max(0, lineCount - 1));
-  if (lineCount === 0) return ['empty'];
-  const size = lineCount === 1 ? '1 line' : `${lineCount} lines`;
-  // `121 lines · 1-121` says the same thing twice. The range earns its place
-  // only when the read started partway into the file.
-  return start > 1 ? [size, `${start}-${end}`] : [size];
+  return result?.status === 'success' ? readResultMetadata(args, result.content) : [];
 }
 
 function domainFor(value: string | undefined): string | undefined {
@@ -385,23 +393,11 @@ export function deriveToolPresentation(
   } else if (canonicalName === 'Grep') {
     target = stringArg(args, 'pattern') ?? target;
     if (result?.status === 'success') {
-      const outputMode = stringArg(args, 'output_mode') ?? 'content';
-      if (/^No matches found$/i.test(result.content.trim())) metadata = ['0 matches'];
-      else if (outputMode === 'files_with_matches') {
-        const files = countNonEmptyOutputLines(result.content);
-        metadata = [`${files} ${files === 1 ? 'file' : 'files'}`];
-      } else if (outputMode === 'count') {
-        const matches = result.content.split('\n').reduce((total, line) => {
-          const count = /:(\d+)\s*$/.exec(line)?.[1];
-          return total + (count ? Number(count) : 0);
-        }, 0);
-        metadata = [`${matches} ${matches === 1 ? 'match' : 'matches'}`];
-      } else {
-        const contentLines = result.content.split('\n');
-        const structuredMatches = contentLines.filter((line) => /:\d+:/.test(line)).length;
-        const matches = structuredMatches || contentLines.filter((line) => line.trim()).length;
-        metadata = [`${matches} ${matches === 1 ? 'match' : 'matches'}`];
-      }
+      // Grep counts from its own data, which the text cannot be counted back
+      // into; only a result persisted by a build that did not have it needs the
+      // text fallback (#311).
+      const own = result.presentation?.metadata;
+      metadata = own?.length ? [...own] : [grepResultMetadata(args, result.content)];
     }
   } else if (canonicalName === 'WebFetch') {
     target = domainFor(stringArg(args, 'url'));
@@ -468,7 +464,9 @@ export function deriveToolPresentation(
     metadata.push(`attempt ${result.metrics.retryAttempt}`);
 
   // A target is shown on one line, in the row and in the summary. A call whose
-  // arguments were not valid JSON shows its raw text here, newlines and all.
+  // arguments were not valid JSON shows its raw text here, newlines and all — the
+  // typed field's text now, the `{__raw}` sentinel's through `getPrimaryArg`.
+  target = target || options.unparsedArguments?.raw;
   target = foldControlCharacters(target);
   const targetText = target ? `(${target})` : '';
   const metadataText = metadata.length > 0 ? ` · ${metadata.join(' ')}` : '';
@@ -629,8 +627,12 @@ export function composeToolRow(
   // Never truncate the verb. A row whose label does not fit the column runs
   // inline instead: `Read sr…` is unreadable in a way `Read src/a.ts` is not.
   const useLabelColumn = grid.label > 0 && displayWidth(title) <= grid.label;
-  const metaSource = extra.error
-    ? [extra.error]
+  // Both strings reaching the layout are someone else's: the target is a
+  // tool argument, and the error is the model's own or a tool's — it may hold a
+  // newline, an ESC, or a bidi override, none of which survive a one-line row.
+  const error = foldControlCharacters(extra.error);
+  const metaSource = error
+    ? [error]
     : [...presentation.metadata, ...(extra.elapsed ? [extra.elapsed] : [])];
 
   const label = useLabelColumn ? title.padEnd(grid.label) : '';
@@ -647,7 +649,7 @@ export function composeToolRow(
   // An error message outranks the target it failed on, so a failing row takes
   // as much as the message needs — capped, and never so much that the target
   // drops below a width worth reading.
-  const metaBudget = extra.error
+  const metaBudget = error
     ? Math.max(
         grid.meta,
         Math.min(
@@ -663,7 +665,10 @@ export function composeToolRow(
   // the prefix here as well clipped an inline-label row by exactly the width of
   // its own verb, and `gap` then padded those columns back with spaces.
   const targetBudget = Math.max(4, measure - labelWidth - metaWidth - (metaWidth > 0 ? 1 : 0));
-  const target = truncateDisplay(`${inlinePrefix}${presentation.target ?? ''}`, targetBudget);
+  const target = truncateDisplay(
+    `${inlinePrefix}${foldControlCharacters(presentation.target) ?? ''}`,
+    targetBudget,
+  );
 
   const used = labelWidth + displayWidth(target) + metaWidth;
   const gap = ' '.repeat(Math.max(metaWidth > 0 ? 1 : 0, measure - used));

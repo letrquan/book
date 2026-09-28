@@ -157,7 +157,7 @@ class CrossOriginRedirectError extends Error {
   ) {
     super(
       targetRefused === undefined
-        ? `Redirect from ${sourceUrl} to a different origin requires a new WebFetch approval.`
+        ? `WebFetch stopped at a redirect from ${sourceUrl} to another origin (${displayRedirectTarget(target)}); it follows only same-origin redirects on its own.`
         : `Redirect from ${sourceUrl} to ${displayRedirectTarget(target)} was not followed: the web policy refuses that target (${targetRefused}).`,
     );
     this.name = 'CrossOriginRedirectError';

@@ -7,7 +7,14 @@ import {
   createTerminalOutcome,
   type AgentTerminalOutcome,
 } from '../types/terminal.js';
-import type { ToolCall, ToolDefinition, ToolResult, UserQuestionResponse } from '../types/tools.js';
+import type {
+  PermissionDecision,
+  PermissionResult,
+  ToolCall,
+  ToolDefinition,
+  ToolResult,
+  UserQuestionResponse,
+} from '../types/tools.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { finalAnswerText } from '../agent/final-answer.js';
 import { runCompact, usagePressureTokens } from '../agent/compact.js';
@@ -37,6 +44,13 @@ import {
 import { deriveAgentDisplayName, uniqueAgentDisplayName } from './naming.js';
 import { projectAgentCompletion, projectAgentSummary } from './projections.js';
 import { beginTerminalGeneration } from './completion-notification.js';
+import {
+  advanceRun,
+  notifiesParent,
+  resumesAfterRestart,
+  spawnerClaimFor,
+  unrunFollowUps,
+} from './spawner-claim.js';
 import { projectToolResultForDisplay, redactToolCallForDisplay } from './activity.js';
 import { AgentStore, type AgentStoreWriteResult } from './store.js';
 import { permissionRuleForToolCall } from '../permissions.js';
@@ -172,7 +186,7 @@ export class AgentManager {
   private readonly questionResolvers = new Map<string, (response: UserQuestionResponse) => void>();
   private readonly permissionResolvers = new Map<
     string,
-    (response: 'allow' | 'deny' | 'always') => void
+    (response: PermissionResult | PermissionDecision) => void
   >();
   private readonly permissionRules = new Map<string, string>();
   private readonly activities = new Map<string, Map<string, AgentActivity>>();
@@ -238,7 +252,11 @@ export class AgentManager {
     for (const record of this.agents.values()) {
       let changed = false;
       if (record.pendingPermission) {
-        this.permissionResolvers.get(record.pendingPermission.id)?.('deny');
+        // The host that could answer has gone; the agent runs on with no approver.
+        this.permissionResolvers.get(record.pendingPermission.id)?.({
+          result: 'deny',
+          reason: 'no_approver',
+        });
         this.permissionResolvers.delete(record.pendingPermission.id);
         this.permissionRules.delete(record.pendingPermission.id);
         record.pendingPermission = undefined;
@@ -424,39 +442,58 @@ export class AgentManager {
           // A user stop stays stopped; only process death is resumable, and only
           // for work that had not reached a terminal decision of its own.
           if (record.stopReason !== 'process_exit') continue;
-          if (!['queued', 'starting', 'running'].includes(record.resumedFromStatus ?? '')) continue;
-          record.resumable = false;
-          // A host whose receiver died with the process (`/review` renders its agents'
-          // output into its own report) gets no re-run: it would bill a result nobody
-          // receives. The agent stays interrupted and says why.
-          if (record.resumeAfterRestart === false) {
-            // Follow-ups sent to it are not run either: one would start with none of the host's
-            // context, and whether its result is the host's or the parent's is not recorded per
-            // run. They are counted, so none is lost without a word: the one that was running
-            // (the prompt is no longer the spawn task) and any queued behind it.
-            const dropped =
-              (record.pendingMessages?.length ?? 0) +
-              (record.purpose !== undefined && record.prompt !== record.purpose ? 1 : 0);
-            record.error =
-              'Not resumed after the restart: the host that spawned it handles its result and exited with the process.' +
-              (dropped > 0
-                ? ` ${dropped} follow-up${dropped === 1 ? '' : 's'} sent to it ${dropped === 1 ? 'was' : 'were'} not run either; send ${dropped === 1 ? 'it' : 'them'} again.`
-                : '');
-            this.persist(record);
+          if (!['queued', 'starting', 'running'].includes(record.resumedFromStatus ?? '')) {
+            // A wait for an answer or an approval is a run in flight rather than one that
+            // decided anything, and it is not one this start re-runs either. The follow-ups
+            // behind it were the parent's, so the parent is told how many went unrun.
+            this.announceUnrunFollowUps(
+              record,
+              'Interrupted by a restart while waiting for an answer, and not resumed.',
+            );
+            record.resumable = false;
             continue;
           }
+          record.resumable = false;
+          // A Task child's run is handed back by Task itself, which died with the process, so
+          // its re-run is the parent's. Any other host that suppresses delivery still owns its
+          // agents' output, and keeps its claim over the re-run.
+          const continuesSpawnerRun = record.parentToolCallId === undefined;
+          if (!resumesAfterRestart(record)) {
+            // The spawner's run is not re-run: its receiver (`/review` renders its agents'
+            // output into its own report) died with the process, so the result would reach
+            // nobody. Mid-run the transcript holds this run's answers but not the task that
+            // opened it, which is written only when the run ends, so re-running a follow-up
+            // here would answer with the review missing from its own context.
+            const reason =
+              'Not resumed after the restart: the host that spawned it handles its result and exited with the process.';
+            if (unrunFollowUps(record).length === 0) {
+              record.error = reason;
+              this.persist(record);
+            } else {
+              this.announceUnrunFollowUps(record, reason);
+            }
+            continue;
+          }
+          advanceRun(record, continuesSpawnerRun);
           record.status = 'queued';
           record.stopReason = undefined;
           record.finishedAt = undefined;
-          // A Task child's first run is handed back by Task itself, which died with the process;
-          // nothing waits on this re-run, so it reports to the parent. Any other host that
-          // suppresses delivery still owns its agents' output.
-          if (record.parentToolCallId) record.notifyParentOnCompletion = undefined;
           this.persist(record);
           this.queue.push(record.id);
           this.emit({ type: 'agent_update', agent: clone(record) });
         }
         if (this.queue.length > 0) queueMicrotask(() => this.pump());
+      } else {
+        // Nothing re-drives an interrupted agent, so the follow-ups sent to it stay unrun. Say
+        // so on the record: its interrupted completion, if the parent has not had it yet, carries
+        // the error there.
+        for (const record of this.agents.values()) {
+          if (!record.resumable || record.stopReason !== 'process_exit') continue;
+          this.announceUnrunFollowUps(
+            record,
+            'Interrupted by a restart and not resumed: agents.resumeInterrupted is off.',
+          );
+        }
       }
       this.exitHandler = () => {
         for (const record of this.agents.values()) {
@@ -489,6 +526,31 @@ export class AgentManager {
       process.once('exit', this.exitHandler);
     })();
     return this.initialized;
+  }
+
+  /**
+   * Tell the parent how many follow-ups an interrupted run left unrun. They were the parent's
+   * runs whatever the interrupted run was, and nothing re-runs them: the run they were queued
+   * behind is not the one the parent would have had answered from. Where a completion of the
+   * interrupted run is still outstanding the new error rides out on it; otherwise the record
+   * takes a new run past its claim, which the parent receives and which is a terminal result it
+   * can show.
+   */
+  private announceUnrunFollowUps(record: AgentRecord, reason: string): void {
+    const unrun = unrunFollowUps(record).length;
+    if (unrun === 0) return;
+    const note =
+      `${unrun} follow-up${unrun === 1 ? '' : 's'} sent to it ` +
+      `${unrun === 1 ? 'was' : 'were'} not run; send ${unrun === 1 ? 'it' : 'them'} again.`;
+    if (record.error?.includes(note)) return;
+    record.error =
+      record.error === undefined ? `${reason} ${note}` : `${record.error} ${reason} ${note}`;
+    if ((record.completionSequence ?? 0) > (record.completionDeliveredSequence ?? 0)) {
+      this.persist(record);
+      return;
+    }
+    advanceRun(record, false);
+    this.persist(record, 'result');
   }
 
   private hydrateAgent(agentId: string): AgentRecord | undefined {
@@ -656,7 +718,7 @@ export class AgentManager {
       rootRunId: record.rootRunId,
       parentRunId: record.parentRunId,
     });
-    if (event === 'result' && record.notifyParentOnCompletion !== false) {
+    if (event === 'result' && notifiesParent(record)) {
       this.emit({
         type: 'agent_completion',
         notification: this.completionNotification(record),
@@ -863,9 +925,9 @@ export class AgentManager {
       rootRunId: request.rootRunId ?? plan.rootRunId ?? runId,
       parentRunId: request.parentRunId ?? plan.parentRunId,
       parentToolCallId: request.parentToolCallId,
-      notifyParentOnCompletion: request.notifyParentOnCompletion,
-      resumeAfterRestart: request.resumeAfterRestart,
+      spawnerClaim: spawnerClaimFor(request),
       runId,
+      runSequence: 1,
       planId: plan.id,
       status: 'queued',
       applicationStatus: 'not_applied',
@@ -1031,18 +1093,22 @@ export class AgentManager {
       return this.recordForReturn(record);
     }
 
-    if (['queued', 'starting', 'running'].includes(record.status)) {
+    // A run that is in flight takes the message as its next run. A wait for a permission or for
+    // an answer nobody is there to give is still inside that run, so starting another one here
+    // would run two loops against the same record.
+    const awaitingAnswer = record.status === 'waiting_input' && !record.pendingQuestion;
+    if (
+      ['queued', 'starting', 'running', 'waiting_permission'].includes(record.status) ||
+      awaitingAnswer
+    ) {
       record.pendingMessages.push(trimmed);
       this.persist(record);
       return this.recordForReturn(record);
     }
 
     record.prompt = trimmed;
-    // A follow-up run is the parent's, not the spawner's: a Task child's first run is handed
-    // back by Task itself (notifyParentOnCompletion: false), but nothing is waiting on this one.
-    record.notifyParentOnCompletion = undefined;
-    // Nor does it die with the spawner: `/review`'s no-resume mark covered only its own run.
-    record.resumeAfterRestart = undefined;
+    // The spawner took its result when the agent finished, so this run is the parent's.
+    advanceRun(record, false);
     record.pendingMessages = [];
     record.error = undefined;
     record.result = undefined;
@@ -1110,7 +1176,10 @@ export class AgentManager {
     record.pendingQuestion = undefined;
     record.pendingQuestionCreatedAt = undefined;
     if (record.pendingPermission) {
-      this.permissionResolvers.get(record.pendingPermission.id)?.('deny');
+      this.permissionResolvers.get(record.pendingPermission.id)?.({
+        result: 'deny',
+        reason: 'dismissed',
+      });
       this.permissionResolvers.delete(record.pendingPermission.id);
       this.permissionRules.delete(record.pendingPermission.id);
       record.pendingPermission = undefined;
@@ -1336,7 +1405,8 @@ export class AgentManager {
   private async run(record: AgentRecord): Promise<void> {
     record.status = 'starting';
     record.startedAt ??= Date.now();
-    record.runSequence = (record.runSequence ?? 0) + 1;
+    // Numbered as it was queued (`advanceRun`); a record written before that has none yet.
+    record.runSequence ??= 1;
     record.runId = randomUUID();
     record.rootRunId ??= record.runId;
     record.runStartedAt = Date.now();
@@ -1369,6 +1439,10 @@ export class AgentManager {
       // redundant re-Read. Worktree children key by their own workspace, so
       // parent entries are simply inert there.
       fileObservationLedger: new Map(this.options.runtime?.fileObservationLedger ?? []),
+      // Disposed in this run's `finally`, which ends every session shell it holds. A foreground
+      // command that reached its deadline must therefore be killed here, not moved to a background
+      // shell this run would destroy before the model could read it.
+      ownsSessionShells: false,
     });
     const controller = runtime.trackAbortController(new AbortController());
     this.controllers.set(record.id, controller);
@@ -1608,6 +1682,13 @@ export class AgentManager {
           onToolResult: (result) => {
             finishActivity(result);
           },
+          // A refusal inside the child is otherwise invisible here: the child runs unattended by
+          // default, its result is summarised into a handoff, and a step that never ran reads the
+          // same as a step it decided not to take. The notice carries the child's own words
+          // (#305 item 4).
+          onNotice: (notice) => {
+            this.emit({ type: 'agent_notice', agentId: record.id, message: notice });
+          },
           onError: (error) => {
             loopError = error;
           },
@@ -1620,7 +1701,9 @@ export class AgentManager {
             record.runOutcome = outcome;
           },
           onPermissionRequired: async (toolCall: ToolCall) => {
-            if (!this.interactivePermissions) return 'deny';
+            if (!this.interactivePermissions) {
+              return { result: 'deny', reason: 'no_approver' } as const;
+            }
             const request: AgentPermissionRequest = {
               id: randomUUID(),
               agentId: record.id,
@@ -1631,10 +1714,13 @@ export class AgentManager {
             };
             record.status = 'waiting_permission';
             record.pendingPermission = request;
-            this.permissionRules.set(request.id, permissionRuleForToolCall(toolCall));
+            // A call with no primary argument has no rule to remember: `resolvePermission`
+            // persists what the map holds, so an absent rule saves nothing.
+            const rule = permissionRuleForToolCall(toolCall);
+            if (rule) this.permissionRules.set(request.id, rule);
             this.persist(record);
             this.emit({ type: 'agent_permission', agentId: record.id, request: clone(request) });
-            return new Promise<'allow' | 'deny' | 'always'>((resolvePromise) => {
+            return new Promise<PermissionResult | PermissionDecision>((resolvePromise) => {
               this.permissionResolvers.set(request.id, resolvePromise);
             });
           },
@@ -1803,11 +1889,11 @@ export class AgentManager {
         if (controller.signal.aborted || this.agents.get(record.id)?.status === 'stopped') return;
         if (record.pendingMessages.length > 0) {
           record.prompt = record.pendingMessages.shift()!;
+          // The run never reached a finished status, so the spawner's `wait` is still pending
+          // and receives this follow-up's result: the next run stays the spawner's.
+          advanceRun(record, true);
           record.status = 'queued';
           record.finishedAt = undefined;
-          // The run never reached a finished status, so the spawner's `wait` is still
-          // pending and receives this follow-up's result: it stays the spawner's, and
-          // keeps both `notifyParentOnCompletion` and `resumeAfterRestart` as they are.
           this.queue.push(record.id);
           this.persist(record);
         } else {
@@ -1842,7 +1928,10 @@ export class AgentManager {
       this.controllers.delete(record.id);
       this.questionResolvers.delete(record.id);
       if (record.pendingPermission) {
-        this.permissionResolvers.get(record.pendingPermission.id)?.('deny');
+        this.permissionResolvers.get(record.pendingPermission.id)?.({
+          result: 'deny',
+          reason: 'dismissed',
+        });
         this.permissionResolvers.delete(record.pendingPermission.id);
         this.permissionRules.delete(record.pendingPermission.id);
         record.pendingPermission = undefined;
@@ -1874,9 +1963,9 @@ export class AgentManager {
         record.prompt = record.pendingMessages.shift()!;
         record.status = 'queued';
         record.finishedAt = undefined;
-        // The run that just ended was the spawner's to hand back; this follow-up is the parent's.
-        record.notifyParentOnCompletion = undefined;
-        record.resumeAfterRestart = undefined;
+        // The run that just ended was handed back with its own status; this follow-up is the
+        // parent's.
+        advanceRun(record, false);
         this.queue.push(record.id);
         this.persist(record);
       }
@@ -1901,6 +1990,8 @@ export class AgentManager {
       cumulativeTokens: record.usage?.totalTokens,
       promptTokens: record.runUsage?.promptTokens,
       completionTokens: record.runUsage?.completionTokens,
+      cacheReadInputTokens: record.runUsage?.cacheReadInputTokens,
+      cacheCreationInputTokens: record.runUsage?.cacheCreationInputTokens,
       contextTokens: record.runUsage?.contextTokens,
       toolCalls: record.runMetrics?.toolCalls,
       compactions: record.runMetrics?.compactions,

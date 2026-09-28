@@ -4,6 +4,8 @@ import type { ToolContext, ToolDefinition } from '../types/tools.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
 import { createToolSurface, normalizeToolDefinition } from './catalog.js';
 import { createDefaultRegistry, createRegistry } from './registry.js';
+import { webTools } from './web.js';
+import { toolSearchTools } from './tool-search.js';
 import { toolSuccess } from './result.js';
 import { SessionRuntime } from '../session/runtime.js';
 
@@ -466,8 +468,10 @@ describe('discovery gate and invalid JSON arguments', () => {
     const registry = createRegistry();
     registry.register(bash);
 
+    // Text that stays un-repairable: a string left open cannot be completed without
+    // inventing the quote that was never sent, so the call reaches the JSON gate.
     const malformed = await registry.execute(
-      { id: 'raw-git', name: 'Bash', arguments: { __raw: '{"command":"git log\n"}' } },
+      { id: 'raw-git', name: 'Bash', arguments: { __raw: '{"command":"git log' } },
       { ...context(), toolDiscovery: surface },
     );
     const refused = await registry.execute(
@@ -476,6 +480,167 @@ describe('discovery gate and invalid JSON arguments', () => {
     );
 
     expect(malformed.structuredError?.code).toBe('invalid_json_arguments');
-    expect(refused.structuredError?.code).toBe('tool_not_active');
+    // `Bash` is active; only its arguments are outside `Bash(git *)`, so the refusal names
+    // the rule rather than telling the model to activate a tool it already has.
+    expect(refused.structuredError?.code).toBe('arguments_not_allowed');
+  });
+});
+
+describe('ToolSearch query matching', () => {
+  const surface = () =>
+    createToolSurface({
+      config: config(),
+      context: context(),
+      definitions: createDefaultRegistry({
+        sessionHistory: { search: async () => [], read: async () => ({}) } as never,
+      }).getDefinitions(),
+    });
+
+  it.each([
+    ['fetch url page', 'WebFetch'],
+    ['download a web page', 'WebFetch'],
+    ['WebFetch', 'WebFetch'],
+    ['webfetch', 'WebFetch'],
+    ['search the web', 'WebSearch'],
+    ['git commit', 'GitCommit'],
+    ['git history', 'GitLog'],
+    ['working tree status', 'GitStatus'],
+    ['edit a jupyter notebook cell', 'NotebookEdit'],
+    ['run the project tests', 'Check'],
+    ['GitComit', 'GitCommit'],
+    ['GitCommet', 'GitCommit'],
+    ['fetching web pages', 'WebFetch'],
+    ['show git logs', 'GitLog'],
+    ['gitlog', 'GitLog'],
+  ])('ranks %s first as %s', (query, expected) => {
+    expect(surface().search(query)[0]?.name).toBe(expected);
+  });
+
+  it.each([
+    ['git checkout', 'Check'],
+    ['find lines that match a pattern', 'GitDiff'],
+    ['find lines that match a pattern', 'AgentApply'],
+  ])('does not answer %s with %s', (query, unexpected) => {
+    // `checkout` is no form of `check`, and `patch` is a different word from `match`:
+    // reading either as the query's own put a tool the query never named in the answer.
+    expect(
+      surface()
+        .search(query)
+        .map((match) => match.name),
+    ).not.toContain(unexpected);
+  });
+
+  it.each([
+    ['Task delegate subagent', ['Task', 'AgentSpawn']],
+    ['delegate to a subagent', ['Task', 'AgentSpawn']],
+    ['delegate to a sub-agent', ['Task', 'AgentSpawn']],
+    ['search past conversation transcript', ['SessionHistorySearch']],
+  ])('finds %s', (query, expected) => {
+    const names = surface()
+      .search(query)
+      .map((match) => match.name);
+    for (const name of expected) expect(names).toContain(name);
+  });
+
+  it('matches nothing for a query that names nothing', () => {
+    expect(surface().search('zzqx')).toEqual([]);
+  });
+
+  it('does not qualify a tool on a description that only negates the query', () => {
+    // `not` + `es` met `notes`, and one word of a description was enough to qualify a
+    // tool: every deferred tool with a "do not" in its description answered `notes`.
+    const runtimeConfig = config();
+    runtimeConfig.settings.toolDiscovery.mode = 'deferred';
+    const deferred = createToolSurface({
+      config: runtimeConfig,
+      context: context(),
+      definitions: [
+        definition('Read'),
+        definition('GuardTool', 'Do not lose pending work'),
+        definition('NoteTool', 'Read the notes of a meeting'),
+      ],
+    });
+
+    const names = deferred.search('notes').map((match) => match.name);
+    // The plain plural still reaches a description, and a tool named for it still wins.
+    expect(names).toContain('NoteTool');
+    expect(names).not.toContain('GuardTool');
+  });
+});
+
+describe('ToolSearch in a bare registry (#270)', () => {
+  const bareSurface = (mode: 'auto' | 'deferred') => {
+    const runtimeConfig = config();
+    runtimeConfig.settings.toolDiscovery.mode = mode;
+    const registry = createRegistry();
+    registry.registerAll(webTools);
+    return createToolSurface({
+      config: runtimeConfig,
+      context: context(),
+      definitions: registry.getDefinitions(),
+    });
+  };
+
+  it('keeps ToolSearch callable in eager mode and names the tools already active', () => {
+    const surface = bareSurface('auto');
+    const active = surface.activeDefinitions().map((tool) => tool.name);
+    expect(active).toEqual(expect.arrayContaining(['WebFetch', 'WebSearch']));
+    expect(active).not.toContain('ToolSearch');
+    expect(surface.isActive?.('ToolSearch')).toBe(true);
+    expect(surface.canExecute({ id: 's', name: 'ToolSearch', arguments: { query: 'web' } })).toBe(
+      true,
+    );
+    expect(surface.search('search the web')).toEqual([]);
+    expect(surface.activeMatches?.('search the web')[0]).toBe('WebSearch');
+  });
+
+  it('filters the already-active names by the category ToolSearch searched with', () => {
+    // The filter the call carried is the model's own: answering "WebSearch is already
+    // active" to a git-scoped search points it at a tool it excluded.
+    const surface = bareSurface('auto');
+    expect(surface.activeMatches?.('search the web', { category: 'git' })).toEqual([]);
+  });
+
+  it('refuses a deferred tool until ToolSearch activates it in deferred mode', () => {
+    const surface = bareSurface('deferred');
+    expect(surface.activeDefinitions().map((tool) => tool.name)).toEqual(['ToolSearch']);
+    const call = { id: 'w', name: 'WebSearch', arguments: { query: 'x' } };
+    expect(surface.canExecute(call)).toBe(false);
+    surface.activate(surface.search('search the web').map((match) => match.name));
+    surface.activeDefinitions();
+    expect(surface.canExecute(call)).toBe(true);
+  });
+
+  it('lets ToolSearch run under capability rules that do not name it', () => {
+    const registry = createRegistry();
+    registry.registerAll(webTools);
+    const surface = createToolSurface({
+      config: config(),
+      context: context(),
+      definitions: registry.getDefinitions(),
+      capabilityRules: ['WebSearch'],
+    });
+    surface.activeDefinitions();
+    expect(surface.canExecute({ id: 's', name: 'ToolSearch', arguments: { query: 'x' } })).toBe(
+      true,
+    );
+  });
+
+  it('names the tools already active this turn beside the ones it loaded', async () => {
+    // A model searching for a tool it already has should learn that from the answer. The
+    // names were only listed when nothing matched, which is the one case where the model
+    // had just been told every deferred tool was tried.
+    const surface = bareSurface('deferred');
+    surface.activate(['WebSearch']);
+    surface.activeDefinitions();
+    const registry = createRegistry();
+    registry.registerAll([...webTools, ...toolSearchTools]);
+
+    const result = await registry.execute(
+      { id: 'again', name: 'ToolSearch', arguments: { query: 'web search' } },
+      { ...context(), toolDiscovery: surface },
+    );
+
+    expect(result.content).toContain('Already active this turn: WebSearch');
   });
 });

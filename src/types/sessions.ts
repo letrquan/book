@@ -37,6 +37,14 @@ export interface CompactRequestHints {
    * as the refused one. It is never written to the learned-window store.
    */
   planningWindowCap?: number;
+  /**
+   * Build the checkpoint without the model: no reducer request is made, and the
+   * deterministic checkpoint (coverage `pass-limit`, strategy `degraded-fallback`)
+   * replaces the summarized span. The loop asks for it only as the last resort, when
+   * a model compaction failed and the request still cannot be sent: it needs no
+   * provider call, so it cannot fail the way the reducer just did.
+   */
+  deterministic?: boolean;
 }
 
 /**
@@ -99,6 +107,12 @@ export type CompactResult =
         | 'invalid-checkpoint'
         | 'budget-overflow';
       error: string;
+      /**
+       * The provider's error code when the reducer's request failed (`reason: 'provider-error'`),
+       * so a caller can tell a verdict on that request (a 400) from a failure every request
+       * shares (a rejected key, an outage).
+       */
+      providerCode?: string;
     };
 
 export interface CompactBoundary {

@@ -9,7 +9,8 @@ import {
   type PersistentShellSpec,
   type PersistentShellState,
 } from './persistent-store.js';
-import { ShellJobManager, terminateWindowsProcessTree } from './shell-manager.js';
+import { ShellJobManager } from './shell-manager.js';
+import { terminateWindowsProcessTree } from './process-tree.js';
 
 let directory: string;
 

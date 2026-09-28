@@ -46,6 +46,11 @@ book tool-stats --all           # ignore the retention window
 book tool-stats --since 7       # only the last 7 days
 ```
 
+Each per-model row names the provider the model was reached through (`9router/cmc/stealth/x`) and
+its error codes, and malformed arguments are counted by shape:
+`invalid_json_arguments:truncated_start` is a route dropping a call's first fragment, not the model
+writing bad JSON.
+
 ## Common flags
 
 | Flag                                  | Purpose                                                                                                                         |
@@ -74,6 +79,7 @@ book tool-stats --since 7       # only the last 7 days
 | `-q, --quiet`                         | Print mode: no progress lines on stderr                                                                                         |
 | `--include-hook-events`               | Include hook lifecycle events in stream-JSON output                                                                             |
 | `--include-partial-messages`          | Include partial assistant text deltas in stream-JSON output                                                                     |
+| `--include-result-messages`           | Include the full message history in the stream-JSON result event                                                                |
 | `--prompt-suggestions`                | Ask for follow-up prompt suggestions after completion                                                                           |
 
 ## Print mode
@@ -102,16 +108,20 @@ file. `--verbose` adds each call's result, naming its target, because a turn's c
 before its results: `  → success 12ms src/cli/doctor.ts`, or `  → error 4ms missing.txt: File not
 found: missing.txt`. A managed child's calls (through `Task`, `AgentSpawn`, or `/review`) print as
 well, indented and named after the child's profile: `  [explorer] [Read] src/a.ts`, with
-`    → success 3ms src/a.ts` under `--verbose`. `--quiet` turns the progress lines off, `retry:`
+`    → success 3ms src/a.ts` under `--verbose`. Two children of the same profile print as
+`[explorer]` and `[explorer 2]`. `--quiet` turns the progress lines off, `retry:`
 lines included.
 
 The answer on stdout is the model's final answer: the text of the last turn that called no tools,
 read past the prompts Book appends mid-run (`[continuation]`, `[work-state]`, the output-cap
 resume). When the run stopped before the model answered again (a provider failure, a turn that was
 only reasoning, or `--max-turns` reached on a turn that called tools), stdout stays empty rather
-than repeating an earlier turn's narration. The exit status does not depend on the answer: a
-`failed` outcome exits 1, and a run that stalled, timed out, or lost its connection exits 0 like a
-completed one.
+than repeating an earlier turn's narration. A prompt a `UserPromptSubmit` hook refused and a tool
+batch Book rejected are not answers either: stdout stays empty and the reason goes to stderr as an
+`error:` line. A run of host-performed commands only (`book -p --continue "/review"`) prints the
+command's output and no answer, never the previous process's. The exit status does not depend on the
+answer: a `failed` outcome exits 1, and a run that stalled, timed out, or lost its connection exits 0
+like a completed one.
 
 `json` and `stream-json` write no progress lines, but their stderr is not silent. `json` still
 writes `retry:` lines (unless `--quiet`) and `error:` lines there; `stream-json` carries retries and
@@ -119,6 +129,21 @@ errors as `retry` and `error` records on stdout instead. Every format writes `wa
 slash command whose shell substitution failed) and `⚠` startup notices to stderr. The SDK's
 `query()` runs quiet: no progress or `retry:` lines reach the host's stderr, since every tool call
 reaches it as an event, but `error:` and `warning:` lines still do.
+
+**The `result` record.** The last line of a `stream-json` run carries the terminal outcome at the
+top level, beside `stopReason`, so a supervisor reads it without reaching into the payload:
+
+```json
+{ "type": "result", "stopReason": "normal_completion",
+  "outcome": { "status": "completed", "reason": "normal_completion", "partialOutput": false },
+  "result": { "usage": { … }, "accounting": { … }, "answer": "…", "outcome": { … } } }
+```
+
+`result.outcome` and `result.stopReason` carry the same values for hosts already reading them there.
+The message history is **not** in `result` by default: a long run's conversation is hundreds of
+kilobytes on this one line, which every reader has to buffer before it can look at the field it came
+for. Pass `--include-result-messages` to get `result.messages` back. `--output-format json` and the
+SDK's own `result` are unaffected and always carry the conversation.
 
 A closed reasoning block the reply opens with (`<think>…</think>`,
 `<reasoning_context>…</reasoning_context>`, several in a row, or an empty one) is stored as
@@ -130,15 +155,41 @@ A block ends at its first closing tag, and only when its shape leaves no doubt:
 - the closing tag ends its line, outside any code the block opened;
 - no other reasoning tag appears inside the block.
 
+One rule is relaxed for a reply the provider cut short (the output cap, or a stream that dropped
+before its terminal event): while nothing after the closing tag reached a line break, the closing tag
+need not end its line, because the answer after it never got to start one. That is the whole
+relaxation — a cut-off reply that _did_ get a line past its closing tag is a finished answer that
+quoted the tags inline, and it is left as written, as is every reply stopped by an interrupt (Ctrl-C)
+or by a stream error other than a drop. Every other condition above still holds, and a reply cut off
+_inside_ the block never closes, so it stays answer text exactly as it does for a settled reply.
+Without this the thought was kept as answer text and re-sent as answer text on every later request
+of the run.
+
 An empty block (`<think></think>`) always splits. Otherwise the reply is left and printed exactly
 as the model wrote it, reasoning included, rather than risk cutting answer text. A reply that
 itself opens with an unfenced reasoning tag, such as a template, loses that block; fence or quote
 the tag to keep it. A tag later in the answer is answer
 text, and an answer with no such block is printed exactly as written, plus a newline. `stream-json` partial deltas
 (`--include-partial-messages`) still carry the raw tags; the complete `assistant` record carries the
-split content.
+split content. A complete `assistant` record that reports what Book itself said — a prompt a
+`UserPromptSubmit` hook refused, a tool batch Book rejected — carries `"host_notice": true`, so a
+consumer can tell a host notice from a model reply without matching on its text.
 
-Three things behave differently in print mode, because there is nobody to ask.
+Four things behave differently in print mode, because there is nobody to ask.
+
+**Permission prompts.** Print mode cannot show one, so in `default` and `acceptEdits` a call that
+would prompt in the TUI is refused. Reading and searching inside the workspace does not prompt
+unless a rule says so, so those calls run. For anything else, the model is told that nothing in the
+run can approve the call, and the first refusal of each tool in the session prints a line like this
+on stderr (a `notice` event in `stream-json`):
+
+```text
+Bash needs approval, and nothing in this run can answer a permission prompt, so the call was refused. To allow it, add a permissions.allow rule such as "Bash(npm test)" to your settings, or run with --permission-mode auto.
+```
+
+Book has no `--allowedTools` flag. To allow specific calls for one run, put the rules in a file
+and pass it with `--settings <path>`. See
+[Permission rules and modes](tools-and-safety.md#permission-rules-and-modes).
 
 **Slash commands.** A prompt beginning with `/name` is resolved through the same command
 registries the TUI uses instead of being sent to the model as literal text. See
@@ -174,9 +225,12 @@ not run. SDK `query()` callers see the stop through the forwarded `tool_use` eve
 and its `tool_result` (`structuredError.code = "plan_approval_unavailable"`); the `plan` object is
 not yet carried on the SDK `result` event.
 
-**Exit codes.** Print mode exits 1 when the run throws — a slash command this host cannot perform,
-a command invoked with a bad argument, or a failure inside a host-performed command such as
-`/review`. Everything else exits 0.
+**Exit codes.** Print mode exits 1 when the run fails or throws — a slash command this host cannot
+perform, a command invoked with a bad argument, or a failure inside a host-performed command such as
+`/review`. A cancelled run exits 0 wherever the cancel landed, since cancelling is not failing; a run
+that failed exits 1 even if its reader goes away afterwards; Ctrl+C (SIGINT) or SIGTERM cancels the
+run, runs SessionEnd hooks, and exits 130 or 143, and a second one exits at once. Everything else
+exits 0.
 
 ## SDK usage
 
@@ -201,7 +255,11 @@ for await (const event of query('Explain this code', {
 }
 ```
 
-`AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop` — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK. Host notices (such as saved memories or review candidates) emit `notice` (`{type: 'notice', message}`).
+The `result` event's `answer` is the model's final answer: empty when the model did not answer, and
+empty on a plan stop, where the plan is the deliverable (see `plan`, which print mode's `text` output
+prints instead). The `json` and `stream-json` result documents carry it too.
+
+`AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop` — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. A managed child's own line for the operator — a call it had refused — emits `agent_notice` (`{type, agentId, message}`); in text mode the same text is written to stderr as a `notice: …` line, and, like the host notices below, it is not silenced by `--quiet`, since it is something that did not happen rather than progress. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK. Host notices (such as saved memories or review candidates) emit `notice` (`{type: 'notice', message}`).
 
 Auth and model selection come from settings / env (`BOOK_API_KEY`, `BOOK_MODEL`, and provider blocks), not from `query()` options. See `src/sdk.ts` for the full `QueryEvent` / `QueryOptions` surface.
 

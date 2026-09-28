@@ -68,7 +68,9 @@ describe('PermissionButtons', () => {
     );
 
     view.stdin.write('\r');
-    await waitForImmediate();
+    // The second prompt lands in the same slot, so the first Enter has to have
+    // been handled before the rerender replaces the call under it.
+    await vi.waitFor(() => expect(onResolveRead).toHaveBeenCalledOnce());
 
     view.rerender(
       withTheme(
@@ -80,11 +82,10 @@ describe('PermissionButtons', () => {
     );
     await waitForImmediate();
     view.stdin.write('\r');
-    await waitForImmediate();
+    await vi.waitFor(() => expect(onResolveGlob).toHaveBeenCalledOnce());
 
     expect(onResolveRead).toHaveBeenCalledOnce();
     expect(onResolveRead).toHaveBeenCalledWith('allow');
-    expect(onResolveGlob).toHaveBeenCalledOnce();
     expect(onResolveGlob).toHaveBeenCalledWith('allow');
   });
 
@@ -136,6 +137,29 @@ describe('PermissionButtons', () => {
     expect(onResolve).toHaveBeenCalledWith({ result: 'always', rule: 'Bash(echo one)' });
   });
 
+  it('saves no rule when the call has no primary argument to scope one to', () => {
+    // `{command: ''}` reaches the prompt, and a bare `Bash` rule would allow every Bash
+    // call afterwards. The card says so rather than naming a rule it will not write.
+    const onResolve = vi.fn();
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-empty', name: 'Bash', arguments: { command: '' } }}
+          onResolve={onResolve}
+        />,
+      ),
+    );
+
+    expect(stripAnsi(view.lastFrame() ?? '')).toContain('no rule to save');
+
+    view.stdin.write('a');
+    view.stdin.write('\r');
+
+    expect(onResolve).toHaveBeenCalledOnce();
+    // `always` with no rule: the call is allowed and the loop persists nothing.
+    expect(onResolve).toHaveBeenCalledWith('always');
+  });
+
   // The exact rule matches that byte sequence and nothing else, so a user who
   // pressed "Always allow" to stop being asked was asked again next call.
   it('steps the Always allow scope on repeated A and writes the chosen rule', async () => {
@@ -149,18 +173,22 @@ describe('PermissionButtons', () => {
       ),
     );
 
+    // The second `a` steps the scope only if the first one has been rendered,
+    // so each key waits for the frame it produced rather than for a fixed
+    // number of event-loop turns a loaded runner can spend elsewhere.
     view.stdin.write('a'); // arm
-    await waitForImmediate();
+    await vi.waitFor(() => expect(stripAnsi(view.lastFrame() ?? '')).toContain('› Always allow'));
     view.stdin.write('a'); // widen once
-    await waitForImmediate();
-    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Bash(npm run *)');
+    await vi.waitFor(() => expect(stripAnsi(view.lastFrame() ?? '')).toContain('Bash(npm run *)'));
     expect(onResolve).not.toHaveBeenCalled();
 
     view.stdin.write('\r');
-    expect(onResolve).toHaveBeenCalledExactlyOnceWith({
-      result: 'always',
-      rule: 'Bash(npm run *)',
-    });
+    await vi.waitFor(() =>
+      expect(onResolve).toHaveBeenCalledExactlyOnceWith({
+        result: 'always',
+        rule: 'Bash(npm run *)',
+      }),
+    );
   });
 
   it('wraps back to the exact rule rather than committing one', async () => {
@@ -174,12 +202,29 @@ describe('PermissionButtons', () => {
       ),
     );
 
-    // Arm, then a full cycle back round to the exact rule.
-    for (let i = 0; i < 4; i++) {
-      view.stdin.write('a');
-      await waitForImmediate();
-    }
-    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Bash(npm run check)');
+    // Each press waits for the frame it produces, rung by rung. The idle frame
+    // already shows the exact rule, so waiting on that would prove nothing: a
+    // lost press leaves the card on a rung it was never asked for, and the hint
+    // that names a widened rung is what tells the rungs apart.
+    const widenedRung = (rule: string) => {
+      const frame = stripAnsi(view.lastFrame() ?? '');
+      expect(frame).toContain(rule);
+      expect(frame).toContain('Covers every command');
+    };
+
+    view.stdin.write('a'); // arm
+    await vi.waitFor(() => expect(stripAnsi(view.lastFrame() ?? '')).toContain('› Always allow'));
+    view.stdin.write('a'); // widen
+    await vi.waitFor(() => widenedRung('Bash(npm run *)'));
+    view.stdin.write('a'); // widen to the broadest rung
+    await vi.waitFor(() => widenedRung('Bash(npm *)'));
+    view.stdin.write('a'); // and back round to the exact rule
+    await vi.waitFor(() => {
+      const frame = stripAnsi(view.lastFrame() ?? '');
+      expect(frame).toContain('Bash(npm run check)');
+      // The exact rung is the only one that needs no caption.
+      expect(frame).not.toContain('Covers every command');
+    });
     expect(onResolve).not.toHaveBeenCalled();
   });
 
@@ -206,9 +251,7 @@ describe('PermissionButtons', () => {
     expect(armed(stripAnsi(view.lastFrame() ?? ''))).toContain('› Run once');
 
     view.stdin.write('\u001b[C');
-    await waitForImmediate();
-    const moved = armed(stripAnsi(view.lastFrame() ?? ''));
-    expect(moved).toContain('› Skip');
+    await vi.waitFor(() => expect(armed(stripAnsi(view.lastFrame() ?? ''))).toContain('› Skip'));
     // Exactly one marker: two would read as two armed buttons.
     expect((stripAnsi(view.lastFrame() ?? '').match(/›/g) ?? []).length).toBe(1);
   });
@@ -313,6 +356,52 @@ describe('PermissionButtons payload', () => {
     const expanded = await frameContaining(view, 'echo line 12');
     expect(expanded).not.toContain('D shows all');
     expect(expanded).toContain('D less');
+  });
+
+  // The card is bounded by the terminal, so on a short one `D` opens a bigger
+  // budget rather than the whole command. Saying "D shows all" there promised a
+  // key that only cut a different few rows out of the same payload.
+  it('says D shows more when the expanded budget still cuts the command', async () => {
+    // 24 rows leave an 8-row expanded budget: 7 of the 10 lines, not all 10.
+    const script = Array.from({ length: 10 }, (_, index) => `echo line ${index + 1}`).join('\n');
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-tall', name: 'Bash', arguments: { command: script } }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+          terminalRows={24}
+        />,
+      ),
+    );
+    const collapsed = stripAnsi(view.lastFrame() ?? '');
+    expect(collapsed).toMatch(/… \d+ more rows · D shows more/);
+    expect(collapsed).not.toContain('D shows all');
+    // The key is still worth offering: it opens more of the command than the
+    // collapsed card keeps.
+    expect(collapsed).toContain('D more');
+
+    view.stdin.write('d');
+    const expanded = await frameContaining(view, 'echo line 7');
+    expect(expanded).toMatch(/… 3 more rows/);
+    expect(expanded).not.toContain('D shows');
+  });
+
+  it('says D shows all only where D does show the whole command', () => {
+    // 40 rows leave a 24-row expanded budget, which holds every row of this one.
+    const script = Array.from({ length: 9 }, (_, index) => `echo row ${index + 1}`).join('\n');
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-fits', name: 'Bash', arguments: { command: script } }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+          terminalRows={40}
+        />,
+      ),
+    );
+
+    expect(stripAnsi(view.lastFrame() ?? '')).toMatch(/… \d+ more rows · D shows all/);
   });
 
   it('shows the diff an Edit would make before anything is written', async () => {

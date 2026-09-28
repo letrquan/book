@@ -269,6 +269,51 @@ describe('ApplyPatch', () => {
     expect(result.structuredError?.code).toBe('path_outside_workspace');
   });
 
+  it('applies a patch to an honored directory, and refuses it without one', async () => {
+    const { context } = await fixture();
+    const extra = await mkdtemp(join(tmpdir(), 'book-apply-patch-extra-'));
+    roots.push(extra);
+    const target = join(extra, 'shared.txt');
+    await writeFile(target, 'before\n');
+    context.additionalRoots = [extra];
+
+    const patch = `*** Begin Patch\n*** Update File: ${target}\n@@\n-before\n+after\n*** End Patch`;
+    const applied = await execute({ patch }, context);
+    expect(applied.status).toBe('success');
+    expect(await readFile(target, 'utf8')).toBe('after\n');
+
+    // The same absolute path is outside every root once the directory is not honored, so honoring
+    // it is the only thing that made the call legal.
+    context.additionalRoots = [];
+    const refused = await execute(
+      { patch: `*** Begin Patch\n*** Update File: ${target}\n@@\n-after\n+again\n*** End Patch` },
+      context,
+    );
+    expect(refused.structuredError?.code).toBe('path_outside_workspace');
+    expect(await readFile(target, 'utf8')).toBe('after\n');
+  });
+
+  it('keeps a relative patch path anchored to the workspace', async () => {
+    const { root, context } = await fixture();
+    const extra = await mkdtemp(join(tmpdir(), 'book-apply-patch-extra-'));
+    roots.push(extra);
+    // The same name in both: a bare filename is the workspace's, never the honored root's.
+    await writeFile(join(root, 'dup.txt'), 'workspace\n');
+    await writeFile(join(extra, 'dup.txt'), 'extra\n');
+    context.additionalRoots = [extra];
+
+    const result = await execute(
+      {
+        patch: '*** Begin Patch\n*** Update File: dup.txt\n@@\n-workspace\n+edited\n*** End Patch',
+      },
+      context,
+    );
+
+    expect(result.status).toBe('success');
+    expect(await readFile(join(root, 'dup.txt'), 'utf8')).toBe('edited\n');
+    expect(await readFile(join(extra, 'dup.txt'), 'utf8')).toBe('extra\n');
+  });
+
   it('serializes concurrent patches so only one old-context mutation commits', async () => {
     const { root, context } = await fixture();
     const file = join(root, 'shared.txt');
@@ -303,5 +348,105 @@ describe('ApplyPatch', () => {
     );
     expect(result.status).toBe('success');
     expect((await stat(file)).mode & 0o777).toBe(0o755);
+  });
+});
+
+describe('ApplyPatch hunk matching', () => {
+  it('applies a later hunk whose context repeats earlier in the file when it is unique after the previous hunk', async () => {
+    const { root, context } = await fixture();
+    const file = join(root, 'tails.txt');
+    await writeFile(file, 'a\nend\nb\nend\n');
+    const result = await execute(
+      {
+        patch:
+          '*** Begin Patch\n*** Update File: tails.txt\n@@\n-b\n+B\n@@\n-end\n+END\n*** End Patch',
+      },
+      context,
+    );
+    expect(result.structuredError).toBeUndefined();
+    expect(await readFile(file, 'utf8')).toBe('a\nend\nB\nEND\n');
+  });
+
+  it('applies the Go function-tail shape that real sessions failed on', async () => {
+    const { root, context } = await fixture();
+    const file = join(root, 'store.go');
+    const tail = '\tif err := s.flush(); err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n';
+    await writeFile(
+      file,
+      `func (s *Store) Save() error {\n${tail}\n// Sync flushes.\nfunc (s *Store) Sync() error {\n\treturn nil\n}\n\nfunc (s *Store) Close() error {\n\tdefer s.file.Close()\n${tail}`,
+    );
+    const result = await execute(
+      {
+        patch: [
+          '*** Begin Patch',
+          '*** Update File: store.go',
+          '@@',
+          '-// Sync flushes.',
+          '+// Sync flushes pending writes.',
+          '@@',
+          ' \tif err := s.flush(); err != nil {',
+          ' \t\treturn err',
+          ' \t}',
+          '+\ts.file = nil',
+          ' \treturn nil',
+          ' }',
+          '*** End Patch',
+        ].join('\n'),
+      },
+      context,
+    );
+    expect(result.structuredError).toBeUndefined();
+    const text = await readFile(file, 'utf8');
+    expect(text.split('s.file = nil').length).toBe(2);
+    expect(text.indexOf('s.file = nil')).toBeGreaterThan(text.indexOf('func (s *Store) Close'));
+  });
+
+  it('still rejects a hunk that repeats after the previous hunk, without changing the file', async () => {
+    const { root, context } = await fixture();
+    const file = join(root, 'tails.txt');
+    await writeFile(file, 'a\nend\nb\nend\nc\nend\n');
+    const result = await execute(
+      {
+        patch:
+          '*** Begin Patch\n*** Update File: tails.txt\n@@\n-a\n+A\n@@\n-end\n+END\n*** End Patch',
+      },
+      context,
+    );
+    expect(result.structuredError?.code).toBe('ambiguous_patch_context');
+    expect(result.structuredError?.details).toMatchObject({
+      hunkIndex: 2,
+      matches: 3,
+      matchesAfterPreviousHunk: 3,
+    });
+    expect(await readFile(file, 'utf8')).toBe('a\nend\nb\nend\nc\nend\n');
+  });
+
+  it('applies a globally unique hunk that precedes the previous hunk', async () => {
+    const { root, context } = await fixture();
+    const file = join(root, 'order.txt');
+    await writeFile(file, 'x\ny\nz\n');
+    const result = await execute(
+      {
+        patch: '*** Begin Patch\n*** Update File: order.txt\n@@\n-z\n+Z\n@@\n-x\n+X\n*** End Patch',
+      },
+      context,
+    );
+    expect(result.structuredError).toBeUndefined();
+    expect(await readFile(file, 'utf8')).toBe('X\ny\nZ\n');
+  });
+
+  it('accepts an envelope whose Begin or End marker is repeated', async () => {
+    const { root, context } = await fixture();
+    const file = join(root, 'twice.txt');
+    await writeFile(file, 'old\n');
+    const result = await execute(
+      {
+        patch:
+          '*** Begin Patch\n*** Begin Patch\n*** Update File: twice.txt\n@@\n-old\n+new\n*** End Patch\n*** End Patch',
+      },
+      context,
+    );
+    expect(result.structuredError).toBeUndefined();
+    expect(await readFile(file, 'utf8')).toBe('new\n');
   });
 });

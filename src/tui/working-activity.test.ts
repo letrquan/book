@@ -170,3 +170,23 @@ describe('deriveWorkingActivity with a plan step in flight', () => {
     expect(deriveWorkingActivity({ ...base, ...step, isThinking: false })).toBeNull();
   });
 });
+
+describe('deriveWorkingActivity — retries', () => {
+  it('says a re-sent turn is being re-sent, not retried inside one request (#244)', () => {
+    const activity = deriveWorkingActivity({
+      isThinking: true,
+      isCompacting: false,
+      messages: [],
+      pendingPermission: false,
+      pendingPlanApproval: false,
+      pendingUserQuestion: false,
+      retryPhase: 'reissue',
+      retryAttempt: 1,
+      retryMax: 3,
+      retryCountdownMs: 2000,
+      elapsedSeconds: 4,
+    });
+
+    expect(activity).toEqual({ label: 'Re-sending the turn in 2s · attempt 1/3', tone: 'warning' });
+  });
+});

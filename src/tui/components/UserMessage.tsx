@@ -4,6 +4,7 @@ import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
 import { displayWidth, hardWrapLine } from './word-wrap.js';
 import { PILCROW } from '../marks.js';
+import { mentionTokenRanges } from '../../input/input-expansion.js';
 import type { ImageAttachment } from '../../types/messages.js';
 
 interface UserMessageProps {
@@ -27,76 +28,26 @@ export function formatTurnTime(timestamp?: number): string {
 
 /**
  * Split content into text segments and @mention tokens.
- * Matches the same pattern as input-expansion's findMentionTokens
- * but without filesystem dependencies — just identifies @path and @"path"
- * tokens for color highlighting.
+ * Shares `findMentionTokens` with input-expansion, so the TUI never accents an
+ * at-sign the agent loop would not expand — an at-sign inside fenced or inline
+ * code is left as plain text. The ranges are the ones `mentionTokenRanges`
+ * found in the *whole* prompt: a fence or a code span that spans lines only
+ * reads as code when the lines are taken together (#261).
  */
-function parseMentionSegments(content: string): Array<{ text: string; isMention: boolean }> {
+function parseMentionSegments(
+  content: string,
+  ranges: ReadonlyArray<[number, number]>,
+): Array<{ text: string; isMention: boolean }> {
   const segments: Array<{ text: string; isMention: boolean }> = [];
-  let i = 0;
-  let textStart = 0;
+  let cursor = 0;
 
-  function isBoundary(idx: number): boolean {
-    if (idx === 0) return true;
-    return /[\s([{<"']/.test(content[idx - 1]);
+  for (const [start, end] of ranges) {
+    if (start > cursor) segments.push({ text: content.slice(cursor, start), isMention: false });
+    segments.push({ text: content.slice(start, end), isMention: true });
+    cursor = end;
   }
-
-  while (i < content.length) {
-    if (content[i] !== '@' || !isBoundary(i)) {
-      i++;
-      continue;
-    }
-
-    const afterAt = i + 1;
-    if (afterAt >= content.length || /\s/.test(content[afterAt])) {
-      i++;
-      continue;
-    }
-
-    let mentionEnd: number | null = null;
-
-    if (content[afterAt] === '"') {
-      const close = content.indexOf('"', afterAt + 1);
-      if (close !== -1) {
-        const filePath = content.slice(afterAt + 1, close);
-        if (filePath) {
-          mentionEnd = close + 1;
-        } else {
-          i = close + 1;
-          continue;
-        }
-      } else {
-        i++;
-        continue;
-      }
-    } else {
-      let end = afterAt;
-      while (end < content.length && !/\s/.test(content[end])) end++;
-      // Strip trailing punctuation
-      let cleanEnd = end;
-      while (cleanEnd > afterAt && /[.,;:!?)]/.test(content[cleanEnd - 1])) cleanEnd--;
-      if (cleanEnd > afterAt) {
-        mentionEnd = cleanEnd;
-      } else {
-        i = end;
-        continue;
-      }
-    }
-
-    if (mentionEnd !== null) {
-      // Flush preceding plain text
-      if (textStart < i) {
-        segments.push({ text: content.slice(textStart, i), isMention: false });
-      }
-      segments.push({ text: content.slice(i, mentionEnd), isMention: true });
-      i = mentionEnd;
-      textStart = i;
-    }
-  }
-
-  // Flush remaining plain text
-  if (textStart < content.length) {
-    segments.push({ text: content.slice(textStart), isMention: false });
+  if (cursor < content.length) {
+    segments.push({ text: content.slice(cursor), isMention: false });
   }
 
   return segments;
@@ -129,17 +80,26 @@ const TAB = '    ';
 /**
  * Wraps one hard line of a prompt into rows of at most `width` columns.
  *
- * The line's indentation is kept, on its first row and on every row it wraps
- * onto, so a pasted code block keeps its shape. Words break at whitespace,
- * and a run of spaces at a break is dropped rather than carried to the end of
- * a row where it would push it past `width`. An @mention is one unbreakable
- * word, so a quoted path that wraps keeps its accent; only a word wider than
- * a whole row is cut.
+ * `mentionRanges` are this line's, already resolved against the whole prompt and
+ * given in columns of `line`. The line's indentation is kept, on its first row
+ * and on every row it wraps onto, so a pasted code block keeps its shape. Words
+ * break at whitespace, and a run of spaces at a break is dropped rather than
+ * carried to the end of a row where it would push it past `width`. An @mention is
+ * one unbreakable word, so a quoted path that wraps keeps its accent; only a word
+ * wider than a whole row is cut.
  */
-function wrapPromptLine(line: string, width: number): PromptPiece[][] {
+function wrapPromptLine(
+  line: string,
+  width: number,
+  mentionRanges: ReadonlyArray<[number, number]>,
+): PromptPiece[][] {
   const lead = /^[ \t]*/.exec(line)![0];
   const body = line.slice(lead.length);
   if (!body) return [[]];
+  // The line's own columns, past the indent the rows open with.
+  const bodyRanges = mentionRanges
+    .filter(([start, end]) => start >= lead.length && end <= line.length)
+    .map(([start, end]): [number, number] => [start - lead.length, end - lead.length]);
   // Leave at least half the row for text, however deep the indent.
   const indent = lead.replace(/\t/g, TAB).slice(0, Math.floor(width / 2));
   const indentWidth = displayWidth(indent);
@@ -166,7 +126,7 @@ function wrapPromptLine(line: string, width: number): PromptPiece[][] {
   };
 
   startRow();
-  for (const segment of parseMentionSegments(body)) {
+  for (const segment of parseMentionSegments(body, bodyRanges)) {
     const tokens = segment.isMention ? [segment.text] : segment.text.split(/(\s+)/);
     for (const token of tokens) {
       if (!token) continue;
@@ -197,7 +157,17 @@ function wrapPromptLine(line: string, width: number): PromptPiece[][] {
 /** A prompt as the transcript sets it: one entry per row, each within `width`. */
 export function wrapUserPrompt(content: string, width: number): PromptPiece[][] {
   if (!content) return [];
-  return content.split('\n').flatMap((line) => wrapPromptLine(line, width));
+  // The whole prompt is scanned once, before it is split: a fence or a code span
+  // that crosses a line break is only visible with the lines together (#261).
+  const ranges = mentionTokenRanges(content);
+  let offset = 0;
+  return content.split('\n').flatMap((line) => {
+    const lineRanges = ranges
+      .filter(([start, end]) => start >= offset && end <= offset + line.length)
+      .map(([start, end]): [number, number] => [start - offset, end - offset]);
+    offset += line.length + 1;
+    return wrapPromptLine(line, width, lineRanges);
+  });
 }
 
 /** Rows a user turn takes at `terminalWidth`, for the transcript's row estimate. */
@@ -214,13 +184,13 @@ export function userTurnRows(
 /**
  * A user turn, set the way a rubricated manuscript opens a paragraph.
  *
- * A red pilcrow hangs in the gutter and the prompt is set in italic, so your
- * words read as a different voice from the agent's roman prose without a band,
- * a box or a rule through the screen. The pilcrow is what a long transcript is
- * scanned by: it is the only red mark at the margin, and it is the same mark as
- * the composer's, so what you typed lands in the transcript under the glyph you
- * typed it after. The time sits at the right edge of the first row. @mentions
- * stay accented.
+ * A red pilcrow hangs in the gutter and the prompt is set upright in the
+ * brightest ink on screen, a step above the agent's prose, so your words read as
+ * a different voice without a band, a box or a rule through the screen. The
+ * pilcrow is what a long transcript is scanned by: it is the only red mark at
+ * the margin, and it is the same mark as the composer's, so what you typed
+ * lands in the transcript under the glyph you typed it after. The time sits at
+ * the right edge of the first row. @mentions stay accented.
  */
 function UserMessageInner({
   content,
@@ -273,13 +243,11 @@ function UserMessageInner({
             {row.attachment !== undefined ? (
               <Text color={theme.userAccent}>{row.attachment}</Text>
             ) : (
-              <Text italic>
-                {row.pieces.map((piece, i) => (
-                  <Text key={i} color={piece.isMention ? theme.userAccent : theme.text}>
-                    {piece.text}
-                  </Text>
-                ))}
-              </Text>
+              row.pieces.map((piece, i) => (
+                <Text key={i} color={piece.isMention ? theme.userAccent : theme.userText}>
+                  {piece.text}
+                </Text>
+              ))
             )}
             {index === 0 && time ? (
               <>

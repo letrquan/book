@@ -9,7 +9,8 @@ import { McpSessionHost } from '../mcp-host.js';
 import { mcpServersToRecord, partitionMcpServersByApproval } from '../mcp-approvals.js';
 import { resolveMcpServerList } from '../mcp-config.js';
 import { collectWithheldProjectNotices } from '../project-approval-notices.js';
-import { exit, isExiting, setExitCode } from './exit.js';
+import { isExiting, setExitCode } from './exit.js';
+import { installPrintInterrupt, printExitCode, type PrintInterrupt } from './print-interrupt.js';
 import { parseNumericFlag } from './utils.js';
 import { parseEffortLevel } from '../commands/effort.js';
 import { join } from 'path';
@@ -31,10 +32,11 @@ import {
 } from '../debug-log.js';
 import { installInkScrollRenderer } from './ink-scroll-renderer.js';
 import { installFrameCapture } from './frame-buffer.js';
-import { isInkIncrementalRendererPatched } from './ink-patch.js';
-import { resolveTuiRendererMode } from './tui-renderer-mode.js';
+import { hasInkTrailingNewlineFix } from './ink-renderer.js';
+import { isCiEnvironment, resolveTuiRendererMode } from './tui-renderer-mode.js';
 import { resolvePermissionMode } from '../permission-mode.js';
 import { spawn } from 'node:child_process';
+import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 
 const SESSION_ROOT = join(resolveBookHome(), 'sessions');
@@ -102,6 +104,7 @@ function writeTerminalControl(stdout: Pick<NodeJS.WriteStream, 'write'>, sequenc
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
+        env: buildChildEnv(),
       },
     );
     bridge.on('error', () => {});
@@ -146,6 +149,10 @@ export function enterInteractiveScreen(
 }
 
 export async function runMainAction(options: Record<string, unknown>): Promise<void> {
+  // Declared before the `try` so the print branch's `catch` can still read them:
+  // a run cancelled or interrupted before it returned has no `result` to read.
+  let printInterrupt: PrintInterrupt | undefined;
+  let printSignal: AbortSignal | undefined;
   try {
     const requestedWorkspace = options.workspace as string | undefined;
     // Validated again here rather than trusted from commander: the option parser
@@ -235,14 +242,17 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         // are best-effort: `book -p … 2>&1 | head` must not crash the run with an unhandled EPIPE,
         // which also skipped its SessionEnd hooks. `stream-json` writes stdout for the whole run,
         // so a closed stdout there means the host has gone: abort the run rather than keep
-        // editing files for no one. Like any cancelled print run, it still runs SessionEnd, with
-        // reason `aborted`.
+        // editing files for no one. A SIGINT or SIGTERM cancels the run the same way, so
+        // SessionEnd runs with reason `aborted`, and a second signal exits at once.
         const printFormat = options.outputFormat as 'text' | 'json' | 'stream-json';
         const readerGone = new AbortController();
+        printInterrupt = installPrintInterrupt();
         const callerSignal = options.signal as AbortSignal | undefined;
-        const printSignal = callerSignal
-          ? AbortSignal.any([callerSignal, readerGone.signal])
-          : readerGone.signal;
+        printSignal = AbortSignal.any(
+          [callerSignal, readerGone.signal, printInterrupt.signal].filter(
+            (signal): signal is AbortSignal => signal !== undefined,
+          ),
+        );
         const onClosedPipe = (stream: 'stdout' | 'stderr') => (error: NodeJS.ErrnoException) => {
           if (error.code !== 'EPIPE') throw error;
           if (stream === 'stdout' && printFormat === 'stream-json') readerGone.abort();
@@ -274,17 +284,25 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           persistSession: options.sessionPersistence as boolean | undefined,
           includeHookEvents: options.includeHookEvents as boolean | undefined,
           includePartialMessages: options.includePartialMessages as boolean | undefined,
+          includeResultMessages: options.includeResultMessages as boolean | undefined,
           promptSuggestions: options.promptSuggestions as boolean | undefined,
         });
       } finally {
+        // The run has settled: its SIGINT/SIGTERM handlers go now, not after the
+        // MCP disconnect. Waiting on a shutting-down server can take seconds, and
+        // a second Ctrl+C in that window must still exit at once.
+        printInterrupt?.dispose();
         await disconnectMcpServers(mcp.connections);
       }
       // Not `exit(1)`: a failed run returns like a successful one and only marks the exit
       // code, so Node exits once the provider's pooled sockets have closed. Exiting while
       // they are still closing aborts inside libuv on Windows, with exit code 127 (#243).
-      if (result?.outcome.status === 'failed') {
-        setExitCode(1);
-      }
+      const code = printExitCode({
+        outcome: result?.outcome,
+        aborted: printSignal?.aborted === true,
+        interruptedBy: printInterrupt?.interruptedBy(),
+      });
+      if (code !== 0) setExitCode(code);
       return;
     }
 
@@ -343,8 +361,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     const mcpHost = new McpSessionHost(config.workspace, config.settings);
     mcpHost.start();
     let app: ReturnType<typeof render> | undefined;
+    // App runs this inside Ink's suspendTerminal(), which erases Ink's frame before it and repaints
+    // the whole frame after it, so this only wipes whatever else is on the screen.
     const redrawViewport = () => {
-      app?.clear();
       process.stdout.write('\x1b[H\x1b[2J');
     };
     const extraction = new AbortController();
@@ -355,7 +374,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       const rendererMode = resolveTuiRendererMode(process.env.BOOK_TUI_RENDERER, {
         isTTY: process.stdout.isTTY === true,
         screenReader: config.accessibility.screenReader,
-        incrementalRendererPatched: isInkIncrementalRendererPatched(),
+        incrementalRendererFixed: hasInkTrailingNewlineFix(),
         platform: process.platform,
       });
       await installInkScrollRenderer(rendererMode === 'experimental-scroll');
@@ -374,6 +393,8 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           isScreenReaderEnabled: config.accessibility.screenReader,
           incrementalRendering: rendererMode !== 'safe',
           maxFps: 60,
+          // Ink 7 also turns live frames off for a non-TTY stdout, which the WSL bridge uses.
+          interactive: !isCiEnvironment(),
         },
       );
       // Phase 1b: read idle earlier sessions of this workspace for memories the model
@@ -407,12 +428,20 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     if (isExiting()) throw e;
     console.error(e instanceof Error ? e.message : String(e));
     // A thrown print failure gets the same treatment as a returned one (#243): mark
-    // the exit code and let Node exit once its handles close. The TUI still exits at
-    // once, since Ink may still hold stdin.
+    // the exit code and let Node exit once its handles close.
     if (options.print !== undefined) {
-      setExitCode(1);
+      printInterrupt?.dispose();
+      const code = printExitCode({
+        aborted: printSignal?.aborted === true,
+        interruptedBy: printInterrupt?.interruptedBy(),
+      });
+      if (code !== 0) setExitCode(code);
       return;
     }
-    exit(1);
+    // The TUI marks the exit code the same way (#268): `exit()` while a pooled provider
+    // socket is still closing aborts inside libuv on Windows, with exit code 127, and the
+    // reason it exited at once — Ink holding stdin — no longer holds; its `finally` has
+    // unmounted Ink and restored the screen by now.
+    setExitCode(1);
   }
 }

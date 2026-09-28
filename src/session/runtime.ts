@@ -4,6 +4,7 @@ import type { AgentTask, BackgroundShellStore } from '../types/runtime.js';
 import type { Todo } from '../tools/todo.js';
 import type { FileObservation, ToolDiscoveryState } from '../types/tools.js';
 import { AgentContextCache } from '../agent/context.js';
+import { refusedBeforeRun } from '../tools/pre-execution-codes.js';
 import { ToolExecutionScheduler } from '../tools/execution-scheduler.js';
 import { RunAccounting } from './run-accounting.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
@@ -29,15 +30,11 @@ export function toolNamesFromHistory(messages: Message[]): Set<string> {
   const ran = new Set(
     messages.flatMap((message) =>
       (message.toolResults ?? [])
-        // Blocked calls and calls rejected at argument validation (a schema
-        // mismatch, or arguments that were not valid JSON) never ran; the live
-        // path (executeToolCall) never counts them either.
-        .filter(
-          (result) =>
-            result.status !== 'blocked' &&
-            result.structuredError?.code !== 'invalid_arguments' &&
-            result.structuredError?.code !== 'invalid_json_arguments',
-        )
+        // Blocked calls and every result refused before the tool ran — an unknown or
+        // inactive tool, arguments the schema or the JSON parser refused, a call the
+        // abort or a stream that ended first cancelled — read nothing. The live path
+        // (executeToolCall) never counts them either.
+        .filter((result) => result.status !== 'blocked' && !refusedBeforeRun(result))
         .map((result) => result.toolCallId),
     ),
   );
@@ -70,6 +67,12 @@ export interface SessionRuntimeOptions {
    * conversation knows what that conversation already read.
    */
   history?: Message[];
+  /**
+   * Whether this runtime is the session's long-lived one. `false` marks a runtime that is disposed
+   * when one run ends — a Task subagent's, a managed agent's — and so may not adopt a timed-out
+   * command as a background shell it would then destroy. Defaults to `true`.
+   */
+  ownsSessionShells?: boolean;
 }
 
 /** Mutable resources owned by one logical agent session. */
@@ -106,8 +109,24 @@ export class SessionRuntime {
   private readonly skillChangeListeners = new Set<() => void>();
   /** Advisory memory of recent identical tool failures (registry circuit breaker). */
   readonly recentToolFailures = new Map<string, number>();
+  /**
+   * Unattended refusals already reported to the operator this session, keyed by tool and remedy,
+   * so print mode names each once however many loop runs the session makes (#264).
+   */
+  readonly unattendedRefusalNotices = new Set<string>();
   /** Per-session tool call/failure counters keyed by canonical tool name. */
   readonly toolCallStats = new Map<string, { calls: number; failures: Record<string, number> }>();
+  /**
+   * Whether this runtime is the session's long-lived one, and so may hand a long-running command
+   * to its shell manager as a background job it will still own afterwards.
+   *
+   * A Task subagent and a managed agent each build a runtime of their own and dispose it when their
+   * run ends, and disposing a runtime ends every session shell it holds — so a command adopted there
+   * would be killed at the end of the very run that told the model it was not killed. Those two
+   * pass `ownsSessionShells: false` and a foreground `Bash` that reaches its deadline is killed
+   * there, as it was before #302.
+   */
+  readonly ownsSessionShells: boolean;
   /**
    * Canonical names of tools executed in this conversation, seeded from the
    * conversation it was built for. A runtime is replaced rather than cleared
@@ -115,11 +134,30 @@ export class SessionRuntime {
    * within one conversation.
    */
   readonly usedToolNames: Set<string>;
+  /**
+   * Files this session's tool output was clipped into, as absolute paths.
+   *
+   * Owned by the session rather than by one `runAgentLoop` call, because a clip
+   * notice ("Full output: <path>") is read by later prompts: a path the session
+   * cannot Read is a path the model was told to go and look at and then could
+   * not (#248).
+   */
+  readonly clippedOutputPaths = new Set<string>();
 
   agentManager?: import('../agents/manager.js').AgentManager;
   private readonly abortControllers = new Set<AbortController>();
   private readonly timers = new Set<NodeJS.Timeout>();
   private readonly childProcesses = new Set<ChildProcess>();
+  /**
+   * Children whose whole process tree is already being torn down, by the tool that started it.
+   *
+   * `dispose()` must not kill these directly: on Windows `taskkill /T` walks the tree from a root
+   * that has to still be alive, and the direct kill landed in the same tick as the abort that
+   * began the teardown, so the wrapper died first and the tree was orphaned instead of ended
+   * (#314). The mark is taken synchronously by the abort listener, before the teardown is
+   * awaited, which is why it beats the loop in `dispose()`.
+   */
+  private readonly terminatingChildren = new Set<ChildProcess>();
   private disposed = false;
 
   constructor(options: SessionRuntimeOptions = {}) {
@@ -136,6 +174,7 @@ export class SessionRuntime {
     this.traceId = options.traceId ?? crypto.randomUUID();
     this.skillRegistry = options.skillRegistry;
     this.skillDiscoveryOptions = options.skillDiscoveryOptions ?? {};
+    this.ownsSessionShells = options.ownsSessionShells ?? true;
     this.usedToolNames = toolNamesFromHistory(options.history ?? []);
   }
 
@@ -274,8 +313,20 @@ export class SessionRuntime {
     return child;
   }
 
+  /**
+   * Record that this tool has begun ending a child's whole process tree.
+   *
+   * Taken synchronously at the moment the teardown starts — inside an abort listener, before the
+   * teardown promise is awaited — so `dispose()` in the same tick can tell a tree already on its
+   * way down from a child it has to kill itself.
+   */
+  trackTreeTermination(child: ChildProcess): void {
+    this.terminatingChildren.add(child);
+  }
+
   releaseChildProcess(child: ChildProcess): void {
     this.childProcesses.delete(child);
+    this.terminatingChildren.delete(child);
   }
 
   recordRunAmbientSnapshot(
@@ -311,6 +362,10 @@ export class SessionRuntime {
     );
     for (const child of this.childProcesses) {
       if (shellProcesses.has(child)) continue;
+      // A child whose tree is already being torn down is not killed here. The teardown needs a
+      // live root — `taskkill /T` on Windows, the group leader on POSIX — and killing the wrapper
+      // first is what left whole trees running after Book exited (#314).
+      if (this.terminatingChildren.has(child)) continue;
       if (!child.killed) child.kill();
     }
     this.shellManager.dispose();

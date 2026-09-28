@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '../theme.js';
-import { transcriptGrid } from '../layout.js';
+import { CONTENT_COLUMN, GUTTER_WIDTH, indentedGrid, transcriptGrid } from '../layout.js';
 import type { CompactBoundary } from '../../types/sessions.js';
 import type { Message } from '../../types/messages.js';
 import type { PermissionResult, PlanApprovalResult } from '../../types/tools.js';
@@ -20,7 +20,7 @@ import {
 import { WelcomeScreen, type RecentChapter } from './WelcomeScreen.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount, useDebugRender } from '../debug.js';
-import { useDensity } from '../density.js';
+import { useDensity, type TuiDensity } from '../density.js';
 import { mergeAssistantMessages } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
 import type { TranscriptMode } from '../tool-presentation.js';
@@ -88,17 +88,19 @@ function estimateTimelineRows(
   entry: Message | CompactBoundary,
   terminalWidth: number,
   quietTools?: QuietToolContext,
+  density: TuiDensity = 'compact',
 ): number {
-  if ('transcriptOrdinal' in entry) return 1;
+  // A boundary is one row of its own plus the blank row it takes, which tight density drops.
+  if ('transcriptOrdinal' in entry) return density === 'tight' ? 1 : 2;
 
-  // A user turn is its prompt and nothing else: it wraps by the same rules
-  // UserMessage sets it with, so the estimate is its row count exactly.
+  // A user turn is its prompt and the two blank rows above it (tight density
+  // drops them): the margin belongs to the turn, so an unmeasured one is
+  // estimated with it. The transcript's first turn has no margin — measuring
+  // corrects that one row pair.
   if (entry.role === 'user') {
-    return userTurnRows(
-      entry.content,
-      terminalWidth,
-      entry.timestamp,
-      entry.attachments?.length ?? 0,
+    return (
+      userTurnRows(entry.content, terminalWidth, entry.timestamp, entry.attachments?.length ?? 0) +
+      (density === 'tight' ? 0 : 2)
     );
   }
   const textRows = estimateWrappedRows(entry.content, transcriptGrid(terminalWidth).content);
@@ -276,8 +278,8 @@ export function ChatPanelInner({
   );
   const estimateRows = useCallback(
     (entry: Message | CompactBoundary) =>
-      estimateTimelineRows(entry, terminalWidth ?? 80, quietTools),
-    [quietTools, terminalWidth],
+      estimateTimelineRows(entry, terminalWidth ?? 80, quietTools, density),
+    [quietTools, terminalWidth, density],
   );
   const hiddenHistoryRows = hiddenTimelineEntries > 0 ? (density === 'tight' ? 1 : 2) : 0;
   const virtualTimeline = useVirtualTranscript({
@@ -356,13 +358,21 @@ export function ChatPanelInner({
       {virtualTimeline.entries.map(({ item: entry, index, key, measurementKey }) => {
         let row: React.ReactNode;
         if ('transcriptOrdinal' in entry) {
-          row = <CompactBoundaryRow terminalWidth={terminalWidth} />;
+          row = (
+            <CompactBoundaryRow
+              terminalWidth={terminalWidth}
+              spaced={index > 0 && density !== 'tight'}
+              screenReader={screenReader}
+            />
+          );
         } else {
           const message = entry;
           const previous = visibleTimeline[index - 1];
           if (message.role === 'user') {
             row = (
-              <Box flexDirection="column" marginTop={index > 0 && density !== 'tight' ? 1 : 0}>
+              // Two blank rows, like the space before a new section: one left
+              // your turn reading as another paragraph of the reply above it.
+              <Box flexDirection="column" marginTop={index > 0 && density !== 'tight' ? 2 : 0}>
                 {screenReader ? (
                   <ScreenReaderRoleLabel role="user" timestamp={message.timestamp} />
                 ) : null}
@@ -407,6 +417,9 @@ export function ChatPanelInner({
                 flexDirection="column"
                 marginTop={
                   followsToolCall ||
+                  // A boundary takes a blank row above it, so the reply that
+                  // follows one keeps the blank row below it too.
+                  (previous && 'transcriptOrdinal' in previous && density !== 'tight') ||
                   (density !== 'tight' &&
                     previous &&
                     // A slash command's output answers no prompt row of its
@@ -518,6 +531,7 @@ interface TimelineCache {
   prefixLast?: Message;
   boundaries?: CompactBoundary[];
   prefix: Array<Message | CompactBoundary>;
+  trailing?: CompactBoundary[];
   composed?: Array<Message | CompactBoundary>;
   composedActive?: Message;
 }
@@ -558,15 +572,29 @@ function useIncrementalTimeline(
       prefixLength: streamingIndex,
       prefixLast,
       boundaries,
-      prefix: buildTimeline(messages.slice(0, streamingIndex), boundaries, streamingMessageId),
+      prefix: buildTimeline(
+        messages.slice(0, streamingIndex),
+        // Only the boundaries this prefix can place: the ones past the streaming message are
+        // drawn after it, from `trailing`.
+        boundaries.filter((boundary) => boundary.transcriptOrdinal <= streamingIndex),
+        streamingMessageId,
+      ),
+      // A compaction that committed behind the streaming message's output sits below it until the
+      // turn's next output opens a message of its own: draw it meanwhile, not when the turn ends.
+      trailing: boundaries
+        .filter((boundary) => boundary.transcriptOrdinal > streamingIndex)
+        .sort((a, b) => a.timestamp - b.timestamp),
     };
   }
   const active = messages[streamingIndex];
-  if (active.kind === 'agent-notification') return cache.current.prefix;
+  if (active.kind === 'agent-notification') {
+    const trailing = cache.current.trailing ?? [];
+    return trailing.length ? [...cache.current.prefix, ...trailing] : cache.current.prefix;
+  }
   // Reuse the composed array while the active message object is unchanged so
   // re-renders without new deltas keep a stable timeline identity downstream.
   if (cache.current.composedActive !== active) {
-    cache.current.composed = [...cache.current.prefix, active];
+    cache.current.composed = [...cache.current.prefix, active, ...(cache.current.trailing ?? [])];
     cache.current.composedActive = active;
   }
   return cache.current.composed!;
@@ -596,22 +624,47 @@ function buildTimeline(
       flush();
       timeline.push(...markers.sort((a, b) => a.timestamp - b.timestamp));
     }
-    if (index < messages.length && messages[index].kind !== 'agent-notification') {
-      segment.push(messages[index]);
+    if (index < messages.length) {
+      // A notification opens a new turn: the agent's reply to it never folds
+      // into the answer that closed the turn before.
+      if (messages[index].kind === 'agent-notification') flush();
+      else segment.push(messages[index]);
     }
+  }
+  // A row placed past the last message, for a streaming message whose append never landed,
+  // still shows: at the end.
+  const beyond = boundaries.filter((boundary) => boundary.transcriptOrdinal > messages.length);
+  if (beyond.length) {
+    flush();
+    timeline.push(...beyond.sort((a, b) => a.timestamp - b.timestamp));
   }
   flush();
   return timeline;
 }
 
-function CompactBoundaryRow({ terminalWidth = 80 }: { terminalWidth?: number }) {
+/**
+ * The point the conversation was compacted, set like a tool row: its mark on the column every tool
+ * row's status mark uses, a blank row above and below it except in tight density.
+ */
+function CompactBoundaryRow({
+  terminalWidth = 80,
+  spaced,
+  screenReader,
+}: {
+  terminalWidth?: number;
+  spaced: boolean;
+  screenReader: boolean;
+}) {
   const theme = useTheme();
+  const text = indentedGrid(transcriptGrid(terminalWidth)).content;
   return (
-    <Box width={transcriptGrid(terminalWidth).width}>
-      <Text color={theme.success}>✓ </Text>
-      <Text color={theme.text}>
-        {truncateDisplay('Compact conversation', transcriptGrid(terminalWidth).content)}
-      </Text>
+    <Box
+      marginTop={spaced ? 1 : 0}
+      marginLeft={screenReader ? 0 : CONTENT_COLUMN}
+      width={GUTTER_WIDTH + text}
+    >
+      <Text color={theme.inactive}>✓ </Text>
+      <Text color={theme.text}>{truncateDisplay('Compact conversation', text)}</Text>
     </Box>
   );
 }

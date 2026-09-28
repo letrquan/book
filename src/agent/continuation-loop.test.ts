@@ -408,6 +408,85 @@ describe('a run whose every tool call is refused', () => {
   });
 });
 
+describe('a run that keeps calling a tool no registry answers to', () => {
+  /** A provider that calls a name no registered tool answers to, forever. */
+  function unknownToolProvider(): Provider {
+    let call = 0;
+    return {
+      id: 'scripted',
+      stream: async function* () {
+        call++;
+        yield {
+          type: 'tool_call',
+          toolCall: {
+            id: `ghost-${call}`,
+            name: 'GhostTool',
+            arguments: { path: 'a.ts' },
+          },
+        };
+        yield { type: 'done' };
+      },
+    } as unknown as Provider;
+  }
+
+  async function runGhosts(
+    config: ReturnType<typeof configWith>,
+    mode: string,
+  ): Promise<{ outcome?: AgentTerminalOutcome; prompts: number }> {
+    let outcome: AgentTerminalOutcome | undefined;
+    let prompts = 0;
+    const callbacks = {
+      onText: () => {},
+      onToolCall: () => {},
+      onToolResult: () => {},
+      onError: () => {},
+      onTurnStart: () => {},
+      onDone: () => {},
+      onTerminal: (value: AgentTerminalOutcome) => (outcome = value),
+      onPermissionRequired: async () => {
+        prompts++;
+        return 'allow' as const;
+      },
+    } as unknown as AgentLoopCallbacks;
+
+    await runAgentLoop(config, createDefaultRegistry(), 'do the work', [], callbacks, mode, {
+      provider: unknownToolProvider(),
+      isNewSession: false,
+      runtime: new SessionRuntime(),
+      unattended: true,
+    });
+    return { outcome, prompts };
+  }
+
+  function ghostConfig(): ReturnType<typeof configWith> {
+    const config = configWith({ enabled: false });
+    config.settings.continuation.blockedToolTurnLimit = 2;
+    // A ceiling, so a broken brake fails the assertion instead of hanging the suite.
+    config.maxTurns = 6;
+    return config;
+  }
+
+  it('still stops the streak in a mode that would have asked', async () => {
+    // The refusal reached the permission prompt, which an unattended run answers
+    // `deny`, so the brake was built around it; refusing the call earlier changed
+    // nothing about the fact that the mode would have asked about it.
+    const { outcome, prompts } = await runGhosts(ghostConfig(), 'default');
+
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(prompts).toBe(0);
+  });
+
+  it('does not stop the streak in a mode that never asks', async () => {
+    // `bypassPermissions` runs a name no registry answers to exactly as it runs a
+    // mutation, and stops only on the turn budget. Counting the pre-execution refusal
+    // here ended an unattended run that was never refused by anything.
+    const { outcome } = await runGhosts(ghostConfig(), 'bypassPermissions');
+
+    expect(outcome?.reason).not.toBe('all_tools_blocked');
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'max_turns' });
+  });
+});
+
 describe('the no-progress witness', () => {
   it('does not accept a refused tool call as progress', async () => {
     // `toolCallStats` increments for every attempted call, refusals included, so a
@@ -655,6 +734,29 @@ function refusedWebProvider(
 }
 
 /**
+ * A provider that calls NotebookEdit on every turn. It is a deferred tool and the run never
+ * activates it, so every call is refused as inactive — a refusal no permission can lift.
+ */
+function inactiveNotebookProvider(): Provider {
+  let call = 0;
+  return {
+    id: 'scripted',
+    stream: async function* () {
+      call++;
+      yield {
+        type: 'tool_call',
+        toolCall: {
+          id: `notebook-${call}`,
+          name: 'NotebookEdit',
+          arguments: { notebook_path: 'a.ipynb', new_source: 'x' },
+        },
+      };
+      yield { type: 'done' };
+    },
+  } as unknown as Provider;
+}
+
+/**
  * The default tools, with the web tools rebuilt on a resolver that answers every hostname inside
  * 198.18.0.0/15, as behind a fake-IP DNS proxy. Each built-in search provider is then refused
  * before any request leaves the host.
@@ -663,6 +765,50 @@ function fakeIpDnsWebRegistry() {
   const registry = createDefaultRegistry();
   registry.registerAll(createWebTools({ resolveHostname: async () => ['198.18.0.1'] }));
   return registry;
+}
+
+/**
+ * A provider that mangles the same Edit on every turn, the way a route that drops the opening
+ * of a call's arguments does. No permission lifts the call, so the streak has to stop with the
+ * remedy for arguments that never parsed.
+ */
+function mangledEditProvider(): Provider {
+  let call = 0;
+  return {
+    id: 'scripted',
+    stream: async function* () {
+      call++;
+      yield {
+        type: 'tool_call',
+        toolCall: {
+          id: `mangled-${call}`,
+          name: 'Edit',
+          arguments: { __raw: '{"filePath": "a", "oldString":' },
+        },
+      };
+      yield { type: 'done' };
+    },
+  } as unknown as Provider;
+}
+
+/**
+ * A provider that calls a tool no registry holds on every turn. The call is refused before it
+ * runs, so no permission was ever asked for, and nothing a run can grant makes the name exist:
+ * the streak has to stop with the remedy for calls that could not run as sent.
+ */
+function unknownToolProvider(): Provider {
+  let turn = 0;
+  return {
+    id: 'scripted',
+    stream: async function* () {
+      turn++;
+      yield {
+        type: 'tool_call',
+        toolCall: { id: `unknown-${turn}`, name: 'NoSuchTool', arguments: {} },
+      };
+      yield { type: 'done' };
+    },
+  } as unknown as Provider;
 }
 
 /** The default tools, with WebFetch rebuilt on a server whose every page redirects to another origin. */
@@ -720,6 +866,43 @@ describe('the refusal brake names the cause it stopped on', () => {
     expect(outcome?.message).toContain('every destination');
   });
 
+  it('points a streak of refusals at activating the tool, not at permissions', async () => {
+    // NotebookEdit was never activated, so no permission rule and no permission mode can
+    // make it run: only ToolSearch (and an allowed-tools list that includes it) can. Telling
+    // this run to "grant the permission" sends it after a gate that was never the one that
+    // refused.
+    const { outcome, codes } = await runRefusals(inactiveNotebookProvider(), 'bypassPermissions');
+
+    expect(codes).toEqual(['tool_not_active', 'tool_not_active', 'tool_not_active']);
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('ToolSearch');
+    expect(outcome?.message).toContain('NotebookEdit');
+    expect(outcome?.message).not.toContain('grant the permission');
+  });
+
+  it('points a streak of unparsed arguments at the route, not at permissions', async () => {
+    // The call never parsed, so it can never run: asking for a permission on it, and
+    // telling the run to "grant the permission" once it stops, points at a gate that
+    // was never the one that refused. `runRefusals` records blocked codes only, so the
+    // outcome is the assertion that matters here.
+    const { outcome } = await runRefusals(mangledEditProvider(), 'bypassPermissions');
+
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('never parsed as JSON');
+    expect(outcome?.message).not.toContain('grant the permission');
+  });
+
+  it('stops a streak of calls to a tool that does not exist, and names that as the cause', async () => {
+    // The call is refused before it runs, so it never reaches the prompt an unattended
+    // run answers `deny`; the brake has to count it, or a run reissuing the same name
+    // until the turn budget ran out is not stopped at all.
+    const { outcome } = await runRefusals(unknownToolProvider(), 'default');
+
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('could not run as sent');
+    expect(outcome?.message).not.toContain('grant the permission');
+  });
+
   it('names both remedies when the streak mixes network-policy and permission refusals', async () => {
     // The streak's last turn is a WebFetch alone, so a message built from that turn would drop the
     // permission advice the Write refused before it still needs.
@@ -774,6 +957,45 @@ describe('the refusal brake names the cause it stopped on', () => {
     expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
     expect(outcome?.message).toContain('BOOK_WEB_ALLOW_PRIVATE_NETWORK');
     expect(outcome?.message).toContain('DNS or proxy');
+    expect(outcome?.message).not.toContain('grant the permission');
+  });
+});
+
+/**
+ * #305 item 3. A streak of outside reads ends the run with `all_tools_blocked`, and the remedy
+ * has to name `additionalDirectories` — telling the operator to "grant the permission" for a
+ * Read that no rule can reach is how a run dead-ends with nothing to change.
+ */
+describe('a streak of outside reads names the outside remedy', () => {
+  /** Refuses every Read the same way a plan-mode or default-mode outside read now is. */
+  function outsideReadProvider(): Provider {
+    let call = 0;
+    return {
+      id: 'scripted',
+      stream: async function* () {
+        call++;
+        yield {
+          type: 'tool_call',
+          toolCall: {
+            id: `read-${call}`,
+            name: 'Read',
+            arguments: { file_path: '/etc/hostname' },
+          },
+        };
+        yield { type: 'done' };
+      },
+    } as unknown as Provider;
+  }
+
+  it('points the operator at the directory, not at a permission rule', async () => {
+    const config = configWith({ enabled: false });
+    config.settings.continuation.blockedToolTurnLimit = 3;
+    config.maxTurns = 25;
+
+    const { outcome } = await runDenied(config, outsideReadProvider());
+
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('additionalDirectories');
     expect(outcome?.message).not.toContain('grant the permission');
   });
 });

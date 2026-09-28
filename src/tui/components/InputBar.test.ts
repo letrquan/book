@@ -12,6 +12,7 @@ import { displayWidth } from './word-wrap.js';
 import { PILCROW } from '../marks.js';
 import type { ImageAttachment } from '../../types/messages.js';
 import type { Skill } from '../../skills.js';
+import { getCommandsForQuery } from '../../commands/filter.js';
 
 /**
  * Tests for InputBar: responsive editor box, bottom-pinning layout,
@@ -127,7 +128,7 @@ describe('InputBar editor box', () => {
   });
 
   it('dismisses the command menu on Esc and keeps the draft', async () => {
-    // Ink sets `meta` on a lone Esc; the Alt-shortcut filter used to swallow it,
+    // Ink 6 set `meta` on a lone Esc, and the Alt-shortcut filter swallowed it,
     // so Esc never closed the menu.
     const commands = [
       { name: 'clear', description: 'Clear it', body: 'Clear', source: 'project' as const },
@@ -780,7 +781,7 @@ describe('InputBar queued follow-up input', () => {
     await tick();
     expect(stripAnsi(view.lastFrame())).toContain('queued draft');
 
-    view.rerender(inputBar(() => {}, { ...props, editingQueuedInput: true }));
+    view.rerender(inputBar(() => {}, props));
     view.stdin.write(' edited');
     await tick();
     view.stdin.write('\r');
@@ -1212,5 +1213,71 @@ describe('composer layout reporting', () => {
     view.stdin.write('word '.repeat(12));
     await tick(20);
     expect(onLayoutChange.mock.calls.length).toBeGreaterThan(settled);
+  });
+});
+
+describe('keys judged against the draft the key arrived to (#268)', () => {
+  const attachment: ImageAttachment = {
+    id: 'img-1',
+    sha256: 'hash',
+    storageKey: 'hash.png',
+    mediaType: 'image/png',
+    byteSize: 2048,
+    displayName: 'clipboard.png',
+  };
+
+  // Backspace removes an attachment only from an empty composer. The editor deletes the draft's
+  // last character before this handler sees the key, so judged by the draft as the key left it,
+  // one Backspace took the last character and the image together.
+  it('Backspace on the last character of a draft keeps the attached image', async () => {
+    const view = render(inputBar(() => {}, { onPasteImage: async () => attachment }));
+    await tick();
+    view.stdin.write('\x1bv');
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).toContain('[image 1');
+    view.stdin.write('a');
+    await tick(20);
+
+    view.stdin.write('\x7f');
+    await tick(20);
+
+    expect(stripAnsi(view.lastFrame())).toContain('[image 1');
+    // A deliberate second press lands outside InputBox's key-repeat window, and the
+    // removal fires only once that window passes without a repeat arriving.
+    await tick(140);
+    view.stdin.write('\x7f');
+    await vi.waitFor(() => expect(stripAnsi(view.lastFrame())).not.toContain('[image 1'));
+  });
+
+  // With the command menu open, Enter runs the selected command, and when nothing matched it
+  // cleared the composer without a word. A typo is kept for fixing instead; it is not sent
+  // either, since an unknown command goes to the model as a prompt.
+  // The menu's selection reached the Enter handler only through a ref written at render, so
+  // Down then Enter in one read (a busy event loop batches them) ran the item Down had left.
+  it('Enter in the same read as Down runs the command Down moved to', async () => {
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value)));
+    await tick();
+    view.stdin.write('/co');
+    await tick(20);
+
+    view.stdin.write('\x1b[B\r');
+    await tick(20);
+
+    expect(submitted).toEqual([`/${getCommandsForQuery([], 'co')[1]!.name}`]);
+  });
+
+  it('Enter on a slash command the menu does not list keeps it in the composer', async () => {
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value)));
+    await tick();
+    view.stdin.write('/zzqx');
+    await tick(20);
+
+    view.stdin.write('\r');
+    await tick(20);
+
+    expect(submitted).toEqual([]);
+    expect(stripAnsi(view.lastFrame())).toContain('/zzqx');
   });
 });

@@ -1,31 +1,14 @@
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import {
+  wrapInkLogUpdate,
+  type CreateLogUpdate,
+  type InkStream,
+  type LogUpdateRenderer,
+} from './ink-renderer.js';
 
 export interface TranscriptScrollHint {
   top: number;
   bottom: number;
   delta: number;
-}
-
-interface InkStream {
-  isTTY?: boolean;
-  rows?: number;
-  write: (data: string) => unknown;
-}
-
-interface LogUpdateRenderer {
-  (output: string): boolean | void;
-  clear: () => void;
-  done: () => void;
-  sync: (output: string) => void;
-  setCursorPosition: (position: unknown) => void;
-  isCursorDirty: () => boolean;
-  willRender: (output: string) => boolean;
-}
-
-interface LogUpdateModule {
-  create: (stream: InkStream, options?: { incremental?: boolean }) => LogUpdateRenderer;
 }
 
 let pendingHint: TranscriptScrollHint | null = null;
@@ -115,7 +98,7 @@ function writeExposedRows(
 function createScrollAwareRenderer(
   stream: InkStream,
   options: { incremental?: boolean } | undefined,
-  createBase: LogUpdateModule['create'],
+  createBase: CreateLogUpdate,
 ): LogUpdateRenderer {
   const base = createBase(stream, options);
   let previousFrame = '';
@@ -166,6 +149,11 @@ function createScrollAwareRenderer(
     previousFrame = '';
     base.done();
   };
+  render.reset = () => {
+    pendingHint = null;
+    previousFrame = '';
+    base.reset?.();
+  };
   render.sync = (output: string) => {
     pendingHint = null;
     previousFrame = output;
@@ -188,15 +176,9 @@ export async function installInkScrollRenderer(enabled?: boolean): Promise<void>
   if (!(enabled ?? isInkScrollRendererEnabled(process.env.BOOK_SCROLL_RENDERER))) return;
   rendererInstalled = true;
 
-  try {
-    const require = createRequire(import.meta.url);
-    const inkEntry = require.resolve('ink');
-    const logUpdateUrl = pathToFileURL(join(dirname(inkEntry), 'log-update.js')).href;
-    const module = (await import(logUpdateUrl)) as { default: LogUpdateModule };
-    const logUpdate = module.default;
-    const createBase = logUpdate.create;
-    logUpdate.create = (stream, options) => createScrollAwareRenderer(stream, options, createBase);
-  } catch {
-    // Keep Ink's built-in renderer when its internal module layout changes.
-  }
+  // Keep Ink's built-in renderer when its internal module layout changes:
+  // wrapInkLogUpdate reports false and leaves Ink's own renderer in place.
+  await wrapInkLogUpdate(
+    (createBase) => (stream, options) => createScrollAwareRenderer(stream, options, createBase),
+  );
 }

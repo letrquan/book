@@ -42,21 +42,24 @@ policy decision, not work, and counting it would move the one signal meant to pr
 
 `blockedToolTurnLimit` is a second, independent brake, and it is enforced **even when `enabled` is
 false**. It stops a run whose every tool call was refused on that many consecutive turns, ending it
-as `all_tools_blocked` and naming every tool refused over the streak and what lifts the refusal. A permission
-refusal is lifted by a grant, an allow rule, or another permission mode, except one made by a
-`permissions.deny` rule: deny rules are checked before allow rules and every mode, so only removing
-or narrowing that rule lifts it. A refusal by the web
-network policy (a private or special-use destination) is lifted by none of those, bypassPermissions
-included. For a refused `WebFetch` the message names the destinations it refused (the host the
-model asked for, and the address it resolved to; a redirect to another origin is reported as a
-cross-origin redirect instead) and `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment,
-warning that the variable lifts the policy for every destination rather than only those. For a
-refused `WebSearch`, whose built-in providers resolved to a private destination, it names the
-private addresses the providers resolved to and points at the host's DNS or proxy instead: the
-providers always validate strictly, so that variable does nothing for them. A streak of stopped
-cross-origin redirects gets its own remedy: the model has to fetch the target in its own
-`WebFetch` call, or stop fetching that page. A streak holding several kinds names each remedy. It
-is separate because a refusal spin never
+as `all_tools_blocked` and naming every tool refused over the streak and what lifts the refusal. Each
+kind of refusal gets its own remedy, because most of them cannot be lifted by a permission at all:
+
+| Refusal                                                                                                          | What lifts it                                                                                                                                                                                                                         |
+| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A permission (including one made by a `permissions.deny` rule, which no other rule or mode lifts)                | A grant, an allow rule, or another permission mode — for a deny rule, changing that rule                                                                                                                                              |
+| A PreToolUse hook                                                                                                | Changing or removing that hook                                                                                                                                                                                                        |
+| A tool that was not active for the turn, or arguments the run's allowed tools do not cover                       | Activating a deferred tool with `ToolSearch`, and an allowed-tools list that covers the tool and its arguments                                                                                                                        |
+| A managed agent's tool policy (its profile or definition)                                                        | Giving the step to an agent whose policy allows it                                                                                                                                                                                    |
+| A skill's activation policy or its allowed-tools                                                                 | Changing that skill's override under `skills.overrides`, or its allowed-tools                                                                                                                                                         |
+| A question the run cannot put to anyone (`dontAsk` mode, or a question the user declined)                        | Nothing — the model has to proceed without asking                                                                                                                                                                                     |
+| Calls that could not run as sent (arguments that never parsed, failed the schema, or a tool that does not exist) | Nothing — the model has to correct them; if `book tool-stats` shows `invalid_json_arguments:truncated_start`, the route is dropping the first fragment of calls                                                                       |
+| A private or special-use web destination                                                                         | `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment, which no rule or mode lifts, bypassPermissions included; the message names the refused destinations and warns that the variable lifts the policy for every destination |
+| A `WebSearch` whose every built-in provider resolved privately                                                   | Fixing the host's DNS or proxy; no setting relaxes the providers' strict validation. The message names the private addresses                                                                                                          |
+| A `WebFetch` stopped at a redirect to another origin                                                             | Nothing — the model has to fetch the target in its own `WebFetch` call, or stop fetching that page                                                                                                                                    |
+| Any other refusal                                                                                                | Whatever that refused call's own message names as the cause                                                                                                                                                                           |
+
+A streak holding several kinds names each remedy. It is separate because a refusal spin never
 produces a tool-free turn, so the turn-end gate — and therefore every brake behind it — never fires:
 a headless run in the default permission mode answers each prompt `deny` and would otherwise
 re-issue refused calls until the budget ran out. Set it to `0` to disable. `planRefreshTurns` restates the open plan periodically, which also keeps compaction from
@@ -94,44 +97,78 @@ wraps an upstream 4xx as a 503 with a cooldown
 ends on that 400; it is not retried ten times and not re-issued, since the request itself is what
 was refused. Only the router's `[<route>] [4xx]:` prefix or a 4xx `code` in a JSON `"error"` object
 counts as a quote: a 503 whose body merely mentions `HTTP 403` or `"code": 4001` is retried like
-any other outage. The body behind a retryable status is read for at most 5 s and 64 KB, and the
+any other outage. Any error body is read for at most 5 s and 64 KB. Behind a retryable status the
 decision is made on what arrived, so a router that sends its headers and then stalls cannot hold an
 attempt for the whole request timeout.
 
 A 408 or a 429 is retried like an outage. A 400, 404 or 422, plain or quoted, and Anthropic's
-mid-stream `invalid_request_error` end the run on the first answer, since re-sending the same
-request reproduces them. A 401, 402 or 403 parks the run as `credentials_rejected`, and a 413 goes
-through the overflow recovery below. Any other 4xx (a 409, 423, 425, or Google's 499) is re-sent at
-the stream level, up to `retry.streamReissueAttempts` times. 9router's antigravity route treats a
-409 like a 429 with a strike counter: it passes the first two through and, on the third within
-60 s, locks that account and switches to the next one, so the third re-send is the one that can
-succeed.
+mid-stream `invalid_request_error` and `not_found_error` end the run on the first answer, since
+re-sending the same request reproduces them. A 401, 402 or 403, or a mid-stream
+`authentication_error` or `permission_error`, parks the run as `credentials_rejected`, and a 413
+or a mid-stream `request_too_large` goes through the overflow recovery below. Any other 4xx (a
+409, 423, 425, or Google's 499) is re-sent at the stream level, up to
+`retry.streamReissueAttempts` times. 9router's antigravity route treats a 409 like a 429 with a
+strike counter: it passes the first two through and, on the third within 60 s, locks that account
+and switches to the next one, so the third re-send is the one that can succeed.
 
 A `bad_request` on a request of 200k estimated tokens or more, plain
 (`400 {"error":{"message":"[400]: …","code":"bad_request"}}`) or quoted inside a 503, is read as a
 context overflow even when the body does not say so: the antigravity Gemini route refuses at ~300k
-without naming the length. The history is compacted and the turn retried once, provided the
-compacted request is below 200k tokens. Only an error that states an overflow also lowers the
-learned context window: a 413 status, an `error.code` or `error.type` of `context_length_exceeded`
-or `request_too_large` (or llama.cpp's `exceed_context_size_error`), or overflow wording in the
-error message ("maximum context length", "prompt is too long", Gemini's "input token count (N)
-exceeds the maximum", …), including the upstream body OpenRouter forwards in `error.metadata.raw`.
-A number elsewhere in the body, such as a `contents[413]` field path or a `req-413-x` request id, is
-not a statement about the window. An overflow inferred from size alone never lowers it, so the
-recovery compaction plans the reducer's requests against 80% of the refused request's size instead
-of the published window. A 400 on a smaller request, or another overflow right after compacting,
-ends the run on the provider's error: the recovery runs once per turn.
+without naming the length. A 429 whose message states an oversized request (OpenAI's
+`Request too large … on tokens per min (TPM)`) is recovered the same way. Such a 429 is not retried
+like other rate limits, and one still refused after its compaction ends the run: waiting cannot make
+that request fit. A transient `Rate limit reached …` is retried as before. The recovery compacts
+under the limit the refusal states (`Limit N`), and the turn is not retried until the request is
+below it. A TPM refusal counts whatever status carries it, a 413 or a router's 503 included, and no
+rate-limit error ever lowers the learned window. The history is compacted and the turn retried once,
+provided a size-inferred retry is below 200k tokens. If that retry is refused with a 400 again, the
+error says so: either the refusal is not about size, or the route's real limit is below 200k, which
+a declared `contextWindow` fixes. Only an error that states an overflow also lowers the learned
+context window: a 413 status, an `error.code` or `error.type` of `context_length_exceeded` or
+`request_too_large` (or llama.cpp's `exceed_context_size_error`), or overflow wording in the error
+message ("maximum context length", "prompt is too long", Gemini's "input token count (N) exceeds the
+maximum", …), including the upstream body OpenRouter forwards in `error.metadata.raw`, as a string
+or an object. A number elsewhere in the body, such as a `contents[413]` field path or a `req-413-x`
+request id, is not a statement about the window, and neither a TPM 429 nor an overflow inferred from
+size alone ever lowers it.
+
+Every recovery compaction plans the reducer's requests against at most 80% of the refused request's
+size, so its first request is never nearly as large as the refused one. The reducer's own request is
+read the same way as the turn's: a plain `bad_request` to a reducer request of 200k tokens or more
+halves the window its chunks are planned against. If the reducer still fails, large tool results are
+clipped, and when the clip cannot bring the request under that 80% (and, for a size-inferred
+overflow, under 200k), a checkpoint is built without the model: it is marked degraded, but it needs
+no provider call. A clip is kept only when the turn is retried with it. The recovery compacts only
+when `autoCompactEnabled` is on; with it off, only the clip runs, and an error that ends the run
+says so. A 400 on a smaller request, or another overflow right after compacting, ends the run on the
+provider's error: the recovery runs once per turn.
+
+Before a request that carries tool results is sent, Book measures it against the model's usable
+window (the window minus the output reserve). At 80% of it the history is compacted, and a request
+still too large has its tool results clipped. When the reducer's own request failed (not when a
+`PreCompact` hook blocked it, the run budget refused it, or the failure is one every request would
+share, such as a rejected key or an outage) and the clip cannot help, which is what resuming a long
+session on a model with a smaller window looks like, a checkpoint is built without the model and the
+request is sent on that. Such a checkpoint is committed only when it brings the request under the
+window; when the gate still refuses, the history it hands back is uncut. The run ends with
+`Request is too large for <model>` only when even that cannot be made, or when `autoCompactEnabled`
+is off, and the message names the remedy and why the compaction did not help.
 
 Two answers that are not answers get one re-issue each: a `content_filter` stop on a turn with no
 tool calls, and a 200 whose text is the upstream's error envelope. When a model may have written
 the text, the envelope must be the whole answer, one `[Error] … request ID …` line, and an answer
-that quotes such a line and goes on to explain it is an answer. With zero tokens both ways (what a
-router reports for text it wrote itself, and what a provider that doesn't report usage sends), any
-answer that opens with `[Error]` counts, however many lines follow. If either repeats, the run ends
+that quotes such a line and goes on to explain it is an answer. With a usage block that reports
+zero tokens both ways (what a router reports for text it wrote itself), any answer that opens with
+`[Error]` counts, however many lines follow. A reply with no usage block at all keeps the one-line
+rule, since a model may have written it. If either repeats, the run ends
 `failed/provider_error` on that second request, never `completed`; the repeat is not re-issued
 again, and no `[continuation]` message is written. Every retry is visible to a print-mode host: a
 `{"type":"retry","phase","attempt","max","delay_ms"}` record in `stream-json`, a `retry: …` line on
-stderr in `text` output.
+stderr in `text` output. `phase` is `transport` for an HTTP-level retry inside one request,
+`watchdog` for one with no limit (`max` is then `null`), and `reissue` for a turn sent again after
+its stream ended mid-turn, or `continue` for a continuation after the output cap; a `reissue` record
+also carries `reason`, the outcome that would otherwise
+have ended the run (`stream_stall`, `transport_interrupted`, `provider_error`, `output_cap`, …).
 
 For a supervised loop, use `--session-id` (resume-or-create) rather than `--continue`, which selects
 the most recently touched session in the directory and can be hijacked by an unrelated `book -p`
@@ -141,6 +178,10 @@ invocation:
 ID=$(uuidgen)
 while ! book -p --session-id "$ID" --output-format stream-json         --max-budget-usd 500 "$OBJECTIVE"      | jq -e 'select(.type=="result") | .outcome.reason=="objective_complete"'; do sleep 30; done
 ```
+
+The `result` record carries `outcome` at its top level, beside `stopReason`, which is what that
+selector reads. It leaves the conversation out, so the last line of a multi-hour run stays small
+however long the session grew; add `--include-result-messages` if the loop wants the history too.
 
 `--max-budget-usd` accumulates across restarts of the same session, so the cap bounds the objective
 rather than each process.
@@ -230,16 +271,17 @@ choice either: it is sent only where a level was chosen or the compact model's c
 `low`.
 
 The reducer's and the judge's requests are also retried at most twice, instead of the full
-`retry.maxAttempts`, and `retry.watchdog` does not lift that cap. Both have a fallback: the reducer
-falls back to the deterministic checkpoint, and a failed judge leaves the verdict inconclusive, so
-the checkpoint is committed anyway. Memory extraction keeps the session's retry policy, because it
-gives up on a session after three failed starts. A reply that ended at the output limit is kept when
-it is one JSON object and nothing else. An empty reply, or one cut off mid-answer, counts as a
-failed start rather than as the session read, and a session given up on is recorded as `truncated`
-when its last reply was cut off (`provider-failed` otherwise). On that retry policy one session's
-call can outlast the extraction lock's 30-minute lifetime, so a run keeps its lock fresh while it
-lasts, for at most two hours on any one session; a run whose lock another Book session took over
-writes nothing more.
+`retry.maxAttempts`, and `retry.watchdog` does not lift that cap. Both have a fallback: a reducer
+reply that is not a valid checkpoint gives way to the deterministic checkpoint, as does a failed
+reducer when the request cannot be sent without a compaction, and a failed judge leaves the verdict
+inconclusive, so the checkpoint is committed anyway. Memory extraction keeps the session's retry
+policy, because it gives up on a session after three failed starts. A reply that ended at the output
+limit is kept when it is one JSON object and nothing else. An empty reply, or one cut off
+mid-answer, counts as a failed start rather than as the session read, and a session given up on is
+recorded as `truncated` when its last reply was cut off (`provider-failed` otherwise). On that retry
+policy one session's call can outlast the extraction lock's 30-minute lifetime, so a run keeps its
+lock fresh while it lasts, for at most two hours on any one session; a run whose lock another Book
+session took over writes nothing more.
 
 `toolDiscovery.mode` accepts `auto`, `eager`, or `deferred`. Auto mode sends all authorized definitions only when there are at most ten and their schemas fit the configured budget; otherwise the provider receives the practical core plus `ToolSearch`. Search never returns tools outside the current command, skill, agent-role, permission-mode, or runtime-state capability intersection.
 

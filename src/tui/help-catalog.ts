@@ -20,7 +20,10 @@ export interface HelpGroup {
  * the registry by five commands.
  */
 const GROUPS: ReadonlyArray<{ title: string; names: readonly string[] }> = [
-  { title: 'Conversation', names: ['clear', 'resume', 'compact', 'rewind', 'export', 'exit'] },
+  {
+    title: 'Conversation',
+    names: ['clear', 'resume', 'compact', 'rewind', 'queue', 'export', 'exit'],
+  },
   { title: 'Model', names: ['model', 'providers', 'effort'] },
   { title: 'Context', names: ['context', 'usage', 'cost', 'status', 'memory'] },
   { title: 'Code', names: ['diff', 'review', 'security-review', 'init'] },

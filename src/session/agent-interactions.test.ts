@@ -85,8 +85,9 @@ describe('AgentInteractionController', () => {
     const second = controller.requestPermission({ ...toolCall, id: 'tc-2' });
 
     expect(controller.cancelAll('unmount').permission).toBe(true);
-    await expect(first).resolves.toBe('deny');
-    await expect(second).resolves.toBe('deny');
+    // Nobody answered them: the loop must not report a person declining (#264).
+    await expect(first).resolves.toEqual({ result: 'deny', reason: 'dismissed' });
+    await expect(second).resolves.toEqual({ result: 'deny', reason: 'dismissed' });
     expect(controller.getSnapshot().pendingPermission).toBeNull();
   });
 
@@ -149,7 +150,7 @@ describe('AgentInteractionController', () => {
       userQuestions: 0,
       elicitations: 0,
     });
-    await expect(permission).resolves.toBe('deny');
+    await expect(permission).resolves.toEqual({ result: 'deny', reason: 'dismissed' });
     await expect(plan).resolves.toBe('reject');
     await expect(userQuestion).resolves.toMatchObject({ action: 'cancel' });
     await expect(elicitation).resolves.toEqual({ action: 'cancel' });

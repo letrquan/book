@@ -47,11 +47,19 @@ function mount(props: Partial<Parameters<typeof McpElicitationForm>[0]> = {}) {
   return { view, onResolve };
 }
 
-async function press(view: ReturnType<typeof render>, input: string) {
+async function press(view: ReturnType<typeof render>, input: string, delayMs = 20) {
   act(() => {
     view.stdin.write(input);
   });
-  await wait(20);
+  await wait(delayMs);
+}
+
+/** Polls rather than sleeps: returns on the first frame that shows `text`. */
+async function waitForText(view: ReturnType<typeof render>, text: string) {
+  await vi.waitFor(() => expect(stripAnsi(view.lastFrame())).toContain(text), {
+    timeout: 2_000,
+    interval: 20,
+  });
 }
 
 afterEach(cleanup);
@@ -167,14 +175,15 @@ describe('McpElicitationForm', () => {
     expect(declined.onResolve).toHaveBeenCalledWith({ action: 'decline' });
 
     const cancelled = mount();
-    await press(cancelled.view, ESC);
+    // Ink 7 flushes a lone Esc only after 20 ms, so a 20 ms wait is a coin flip.
+    await press(cancelled.view, ESC, 60);
     expect(cancelled.onResolve).toHaveBeenCalledWith({ action: 'cancel' });
   });
 
   it('leaves the form open when Escape closes an editor instead', async () => {
     const { view, onResolve } = mount();
     await press(view, ENTER); // open picker
-    await press(view, ESC); // close picker only
+    await press(view, ESC, 60); // close picker only
     expect(onResolve).not.toHaveBeenCalled();
     await press(view, UP);
     expect(stripAnsi(view.lastFrame())).toContain('Send to azure-devops');
@@ -218,6 +227,42 @@ describe('McpElicitationForm', () => {
 
     expect(onResolve).not.toHaveBeenCalled();
     expect(stripAnsi(view.lastFrame())).toContain('Alpha');
+  });
+
+  // The sheet shares the screen with the transcript, which re-measures its
+  // viewport only when the app hears that the footer's height changed. Opening
+  // a field is a different shape from the list, and a filter that matches more
+  // or fewer choices is another, and a notice is another; each of them landed on
+  // top of a transcript row that was there a moment earlier.
+  it('reports a height change for the editor, its options and a notice', async () => {
+    const onLayoutChange = vi.fn();
+    const { view } = mount({ onLayoutChange });
+    // Opening the sheet is a change of height too.
+    expect(onLayoutChange).toHaveBeenCalled();
+
+    const onFields = onLayoutChange.mock.calls.length;
+    await press(view, ENTER);
+    await waitForText(view, '↑↓ move · type to filter');
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(onFields);
+
+    // A filter that leaves a different number of option rows is a height
+    // change, so the frame is waited on rather than slept for.
+    const onPicker = onLayoutChange.mock.calls.length;
+    await press(view, 'z');
+    await vi.waitFor(() => expect(stripAnsi(view.lastFrame())).not.toContain('Beta'));
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(onPicker);
+
+    const onFiltered = onLayoutChange.mock.calls.length;
+    await press(view, ESC, 60);
+    await waitForText(view, '↑↓ move · Enter edit field or send');
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(onFiltered);
+
+    const onClosed = onLayoutChange.mock.calls.length;
+    await press(view, DOWN);
+    await press(view, DOWN); // send row
+    await press(view, ENTER);
+    await waitForText(view, 'Project is required');
+    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(onClosed);
   });
 });
 

@@ -1,4 +1,4 @@
-import { Box, Text, useInput, useStdout, useApp, type Key } from 'ink';
+import { Box, Text, useStdout, useApp, type Key } from 'ink';
 import {
   useState,
   useCallback,
@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { panelContentWidth, panelGrid } from './layout.js';
+import { GlobalKeyHandler } from './global-key-handler.js';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { QueuedInputPreview, type FlashNotice } from './components/QueuedInputPreview.js';
@@ -28,7 +29,7 @@ import { SkillManager } from './components/SkillManager.js';
 import { AgentProfilePicker } from './components/AgentProfilePicker.js';
 import { SessionPicker } from './components/SessionPicker.js';
 import { RewindPicker } from './components/RewindPicker.js';
-import { TranscriptView } from './components/TranscriptView.js';
+import { TranscriptView, type TranscriptScrollRequest } from './components/TranscriptView.js';
 import { PermissionButtons } from './components/PermissionButtons.js';
 import { HelpPanel } from './components/HelpPanel.js';
 import { KeyValueList, SoftPanel } from './components/chrome.js';
@@ -88,18 +89,21 @@ import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewScope } from '../review/types.js';
 import { join } from 'path';
 import { selectExpandedToolId, selectLatestToolId } from './tool-traces.js';
+import { halfPageScrollDirection, pagerChordsAvailable } from './transcript-scroll.js';
 import {
   getTranscriptShortcutAction,
   isShortcutsToggleKey,
   type TranscriptMode,
 } from './tool-presentation.js';
 import { permissionResultOf } from '../permissions.js';
+import { startupAnimationEnvNote } from '../settings-loader.js';
 import { PermissionsPanel } from './components/PermissionsPanel.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
 import type { InteractiveAssets } from './interactive-assets.js';
 import { resolveContextWindow, stripProvider } from '../models.js';
-import { foldControlCharacters, wordWrap } from './components/word-wrap.js';
+import { wordWrap } from './components/word-wrap.js';
+import { foldControlCharacters } from '../control-characters.js';
 import { countWrittenTurns } from './components/transcript-messages.js';
 import {
   createQueuedInput,
@@ -247,6 +251,7 @@ interface AppProps {
 }
 
 const QUEUED_SEND_NOTICE = 'Sending queued follow-up...';
+const QUEUE_PAUSED_NOTICE = 'Queue paused. Up then Enter resumes it; /queue clear drops it.';
 
 function capitalize(word: string): string {
   return word ? word[0]!.toUpperCase() + word.slice(1) : word;
@@ -291,7 +296,7 @@ export function App({
   config,
   permissionMode,
   session,
-  redrawViewport,
+  redrawViewport: wipeViewport,
   interactiveAssets,
   mcp,
 }: AppProps) {
@@ -301,6 +306,7 @@ export function App({
     compactBoundaries,
     isThinking,
     isCompacting,
+    isCompactCommitted,
     isRewinding,
     compactUi,
     streamingMessageId,
@@ -570,6 +576,12 @@ export function App({
   );
   const [selectedShellId, setSelectedShellId] = useState<string>();
   const commandResolutionRef = useRef<AbortController | null>(null);
+  /** Ends a command resolution in flight and frees the composer it was blocking (#262). */
+  const abortCommandResolution = useCallback(() => {
+    commandResolutionRef.current?.abort();
+    commandResolutionRef.current = null;
+    setIsResolvingCommand(false);
+  }, [setIsResolvingCommand]);
   const queuedInputsRef = useRef<QueuedInput[]>([]);
   const editingQueuedInputRef = useRef<QueuedInput | undefined>(undefined);
   const dispatchingQueuedIdRef = useRef<string | undefined>(undefined);
@@ -582,6 +594,12 @@ export function App({
   const queueDrainPausedRef = useRef(false);
   const queueInterruptEpochRef = useRef(0);
   const queueSessionRef = useRef(sessionId);
+  // A `/compact` cancel is sent once per compaction: a second press is a user who is waiting, and
+  // it arms the exit window instead of cancelling again.
+  const compactCancelSentRef = useRef(false);
+  useEffect(() => {
+    if (!isCompacting) compactCancelSentRef.current = false;
+  }, [isCompacting]);
   const [currentTheme] = useState<ResolvedTheme>(
     () =>
       interactiveAssets?.initialTheme ??
@@ -623,11 +641,30 @@ export function App({
   }, [listSessions, sessionId, transcriptEmpty]);
   // The status line's folio: one page per turn you have written.
   const turnCount = useMemo(() => countWrittenTurns(messages), [messages]);
-  const { exit: exitApp } = useApp();
+  const { exit: exitApp, suspendTerminal } = useApp();
+  const redrawInFlightRef = useRef(false);
+  /**
+   * Wipes the screen and has Ink paint the whole frame again. Ink skips a frame identical to the
+   * last one it wrote, so wiping alone left the screen blank after Ctrl+L, and left rows blank that
+   * a resized frame shared with the old one. suspendTerminal() erases Ink's frame, runs the wipe,
+   * then forgets the old frame and repaints.
+   */
+  const redrawViewport = useCallback(() => {
+    if (!wipeViewport || redrawInFlightRef.current) return;
+    redrawInFlightRef.current = true;
+    void suspendTerminal(wipeViewport)
+      .catch((error: unknown) =>
+        uiLog.event('redraw:failed', {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      )
+      .finally(() => {
+        redrawInFlightRef.current = false;
+      });
+  }, [wipeViewport, suspendTerminal]);
   // Set once an exit starts. SessionEnd can take seconds, and a press meanwhile must neither
-  // arm the window again nor start a second exit: the session-end guard returns at once for a
-  // session that is already ending, so a second exit would unmount Ink before the first
-  // SessionEnd finished.
+  // arm the window again nor start a second exit, which would cancel and log a second time
+  // and show the hint over an exit already under way.
   const exitStartedRef = useRef(false);
   // The same fact as state, for what renders and effects gate on: nothing new is dispatched
   // while SessionEnd runs.
@@ -637,8 +674,13 @@ export function App({
     exitStartedRef.current = true;
     setExitStarted(true);
     disarmCtrlCExit();
+    // An exit ends the work under the UI as well as the UI: a turn still streaming, a command
+    // still resolving, a permission prompt that, approved while a slow SessionEnd ran, still
+    // ran its tool.
+    abortCommandResolution();
+    cancel();
     void endCurrentSession('exit').finally(exitApp);
-  }, [disarmCtrlCExit, endCurrentSession, exitApp]);
+  }, [abortCommandResolution, cancel, disarmCtrlCExit, endCurrentSession, exitApp]);
   /** The idle Ctrl+C decision: exit when the window is armed, otherwise arm it. True on exit. */
   const exitOrArmOnCtrlC = useCallback(
     (context: string): boolean => {
@@ -692,11 +734,19 @@ export function App({
       const input = createQueuedInput(value, sessionId, attachments, edited);
       const result = enqueueQueuedInput(queuedInputsRef.current, input);
       if (!result.accepted) {
-        announceQueueEvent(
-          'Queue is full. Edit or clear a queued message before adding another.',
-          'warning',
-          5_000,
-        );
+        if (edited) {
+          // Still out for editing, so say what to do about it rather than announcing a refusal
+          // about a message that is not being added: Esc removes it, /queue clear empties the queue.
+          setQueueNotice(
+            'Queue is full, so this input stays here. Esc removes it; /queue clear empties the queue.',
+          );
+        } else {
+          announceQueueEvent(
+            'Queue is full. Edit or clear a queued message before adding another.',
+            'warning',
+            5_000,
+          );
+        }
         return false;
       }
       replaceQueuedInputs(result.queue);
@@ -747,8 +797,9 @@ export function App({
   ]);
   const interrupt = useCallback(() => {
     queueInterruptEpochRef.current += 1;
-    commandResolutionRef.current?.abort();
-    commandResolutionRef.current = null;
+    // #262: clearing the handle before the resolution's own `finally` ran left "Resolving…" up
+    // and the composer blocked for the rest of the session.
+    abortCommandResolution();
     const pending = queuedInputsRef.current;
     if (pending.length > 0) {
       const restored = restoreQueuedInputText(pending, draftRef.current);
@@ -760,10 +811,9 @@ export function App({
       }));
       announceQueueEvent('Queued inputs restored to the composer after interrupt.');
     }
-    replaceEditingQueuedInput(undefined);
-    queueDrainPausedRef.current = true;
+    endQueuedEdit(true);
     cancel();
-  }, [cancel, replaceEditingQueuedInput, replaceQueuedInputs]);
+  }, [abortCommandResolution, cancel, endQueuedEdit, replaceQueuedInputs]);
 
   useEffect(() => {
     return () => commandResolutionRef.current?.abort();
@@ -865,13 +915,12 @@ export function App({
     queueSessionRef.current = sessionId;
     queueInterruptEpochRef.current += 1;
     replaceQueuedInputs([]);
-    replaceEditingQueuedInput(undefined);
+    endQueuedEdit();
     dispatchingQueuedIdRef.current = undefined;
     queueDrainRunningRef.current = false;
-    queueDrainPausedRef.current = false;
     setQueueNotice(undefined);
     draftRef.current = '';
-  }, [replaceEditingQueuedInput, replaceQueuedInputs, sessionId]);
+  }, [endQueuedEdit, replaceQueuedInputs, sessionId]);
 
   useAgentCompletionDelivery({
     pending: managedAgents.pendingCompletions,
@@ -1011,10 +1060,12 @@ export function App({
     reducedMotion || Boolean(pendingPlanApproval || pendingUserQuestion || pendingElicitation);
   const screenReader = Boolean(config.accessibility?.screenReader);
   const managedAgentUiEnabled = liveConfig.settings.agents.ui.enabled;
-  const childPermission = managedAgents.pendingPermissions.find(
-    (event) => event.type === 'agent_permission',
-  );
-  const childQuestion = managedAgents.pendingQuestions[0];
+  // Withdrawn while an exit runs: the session's cancel does not reach a child's prompt, so one
+  // approved during a slow SessionEnd still ran the child's tool.
+  const childPermission = exitStarted
+    ? undefined
+    : managedAgents.pendingPermissions.find((event) => event.type === 'agent_permission');
+  const childQuestion = exitStarted ? undefined : managedAgents.pendingQuestions[0];
 
   const subscribeMcp = useCallback(
     (listener: () => void) => mcp?.subscribe(listener) ?? (() => {}),
@@ -1075,6 +1126,19 @@ export function App({
       }
     }
   }, [mcpSnapshot, isThinking, sendInFlight, addLocalMessage, flashNotice]);
+
+  // A managed child that was refused something says so here (#305 item 4). The child's result is
+  // a summary, so a step that never ran is otherwise indistinguishable from one the model chose
+  // to skip. Kept in the transcript rather than flashed, because it is a fact about the run the
+  // operator needs after the fact. Consumption waits for idle, as above.
+  useEffect(() => {
+    const next = managedAgents.noticeQueue[0];
+    if (!next) return;
+    if (isThinking || sendInFlight) return;
+    managedAgents.takeNotice();
+    addLocalMessage(next.message);
+  }, [managedAgents, isThinking, sendInFlight, addLocalMessage]);
+
   const queueDrainBlocked = Boolean(
     exitStarted ||
     isThinking ||
@@ -1187,6 +1251,18 @@ export function App({
       }
     },
     [backgroundShells.shells, managedAgents.selectAgent],
+  );
+
+  // Depend on `stopOrDismiss` rather than on the whole hook result: the hook returns a fresh object
+  // on every render, which would rebuild this callback — and every consumer of it — each time.
+  const { stopOrDismiss: stopOrDismissBackgroundShell } = backgroundShells;
+  const stopOrDismissShell = useCallback(
+    (jobId: string) => {
+      void stopOrDismissBackgroundShell(jobId).then((failure) => {
+        if (failure) flashNotice(failure, 'warning', 6_000);
+      });
+    },
+    [stopOrDismissBackgroundShell, flashNotice],
   );
 
   // Terminal jobs are removed from the active list as soon as they finish or
@@ -1376,7 +1452,18 @@ export function App({
     (input: string, key: Key) => handleInputRef.current(input, key),
     [],
   );
-  useInput(forwardInput);
+  /**
+   * Cancels a `/compact` still running its reducer, once. The follow-up queue behind it stays as it
+   * was; a saved compaction's PostCompact hooks are left to finish; a second press is a user who
+   * is waiting, so it falls through (Ctrl+C then arms the exit window as usual).
+   */
+  const cancelCompaction = (via: 'Escape' | 'Ctrl+C'): boolean => {
+    if (!isCompacting || isCompactCommitted || compactCancelSentRef.current) return false;
+    uiLog.event(`input:${via}`, { action: 'cancel-compaction' });
+    compactCancelSentRef.current = true;
+    cancel();
+    return true;
+  };
   handleInputRef.current = (input: string, key: Key) => {
     // Once an exit has started, Ctrl+C has nothing left to do: SessionEnd is running and the
     // app unmounts when it finishes.
@@ -1437,8 +1524,8 @@ export function App({
         if (isCtrlCExitArmed()) {
           // The visible "press again to exit" hint is a promise, including over a modal
           // that took the keyboard after the first press (e.g. behind the startup splash).
-          uiLog.event('input:Ctrl+C', { action: 'exit', context: 'modal' });
-          exitOnce();
+          // Armed, this exits; a modal never arms the window itself.
+          exitOrArmOnCtrlC('modal');
         } else if (pendingUserQuestion || pendingElicitation) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
           interrupt();
@@ -1503,6 +1590,7 @@ export function App({
         interrupt();
         return;
       }
+      if (cancelCompaction('Escape')) return;
       if (cancelReview()) {
         uiLog.event('input:Escape', { action: 'cancel-review' });
         return;
@@ -1517,13 +1605,19 @@ export function App({
       }
       uiLog.event('input:Escape', { action: 'noop-idle' });
     }
-    // Ctrl+C cancels active work, drops a recalled queued input, clears a non-empty
-    // composer, or confirms idle exit.
+    // Ctrl+C cancels active work (a turn, a compaction, a command resolution), drops a
+    // recalled queued input, clears a non-empty composer, or confirms idle exit. A compaction
+    // that does not stop when asked must not trap the user, so a press after the cancel went
+    // out arms the exit window as usual.
     if (key.ctrl && input === 'c') {
       if (isThinking || sendInFlightRef.current || isResolvingCommandRef.current) {
         uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
         disarmCtrlCExit();
         interrupt();
+        return;
+      }
+      if (cancelCompaction('Ctrl+C')) {
+        disarmCtrlCExit();
         return;
       }
       // A review is in-flight work too, so Ctrl+C cancels it without exiting.
@@ -1658,6 +1752,17 @@ export function App({
   // the transcript's viewport must be measured again.
   const [footerLayoutRevision, setFooterLayoutRevision] = useState(0);
   const bumpFooterLayout = useCallback(() => setFooterLayoutRevision((value) => value + 1), []);
+  // A sheet with a text editor open takes the readline chords, so the transcript
+  // must not read Ctrl+U and Ctrl+D as half-page scrolls while it is. The sheets
+  // report this the same way they report their height — see `useReportLayout`.
+  const [sheetEditorFocused, setSheetEditorFocused] = useState(false);
+  // Sheets come and go, so a sheet that unmounts while focused has to hand the
+  // chords back rather than leave them claimed for a surface that is gone.
+  useEffect(() => {
+    if (!pendingPlanApproval && !pendingUserQuestion && !pendingElicitation && !childQuestion) {
+      setSheetEditorFocused(false);
+    }
+  }, [childQuestion, pendingElicitation, pendingPlanApproval, pendingUserQuestion]);
   // Whether a composer menu is open, as of the last commit. Read by the Esc
   // handler below, which must not also act on the Esc that closes a menu.
   const composerMenuOpenRef = useRef(false);
@@ -1767,17 +1872,25 @@ export function App({
         if (othersQueued && !value.startsWith('/') && managedAgents.surface === 'main') {
           // The edited text goes back to the end of the queue, where it was recalled from, so
           // the inputs queued before it are still sent first.
-          enqueueFollowUp(value, attachments);
+          if (enqueueFollowUp(value, attachments)) {
+            // It follows the transcript to the bottom as any other submission does.
+            setFollowRequestKey((key) => key + 1);
+          } else {
+            // The queue filled up while this input was out for editing. The composer has already
+            // cleared it, so put it back, still recalled, rather than drop it; the notice the
+            // rejection left says what Enter and Esc do with it.
+            setDraftRestore((current) => ({
+              key: (current?.key ?? 0) + 1,
+              value,
+              attachments,
+            }));
+          }
           return;
         }
         // Anything else, a slash command such as /exit included, leaves them waiting instead
         // of sending them behind it.
         endQueuedEdit(othersQueued);
-        setQueueNotice(
-          othersQueued
-            ? 'Queue paused. Up then Enter resumes it; /queue clear drops it.'
-            : undefined,
-        );
+        setQueueNotice(othersQueued ? QUEUE_PAUSED_NOTICE : undefined);
       }
       setFollowRequestKey((key) => key + 1);
       const selectedChild = managedAgents.selectedAgentId
@@ -1820,13 +1933,19 @@ export function App({
           announceQueueEvent('Queued follow-up inputs cleared.', 'done');
         } else {
           const count = queuedInputsRef.current.length;
-          announceQueueEvent(
-            count === 0
-              ? 'The follow-up queue is empty.'
-              : `${count} follow-up input${count === 1 ? '' : 's'} queued. Up edits the newest.`,
-            'info',
-            6_000,
-          );
+          const counted = `${count} follow-up input${count === 1 ? '' : 's'} queued.`;
+          if (count > 0 && queueDrainPausedRef.current) {
+            // A paused queue is a state, not an event: keep saying so where the paused notice
+            // was, rather than announce the count over it and leave nothing on screen to say
+            // the queue is waiting.
+            setQueueNotice(`${counted} ${QUEUE_PAUSED_NOTICE}`);
+          } else {
+            announceQueueEvent(
+              count === 0 ? 'The follow-up queue is empty.' : `${counted} Up edits the newest.`,
+              'info',
+              6_000,
+            );
+          }
         }
         return;
       }
@@ -1987,8 +2106,16 @@ export function App({
         }
         if (effect?.type === 'set-startup-animation') {
           const result = toggleStartupAnimation(effect.enabled);
-          if (result.ok) flashNotice(`Startup animation ${effect.enabled ? 'on' : 'off'}`);
-          else {
+          if (result.ok) {
+            // The row saves to `~/.book/settings.json`, and the variable outranks
+            // that file at every launch, so a save here looks like it took effect
+            // when it will not. Same sentence as the `BOOK_MODEL` warning above.
+            const envNote = startupAnimationEnvNote();
+            flashNotice(
+              `Startup animation ${effect.enabled ? 'on' : 'off'}` +
+                (envNote ? ` · ${envNote}` : ''),
+            );
+          } else {
             addLocalMessage(`✕ ${result.error ?? 'Could not save the startup animation setting.'}`);
           }
           return;
@@ -2209,6 +2336,7 @@ export function App({
   );
 
   const canSubmitWhileParentBusy = useCallback((value: string) => {
+    if (exitStartedRef.current) return false;
     const name = parseSlashInput(value)?.name;
     return name === 'tasks' || name === 'jobs' || name === 'queue';
   }, []);
@@ -2216,6 +2344,19 @@ export function App({
     (value: string) => !value.trimStart().startsWith('/'),
     [],
   );
+
+  // Ctrl+U and Ctrl+D scroll the transcript half a page, but only when the
+  // composer had no draft to edit. The composer is the only thing that knows
+  // that, so it reports those chords through `forwardEmptyChord` and this hands
+  // them back to the transcript as a request rather than as a keypress.
+  const [transcriptScrollRequest, setTranscriptScrollRequest] = useState<TranscriptScrollRequest>({
+    key: 0,
+    direction: 'up',
+  });
+  const requestTranscriptHalfPage = useCallback((direction: 'up' | 'down') => {
+    uiLog.event(`input:Ctrl+${direction === 'up' ? 'U' : 'D'}`, { action: 'scroll-transcript' });
+    setTranscriptScrollRequest((current) => ({ key: current.key + 1, direction }));
+  }, []);
 
   const handleGlobalShortcut = useCallback(
     (
@@ -2253,10 +2394,16 @@ export function App({
         redrawViewport?.();
         return true;
       }
-      if (
-        key.ctrl &&
-        (input.toLowerCase() === 'u' || input.toLowerCase() === 'd' || key.home || key.end)
-      ) {
+      // Reached with Ctrl+U / Ctrl+D only when the composer had nothing to edit:
+      // InputBar hands over the chords it cannot spend, and nothing else routes
+      // them here, so a draft in hand never scrolls the transcript out from under
+      // the person clearing it.
+      const halfPage = halfPageScrollDirection(input, key);
+      if (halfPage) {
+        requestTranscriptHalfPage(halfPage);
+        return true;
+      }
+      if (key.ctrl && (key.home || key.end)) {
         return true;
       }
       if (isShortcutsToggleKey(input, key)) {
@@ -2285,6 +2432,7 @@ export function App({
     },
     [
       redrawViewport,
+      requestTranscriptHalfPage,
       showEffortPicker,
       showPermissionModePicker,
       showModelPicker,
@@ -2334,6 +2482,30 @@ export function App({
       pendingElicitation,
     ) || showMcpApproval;
 
+  // Whether the composer is taking keys at all. The transcript asks the same
+  // question before it reads Ctrl+U and Ctrl+D as paging chords, so the answer
+  // is named once here instead of being restated in two places that could drift.
+  const composerAcceptsInput = !(
+    modalOwnsInput ||
+    // The rules sheet is a list, not a page of text: while it is up
+    // it takes the arrows, so the composer must not also read them
+    // as history navigation. Esc closes it, as it does every panel.
+    showPermissions ||
+    transcriptMode === 'detailed' ||
+    managedAgents.surface === 'tasks' ||
+    detailTaskPickerOpen
+  );
+
+  // Whether the transcript may read Ctrl+U and Ctrl+D as its own half-page
+  // scrolls. The rule is "no editor on screen is taking the keys", not "the
+  // composer is free": the composer spends those chords on the draft and a
+  // sheet's editor spends them on its field, and either one hands back a chord
+  // it cannot spend as `transcriptScrollRequest` instead. A sheet that is up with
+  // no editor open is a list of choices, and there the chords can only mean
+  // paging. `pagerChordsAvailable` is that rule as one function, so it cannot be
+  // restated — and read backwards — at a second call site.
+  const pagerChordsFree = pagerChordsAvailable({ composerAcceptsInput, sheetEditorFocused });
+
   const pickerOwnsTranscript =
     showModelPicker ||
     showEffortPicker ||
@@ -2362,6 +2534,7 @@ export function App({
   if (startupFireActive) {
     return (
       <AppProviders theme={currentTheme.tokens} density={density}>
+        <GlobalKeyHandler onInput={forwardInput} />
         <ErrorBoundary resumeCommand={resumeCommand} onExit={exitFromCrash}>
           <StartupFire
             width={termWidth}
@@ -2375,8 +2548,17 @@ export function App({
 
   const contextWindow = resolveContextWindow(liveConfig);
 
+  // Shown for as long as SessionEnd runs; the composer takes nothing meanwhile. Read only once
+  // an exit has started, so a host config without a hooks block renders as before.
+  const exitingNotice = !exitStarted
+    ? undefined
+    : liveConfig.settings.hooks?.SessionEnd?.length
+      ? 'Exiting: running SessionEnd hooks…'
+      : 'Exiting…';
+
   return (
     <AppProviders theme={currentTheme.tokens} density={density}>
+      <GlobalKeyHandler onInput={forwardInput} />
       <ErrorBoundary resumeCommand={resumeCommand} onExit={exitFromCrash}>
         <Box
           flexDirection="column"
@@ -2390,6 +2572,8 @@ export function App({
             isActive={!pickerOwnsTranscript && managedAgents.surface !== 'tasks'}
             followRequestKey={followRequestKey}
             layoutRevision={transcriptLayoutRevision}
+            pagerChordsAvailable={pagerChordsFree}
+            scrollRequest={transcriptScrollRequest}
             onToggleTool={toggleToolExpansion}
             onNotify={handleCopiedNotice}
             onRedrawViewport={redrawViewport}
@@ -2596,6 +2780,8 @@ export function App({
                 onResolve={resolvePlanApproval}
                 screenReader={screenReader}
                 terminalWidth={termWidth}
+                onLayoutChange={bumpFooterLayout}
+                onEditorFocusChange={setSheetEditorFocused}
               />
             ) : null}
             {pendingElicitation ? (
@@ -2606,6 +2792,8 @@ export function App({
                 terminalWidth={termWidth}
                 onResolve={resolveElicitation}
                 screenReader={screenReader}
+                onLayoutChange={bumpFooterLayout}
+                onEditorFocusChange={setSheetEditorFocused}
               />
             ) : null}
             {pendingUserQuestion ? (
@@ -2616,6 +2804,8 @@ export function App({
                 terminalWidth={termWidth}
                 onResolve={resolveUserQuestion}
                 screenReader={screenReader}
+                onLayoutChange={bumpFooterLayout}
+                onEditorFocusChange={setSheetEditorFocused}
               />
             ) : childQuestion ? (
               <AskUserQuestionWizard
@@ -2627,6 +2817,8 @@ export function App({
                   void managedAgents.resolveQuestion(childQuestion.agentId, response)
                 }
                 screenReader={screenReader}
+                onLayoutChange={bumpFooterLayout}
+                onEditorFocusChange={setSheetEditorFocused}
               />
             ) : null}
             {showSessionPicker ? (
@@ -2793,6 +2985,7 @@ export function App({
                     );
                   }
                 }}
+                startupAnimationWarning={startupAnimationEnvNote()}
                 onCancel={() => {
                   forgetConfigOrigin();
                   setShowConfigPicker(false);
@@ -3020,6 +3213,7 @@ export function App({
             <WorkingIndicator
               isThinking={isThinking}
               isCompacting={isCompacting}
+              compactComplete={isCompactCommitted}
               compactTrigger={compactUi?.trigger}
               messages={messages}
               streamingMessageId={streamingMessageId}
@@ -3053,8 +3247,18 @@ export function App({
               items={queuedInputs}
               terminalWidth={termWidth}
               // Keep the exit hint visible even when another transient notice remains.
-              notice={ctrlCExitHintVisible ? CTRL_C_EXIT_HINT_TEXT : (queueNotice ?? flash?.text)}
-              noticeTone={ctrlCExitHintVisible || queueNotice ? 'warning' : flash?.tone}
+              // An exit in progress outranks both: the queue's notices offer actions that no
+              // longer do anything.
+              notice={
+                exitStarted
+                  ? exitingNotice
+                  : ctrlCExitHintVisible
+                    ? CTRL_C_EXIT_HINT_TEXT
+                    : (queueNotice ?? flash?.text)
+              }
+              noticeTone={
+                exitStarted ? 'info' : ctrlCExitHintVisible || queueNotice ? 'warning' : flash?.tone
+              }
             />
             <InputBar
               key={sessionId}
@@ -3063,22 +3267,24 @@ export function App({
               onSubmit={handleSubmit}
               onPasteImage={pasteClipboardImage}
               submissionMode={
-                managedAgents.surface === 'detail'
-                  ? 'submit'
-                  : isThinking || sendInFlight
-                    ? 'queue'
-                    : isCompacting || isRewinding || isResolvingCommand
-                      ? 'blocked'
-                      : 'submit'
+                exitStarted
+                  ? 'blocked'
+                  : managedAgents.surface === 'detail'
+                    ? 'submit'
+                    : isThinking || sendInFlight
+                      ? 'queue'
+                      : isCompacting || isRewinding || isResolvingCommand
+                        ? 'blocked'
+                        : 'submit'
               }
               mode={mode}
               onCycleMode={cycleMode}
               canSubmitWhileBusy={canSubmitWhileParentBusy}
               canQueueWhileBusy={canQueueWhileParentBusy}
               onQueue={enqueueFollowUp}
-              onRecallQueued={managedAgents.surface === 'main' ? recallQueuedInput : undefined}
-              onCancelQueuedEdit={cancelQueuedEdit}
-              editingQueuedInput={Boolean(editingQueuedInput)}
+              onRecallQueued={
+                managedAgents.surface === 'main' && !exitStarted ? recallQueuedInput : undefined
+              }
               onDraftChange={(value, attachments) => {
                 draftRef.current = value;
                 draftAttachmentsRef.current = attachments ?? [];
@@ -3098,16 +3304,7 @@ export function App({
                 managedAgents.setSurface('tasks');
                 return true;
               }}
-              inputSuppressed={
-                modalOwnsInput ||
-                // The rules sheet is a list, not a page of text: while it is up
-                // it takes the arrows, so the composer must not also read them
-                // as history navigation. Esc closes it, as it does every panel.
-                showPermissions ||
-                transcriptMode === 'detailed' ||
-                managedAgents.surface === 'tasks' ||
-                detailTaskPickerOpen
-              }
+              inputSuppressed={!composerAcceptsInput}
               awaitingAnswer={awaitingAnswer}
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
@@ -3141,7 +3338,7 @@ export function App({
               onCancel={() => managedAgents.setSurface('main')}
               onStopOrDismiss={(jobId) => {
                 if (backgroundShells.shells.some((shell) => shell.id === jobId)) {
-                  void backgroundShells.stopOrDismiss(jobId);
+                  stopOrDismissShell(jobId);
                 } else {
                   void managedAgents.stopOrDismiss(jobId);
                 }
@@ -3171,7 +3368,7 @@ export function App({
               }}
               onStopOrDismiss={(jobId) => {
                 if (backgroundShells.shells.some((shell) => shell.id === jobId)) {
-                  void backgroundShells.stopOrDismiss(jobId);
+                  stopOrDismissShell(jobId);
                 } else {
                   void managedAgents.stopOrDismiss(jobId);
                 }

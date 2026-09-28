@@ -7,6 +7,7 @@ import type {
   ToolContext,
   ToolResult,
 } from '../types/tools.js';
+import { canonicalizePath } from './path-utils.js';
 import { toolFailure } from './result.js';
 
 export function workspaceIdentity(workspaceRoot: string): string {
@@ -20,6 +21,28 @@ export function observationKey(workspaceId: string, path: string): string {
   // Case-insensitive filesystems (Windows) must key differently-cased spellings
   // of the same file identically, mirroring workspaceIdentity's root folding.
   return `${workspaceId}:${process.platform === 'win32' ? normalized.toLowerCase() : normalized}`;
+}
+
+/**
+ * The path an observation is filed and looked up under: the file's position relative to the
+ * workspace root, with links followed on **both** sides.
+ *
+ * The two ends of the ledger have to derive this one way. `resolveWorkspacePath` reports a
+ * workspace file relative to the root *after* links whenever the path was not written inside the
+ * root as given (`asWrittenInside`), so a workspace root reached through a symlink — or typed in
+ * 8.3 short form, which is the same disagreement on Windows — makes a lexical
+ * `relative(resolve(workspaceRoot), absolutePath)` name a *different* file: the Read filed
+ * `../real/a.txt` and the Edit looked up `a.txt`, so the write answered `file_not_observed`
+ * (PR #334 finding 6). Canonicalizing both sides is the one spelling under which the two agree,
+ * and it is the one the resolution has already committed to.
+ *
+ * A file in an honored root keeps its `../` prefix, because an honored root is outside the
+ * workspace either way: that is what keeps `notes.txt` in `/srv/app` and `notes.txt` in the
+ * workspace from sharing a ledger entry.
+ */
+export function observationPathFor(workspaceRoot: string, absolutePath: string): string {
+  const root = canonicalizePath(resolve(workspaceRoot));
+  return relative(root, canonicalizePath(absolutePath)).replace(/\\/g, '/');
 }
 
 /**
@@ -86,7 +109,7 @@ export async function observeFile(
 ): Promise<FileObservation> {
   const bytes = await readFile(absolutePath);
   const workspaceId = workspaceIdentity(ctx.workspaceRoot);
-  const path = relative(resolve(ctx.workspaceRoot), absolutePath).replace(/\\/g, '/');
+  const path = observationPathFor(ctx.workspaceRoot, absolutePath);
   const observation: FileObservation = {
     path,
     workspaceId,
@@ -111,7 +134,13 @@ export async function requireFreshObservation(
 ): Promise<string | undefined> {
   const workspaceId = workspaceIdentity(ctx.workspaceRoot);
   const normalizedPath = relativePath.replace(/\\/g, '/');
-  const remembered = ctx.fileObservationLedger?.get(observationKey(workspaceId, normalizedPath));
+  // Looked up by the same derivation `observeFile` filed it under, not by the display spelling:
+  // the two are the same file spelled two ways whenever the workspace root is itself reached
+  // through a link (PR #334 finding 6). `relativePath` is still what the message names, because
+  // that is the spelling the model wrote.
+  const remembered = ctx.fileObservationLedger?.get(
+    observationKey(workspaceId, observationPathFor(ctx.workspaceRoot, absolutePath)),
+  );
   if (!remembered || isOutline(remembered)) return undefined;
   try {
     const info = await stat(absolutePath);
@@ -134,9 +163,14 @@ function staleMessage(path: string): string {
  * without an observation ledger (bare harnesses, low-level embedding) are
  * exempt. Returns a ready ToolResult failure so every mutating tool reports the
  * same code and remediation.
+ *
+ * Keyed on `absolutePath` through {@link observationPathFor}, the way the observation was filed —
+ * `relativePath` is the display spelling and can be the other spelling of the same file. It
+ * names the file in the message either way.
  */
 export function requireObservationForMutation(
   ctx: ToolContext,
+  absolutePath: string,
   relativePath: string,
   retryVerb: string,
 ): ToolResult | undefined {
@@ -144,7 +178,9 @@ export function requireObservationForMutation(
   if (!ledger) return undefined;
   const workspaceId = workspaceIdentity(ctx.workspaceRoot);
   const normalizedPath = relativePath.replace(/\\/g, '/');
-  const remembered = ledger.get(observationKey(workspaceId, normalizedPath));
+  const remembered = ledger.get(
+    observationKey(workspaceId, observationPathFor(ctx.workspaceRoot, absolutePath)),
+  );
   if (remembered && !isOutline(remembered)) return undefined;
   const seen = remembered
     ? "has only been outlined in this session, and an outline is not the file's content"

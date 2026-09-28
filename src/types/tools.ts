@@ -25,6 +25,13 @@ export interface PermissionDecision {
   result: PermissionResult;
   /** Overrides the derived rule when the result is `always`. */
   rule?: string;
+  /**
+   * Why the approver refused, when it is not a person saying no. `no_approver`: nothing in this
+   * run can answer a prompt (print mode, the SDK, a background agent), so the call was refused
+   * unasked. `dismissed`: the prompt was withdrawn before anyone answered it (the run was
+   * interrupted, the session changed, or the agent was stopped).
+   */
+  reason?: 'no_approver' | 'dismissed';
 }
 
 /** Why a submitted plan was never applied when the host could not approve it. */
@@ -115,6 +122,13 @@ export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /**
+   * Set when the provider's argument text never parsed. `raw` is that text exactly as
+   * it was streamed, `error` is V8's `JSON.parse` message for it, and `arguments` is
+   * `{}` — nothing was read. The registry rejects such a call (or repairs it, when the
+   * text is one of the three shapes `repairToolArguments` accepts).
+   */
+  unparsedArguments?: { raw: string; error: string };
 }
 
 /** Display-only trace for a tool invoked inside a Task subagent. */
@@ -312,6 +326,14 @@ export interface ToolContext {
    * today only the project memory directory.
    */
   readOnlyRoots?: readonly (string | ReadOnlyRoot)[];
+  /**
+   * Honored `additionalDirectories`, as resolved real roots the file tools may serve alongside
+   * the workspace: Read, Glob and Grep reach them, and so do the write tools' root check. A read
+   * there is auto-allowed exactly as a workspace read is; a write goes through the ordinary
+   * permission flow for its mode. Populated by the agent loop from resolved settings, so a
+   * managed child and a subagent see the same roots as their parent.
+   */
+  additionalRoots?: readonly string[];
   env: Record<string, string>;
   /** Explicit environment overrides safe to persist for opt-in persistent jobs. */
   envOverrides?: Record<string, string>;
@@ -401,6 +423,15 @@ export interface ToolDiscoveryContext {
     namespace?: string,
     limit?: number,
   ): ToolSearchMatch[];
+  /**
+   * Names of tools already active this turn that match a query, best first, filtered by the
+   * category and namespace the caller searched with. Optional so a discovery object built without
+   * it keeps working; ToolSearch then only reports that nothing deferred matched.
+   */
+  activeMatches?(
+    query: string,
+    filter?: { category?: ToolCategory; namespace?: string; limit?: number },
+  ): string[];
   /** Activate selected definitions for the next provider request. */
   activate(names: string[]): string[];
   /** Intersect the current surface with an additional command/skill capability policy. */
@@ -416,6 +447,14 @@ export interface ToolDiscoveryContext {
    * registry then runs `canExecute` in its place.
    */
   isActive?(name: string): boolean;
+  /**
+   * Whether the run's capability rules admit this tool at all, ignoring activation:
+   * a name it refuses can never be activated by a search, so a refusal for it names
+   * the run's allowed tools rather than ToolSearch. Optional so a discovery object
+   * built without it keeps working; the registry then cannot tell "not active" from
+   * "not allowed" and reports the former.
+   */
+  isAuthorized?(name: string): boolean;
   /** Whether a tool is currently visible and executable for this turn. */
   canExecute(call: ToolCall): boolean;
   /** Definitions to send to the provider for the current request. */

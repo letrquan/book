@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Book is a proprietary, provider-agnostic alternative to Claude Code. It provides an interactive terminal UI (TUI), print/headless mode, an SDK, and managed background execution for AI-assisted coding.
 
-**Tech stack**: TypeScript (ES2022/ESM, `moduleResolution: bundler`), React 19 via Ink 6.8.0 for the TUI, tsup for building, Vitest 4 for testing, Zod 3 for config validation. Node.js 22.19+.
+**Tech stack**: TypeScript (ES2022/ESM, `moduleResolution: bundler`), React 19 via Ink 7.1.1 for the TUI, tsup for building, Vitest 4 for testing, Zod 4 for config validation. Node.js 22.19+.
 
 **Version**: `0.1.0` plus the unreleased changes in `CHANGELOG.md`. `docs/current-state.md` is the authoritative status snapshot, `README.md` is the front door, `docs/guide/` is the usage reference, and `MILESTONES.md` tracks remaining work.
 
@@ -17,6 +17,7 @@ src/
   index.ts              CLI entry (Commander.js) — flags + doctor/config/tool-stats subcommands
   sdk.ts                Programmatic SDK (`query()` async generator)
   job-runner.ts         Detached runner for persistent background shell jobs
+  job-supervisor.ts     Supervisor between a persistent job's runner and its command
   cli/                  run.ts (interactive/headless wiring), doctor.ts, config-cmd.ts,
                         trust-cmd.ts (`book trust hook|rule`), scrollback.ts,
                         exit.ts (process.exit abstraction), utils.ts
@@ -141,7 +142,7 @@ The `tui/` tree (root `app.tsx`, `hooks/`, and `components/`) is broad but disco
 - **Entry points are never imported**: implementation modules must not import `index.ts` or `sdk.ts`.
 - **`tui/` is a leaf**: non-TUI code must not import from `tui/`.
 - **No blocking child-process APIs**: production code must not use `execFileSync` / `execSync` / `spawnSync`. Use async spawns.
-- **Process termination goes through `cli/exit.ts`**: a direct `process.exit()` is rejected outside the build entry points (`index.ts`, `sdk.ts`, `job-runner.ts`), which own their own process lifetime, and the `cli/exit.ts` seam itself.
+- **Process termination goes through `cli/exit.ts`**: a direct `process.exit()` is rejected outside the build entry points (`index.ts`, `sdk.ts`, `job-runner.ts`, `job-supervisor.ts`), which own their own process lifetime, and the `cli/exit.ts` seam itself.
 
 Other conventions:
 
@@ -241,7 +242,7 @@ prompt, or the add-provider wizard looks also means regenerating the README medi
 - `/review` pipeline behavior in `src/review/` ("Code review" in `docs/guide/agents-and-review.md` is the detailed spec). The
   review target is resolved by the host, never by the reviewer — reviewer agents have no diff tool,
   so prompt builders require a `ReviewTarget`.
-- Background shell behavior in `src/jobs/` and `src/job-runner.ts`
+- Background shell behavior in `src/jobs/`, `src/job-runner.ts`, and `src/job-supervisor.ts`
 - Skill behavior in `src/skills.ts`, `src/skill-registry.ts`, and `src/tools/skills-tool.ts`
 
 ## Agent skills

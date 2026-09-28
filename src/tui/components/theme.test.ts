@@ -19,8 +19,34 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('loadCustomTheme', () => {
+  function writeTheme(name: string, tokens: Record<string, string>): void {
+    const themesDir = join(dir, '.book', 'themes');
+    mkdirSync(themesDir, { recursive: true });
+    writeFileSync(join(themesDir, `${name}.json`), JSON.stringify(tokens));
+  }
+
   it('returns null when no theme file exists', () => {
     expect(loadCustomTheme(dir, 'nonexistent')).toBeNull();
+  });
+
+  it("keeps a pre-`userText` theme's prompt in the ink it set through `text`", () => {
+    // `userText` landed with the rubric palette. A theme written before it, on a
+    // light paper, inherited Rubric's near-white and its prompt vanished.
+    writeTheme('ink-only', { text: '#1A1A1A' });
+
+    expect(loadCustomTheme(dir, 'ink-only')!.userText).toBe('#1A1A1A');
+  });
+
+  it('prefers the prompt ink a theme sets outright', () => {
+    writeTheme('both', { text: '#1A1A1A', userText: '#223344' });
+
+    expect(loadCustomTheme(dir, 'both')!.userText).toBe('#223344');
+  });
+
+  it("falls back to Rubric's prompt ink for a theme that sets neither", () => {
+    writeTheme('brand-only', { brand: '#ff0000' });
+
+    expect(loadCustomTheme(dir, 'brand-only')!.userText).toBe(RUBRIC_THEME.userText);
   });
 
   it('loads a custom theme and merges with defaults', () => {

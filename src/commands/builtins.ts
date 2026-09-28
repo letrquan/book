@@ -22,7 +22,14 @@ import {
   listMemoryCandidates,
   type MemoryFileSummary,
 } from '../memory-store.js';
-import { costReport, failureTotal, PRICING, usageReport, type DelegatedUsage } from '../pricing.js';
+import {
+  costReport,
+  failureTotal,
+  resolveModelPricing,
+  usageCostForModel,
+  usageReport,
+  type DelegatedUsage,
+} from '../pricing.js';
 import { buildContextBreakdown, buildContextReport, sourceLabel } from '../context-report.js';
 import { resolveContextWindow } from '../models.js';
 import type { SkillRegistrySnapshot } from '../skill-registry.js';
@@ -39,6 +46,8 @@ export interface BuiltinCommand {
   argumentHint?: string;
   /** Hide from / autocomplete when empty, but still match when typed exactly. */
   isHidden?: boolean;
+  /** Listed for the TUI's menu and help only; see `CommandDefinition.tuiOnly`. */
+  tuiOnly?: boolean;
 }
 
 export interface BuiltinCommandContext {
@@ -515,12 +524,13 @@ function agentCommandEffect(
 }
 
 function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffect {
-  const rate = PRICING[context.runtimeConfig.model];
-  const estimatedCostUsd =
-    context.usage && rate
-      ? (context.usage.promptTokens * rate.in + context.usage.completionTokens * rate.out) /
-        1_000_000
-      : undefined;
+  // The same rate resolution as /cost and the /usage text, so a dated or aliased model id
+  // prices here too.
+  const priced = context.usage
+    ? usageCostForModel(context.runtimeConfig.model, context.usage)
+    : undefined;
+  const rate = priced?.rate ?? resolveModelPricing(context.runtimeConfig.model)?.rate;
+  const estimatedCostUsd = priced?.costUsd;
   const toolCallStats =
     context.toolCallStats && context.toolCallStats.size > 0
       ? [...context.toolCallStats.entries()]
@@ -702,6 +712,17 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     name: 'tasks',
     description: 'Alias for /jobs',
     execute: () => ({ type: 'managed-agent', operation: 'list' }),
+  },
+  {
+    name: 'queue',
+    description: 'Show the follow-up queue; /queue clear drops it',
+    argumentHint: '[clear]',
+    // The TUI handles /queue itself before this registry is consulted: the queue is its state.
+    tuiOnly: true,
+    execute: () => ({
+      type: 'local-message',
+      content: 'The follow-up queue belongs to the interactive session.',
+    }),
   },
   {
     name: 'agent',
@@ -934,6 +955,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = BUILTIN_COMMAND_DEFINITIONS.fl
       description: definition.description,
       argumentHint: definition.argumentHint,
       isHidden: definition.isHidden,
+      tuiOnly: definition.tuiOnly,
     },
     ...(definition.aliases ?? []).map((alias) => metadataForAlias(definition, alias)),
   ],

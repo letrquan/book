@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { chatCompletionStream, convertTools } from './openai-compatible.js';
+import { chatCompletionStream, convertTools, parseCompatibleUsage } from './openai-compatible.js';
 import { patchTools } from '../tools/patch.js';
 import { defaultConfig } from '../test/fixtures.js';
 
@@ -568,15 +568,27 @@ describe('chatCompletionStream retry — callbacks', () => {
 describe('stall tolerance while reasoning', () => {
   // A stream whose first byte arrives after `delayMs` — an endpoint that buffers
   // the whole thinking block before emitting anything.
+  //
+  // A stall ceiling cancels the stream, and the client that would have read the
+  // answer is often gone before the delay elapses. So the timer is cancelled
+  // with the stream: `start` runs inside the constructor, which means the handle
+  // is always in hand by the time `cancel` can fire. Left to run, the callback
+  // enqueues into a closed controller and the `ERR_INVALID_STATE` throw lands
+  // inside the timer, where no test can see it — vitest calls it an unhandled
+  // error and fails the run.
   function quietThenAnswer(delayMs: number): ReadableStream {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     return new ReadableStream({
       start(c) {
         const enc = new TextEncoder();
-        setTimeout(() => {
+        timer = setTimeout(() => {
           c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"answer"}}]}\n\n'));
           c.enqueue(enc.encode('data: [DONE]\n\n'));
           c.close();
         }, delayMs);
+      },
+      cancel() {
+        clearTimeout(timer);
       },
     });
   }
@@ -648,6 +660,18 @@ describe('stall tolerance while reasoning', () => {
     expect(events).toContainEqual(
       expect.objectContaining({ type: 'error', errorCode: 'stream_stall' }),
     );
+  });
+
+  it('stops writing once the client has cancelled the stream', async () => {
+    // A stall ceiling is a cancel: the client gives up on a quiet stream while
+    // the fixture is still counting down to its first byte. Nothing may write
+    // after that. A pending timer that ignores the cancel fires against a closed
+    // controller, and the throw lands in the timer callback where no test can
+    // catch it — vitest reports it as an unhandled error and fails the whole
+    // run for a stream that was discarded on purpose.
+    const stream = quietThenAnswer(20);
+    await stream.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 80));
   });
 });
 
@@ -995,6 +1019,52 @@ describe('chatCompletionStream tool call streaming', () => {
     expect(events[events.length - 1].type).toBe('done');
   });
 
+  it('marks arguments that never parsed with the typed unparsedArguments field', async () => {
+    // The `{__raw}` sentinel is gone: `arguments` stays `{}` and the raw text and
+    // the parse error ride in `unparsedArguments`, so no consumer has to sniff
+    // the arguments object for a magic key.
+    const raw = '{"filePath":"src/a.ts","oldString":"const re = /\\d+/;"}';
+    let parseError = '';
+    try {
+      JSON.parse(raw);
+    } catch (error) {
+      parseError = error instanceof Error ? error.message : String(error);
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(
+              enc.encode(
+                `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"Edit","arguments":${JSON.stringify(raw)}}}]},"finish_reason":"tool_calls"}]}\n\n`,
+              ),
+            );
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(e);
+    }
+
+    const calls = events.filter((e) => e.type === 'tool_call').map((e) => e.toolCall);
+    expect(calls).toEqual([
+      {
+        id: 'call_1',
+        name: 'Edit',
+        arguments: {},
+        unparsedArguments: { raw, error: parseError },
+      },
+    ]);
+  });
+
   it('does not hang when an already-open stream is aborted', async () => {
     const controller = new AbortController();
     vi.stubGlobal(
@@ -1145,6 +1215,260 @@ describe('OpenAI-compatible tool contracts', () => {
       events.push(event);
     expect(events.find((event) => event.type === 'tool_call')?.toolCall?.arguments).toEqual({
       patch,
+    });
+  });
+});
+
+describe('non-retryable error bodies (#244 review)', () => {
+  it('reads at most 64 KB of a non-retryable error body', async () => {
+    let pulled = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                if (pulled >= 10 * 1024 * 1024) {
+                  controller.close();
+                  return;
+                }
+                const chunk = new TextEncoder().encode('x'.repeat(16_384));
+                pulled += chunk.byteLength;
+                controller.enqueue(chunk);
+              },
+            }),
+            { status: 400 },
+          ),
+      ),
+    );
+    const events = [];
+    for await (const event of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(event);
+    }
+    expect(events.at(-1)).toMatchObject({ type: 'error', errorCode: 'bad_request' });
+    expect(pulled).toBeLessThanOrEqual(64 * 1024 + 3 * 16_384);
+  });
+});
+
+describe('parseCompatibleUsage', () => {
+  it('maps a usage without cache tokens exactly as before', () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        total_tokens: 15,
+        prompt_tokens_details: { cached_tokens: 0 },
+      }),
+    ).toEqual({ promptTokens: 10, completionTokens: 5, totalTokens: 15 });
+    expect(parseCompatibleUsage(undefined)).toBeNull();
+  });
+
+  it('splits OpenAI cached_tokens out of prompt_tokens', () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 5,
+        total_tokens: 1005,
+        prompt_tokens_details: { cached_tokens: 800 },
+      }),
+    ).toEqual({
+      promptTokens: 200,
+      completionTokens: 5,
+      totalTokens: 1005,
+      cacheReadInputTokens: 800,
+      cacheCreationInputTokens: 0,
+    });
+  });
+
+  it("reads 9router's cache_creation_tokens and OpenRouter's cache_write_tokens as writes", () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 1,
+        total_tokens: 1001,
+        prompt_tokens_details: { cache_creation_tokens: 700 },
+      }),
+    ).toMatchObject({ promptTokens: 300, cacheReadInputTokens: 0, cacheCreationInputTokens: 700 });
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 1,
+        total_tokens: 1001,
+        prompt_tokens_details: { cached_tokens: 100, cache_write_tokens: 600 },
+      }),
+    ).toMatchObject({
+      promptTokens: 300,
+      cacheReadInputTokens: 100,
+      cacheCreationInputTokens: 600,
+    });
+  });
+
+  it("reads DeepSeek's prompt_cache_hit_tokens", () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 2,
+        total_tokens: 1002,
+        prompt_cache_hit_tokens: 600,
+        prompt_cache_miss_tokens: 400,
+      }),
+    ).toMatchObject({ promptTokens: 400, cacheReadInputTokens: 600 });
+    expect(
+      parseCompatibleUsage({ prompt_tokens: 1000, prompt_cache_hit_tokens: 600 })?.contextTokens,
+    ).toBeUndefined();
+  });
+
+  it('adds Anthropic-shaped top-level cache counts on top of prompt_tokens', () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 50,
+        completion_tokens: 3,
+        total_tokens: 53,
+        cache_read_input_tokens: 900,
+        cache_creation_input_tokens: 100,
+      }),
+    ).toEqual({
+      promptTokens: 50,
+      completionTokens: 3,
+      totalTokens: 53,
+      cacheReadInputTokens: 900,
+      cacheCreationInputTokens: 100,
+      contextTokens: 1050,
+    });
+    // Smaller than the uncached input, still on top: the source decides, not the size.
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 3,
+        total_tokens: 1003,
+        cache_creation_input_tokens: 800,
+      }),
+    ).toEqual({
+      promptTokens: 1000,
+      completionTokens: 3,
+      totalTokens: 1003,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 800,
+      contextTokens: 1800,
+    });
+  });
+
+  it('reads LiteLLM top-level cache writes as part of a normalised prompt_tokens', () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 4,
+        total_tokens: 1004,
+        prompt_tokens_details: { cached_tokens: 600 },
+        cache_read_input_tokens: 600,
+        cache_creation_input_tokens: 300,
+      }),
+    ).toEqual({
+      promptTokens: 100,
+      completionTokens: 4,
+      totalTokens: 1004,
+      cacheReadInputTokens: 600,
+      cacheCreationInputTokens: 300,
+    });
+  });
+
+  it('counts Anthropic top-level cache on top only when no OpenAI-style cache field is present', () => {
+    // An empty details object says nothing about the cache: counted on top.
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 2,
+        total_tokens: 1002,
+        prompt_tokens_details: {},
+        cache_read_input_tokens: 400,
+      }),
+    ).toMatchObject({ promptTokens: 1000, cacheReadInputTokens: 400, contextTokens: 1400 });
+    // LiteLLM's cold turn: `cached_tokens: 0` beside the write says prompt_tokens includes it.
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 60000,
+        completion_tokens: 20,
+        total_tokens: 60020,
+        prompt_tokens_details: { cached_tokens: 0 },
+        cache_creation_input_tokens: 58000,
+      }),
+    ).toEqual({
+      promptTokens: 2000,
+      completionTokens: 20,
+      totalTokens: 60020,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 58000,
+    });
+  });
+
+  it('derives total_tokens when a provider omits it', () => {
+    expect(parseCompatibleUsage({ prompt_tokens: 10, completion_tokens: 5 })).toEqual({
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+    });
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 150000,
+        completion_tokens: 300,
+        prompt_tokens_details: { cached_tokens: 150000 },
+      }),
+    ).toMatchObject({ promptTokens: 0, totalTokens: 150300, cacheReadInputTokens: 150000 });
+  });
+
+  it("reads Moonshot's top-level cached_tokens and DashScope's cache writes as included", () => {
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 1,
+        total_tokens: 1001,
+        cached_tokens: 700,
+      }),
+    ).toEqual({
+      promptTokens: 300,
+      completionTokens: 1,
+      totalTokens: 1001,
+      cacheReadInputTokens: 700,
+      cacheCreationInputTokens: 0,
+    });
+    expect(
+      parseCompatibleUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 1,
+        total_tokens: 1001,
+        prompt_tokens_details: { cache_creation_input_tokens: 900 },
+      }),
+    ).toMatchObject({ promptTokens: 100, cacheCreationInputTokens: 900 });
+  });
+
+  it('carries cache tokens through the stream into the done event', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'));
+            c.enqueue(
+              enc.encode(
+                'data: {"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":5,"total_tokens":1005,"prompt_tokens_details":{"cached_tokens":800}}}\n\n',
+              ),
+            );
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+    const events = [];
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(e);
+    }
+    expect(events.find((e) => e.type === 'done')?.usage).toMatchObject({
+      promptTokens: 200,
+      cacheReadInputTokens: 800,
     });
   });
 });

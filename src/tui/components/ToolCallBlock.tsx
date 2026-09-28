@@ -25,6 +25,7 @@ import {
   withLabelColumn,
 } from '../layout.js';
 import { formatElapsedDuration } from './SubagentRow.js';
+import { foldControlCharacters, stripTerminalControls } from '../../control-characters.js';
 import { useToolRowInteractionRegistry } from './tool-row-interactions.js';
 import { useUiClock } from '../ui-clock.js';
 import type { ToolResult } from '../../types/tools.js';
@@ -44,6 +45,8 @@ interface ToolCallBlockProps {
   toolId?: string;
   name: string;
   args: Record<string, unknown>;
+  /** The argument text of a call the provider could not parse; its `args` are empty. */
+  unparsedArguments?: { raw: string; error: string };
   result?: ToolResult;
   isExpanded: boolean;
   isPending?: boolean;
@@ -99,7 +102,10 @@ function toolLabel(name: string): string {
 }
 
 function statusColor(status: ToolPresentationStatus, theme: ReturnType<typeof useTheme>): string {
-  if (status === 'success') return theme.success;
+  // A column of green checks beside one rose `×` made every row shout. Success
+  // is the default, so it is the exception — a failure or a pending row — that
+  // takes colour.
+  if (status === 'success') return theme.inactive;
   if (status === 'failure') return theme.error;
   if (status === 'skipped' || status === 'pending') return theme.warning;
   return theme.brand;
@@ -156,9 +162,9 @@ function ScreenReaderTool({
       <Text>
         {status} {accessibleSummary}
       </Text>
-      {result?.content ? <Text>{result.content}</Text> : null}
+      {result?.content ? <Text>{stripTerminalControls(result.content)}</Text> : null}
       {result?.structuredError && showsErrorMessage(result) ? (
-        <Text>Error: {result.structuredError.message}</Text>
+        <Text>Error: {foldControlCharacters(result.structuredError.message)}</Text>
       ) : null}
     </Box>
   );
@@ -235,6 +241,7 @@ function ToolCallBlockInner({
   toolId,
   name,
   args,
+  unparsedArguments,
   result,
   isExpanded,
   isPending = false,
@@ -260,8 +267,13 @@ function ToolCallBlockInner({
   const rowGrid = useMemo(() => indentedGrid(grid), [grid]);
   const blockWidth = rowGrid.content;
   const presentation = useMemo(
-    () => deriveToolPresentation(name, args, result, { isPending, nestedActivityCount }),
-    [args, isPending, name, nestedActivityCount, result],
+    () =>
+      deriveToolPresentation(name, args, result, {
+        isPending,
+        nestedActivityCount,
+        unparsedArguments,
+      }),
+    [args, isPending, name, nestedActivityCount, result, unparsedArguments],
   );
   const isRunning = presentation.status === 'running';
   // Under reducedMotion the row must not tick at all: the spinner is frozen,

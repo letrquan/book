@@ -5,7 +5,8 @@ import { GUTTER_WIDTH, sheetContentWidth } from '../layout.js';
 import { stepProgress, stepWindow } from '../steps.js';
 import type { Todo } from '../../tools/todo.js';
 import { SoftPanel } from './chrome.js';
-import { foldControlCharacters, truncateDisplay } from './word-wrap.js';
+import { foldControlCharacters } from '../../control-characters.js';
+import { truncateDisplay } from './word-wrap.js';
 
 /**
  * The agent's steps, opened with Ctrl+T.

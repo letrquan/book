@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from 'ink';
-import { useCallback, useMemo, useRef, useEffect, useLayoutEffect, useState } from 'react';
+import { useCallback, useMemo, useRef, useEffect, useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
+import { useReportLayout } from '../hooks/useReportLayout.js';
 import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN, PANEL_CHROME, frameGrid } from '../layout.js';
 import { useDensityMetrics } from '../density.js';
@@ -23,6 +24,8 @@ import { displayWidth, hardWrapLine, truncateDisplay } from './word-wrap.js';
 
 const uiLog = createUiDebugLogger('tui:permbtn');
 const PERMISSION_PATTERN_DISPLAY_MAX_LENGTH = 40;
+/** What the "Always allow" row offers when the call has nothing to scope a rule to. */
+const NO_RULE_TO_SAVE = 'this call only — no rule to save';
 
 /**
  * Rows the payload (a wrapped command, or a diff) may take before the card
@@ -96,7 +99,10 @@ function riskHint(level: ReturnType<typeof toolRiskLevel>): string | null {
   return null;
 }
 
-export function permissionPatternForTool(toolCall: ToolCall, primaryArg: string): string {
+export function permissionPatternForTool(
+  toolCall: ToolCall,
+  primaryArg: string,
+): string | undefined {
   void primaryArg;
   return permissionRuleForToolCall(toolCall);
 }
@@ -155,6 +161,36 @@ export function wrapPayload(text: string, width: number, maxRows: number): Wrapp
   return { rows: rows.slice(0, kept), hiddenRows: rows.length - kept };
 }
 
+/**
+ * What `D` will do to a payload the card had to cut, as the marker words it.
+ *
+ * `all` is a promise the card has to be able to keep. A card is bounded by the
+ * terminal it sits in, so on a short one `D` opens a bigger budget rather than
+ * the whole command: the marker said `… 4 more rows · D shows all`, D cut two
+ * more rows out of the same payload, and the key had not done what it said. So
+ * the marker says what D will do — everything, or more of it — and a payload the
+ * expanded budget cannot make any longer gets no marker and no key at all, the
+ * rule the diff half already followed.
+ */
+export function payloadExpandHint(payload: {
+  /** Rows the budget hid. */
+  hiddenRows: number;
+  expanded: boolean;
+  /** Rows the payload takes with nothing cut. */
+  totalRows: number;
+  /** Rows the collapsed and the expanded budget each keep. */
+  collapsedRows: number;
+  expandedRows: number;
+}): 'none' | 'all' | 'more' {
+  if (payload.expanded || payload.hiddenRows <= 0) return 'none';
+  if (payload.expandedRows <= payload.collapsedRows) return 'none';
+  // `all` is a promise the key has to be able to keep, so the test is the
+  // inclusive one: a payload of exactly the expanded budget fits, and only a
+  // payload longer than the budget is still going to be cut after `D`. One row
+  // of slack here claimed `D shows all` for a command that lost a row anyway.
+  return payload.expandedRows >= payload.totalRows ? 'all' : 'more';
+}
+
 function previewSummary(files: readonly MutationPreviewFile[]): string {
   const added = files.reduce((total, file) => total + file.stats.addedLines, 0);
   const removed = files.reduce((total, file) => total + file.stats.removedLines, 0);
@@ -204,8 +240,12 @@ export function PermissionButtons({
   const ladderRef = useRef(ladder);
   ladderRef.current = ladder;
   const [scopeIndex, setScopeIndex, currentScope] = useKeyState(0);
+  // No ladder means no rule to write, so the row says so rather than naming one. The
+  // answer is still `always`: the loop applies it to this call and persists nothing.
   const alwaysPattern = ladder[scopeIndex] ?? ladder[0];
-  const alwaysPatternDisplay = permissionPatternForDisplay(alwaysPattern);
+  const alwaysPatternDisplay = alwaysPattern
+    ? permissionPatternForDisplay(alwaysPattern)
+    : NO_RULE_TO_SAVE;
   const scopeHint = scopeCaption(ladder, scopeIndex);
   const [expanded, setExpanded] = useState(false);
 
@@ -240,6 +280,27 @@ export function PermissionButtons({
           wrapPayload(payload, contentWidth - 2, expanded ? rowBudget : COLLAPSED_COMMAND_ROWS),
     [contentWidth, expanded, payload, payloadInline, rowBudget],
   );
+  // The command with nothing cut, which is what decides whether `D` can show all
+  // of it. A budget is rows *including* the marker's own, so the payload keeps
+  // one fewer than the number below.
+  const totalCommandRows = useMemo(
+    () =>
+      payloadInline || payload.length === 0
+        ? 0
+        : wrapPayload(payload, contentWidth - 2, Number.POSITIVE_INFINITY).rows.length,
+    [contentWidth, payload, payloadInline],
+  );
+  const commandExpandHint = payloadExpandHint({
+    hiddenRows: wrappedPayload.hiddenRows,
+    expanded,
+    totalRows: totalCommandRows,
+    collapsedRows: Math.max(1, COLLAPSED_COMMAND_ROWS - 1),
+    // The expanded budget, not one less. `wrapPayload` keeps every row when the
+    // payload is no longer than the budget it is given, so a payload of exactly
+    // `rowBudget` rows is one `D` already shows whole; reserving the marker's row
+    // on both sides made a payload that fit claim to be cut.
+    expandedRows: Math.max(1, rowBudget),
+  });
 
   // File mutations show the diff they would make, computed from the pending
   // arguments against the file on disk. Nothing is written until the user
@@ -271,10 +332,9 @@ export function PermissionButtons({
     return () => controller.abort();
   }, [canonical, previewable, toolCall.id, workspaceRoot]);
 
-  useLayoutEffect(() => {
-    onLayoutChange?.();
-    return () => onLayoutChange?.();
-  }, [expanded, onLayoutChange, preview]);
+  useReportLayout([expanded ? 'expanded' : 'collapsed', preview ? 'preview' : 'none'].join(':'), {
+    onLayoutChange,
+  });
 
   // Row counts are constant for the life of a preview; the card re-renders on
   // every keypress and must not re-split a large diff each time.
@@ -304,7 +364,7 @@ export function PermissionButtons({
     shownFiles.some((file) => (diffRows.get(file.filePath) ?? 0) > diffRowsPerFile);
   const canExpand =
     expanded ||
-    (files.length === 0 && wrappedPayload.hiddenRows > 0) ||
+    (files.length === 0 && commandExpandHint !== 'none') ||
     (diffHasMore && expandedDiffRows > collapsedDiffRows);
 
   // Track previous selection for old→new logging without stale closure issues.
@@ -465,7 +525,7 @@ export function PermissionButtons({
         ))}
         <Text>Press: [R] Run once, [S] Skip, [Esc] Deny.</Text>
         <Text>Always allow: press [A] to select it, then Enter to confirm.</Text>
-        <Text>Rule to be saved: {alwaysPattern}</Text>
+        <Text>Rule to be saved: {alwaysPattern ?? '(none — this call only)'}</Text>
         {ladder.length > 1 ? <Text>Press [A] again to widen or narrow that rule.</Text> : null}
       </Box>
     );
@@ -565,7 +625,9 @@ export function PermissionButtons({
       {files.length === 0 && wrappedPayload.hiddenRows > 0 ? (
         <Text color={theme.inactive}>
           {truncateDisplay(
-            `… ${wrappedPayload.hiddenRows} more ${wrappedPayload.hiddenRows === 1 ? 'row' : 'rows'}${expanded ? '' : ' · D shows all'}`,
+            // The cut is marked either way; the key is named only while it is
+            // offered, and named for what it will do.
+            `… ${wrappedPayload.hiddenRows} more ${wrappedPayload.hiddenRows === 1 ? 'row' : 'rows'}${commandExpandHint === 'none' ? '' : ` · D shows ${commandExpandHint === 'all' ? 'all' : 'more'}`}`,
             contentWidth,
           )}
         </Text>

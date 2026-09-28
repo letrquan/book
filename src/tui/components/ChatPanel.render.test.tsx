@@ -5,6 +5,7 @@ import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { DensityContext, type TuiDensity } from '../density.js';
 import { ChatPanel, getCompletedTimelineWindow, getStreamingTimelineWindow } from './ChatPanel.js';
 import { AgentMessage } from './AgentMessage.js';
+import { userTurnRows } from './UserMessage.js';
 import { DROP_CAP } from './WelcomeScreen.js';
 import { PILCROW } from '../marks.js';
 import type { FileMutationSummary, ToolCall, ToolResult } from '../../types/tools.js';
@@ -67,6 +68,16 @@ function failureResult(toolCallId: string, message: string, content = ''): ToolR
     content,
     structuredError: { code: 'test_error', message, retryable: false },
   };
+}
+
+/** The truecolor escape chalk writes for a `#RRGGBB` token. */
+function rgb(token: string): string {
+  const [r, g, b] = [1, 3, 5].map((offset) => parseInt(token.slice(offset, offset + 2), 16)) as [
+    number,
+    number,
+    number,
+  ];
+  return `\u001b[38;2;${r};${g};${b}m`;
 }
 
 afterEach(() => {
@@ -245,6 +256,192 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).not.toContain('Historical conversation checkpoint');
   });
 
+  it('sets a compact boundary on the tool-row column, a blank row from its neighbours (#266)', () => {
+    const messages: Message[] = [
+      msg('u1', 'user', 'run the checks'),
+      {
+        ...msg('a1', 'assistant', 'Running them.'),
+        toolCalls: [{ id: 'bash-1', name: 'Bash', arguments: { command: 'npm test' } }],
+        toolResults: [successResult('bash-1', 'ok')],
+      },
+      msg('a2', 'assistant', 'answer after the compaction'),
+    ];
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          compactBoundaries={[
+            {
+              id: 'c1',
+              trigger: 'auto',
+              transcriptOrdinal: 2,
+              preContextCount: 8,
+              postContextCount: 3,
+              preContextTokens: 10_300,
+              postContextTokens: 3_800,
+              generation: 1,
+              checkpointVersion: 2,
+              timestamp: 2,
+            },
+          ]}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const lines = frame(view.lastFrame).split('\n');
+    const boundary = lines.findIndex((line) => line.includes('Compact conversation'));
+    const toolRow = lines.findIndex((line) => line.includes('npm test'));
+    expect(boundary).toBeGreaterThan(toolRow);
+    // The mark sits in the column every tool row's status mark does, not at column 0.
+    expect(lines[boundary]!.indexOf('✓')).toBe(lines[toolRow]!.indexOf('✓'));
+    expect(lines[boundary]!.indexOf('✓')).toBeGreaterThan(0);
+    expect(lines[boundary - 1]!.trim()).toBe('');
+    expect(lines[boundary + 1]!.trim()).toBe('');
+    expect(lines[boundary + 2]).toContain('answer after the compaction');
+  });
+
+  it('greys the check on a compact boundary, which is a transcript event', () => {
+    // Ink styles through chalk, which emits nothing off a TTY; force truecolor
+    // so the mark's ink is visible in the frame.
+    const level = chalk.level;
+    chalk.level = 3;
+    let raw: string;
+    try {
+      const view = render(
+        withTheme(
+          <ChatPanel
+            messages={[msg('u1', 'user', 'go'), msg('a1', 'assistant', 'first answer')]}
+            compactBoundaries={[
+              {
+                id: 'c1',
+                trigger: 'auto',
+                transcriptOrdinal: 1,
+                preContextCount: 8,
+                postContextCount: 3,
+                preContextTokens: 10_300,
+                postContextTokens: 3_800,
+                generation: 1,
+                checkpointVersion: 2,
+                timestamp: 2,
+              },
+            ]}
+            terminalWidth={80}
+            reducedMotion
+          />,
+        ),
+      );
+      raw = view.lastFrame() ?? '';
+    } finally {
+      chalk.level = level;
+    }
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}✓`);
+    expect(raw).not.toContain(`${rgb(DEFAULT_THEME.success)}✓`);
+  });
+
+  it('sets a compact boundary flush left for a screen reader, like the assistant rows', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[msg('u1', 'user', 'go'), msg('a1', 'assistant', 'answer')]}
+          compactBoundaries={[
+            {
+              id: 'c1',
+              trigger: 'auto',
+              transcriptOrdinal: 1,
+              preContextCount: 8,
+              postContextCount: 3,
+              preContextTokens: 10_300,
+              postContextTokens: 3_800,
+              generation: 1,
+              checkpointVersion: 2,
+              timestamp: 2,
+            },
+          ]}
+          terminalWidth={80}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    const row = frame(view.lastFrame)
+      .split('\n')
+      .find((line) => line.includes('Compact conversation'));
+    expect(row?.indexOf('✓')).toBe(0);
+  });
+
+  it('never drops a compact boundary placed past the last message', () => {
+    // A row placed for a streaming message whose append was still queued, which
+    // then never landed (the send was cancelled).
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[msg('u1', 'user', 'go'), msg('a1', 'assistant', 'answer')]}
+          compactBoundaries={[
+            {
+              id: 'c1',
+              trigger: 'auto',
+              transcriptOrdinal: 3,
+              preContextCount: 8,
+              postContextCount: 3,
+              preContextTokens: 10_300,
+              postContextTokens: 3_800,
+              generation: 1,
+              checkpointVersion: 2,
+              timestamp: 2,
+            },
+          ]}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('Compact conversation');
+    expect(output.indexOf('Compact conversation')).toBeGreaterThan(output.indexOf('answer'));
+  });
+
+  it('draws a compact boundary that follows the streaming message while it streams (#266)', () => {
+    const messages: Message[] = [
+      msg('u1', 'user', 'write it all'),
+      msg('a1', 'assistant', 'partial answer so far'),
+    ];
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          streamingMessageId="a1"
+          compactBoundaries={[
+            {
+              id: 'c1',
+              trigger: 'auto',
+              transcriptOrdinal: 2,
+              preContextCount: 8,
+              postContextCount: 3,
+              preContextTokens: 10_300,
+              postContextTokens: 3_800,
+              generation: 1,
+              checkpointVersion: 2,
+              timestamp: 2,
+            },
+          ]}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('partial answer so far');
+    expect(output).toContain('Compact conversation');
+    expect(output.indexOf('Compact conversation')).toBeGreaterThan(
+      output.indexOf('partial answer so far'),
+    );
+  });
+
   it('keeps automatic child completion notifications out of the visible transcript', () => {
     const notification: Message = {
       id: 'notification-1',
@@ -383,9 +580,10 @@ describe('ChatPanel Ink rendering', () => {
     const answerLine = lines.findIndex((line) => line.includes('FIRST_ANSWER_MARKER'));
     const nextQuestionLine = lines.findIndex((line) => line.includes('SECOND_QUESTION_MARKER'));
 
-    // Blank row, then the prompt: the pilcrow marks the boundary itself, so the
-    // next turn needs no separate rule row.
-    expect(nextQuestionLine - answerLine).toBe(2);
+    // Two blank rows, then the prompt: the pilcrow marks the boundary itself, so
+    // the next turn needs no separate rule row — and it opens like a new
+    // section rather than another paragraph of the reply above it.
+    expect(nextQuestionLine - answerLine).toBe(3);
     expect(lines[nextQuestionLine]).toContain(`${PILCROW} SECOND_QUESTION_MARKER`);
   });
 
@@ -559,7 +757,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output.indexOf('src/b.ts')).toBeLessThan(output.indexOf('src/c.ts'));
   });
 
-  it('adds one blank row between narration and sibling actions in compact density', () => {
+  it("runs a step's narration into its actions in compact density", () => {
     const message: Message = {
       ...msg('a1', 'assistant', 'I will inspect both files.'),
       toolCalls: [
@@ -579,10 +777,74 @@ describe('ChatPanel Ink rendering', () => {
     const first = lines.findIndex((line) => /Read\s+src\/a\.ts/.test(line));
     const second = lines.findIndex((line) => /Read\s+src\/b\.ts/.test(line));
 
-    // One blank row separates prose from the block; the rows inside it run
-    // together so they read as a single aligned column.
-    expect(lines.slice(narration + 1, first)).toEqual(['']);
+    // A step of work is one quiet unit: the sentence it says before acting runs
+    // straight into the rows it acts on, with no blank row in between. The rows
+    // inside it run together so they read as a single aligned column.
+    expect(lines.slice(narration + 1, first)).toEqual([]);
     expect(lines.slice(first + 1, second)).toEqual([]);
+  });
+
+  it('opens each of your turns after two blank rows, like a new section', () => {
+    // Your turn is the landmark in a long transcript. One blank row left it
+    // reading as another paragraph of the reply above it.
+    const messages = [
+      msg('u1', 'user', 'first question'),
+      msg('a1', 'assistant', 'The answer is 42.'),
+      msg('u2', 'user', 'second question'),
+    ];
+
+    for (const [density, gap] of [
+      ['compact', ['', '']],
+      ['tight', []],
+    ] as const) {
+      const view = render(
+        withDensity(
+          <ChatPanel messages={messages} terminalWidth={80} terminalHeight={24} reducedMotion />,
+          density,
+        ),
+      );
+      const lines = frame(view.lastFrame).split('\n');
+      const answer = lines.findIndex((line) => line.includes('The answer is 42.'));
+      const turns = lines
+        .map((line, index) => (line.includes(PILCROW) ? index : -1))
+        .filter((index) => index >= 0);
+
+      expect(turns).toHaveLength(2);
+      expect(lines.slice(answer + 1, turns[1]!)).toEqual([...gap]);
+      cleanup();
+    }
+  });
+
+  it('estimates your turn with the blank rows above it', () => {
+    // The virtual transcript sizes its spacers from the estimate until a row is
+    // measured. Leaving the two blank rows out made every unmeasured turn two
+    // rows short, so the scroll offset jumped the moment a row was measured.
+    const messages = [
+      msg('u1', 'user', 'first question'),
+      msg('a1', 'assistant', 'The answer is 42.'),
+      msg('u2', 'user', 'second question'),
+    ];
+
+    for (const [density, margin] of [
+      ['compact', 2],
+      ['tight', 0],
+    ] as const) {
+      const view = render(
+        withDensity(
+          <ChatPanel messages={messages} terminalWidth={80} terminalHeight={24} reducedMotion />,
+          density,
+        ),
+      );
+      const { estimateRows } = virtualTranscriptOptionsSpy.mock.lastCall![0];
+      const turn = messages[2]!;
+
+      // The prompt, exactly as `userTurnRows` sets it, plus its margin.
+      expect(estimateRows(turn)).toBe(
+        userTurnRows(turn.content, 80, turn.timestamp, turn.attachments?.length ?? 0) + margin,
+      );
+      expect(view.lastFrame()).toBeDefined();
+      cleanup();
+    }
   });
 
   it('runs actions together in tight density', () => {
@@ -1493,6 +1755,44 @@ describe('ChatPanel Ink rendering', () => {
     expect(textIdx).toBeLessThan(globIdx);
     expect(globIdx).toBeLessThan(readIdx);
     expect(readIdx).toBeLessThan(grepIdx);
+  });
+
+  it('never folds an answer into the turn a notification opened', () => {
+    // A background shell finishing posts a notification, and the agent's blank
+    // tool-only reply to it is a turn of its own. Merged into the answer above,
+    // that answer gained a working call, became a step of work, and greyed a
+    // reply you have already read.
+    const messages: Message[] = [
+      msg('u1', 'user', 'go'),
+      msg('a1', 'assistant', 'All done.'),
+      { ...msg('n1', 'user', 'shell 1 exited'), kind: 'agent-notification' },
+      {
+        ...msg('a2', 'assistant', ''),
+        toolCalls: [{ id: 'call-1', name: 'Read', arguments: { filePath: 'src/a.ts' } }],
+        toolResults: [successResult('call-1', 'a')],
+      },
+    ];
+
+    const level = chalk.level;
+    chalk.level = 3;
+    let raw: string;
+    try {
+      const view = render(
+        withTheme(
+          <ChatPanel messages={messages} terminalWidth={80} terminalHeight={24} reducedMotion />,
+        ),
+      );
+      raw = view.lastFrame() ?? '';
+    } finally {
+      chalk.level = level;
+    }
+
+    const answer = raw
+      .split('\n')
+      .find((line) => line.includes('All done.'))
+      ?.trimStart();
+    expect(answer).toContain(`${rgb(DEFAULT_THEME.text)}`);
+    expect(answer).not.toContain(`${rgb(DEFAULT_THEME.subtle)}`);
   });
 
   it('renders structured local command output as a panel instead of markdown text', () => {

@@ -33,7 +33,7 @@ import { dirname } from 'path';
 import { writeJsonAtomic } from './jobs/persistent-store.js';
 import { normalizeWorkspace } from './session/store.js';
 import { createProvider, type Provider } from './provider/index.js';
-import { TRUNCATION_FINISH_REASONS } from './provider/finish-reasons.js';
+import { isTruncationFinish } from './provider/finish-reasons.js';
 import { resolveCompactModelConfig } from './config.js';
 import {
   deleteMemoryEntry,
@@ -329,7 +329,7 @@ async function complete(
   )) {
     if (event.type === 'text' && event.content) text += event.content;
     if (event.type === 'error') throw new Error(event.error ?? 'provider error');
-    if (event.finishReasons?.some((reason) => TRUNCATION_FINISH_REASONS.has(reason))) {
+    if (isTruncationFinish(event.finishReasons)) {
       truncated = true;
     }
   }

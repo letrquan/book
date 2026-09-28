@@ -35,6 +35,17 @@ function tailOf(window: string): string {
   return window.startsWith(banner) ? window.slice(banner.length) : window;
 }
 
+/**
+ * Where in `content` a live tail's own text starts, looking past a fence opening line the tail
+ * re-adds for a cutoff inside code. `undefined` for an empty tail.
+ */
+function tailStartOffset(content: string, tail: string): number | undefined {
+  if (tail === '') return undefined;
+  if (content.endsWith(tail)) return content.length - tail.length;
+  const body = tail.slice(tail.indexOf('\n') + 1);
+  return content.endsWith(body) ? content.length - body.length : undefined;
+}
+
 const MARKER_WORDS = ['-', '+', '#', '3.', '2)', '2019.', '##'];
 
 function markerProse(count: number): string {
@@ -203,6 +214,36 @@ describe('MarkdownBlock', () => {
     }
   });
 
+  it('never moves the live tail start back across a fence that follows the cutoff (#268)', () => {
+    // width 80 => maxCharacters = 1920. The fence opens on the line after a paragraph, with no
+    // blank line between them, and a blank line only after it closes.
+    const code = Array.from({ length: 12 }, (_, index) => `const value${index} = ${index};`);
+    const full = `${numberedWords(500)}\n\`\`\`ts\n${code.join('\n')}\n\`\`\`\n\n${numberedWords(500)}`;
+    let previous = -1;
+    let frames = 0;
+    for (let length = 1921; length <= full.length; length += 5) {
+      const content = full.slice(0, length);
+      const start = tailStartOffset(content, tailOf(streamingMarkdownWindow(content, 80)));
+      if (start === undefined) continue;
+      frames++;
+      expect(start, `tail start at length ${length}`).toBeGreaterThanOrEqual(previous);
+      previous = start;
+    }
+    expect(frames).toBeGreaterThan(100);
+  });
+
+  it('shows the whole fenced block, not what follows it, once the cutoff nears it (#268)', () => {
+    const code = Array.from({ length: 12 }, (_, index) => `const value${index} = ${index};`);
+    const head = `${numberedWords(500)}\n`;
+    const full = `${head}\`\`\`ts\n${code.join('\n')}\n\`\`\`\n\n${numberedWords(500)}`;
+    // A cutoff in the paragraph just before the fence line.
+    const length = head.length - 40 + 1920;
+    const tail = tailOf(streamingMarkdownWindow(full.slice(0, length), 80));
+
+    expect(tail.startsWith('```ts\nconst value0 = 0;')).toBe(true);
+    expect(marked.lexer(tail)[0]?.type).toBe('code');
+  });
+
   it('starts the tail after a closing fence line the cutoff lands inside', () => {
     const code = Array.from({ length: 40 }, (_, index) => `const value${index} = ${index};`);
     const head = `\`\`\`ts\n${code.join('\n')}\n`;
@@ -261,6 +302,17 @@ describe('MarkdownBlock', () => {
     const output = frame(view.lastFrame);
 
     expect(output.split('\n')).toEqual(['First paragraph', '', 'Second paragraph']);
+  });
+
+  it('keeps a closing paragraph off a list that a link definition follows', () => {
+    // A link definition draws nothing, so the paragraph after it must take the
+    // gap from the block the reader actually saw above it.
+    const view = render(
+      withTheme(React.createElement(MarkdownBlock, { content: '- a\n- b\n\n[ref]: /u\n\nDone.' })),
+    );
+    const lines = frame(view.lastFrame).split('\n');
+
+    expect(lines).toEqual(['  • a', '  • b', '', 'Done.']);
   });
 
   it('places heading bodies directly under their heading chrome', () => {

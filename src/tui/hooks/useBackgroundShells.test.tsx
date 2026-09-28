@@ -166,4 +166,32 @@ describe('useBackgroundShells', () => {
       expect(latest?.pendingAgentCompletions.map((job) => job.id)).toEqual(['shell_2']),
     );
   });
+
+  it('reports a stop that fails instead of rejecting', async () => {
+    const running = shell('running');
+    const manager = {
+      list: vi.fn(() => [running]),
+      listPendingAgentCompletions: vi.fn(() => []),
+      listPendingUiCompletions: vi.fn(() => []),
+      subscribe: vi.fn(() => vi.fn()),
+      acknowledgeCompletion: vi.fn(),
+      get: vi.fn(() => running),
+      dismiss: vi.fn(),
+      stop: vi.fn(async () => {
+        throw new Error('Could not request the stop of shell_1: EPERM');
+      }),
+    } as unknown as ShellJobManager;
+    let latest: BackgroundShellState | undefined;
+
+    function Harness() {
+      latest = useBackgroundShells(manager, 'session-1');
+      return <Text>{latest.shells.length}</Text>;
+    }
+
+    render(<Harness />);
+    await vi.waitFor(() => expect(latest?.shells).toHaveLength(1));
+    await expect(latest!.stopOrDismiss('shell_1')).resolves.toBe(
+      'Could not request the stop of shell_1: EPERM',
+    );
+  });
 });

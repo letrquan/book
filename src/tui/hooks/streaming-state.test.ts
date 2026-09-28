@@ -5,6 +5,7 @@ import {
   appendNestedToolResultToMessage,
   appendToolCallToMessage,
   appendToolResultToMessage,
+  compactionPlacement,
   isTotallyEmptyAssistant,
   makeMessage,
   removeTrailingEmptyAssistantPlaceholder,
@@ -293,5 +294,54 @@ describe('streaming TUI message state helpers', () => {
     // Non-trailing empty must stay (only trailing is safe to drop).
     const nonTrailing = [empty, msg('u2', 'user', 'later')];
     expect(removeTrailingEmptyAssistantPlaceholder(nonTrailing)).toBe(nonTrailing);
+  });
+});
+
+describe('compactionPlacement', () => {
+  const messages = [
+    msg('u1', 'user', 'q'),
+    msg('a1', 'assistant', ''),
+    msg('a2', 'assistant', 'done'),
+  ];
+
+  it('lands after everything when no turn is streaming', () => {
+    expect(compactionPlacement(messages, null, false)).toEqual({
+      ordinal: messages.length,
+      afterStreaming: false,
+    });
+    expect(compactionPlacement(messages, undefined, true)).toEqual({
+      ordinal: messages.length,
+      afterStreaming: false,
+    });
+  });
+
+  it('lands after the streaming message once it has output', () => {
+    expect(compactionPlacement(messages, 'a2', true)).toEqual({
+      ordinal: messages.length,
+      afterStreaming: true,
+    });
+  });
+
+  it('lands before the streaming message while it has streamed nothing', () => {
+    expect(compactionPlacement(messages, 'a1', false)).toEqual({
+      ordinal: 1,
+      afterStreaming: false,
+    });
+    expect(compactionPlacement(messages, 'a2', false)).toEqual({
+      ordinal: 2,
+      afterStreaming: false,
+    });
+  });
+
+  it('places a streaming message not in the list yet at the index it will land at', () => {
+    // Its append is still queued: it lands at messages.length.
+    expect(compactionPlacement(messages, 'a3', false)).toEqual({
+      ordinal: messages.length,
+      afterStreaming: false,
+    });
+    expect(compactionPlacement(messages, 'a3', true)).toEqual({
+      ordinal: messages.length + 1,
+      afterStreaming: true,
+    });
   });
 });

@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { buildChildEnv } from '../child-env.js';
 
 export const MAX_CLIPBOARD_IMAGE_BYTES = 8 * 1024 * 1024;
 
@@ -15,7 +16,11 @@ interface CommandResult {
 
 function run(command: string, args: string[], timeoutMs = 5_000): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: buildChildEnv(),
+    });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let size = 0;

@@ -44,6 +44,30 @@ describe('SettingsRepository', () => {
     }
   });
 
+  it('writes nothing when one value in a mutation is invalid, naming only that field', () => {
+    const item = fixture();
+    try {
+      mkdirSync(join(item.dir, '.book'));
+      writeFileSync(item.path, JSON.stringify({ model: 'kept' }, null, 2) + '\n');
+
+      const result = new SettingsRepository(item.path).set({
+        'retry.baseDelayMs': 2000,
+        'retry.maxAttempts': 99,
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.diagnostics.map((diagnostic) => diagnostic.issuePath)).toEqual([
+          'retry.maxAttempts',
+        ]);
+        expect(result.diagnostics[0]?.message).toMatch(/15/);
+      }
+      expect(JSON.parse(readFileSync(item.path, 'utf8'))).toEqual({ model: 'kept' });
+    } finally {
+      item.cleanup();
+    }
+  });
+
   it('preserves malformed JSON instead of replacing it', () => {
     const item = fixture();
     try {

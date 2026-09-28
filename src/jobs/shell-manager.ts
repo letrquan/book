@@ -1,6 +1,8 @@
-import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { systemClock, type Clock } from '../clock.js';
+import { buildChildEnv } from '../child-env.js';
+import { createDebugLogger } from '../debug-log.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -24,15 +26,16 @@ import {
   type PersistentShellSpec,
   type PersistentShellState,
 } from './persistent-store.js';
-import { isProcessAlive, signalProcessGroup, waitForProcessGroupExit } from './process-tree.js';
-import { system32Executable } from '../system32.js';
+import { isProcessAlive, terminateProcessTree, waitForProcessClose } from './process-tree.js';
 
 const MAX_BACKGROUND_BUFFER = 1024 * 1024 * 5;
 const MAX_OUTPUT_RESULT = 32_000;
-const TERMINATE_GRACE_MS = 1_500;
 const MAX_RETAINED_TERMINAL_SHELLS = 20;
 const TERMINAL_SHELL_TTL_MS = 15 * 60_000;
 const PERSISTENT_HEARTBEAT_STALE_MS = 10_000;
+/** How long a lost-job record that could not be written waits before the next attempt. */
+const LOST_WRITE_RETRY_MS = 5_000;
+const log = createDebugLogger('jobs');
 
 export type ShellJobEvent =
   | { type: 'background_job_start'; job: BackgroundShellRecord }
@@ -58,6 +61,33 @@ export interface ShellStartOptions {
   lifetime?: 'session' | 'persistent';
   workspace?: string;
   envOverrides?: Record<string, string>;
+  parentSessionId?: string;
+  rootRunId?: string;
+  parentRunId?: string;
+}
+
+/**
+ * A running session command that was started elsewhere — a foreground `Bash` that reached its
+ * deadline and is being handed over rather than killed (#302).
+ *
+ * Deliberately narrower than `ShellStartOptions`: an adopted process was not spawned here, so it
+ * has no workdir, environment, or runtime to configure, and pretending otherwise would let a
+ * caller set fields that describe a spawn this manager never performed.
+ */
+export interface ShellAdoptOptions {
+  process: ChildProcess;
+  command: string;
+  effectiveCommand: string;
+  workdir: string;
+  sandboxed: boolean;
+  title?: string;
+  /** When the command really started, not when it was adopted. */
+  startedAt?: number;
+  /**
+   * What the command printed before it was adopted, in the order the two streams were read.
+   * Seeded into the buffer and read past, so `BashOutput` reports only what comes next.
+   */
+  initialOutput?: string;
   parentSessionId?: string;
   rootRunId?: string;
   parentRunId?: string;
@@ -129,92 +159,9 @@ function waitForSpawn(proc: ChildProcess): Promise<Error | undefined> {
   });
 }
 
-function waitForProcessClose(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
-  if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      resolve(proc.exitCode !== null || proc.signalCode !== null);
-    }, timeoutMs);
-    const onClose = () => {
-      cleanup();
-      resolve(true);
-    };
-    const cleanup = () => {
-      clearTimeout(timer);
-      proc.off('close', onClose);
-    };
-    proc.once('close', onClose);
-  });
-}
-
 function waitForShellClose(shell: BackgroundShellRecord, timeoutMs: number): Promise<boolean> {
   if (shell.finishedAt !== undefined) return Promise.resolve(true);
   return shell.process ? waitForProcessClose(shell.process, timeoutMs) : Promise.resolve(true);
-}
-
-type WindowsTreeKill = (pid: number) => Promise<boolean>;
-
-async function runTaskkill(pid: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    execFile(
-      system32Executable('taskkill'),
-      ['/PID', String(pid), '/T', '/F'],
-      { windowsHide: true, timeout: TERMINATE_GRACE_MS },
-      (error) => resolve(!error),
-    );
-  });
-}
-
-export async function terminateWindowsProcessTree(
-  proc: ChildProcess,
-  pid: number,
-  signal: NodeJS.Signals,
-  treeKill: WindowsTreeKill = runTaskkill,
-): Promise<boolean> {
-  const alreadyExited = proc.exitCode !== null || proc.signalCode !== null;
-  if (alreadyExited) return true;
-  if (await treeKill(pid)) return true;
-  try {
-    proc.kill(signal);
-  } catch {
-    // The process may have exited between taskkill and the direct-child fallback.
-  }
-  return false;
-}
-
-/**
- * Escalate SIGTERM → SIGKILL across the whole tree and report whether it is really gone.
- *
- * On POSIX the direct child is the `sh -c` wrapper, which dies from SIGTERM even when the worker
- * it forked ignores it, so its exit says nothing about the tree — success is judged on whether
- * the process group still holds anything. On Windows `taskkill /T /F` covers the tree, so the
- * direct child's close speaks for the tree only when taskkill actually ran.
- */
-async function terminateProcessTree(
-  proc: ChildProcess | undefined,
-  pid: number | undefined,
-  hasClosed: (timeoutMs: number) => Promise<boolean>,
-): Promise<boolean> {
-  if (!proc || pid === undefined) return true;
-  if (process.platform !== 'win32') {
-    signalProcessGroup(proc, pid, 'SIGTERM');
-    if (await waitForProcessGroupExit(pid, TERMINATE_GRACE_MS)) return true;
-    signalProcessGroup(proc, pid, 'SIGKILL');
-    return waitForProcessGroupExit(pid, TERMINATE_GRACE_MS);
-  }
-  const confirmed = await terminateWindowsProcessTree(proc, pid, 'SIGTERM');
-  if (await hasClosed(TERMINATE_GRACE_MS)) return confirmed;
-  try {
-    proc.kill('SIGKILL');
-  } catch {
-    return false;
-  }
-  return (await hasClosed(TERMINATE_GRACE_MS)) && confirmed;
-}
-
-export async function terminateForegroundProcess(proc: ChildProcess): Promise<void> {
-  await terminateProcessTree(proc, proc.pid, (timeoutMs) => waitForProcessClose(proc, timeoutMs));
 }
 
 export class ShellJobManager {
@@ -223,6 +170,13 @@ export class ShellJobManager {
   private persistentPaths?: PersistentJobPaths;
   private persistentStorageError?: Error;
   private monitor?: NodeJS.Timeout;
+  /** Lost-job records whose write failed, by job id, with when to try the write again. */
+  private readonly unwrittenLost = new Map<
+    string,
+    { lost: PersistentShellState; retryAt: number }
+  >();
+  /** Set by `dispose()`: a disposed manager takes on no new work. */
+  private disposed = false;
 
   constructor(
     private readonly store: BackgroundShellStore,
@@ -357,22 +311,7 @@ export class ShellJobManager {
     };
     this.store.shells.set(id, shell);
 
-    proc.stdout?.on('data', (data) => this.appendOutput(shell, data));
-    proc.stderr?.on('data', (data) => this.appendOutput(shell, data));
-    proc.on('error', (error) => {
-      this.appendOutput(shell, `${error.message}\n`);
-      this.finish(shell, 'failed');
-    });
-    proc.on('close', (code, signal) => {
-      if (shell.status === 'stopping') {
-        shell.exitCode = code;
-        shell.signal = signal;
-        shell.finishedAt = Date.now();
-        this.clearTimer(shell);
-        return;
-      }
-      this.finish(shell, code === 0 ? 'exited' : 'failed', code, signal);
-    });
+    this.attachProcessHandlers(shell, proc);
 
     const startupError = await startup;
     if (startupError) {
@@ -394,6 +333,73 @@ export class ShellJobManager {
       }, options.timeoutMs);
     }
 
+    this.emit({ type: 'background_job_start', job: cloneRecord(shell) });
+    return cloneRecord(shell);
+  }
+
+  /**
+   * Take over a process that is already running as a session shell.
+   *
+   * A foreground `Bash` that reached its deadline used to be killed (#302), which left the model
+   * with no result and usually a re-run of the whole gate. This registers the running process
+   * exactly as `start()` would — same record shape, same events, same stream handling and buffer
+   * cap — so from here on it is an ordinary session background shell: KillShell ends its whole
+   * tree, and dispose ends it with Book.
+   *
+   * No timer: a detached command is not on a deadline, and giving it one would make a long gate
+   * die on a clock it never agreed to. The default notify policy of a `run_in_background` call
+   * with no `notify` is used instead, since the model did not choose one.
+   *
+   * Returns `undefined` rather than throwing when it cannot take the process — a disposed
+   * manager, a process that has already exited, or one that never got a pid. A caller that gets
+   * `undefined` still owns the process and has to deal with it.
+   *
+   * The caller's own stream listeners are attached before this returns, so a caller that wants
+   * to stop reading should do so straight after, in the same tick: no output can be delivered in
+   * between.
+   */
+  adopt(options: ShellAdoptOptions): BackgroundShellRecord | undefined {
+    if (this.disposed) return undefined;
+    const proc = options.process;
+    if (proc.pid === undefined) return undefined;
+    if (proc.exitCode !== null || proc.signalCode !== null) return undefined;
+
+    const id = `shell_${this.store.nextId++}`;
+    const shell: BackgroundShellRecord = {
+      id,
+      command: options.command,
+      effectiveCommand: options.effectiveCommand,
+      title: options.title?.trim() || options.command,
+      workdir: options.workdir,
+      pid: proc.pid,
+      process: proc,
+      status: 'running',
+      lifetime: 'session',
+      notify: 'ui',
+      output: '',
+      readOffset: 0,
+      truncatedBytes: 0,
+      outputRevision: 0,
+      completionSequence: 0,
+      completionAcknowledgedSequence: 0,
+      completionDeliveredSequence: 0,
+      // When the command really started, not when it changed hands: the job panel's age is the
+      // only visible difference, and an adopted command that claims to be new is a lie.
+      startedAt: options.startedAt ?? Date.now(),
+      sandboxed: options.sandboxed,
+      parentSessionId: options.parentSessionId,
+      rootRunId: options.rootRunId,
+      parentRunId: options.parentRunId,
+    };
+    this.store.shells.set(id, shell);
+    // Deliberately not `unref()`ing the process or its streams the way `start()` does. This one
+    // was spawned for a tool call that is still open, and the tool call resolves on these very
+    // pipes; unref'ing them could let the loop drain out from under it. The manager's dispose
+    // still ends the process, so it cannot outlive the session either way.
+    this.attachProcessHandlers(shell, proc);
+    // Seeded last, so the cursor lands past everything the command had already printed and
+    // `BashOutput` reports only what comes after the move.
+    this.seedOutput(shell, options.initialOutput ?? '');
     this.emit({ type: 'background_job_start', job: cloneRecord(shell) });
     return cloneRecord(shell);
   }
@@ -479,7 +485,26 @@ export class ShellJobManager {
     this.emit({ type: 'background_job_update', job: cloneRecord(shell) });
   }
 
+  /**
+   * End every session shell this manager owns.
+   *
+   * `dispose()` used to `kill()` the direct child, which is the wrapper rather than the command:
+   * on Windows the worker it started kept running with the console still attached, and on POSIX
+   * the session shell leads its own process group that a SIGTERM to the wrapper left alive (#314).
+   * `terminateProcessTree` is what already does this properly for KillShell, so the same call is
+   * used here — the group on POSIX, `taskkill /T /F` on Windows, which needs the root process
+   * still alive to find the tree, so the direct kill must not come first.
+   *
+   * Persistent jobs are untouched: a job started with `lifetime: "persistent"` is explicitly one
+   * that outlives Book, and it is stopped through its runner's control file instead.
+   *
+   * It returns before the trees are down, because a teardown is not something a tick can wait for.
+   * It needs no one to wait for it either: the escalation and the poll run on the loop, and their
+   * children and timers hold a host open until they finish — which is what a caller that ends by
+   * letting the process exit needs, and the only caller this had.
+   */
   dispose(): void {
+    this.disposed = true;
     if (this.monitor) clearInterval(this.monitor);
     this.monitor = undefined;
     for (const shell of this.store.shells.values()) {
@@ -491,7 +516,18 @@ export class ShellJobManager {
         shell.process &&
         !shell.process.killed
       ) {
-        shell.process.kill();
+        // No pid is no tree to walk, and `terminateProcessTree` reads that as nothing to do.
+        // The process itself is still running, so it is ended directly rather than left behind.
+        if (shell.pid === undefined) {
+          shell.process.kill();
+          continue;
+        }
+        // Started and not awaited on purpose: the escalation and the poll run on the loop, and
+        // their children and timers are what hold a host open until the tree is down. The
+        // boolean it resolves to is a report for a caller that wanted one, and there is none.
+        void terminateProcessTree(shell.process, shell.pid, (timeoutMs) =>
+          waitForShellClose(shell, timeoutMs),
+        );
       }
     }
     this.store.shells.clear();
@@ -506,12 +542,21 @@ export class ShellJobManager {
     if (shell.lifetime !== 'persistent' || !shell.persistentRecordPath) return;
     const state = readJsonFile<PersistentShellState>(shell.persistentRecordPath);
     if (!state) return;
-    writeJsonAtomic(shell.persistentRecordPath, {
-      ...state,
-      revision: state.revision + 1,
-      completionDeliveredSequence: shell.completionDeliveredSequence ?? 0,
-      completionAcknowledgedSequence: shell.completionAcknowledgedSequence ?? 0,
-    });
+    try {
+      writeJsonAtomic(shell.persistentRecordPath, {
+        ...state,
+        revision: state.revision + 1,
+        completionDeliveredSequence: shell.completionDeliveredSequence ?? 0,
+        completionAcknowledgedSequence: shell.completionAcknowledgedSequence ?? 0,
+      });
+    } catch (error) {
+      // The acknowledgement stands in memory. If its write still fails, a restarted Book offers
+      // this completion once more, which is the whole cost.
+      log.warn('could not acknowledge a job completion', {
+        id: shell.id,
+        error: String(error),
+      });
+    }
   }
 
   private async startPersistent(options: ShellStartOptions): Promise<BackgroundShellRecord> {
@@ -558,7 +603,10 @@ export class ShellJobManager {
     let runnerError = '';
     const runner = spawn(process.execPath, [...invocation, specPath], {
       cwd: options.workdir,
-      env: process.env,
+      // The runner is Book's own detached process. It reads its environment back to build the
+      // job's, so a NODE_ENV Book defaulted for its own renderer has to be off the runner too --
+      // and this is also where the runner is launched directly, with no tool call to set an env.
+      env: buildChildEnv(),
       detached: true,
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,
@@ -568,6 +616,10 @@ export class ShellJobManager {
     });
     runner.on('error', (error) => {
       runnerError ||= error.message;
+    });
+    let runnerExited = false;
+    runner.on('close', () => {
+      runnerExited = true;
     });
     runner.unref();
     unrefStream(runner.stderr);
@@ -610,15 +662,28 @@ export class ShellJobManager {
         this.applyPersistentState(shell, state);
         if (state.status !== 'starting') break;
       }
+      if (runnerExited) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     if (shell.status === 'starting') {
+      // The job is being forgotten, so nothing may keep running under it. Ending the runner closes
+      // the supervisor's lifeline, which ends the command's tree if it had started.
+      if (!runnerExited) {
+        // Ends with a boolean rather than by throwing, and a false one only means the runner was
+        // already gone, which is the outcome this branch wants either way.
+        runner.kill('SIGKILL');
+      }
       this.store.shells.delete(id);
-      removePersistentJobFiles(paths, id);
+      try {
+        removePersistentJobFiles(paths, id);
+      } catch {
+        // Cleanup is best effort; the start error is the one to report.
+      }
       const detail = runnerError.trim();
-      throw new Error(
-        `Persistent background runner did not start within ${startBudgetMs}ms${detail ? `: ${detail}` : '.'}`,
-      );
+      const what = runnerExited
+        ? 'exited before the job started'
+        : `did not start within ${startBudgetMs}ms`;
+      throw new Error(`Persistent background runner ${what}${detail ? `: ${detail}` : '.'}`);
     }
     this.emit({ type: 'background_job_start', job: cloneRecord(shell) });
     return cloneRecord(shell);
@@ -640,14 +705,20 @@ export class ShellJobManager {
     reason: 'killed' | 'timed_out',
   ): Promise<boolean> {
     if (!shell.persistentControlPath || !shell.controlToken) return false;
+    try {
+      writeJsonAtomic(shell.persistentControlPath, {
+        token: shell.controlToken,
+        action: 'stop',
+        reason,
+        requestedAt: Date.now(),
+      });
+    } catch (error) {
+      // Nothing was asked of the runner, so the job is still running and says so.
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Could not request the stop of ${shell.id}: ${message}`);
+    }
     shell.status = 'stopping';
     this.emit({ type: 'background_job_update', job: cloneRecord(shell) });
-    writeJsonAtomic(shell.persistentControlPath, {
-      token: shell.controlToken,
-      action: 'stop',
-      reason,
-      requestedAt: Date.now(),
-    });
     const deadline = this.clock.monotonicNowMs() + (this.options.runnerStopBudgetMs ?? 5_000);
     while (this.clock.monotonicNowMs() < deadline) {
       this.refreshPersistentRecord(shell);
@@ -659,7 +730,13 @@ export class ShellJobManager {
 
   private refreshPersistentJobs(): void {
     for (const shell of this.store.shells.values()) {
-      if (shell.lifetime === 'persistent') this.refreshPersistentRecord(shell);
+      if (shell.lifetime !== 'persistent') continue;
+      try {
+        this.refreshPersistentRecord(shell);
+      } catch (error) {
+        // Retried on the next refresh; the shell keeps its last known state meanwhile.
+        log.warn('persistent job refresh failed', { id: shell.id, error: String(error) });
+      }
     }
   }
 
@@ -699,6 +776,10 @@ export class ShellJobManager {
     ) {
       return state;
     }
+    // A failed write costs this process the whole rename budget on every refresh, and the monitor,
+    // `list()`, `get()` and `readOutput()` all refresh: back off instead.
+    const unwritten = this.unwrittenLost.get(state.id);
+    if (unwritten && this.clock.monotonicNowMs() < unwritten.retryAt) return unwritten.lost;
     const lost: PersistentShellState = {
       ...state,
       revision: state.revision + 1,
@@ -708,8 +789,30 @@ export class ShellJobManager {
       heartbeatAt: Date.now(),
       completionSequence: state.completionSequence + 1,
     };
-    writeJsonAtomic(recordPath, lost);
-    if (this.persistentPaths) removePersistentRunnerFiles(this.persistentPaths, state.id);
+    try {
+      writeJsonAtomic(recordPath, lost);
+    } catch (error) {
+      // The write still failed after its retry budget (on Windows, a reader holds the record). The
+      // job reads as lost and its runner files stay, since the record does not say so yet; the next
+      // attempt comes after `LOST_WRITE_RETRY_MS`, not on the next refresh.
+      log.warn('could not record a lost job', { id: state.id, error: String(error) });
+      this.unwrittenLost.set(state.id, {
+        lost,
+        retryAt: this.clock.monotonicNowMs() + LOST_WRITE_RETRY_MS,
+      });
+      return lost;
+    }
+    this.unwrittenLost.delete(state.id);
+    if (this.persistentPaths) {
+      try {
+        removePersistentRunnerFiles(this.persistentPaths, state.id);
+      } catch (error) {
+        log.warn("could not remove a lost job's runner files", {
+          id: state.id,
+          error: String(error),
+        });
+      }
+    }
     return lost;
   }
 
@@ -736,8 +839,17 @@ export class ShellJobManager {
       rootRunId: state.rootRunId,
       parentRunId: state.parentRunId,
       completionSequence: state.completionSequence,
-      completionDeliveredSequence: state.completionDeliveredSequence,
-      completionAcknowledgedSequence: state.completionAcknowledgedSequence,
+      // Only this process raises these two, and it raises them after it has already offered the
+      // completion. A record that has not caught up — because the write failed, or because the
+      // runner's own write landed first — must not offer the same completion a second time.
+      completionDeliveredSequence: Math.max(
+        shell.completionDeliveredSequence ?? 0,
+        state.completionDeliveredSequence,
+      ),
+      completionAcknowledgedSequence: Math.max(
+        shell.completionAcknowledgedSequence ?? 0,
+        state.completionAcknowledgedSequence,
+      ),
       truncatedBytes: state.truncatedBytes ?? shell.truncatedBytes,
       persistentOutputPath: state.outputPath,
       persistentControlPath: state.controlPath,
@@ -768,6 +880,48 @@ export class ShellJobManager {
     };
     this.applyPersistentState(shell, state);
     return shell;
+  }
+
+  /**
+   * Read a session shell's output and status into its record.
+   *
+   * Shared by `start()` and `adopt()` so an adopted command is observed exactly as one this
+   * manager spawned: the same two-stream buffer, the same cap, the same terminal transitions and
+   * the same events a host already renders.
+   */
+  private attachProcessHandlers(shell: BackgroundShellRecord, proc: ChildProcess): void {
+    proc.stdout?.on('data', (data) => this.appendOutput(shell, data));
+    proc.stderr?.on('data', (data) => this.appendOutput(shell, data));
+    proc.on('error', (error) => {
+      this.appendOutput(shell, `${error.message}\n`);
+      this.finish(shell, 'failed');
+    });
+    proc.on('close', (code, signal) => {
+      if (shell.status === 'stopping') {
+        shell.exitCode = code;
+        shell.signal = signal;
+        shell.finishedAt = Date.now();
+        this.clearTimer(shell);
+        return;
+      }
+      this.finish(shell, code === 0 ? 'exited' : 'failed', code, signal);
+    });
+  }
+
+  /**
+   * Preload a record's buffer with output that was already read elsewhere, leaving the read
+   * cursor past it.
+   *
+   * A seed is not a new event: the caller has already shown this text to whoever is reading, so
+   * counting it as fresh output would report it a second time. It does still count against the
+   * buffer cap, and it does shift the cursor down if the cap ate the front of it, so a
+   * `BashOutput` after a long pre-adoption run reads "(no new output)" rather than a tail of
+   * what the model has already been shown.
+   */
+  private seedOutput(shell: BackgroundShellRecord, text: string): void {
+    if (!text) return;
+    this.appendOutput(shell, text);
+    shell.readOffset = shell.output.length;
   }
 
   private appendOutput(shell: BackgroundShellRecord, data: unknown): void {
@@ -831,9 +985,22 @@ export class ShellJobManager {
     const shell = this.store.shells.get(shellId);
     if (shell?.retentionTimer) clearTimeout(shell.retentionTimer);
     if (shell?.lifetime === 'persistent' && this.persistentPaths) {
-      removePersistentJobFiles(this.persistentPaths, shell.id);
+      try {
+        removePersistentJobFiles(this.persistentPaths, shell.id);
+      } catch (error) {
+        // The record is dropped from memory either way. Leftover files are loaded again on the
+        // next start as a finished job, which can be dismissed again.
+        log.warn("could not remove a dismissed job's files", {
+          id: shell.id,
+          error: String(error),
+        });
+      }
     }
     this.store.shells.delete(shellId);
+    // A lost record whose write has not landed is otherwise only removed by a later write
+    // succeeding, and a job dismissed in the meantime has no record left to write. Left behind, the
+    // entry would keep retrying forever and report the same lost job after it is gone.
+    this.unwrittenLost.delete(shellId);
   }
 
   private pruneTerminalShells(now = Date.now()): void {

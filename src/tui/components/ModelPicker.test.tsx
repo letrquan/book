@@ -62,9 +62,9 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof ModelPicker
   return { view, onPick, onSaveProvider, onRemoveProvider, props };
 }
 
-async function write(view: ReturnType<typeof render>, value: string) {
+async function write(view: ReturnType<typeof render>, value: string, delayMs = 20) {
   view.stdin.write(value);
-  await wait(20);
+  await wait(delayMs);
 }
 
 afterEach(cleanup);
@@ -114,18 +114,22 @@ describe('ModelPicker', () => {
     const { view, onPick } = renderPicker();
     await write(view, 'gateway');
 
-    expect(view.lastFrame()).toContain('¶ gateway');
-    expect(view.lastFrame()).toContain('Custom  gateway  BYOK');
-    expect(view.lastFrame()).not.toContain('Built In');
+    // A fixed wait here is a race with the next frame, not a wait for it: on a
+    // loaded runner the keystroke can still be in flight when the sleep ends.
+    await vi.waitFor(() => {
+      expect(view.lastFrame()).toContain('¶ gateway');
+      expect(view.lastFrame()).toContain('Custom  gateway  BYOK');
+      expect(view.lastFrame()).not.toContain('Built In');
+    });
 
     await write(view, '\r');
-    expect(onPick).toHaveBeenCalledWith('gateway/custom', true);
+    await vi.waitFor(() => expect(onPick).toHaveBeenCalledWith('gateway/custom', true));
   });
 
   it('opens the BYOK wizard with Alt+A', async () => {
     const { view } = renderPicker();
     await write(view, '\x1ba');
-    expect(view.lastFrame()).toContain('Add BYOK provider');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('Add BYOK provider'));
     expect(view.lastFrame()).toContain('Provider ID');
   });
 
@@ -134,7 +138,7 @@ describe('ModelPicker', () => {
     const { view, onSaveProvider } = renderPicker({ discover });
     await write(view, '\x1b[B');
     await write(view, '\x1br');
-    await wait(10);
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('gateway: 2 models listed.'));
     expect(discover).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'openai',
@@ -149,7 +153,6 @@ describe('ModelPicker', () => {
         replaceModels: true,
       }),
     );
-    expect(view.lastFrame()).toContain('gateway: 2 models listed.');
   });
 
   it('reports an endpoint that lists nothing instead of saving an empty catalog', async () => {
@@ -157,10 +160,11 @@ describe('ModelPicker', () => {
     const { view, onSaveProvider } = renderPicker({ discover });
     await write(view, '\x1b[B');
     await write(view, '\x1br');
-    await wait(10);
+    await vi.waitFor(() =>
+      expect(view.lastFrame()).toContain('gateway did not return any models.'),
+    );
 
     expect(onSaveProvider).not.toHaveBeenCalled();
-    expect(view.lastFrame()).toContain('gateway did not return any models.');
   });
 
   it('announces the catalog actions on a provider row', async () => {
@@ -168,7 +172,7 @@ describe('ModelPicker', () => {
     expect(view.lastFrame()).not.toContain('Alt+R refresh');
 
     await write(view, '\x1b[B');
-    expect(view.lastFrame()).toContain('Alt+R refresh gateway');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('Alt+R refresh gateway'));
     expect(view.lastFrame()).toContain('Alt+M add model');
   });
 
@@ -176,10 +180,11 @@ describe('ModelPicker', () => {
     const { view, onSaveProvider, onPick } = renderPicker();
     await write(view, '\x1b[B');
     await write(view, '\x1bm');
-    expect(view.lastFrame()).toContain('Add models to gateway');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('Add models to gateway'));
 
     await write(view, 'hidden-a, hidden-b');
     await write(view, '\r');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('Added 2 models to gateway.'));
 
     expect(onSaveProvider).toHaveBeenCalledWith({
       providerId: 'gateway',
@@ -193,18 +198,18 @@ describe('ModelPicker', () => {
     });
     // Curating the catalog must not switch the model out from under the user.
     expect(onPick).not.toHaveBeenCalled();
-    expect(view.lastFrame()).toContain('Added 2 models to gateway.');
   });
 
   it('keeps the manual form open with an inline error on a bad entry', async () => {
     const { view, onSaveProvider } = renderPicker();
     await write(view, '\x1b[B');
     await write(view, '\x1bm');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('Add models to gateway'));
     await write(view, '   ');
     await write(view, '\r');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('Enter at least one model ID.'));
 
     expect(onSaveProvider).not.toHaveBeenCalled();
-    expect(view.lastFrame()).toContain('Enter at least one model ID.');
     expect(view.lastFrame()).toContain('Add models to gateway');
   });
 
@@ -212,8 +217,11 @@ describe('ModelPicker', () => {
     const { view, onSaveProvider } = renderPicker();
     await write(view, '\x1b[B');
     await write(view, '\x1bm');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('Add models to gateway'));
     await write(view, 'hidden-a');
-    await write(view, '\x1b');
+    // Ink 7 flushes a lone Esc only after 20 ms, so a 20 ms wait is a coin flip.
+    await write(view, '\x1b', 60);
+    await vi.waitFor(() => expect(view.lastFrame()).not.toContain('Add models to gateway'));
 
     expect(onSaveProvider).not.toHaveBeenCalled();
     expect(view.lastFrame()).toContain('§ Models');
@@ -223,9 +231,11 @@ describe('ModelPicker', () => {
   it('refuses manual entry on a built-in model row', async () => {
     const { view, onSaveProvider } = renderPicker();
     await write(view, '\x1bm');
+    await vi.waitFor(() =>
+      expect(view.lastFrame()).toContain('Only custom providers can take extra models.'),
+    );
 
     expect(onSaveProvider).not.toHaveBeenCalled();
-    expect(view.lastFrame()).toContain('Only custom providers can take extra models.');
   });
 
   it('refuses to edit the catalog of an inherited provider', async () => {
@@ -239,7 +249,9 @@ describe('ModelPicker', () => {
     expect(view.lastFrame()).not.toContain('Alt+R refresh');
 
     await write(view, '\x1bm');
-    expect(view.lastFrame()).toContain('Only BYOK providers you added can be changed.');
+    await vi.waitFor(() =>
+      expect(view.lastFrame()).toContain('Only BYOK providers you added can be changed.'),
+    );
     expect(view.lastFrame()).not.toContain('Add models to gateway');
 
     await write(view, '\x1br');
@@ -258,7 +270,7 @@ describe('ModelPicker', () => {
     await write(view, '\x1bm');
     await write(view, 'aaa-model');
     await write(view, '\r');
-    expect(onSaveProvider).toHaveBeenCalled();
+    await vi.waitFor(() => expect(onSaveProvider).toHaveBeenCalled());
 
     // The parent rebuilds the catalog sorted, inserting a row above Zeta.
     view.rerender(
@@ -279,11 +291,10 @@ describe('ModelPicker', () => {
         />,
       ),
     );
-    await wait(20);
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('› Zeta  gateway'));
 
-    expect(view.lastFrame()).toContain('› Zeta  gateway');
     await write(view, '\r');
-    expect(onPick).toHaveBeenCalledWith('gateway/zeta', true);
+    await vi.waitFor(() => expect(onPick).toHaveBeenCalledWith('gateway/zeta', true));
   });
 
   it('keeps the effort control and respects restricted levels', async () => {
@@ -296,9 +307,10 @@ describe('ModelPicker', () => {
 
     await write(view, '\x1b[B');
     await write(view, '\x1be');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('← → adjust'));
     await write(view, '\x1b[C');
 
-    expect(onPickEffort).toHaveBeenCalledWith('high');
+    await vi.waitFor(() => expect(onPickEffort).toHaveBeenCalledWith('high'));
   });
 
   it('opens provider-level confirmation for a removable BYOK row', async () => {
@@ -315,9 +327,9 @@ describe('ModelPicker', () => {
 
     await write(view, '\x1b[B');
     await write(view, '\x1bd');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('Remove BYOK provider?'));
 
     const frame = view.lastFrame();
-    expect(frame).toContain('Remove BYOK provider?');
     expect(frame).toContain('Provider: gateway');
     expect(frame).toContain('Models: 3');
     expect(frame).toContain('.book/settings.local.json');
@@ -330,7 +342,9 @@ describe('ModelPicker', () => {
     const { view, onRemoveProvider } = renderPicker();
     await write(view, '\x1b[B');
     await write(view, '\x1bd');
-    await write(view, key);
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('Remove BYOK provider?'));
+    await write(view, key, key === '\x1b' ? 60 : 20);
+    await vi.waitFor(() => expect(view.lastFrame()).not.toContain('Remove BYOK provider?'));
 
     expect(onRemoveProvider).not.toHaveBeenCalled();
     expect(view.lastFrame()).toContain('§ Models');
@@ -366,10 +380,9 @@ describe('ModelPicker', () => {
     const { view } = renderPicker({ onRemoveProvider });
     await write(view, '\x1b[B');
     await write(view, '\x1bd');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('Remove BYOK provider?'));
     await write(view, '\r');
-
-    expect(view.lastFrame()).toContain('Remove BYOK provider?');
-    expect(view.lastFrame()).toContain('settings are read-only');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('settings are read-only'));
   });
 
   it('does nothing destructive on a built-in model', async () => {
@@ -385,20 +398,24 @@ describe('ModelPicker', () => {
     const { view, onRemoveProvider } = renderPicker({ removableProviderIds: new Set() });
     await write(view, '\x1b[B');
     await write(view, '\x1bd');
+    await vi.waitFor(() =>
+      expect(view.lastFrame()).toContain('Only BYOK providers you added can be removed.'),
+    );
 
     expect(onRemoveProvider).not.toHaveBeenCalled();
-    expect(view.lastFrame()).toContain('Only BYOK providers you added can be removed.');
   });
 
   it('restores the same filter and selected row after cancellation', async () => {
     const { view } = renderPicker();
     await write(view, 'gateway');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('¶ gateway'));
     await write(view, '\x1bd');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('Remove BYOK provider?'));
     await write(view, 'n');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('› Custom  gateway'));
 
     const frame = view.lastFrame();
     expect(frame).toContain('¶ gateway');
-    expect(frame).toContain('› Custom  gateway');
   });
 
   it('shows wide and compact removal shortcuts before selecting a provider row', () => {

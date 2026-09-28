@@ -296,6 +296,91 @@ describe('Anthropic terminal framing', () => {
     );
   });
 
+  it('marks a tool_use block whose partial JSON never parsed with unparsedArguments', async () => {
+    // Same contract as the OpenAI-compatible client: `arguments` stays `{}` and
+    // the raw text and the parse error ride in `unparsedArguments`.
+    const raw = '{"filePath":"src/a.ts","oldString":"const re = /\\d+/;"}';
+    let parseError = '';
+    try {
+      JSON.parse(raw);
+    } catch (error) {
+      parseError = error instanceof Error ? error.message : String(error);
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                [
+                  'data: {"type":"message_start","message":{"usage":{"input_tokens":2}}}',
+                  '',
+                  'data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"call-1","name":"Edit"}}',
+                  '',
+                  `data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":${JSON.stringify(raw)}}}`,
+                  '',
+                  'data: {"type":"content_block_stop"}',
+                  '',
+                  'data: {"type":"message_stop"}',
+                  '',
+                ].join('\n'),
+              ),
+            );
+            controller.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const event of chatCompletionStream(
+      defaultConfig({ provider: 'anthropic', baseUrl: 'https://api.anthropic.com' }),
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        {
+          type: 'tool_call',
+          toolCall: {
+            id: 'call-1',
+            name: 'Edit',
+            arguments: {},
+            unparsedArguments: { raw, error: parseError },
+          },
+        },
+      ]),
+    );
+  });
+
+  it('replays malformed arguments as {__raw} so the raw text survives on the wire', async () => {
+    // Anthropic tool_use.input must be an object, so the unparseable text cannot
+    // go back verbatim; `{__raw}` is its wire encoding and reloads as a parse
+    // failure next session.
+    const raw = '{"filePath":"x"';
+    const converted = convertMessages([
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call-1', type: 'function', function: { name: 'Edit', arguments: raw } },
+        ],
+      },
+    ]);
+
+    expect(converted.messages[0]).toMatchObject({
+      role: 'assistant',
+      content: expect.arrayContaining([
+        expect.objectContaining({ type: 'tool_use', input: { __raw: raw } }),
+      ]),
+    });
+  });
+
   it('reports transport interruption when EOF arrives without message_stop', async () => {
     vi.stubGlobal(
       'fetch',
@@ -659,5 +744,81 @@ describe('stall tolerance while thinking', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe('Anthropic error classification (#244 review)', () => {
+  async function lastEvent(response: () => Response): Promise<unknown> {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => response()),
+    );
+    const events = [];
+    for await (const event of chatCompletionStream(
+      defaultConfig({ provider: 'anthropic', baseUrl: 'https://api.anthropic.com' }),
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      events.push(event);
+    }
+    return events.at(-1);
+  }
+
+  it.each([
+    ['authentication_error', 'auth'],
+    ['permission_error', 'auth'],
+    ['not_found_error', 'not_found'],
+    ['request_too_large', 'context_overflow'],
+    ['rate_limit_error', 'rate_limited'],
+    ['billing_error', 'quota'],
+    ['timeout_error', 'timeout'],
+    ['invalid_request_error', 'invalid_request_error'],
+    ['overloaded_error', 'overloaded_error'],
+  ])('reads a mid-stream %s as %s', async (type, errorCode) => {
+    const event = await lastEvent(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  [
+                    'data: {"type":"message_start","message":{"usage":{"input_tokens":2}}}',
+                    '',
+                    `data: {"type":"error","error":{"type":"${type}","message":"refused"}}`,
+                    '',
+                  ].join('\n'),
+                ),
+              );
+              controller.close();
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    expect(event).toEqual({ type: 'error', error: 'refused', errorCode });
+  });
+
+  it('reads at most 64 KB of a non-retryable error body', async () => {
+    let pulled = 0;
+    const event = await lastEvent(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (pulled >= 10 * 1024 * 1024) {
+                controller.close();
+                return;
+              }
+              const chunk = new TextEncoder().encode('x'.repeat(16_384));
+              pulled += chunk.byteLength;
+              controller.enqueue(chunk);
+            },
+          }),
+          { status: 400 },
+        ),
+    );
+    expect(event).toMatchObject({ type: 'error', errorCode: 'bad_request' });
+    expect(pulled).toBeLessThanOrEqual(64 * 1024 + 3 * 16_384);
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { collectWithheldProjectNotices } from './project-approval-notices.js';
@@ -78,5 +78,88 @@ describe('collectWithheldProjectNotices', () => {
     });
 
     expect(notices(structuredClone(DEFAULT_SETTINGS) as ResolvedSettings, false)).toEqual([]);
+  });
+});
+
+/**
+ * #300. A withheld `additionalDirectories` entry is the only gated declaration with no other
+ * symptom: the run simply cannot see the directory, so the model reports the file as missing
+ * rather than as un-approved. The notice is what turns that into something the operator can fix,
+ * and it names the real path because that is what `book trust dir` matches on.
+ */
+describe('a withheld additionalDirectories entry is reported', () => {
+  let shared: string;
+
+  beforeEach(() => {
+    shared = mkdtempSync(join(tmpdir(), 'book-notices-shared-'));
+  });
+
+  afterEach(() => {
+    rmSync(shared, { recursive: true, force: true });
+  });
+
+  it('names the declared text and the real path, and points at doctor', () => {
+    symlinkSync(shared, join(workspace, 'link'), 'junction');
+    writeProject({ additionalDirectories: ['link'] });
+
+    const reported = notices(resolved()).join('\n');
+
+    expect(reported).toContain('Ignoring project-declared additionalDirectories entry "link"');
+    expect(reported).toContain(realpathSync.native(shared));
+    expect(reported).toContain('book doctor');
+  });
+
+  it('says nothing once the directory has been decided', () => {
+    writeProject({ additionalDirectories: [shared] });
+    updateWorkspaceTrust(
+      workspace,
+      (trust) => {
+        trust.projectDirectories[realpathSync.native(shared)] = 'approved';
+      },
+      join(home, '.book', 'trust.json'),
+    );
+
+    expect(notices(resolved())).toEqual([]);
+  });
+
+  it('says nothing for a rejected directory, which is not awaiting anything', () => {
+    writeProject({ additionalDirectories: [shared] });
+    updateWorkspaceTrust(
+      workspace,
+      (trust) => {
+        trust.projectDirectories[realpathSync.native(shared)] = 'rejected';
+      },
+      join(home, '.book', 'trust.json'),
+    );
+
+    expect(notices(resolved())).toEqual([]);
+  });
+
+  it('says nothing for a directory the user declared themselves', () => {
+    mkdirSync(join(home, '.book'), { recursive: true });
+    writeFileSync(
+      join(home, '.book', 'settings.json'),
+      JSON.stringify({ additionalDirectories: [shared] }),
+    );
+
+    expect(notices(resolved())).toEqual([]);
+  });
+
+  it('says nothing for an entry that does not exist', () => {
+    writeProject({ additionalDirectories: [join(workspace, 'not-here')] });
+
+    expect(notices(resolved())).toEqual([]);
+  });
+
+  it('reports each pending entry separately', () => {
+    const other = mkdtempSync(join(tmpdir(), 'book-notices-other-'));
+    try {
+      writeProject({ additionalDirectories: [shared, other] });
+
+      const reported = notices(resolved());
+      expect(reported.filter((line) => line.includes('additionalDirectories'))).toHaveLength(2);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
   });
 });

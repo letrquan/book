@@ -26,6 +26,7 @@ import { withBuiltInAgents } from '../agents/profiles.js';
 import { resolveBookHome } from '../book-home.js';
 import { resolveAgentProfile } from '../agents/profile-resolver.js';
 import { toolResultModelContent } from '../tools/result.js';
+import { unparsedArgumentsText } from '../tools/unparsed-arguments.js';
 import { resolveContextLimit, resolveEditFormat, type EditFormat } from '../models.js';
 import {
   countMemoryCandidates,
@@ -173,7 +174,8 @@ function compactList(
 }
 
 function builtinSlashCommands(): SlashCommand[] {
-  return BUILTIN_COMMANDS.filter((c) => !c.isHidden).map((c) => ({
+  // Hidden ones are not offered, and a `tuiOnly` command is the TUI's own state, not the model's.
+  return BUILTIN_COMMANDS.filter((c) => !c.isHidden && !c.tuiOnly).map((c) => ({
     name: c.name,
     description: c.description,
     argumentHint: c.argumentHint,
@@ -352,7 +354,7 @@ function mutationGuidanceLines(editFormat: EditFormat): string[] {
  * model's own defaults — work as an agent, solve root causes, keep context lean
  * — dilute the ones that carry information the model cannot infer.
  */
-function operatingPrinciplesSection(editFormat: EditFormat): string {
+function operatingPrinciplesSection(editFormat: EditFormat, delegation: boolean): string {
   return [
     '## Operating principles',
     '- Interpret short engineering requests in workspace context. Locate and act on the relevant code instead of replying with a literal transformation. Let the user decide whether a task is too large; do not silently narrow requested scope.',
@@ -361,11 +363,16 @@ function operatingPrinciplesSection(editFormat: EditFormat): string {
     '- Make reasonable, reversible assumptions and keep moving. Ask only when a missing decision would materially change the result, expand scope, or create significant risk.',
     "- Prefer the smallest complete change that follows the project's existing architecture, conventions, and style. Reuse existing files, utilities, and patterns; avoid unrelated cleanup, speculative abstractions, impossible-state fallbacks, and incomplete implementations.",
     '- Batch independent read-only calls in one response so the harness can run parallel-capable tools concurrently. Prefer Read, Glob, Grep, and dedicated Git read tools over Bash for concurrent exploration. Keep dependent calls, mutations, permission-sensitive actions, user interactions, mode changes, and synchronization tools sequential.',
-    '- For independent managed-agent work, issue AgentSpawn calls together. AgentSpawn returns after queueing each child; use AgentWait only at a real dependency barrier. If one sibling tool fails, preserve successful sibling results and retry only the failed call.',
+    ...(delegation
+      ? [
+          '- For independent managed-agent work, issue AgentSpawn calls together. AgentSpawn returns after queueing each child; use AgentWait only at a real dependency barrier. If one sibling tool fails, preserve successful sibling results and retry only the failed call.',
+        ]
+      : []),
     ...mutationGuidanceLines(editFormat),
     '- Use the strongest practical feedback loop available: exercise the affected behavior when possible, then run focused tests, type checks, lint, builds, or visual checks as relevant. Fix failures caused by your changes.',
     '- Before finishing, review the changed files or diff for requested scope, edge cases, security issues, and accidental edits. Do not claim success without evidence; if verification is incomplete or blocked, state what ran and what remains uncertain.',
     '- Report verification from the tool results already in the transcript. Do not re-run a command only to quote its output when nothing it reads has changed since it last ran; a second run of the same suite spends a turn and proves nothing new.',
+    '- A checkpoint or summary that says a check passed is not a tool result. When such a claim is the only evidence left, as after compaction, run the check again before you report it.',
     '',
     '## Communication',
     '- Be concise, direct, and factual. Lead with outcomes and include reasoning only when it helps the user evaluate a decision or tradeoff.',
@@ -518,13 +525,19 @@ export async function buildSystemPromptZones(
   const kernel = (text: string): PromptSection => ({ zone: 'kernel', text });
   const sessionContext = (text: string): PromptSection => ({ zone: 'session-context', text });
 
+  // One condition for every delegation surface: a prompt must not describe a tool it cannot call.
+  const delegation = !overrides?.hideAgents && config.settings.agents.mode !== 'off';
+
   const staticSections: PromptSection[] = [
     kernel(
       `You are Book, an AI coding agent working directly in the user's workspace. Help users understand, change, and verify software.`,
     ),
     kernel(harnessSection(config.shell ?? resolveShell({ requested: config.settings.shell }))),
     kernel(
-      operatingPrinciplesSection(resolveEditFormat(config.model, config.modelInfo?.editFormat)),
+      operatingPrinciplesSection(
+        resolveEditFormat(config.model, config.modelInfo?.editFormat),
+        delegation,
+      ),
     ),
     kernel(trustBoundarySection(Boolean(projectInstructions))),
     sessionContext(projectInstructions),
@@ -541,11 +554,11 @@ export async function buildSystemPromptZones(
     ),
     sessionContext(generateCommandListing(cmdList, 1536)),
     sessionContext(
-      overrides?.hideAgents || config.settings.agents.mode === 'off'
-        ? ''
-        : generateAgentListing(config, discovery?.agents ?? discoverAgents(config.workspace), 1536),
+      delegation
+        ? generateAgentListing(config, discovery?.agents ?? discoverAgents(config.workspace), 1536)
+        : '',
     ),
-    sessionContext(overrides?.hideAgents ? '' : agentRoutingSection(config)),
+    sessionContext(delegation ? agentRoutingSection(config) : ''),
     sessionContext(memorySection(config, overrides)),
     sessionContext(overrides?.append ?? ''),
     kernel(guardrailsSection()),
@@ -656,7 +669,23 @@ export async function buildMessages(
     content: await buildSystemPromptZones(config, commands, systemOverrides, cache),
   });
 
-  for (const msg of history) {
+  // Reasoning goes back to the model only for the turn in progress: the assistant steps after
+  // the newest message the user wrote. A host-written user message (`derivedContent`: the
+  // `[continuation]` resume, the completion gate, the `[work-state]` refresh) does not start a
+  // turn, so a run keeps its chain of thought across them. A turn a later user message closed is
+  // sent as its answer and tool calls, the way the Anthropic API drops earlier turns' thinking,
+  // except a reply that was only reasoning, which would otherwise reach the model empty.
+  // Measured with `npm run eval:prompt -- --suite replay` (#248 item 6).
+  let turnStart = -1;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const candidate = history[index];
+    if (candidate.includeInContext && candidate.role === 'user' && !candidate.derivedContent) {
+      turnStart = index;
+      break;
+    }
+  }
+
+  for (const [index, msg] of history.entries()) {
     if (!msg.includeInContext) continue;
     if (msg.role === 'user') {
       // Checkpoint bytes render verbatim; drift is reported as session-state deltas.
@@ -691,7 +720,10 @@ export async function buildMessages(
         // OpenAI rejects null content when tool_calls is absent, so coerce to ''.
         content:
           msg.content && msg.content.length > 0 ? msg.content : msg.toolCalls?.length ? null : '',
-        reasoningContent: msg.reasoningContent,
+        reasoningContent:
+          config.replayAllReasoning || index > turnStart || (!msg.content && !msg.toolCalls?.length)
+            ? msg.reasoningContent
+            : undefined,
         providerMetadata: msg.providerMetadata,
       };
       if (msg.toolCalls && msg.toolCalls.length > 0) {
@@ -700,7 +732,10 @@ export async function buildMessages(
           type: 'function' as const,
           function: {
             name: tc.name,
-            arguments: JSON.stringify(tc.arguments ?? {}),
+            // A call whose arguments never parsed is replayed as the text the provider
+            // streamed, not as `{}` or as the legacy `{__raw}` wrapper: the model has to
+            // see its own malformed JSON again to be able to resend it correctly.
+            arguments: unparsedArgumentsText(tc) ?? JSON.stringify(tc.arguments ?? {}),
           },
         }));
       }

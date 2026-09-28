@@ -95,6 +95,10 @@ program
   .option('--fork-session', 'On resume, create a new session id instead of reusing')
   .option('--include-hook-events', 'Emit hook lifecycle events in stream-json output')
   .option('--include-partial-messages', 'Emit partial assistant text deltas in stream-json output')
+  .option(
+    '--include-result-messages',
+    'Include the full message history in the stream-json result event',
+  )
   .option('--prompt-suggestions', 'Ask model for follow-up prompt suggestions after completion')
   .option('--agents <mode>', 'Managed agents: adaptive, manual, off')
   .option('--scrollback', 'Use terminal-native scrollback instead of the full-screen TUI')
@@ -288,6 +292,25 @@ trustCommand
       options: { workspace?: string; allPending?: boolean; reject?: boolean },
     ) => {
       await runTrustCommand('rule', rule, {
+        ...options,
+        workspace: resolveWorkspace(options.workspace),
+      });
+    },
+  );
+
+trustCommand
+  .command('dir')
+  .description('Approve or reject a project-declared additionalDirectories entry')
+  .argument('[path]', 'The declared entry, or the real path `book doctor` reported for it')
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
+  .option('--all-pending', 'Apply to every directory currently awaiting a decision')
+  .option('--reject', 'Record a refusal instead of an approval')
+  .action(
+    async (
+      path: string | undefined,
+      options: { workspace?: string; allPending?: boolean; reject?: boolean },
+    ) => {
+      await runTrustCommand('dir', path, {
         ...options,
         workspace: resolveWorkspace(options.workspace),
       });

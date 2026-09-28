@@ -10,6 +10,7 @@ vi.mock('../async.js', async (importOriginal) => {
   return { ...actual, yieldToEventLoop: vi.fn(actual.yieldToEventLoop) };
 });
 import { fileTools } from './file.js';
+import { createRegistry } from './registry.js';
 import { boundToolResultOutput, TOOL_RESULT_MAX_BYTES } from './result.js';
 import type { ToolContext } from '../types/tools.js';
 import {
@@ -18,13 +19,15 @@ import {
   mkdtempSync,
   lstatSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
   rmSync,
 } from 'fs';
 import { writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
-import { dirname, join, resolve } from 'path';
+import { dirname, basename, join, resolve } from 'path';
+import { shortPathName, withLowercaseDriveLetter } from '../test/short-path.js';
 
 let dir: string;
 const ctx: ToolContext = { workspaceRoot: '', env: {} };
@@ -423,6 +426,146 @@ describe('read_file', () => {
     expect(emptyPast.structuredError?.code).toBe('offset_out_of_range');
     expect(emptyPast.structuredError?.message).toContain('the file has 0 lines');
   });
+
+  // #309: `content.split('\n')` leaves an empty element after a file's final
+  // newline, and a page loop bounded by that array numbered it as though it
+  // were a line of the file — so `a\nb\n` read as three lines and an empty
+  // file as `1: `.
+  it('numbers exactly the lines of a file that ends in a newline (#309)', async () => {
+    writeFileSync(join(dir, 'trailing.txt'), 'a\nb\n');
+
+    const result = await read.execute({ filePath: 'trailing.txt' }, ctx);
+
+    expect(result.status).toBe('success');
+    expect(result.content.split('\n')).toEqual(['1: a', '2: b']);
+  });
+
+  it('says an empty file is empty rather than returning nothing (#309)', async () => {
+    writeFileSync(join(dir, 'empty.txt'), '');
+
+    const result = await read.execute({ filePath: 'empty.txt' }, ctx);
+
+    expect(result.status).toBe('success');
+    // An empty tool result reads as a call that produced no output at all,
+    // which is not the same thing as a file that has no lines in it.
+    expect(result.content).toBe('[Empty file: 0 lines.]');
+    expect(result.presentation?.metadata).toEqual(['empty']);
+  });
+
+  it('reads a file of one newline as the one blank line it has (#309)', async () => {
+    writeFileSync(join(dir, 'blank.txt'), '\n');
+
+    const result = await read.execute({ filePath: 'blank.txt' }, ctx);
+
+    expect(result.status).toBe('success');
+    expect(result.content).toBe('1: ');
+    expect(result.presentation?.metadata).toEqual(['1 line']);
+  });
+
+  it('tells a file ending in a newline apart from one ending in a blank line (#309)', async () => {
+    writeFileSync(join(dir, 'one.txt'), 'a\n');
+    writeFileSync(join(dir, 'two.txt'), 'a\n\n');
+
+    const one = await read.execute({ filePath: 'one.txt', limit: 2 }, ctx);
+    const two = await read.execute({ filePath: 'two.txt', limit: 2 }, ctx);
+
+    // Before the fix both ended in a `2: ` numbered line, so a file whose last
+    // line was blank and one that merely ended with a newline were the same
+    // Read.
+    expect(one.content).toBe('1: a');
+    expect(two.content).toBe('1: a\n2: ');
+  });
+
+  it('counts the numbered lines it shows in a row for a file ending in a newline (#309)', async () => {
+    writeFileSync(
+      join(dir, 'page.ts'),
+      'export const a = 1;\nexport const b = 2;\nexport const c = 3;\n',
+    );
+
+    const whole = await read.execute({ filePath: 'page.ts' }, ctx);
+    const numbered = whole.content.split('\n').filter((line) => /^\d+: /.test(line));
+
+    expect(numbered).toHaveLength(3);
+    expect(whole.presentation?.metadata).toEqual(['3 lines']);
+  });
+
+  it('allows an Edit after a Read of an empty file (#309)', async () => {
+    writeFileSync(join(dir, 'empty.ts'), '');
+    const observed = await read.execute({ filePath: 'empty.ts' }, ctx);
+    expect(observed.status).toBe('success');
+
+    const written = await write.execute({ filePath: 'empty.ts', content: 'const a = 1;\n' }, ctx);
+    expect(written.status).toBe('success');
+
+    const edited = await edit.execute(
+      { filePath: 'empty.ts', oldString: 'a = 1', newString: 'a = 2' },
+      ctx,
+    );
+    expect(edited.status).toBe('success');
+    expect(readFileSync(join(dir, 'empty.ts'), 'utf-8')).toBe('const a = 2;\n');
+  });
+
+  // #310: the schema took `offset` as a number, so a model's `2.5` printed
+  // `2.5: undefined` and offered `offset: 4.5` as the next page.
+  it('rejects a fractional offset before the tool runs (#310)', async () => {
+    writeFileSync(join(dir, 'lines.txt'), '1\n2\n3\n4\n5');
+    const registry = createRegistry();
+    registry.register(read);
+
+    const result = await registry.execute(
+      { id: 'fractional', name: 'Read', arguments: { filePath: 'lines.txt', offset: 2.5 } },
+      ctx,
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.code).toBe('invalid_arguments');
+    expect(result.structuredError?.message).toContain('arguments.offset');
+  });
+
+  it('floors a fractional offset and limit rather than numbering 2.5 (#310)', async () => {
+    writeFileSync(join(dir, 'lines.txt'), '1\n2\n3\n4\n5');
+
+    const result = await read.execute({ filePath: 'lines.txt', offset: 2.5, limit: 2 }, ctx);
+
+    expect(result.content.split('\n')).toEqual([
+      '2: 2',
+      '3: 3',
+      '[Lines 2-3 of 5 shown. Continue with offset: 4.]',
+    ]);
+  });
+
+  // #310, C: `Math.floor` ran after the `|| 1` fallback, so `offset: 0.5`
+  // floored to 0 and printed `0: undefined`, and a schema-valid negative
+  // integer printed `-3: undefined` lines.
+  it.each([
+    { name: 'a fraction below one', offset: 0.5 },
+    { name: 'a negative integer', offset: -3 },
+  ])('starts at line 1 for $name (#310)', async ({ offset }) => {
+    writeFileSync(join(dir, 'lines.txt'), '1\n2\n3\n4\n5');
+
+    const result = await read.execute({ filePath: 'lines.txt', offset }, ctx);
+
+    expect(result.status).toBe('success');
+    expect(result.content.split('\n')[0]).toBe('1: 1');
+  });
+
+  it.each([
+    { field: 'offset', value: 0 },
+    { field: 'limit', value: 0 },
+  ])('rejects $field of 0 before the tool runs (#310)', async ({ field, value }) => {
+    writeFileSync(join(dir, 'lines.txt'), '1\n2\n3');
+    const registry = createRegistry();
+    registry.register(read);
+
+    const result = await registry.execute(
+      { id: 'zero', name: 'Read', arguments: { filePath: 'lines.txt', [field]: value } },
+      ctx,
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.code).toBe('invalid_arguments');
+    expect(result.structuredError?.message).toContain(`arguments.${field}`);
+  });
 });
 
 describe('readOnlyRoots', () => {
@@ -533,13 +676,9 @@ describe('readOnlyRoots', () => {
     expect(direct.status, candidate).toBe('error');
 
     const throughLink = join(memory, 'in');
-    try {
-      symlinkSync(join(memory, '.inbox'), throughLink);
-    } catch {
-      // Symlink creation needs a privilege Windows withholds by default; the direct
-      // path above is still covered there.
-      return;
-    }
+    // A junction needs no privilege on Windows, where a directory symlink does; elsewhere the type
+    // is ignored and this is an ordinary symlink.
+    symlinkSync(join(memory, '.inbox'), throughLink, 'junction');
     const linked = await read.execute({ filePath: join(throughLink, 'x.md') }, ctx);
     expect(linked.status, join(throughLink, 'x.md')).toBe('error');
   });
@@ -982,6 +1121,22 @@ describe('grep', () => {
     expect(JSON.stringify(result.data)).not.toContain('unrelated secret');
   });
 
+  it('counts a content-mode row from its own data, not by re-parsing the page (#311)', async () => {
+    // A context line carries `path:line- text`, and the text itself holds a
+    // `12:30` timestamp. Counting `/:\d+:/` lines took that context line for a
+    // match; Grep's own data knows there is only one.
+    writeFileSync(join(dir, 'a.ts'), "const found = 1;\nconst at = '10:12:30';\n");
+    const context = { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' } };
+
+    const result = await grep.execute({ pattern: 'found', include: '*.ts', C: 1 }, context);
+
+    expect(result.status).toBe('success');
+    // The context line is in the page, so the text alone would count two.
+    expect(result.content).toContain('a.ts:2- const at');
+    expect(result.presentation?.metadata).toEqual(['1 match']);
+    expect(result.presentation?.summary).toBe('Found 1 match');
+  });
+
   it('skips binary files even when their bytes contain the pattern', async () => {
     writeFileSync(join(dir, 'native.dll'), Buffer.from('prefix\0needle\0suffix'));
 
@@ -989,6 +1144,30 @@ describe('grep', () => {
 
     expect(result.content).toBe('No matches found');
     expect(JSON.stringify(result.data)).not.toContain('native.dll');
+  });
+
+  it("never searches Book's project-local settings, which can hold an API key (#264)", async () => {
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(join(dir, '.book', 'settings.local.json'), '{"apiKey":"sk-local-marker"}');
+    writeFileSync(join(dir, 'a.ts'), 'const note = "sk-visible-marker";');
+    // A link to .book is another way in; a junction needs no symlink privilege on Windows.
+    symlinkSync(join(dir, '.book'), join(dir, 'cfgdir'), 'junction');
+    for (const env of [{}, { BOOK_GREP_BACKEND: 'typescript' }] as Record<string, string>[]) {
+      const context = { ...ctx, env };
+      for (const args of [
+        { pattern: 'sk-' },
+        { pattern: 'sk-', include: '.book/settings.local.json' },
+        { pattern: 'sk-', path: '.book' },
+        { pattern: 'sk-', path: '.book/settings.local.json' },
+        { pattern: 'sk-', path: 'cfgdir' },
+      ]) {
+        const result = await grep.execute(args, context);
+        expect(JSON.stringify(result)).not.toContain('sk-local-marker');
+      }
+      expect((await grep.execute({ pattern: 'sk-' }, context)).content).toContain(
+        'sk-visible-marker',
+      );
+    }
   });
 
   it('searches supported project files under .book', async () => {
@@ -1593,12 +1772,6 @@ const OUTLINE_CONTRACT: Array<{ shape: string; file: string; lines: string[]; ou
       outline: ['1: int main(void)'],
     },
     {
-      shape: 'JSON: a file that opens with a brace keeps it',
-      file: 'package.json',
-      lines: ['{', '  "name": "x"', '}'],
-      outline: ['1: {'],
-    },
-    {
       shape: 'Makefile: # starts a comment',
       file: 'Makefile',
       lines: ['# build rules', 'CC = gcc', '', 'all: main', '\t$(CC) -o main main.c'],
@@ -1809,16 +1982,844 @@ const OUTLINE_CONTRACT: Array<{ shape: string; file: string; lines: string[]; ou
       ],
     },
     {
-      shape: 'TypeScript: a scan that ends inside a template masks nothing',
-      file: 'continued.ts',
-      lines: ["const s = 'a \\", "`';", 'export function later() {', '  return s;', '}'],
-      outline: ["1: const s = 'a \\", "2: `';", '3: export function later() {'],
-    },
-    {
       shape: 'Markdown: a heading after a blank line inside a --- block is a heading',
       file: 'intro.md',
       lines: ['---', 'Title: something', '', '# Intro', '', '---', '', 'Body text.', '', '## Next'],
       outline: ['4: # Intro', '10: ## Next'],
+    },
+    {
+      shape: 'Java: one-line methods, same-line annotations, inner-class members and records',
+      file: 'Outer.java',
+      lines: [
+        'public class Outer {',
+        '    public int get() { return n; }',
+        '    @Override public String toString() { return "o"; }',
+        '    @Override',
+        '    public int hashCode() {',
+        '        return 1;',
+        '    }',
+        '    private static class Inner {',
+        '        void run() {',
+        '            if (ready) {',
+        '            }',
+        '        }',
+        '        int size() { return 0; }',
+        '    }',
+        '    record Point(int x, int y) {}',
+        '    interface Callback {',
+        '        void call(int x);',
+        '    }',
+        '}',
+      ],
+      outline: [
+        '1: public class Outer {',
+        '2:     public int get() { return n; }',
+        '3:     @Override public String toString() { return "o"; }',
+        '5:     public int hashCode() {',
+        '8:     private static class Inner {',
+        '9:         void run() {',
+        '13:         int size() { return 0; }',
+        '15:     record Point(int x, int y) {}',
+        '16:     interface Callback {',
+        '17:         void call(int x);',
+      ],
+    },
+    {
+      shape: 'C#: same-line attributes, one-line bodies and nested-class members',
+      file: 'Api.cs',
+      lines: [
+        'public class Api',
+        '{',
+        '    [HttpGet] public IActionResult Get() { return Ok(); }',
+        '    [Obsolete]',
+        '    public void Old()',
+        '    {',
+        '    }',
+        '    public int Twice(int x) { return x * 2; }',
+        '    private class Nested',
+        '    {',
+        '        public void Run()',
+        '        {',
+        '            foreach (var a in args)',
+        '            {',
+        '            }',
+        '        }',
+        '    }',
+        '}',
+      ],
+      outline: [
+        '1: public class Api',
+        '3:     [HttpGet] public IActionResult Get() { return Ok(); }',
+        '5:     public void Old()',
+        '8:     public int Twice(int x) { return x * 2; }',
+        '9:     private class Nested',
+        '11:         public void Run()',
+      ],
+    },
+    {
+      shape: 'C++: class members, constructors, destructors, operators and qualified definitions',
+      file: 'foo.hpp',
+      lines: [
+        'class Foo {',
+        'public:',
+        '    Foo(int n);',
+        '    virtual ~Foo();',
+        '    int get() const { return n_; }',
+        '    void set(int v);',
+        '    static std::string name();',
+        '    const std::vector<int>& items() const;',
+        '    virtual void draw() = 0;',
+        '    bool operator==(const Foo& other) const;',
+        '    int code() const NOEXCEPT_MACRO {',
+        '        return n_;',
+        '    }',
+        '    void flush() NOEXCEPT_MACRO;',
+        'private:',
+        '    int n_;',
+        '};',
+        '',
+        'namespace app {',
+        '    std::string Foo::name() {',
+        '        return "foo";',
+        '    }',
+        '}',
+        '',
+        'int main() {',
+        '    int x(5);',
+        '    Foo f(1);',
+        '    std::sort(v.begin(), v.end());',
+        '    for (int i = 0; i < x; ++i) {',
+        '    }',
+        '    return x;',
+        '}',
+      ],
+      outline: [
+        '1: class Foo {',
+        '2: public:',
+        '3:     Foo(int n);',
+        '4:     virtual ~Foo();',
+        '5:     int get() const { return n_; }',
+        '6:     void set(int v);',
+        '7:     static std::string name();',
+        '8:     const std::vector<int>& items() const;',
+        '9:     virtual void draw() = 0;',
+        '10:     bool operator==(const Foo& other) const;',
+        '11:     int code() const NOEXCEPT_MACRO {',
+        '14:     void flush() NOEXCEPT_MACRO;',
+        '15: private:',
+        '19: namespace app {',
+        '20:     std::string Foo::name() {',
+        '25: int main() {',
+      ],
+    },
+    {
+      shape: 'TypeScript: decorators on the method line, generator methods, parentheses in strings',
+      file: 'widget.ts',
+      lines: [
+        'export class Widget {',
+        "  @HostListener('click') onClick(): void {",
+        '  }',
+        '  *values(): Generator<number> {',
+        '    yield 1;',
+        '  }',
+        '  static *range(n: number) {',
+        '  }',
+        "  paren(s = '(') {",
+        '  }',
+        '  quote(s = ")"): string {',
+        '    return s;',
+        '  }',
+        '}',
+      ],
+      outline: [
+        '1: export class Widget {',
+        "2:   @HostListener('click') onClick(): void {",
+        '4:   *values(): Generator<number> {',
+        '7:   static *range(n: number) {',
+        "9:   paren(s = '(') {",
+        '11:   quote(s = ")"): string {',
+      ],
+    },
+    {
+      shape: 'TypeScript: property access on keyword-named objects and two statements on a line',
+      file: 'bodies.ts',
+      lines: [
+        'export function f() {',
+        '  set.add(1);',
+        '  it.skip;',
+        '  get.value;',
+        "  it.skip('later', () => {",
+        '  });',
+        "  describe.only('x', () => {",
+        '  });',
+        "  it.each<[number, string]>([[1, 'a']])('case %i', (n) => {",
+        '  });',
+        '  foo(x); if (y) {',
+        '  }',
+        '}',
+      ],
+      outline: [
+        '1: export function f() {',
+        "5:   it.skip('later', () => {",
+        "7:   describe.only('x', () => {",
+        "9:   it.each<[number, string]>([[1, 'a']])('case %i', (n) => {",
+      ],
+    },
+    {
+      shape: 'TypeScript: a regex after a control-flow condition does not open a template',
+      file: 'regex.ts',
+      lines: [
+        'if (a) /`/.test(x);',
+        'export function hidden() {',
+        '}',
+        'while (b) /`/.test(y);',
+        'export const after = 1;',
+      ],
+      outline: [
+        '1: if (a) /`/.test(x);',
+        '2: export function hidden() {',
+        '4: while (b) /`/.test(y);',
+        '5: export const after = 1;',
+      ],
+    },
+    {
+      shape: 'TypeScript: a string continued with a backslash is text, and opens no template',
+      file: 'continued.ts',
+      lines: [
+        "const s = 'a \\",
+        "`';",
+        'export function hidden() {',
+        '}',
+        "const t = 'b \\",
+        "`';",
+        'export const after = 1;',
+      ],
+      outline: [
+        "1: const s = 'a \\",
+        '3: export function hidden() {',
+        "5: const t = 'b \\",
+        '7: export const after = 1;',
+      ],
+    },
+    {
+      shape: 'TypeScript: a scan that ends inside a template masks nothing',
+      file: 'unclosed.ts',
+      lines: ['const a = 1;', 'const t = `', 'export function later() {', '  return t;', '}'],
+      outline: ['1: const a = 1;', '2: const t = `', '3: export function later() {'],
+    },
+    {
+      shape: 'JSON: an object outlines to its top-level keys',
+      file: 'package.json',
+      lines: [
+        '{',
+        '  "name": "x",',
+        '  "glob": "src/**/{a,b}[0]",',
+        '  "scripts": {',
+        '    "build": "tsc"',
+        '  },',
+        '  "private": true',
+        '}',
+      ],
+      outline: [
+        '1: {',
+        '2:   "name": "x",',
+        '3:   "glob": "src/**/{a,b}[0]",',
+        '4:   "scripts": {',
+        '7:   "private": true',
+      ],
+    },
+    {
+      shape: 'JSON: an array of objects outlines to each element by its first key',
+      file: 'list.json',
+      lines: [
+        '[',
+        '  {',
+        '    "name": "a",',
+        '    "v": 1',
+        '  },',
+        '  { "name": "inline" },',
+        '  {',
+        '    "name": "b"',
+        '  }',
+        ']',
+      ],
+      outline: ['1: [', '3:     "name": "a",', '6:   { "name": "inline" },', '8:     "name": "b"'],
+    },
+    {
+      shape: 'JSON: elements written at column 0 are found by depth, not indentation',
+      file: 'flat.json',
+      lines: ['[', '{', '"name": "a"', '},', '{', '"name": "b"', '}', ']'],
+      outline: ['1: [', '3: "name": "a"', '6: "name": "b"'],
+    },
+    {
+      shape: 'Markdown: front matter that opens with a # comment is skipped',
+      file: 'commented.md',
+      lines: ['---', '# comment', 'title: x', 'body: y', '---', '# Heading'],
+      outline: ['6: # Heading'],
+    },
+    {
+      shape: 'Markdown: a # comment beside keys after a blank line stays in front matter',
+      file: 'sections.md',
+      lines: ['---', 'title: x', '', '# section', 'key: y', '---', '# Heading'],
+      outline: ['7: # Heading'],
+    },
+    {
+      shape:
+        'C++: trailing comments, attributes, qualifier macros, preprocessor lines and access specifiers inside a class',
+      file: 'cache.h',
+      lines: [
+        'class Cache {',
+        ' public:',
+        '  void Evict() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);  // Drops the oldest entry.',
+        '  int size() const;  ///< Returns it.',
+        '  [[nodiscard]] bool empty() const;',
+        '#ifdef DEBUG',
+        '  void dump() const;',
+        '#endif',
+        '  int n() const { return n_; }  // inline',
+        '};',
+      ],
+      outline: [
+        '1: class Cache {',
+        '3:   void Evict() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);  // Drops the oldest entry.',
+        '4:   int size() const;  ///< Returns it.',
+        '5:   [[nodiscard]] bool empty() const;',
+        '6: #ifdef DEBUG',
+        '7:   void dump() const;',
+        '8: #endif',
+        '9:   int n() const { return n_; }  // inline',
+      ],
+    },
+    {
+      shape:
+        'C++: a class inside a namespace, and free functions whose body opens below a qualifier',
+      file: 'app.hpp',
+      lines: [
+        'namespace app {',
+        '    class Foo {',
+        '    public:',
+        '        Foo(int n);',
+        '        int get() const;',
+        '    };',
+        '    int helper(int x) noexcept',
+        '    {',
+        '        return x;',
+        '    }',
+        '    auto twice(int x) -> int',
+        '    {',
+        '        return x * 2;',
+        '    }',
+        '}',
+      ],
+      outline: [
+        '1: namespace app {',
+        '2:     class Foo {',
+        '4:         Foo(int n);',
+        '5:         int get() const;',
+        '7:     int helper(int x) noexcept',
+        '11:     auto twice(int x) -> int',
+      ],
+    },
+    {
+      shape: 'C: a function returning a struct pointer does not open a class body',
+      file: 'list.h',
+      lines: [
+        'struct node *node_new(int v) {',
+        '    n = alloc(sizeof *n);',
+        '    init(n);',
+        '    set_value(n, v);',
+        '    return n;',
+        '}',
+      ],
+      outline: ['1: struct node *node_new(int v) {'],
+    },
+    {
+      shape: 'C++: pimpl access is not an impl block',
+      file: 'widget.cpp',
+      lines: [
+        'Widget::Widget() {',
+        '    impl->value = compute(',
+        '        impl->a,',
+        '        impl->b);',
+        '}',
+      ],
+      outline: ['1: Widget::Widget() {'],
+    },
+    {
+      shape: 'TypeScript: methods named return, do and try after a modifier',
+      file: 'iter.ts',
+      lines: [
+        'export class Iter {',
+        '  async return(value?: unknown) {',
+        '  }',
+        '  public do(): void {',
+        '  }',
+        '  static try(fn: () => void) {',
+        '  }',
+        '}',
+      ],
+      outline: [
+        '1: export class Iter {',
+        '2:   async return(value?: unknown) {',
+        '4:   public do(): void {',
+        '6:   static try(fn: () => void) {',
+      ],
+    },
+    {
+      shape: 'TypeScript: Jest table tests are listed; calls on objects named it or test are not',
+      file: 'each.test.ts',
+      lines: [
+        "describe('math', () => {",
+        '  it.each`',
+        '    a    | b',
+        '    ${1} | ${2}',
+        "  `('adds $a', ({ a, b }) => {",
+        '  });',
+        "  describe.each`x`('group', () => {",
+        '  });',
+        '  it.push(1);',
+        '  test.context.onTestFailed(handler);',
+        '  it.next();',
+        '});',
+      ],
+      outline: [
+        "1: describe('math', () => {",
+        '2:   it.each`',
+        "7:   describe.each`x`('group', () => {",
+      ],
+    },
+    {
+      shape: 'JavaScript: a column-0 line of a block comment is not a declaration',
+      file: 'banner.js',
+      lines: ['/*', '*Author: someone', '*-----------', '*/', 'function main() {}'],
+      outline: ['5: function main() {}'],
+    },
+    {
+      shape: 'JSON: an element opened on the line that closes the one before',
+      file: 'cuddled.json',
+      lines: ['[', '  {', '    "name": "a"', '  }, {', '    "name": "b"', '  }', ']'],
+      outline: ['1: [', '3:     "name": "a"', '5:     "name": "b"'],
+    },
+    {
+      shape: 'JSON: block and line comments hold no brackets and no root',
+      file: 'tsconfig.json',
+      lines: [
+        '/*',
+        ' * see {docs} [below',
+        ' */',
+        '{',
+        '  "compilerOptions": {',
+        '    "strict": true',
+        '  },',
+        '  // a comment',
+        '  "include": ["src"]',
+        '}',
+      ],
+      outline: ['4: {', '5:   "compilerOptions": {', '9:   "include": ["src"]'],
+    },
+    {
+      shape: 'A YAML .prettierrc is outlined as code, not JSON',
+      file: '.prettierrc',
+      lines: ['semi: false', 'singleQuote: true', 'printWidth: 100'],
+      outline: ['1: semi: false', '2: singleQuote: true', '3: printWidth: 100'],
+    },
+    {
+      shape:
+        'Markdown: a heading beside a prose "Label: text" line after a blank is not front matter',
+      file: 'notes.md',
+      lines: [
+        '---',
+        'Author: Jane',
+        '',
+        '# Introduction',
+        'Summary: what this covers',
+        '---',
+        '',
+        '## Next',
+      ],
+      outline: ['4: # Introduction', '5: Summary: what this covers', '8: ## Next'],
+    },
+    {
+      shape: 'Markdown: a leading heading beside a capitalized label is not a front-matter comment',
+      file: 'release.md',
+      lines: ['---', '# Release notes', 'Version: 1.2', '---', '', '## Body'],
+      outline: ['2: # Release notes', '3: Version: 1.2', '6: ## Body'],
+    },
+    {
+      shape: 'C++: class heads and access specifiers with comments, export macros and alignas',
+      file: 'heads.hpp',
+      lines: [
+        'class Foo {  // the foo',
+        ' public:  // accessors',
+        '  void set(int v);',
+        '};',
+        'class __declspec(dllexport) Bar {',
+        ' public:',
+        '  int get() const;',
+        '};',
+        'class alignas(16) Vec {',
+        ' public:',
+        '  float x() const;',
+        '};',
+      ],
+      outline: [
+        '1: class Foo {  // the foo',
+        '3:   void set(int v);',
+        '5: class __declspec(dllexport) Bar {',
+        '7:   int get() const;',
+        '9: class alignas(16) Vec {',
+        '11:   float x() const;',
+      ],
+    },
+    {
+      shape:
+        'C++: macro invocations in a class body are not members, and a closed class stays closed',
+      file: 'macros.h',
+      lines: [
+        'class Foo {',
+        ' public:',
+        '  Q_PROPERTY(int x READ x)',
+        '  Q_DISABLE_COPY(Foo)',
+        '  DISALLOW_COPY_AND_ASSIGN(Foo);',
+        '  Foo();',
+        '};',
+        '#define LIST(x) \\',
+        '  visit(x)     \\',
+        '  done(x)',
+      ],
+      outline: ['1: class Foo {', '6:   Foo();', '8: #define LIST(x) \\'],
+    },
+    {
+      shape: 'C++: members of a nested class',
+      file: 'nested.hpp',
+      lines: [
+        'class Outer {',
+        'public:',
+        '    class Inner {',
+        '    public:',
+        '        void f();',
+        '        int g() const { return 1; }',
+        '    };',
+        '};',
+      ],
+      outline: [
+        '1: class Outer {',
+        '2: public:',
+        '3:     class Inner {',
+        '5:         void f();',
+        '6:         int g() const { return 1; }',
+      ],
+    },
+    {
+      shape: 'C# verbatim strings and C++ digit separators do not unbalance a signature',
+      file: 'Paths.cs',
+      lines: [
+        'public class Paths',
+        '{',
+        '    public void Load(string p = @"C:\\") {',
+        '    }',
+        '}',
+      ],
+      outline: ['1: public class Paths', '3:     public void Load(string p = @"C:\\") {'],
+    },
+    {
+      shape: 'C++: a digit separator in a default value',
+      file: 'scale.cpp',
+      lines: [
+        'namespace app {',
+        "    int scale(int n = 1'000) {",
+        '        return n;',
+        '    }',
+        '}',
+      ],
+      outline: ['1: namespace app {', "2:     int scale(int n = 1'000) {"],
+    },
+    {
+      shape:
+        'TypeScript: test chains through for, extend and shuffle, and chains called with a title',
+      file: 'm.test.ts',
+      lines: [
+        "describe('m', () => {",
+        "  it.for([1, 2])('case %i', (n) => {",
+        '  });',
+        "  describe.shuffle('y', () => {",
+        '  });',
+        "  test.extend({})('z', () => {",
+        '  });',
+        "  it.custom('titled', () => {",
+        '  });',
+        '  it.next();',
+        '});',
+      ],
+      outline: [
+        "1: describe('m', () => {",
+        "2:   it.for([1, 2])('case %i', (n) => {",
+        "4:   describe.shuffle('y', () => {",
+        "6:   test.extend({})('z', () => {",
+        "8:   it.custom('titled', () => {",
+      ],
+    },
+    {
+      shape: 'Makefile and SCSS: an @ prefix is not an annotation outside languages that have them',
+      file: 'Makefile',
+      lines: ['deps:', '\t@go get -u ./...', 'all: deps'],
+      outline: ['1: deps:', '3: all: deps'],
+    },
+    {
+      shape: 'SCSS: an @include in a rule is not a declaration',
+      file: 'c.scss',
+      lines: ['.card {', '  @include mq(tablet) {', '    width: 50%;', '  }', '}'],
+      outline: ['1: .card {'],
+    },
+    {
+      shape: 'JSON5: unquoted keys and single-quoted strings',
+      file: 'a.json5',
+      lines: [
+        '{',
+        "  name: 'x',",
+        "  note: 'has { brace',",
+        '  scripts: {',
+        "    build: 'tsc',",
+        '  },',
+        "  'quoted-key': true,",
+        '}',
+      ],
+      outline: [
+        '1: {',
+        "2:   name: 'x',",
+        "3:   note: 'has { brace',",
+        '4:   scripts: {',
+        "7:   'quoted-key': true,",
+      ],
+    },
+    {
+      shape: 'JSON: one record per line, each its own root',
+      file: 'records.json',
+      lines: ['{"id":1}', '{"id":2}', '{"id":3}'],
+      outline: ['1: {"id":1}', '2: {"id":2}', '3: {"id":3}'],
+    },
+    {
+      shape: 'JSON: a root that follows a comment on its line',
+      file: 'list.jsonc',
+      lines: ['/* header */ [', '  {', '    "name": "a"', '  }', ']'],
+      outline: ['1: /* header */ [', '3:     "name": "a"'],
+    },
+    {
+      shape: 'An rc file whose JSON starts after a comment line',
+      file: '.eslintrc',
+      lines: ['// lint settings', '{', '  "root": true,', '  "rules": {}', '}'],
+      outline: ['2: {', '3:   "root": true,', '4:   "rules": {}'],
+    },
+    {
+      shape: 'Markdown: a heading alone in its run stays a heading, even beside identifier keys',
+      file: 'rule.md',
+      lines: ['---', '# API', '', 'usage: run it', '---', '## Next'],
+      outline: ['2: # API', '4: usage: run it', '6: ## Next'],
+    },
+    {
+      shape: 'Java and C++: a block comment that closes before the body brace',
+      file: 'Runner.java',
+      lines: ['public class Runner {', '    public void run() /* entry */ {', '    }', '}'],
+      outline: ['1: public class Runner {', '2:     public void run() /* entry */ {'],
+    },
+    {
+      shape: 'C++: guarded and attributed data members are not functions',
+      file: 'guarded.h',
+      lines: [
+        'class Cache {',
+        ' public:',
+        '  int count_ ABSL_GUARDED_BY(mu_);',
+        '  std::vector<int> items_ GUARDED_BY(mu_);',
+        '  uint32_t flags __attribute__((aligned(8)));',
+        '  static_assert(sizeof(int) == 4, "int");',
+        '  void Clear();',
+        '};',
+      ],
+      outline: ['1: class Cache {', '7:   void Clear();'],
+    },
+    {
+      shape: 'C++: an Allman brace or a closing brace with a comment',
+      file: 'nolint.hpp',
+      lines: [
+        'class Foo',
+        '{  // NOLINT',
+        'public:',
+        '    void f();',
+        '    int g() const;',
+        '};  // class Foo',
+      ],
+      outline: ['1: class Foo', '3: public:', '4:     void f();', '5:     int g() const;'],
+    },
+    {
+      shape: 'C++: all-caps constructors and test macros with a body are listed',
+      file: 'rgb.cpp',
+      lines: [
+        'class RGB {',
+        'public:',
+        '    RGB(int r, int g, int b);',
+        '    A();',
+        '};',
+        'namespace t {',
+        '    TEST(Suite, Name) {',
+        '    }',
+        '    BOOST_AUTO_TEST_CASE(works) {',
+        '    }',
+        '}',
+      ],
+      outline: [
+        '1: class RGB {',
+        '2: public:',
+        '3:     RGB(int r, int g, int b);',
+        '4:     A();',
+        '6: namespace t {',
+        '7:     TEST(Suite, Name) {',
+        '9:     BOOST_AUTO_TEST_CASE(works) {',
+      ],
+    },
+    {
+      shape: 'A trailing comment holding an apostrophe after a parenthesis',
+      file: 'caller.ts',
+      lines: ['export class C {', "  bar(x: number) { // (the caller's value)", '  }', '}'],
+      outline: ['1: export class C {', "2:   bar(x: number) { // (the caller's value)"],
+    },
+    {
+      shape: 'JSON: a key after a block comment, a key after a cuddled close, and an empty element',
+      file: 'mixed.json',
+      lines: [
+        '{',
+        '  /* c */ "a": 1,',
+        '  "b": {',
+        '    "x": 1',
+        '  }, "c": 2,',
+        '  "list": [',
+        '    {',
+        '    },',
+        '    {"k": 1,',
+        '     "l": 2}',
+        '  ]',
+        '}',
+      ],
+      outline: ['1: {', '2:   /* c */ "a": 1,', '3:   "b": {', '5:   }, "c": 2,', '6:   "list": ['],
+    },
+    {
+      shape: 'JSON: an empty element does not make the next element list its second key',
+      file: 'empty.json',
+      lines: ['[', '  {', '  },', '  {"a": 1,', '   "b": 2}', ']'],
+      outline: ['1: [', '4:   {"a": 1,'],
+    },
+    {
+      shape: 'Kotlin and Groovy: a call on the implicit `it` is not a test',
+      file: 'List.kt',
+      lines: ['fun top() = xs.map {', '    it.split(",")', '}'],
+      outline: ['1: fun top() = xs.map {'],
+    },
+    {
+      // #316: `CPP_QUALIFIER`'s `[^()]*` could not hold a nested `(`.
+      shape: 'C++: a conditional noexcept and a guarded macro argument with a nested call',
+      file: 'swap.h',
+      lines: [
+        'class Buffer {',
+        ' public:',
+        '  void swap(Buffer&) noexcept(noexcept(a.swap(b)));',
+        '  int size() GUARDED_BY(mu_.lock());',
+        '  void Clear();',
+        '};',
+      ],
+      outline: [
+        '1: class Buffer {',
+        '3:   void swap(Buffer&) noexcept(noexcept(a.swap(b)));',
+        '4:   int size() GUARDED_BY(mu_.lock());',
+        '5:   void Clear();',
+      ],
+    },
+    {
+      // #316: `u8'a'` was read as the digit separator in `1'000`.
+      shape: 'C++: a u8 character literal is a literal, not a digit separator',
+      file: 'Charset.h',
+      lines: ['class Charset {', ' public:', "  void f(char8_t c = u8'a') {", '  }', '};'],
+      outline: ['1: class Charset {', "3:   void f(char8_t c = u8'a') {"],
+    },
+    {
+      // #316: `union` was missing from OUTLINE_KEYWORD, so a nested union's
+      // members fell outside the class body that held them.
+      shape: 'C++: a nested union keeps its members',
+      file: 'Value.h',
+      lines: [
+        'class Value {',
+        ' public:',
+        '  union U {',
+        '    void f();',
+        '    int n;',
+        '  };',
+        '};',
+      ],
+      outline: ['1: class Value {', '3:   union U {', '4:     void f();'],
+    },
+    {
+      // #316: the generic test-chain arm matched any `it.<name>('title')`.
+      shape: 'TypeScript: a call taking a string is not a test block',
+      file: 'drive.ts',
+      lines: ['export function drive(it: Iterator<string>) {', "  it.next('resume');", '}'],
+      outline: ['1: export function drive(it: Iterator<string>) {'],
+    },
+    {
+      // #316, item 4, both directions. Requiring the line to end in `=> {`
+      // listed any call whose callback opened a body, and a title with anything
+      // after it on the line. A test call is a member chain called with a title
+      // *and* a second argument: the callback. The comma is what says so.
+      shape: 'TypeScript: a test chain is a titled call with a second argument',
+      file: 'suite.ts',
+      lines: [
+        "describe('suite', () => {",
+        "  it.effect('adds', () => Effect.gen(function* () {",
+        '  }));',
+        "  it.custom('titled', function () {",
+        '  });',
+        "  it.custom('titled',",
+        '    () => {',
+        '    });',
+        "  test.extend({})('z', () => {",
+        '  });',
+        "  it.next('resume');",
+        "  it.next('resume').then(() => {",
+        "  it.value = run('x', () => {",
+        '});',
+      ],
+      outline: [
+        "1: describe('suite', () => {",
+        "2:   it.effect('adds', () => Effect.gen(function* () {",
+        "4:   it.custom('titled', function () {",
+        "6:   it.custom('titled',",
+        "9:   test.extend({})('z', () => {",
+      ],
+    },
+    {
+      // #316, D: `union` in the language-agnostic keyword list made a call
+      // named `union` a declaration. It is a type only when a name or `{`
+      // follows, never a `(`.
+      shape: 'Python: a call named union is a call',
+      file: 'sets.py',
+      lines: [
+        'def combine(set_a, set_b):',
+        '    union = 1',
+        '    total = union(set_a, {1, 2})',
+        '    other = set_a.union(set_b)',
+      ],
+      outline: ['1: def combine(set_a, set_b):'],
+    },
+    {
+      // #316, D: the same call in JavaScript, where the keyword list applies
+      // too (`const u = union(a, b);` is an assignment, not a declaration).
+      shape: 'JavaScript: a call named union is a call',
+      file: 'sets.js',
+      lines: [
+        'function combine(setA, setB) {',
+        '  union(setA, setB);',
+        '  const total = union(setA, { 1, 2 });',
+        '  return total;',
+        '}',
+      ],
+      outline: ['1: function combine(setA, setB) {'],
     },
   ];
 
@@ -1835,6 +2836,46 @@ describe('Read outline contract', () => {
     writeFileSync(join(dir, 'counted.ts'), 'export const a = 1;\nexport const b = 2;\n');
     const outlined = await read.execute({ filePath: 'counted.ts', outline: true }, ctx);
     expect(outlined.content.split('\n')[0]).toMatch(/^Outline of counted\.ts: 2 lines, 2 shown\./);
+  });
+
+  it('cuts an oversized entry instead of showing none', async () => {
+    writeFileSync(join(dir, 'min.js'), `var a=${'1+'.repeat(30_000)}1;\nfunction b() {}\n`);
+    const outlined = await read.execute({ filePath: 'min.js', outline: true }, ctx);
+    const lines = outlined.content.split('\n');
+    expect(lines[0]).toMatch(/^Outline of min\.js: 2 lines, 2 shown\./);
+    expect(lines[1].startsWith('1: var a=1+1+')).toBe(true);
+    expect(lines[1].endsWith('…')).toBe(true);
+    expect(Buffer.byteLength(lines[1])).toBeLessThanOrEqual(3 + 512);
+    expect(lines[2]).toBe('2: function b() {}');
+    expect(lines).toHaveLength(3);
+  });
+
+  it('keeps the header and the truncation note inside the clip for a long path', async () => {
+    const declarations = Array.from(
+      { length: 3000 },
+      (_, index) => `export const value${index} = '${'x'.repeat(40)}';`,
+    );
+    writeFileSync(join(dir, 'many.ts'), declarations.join('\n'));
+    const filePath = `${'./'.repeat(200)}many.ts`;
+    const outlined = await read.execute({ filePath, outline: true }, ctx);
+    expect(Buffer.byteLength(outlined.content)).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
+    expect(outlined.content.split('\n').at(-1)).toMatch(
+      /^\[Outline truncated at \d+ of 3000 entries/,
+    );
+    const bounded = await boundToolResultOutput(outlined, dir, undefined, join(dir, 'tool-output'));
+    expect(bounded.content).toBe(outlined.content);
+  });
+
+  it('reads a long C++ qualifier macro in linear time', async () => {
+    const macro = 'A'.repeat(40);
+    writeFileSync(
+      join(dir, 'slow.h'),
+      ['class Cache {', ' public:', `  void Evict() ${macro} ~;`, '};'].join('\n'),
+    );
+    const started = performance.now();
+    const outlined = await read.execute({ filePath: 'slow.h', outline: true }, ctx);
+    expect(performance.now() - started).toBeLessThan(5000);
+    expect(outlined.content.split('\n').slice(1)).toEqual(['1: class Cache {']);
   });
 });
 
@@ -1960,3 +3001,405 @@ describe('Read output budget', () => {
     expect(note).toContain(`the rest start at line ${shownCount + 1}.`);
   });
 });
+
+/**
+ * #300. `additionalDirectories` is honored as a set of roots, and the tools agree about which.
+ * Read, Glob and Grep serve an approved directory, and so do Write, Edit, MultiEdit,
+ * NotebookEdit and ApplyPatch (decision A) — an approved directory widens what Book may reach,
+ * and a tool that could not read a root could still write into it, which is the worse gap.
+ */
+describe('additionalRoots', () => {
+  let extra: string;
+  let outside: string;
+
+  beforeEach(() => {
+    extra = mkdtempSync(join(tmpdir(), 'book-additional-'));
+    outside = mkdtempSync(join(tmpdir(), 'book-notadditional-'));
+    writeFileSync(join(extra, 'shared.txt'), 'shared directory content\n');
+    writeFileSync(join(extra, 'matchme.txt'), 'grepme\n');
+    writeFileSync(join(outside, 'secret.txt'), 'not yours\n');
+    ctx.additionalRoots = [extra];
+  });
+
+  afterEach(() => {
+    rmSync(extra, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+    delete ctx.additionalRoots;
+  });
+
+  it('reads a file in an honored directory', async () => {
+    const r = await read.execute({ filePath: join(extra, 'shared.txt') }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('shared directory content');
+  });
+
+  it('refuses a file in a directory that is not honored', async () => {
+    const r = await read.execute({ filePath: join(outside, 'secret.txt') }, ctx);
+
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/outside workspace/i);
+  });
+
+  it('refuses a file in a sibling of an honored directory, which is not a root', async () => {
+    const sibling = mkdtempSync(join(tmpdir(), 'book-additional-sibling-'));
+    try {
+      writeFileSync(join(sibling, 'sneaky.txt'), 'not covered\n');
+
+      const r = await read.execute({ filePath: join(sibling, 'sneaky.txt') }, ctx);
+
+      expect(r.status).toBe('error');
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+
+  it('anchors a relative path to the workspace, not to the honored directory', async () => {
+    // `shared.txt` exists in both. A bare filename must name the workspace's, or a model could
+    // read a file from a root the user only approved for other work.
+    writeFileSync(join(dir, 'shared.txt'), 'workspace copy\n');
+
+    const r = await read.execute({ filePath: 'shared.txt' }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('workspace copy');
+  });
+
+  it('refuses a symlink out of an honored directory', async () => {
+    symlinkSync(outside, join(extra, 'escape'), 'junction');
+
+    const r = await read.execute({ filePath: join(extra, 'escape', 'secret.txt') }, ctx);
+
+    expect(r.status).toBe('error');
+  });
+
+  it('globs into an honored directory with an absolute pattern', async () => {
+    // A relative pattern is workspace-anchored, exactly as `Read` anchors a relative path, so it
+    // searches the workspace alone; an absolute pattern names its own root and is walked once, in
+    // that root (PR #334 finding 9).
+    const r = await glob.execute({ pattern: join(extra, '*.txt') }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain(join(extra, 'shared.txt'));
+  });
+
+  it('searches only the workspace for a relative Glob pattern', async () => {
+    // `*.txt` matches in both roots, and it used to be run once per root with the honored root's
+    // matches listed too — so a relative pattern the model wrote for the workspace surfaced
+    // unrequested files from a root approved for other work. It agrees with `Read` and `Grep`,
+    // which both anchor a relative argument to the workspace.
+    writeFileSync(join(dir, 'local.txt'), 'workspace copy\n');
+
+    const r = await glob.execute({ pattern: '*.txt' }, ctx);
+
+    expect(r.status).toBe('success');
+    // A workspace match is labelled workspace-relative, the form `Read` accepts.
+    expect(r.content).toContain('local.txt');
+    expect(r.content).not.toContain('shared.txt');
+  });
+
+  it('walks an absolute Glob pattern once, not once per root', async () => {
+    // A relative pattern was run against every root in turn, and an absolute one was run against
+    // every root too — where it resolves to the same files each time, because fast-glob ignores
+    // `cwd` for an absolute pattern. The work was repeated per honored root, and a root that
+    // happened to hold a copy of the pattern's subtree was walked as well.
+    const r = await glob.execute({ pattern: join(extra, '**', '*.txt') }, ctx);
+
+    expect(r.status).toBe('success');
+    const listed = (r.data as { files?: string[] })?.files ?? [];
+    expect(listed.filter((file) => file === join(extra, 'shared.txt'))).toHaveLength(1);
+  });
+
+  it('greps a scope inside an honored directory, rather than the workspace tree', async () => {
+    // The scope is not in the workspace tree at all, so a search rooted at the workspace would
+    // find nothing — the root is what a Grep `path` argument now resolves against.
+    const r = await grep.execute({ pattern: 'grepme', path: extra }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('grepme');
+  });
+
+  it('writes a file in an honored directory', async () => {
+    await observeFirst(join(extra, 'shared.txt'));
+
+    const w = await write.execute({ filePath: join(extra, 'shared.txt'), content: 'changed' }, ctx);
+
+    expect(w.status).toBe('success');
+    expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toBe('changed');
+  });
+
+  it('refuses the same write once the directory is not honored', async () => {
+    delete ctx.additionalRoots;
+    try {
+      const w = await write.execute(
+        { filePath: join(extra, 'shared.txt'), content: 'changed' },
+        ctx,
+      );
+
+      expect(w.status).toBe('error');
+      expect(w.structuredError?.code).toBe('path_outside_workspace');
+      expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toContain('shared directory content');
+    } finally {
+      ctx.additionalRoots = [extra];
+    }
+  });
+
+  it('edits a file in an honored directory', async () => {
+    await observeFirst(join(extra, 'shared.txt'));
+
+    const e = await edit.execute(
+      { filePath: join(extra, 'shared.txt'), oldString: 'shared', newString: 'edited' },
+      ctx,
+    );
+
+    expect(e.status).toBe('success');
+    expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toContain('edited');
+  });
+
+  it('multi-edits a file in an honored directory', async () => {
+    await observeFirst(join(extra, 'shared.txt'));
+
+    const m = await multiEditTool.execute(
+      {
+        filePath: join(extra, 'shared.txt'),
+        edits: [{ oldString: 'shared', newString: 'edited' }],
+      },
+      ctx,
+    );
+
+    expect(m.status).toBe('success');
+    expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toContain('edited');
+  });
+
+  it('anchors a relative write to the workspace, not to the honored directory', async () => {
+    // The write tools get the same anchoring the read tools do: a bare filename is the
+    // workspace's, never a root the user approved for other work.
+    writeFileSync(join(dir, 'shared.txt'), 'workspace copy\n');
+    await observeFirst('shared.txt');
+
+    const w = await write.execute({ filePath: 'shared.txt', content: 'written' }, ctx);
+
+    expect(w.status).toBe('success');
+    expect(readFileSync(join(dir, 'shared.txt'), 'utf8')).toBe('written');
+    expect(readFileSync(join(extra, 'shared.txt'), 'utf8')).toContain('shared directory content');
+  });
+
+  it('still requires a write into an honored directory to be read first', async () => {
+    // The same fresh-observation requirement the workspace has: a file in an honored root is a
+    // different resolved path from a workspace file of the same name, not a way around the check.
+    const w = await write.execute(
+      { filePath: join(extra, 'matchme.txt'), content: 'changed' },
+      ctx,
+    );
+
+    expect(w.status).toBe('error');
+    expect(w.structuredError?.code).toBe('file_not_observed');
+    expect(readFileSync(join(extra, 'matchme.txt'), 'utf8')).toBe('grepme\n');
+  });
+});
+
+/**
+ * PR #334. The observation ledger is keyed by a path relative to the workspace root, and the two
+ * ends of that key were derived differently: `observeFile` relativized the absolute path against
+ * `resolve(workspaceRoot)` — the root *as given* — while the mutation tools looked the file up
+ * under the `relativePath` a resolution produced, which is relative to the root *after links*.
+ * The two agree until the workspace root is itself reached through a link, and then every Read
+ * of the real directory licensed an Edit that answered `file_not_observed`. The same disagreement
+ * is what the 8.3 and long spellings of one root produce on Windows, and the tests below are
+ * written so the same fix covers both.
+ */
+describe('a workspace root reached through a link', () => {
+  let real: string;
+  let link: string;
+  let linkCtx: ToolContext;
+
+  beforeEach(() => {
+    real = realpathSync(dir);
+    link = join(dirname(dir), `${basename(dir)}-link`);
+    // A junction needs no symlink privilege on Windows; elsewhere the type is ignored.
+    symlinkSync(real, link, 'junction');
+    linkCtx = { ...ctx, workspaceRoot: link, fileObservationLedger: new Map() };
+  });
+  afterEach(() => rmSync(link, { force: true, maxRetries: 3 }));
+
+  it('edits a file the model read through the real directory', async () => {
+    writeFileSync(join(real, 'a.txt'), 'hello');
+    expect((await read.execute({ filePath: join(real, 'a.txt') }, linkCtx)).status).toBe('success');
+
+    const e = await edit.execute(
+      { filePath: join(real, 'a.txt'), oldString: 'hello', newString: 'edited' },
+      linkCtx,
+    );
+
+    expect(e.status).toBe('success');
+    expect(readFileSync(join(real, 'a.txt'), 'utf8')).toBe('edited');
+  });
+
+  it('edits a file the model read through the link, and the two spellings share one entry', async () => {
+    writeFileSync(join(real, 'a.txt'), 'hello');
+    expect((await read.execute({ filePath: join(link, 'a.txt') }, linkCtx)).status).toBe('success');
+    // One file, one observation: the ledger holds a single entry however the file was named, or
+    // the second Read would shadow the first under a key the Edit never consults.
+    expect(linkCtx.fileObservationLedger?.size).toBe(1);
+
+    const e = await edit.execute(
+      { filePath: join(real, 'a.txt'), oldString: 'hello', newString: 'edited' },
+      linkCtx,
+    );
+
+    expect(e.status).toBe('success');
+    expect(readFileSync(join(real, 'a.txt'), 'utf8')).toBe('edited');
+  });
+
+  it('still refuses a sibling the link does not serve', async () => {
+    // The key now goes through a link, and one that must not have widened what a root serves.
+    const sibling = mkdtempSync(join(tmpdir(), 'book-file-sibling-'));
+    try {
+      writeFileSync(join(sibling, 'a.txt'), 'sibling');
+      const r = await read.execute({ filePath: join(sibling, 'a.txt') }, linkCtx);
+      expect(r.structuredError?.code).toBe('path_outside_workspace');
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * #264, on Windows. One directory has more than one name: the long form a user reads
+ * (`C:\Users\runneradmin\AppData\Local\Temp`) and the DOS 8.3 form (`C:\Users\RUNNER~1\AppData`),
+ * plus a drive letter in either case and separators either way. GitHub's Windows runners put
+ * `os.tmpdir()` in the short form, so every workspace root in this file is spelled short while
+ * `realpath`, fast-glob and ripgrep all answer in the long form.
+ *
+ * A root compared as given against a path in that form reads as outside the workspace, and every
+ * guard that keys on the root then cannot name its own file: the `.book/settings.local.json`
+ * exclusion missed and printed an API key, the workspace's own matches came back labelled as
+ * absolute paths, and a search in an honored directory searched the workspace tree instead. These
+ * tests spell each root the way the runner does and ask for the same answers as everywhere else
+ * in this file.
+ */
+describe.runIf(process.platform === 'win32')(
+  'a root spelled in another form of its own name',
+  () => {
+    /**
+     * The 8.3 name of a directory, or `undefined` when this volume has none to give.
+     *
+     * A volume with 8.3 name generation disabled echoes the long form back: there is no second
+     * spelling to disagree with, so the case would have nothing to prove and skips rather than
+     * passing vacuously.
+     */
+    async function shortOf(directory: string): Promise<string | undefined> {
+      const short = await shortPathName(directory);
+      return short && short !== realpathSync.native(directory) ? short : undefined;
+    }
+
+    let honored: string;
+    let shortDir: string | undefined;
+    let shortHonored: string | undefined;
+
+    beforeEach(async () => {
+      // The two forms are only in disagreement once the directories exist, so the lookup is per test
+      // rather than once for the file: the short name of a temp directory carries its own suffix.
+      honored = mkdtempSync(join(tmpdir(), 'book-shortroot-'));
+      [shortDir, shortHonored] = await Promise.all([shortOf(dir), shortOf(honored)]);
+    });
+    afterEach(() => rmSync(honored, { recursive: true, force: true }));
+
+    it('never searches the local settings of a workspace root spelled in 8.3 form', async (test) => {
+      if (!shortDir) return test.skip();
+      mkdirSync(join(dir, '.book'));
+      writeFileSync(join(dir, '.book', 'settings.local.json'), '{"apiKey":"sk-local-marker"}');
+      writeFileSync(join(dir, 'a.ts'), 'const note = "sk-visible-marker";\n');
+      // A link to `.book` is another way in; a junction needs no symlink privilege on Windows.
+      symlinkSync(join(dir, '.book'), join(dir, 'cfgdir'), 'junction');
+      const shortCtx: ToolContext = { ...ctx, workspaceRoot: shortDir };
+
+      for (const args of [
+        { pattern: 'sk-' },
+        { pattern: 'sk-', include: '.book/settings.local.json' },
+        { pattern: 'sk-', path: '.book' },
+        // A scope that is one file, and one reached through a link, are the two the glob's ignore
+        // list cannot cover — and the two the root-keyed guard exists for.
+        { pattern: 'sk-', path: '.book/settings.local.json' },
+        { pattern: 'sk-', path: 'cfgdir' },
+      ]) {
+        const result = await grep.execute(args, shortCtx);
+        expect(JSON.stringify(result)).not.toContain('sk-local-marker');
+      }
+      // An ordinary search still reaches an ordinary file, so the exclusions above are the guard
+      // doing its work rather than a search that finds nothing at all.
+      expect((await grep.execute({ pattern: 'sk-' }, shortCtx)).content).toContain(
+        'sk-visible-marker',
+      );
+    });
+
+    it('keys and lists a short-form workspace root relatively, as it does any other', async (test) => {
+      if (!shortDir) return test.skip();
+      mkdirSync(join(dir, 'sub'));
+      writeFileSync(join(dir, 'a.ts'), 'const note = "sk-visible-marker";\n');
+      writeFileSync(join(dir, 'sub', 'b.ts'), 'const note = "sk-visible-marker";\n');
+      const shortCtx: ToolContext = { ...ctx, workspaceRoot: shortDir };
+
+      const result = await grep.execute({ pattern: 'sk-visible-marker' }, shortCtx);
+
+      expect(result.status).toBe('success');
+      expect(Object.keys((result.data as { matches: object }).matches).sort()).toEqual([
+        'a.ts',
+        'sub/b.ts',
+      ]);
+      expect(result.content).toContain('a.ts:1:');
+      expect(result.content).toContain('sub/b.ts:1:');
+      // The listing is the workspace-relative spelling, never the root in whatever form it was given.
+      expect(result.content).not.toContain(shortDir);
+    });
+
+    it('searches an honored directory given in 8.3 form, and keeps its own guard', async (test) => {
+      if (!shortHonored) return test.skip();
+      mkdirSync(join(honored, '.book'));
+      writeFileSync(join(honored, '.book', 'settings.local.json'), '{"apiKey":"sk-local-marker"}');
+      writeFileSync(join(honored, 'matchme.txt'), 'grepme\n');
+      const shortCtx: ToolContext = { ...ctx, additionalRoots: [shortHonored] };
+
+      const found = await grep.execute({ pattern: 'grepme', path: shortHonored }, shortCtx);
+      expect(found.status).toBe('success');
+      expect(found.content).toContain('grepme');
+      // The honored root's own local settings stay closed, in whichever form the root was declared.
+      const guarded = await grep.execute({ pattern: 'sk-', path: shortHonored }, shortCtx);
+      expect(JSON.stringify(guarded)).not.toContain('sk-local-marker');
+    });
+
+    it('reads a workspace root whose drive letter is lowercase', async () => {
+      writeFileSync(join(dir, 'a.ts'), 'const note = 1;\n');
+      const lowerCtx: ToolContext = { ...ctx, workspaceRoot: withLowercaseDriveLetter(dir) };
+
+      const result = await grep.execute({ pattern: 'note' }, lowerCtx);
+
+      expect(result.status).toBe('success');
+      expect(Object.keys((result.data as { matches: object }).matches)).toEqual(['a.ts']);
+    });
+
+    /**
+     * The same disagreement PR #334 finding 6 reported for a symlinked root, on Windows: a root
+     * typed in 8.3 short form and a file named in the long form are one directory and one file,
+     * and the Read that licensed the Edit filed its observation under one spelling while the Edit
+     * looked it up under the other.
+     */
+    it('edits a file the model read by its long name under a root spelled short', async (test) => {
+      if (!shortDir) return test.skip();
+      writeFileSync(join(dir, 'a.txt'), 'hello');
+      const shortCtx: ToolContext = { ...ctx, workspaceRoot: shortDir };
+      // `dir` is the long form the runner gives for the same directory `shortDir` names.
+      expect((await read.execute({ filePath: join(dir, 'a.txt') }, shortCtx)).status).toBe(
+        'success',
+      );
+
+      const e = await edit.execute(
+        { filePath: join(dir, 'a.txt'), oldString: 'hello', newString: 'edited' },
+        shortCtx,
+      );
+
+      expect(e.status).toBe('success');
+      expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('edited');
+    });
+  },
+);

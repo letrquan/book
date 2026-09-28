@@ -13,6 +13,11 @@ updates:
         update-types:
           - minor
           - patch
+        # Ink is pinned exactly and gated by src/cli/ink-renderer.contract.test.ts until the TUI is
+        # re-verified (docs/guide/development.md, "Upgrading Ink"), so its bump must not ride in a
+        # group and block the safe updates beside it.
+        exclude-patterns:
+          - ink
       development-dependencies:
         dependency-type: development
         update-types:

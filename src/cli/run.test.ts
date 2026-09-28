@@ -175,6 +175,37 @@ describe('runMainAction — slash commands in print mode', () => {
     expect(provider.requests.length).toBe(0);
   });
 
+  // #268 item 9: the interactive branch still called exit(1), for a reason that no longer
+  // held: the `finally` around the TUI has unmounted Ink and restored the screen by then.
+  it('fails an interactive launch through the exit code too, not exit()', async () => {
+    const workspace = printWorkspace();
+    const exits: number[] = [];
+    const exitCodes: number[] = [];
+    setExitFn(((code: number) => {
+      exits.push(code);
+      throw new Error(`unexpected exit(${code})`);
+    }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      exitCodes.push(code);
+    });
+    const errors: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+
+    // --resume with persistence off fails in the launch, before any TUI is drawn.
+    await runMainAction({
+      workspace,
+      settings: false,
+      sessionPersistence: false,
+      resume: 'no-such-session',
+    });
+
+    expect(exits).toEqual([]);
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('Session persistence is disabled');
+  });
+
   it('runs a resolved custom command body and exits normally', async () => {
     const workspace = printWorkspace();
     mkdirSync(join(workspace, '.book', 'commands'), { recursive: true });
@@ -433,5 +464,86 @@ describe('runMainAction — print mode exit codes (#190)', () => {
     });
 
     expect(codes).toEqual([]);
+  });
+
+  it('exits 0 when the abort lands inside a tool, as it does in the stream (#248)', async () => {
+    const workspace = printWorkspace();
+    const controller = new AbortController();
+    const command = 'node -e "setTimeout(() => {}, 3000)"';
+    const provider = createRepeatingScriptedProvider(() =>
+      sseResponse([
+        JSON.stringify({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'call-1',
+                    function: { name: 'Bash', arguments: JSON.stringify({ command }) },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ]),
+    );
+    vi.stubGlobal('fetch', provider.fetch);
+    const codes: number[] = [];
+    setExitFn(((code: number) => {
+      codes.push(code);
+      throw new Error(`unexpected exit(${code})`);
+    }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      codes.push(code);
+    });
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    // The progress line prints as the call starts; aborting while the command runs lands
+    // inside the tool, where the run throws instead of returning a cancelled outcome.
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      if (String(chunk).startsWith('[Bash]')) setTimeout(() => controller.abort(), 500);
+      return true;
+    });
+
+    await runMainAction({
+      ...printOptions(workspace, 'say hi'),
+      permissionMode: 'bypassPermissions',
+      signal: controller.signal,
+    });
+
+    expect(provider.requests.length).toBe(1);
+    expect(codes).toEqual([]);
+  });
+
+  it('cancels the run on SIGINT and exits 130 (#248)', async () => {
+    const workspace = printWorkspace();
+    const provider = createRepeatingScriptedProvider(() => {
+      process.emit('SIGINT', 'SIGINT');
+      return sseResponse([]);
+    });
+    vi.stubGlobal('fetch', provider.fetch);
+    const codes: number[] = [];
+    setExitFn(((code: number) => {
+      codes.push(code);
+      throw new Error(`unexpected exit(${code})`);
+    }) as (code: number) => never);
+    setExitCodeFn((code: number) => {
+      codes.push(code);
+    });
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    const sigintListeners = process.listenerCount('SIGINT');
+
+    await runMainAction(printOptions(workspace, 'say hi'));
+
+    expect(codes).toEqual([130]);
+    expect(stderr.join('')).toContain('Ctrl+C again');
+    expect(process.listenerCount('SIGINT')).toBe(sigintListeners);
   });
 });

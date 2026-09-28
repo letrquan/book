@@ -6,6 +6,7 @@ import type { CompactResult, CompactBoundary } from './types/sessions.js';
 import type { ImageAttachment, Message, Usage } from './types/messages.js';
 import type { HeadlessOptions, HeadlessPlanOutcome, HeadlessResult } from './types/public-sdk.js';
 import type {
+  PermissionDecision,
   PlanApprovalResult,
   ToolCall,
   ToolResult,
@@ -20,7 +21,11 @@ import {
 import { resolvePrintCommand, type PrintCommandDispatch } from './commands/print-dispatch.js';
 import type { CommandContext, HostCommandResult } from './types/commands.js';
 import type { AgentActivity, AgentCompletionNotification } from './agents/types.js';
-import { createTerminalOutcome, type AgentTerminalOutcome } from './types/terminal.js';
+import {
+  classifyAbortReason,
+  createTerminalOutcome,
+  type AgentTerminalOutcome,
+} from './types/terminal.js';
 import { createAgentRunContext, type AgentRunContext, type AgentRunResult } from './types/runs.js';
 import { shouldCompact, usagePressureTokens } from './agent/compact.js';
 import { resolveContextLimit } from './models.js';
@@ -37,15 +42,18 @@ import {
 import { AgentSession, type AgentSessionRunRequest } from './session/agent-session.js';
 import { SessionRuntime } from './session/runtime.js';
 import type { AgentEvent } from './session/agent-events.js';
+import type { CarriedSpend } from './session/run-accounting.js';
 import {
   buildAgentCompletionMessage,
   takeAgentCompletionBatch,
 } from './agents/completion-notification.js';
 import { getOrCreateAgentManager } from './agents/manager.js';
+import { uniqueAgentDisplayName } from './agents/naming.js';
 import { resolvePermissionMode } from './permission-mode.js';
 import { separateInlineReasoning } from './reasoning-tags.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { toolResultErrorMessage } from './tools/result.js';
+import { onAbort, throwIfAborted } from './async.js';
 
 /**
  * Re-price restored tokens.
@@ -86,6 +94,46 @@ async function readPipedPrompt(stream: NodeJS.ReadableStream): Promise<string | 
   return prompt || undefined;
 }
 
+/**
+ * Destroy `stream` when `signal` aborts, so a pending read of a prompt that never
+ * finishes arriving rejects instead of holding a cancelled run open. Returns the
+ * cleanup.
+ */
+function destroyOnAbort(
+  stream: NodeJS.ReadableStream,
+  signal: AbortSignal | undefined,
+): () => void {
+  if (!signal) return () => {};
+  return onAbort(signal, () => {
+    const reason = signal.reason instanceof Error ? signal.reason : new Error('Aborted');
+    (stream as NodeJS.ReadableStream & { destroy?: (error?: Error) => void }).destroy?.(reason);
+  });
+}
+
+/**
+ * Resolve `true` when `promise` settles first and `false` when `signal` aborts first.
+ * The promise is left running; only the wait for it ends.
+ */
+async function raceAbort(
+  promise: Promise<unknown>,
+  signal: AbortSignal | undefined,
+): Promise<boolean> {
+  if (!signal) {
+    await promise;
+    return true;
+  }
+  if (signal.aborted) return false;
+  let release: (() => void) | undefined;
+  const aborted = new Promise<false>((resolve) => {
+    release = onAbort(signal, () => resolve(false));
+  });
+  try {
+    return await Promise.race([promise.then(() => true as const), aborted]);
+  } finally {
+    release?.();
+  }
+}
+
 export async function runHeadless(
   config: AgentConfig,
   registry: ToolRegistry,
@@ -100,12 +148,17 @@ export async function runHeadless(
     stdout.write(JSON.stringify(obj) + '\n');
   };
   /**
-   * Managed children by agent id, for text-mode progress lines: an `agent_activity`
-   * carries only the id, and the child's name arrives once, on `agent_start`.
+   * What the event printers remember across one run: the managed children's
+   * progress labels, which arrive once each on `agent_start` and are read by every
+   * later `agent_activity`, and whether an error has already been reported.
    */
-  const childAgentNames = new Map<string, string>();
+  const eventState: HeadlessEventState = {
+    childLabels: new Map<string, string>(),
+    errorReported: false,
+  };
   /** Set once the run's liveness file exists; released in the outer `finally`. */
   let disposeCrashHandlers: (() => void) | undefined;
+  let sessionDisposed = false;
   /** The session SessionStart ran for, so a run that throws on abort still ends it. */
   let startedSessionId: string | undefined;
   const agentSession = new AgentSession({
@@ -116,6 +169,16 @@ export async function runHeadless(
       history: opts.transcript?.length ? opts.transcript : opts.history,
     }),
   });
+  /**
+   * Stop the run's children, background shells and timers. SessionEnd runs after this,
+   * never before: on an aborted run the children otherwise kept working for up to 10 s
+   * per SessionEnd hook (#248). Idempotent; the outer `finally` calls it too.
+   */
+  const disposeSession = (): void => {
+    if (sessionDisposed) return;
+    sessionDisposed = true;
+    agentSession.dispose('headless_complete');
+  };
   const runtime = agentSession.getRuntime();
   // Seed the plan from the resumed session. Both lists are mutated in place by
   // their tools, so pushing into the runtime's arrays is what makes the plan
@@ -197,9 +260,13 @@ export async function runHeadless(
     disposeCrashHandlers = statusWriter.installCrashHandlers();
 
     // Headless permission policy: if a prompt would be shown and no rule resolves
-    // it, deny the tool — headless can't interactively prompt. Callers who want
-    // full autonomy should pass mode: 'bypassPermissions'.
-    const permissionRequired = async (): Promise<'deny'> => 'deny';
+    // it, deny the tool — headless can't interactively prompt — and say so, so the
+    // refusal names that cause rather than a policy (#264). Callers who want full
+    // autonomy should pass mode: 'auto' or 'bypassPermissions'.
+    const permissionRequired = async (): Promise<PermissionDecision> => ({
+      result: 'deny',
+      reason: 'no_approver',
+    });
 
     // The one interactive escape hatch this host has. Everything that needs a
     // human decision (AskUserQuestion, plan approval) goes through it, so
@@ -238,14 +305,14 @@ export async function runHeadless(
         { type: 'user_question', request, status: userQuestionStatus },
         opts,
         emit,
-        childAgentNames,
+        eventState,
       );
       const response = await askUser(request, { signal: opts.signal });
       emitAgentEvent(
         { type: 'user_question_result', requestId: request.id, response },
         opts,
         emit,
-        childAgentNames,
+        eventState,
       );
       return planApprovalFromUserQuestionResponse(request, response);
     };
@@ -258,6 +325,13 @@ export async function runHeadless(
 
     let lastUsage: Usage | null = null;
     let lastOutcome: AgentTerminalOutcome | null = null;
+    /**
+     * Whether an abort may reclassify the run as cancelled when it ends a wait
+     * for managed children. Set once the prompts are done, and only ever false
+     * when the run's last turn failed: a failure is what went wrong, whatever
+     * arrived afterwards (#248).
+     */
+    let mayReclassify = true;
     /** The opening message of the latest model run: the answer is read from that run only. */
     let finalRunOpeningId: string | undefined;
     const runResults: AgentRunResult[] = [];
@@ -357,7 +431,7 @@ export async function runHeadless(
           lastOutcome = event.outcome;
           onOutcome(event.outcome);
         }
-        emitAgentEvent(event, opts, emit, childAgentNames);
+        emitAgentEvent(event, opts, emit, eventState);
       },
       // No header rewrite at turn boundaries: load() derives updatedAt from
       // the last appended record, so the on-disk header is never authoritative.
@@ -386,12 +460,21 @@ export async function runHeadless(
       },
       onUserQuestionRequired: askUser,
       userQuestionStatus,
-      onRetry: (phase, attempt, max, delayMs) => {
+      onRetry: (phase, attempt, max, delayMs, reason) => {
+        // `max` is -1 when retries are unbounded (the watchdog); the wire says null.
+        const limit = max < 0 ? null : max;
         if (opts.outputFormat === 'stream-json') {
-          emit({ type: 'retry', phase, attempt, max, delay_ms: delayMs });
+          emit({
+            type: 'retry',
+            phase,
+            attempt,
+            max: limit,
+            delay_ms: delayMs,
+            ...(reason ? { reason } : {}),
+          });
         } else if (opts.quiet !== true) {
           process.stderr.write(
-            `retry: ${phase} attempt ${attempt}${max > 0 ? `/${max}` : ''} in ${Math.round(delayMs / 1000)}s\n`,
+            `retry: ${phase} attempt ${attempt}${limit !== null ? `/${limit}` : ''} in ${Math.round(delayMs / 1000)}s${reason ? ` (${reason})` : ''}\n`,
           );
         }
       },
@@ -475,7 +558,15 @@ export async function runHeadless(
         // text at all. Emitting only deltas made the flag load-bearing for the
         // basic contract, which is why leaving it off had to mean "maximum volume".
         if (opts.outputFormat === 'stream-json' && message.content) {
-          emit({ type: 'assistant', text: message.content, complete: true });
+          // A host notice is what Book said, not what the model answered, and the
+          // wire has to say so: the record's shape is otherwise indistinguishable
+          // from an ordinary reply (#248).
+          emit({
+            type: 'assistant',
+            text: message.content,
+            complete: true,
+            ...(message.hostNotice ? { host_notice: true } : {}),
+          });
         }
       },
     });
@@ -486,6 +577,8 @@ export async function runHeadless(
       runContext: AgentRunContext,
       commandContext?: CommandContext,
     ): Promise<void> => {
+      // An earlier prompt's error must not hide why this one failed.
+      eventState.errorReported = false;
       let runOutcome: AgentTerminalOutcome | undefined;
       finalRunOpeningId = userMessage.id;
       lastUsage = null;
@@ -513,6 +606,9 @@ export async function runHeadless(
             userFileObservations: userMessage.fileObservations,
             userAttachments: userMessage.attachments,
             userMessageKind: userMessage.kind,
+            // The answer walk is bounded by `openingMessageId`, so a derived opening
+            // message no longer lets it walk past the run.
+            userMessageDerived: userMessage.derivedContent,
             manageSessionHooks: sessionId ? false : undefined,
             // Completion messages are host-generated notifications, not user
             // prompts. Keep UserPromptSubmit hooks from rewriting or blocking them.
@@ -596,7 +692,7 @@ export async function runHeadless(
                   permissionMode: mode,
                   eventSink: (event) => {
                     if (event.type === 'agent_result') recordManagedRunResult(event.agent);
-                    emitAgentEvent(event, opts, emit, childAgentNames);
+                    emitAgentEvent(event, opts, emit, eventState);
                   },
                   hookEventSink: createHookEventHandler(opts, emit),
                 }),
@@ -626,7 +722,19 @@ export async function runHeadless(
     // stream-json -> read stdin.
     const prompts: string[] = [];
     if (opts.inputFormat === 'text') {
-      const prompt = opts.prompt ?? (await readPipedPrompt(opts.stdin ?? process.stdin));
+      let prompt = opts.prompt;
+      if (prompt === undefined) {
+        const stream = opts.stdin ?? process.stdin;
+        // A prompt that never finishes arriving must not hold a cancelled run open.
+        // A TTY returns at once inside `readPipedPrompt`, so it is never destroyed.
+        const release = destroyOnAbort(stream, opts.signal);
+        try {
+          prompt = await readPipedPrompt(stream);
+        } finally {
+          release();
+        }
+        throwIfAborted(opts.signal);
+      }
       if (!prompt) {
         throw new Error(
           'print mode requires a prompt: pass one to -p, pipe one on stdin, or use --input-format stream-json',
@@ -646,9 +754,15 @@ export async function runHeadless(
           onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
         },
       );
-      for await (const chunk of stream) {
-        parser.feed(chunk as string | Buffer);
+      const release = destroyOnAbort(stream, opts.signal);
+      try {
+        for await (const chunk of stream) {
+          parser.feed(chunk as string | Buffer);
+        }
+      } finally {
+        release();
       }
+      throwIfAborted(opts.signal);
       parser.flush();
       if (diagnostics.length > 0) throw new Error(diagnostics[0]?.message);
       if (opts.prompt) prompts.unshift(opts.prompt);
@@ -659,16 +773,19 @@ export async function runHeadless(
     // stream-json prompts under a $50 cap would authorise $5000 inside a single
     // process. Carry the accumulated spend into each subsequent root through the
     // same seam that already carries it across processes.
-    let carriedSpend: { usage: Usage | null; costUsd: number | null } | undefined =
-      opts.carriedUsage
-        ? {
-            usage: opts.carriedUsage,
-            costUsd: carriedCostUsd(
-              opts.carriedUsage,
-              opts.carriedModels?.length ? opts.carriedModels : [config.model],
-            ),
-          }
-        : undefined;
+    //
+    // A carry restored from disk names no `persistedUsage`: the `usage` records it
+    // was summed from already cover all of it. Each later carry in this process is
+    // an in-process total, so it brings the watermark its root actually reached.
+    let carriedSpend: CarriedSpend | undefined = opts.carriedUsage
+      ? {
+          usage: opts.carriedUsage,
+          costUsd: carriedCostUsd(
+            opts.carriedUsage,
+            opts.carriedModels?.length ? opts.carriedModels : [config.model],
+          ),
+        }
+      : undefined;
 
     for (const submitted of prompts) {
       // The run exists before dispatch, not after it. A host-performed command
@@ -813,11 +930,17 @@ export async function runHeadless(
       rootContexts.set(runContext.rootRunId, runContext);
       await runParentTurn(contextMessage, prompt, userMessage, runContext, commandContext);
       // Fold this prompt's inclusive spend into the carry so the next root starts
-      // where this one finished instead of back at zero.
+      // where this one finished instead of back at zero — along with how much of it
+      // a record already covers. The total can run ahead of the records: a
+      // background agent or a compaction judge can spend after this root's last
+      // `onUsage`, and a continuation the budget gate refused is charged but never
+      // reported. Seeding the next root's watermark with the whole total would
+      // skip that remainder for good, so the next root's first record writes it.
       const spentSoFar = runtime.runAccounting.snapshotRoot(runContext.rootRunId);
       carriedSpend = {
         usage: spentSoFar.inclusiveUsage,
         costUsd: spentSoFar.inclusiveCostUsd,
+        persistedUsage: runtime.runAccounting.persistedUsage(runContext.rootRunId),
       };
       // An unapprovable plan is the deliverable: queued prompts would only
       // re-plan against a workspace nothing is allowed to change.
@@ -837,7 +960,16 @@ export async function runHeadless(
         ),
       );
       while (true) {
-        await managedAgentManager.waitForIdle();
+        // Waiting for active children is the one place an abort reclassifies the
+        // run: a reader that goes away after the last turn already ended — after
+        // it failed, most of all — changes nothing about how that run ended.
+        const idle =
+          !opts.signal?.aborted &&
+          (await raceAbort(managedAgentManager.waitForIdle(), opts.signal));
+        if (!idle) {
+          if (mayReclassify) lastOutcome = classifyAbortReason(opts.signal?.reason, true);
+          break;
+        }
         const pending = (await managedAgentManager.listPendingCompletions()).filter(
           (notification) => notification.parentSessionId === runtimeSessionId,
         );
@@ -914,6 +1046,19 @@ export async function runHeadless(
     // A run made only of host-performed commands has no last turn, so reporting
     // `null` would say "this cost nothing" about work that really spent tokens.
     const reportedUsage = lastUsage ?? commandUsage;
+    // A turn that failed failed: an abort afterwards is a reader going away, a
+    // cancel, or a timeout, and none of them is what went wrong (#248).
+    mayReclassify = lastOutcome?.status !== 'failed';
+    // No model turn in this process (a run of host-performed commands, such as
+    // `book -p --continue "/review"`) has no answer: the walk would otherwise read the
+    // previous process's answer out of the resumed history (#248).
+    const lastText =
+      finalRunOpeningId === undefined ? '' : finalAnswerText(contextHistory, finalRunOpeningId);
+    // Only a reply that opened with a closed reasoning block is rewritten. Any other
+    // answer is kept exactly as the model wrote it, so an indented first line (YAML,
+    // code piped to a file) keeps its indent.
+    const inline = separateInlineReasoning(lastText);
+    const answer = inline.found ? inline.content.trimEnd() : lastText;
     const result: HeadlessResult = {
       messages: contextHistory,
       transcript,
@@ -925,12 +1070,12 @@ export async function runHeadless(
       sessionId,
       plan: planNotApplied.outcome,
       commandResults,
+      answer,
     };
 
     if (opts.jsonSchema) {
-      const text = finalAnswerText(contextHistory, finalRunOpeningId);
       try {
-        result.structured = JSON.parse(text);
+        result.structured = JSON.parse(answer);
       } catch {
         result.structuredError = 'Failed to parse JSON from assistant output';
       }
@@ -964,12 +1109,6 @@ export async function runHeadless(
         // "did the work".
         stdout.write(`${stopped.plan}\n\n${stopped.message}\n`);
       } else {
-        // Only a reply that opened with a closed reasoning block is rewritten.
-        // Any other answer is printed exactly as the model wrote it, so an
-        // indented first line (YAML, code piped to a file) keeps its indent.
-        const last = finalAnswerText(contextHistory, finalRunOpeningId);
-        const inline = separateInlineReasoning(last);
-        const answer = inline.found ? inline.content.trimEnd() : last;
         if (answer) stdout.write(answer + '\n');
       }
     } else if (opts.outputFormat === 'json') {
@@ -987,14 +1126,24 @@ export async function runHeadless(
           structuredError: result.structuredError,
           plan: result.plan,
           commandResults,
+          answer,
         },
       });
     } else if (opts.outputFormat === 'stream-json') {
       emit({
         type: 'result',
+        // At the top level, beside `stopReason`, because that is where a
+        // supervised loop reads the outcome from: `jq -e 'select(.type=="result")
+        // | .outcome.reason=="objective_complete"'` was written against this
+        // record and read a null. `result.outcome` stays for hosts already
+        // reading it there.
         stopReason: outcome.reason,
+        outcome,
         result: {
-          messages: contextHistory,
+          // Off by default: a long run's conversation is half a megabyte of JSONL
+          // on one line, which every reader has to buffer before it can look at
+          // the field it came for. `--include-result-messages` asks for it back.
+          ...(opts.includeResultMessages ? { messages: contextHistory } : {}),
           usage: reportedUsage,
           accounting: result.accounting,
           outcome,
@@ -1004,24 +1153,45 @@ export async function runHeadless(
           structuredError: result.structuredError,
           plan: result.plan,
           commandResults,
+          answer,
         },
       });
     }
 
+    // A failed run with no answer used to say nothing at all in text or json output when
+    // the loop reported no error of its own: a prompt a UserPromptSubmit hook refused
+    // exited 1 with empty stdout and stderr. stream-json carries the outcome in `result`.
+    // An SDK host is skipped: it gets the outcome on its `result` event and owns the
+    // stderr of the process it embedded Book in.
+    if (
+      opts.outputFormat !== 'stream-json' &&
+      opts.runSource !== 'sdk' &&
+      outcome.status === 'failed' &&
+      outcome.message &&
+      !answer &&
+      !planNotApplied.outcome &&
+      !eventState.errorReported
+    ) {
+      process.stderr.write(`error: ${outcome.message}\n`);
+    }
+
     if (sessionId) {
-      // A run that completed reports `completion`, even when its reader went away
-      // afterwards. Otherwise an aborted signal (a cancel, or an `AbortSignal.timeout`
-      // that ended the run as timed out) reports `aborted`, and a failed run `error`.
+      // A run that completed reports `completion`, a failed one `error`, and only
+      // then does an abort count: an `aborted` signal is how a cancel, a timeout
+      // and a reader that walked away all arrive, and none of them may rewrite
+      // how the run actually ended (#248).
       const sessionEndReason =
         outcome.status === 'completed'
           ? 'completion'
-          : opts.signal?.aborted || outcome.status === 'cancelled'
-            ? 'aborted'
-            : outcome.status === 'failed'
-              ? 'error'
+          : outcome.status === 'failed'
+            ? 'error'
+            : outcome.status === 'cancelled' || opts.signal?.aborted
+              ? 'aborted'
               : 'completion';
+      disposeSession();
       await agentSession.endLifecycle(config, sessionId, sessionEndReason, {
         onHookEvent: createHookEventHandler(opts, emit),
+        endOutcome: outcome,
       });
     }
 
@@ -1032,13 +1202,18 @@ export async function runHeadless(
     // aborted signal): a cancelled print run, or a stream-json run whose reader went
     // away. A missing prompt is another. End the session SessionStart opened, then
     // rethrow. There is no outcome here, so the signal decides between `aborted` and
-    // `error`. `endLifecycle` fires at most once per session. It gets no signal, as in
+    // `error`, and the outcome handed to the hooks is synthesized for the same reason.
+    // `endLifecycle` fires at most once per session. It gets no signal, as in
     // the TUI: the run's signal may be the one that aborted, and every hook already
     // runs under its own fresh 10 s timeout.
     if (startedSessionId) {
+      disposeSession();
       await agentSession
         .endLifecycle(config, startedSessionId, opts.signal?.aborted ? 'aborted' : 'error', {
           onHookEvent: createHookEventHandler(opts, emit),
+          endOutcome: opts.signal?.aborted
+            ? classifyAbortReason(opts.signal.reason, false)
+            : createTerminalOutcome('failed', 'runtime_error', { partialOutput: false }),
         })
         .catch((hookError: unknown) => {
           console.warn(
@@ -1049,7 +1224,7 @@ export async function runHeadless(
     throw error;
   } finally {
     disposeCrashHandlers?.();
-    agentSession.dispose('headless_complete');
+    disposeSession();
   }
 }
 
@@ -1059,6 +1234,14 @@ function planApprovalStatus(decision: PlanApprovalResult): string {
 }
 
 type HeadlessEmit = (event: unknown) => void;
+
+/** What the event printers remember across one run. */
+interface HeadlessEventState {
+  /** Managed children's progress labels by agent id; see `writeTextProgress`. */
+  childLabels: Map<string, string>;
+  /** Set once an `error` line or record was written for this run. */
+  errorReported: boolean;
+}
 
 function createHookEventHandler(
   opts: HeadlessOptions,
@@ -1072,7 +1255,7 @@ function emitAgentEvent(
   event: AgentEvent,
   opts: HeadlessOptions,
   emit: HeadlessEmit,
-  childAgentNames: Map<string, string>,
+  state: HeadlessEventState,
 ): void {
   if (event.type === 'terminal') return;
   if (event.type === 'agent_text_delta' && opts.forwardSubagentText !== true) return;
@@ -1082,13 +1265,29 @@ function emitAgentEvent(
     else console.warn(event.message);
     return;
   }
+  // A managed child's own line for the operator (#305 item 4). A child runs unattended and its
+  // result is summarised into a handoff, so a step that was refused and never ran is
+  // indistinguishable from one it chose to skip — and only the TUI was rendering this, so a
+  // print-mode operator learned nothing. The label is already on the text, because the child's
+  // prompt is the delegating model's. Unlike the progress lines, and like `notice`, this is not
+  // silenced by `--quiet`: it is not progress, it is something that did not happen, and the
+  // answer alone would not show it.
+  if (event.type === 'agent_notice') {
+    if (opts.outputFormat === 'stream-json') {
+      emit({ type: 'agent_notice', agentId: event.agentId, message: event.message });
+    } else {
+      process.stderr.write(`notice: ${progressLine(event.message, PROGRESS_NOTICE_MAX)}\n`);
+    }
+    return;
+  }
   if (event.type === 'error') {
+    state.errorReported = true;
     if (opts.outputFormat === 'stream-json') emit({ type: 'error', error: event.error });
     else process.stderr.write(`error: ${event.error}\n`);
     return;
   }
   if (opts.outputFormat === 'text' && opts.quiet !== true) {
-    writeTextProgress(event, opts, childAgentNames);
+    writeTextProgress(event, opts, state);
   }
   if (opts.outputFormat !== 'stream-json') return;
 
@@ -1156,6 +1355,12 @@ function emitAgentEvent(
 const PROGRESS_ARG_MAX = 120;
 /** Longest error a `--verbose` result line shows. */
 const PROGRESS_ERROR_MAX = 160;
+/**
+ * Longest child-notice line. A notice carries a refusal message, which quotes a model-chosen
+ * path, so the line is folded and capped exactly as a progress line is — the operator's terminal
+ * is the last place an escape sequence from a model argument should reach.
+ */
+const PROGRESS_NOTICE_MAX = 400;
 
 /**
  * The first non-blank line of `text`, cut to `max` characters, so a plan, an
@@ -1198,7 +1403,7 @@ function progressLine(text: string, max: number): string {
 function writeTextProgress(
   event: AgentEvent,
   opts: HeadlessOptions,
-  childAgentNames: Map<string, string>,
+  state: HeadlessEventState,
 ): void {
   if (event.type === 'tool_use') {
     process.stderr.write(`${toolCallProgress(event.toolCall)}\n`);
@@ -1209,11 +1414,19 @@ function writeTextProgress(
     return;
   }
   if (event.type === 'agent_start') {
-    childAgentNames.set(event.agent.id, event.agent.profile ?? event.agent.name);
+    // Two children of one profile would both print as `[explorer]`: number the later ones
+    // the way the manager numbers display names (`explorer 2`). A child that starts again
+    // (a follow-up) keeps its label.
+    if (!state.childLabels.has(event.agent.id)) {
+      state.childLabels.set(
+        event.agent.id,
+        uniqueAgentDisplayName(event.agent.profile ?? event.agent.name, state.childLabels.values()),
+      );
+    }
     return;
   }
   if (event.type === 'agent_activity') {
-    writeChildToolProgress(event.agentId, event.activity, opts, childAgentNames);
+    writeChildToolProgress(event.agentId, event.activity, opts, state);
   }
 }
 
@@ -1222,11 +1435,11 @@ function writeChildToolProgress(
   agentId: string,
   activity: AgentActivity,
   opts: HeadlessOptions,
-  childAgentNames: Map<string, string>,
+  state: HeadlessEventState,
 ): void {
   if (activity.kind !== 'tool' || !activity.toolCall) return;
   if (activity.status === 'running') {
-    const child = progressLine(childAgentNames.get(agentId) ?? 'agent', PROGRESS_ARG_MAX);
+    const child = progressLine(state.childLabels.get(agentId) ?? 'agent', PROGRESS_ARG_MAX);
     process.stderr.write(`  [${child}] ${toolCallProgress(activity.toolCall)}\n`);
     return;
   }

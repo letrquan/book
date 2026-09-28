@@ -17,11 +17,6 @@ export function stripAnsi(text: string): string {
   return text.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
 }
 
-/** Control characters (a newline, an escape) folded to a space, so a value stays on one row. */
-export function foldControlCharacters<T extends string | undefined>(value: T): T {
-  return value?.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ') as T;
-}
-
 /**
  * Unicode zero-width character ranges.
  * Characters in these ranges contribute 0 to terminal display width.

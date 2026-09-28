@@ -81,6 +81,15 @@ describe('buildMessages', () => {
     const prompt = await buildSystemPrompt(offConfig, undefined);
     expect(prompt).not.toContain('Managed delegation');
     expect(prompt).not.toContain('**explorer**');
+    // The kernel sentence specifically: this repo's own CLAUDE.md is rendered into the prompt and
+    // legitimately mentions AgentSpawn.
+    expect(prompt).not.toContain('issue AgentSpawn calls together');
+  });
+
+  it('keeps a hideAgents prompt (a subagent) free of AgentSpawn guidance', async () => {
+    const prompt = await buildSystemPrompt(defaultConfig(), undefined, { hideAgents: true });
+    expect(prompt).not.toContain('issue AgentSpawn calls together');
+    expect(prompt).toContain('Batch independent read-only calls in one response');
   });
 
   it('emits tool_calls on assistant messages and a tool role message per result', async () => {
@@ -102,6 +111,52 @@ describe('buildMessages', () => {
     expect(out[3].role).toBe('tool');
     expect(out[3].tool_call_id).toBe('call_1');
     expect(out[3].content).toBe('1: hi');
+  });
+
+  it('replays the provider-sent text for a call whose arguments never parsed', async () => {
+    // The typed field carries the malformed text the provider streamed; replay
+    // has to put that text back on the wire, not `"{}", or a resumed session
+    // shows the model an argument object it never produced.
+    const raw = '{"filePath":"src/a.ts","oldString":"const re = /\\d+/;"}';
+    const call: ReturnType<typeof toolCall> = {
+      ...toolCall('call_1', 'Edit'),
+      unparsedArguments: { raw, error: 'Bad escaped character in JSON at position 48' },
+    };
+    const history = [userMsg('edit it'), assistantMsg('', [call], [toolResult('call_1', 'err')])];
+
+    const out = await buildMessages(config, history);
+
+    expect(out[2].tool_calls).toEqual([
+      { id: 'call_1', type: 'function', function: { name: 'Edit', arguments: raw } },
+    ]);
+  });
+
+  it("keeps replaying the legacy {__raw} wrapper's raw text", async () => {
+    // Sessions written before the typed field carry `{ __raw: "…" }` inside
+    // `arguments`; replay still has to surface the wrapped text, not the wrapper.
+    const raw = '{"filePath":"x"';
+    const call = toolCall('call_1', 'Edit', { __raw: raw });
+    const history = [userMsg('edit it'), assistantMsg('', [call], [toolResult('call_1', 'err')])];
+
+    const out = await buildMessages(config, history);
+
+    expect(out[2].tool_calls).toEqual([
+      { id: 'call_1', type: 'function', function: { name: 'Edit', arguments: raw } },
+    ]);
+  });
+
+  it('replays a tool call whose record carries no arguments field', async () => {
+    // A session written before `arguments` was always present can load a call
+    // without one; replay reads the raw text through the same helper, so it must
+    // not throw on the missing field.
+    const call = { id: 'call_1', name: 'Edit' } as ReturnType<typeof toolCall>;
+    const history = [userMsg('edit it'), assistantMsg('', [call], [toolResult('call_1', 'err')])];
+
+    const out = await buildMessages(config, history);
+
+    expect(out[2].tool_calls).toEqual([
+      { id: 'call_1', type: 'function', function: { name: 'Edit', arguments: '{}' } },
+    ]);
   });
 
   it('serializes only explicitly included conversation messages', async () => {
@@ -213,6 +268,54 @@ describe('buildMessages', () => {
       content: 'The answer',
       reasoningContent: 'I checked the relevant file first.',
     });
+  });
+
+  it('replays reasoning only for the turn in progress (#248 item 6)', async () => {
+    const history: Message[] = [
+      userMsg('first'),
+      { ...assistantMsg('Earlier answer.'), reasoningContent: 'earlier thought' },
+      { ...assistantMsg(''), id: 'a-only', reasoningContent: 'a reply that was only reasoning' },
+      { ...userMsg('second'), id: 'u2' },
+      {
+        ...assistantMsg(
+          '',
+          [toolCall('c1', 'Read', { filePath: 'a.ts' })],
+          [toolResult('c1', 'text')],
+        ),
+        id: 'a2',
+        reasoningContent: 'inspect first',
+      },
+      {
+        ...userMsg('[continuation] Continue from exactly where you stopped.'),
+        id: 'u3',
+        derivedContent: true,
+      },
+      { ...assistantMsg('Done.'), id: 'a3', reasoningContent: 'then finish' },
+    ];
+    const out = await buildMessages(config, history);
+    expect(out.filter((m) => m.role === 'assistant').map((m) => m.reasoningContent)).toEqual([
+      undefined,
+      'a reply that was only reasoning',
+      'inspect first',
+      'then finish',
+    ]);
+  });
+
+  it('replays every turn of reasoning when replayAllReasoning is set', async () => {
+    const history: Message[] = [
+      userMsg('first'),
+      { ...assistantMsg('Earlier answer.'), reasoningContent: 'earlier thought' },
+      { ...userMsg('second'), id: 'u2' },
+    ];
+    const out = await buildMessages({ ...config, replayAllReasoning: true }, history);
+    expect(out.find((m) => m.role === 'assistant')?.reasoningContent).toBe('earlier thought');
+  });
+
+  it('says a checkpoint claim is not a tool result, right after the verification line', async () => {
+    const prefix = systemPrefix(await buildMessages(config, [userMsg('hi')]));
+    expect(prefix).toContain(
+      'a second run of the same suite spends a turn and proves nothing new.\n- A checkpoint or summary that says a check passed is not a tool result. When such a claim is the only evidence left, as after compaction, run the check again before you report it.',
+    );
   });
 
   it('injects workspace CLAUDE.md and AGENTS.md instructions into the system prompt', async () => {

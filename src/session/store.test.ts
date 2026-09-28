@@ -618,6 +618,64 @@ describe('SessionStore', () => {
     expect(assistant.toolResults?.[0]).not.toHaveProperty('fileMutation');
   });
 
+  it('round-trips a call whose arguments never parsed through the typed field', () => {
+    // Provider-marked parse failures persist as `unparsedArguments` on the call
+    // (not inside `arguments`), so a resumed session reloads the same refusal.
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    const raw = '{"filePath":"a.ts",';
+    s.append(id, {
+      type: 'assistant',
+      timestamp: 2,
+      data: {
+        complete: true,
+        content: '',
+        toolCalls: [
+          {
+            id: 'tc1',
+            name: 'Edit',
+            arguments: {},
+            unparsedArguments: { raw, error: 'Unexpected end of JSON input' },
+          },
+        ],
+        toolResults: [
+          {
+            toolCallId: 'tc1',
+            success: false,
+            output:
+              'Invalid JSON arguments for Edit: the arguments end before the JSON is complete.',
+          },
+        ],
+      },
+    });
+    const call = s.load(id).history[0].toolCalls?.[0];
+    expect(call).toEqual({
+      id: 'tc1',
+      name: 'Edit',
+      arguments: {},
+      unparsedArguments: { raw, error: 'Unexpected end of JSON input' },
+    });
+  });
+
+  it('keeps an old {__raw} session record loading', () => {
+    // Sessions written before the typed field carry `{ __raw: "…" }` inside
+    // `arguments`; they must still deserialize as a parse failure.
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    const raw = '{"filePath":"a.ts",';
+    s.append(id, {
+      type: 'assistant',
+      timestamp: 2,
+      data: {
+        complete: true,
+        content: '',
+        toolCalls: [{ id: 'tc1', name: 'Edit', arguments: { __raw: raw } }],
+      },
+    });
+    const call = s.load(id).history[0].toolCalls?.[0];
+    expect(call?.arguments).toEqual({ __raw: raw });
+  });
+
   it('touches a session without adding a message', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj' });
@@ -650,5 +708,31 @@ describe('SessionStore', () => {
 
     expect(s.cleanup(30, new Set([active]))).toBe(0);
     expect(existsSync(join(dir, `${active}.jsonl`))).toBe(true);
+  });
+});
+
+describe('SessionStore — host notices survive a reload (#248)', () => {
+  it('restores hostNotice on an assistant record', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-store-notice-'));
+    try {
+      const store = new SessionStore(dir);
+      const id = store.create({ cwd: dir });
+      store.append(id, {
+        type: 'assistant',
+        timestamp: 2,
+        data: {
+          id: 'notice-1',
+          complete: true,
+          content: '[Tool batch rejected: duplicate ids]',
+          hostNotice: true,
+        },
+      });
+
+      const loaded = store.load(id);
+
+      expect(loaded.transcript.find((message) => message.id === 'notice-1')?.hostNotice).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

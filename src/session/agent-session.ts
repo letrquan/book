@@ -36,13 +36,15 @@ import {
   createTerminalOutcome,
   type AgentTerminalOutcome,
 } from '../types/terminal.js';
-import type { ToolCall, ToolResult, UserQuestionResponse } from '../types/tools.js';
-import {
-  collectAtMentionObservations,
-  expandAtMentions,
-  expandShellCommands,
-} from '../input/input-expansion.js';
+import type {
+  PermissionDecision,
+  ToolCall,
+  ToolResult,
+  UserQuestionResponse,
+} from '../types/tools.js';
+import { collectAtMentionObservations, expandUserInput } from '../input/input-expansion.js';
 import { observationKey } from '../tools/file-provenance.js';
+import { promptSizeTokens } from '../pricing.js';
 import { AgentInteractionController } from './agent-interactions.js';
 import {
   AgentSessionOperations,
@@ -298,25 +300,6 @@ export type AgentSessionTransitionResult =
 type AgentSessionListener = (snapshot: AgentSessionSnapshot) => void;
 
 /** Shared owner for agent-loop execution, interaction promises, and operation lifetime. */
-/**
- * Usage written since the last record, so a stream of deltas still sums correctly.
- *
- * Clamped at zero per field: a compaction or a re-priced retry can make an
- * inclusive total move backwards, and a negative delta would silently refund
- * spend the run actually made.
- */
-function subtractUsage(total: Usage, already: Usage): Usage {
-  const at = (left: number | undefined, right: number | undefined): number =>
-    Math.max(0, (left ?? 0) - (right ?? 0));
-  return {
-    promptTokens: at(total.promptTokens, already.promptTokens),
-    completionTokens: at(total.completionTokens, already.completionTokens),
-    totalTokens: at(total.totalTokens, already.totalTokens),
-    cacheReadInputTokens: at(total.cacheReadInputTokens, already.cacheReadInputTokens),
-    cacheCreationInputTokens: at(total.cacheCreationInputTokens, already.cacheCreationInputTokens),
-  };
-}
-
 export class AgentSession {
   readonly interactions = new AgentInteractionController();
   readonly operations = new AgentSessionOperations();
@@ -330,7 +313,9 @@ export class AgentSession {
   private readonly listeners = new Set<AgentSessionListener>();
   private runGeneration = 0;
   private lifecycleStartedSessionId?: string;
+  private lifecycleStart?: Promise<void>;
   private lifecycleEndedSessionId?: string;
+  private lifecycleEnd?: Promise<void>;
   private runtime: SessionRuntime;
   private readonly registryFactory?: AgentSessionDependencies['registryFactory'];
 
@@ -539,20 +524,32 @@ export class AgentSession {
     source: Parameters<typeof runSessionStart>[2],
     options?: SessionLifecycleOptions,
   ): Promise<void> {
-    if (this.lifecycleStartedSessionId === sessionId) return;
+    if (this.lifecycleStartedSessionId === sessionId) {
+      await this.lifecycleStart?.catch(() => undefined);
+      return;
+    }
     this.lifecycleStartedSessionId = sessionId;
-    await this.sessionStartRunner(config, sessionId, source, options);
+    this.lifecycleStart = this.sessionStartRunner(config, sessionId, source, options);
+    await this.lifecycleStart;
   }
 
+  // A second call for a session that is already ending waits for the SessionEnd in flight
+  // instead of returning at once, which let a second exit or a `/clear` racing an exit move on
+  // while the hooks were still running. The first caller reports a failed SessionEnd; a caller that
+  // only waited for it does not report the same failure a second time.
   async endLifecycle(
     config: AgentConfig,
     sessionId: string,
     reason: Parameters<typeof runSessionEnd>[2],
     options?: SessionLifecycleOptions,
   ): Promise<void> {
-    if (this.lifecycleEndedSessionId === sessionId) return;
+    if (this.lifecycleEndedSessionId === sessionId) {
+      await this.lifecycleEnd?.catch(() => undefined);
+      return;
+    }
     this.lifecycleEndedSessionId = sessionId;
-    await this.sessionEndRunner(config, sessionId, reason, options);
+    this.lifecycleEnd = this.sessionEndRunner(config, sessionId, reason, options);
+    await this.lifecycleEnd;
   }
 
   async clearSession(
@@ -681,14 +678,19 @@ export class AgentSession {
   async recordUserMessage(
     request: AgentSessionRecordUserRequest,
   ): Promise<{ contextMessage: string; sessionName: string }> {
-    const expandedMentions =
-      request.contextMessage === undefined
-        ? expandAtMentions(request.displayMessage, request.config.workspace)
-        : request.contextMessage;
+    // One pass over what the user typed: a `!cmd` line runs, an `@path` mention
+    // is inlined, and neither is found in the other's output. A mentioned file's
+    // lines must never run as commands, and a command's output must never be read
+    // as the user's own mentions (#261 review).
+    const expandShellInput =
+      request.contextMessage === undefined && request.expandShellInput !== false;
     const contextMessage =
-      request.contextMessage !== undefined || request.expandShellInput === false
-        ? expandedMentions
-        : await expandShellCommands(expandedMentions, request.config.workspace, request.signal);
+      request.contextMessage !== undefined
+        ? request.contextMessage
+        : await expandUserInput(request.displayMessage, request.config.workspace, {
+            expandShell: expandShellInput,
+            signal: request.signal,
+          });
     request.userMessage.contextContent =
       contextMessage === request.displayMessage ? undefined : contextMessage;
     request.userMessage.fileObservations =
@@ -697,6 +699,7 @@ export class AgentSession {
             request.displayMessage,
             request.config.workspace,
             request.userMessage.id,
+            expandShellInput,
           )
         : [];
     const observationLedger = (request.runtime ?? this.runtime).fileObservationLedger;
@@ -912,12 +915,14 @@ export class AgentSession {
       } satisfies SessionRecord);
     }
     request.onCommitted?.(result, boundary);
+    // No signal: a saved compaction cannot be taken back, so a cancel here (Esc in the row's last
+    // moments, an exit, a cancelled turn around an auto-compaction) would stop nothing but the
+    // user's hooks. They run to their own timeouts.
     await this.postCompactHooksRunner(request.config, {
       trigger: result.trigger,
       sessionId: request.sessionId,
       focus: request.options.focus,
       onHookEvent: request.options.onHookEvent,
-      signal: request.options.signal,
     });
     return { result, boundary };
   }
@@ -982,14 +987,6 @@ export class AgentSession {
        * leave half a plan on disk. The signature check keeps a per-wave callback
        * from appending an identical record on every tool result.
        */
-      /** Inclusive usage already written to the timeline for this run. */
-      let persistedUsage: Usage = {
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
-      };
       let lastPlanSignature = '';
       const persistPlan = (): void => {
         if (!request.timelineStore) return;
@@ -1038,7 +1035,9 @@ export class AgentSession {
           finalizeOutcome(outcome);
         },
         onPermissionRequired: (toolCall) => {
-          if (request.isCurrent?.() === false) return Promise.resolve('deny');
+          if (request.isCurrent?.() === false) {
+            return Promise.resolve<PermissionDecision>({ result: 'deny', reason: 'dismissed' });
+          }
           return callbacks.onPermissionRequired
             ? callbacks.onPermissionRequired(toolCall)
             : this.interactions.requestPermission(toolCall);
@@ -1077,22 +1076,37 @@ export class AgentSession {
           // is precisely the delegated money a budget is supposed to bound.
           //
           // `RunAccounting` already tracks every execution under this root in
-          // process, so the honest number is its inclusive total minus whatever has
-          // already been written. Cost is still not stored: it is re-derived from
-          // tokens at bootstrap, deliberately at the most expensive model involved.
-          const inclusive = request.runContext
-            ? runtime.runAccounting.snapshotRoot(request.runContext.rootRunId).inclusiveUsage
-            : null;
-          const recordUsage = inclusive ? subtractUsage(inclusive, persistedUsage) : nextUsage;
-          if (inclusive) persistedUsage = inclusive;
-          if (recordUsage.totalTokens <= 0 && recordUsage.promptTokens <= 0) return;
+          // process, so the honest number is the part of its inclusive total that
+          // no `usage` record covers yet — the root owns that watermark, seeded
+          // from the carry the session resumed with, so neither a restart nor a
+          // second run under the same root writes a token twice. Read the run
+          // context this run resolved, not the request's: a caller that passed none
+          // is still charged to the root minted above, and keying off the request
+          // skipped the watermark and wrote only the reported turn. Cost is still
+          // not stored: it is re-derived from tokens at bootstrap, deliberately at
+          // the most expensive model involved.
+          const unpersisted = runtime.runAccounting.peekUnpersistedUsage(runContext.rootRunId);
+          const recordUsage = unpersisted ?? nextUsage;
+          // A full cache hit leaves `promptTokens` at 0 on a provider that omits
+          // `total_tokens`; the record still carries spend.
+          if (
+            recordUsage.totalTokens <= 0 &&
+            promptSizeTokens(recordUsage) + recordUsage.completionTokens <= 0
+          )
+            return;
           // `RunAccounting.roots` is rebuilt with the process, so without a durable
           // record forty restarts is forty independent budget caps. The 'usage'
           // SessionRecord type was already declared with no writers; this is it.
           // Cost is not stored — pricing can change between processes, so it is
           // re-derived from tokens at bootstrap.
-          if (request.isCurrent?.() !== false) {
-            request.timelineStore?.append(request.sessionId, {
+          //
+          // The watermark moves only here, where the record really lands. A turn
+          // that reaches no store — a session that moved on, a run with nowhere to
+          // write — leaves its spend unpersisted instead, for the next writer under
+          // this root to record; counted as written, no record would ever hold it.
+          const store = request.isCurrent?.() === false ? undefined : request.timelineStore;
+          if (store) {
+            store.append(request.sessionId, {
               type: 'usage',
               timestamp: Date.now(),
               data: {
@@ -1102,16 +1116,15 @@ export class AgentSession {
                 responseModel: metadata?.responseModel,
               },
             } satisfies SessionRecord);
+            runtime.runAccounting.commitPersistedUsage(runContext.rootRunId);
           }
           callbacks.onUsage?.(nextUsage, metadata);
         },
         getMode: callbacks.getMode,
         onModeChange: callbacks.onModeChange,
         onPlanHandoff: callbacks.onPlanHandoff,
-        // Kept under Zero-Mem: `loopConfig` already sets `autoCompactEnabled:
-        // false`, which gates the loop's two routine compaction paths, and the
-        // context-overflow path at the bottom of the turn is deliberately not
-        // gated by it. Nulling the callback disabled that recovery too.
+        // Passed through as is: the loop gates every compaction site on
+        // `autoCompactEnabled`, the context-overflow recovery included.
         onCompact: callbacks.onCompact,
         prepareCompact: callbacks.prepareCompact,
         commitCompact: callbacks.commitCompact,
@@ -1131,6 +1144,9 @@ export class AgentSession {
               toolCalls: message.toolCalls,
               toolResults: message.toolResults,
               fileObservations: message.fileObservations,
+              // Without this a resumed session reads a host notice as the model's
+              // own reply: `finalAnswerText` and the answer walk both key on it.
+              hostNotice: message.hostNotice,
             },
           } satisfies SessionRecord);
           callbacks.onAssistantMessageComplete?.(message);

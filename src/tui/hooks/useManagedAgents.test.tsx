@@ -81,6 +81,51 @@ function completionNotification(
 }
 
 describe('useManagedAgents', () => {
+  it('queues every notice a child raises, oldest first (PR #334 finding 8)', async () => {
+    // The notice slot was a single value, and the drain waits for idle while children run
+    // concurrently: two children refusing something in the same turn left one notice, so the
+    // operator never learned a step had not happened. A queue, taken one at a time.
+    let listener: ((event: AgentRuntimeEvent) => void) | undefined;
+    const manager = {
+      list: vi.fn(async () => [
+        { ...record('a1', 20), parentSessionId: 's1' },
+        { ...record('b2', 21), parentSessionId: 's1' },
+      ]),
+      listPendingCompletions: vi.fn(async () => []),
+      subscribe: vi.fn((next: (event: AgentRuntimeEvent) => void) => {
+        listener = next;
+        return vi.fn();
+      }),
+      setInteractivePermissions: vi.fn(),
+    } as unknown as AgentManager;
+    let latest: ManagedAgentState | undefined;
+    function Harness() {
+      latest = useManagedAgents(manager, 's1');
+      return <Text>{latest.noticeQueue.map((event) => event.message).join('|')}</Text>;
+    }
+
+    const view = render(<Harness />);
+    await vi.waitFor(() => expect(latest?.records.size).toBe(2));
+    for (const [agentId, message] of [
+      ['a1', 'first refusal'],
+      ['b2', 'second refusal'],
+    ] as const) {
+      listener?.({ type: 'agent_notice', agentId, message } as AgentRuntimeEvent);
+      await wait(0);
+    }
+
+    // Both are held, in the order they arrived.
+    expect(latest?.noticeQueue.map((event) => event.message)).toEqual([
+      'first refusal',
+      'second refusal',
+    ]);
+    // Taking one leaves the other, rather than clearing both.
+    latest?.takeNotice();
+    await wait(0);
+    expect(latest?.noticeQueue.map((event) => event.message)).toEqual(['second refusal']);
+    view.unmount();
+  });
+
   it('keeps one non-modal persistence warning and replaces it with recovery status', async () => {
     let listener: ((event: AgentRuntimeEvent) => void) | undefined;
     const manager = {
@@ -403,7 +448,7 @@ describe('host-orchestrated agents in the session surface', () => {
       pendingQuestion: undefined,
       pendingQuestionCreatedAt: undefined,
       parentSessionId: 'current-session',
-      notifyParentOnCompletion: false,
+      spawnerClaim: { throughRunSequence: 1, notifyParent: false, resumeAfterRestart: false },
       // Suppression marks the generation delivered as it is produced.
       completionSequence: terminal ? 1 : 0,
       completionDeliveredSequence: terminal ? 1 : 0,

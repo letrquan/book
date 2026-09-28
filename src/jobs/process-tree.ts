@@ -8,9 +8,14 @@
  * group membership; the direct child's own exit proves nothing about the tree behind it.
  */
 
+import { execFile, type ChildProcess } from 'node:child_process';
 import { systemClock, type Clock } from '../clock.js';
+import { buildChildEnv } from '../child-env.js';
+import { system32Executable } from '../system32.js';
 
 const GROUP_POLL_INTERVAL_MS = 25;
+/** How long a process group is given between SIGTERM and SIGKILL, and how long taskkill may take. */
+export const TERMINATE_GRACE_MS = 1_500;
 
 /** A signal target exists when it accepts signal 0, or rejects it as another user's. */
 function signalTargetExists(target: number): boolean {
@@ -70,4 +75,98 @@ export async function waitForProcessGroupExit(
     await new Promise((resolve) => setTimeout(resolve, GROUP_POLL_INTERVAL_MS));
   }
   return true;
+}
+
+export function waitForProcessClose(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve(proc.exitCode !== null || proc.signalCode !== null);
+    }, timeoutMs);
+    const onClose = () => {
+      cleanup();
+      resolve(true);
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      proc.off('close', onClose);
+    };
+    proc.once('close', onClose);
+  });
+}
+
+type WindowsTreeKill = (pid: number) => Promise<boolean>;
+
+/**
+ * `taskkill /T /F` on the tree rooted at `pid`, resolved through `system32Executable` so a
+ * workspace on the PATH cannot stand in for it. Reports whether the kill actually ran. The bound is
+ * a parameter because a caller that exits straight afterwards has nobody to escalate for it and can
+ * afford to wait far longer than one that does.
+ */
+export async function runTaskkill(
+  pid: number,
+  timeoutMs: number = TERMINATE_GRACE_MS,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(
+      system32Executable('taskkill'),
+      ['/PID', String(pid), '/T', '/F'],
+      // Book's own helper, but it is a command like any other and is handed no more of Book's
+      // environment than the next one would be.
+      { windowsHide: true, timeout: timeoutMs, env: buildChildEnv() },
+      (error) => resolve(!error),
+    );
+  });
+}
+
+export async function terminateWindowsProcessTree(
+  proc: ChildProcess,
+  pid: number,
+  signal: NodeJS.Signals,
+  treeKill: WindowsTreeKill = runTaskkill,
+): Promise<boolean> {
+  const alreadyExited = proc.exitCode !== null || proc.signalCode !== null;
+  if (alreadyExited) return true;
+  if (await treeKill(pid)) return true;
+  try {
+    proc.kill(signal);
+  } catch {
+    // The process may have exited between taskkill and the direct-child fallback.
+  }
+  return false;
+}
+
+/**
+ * Escalate SIGTERM → SIGKILL across the whole tree and report whether it is really gone.
+ *
+ * On POSIX the direct child is the `sh -c` wrapper, which dies from SIGTERM even when the worker
+ * it forked ignores it, so its exit says nothing about the tree — success is judged on whether
+ * the process group still holds anything. On Windows `taskkill /T /F` covers the tree, so the
+ * direct child's close speaks for the tree only when taskkill actually ran.
+ */
+export async function terminateProcessTree(
+  proc: ChildProcess | undefined,
+  pid: number | undefined,
+  hasClosed: (timeoutMs: number) => Promise<boolean>,
+): Promise<boolean> {
+  if (!proc || pid === undefined) return true;
+  if (process.platform !== 'win32') {
+    signalProcessGroup(proc, pid, 'SIGTERM');
+    if (await waitForProcessGroupExit(pid, TERMINATE_GRACE_MS)) return true;
+    signalProcessGroup(proc, pid, 'SIGKILL');
+    return waitForProcessGroupExit(pid, TERMINATE_GRACE_MS);
+  }
+  const confirmed = await terminateWindowsProcessTree(proc, pid, 'SIGTERM');
+  if (await hasClosed(TERMINATE_GRACE_MS)) return confirmed;
+  try {
+    proc.kill('SIGKILL');
+  } catch {
+    return false;
+  }
+  return (await hasClosed(TERMINATE_GRACE_MS)) && confirmed;
+}
+
+export async function terminateForegroundProcess(proc: ChildProcess): Promise<void> {
+  await terminateProcessTree(proc, proc.pid, (timeoutMs) => waitForProcessClose(proc, timeoutMs));
 }

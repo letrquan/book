@@ -325,7 +325,7 @@ export const taskTools: ToolDefinition[] = [
   {
     name: 'TaskCreate',
     description:
-      'Create an agent task with status, dependencies, metadata, and optional activeForm. Use this instead of TodoWrite for tracking multi-step work.',
+      "Create an agent task with status, dependencies, metadata, and optional activeForm. Use tasks when steps depend on each other or need metadata; a plain checklist fits TodoWrite, whose list is shown in every turn's <session-state> block.",
     parameters: {
       type: 'object',
       properties: {

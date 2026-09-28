@@ -404,4 +404,130 @@ describe('spend attribution across snapshot kinds', () => {
     accounting.startRoot(context('r2', 'r2'), 10);
     expect(accounting.budgetedRootRunId()).toBeUndefined();
   });
+
+  describe('the unpersisted-usage watermark', () => {
+    const meta = {
+      provider: 'anthropic',
+      requestedModel: 'claude-sonnet-5',
+      responseModel: 'claude-sonnet-5',
+      responseId: 'r1',
+      status: 'verified',
+    } as unknown as ProviderResponseMetadata;
+
+    it('never hands back the carry a seeded root restored', () => {
+      // The carry is what earlier processes already wrote as `usage` records.
+      // Handing it back would write those tokens again on this process's first
+      // response, and the next restart would restore an inflated total.
+      const accounting = new RunAccounting();
+      accounting.startRoot(context('root-g', 'root-g'));
+      accounting.seedRoot('root-g', { usage: usage(1_000, 100), costUsd: 0.5 });
+      accounting.record(context('root-g', 'root-g'), usage(10, 1), meta);
+
+      expect(accounting.peekUnpersistedUsage('root-g')).toMatchObject(usage(10, 1));
+      accounting.commitPersistedUsage('root-g');
+      expect(accounting.peekUnpersistedUsage('root-g')).toMatchObject(usage(0, 0));
+    });
+
+    it('records a second run under a shared root only for what that run spent', () => {
+      // A managed agent's completion is delivered to the model as a new run under
+      // the root the spawning turn already used, in the same process. The spawn's
+      // spend is on disk; re-persisting the root's whole inclusive total would
+      // bill it twice.
+      const accounting = new RunAccounting();
+      const root = context('parent-run', 'shared-root');
+      accounting.startRoot(root, 5);
+      accounting.record(root, usage(100, 10), meta);
+      expect(accounting.peekUnpersistedUsage('shared-root')).toMatchObject(usage(100, 10));
+      accounting.commitPersistedUsage('shared-root');
+
+      const continuation = context('continuation-run', 'shared-root');
+      accounting.startExecution(continuation);
+      accounting.record(continuation, usage(20, 2), meta);
+
+      expect(accounting.peekUnpersistedUsage('shared-root')).toMatchObject(usage(20, 2));
+    });
+
+    it('picks up spend recorded after the last read, never dropping it', () => {
+      // A background agent that answers between two runs: its usage reaches the
+      // root's total without any `usage` record of its own, so the next read has
+      // to carry it or the restored carry is short by exactly that much.
+      const accounting = new RunAccounting();
+      const root = context('root-h', 'root-h');
+      accounting.startRoot(root, 5);
+      accounting.record(root, usage(10, 1), meta);
+      accounting.commitPersistedUsage('root-h');
+
+      accounting.startExecution(context('late-agent', 'root-h'));
+      accounting.record(context('late-agent', 'root-h'), usage(7, 3), meta);
+
+      expect(accounting.peekUnpersistedUsage('root-h')).toMatchObject(usage(7, 3));
+    });
+
+    it('leaves a peek that was never committed for the next reader', () => {
+      // A writer that decides not to append — the session moved on, or it has
+      // nowhere to write — must not consume the delta. Committing on the peek
+      // would mark those tokens written for every later writer under the root
+      // while no record ever held them, so nothing would restore them after a
+      // restart.
+      const accounting = new RunAccounting();
+      const root = context('root-i', 'root-i');
+      accounting.startRoot(root, 5);
+      accounting.record(root, usage(10, 1), meta);
+
+      expect(accounting.peekUnpersistedUsage('root-i')).toMatchObject(usage(10, 1));
+      // The skipped append: no commit.
+      accounting.record(context('root-i', 'root-i'), usage(5, 1), meta);
+
+      expect(accounting.peekUnpersistedUsage('root-i')).toMatchObject(usage(15, 2));
+    });
+
+    it("seeds the watermark from the carry's own persisted figure", () => {
+      // The multi-prompt stream-json carry is a previous root's in-memory total,
+      // which can exceed what that root wrote: a background agent or a compaction
+      // judge can spend after its last `onUsage`. Seeding the watermark with the
+      // whole carry skipped that remainder for good.
+      const accounting = new RunAccounting();
+      accounting.startRoot(context('root-j', 'root-j'));
+      accounting.seedRoot('root-j', {
+        usage: usage(1_000, 100),
+        costUsd: 0.5,
+        persistedUsage: usage(900, 90),
+      });
+      accounting.record(context('root-j', 'root-j'), usage(10, 1), meta);
+
+      // The previous root's unwritten 100/10, then this root's own 10/1.
+      expect(accounting.peekUnpersistedUsage('root-j')).toMatchObject(usage(110, 11));
+    });
+
+    it('peeks the same total the snapshot reports, so the two cannot drift', () => {
+      // The unpersisted figure is the snapshot's inclusive total less the
+      // watermark. Computing the sum a second way let the two disagree, and the
+      // record set then stopped adding up to what the budget rail believed.
+      const accounting = new RunAccounting();
+      const root = context('root-k', 'root-k');
+      accounting.startRoot(root, 5);
+      accounting.seedRoot('root-k', { usage: usage(100, 10), costUsd: 0.1 });
+      accounting.record(root, usage(20, 2), meta);
+      accounting.startExecution(context('child-k', 'root-k'));
+      accounting.record(context('child-k', 'root-k'), usage(3, 1), meta);
+
+      const peeked = accounting.peekUnpersistedUsage('root-k');
+      accounting.commitPersistedUsage('root-k');
+
+      expect(accounting.persistedUsage('root-k')).toEqual(
+        accounting.snapshotRoot('root-k').inclusiveUsage,
+      );
+      // The carried 100 was already on disk, so only this process's spend was new.
+      expect(peeked).toMatchObject(usage(23, 3));
+    });
+
+    it('reports nothing for a root it has never seen', () => {
+      const accounting = new RunAccounting();
+      expect(accounting.peekUnpersistedUsage('missing')).toBeNull();
+      expect(accounting.persistedUsage('missing')).toBeUndefined();
+      // Committing an unknown root must not mint one with a watermark.
+      accounting.commitPersistedUsage('missing');
+      expect(accounting.hasRoot('missing')).toBe(false);
+    });
+  });
 });
