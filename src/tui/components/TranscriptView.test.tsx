@@ -247,6 +247,35 @@ describe('TranscriptView', () => {
     expect(frameLines(app.lastFrame())).toEqual(['E', 'F', 'G', 'H']);
   });
 
+  it('moves a quick second notch further, gliding it in over frames', async () => {
+    const labels = Array.from({ length: 60 }, (_, index) => `R${index}`);
+    const app = render(view(labels, { height: 6 }));
+    const topRow = (frame: string | undefined) =>
+      Number(
+        frameLines(frame)
+          .find((line) => /^R\d+$/.test(line))
+          ?.slice(1),
+      );
+    const start = topRow(app.lastFrame());
+
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    await flushFrame();
+    expect(topRow(app.lastFrame())).toBe(start - 3);
+
+    // A second notch 20 ms later is part of a run: it moves further than a lone notch.
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    const drawn = app.frames.length;
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    await vi.waitFor(() => expect(start - topRow(app.lastFrame())).toBeGreaterThan(6), {
+      timeout: 500,
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    const tops = [...new Set(app.frames.slice(drawn).map(topRow))];
+    // It lands over more than one frame, each one closer to where the run ends.
+    expect(tops.length).toBeGreaterThan(1);
+    expect(tops).toEqual([...tops].sort((left, right) => right - left));
+  });
+
   it('toggles expandable tool summaries on a left click release', () => {
     const onToggleTool = vi.fn();
     const toolView = (isExpanded: boolean) => (

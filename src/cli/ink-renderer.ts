@@ -41,7 +41,8 @@ export type CreateLogUpdate = (
   options?: { incremental?: boolean },
 ) => LogUpdateRenderer;
 
-function inkBuildDir(from: string | URL = import.meta.url): string {
+/** Ink's build directory, where its private modules live. Throws when Ink cannot be resolved. */
+export function inkBuildDir(from: string | URL = import.meta.url): string {
   const require = createRequire(from);
   return dirname(require.resolve('ink'));
 }
