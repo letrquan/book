@@ -6,6 +6,7 @@
     "scripts/compact-eval-worker.ts",
     "scripts/verify-ink.ts",
     "scripts/package-smoke.ts",
-    "scripts/prompt-eval.ts"
+    "scripts/prompt-eval.ts",
+    "scripts/run-book-mock-provider.test.ts"
   ]
 }

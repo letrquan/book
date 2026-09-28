@@ -11,6 +11,7 @@
     "src/tui/__benchmarks__/*.tsx",
     "scripts/*.ts",
     "scripts/*.mjs",
+    ".claude/skills/run-book/*.mjs",
     "*.config.ts"
   ],
   "project": ["src/**/*.ts", "src/**/*.tsx", "scripts/**/*.ts"],

@@ -110,6 +110,19 @@ All notable changes to this project are documented in this file.
   keyed on the resolved absolute path rather than the display spelling (the message still names the
   spelling the model wrote). A file in an honored root keeps its `../` prefix, so `notes.txt` in
   `/srv/app` and `notes.txt` in the workspace still do not share an entry.
+- **`Grep` now ends its options with `--`, so a path starting with `-` can't be read as a ripgrep
+  option** (#324). The scope's path went to `rg` as an operand with nothing separating it from the
+  options, and ripgrep's `--pre` names a program to run on every file it searches. A repository
+  that commits a directory named `--pre=.` beside an executable `x` therefore turned a model call of
+  `Grep { path: "--pre=./x" }` into `--pre=./x`, and `rg` ran `./x` over everything it searched —
+  with no prompt, because a workspace `Grep` is auto-allowed. The argv is now built by one function
+  that ends it with `--`, so the path is the only thing after the separator, and the pattern and
+  the include stay behind `--regexp` and `--glob`. Two other places that shape is kept: `/review`
+  refuses a ref that starts with `-` (`Invalid git ref: …`) before it reaches `git merge-base` or
+  `git rev-parse` — git reads such an argument as an option rather than a ref, which is defense in
+  depth rather than a known code-execution path — and a test holds the read-only Git tools to
+  declaring no parameters at all, so a parameter added to one has to be reviewed rather than
+  inherited.
 
 ### Changed
 
@@ -581,6 +594,78 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Spend made after a root run's last response is now persisted** (#336). The session's `usage`
+  records — the only durable statement of what a run cost, and the sum a resumed process restores —
+  were written from one place: the callback a root's own responses report through. Spend
+  `RunAccounting` was charged afterwards reached no store at all, so it left with the process. A
+  host-run `/review` in print mode is the clearest case: its reviewer agents' requests are charged to
+  the run's root, no response of that root is ever made to report them, and the session ended having
+  paid for a review its own history said cost nothing. A background managed agent that answered after
+  the root's last response, and a compaction judge, lost their spend the same way — and because a
+  resumed session restores its carry by summing these records, the next process was handed a budget
+  that had never been spent, so `--max-budget-usd` re-authorized it. The writer is now one function,
+  reached from three places: a response reporting usage (unchanged), the end of a root run whether it
+  returned or threw, and the end of the session — `dispose`, and `reset`/a `/clear`/`/resume`
+  transition, each after the outgoing runtime's managed children are stopped and before its store is
+  released. Whatever the children had already been charged for by then is in the figure written; a
+  managed child still unwinding asynchronously past that synchronous stop can still be missed, and the
+  next run's delta is what recovers it. The end-of-session flushes write to the target's own store and
+  session, and do not consult the turn's lease: by then it has been released, and honouring it skipped
+  every target the TUI ever created, which is exactly where a background agent's late spend went. Each
+  flush writes **one** record for the whole unwritten delta, and every record — a response's and a
+  flush's alike — carries a new `models` field naming every model its root has spent on, children
+  included, which `store.ts` folds into `carriedModels` beside the existing `responseModel ??
+requestedModel`. A record's own model names only the response that triggered the write, which for a
+  cheap root whose pricier children all finished first is the cheap one, and the carry was then priced
+  below what it had cost. Roots the host runs itself are registered the same way, so a TUI `/review`
+  (previously one unregistered root per reviewer, lens and verifier) and a compaction's own model calls
+  — a manual `/compact`, and an auto-compact in a send cancelled before its turn began — reach a
+  record. A root that hands its totals to the next one records the figure it handed on and stops
+  writing there: the successor's carry already holds it, so the remainder is written once rather than
+  by both roots, and spend the source is charged after the hand-over is still its own. A handled
+  command carries the same rule: `/review` between two prompts now rebuilds the carry instead of leaving
+  the next prompt to re-seed a total that still named the first prompt's root, which had both dropped
+  the review's spend from the next prompt's budget and re-stamped that root's hand-over floor against a
+  total it had never passed on. A run whose session has moved on, or that has nowhere to write, still
+  leaves its spend for a writer that can, and a store whose append fails no longer replaces a finished
+  run's outcome or aborts a sweep part-way: that root's watermark stays where it was, so the spend is
+  still owed, and the other roots are still written.
+- **Print mode and `query()` no longer document a plan decision they cannot make** (#340). Plan
+  approval in a non-interactive host is asked as an ordinary `AskUserQuestion` with two options, so
+  the `plan_approval` status is one of `approve`, `reject`, `revise`, or `stop` — `approve-fresh`,
+  which approves with a fresh context, belongs to the interactive TUI, the only host that owns the
+  conversation it would reseed. `docs/guide/cli.md` listed it for both hosts. A unit test now pins
+  every answer shape — Approve, Reject, free text, decline, cancel, invalid — to one of the four.
+- **The C++ outline no longer backtracks exponentially on repeated `template<…>` units** (#326). The
+  pattern behind `Read { outline: true }` allowed a `template<…>` prefix on each repeated return-type
+  word, so `template<a> ` read two ways — as that prefix, or as the word `template` plus the generic
+  `<a>` — and every repetition doubled the work. A line of forty of them took tens of seconds and
+  blocked the event loop while it did, and a model only had to be pointed at such a file to get
+  there. A template head is a unit of the return type now, and a type word refuses to start where a
+  head starts, so each unit has exactly one parse and the repetition is linear. Because the head is
+  a unit rather than a prefix, it is read at any position and in either spelling, so
+  `template<typename T> template <typename U> void bar(U u) {` outlines as it should.
+- **`sharp` is installed, so the run-book skill's media scripts work** (#335). `sharp` was named
+  only under `overrides`, left there by an audit advisory for a dev dependency that has since gone,
+  so nothing installed it: `record-gif.mjs` required it at the top and failed at once, and
+  `readme-media.sh` runs `record-gif.mjs`, so regenerating `docs/media/` died on a fresh
+  `npm ci`. It is a devDependency now, and the override follows that direct range (`"$sharp"`), so
+  a transitive sharp keeps the version the advisory pinned.
+- **The mock provider's request log is private, and a bad scenario turn no longer kills the mock**
+  (#327). The log sat at a predictable `<tmp>/book-mock-<port>.requests.jsonl`, was truncated at
+  startup and appended per request by name, so a path pre-created as a symbolic link received whole
+  request bodies. It now lives in a temp directory the mock creates for the run once it is listening
+  (mode 0700), opened once — with `O_TRUNC` and, where it exists, `O_NOFOLLOW` — and appended
+  through that descriptor; an explicit `--request-log` is still honoured, and a symbolic link at
+  that path, or a log that cannot be opened at all, is refused before the server serves anything.
+  That directory is removed when the mock stops (normal exit, SIGINT, SIGTERM, SIGHUP), and by the
+  driver after a hard kill, so a log of whole request bodies does not outlive its run: pass
+  `--request-log` (the driver's `--mock-request-log`) to keep it. A scenario turn of the wrong shape
+  — `{"text": 5}` — used to throw after the 200 was on the wire, where nothing caught it, and the
+  unhandled rejection took the whole mock down mid-run; turns are checked before the reply is
+  written, and a bad one is answered with a 500 naming the turn while the run continues. The
+  driver prints the log path it was given, and `--port 0` now takes any free port and names the
+  bound one on the READY line, so two runs on one machine cannot race for a port.
 - **An MCP stdio write that failed after teardown no longer crashes the process** (#338). The
   transport's no-op `error` listener on the server's stdin was removed when the transport closed,
   but a write still queued on that pipe — a large request, or the cancellation sent on abort —

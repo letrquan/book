@@ -14,12 +14,22 @@ import type { HostReviewRequest, HostReviewResult } from '../review/host.js';
 
 const useAgentMock = vi.fn();
 const useTasksMock = vi.fn();
+/** The session seam that mints a tracked root for a host-run subtree. */
+const trackRunUsageMock = vi.fn(() => ({ rootRunId: 'review-root', runId: 'review-run' }));
 const managedAgentManagerMock = {
   list: vi.fn(async () => []),
   listPendingCompletions: vi.fn(async () => []),
   subscribe: vi.fn(() => () => {}),
   setInteractivePermissions: vi.fn(),
   send: vi.fn(),
+  spawn: vi.fn(async (request: { rootRunId?: string }) => ({
+    id: 'agent-1',
+    status: 'completed',
+    result: '{}',
+    error: undefined,
+    producedEvidenceIds: [],
+    rootRunId: request.rootRunId,
+  })),
   stop: vi.fn(),
   apply: vi.fn(),
   get: vi.fn(),
@@ -136,6 +146,7 @@ function agentState(sessionId: string, addLocalMessage: ReturnType<typeof vi.fn>
     setCompactUi: vi.fn(),
     cycleMode: vi.fn(),
     addLocalMessage,
+    startHostRun: trackRunUsageMock,
     setModel: vi.fn(),
     upsertProviderAndSelect: vi.fn(() => ({ ok: true })),
     removeProvider: vi.fn(() => ({ ok: false, error: 'not local' })),
@@ -262,5 +273,37 @@ describe('/review lifecycle in the session that started it', () => {
     await submit(view, '/review');
 
     expect(reviewCalls).toHaveLength(2);
+  });
+
+  // Every reviewer, lens and verifier is spawned under the host's run, so the
+  // whole pipeline is billed and budgeted as one root. The TUI passed only
+  // `{parentSessionId}`, so each agent became its own root — one the session
+  // never registered, and which therefore no flush could ever write. A TUI
+  // `/review`'s spend has to reach a `usage` record like any other spend.
+  it('spawns its reviewers under one session-owned root, and registers it', async () => {
+    const addLocalMessage = vi.fn();
+    const view = startApp(addLocalMessage);
+    await settle();
+    await submit(view, '/review --deep');
+
+    const request = reviewCalls[0]!.request;
+    for (let lens = 0; lens < 4; lens++) {
+      await request.runner.spawn('reviewer', 'review this', { description: 'lens' });
+    }
+    const rootIds = new Set(
+      managedAgentManagerMock.spawn.mock.calls.map(
+        (call) => (call[0] as { rootRunId?: string }).rootRunId,
+      ),
+    );
+    // One root for the whole pipeline, not one per agent, and a root the session
+    // tracks: the spend of a root nothing registered is spend no flush writes.
+    expect(rootIds).toEqual(new Set(['review-root']));
+    // The seam that mints it both registers the root and hands back the
+    // attribution, so a caller cannot take the root without the tracking.
+    expect(trackRunUsageMock).toHaveBeenCalledTimes(1);
+    expect(trackRunUsageMock).toHaveReturnedWith({
+      rootRunId: 'review-root',
+      runId: 'review-run',
+    });
   });
 });

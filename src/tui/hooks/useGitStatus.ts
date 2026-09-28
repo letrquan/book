@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { isTranscriptScrollActive } from '../scroll-activity.js';
 import { buildChildEnv } from '../../child-env.js';
+import { hardenedGitArgs } from '../../tools/git.js';
 
 /**
  * Whether `dir` sits anywhere inside a working tree, without spawning anything.
@@ -117,18 +118,28 @@ export function useGitStatus(workspace: string): GitStatus {
   return status;
 }
 
+/**
+ * One poll's `git` call, hardened.
+ *
+ * The poll is not a tool call: nothing asks before it runs, and it runs every five seconds for as
+ * long as the session lasts, in whatever repository was opened. A clone brings `.git/config` with
+ * it, and `core.fsmonitor` there names a program `git status` executes — so without
+ * `hardenedGitArgs` a checkout that sets it runs that program as soon as Book opens it. Every
+ * call here is read-only, so the read-only hardening is the right one; the pager and the
+ * credential prompt it cannot wait on come with it, as in `readOnlyGit`.
+ */
 function runGit(args: string[], cwd: string, signal: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       'git',
-      args,
+      hardenedGitArgs(args),
       {
         cwd,
         timeout: 5_000,
         encoding: 'utf8',
         windowsHide: true,
         signal,
-        env: buildChildEnv(),
+        env: buildChildEnv(process.env, { GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' }),
       },
       (error, stdout) => (error ? reject(error) : resolve(stdout.trim())),
     );

@@ -594,6 +594,28 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [agentSession],
   );
 
+  /**
+   * A root the session owns for a subtree the host runs itself — a `/review`'s
+   * reviewer agents, which no turn of the root would ever report.
+   *
+   * Returns the attribution to spawn them under, exactly as print mode does
+   * (`print-dispatch.ts`): without a `rootRunId` each agent becomes its own root,
+   * and a root the session never registered is spend no flush can write. The
+   * registration is what makes it durable, so both halves are returned together
+   * and a caller cannot take the root without the tracking.
+   */
+  const startHostRun = useCallback(() => {
+    const rootRunId = crypto.randomUUID();
+    const runId = crypto.randomUUID();
+    if (timelineStore) {
+      agentSession.trackRunUsage(rootRunId, {
+        sessionId: sessionIdRef.current,
+        timelineStore,
+      });
+    }
+    return { rootRunId, runId };
+  }, [agentSession, timelineStore]);
+
   const startNewConversation = useCallback(
     async (previousName?: string) => {
       await agentSession.clearSession({
@@ -2281,6 +2303,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     send,
     sendAgentCompletions,
     sendBackgroundShellCompletion,
+    startHostRun,
     clear,
     startNewConversation,
     resumeConversation,

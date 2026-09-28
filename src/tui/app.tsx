@@ -215,8 +215,17 @@ async function runReviewCommand(
   sessionId: string,
   report: (message: string) => void,
   signal: AbortSignal,
+  hostRun: { rootRunId: string; runId: string },
 ): Promise<void> {
-  const attribution = { parentSessionId: sessionId };
+  // One session-owned root for the whole pipeline, the way print mode spawns its
+  // reviewers. Without a `rootRunId` each reviewer, lens and verifier becomes its
+  // own root — and a root the session never registered, so no flush ever wrote
+  // their spend and a resume restored a carry that had never been charged.
+  const attribution = {
+    parentSessionId: sessionId,
+    rootRunId: hostRun.rootRunId,
+    parentRunId: hostRun.runId,
+  };
   await runHostReview({
     scope,
     workspace,
@@ -334,6 +343,7 @@ export function App({
     send,
     sendAgentCompletions,
     sendBackgroundShellCompletion,
+    startHostRun,
     clear,
     startNewConversation,
     resumeConversation,
@@ -851,6 +861,8 @@ export function App({
         sessionId,
         report,
         controller.signal,
+        // A root the session owns and will persist, for spend no turn reports.
+        startHostRun(),
       )
         .catch((reviewError) =>
           report(`✕ ${reviewError instanceof Error ? reviewError.message : String(reviewError)}`),

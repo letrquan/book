@@ -7,7 +7,8 @@
  * every restart, and a request whose usage is never recorded under-reports it —
  * either way `--max-budget-usd` stops bounding the objective it was set for.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -111,6 +112,29 @@ function persistedRecords(store: SessionStore, sessionId: string): Usage[] {
 }
 
 type Respond = () => Response;
+
+/** A recorded request's metadata: the model a `usage` record is named after. */
+function lateMeta(responseModel = 'gpt-5'): ProviderResponseMetadata {
+  return {
+    provider: 'openai-compatible',
+    requestedModel: responseModel,
+    responseModel,
+    responseId: `response-late-${responseModel}`,
+  } as unknown as ProviderResponseMetadata;
+}
+
+/**
+ * A child execution under `root`, for spend a managed agent records.
+ *
+ * The real path runs the child inside a worktree, and in print mode the
+ * completion it produces is delivered back through a parent turn whose own
+ * `onUsage` would write the very record under test — so the child's request is
+ * recorded on the session's own accounting under a child run context instead,
+ * which is the one thing the manager does with it too.
+ */
+function childOf(root: AgentRunContext, runId = `${root.runId}-child`): AgentRunContext {
+  return { ...root, runId, parentRunId: root.runId, startedAt: Date.now() };
+}
 
 /**
  * One process over the session store: a fresh run whose root is seeded from the
@@ -318,4 +342,325 @@ describe('print-mode usage records across a resume (#294)', () => {
       totalTokens: 396,
     });
   });
+});
+
+/** A reviewer agent's structured answer, the way a real review agent returns one. */
+const REVIEWER_REPORT = JSON.stringify({
+  verdict: 'recommend',
+  findings: [
+    {
+      severity: 'major',
+      category: 'correctness',
+      file: 'a.ts',
+      line: 1,
+      summary: 'the exported constant changed meaning',
+      evidence: 'export const value = 2;',
+      failure: 'callers that branch on value === 1 stop matching',
+      suggestedFix: 'introduce a new constant instead of changing this one',
+      confidence: 92,
+    },
+  ],
+});
+
+/**
+ * Spend that `RunAccounting` holds when no further response of its root will be
+ * reported (#336).
+ *
+ * The `usage` record is the only durable statement of what a run cost, and the
+ * `onUsage` seam is the only thing that wrote one. Anything charged after the
+ * root's last response — a managed agent that answered, a `/review` whose root
+ * model was never called, a compaction judge — reached no store at all: the
+ * process ended with the spend in memory, a resumed session restored a carry
+ * that did not include it, and `--max-budget-usd` re-authorised it.
+ */
+describe('print-mode usage records for spend after the root run ends (#336)', () => {
+  it("persists a managed child's spend, and the resume's carry counts it once", async () => {
+    const store = new SessionStore(workspace);
+    const sessionId = store.create({ cwd: workspace });
+    // A background managed agent answering behind the root's back: the root
+    // reported its own response, then the child made its request against the
+    // same root while the process was on its way out.
+    const CHILD: Usage = { promptTokens: 50, completionTokens: 5, totalTokens: 55 };
+    const record = vi.spyOn(RunAccounting.prototype, 'record');
+    let charged = false;
+    const provider = createRepeatingScriptedProvider(() => settledTurn('the answer', 1_000, 100));
+    vi.stubGlobal('fetch', provider.fetch);
+
+    await runHeadless(freshConfig(), createDefaultRegistry(), {
+      prompt: 'delegate, then answer',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      sessionStore: store,
+      sessionId,
+      mode: 'bypassPermissions',
+      stdout: { write: () => true },
+      onAgentEvent: (event) => {
+        // The root's own result record: its last response is behind it, so a
+        // request charged now is one no response of this root will report.
+        if (event.type !== 'result' || charged) return;
+        charged = true;
+        const accounting = record.mock.instances.at(-1) as RunAccounting | undefined;
+        const root = record.mock.calls.at(-1)?.[0];
+        accounting?.record(childOf(root as AgentRunContext), CHILD, lateMeta());
+      },
+    });
+
+    expect(provider.requests).toHaveLength(1);
+    expect(charged).toBe(true);
+    // The root's own request, then the child's — before any later process reads
+    // the carry this session ends with.
+    expect(persistedRecords(store, sessionId)).toMatchObject([
+      { promptTokens: 1_000, completionTokens: 100, totalTokens: 1_100 },
+      { promptTokens: 50, completionTokens: 5, totalTokens: 55 },
+    ]);
+
+    // Resume the session: the carry the second process restores now includes the
+    // child's spend, so its own request is written as its own delta and the
+    // three served requests are the total — none of them counted twice.
+    const resumed = await runProcess(store, sessionId, () =>
+      settledTurn('the resumed answer', 2_000, 200),
+    );
+    expect(resumed).toBe(1);
+    expect(persistedRecords(store, sessionId)).toMatchObject([
+      { promptTokens: 1_000, completionTokens: 100, totalTokens: 1_100 },
+      { promptTokens: 50, completionTokens: 5, totalTokens: 55 },
+      { promptTokens: 2_000, completionTokens: 200, totalTokens: 2_200 },
+    ]);
+    expect(persistedTotals(store, sessionId)).toEqual({
+      count: 3,
+      promptTokens: 3_050,
+      completionTokens: 305,
+      totalTokens: 3_355,
+    });
+  });
+
+  it("persists a host-run /review's reviewer requests, whose root model is never called", async () => {
+    // A review resolves its target from the host's git workspace, so this one
+    // needs a repository of its own rather than the flat temp directory.
+    const repo = mkdtempSync(join(tmpdir(), 'book-usage-review-'));
+    const home = mkdtempSync(join(tmpdir(), 'book-usage-review-home-'));
+    const previousHome = process.env.BOOK_HOME;
+    process.env.BOOK_HOME = home;
+    const git = (...args: string[]): string =>
+      execFileSync('git', args, {
+        cwd: repo,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    try {
+      git('init', '-q');
+      git('config', 'user.email', 'book-tests@example.invalid');
+      git('config', 'user.name', 'Book Tests');
+      writeFileSync(join(repo, 'a.ts'), 'export const value = 1;\n', 'utf8');
+      git('add', '.');
+      git('commit', '-qm', 'initial');
+      writeFileSync(join(repo, 'a.ts'), 'export const value = 2;\n', 'utf8');
+
+      const config = defaultConfig({ baseUrl: 'http://localhost/v1', workspace: repo });
+      // Keep the throwaway agent state out of the developer's BOOK_HOME history.
+      config.settings.agents.persist = false;
+      config.settings.agents.telemetry = false;
+      const store = new SessionStore(repo);
+      const sessionId = store.create({ cwd: repo });
+      const provider = createRepeatingScriptedProvider(() =>
+        sseResponse([
+          JSON.stringify({ choices: [{ delta: { content: REVIEWER_REPORT } }] }),
+          usageChunk(30, 12, 'stop'),
+        ]),
+      );
+      vi.stubGlobal('fetch', provider.fetch);
+
+      await runHeadless(config, createDefaultRegistry({ agents: true }), {
+        prompt: '/review',
+        inputFormat: 'text',
+        outputFormat: 'text',
+        history: [],
+        mode: 'default',
+        maxTurns: 2,
+        sessionStore: store,
+        sessionId,
+        stdout: { write: () => true },
+      });
+
+      // The host performed the command, so no response of the root was ever
+      // reported and the reviewer agents' requests are all the spend there is.
+      const requests = provider.requests.length;
+      expect(requests).toBeGreaterThan(0);
+      expect(persistedTotals(store, sessionId)).toEqual({
+        count: 1,
+        promptTokens: 30 * requests,
+        completionTokens: 12 * requests,
+        totalTokens: 42 * requests,
+      });
+    } finally {
+      if (previousHome === undefined) delete process.env.BOOK_HOME;
+      else process.env.BOOK_HOME = previousHome;
+      for (const dir of [repo, home]) rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('writes one record when the end of the run and the dispose both flush the same root', async () => {
+    const store = new SessionStore(workspace);
+    const sessionId = store.create({ cwd: workspace });
+    const CHILD: Usage = { promptTokens: 50, completionTokens: 5, totalTokens: 55 };
+    const record = vi.spyOn(RunAccounting.prototype, 'record');
+    let charged = false;
+    const provider = createRepeatingScriptedProvider(() => toolCallTurn('call-1', 10, 1));
+    vi.stubGlobal('fetch', provider.fetch);
+
+    // One turn, ended by the turn limit while the tool is still running: the
+    // child's request is charged after the root's last response and before the
+    // run ends, so the flush at the end of the run is the only one that can
+    // write it — and the session is disposed immediately afterwards.
+    await runHeadless(freshConfig(), createDefaultRegistry(), {
+      prompt: 'do one thing',
+      inputFormat: 'text',
+      outputFormat: 'stream-json',
+      history: [],
+      sessionStore: store,
+      sessionId,
+      maxTurns: 1,
+      mode: 'bypassPermissions',
+      stdout: { write: () => true },
+      onAgentEvent: (event) => {
+        if (event.type !== 'tool_result' || charged) return;
+        charged = true;
+        const accounting = record.mock.instances.at(-1) as RunAccounting | undefined;
+        const root = record.mock.calls.at(-1)?.[0];
+        accounting?.record(childOf(root as AgentRunContext), CHILD, lateMeta());
+      },
+    });
+
+    expect(provider.requests).toHaveLength(1);
+    expect(charged).toBe(true);
+    // The root's own turn, then the child's — once. A second flush of the same
+    // watermark would add a third record and overstate the objective.
+    expect(persistedRecords(store, sessionId)).toMatchObject([
+      { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
+      { promptTokens: 50, completionTokens: 5, totalTokens: 55 },
+    ]);
+    expect(persistedTotals(store, sessionId)).toEqual({
+      count: 2,
+      promptTokens: 60,
+      completionTokens: 6,
+      totalTokens: 66,
+    });
+  });
+});
+
+/**
+ * A host-performed command between two prompts: `[prompt, /review, prompt]`
+ * (#336).
+ *
+ * The handled branch used to `continue` without rebuilding the carry, so the
+ * third prompt re-seeded a total that still named the *first* prompt's root. That
+ * stale carry skipped the review's spend entirely — it was not in the third
+ * prompt's budget, and its model names never reached `carriedModels` — and
+ * re-seeding the old root re-stamped that root's hand-over floor against a total
+ * it had never passed on, sealing anything it spent in the meantime.
+ */
+describe('print-mode usage records across a host-performed command', () => {
+  it('carries the review spend forward, and loses and duplicates nothing', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'book-usage-cmd-'));
+    const home = mkdtempSync(join(tmpdir(), 'book-usage-cmd-home-'));
+    const previousHome = process.env.BOOK_HOME;
+    process.env.BOOK_HOME = home;
+    const git = (...args: string[]): string =>
+      execFileSync('git', args, {
+        cwd: repo,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    try {
+      git('init', '-q');
+      git('config', 'user.email', 'book-tests@example.invalid');
+      git('config', 'user.name', 'Book Tests');
+      writeFileSync(join(repo, 'a.ts'), 'export const value = 1;\n', 'utf8');
+      git('add', '.');
+      git('commit', '-qm', 'initial');
+      writeFileSync(join(repo, 'a.ts'), 'export const value = 2;\n', 'utf8');
+
+      const config = defaultConfig({ baseUrl: 'http://localhost/v1', workspace: repo });
+      config.settings.agents.persist = false;
+      config.settings.agents.telemetry = false;
+      const store = new SessionStore(repo);
+      const sessionId = store.create({ cwd: repo });
+
+      // Prompt 1 spends 100/10; its still-running agent adds 10/1 afterwards.
+      // The `/review`'s reviewer spends 30/12, then prompt 3 spends 200/20.
+      const LATE: Usage = { promptTokens: 10, completionTokens: 1, totalTokens: 11 };
+      const record = vi.spyOn(RunAccounting.prototype, 'record');
+      const seed = vi.spyOn(RunAccounting.prototype, 'seedRoot');
+      let charged = false;
+      let turn = 0;
+      const provider = createRepeatingScriptedProvider(() => {
+        turn++;
+        if (turn === 1) return settledTurn('first answer', 100, 10);
+        // The review's single reviewer agent, then the third prompt's turn.
+        if (turn === 2) {
+          return sseResponse([
+            JSON.stringify({ choices: [{ delta: { content: REVIEWER_REPORT } }] }),
+            usageChunk(30, 12, 'stop'),
+          ]);
+        }
+        return settledTurn('third answer', 200, 20);
+      });
+      vi.stubGlobal('fetch', provider.fetch);
+
+      await runHeadless(config, createDefaultRegistry({ agents: true }), {
+        inputFormat: 'stream-json',
+        outputFormat: 'text',
+        history: [],
+        stdin: Readable.from([
+          `${JSON.stringify({ type: 'user', content: 'first' })}\n`,
+          `${JSON.stringify({ type: 'user', content: '/review' })}\n`,
+          `${JSON.stringify({ type: 'user', content: 'third' })}\n`,
+        ]),
+        sessionStore: store,
+        sessionId,
+        mode: 'bypassPermissions',
+        stdout: { write: () => true },
+        onAgentEvent: (event) => {
+          // Prompt 1's result record: its turn is reported, and the review has
+          // not started. The agent answering now is charged above everything
+          // prompt 1 will ever hand on.
+          if (event.type !== 'result' || charged) return;
+          charged = true;
+          const accounting = record.mock.instances.at(-1) as RunAccounting | undefined;
+          const root = record.mock.calls.at(-1)?.[0];
+          accounting?.record(childOf(root as AgentRunContext), LATE, lateMeta());
+        },
+      });
+
+      expect(provider.requests).toHaveLength(3);
+      expect(charged).toBe(true);
+      // Every charge, once: 100/10, the late 10/1, the review's 30/12, and
+      // prompt 3's own 200/20. A stale carry would write the review's 42 a
+      // second time under prompt 3's root; a sealed floor would drop the late 11.
+      const totals = persistedTotals(store, sessionId);
+      expect(totals.promptTokens).toBe(100 + 10 + 30 + 200);
+      expect(totals.completionTokens).toBe(10 + 1 + 12 + 20);
+      expect(totals.totalTokens).toBe(110 + 11 + 42 + 220);
+
+      // The review's spend is inside the carry prompt 3 is budgeted against, so
+      // the last seed names a root whose total includes it — not prompt 1's.
+      const seeded = seed.mock.calls.map((call) => call[1].usage?.totalTokens ?? 0);
+      expect(seeded).toHaveLength(2);
+      expect(seeded[0]).toBe(110 + 11);
+      expect(seeded[1]).toBe(110 + 11 + 42);
+      // The source named by the last seed is the review's root, not prompt 1's:
+      // re-seeding prompt 1's root is what re-stamped its floor.
+      expect(seed.mock.calls[1]?.[1].fromRootRunId).not.toBe(seed.mock.calls[0]?.[1].fromRootRunId);
+
+      // And a resume restores all of it, once.
+      const resumed = await runProcess(store, sessionId, () => settledTurn('after', 50, 5));
+      expect(resumed).toBe(1);
+      expect(persistedTotals(store, sessionId).promptTokens).toBe(100 + 10 + 30 + 200 + 50);
+    } finally {
+      if (previousHome === undefined) delete process.env.BOOK_HOME;
+      else process.env.BOOK_HOME = previousHome;
+      for (const dir of [repo, home]) rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
 });

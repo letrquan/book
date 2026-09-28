@@ -184,7 +184,13 @@ selector reads. It leaves the conversation out, so the last line of a multi-hour
 however long the session grew; add `--include-result-messages` if the loop wants the history too.
 
 `--max-budget-usd` accumulates across restarts of the same session, so the cap bounds the objective
-rather than each process.
+rather than each process. Spend reaches the session's `usage` records as each response reports it, and
+again when a root run ends and when the session ends — on exit, on `/clear`, on `/resume`, each after
+the outgoing run's managed workers are stopped. A worker that answers after the root's last response, a
+`/review` the host performed itself, and a compaction's own model calls are written before the process
+exits, so nothing it paid is re-authorized by the next restart. Each flush writes one record for
+everything still unwritten, and every record names every model its run spent on — a cheap parent with a
+pricier managed worker is restored at the pricier rate rather than the cheaper one.
 
 Check on a run at any point, from any shell, with no provider configured:
 
