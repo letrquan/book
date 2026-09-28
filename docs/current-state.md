@@ -241,11 +241,13 @@ Work aimed at running an objective unattended for days rather than hours. All of
 - **Spend.** `--max-budget-usd` bounds the _objective_: enforced against inclusive cost so delegated
   work counts, carried across submitted prompts and across restarts, and fail-closed on a ceiling that
   cannot be evaluated. A `usage` record is written for whatever a response reports, and again when a
-  root run ends and when the session is disposed — so a managed child that answers after the root's
-  last response, and a host-performed `/review` whose root model is never called, reach the store
-  before the process exits. Each record names the model its own tokens were spent on, so
-  managed-agent and subagent tokens survive a restart priced at the rate that served them. The
-  pre-call check is O(1) in responses.
+  root run ends and when the session ends — `dispose`, `/clear`, `/resume` — each after the outgoing
+  runtime's managed children are stopped, so a managed child that answers after the root's last
+  response, and a host-performed `/review` whose root model is never called, reach the store. A flush
+  writes one record for the whole unwritten delta, named after the dearest model the root spent on,
+  and the restored carry is priced at the most expensive of the models its records name. A root
+  handing its totals to the next writes only what it spends after the hand-over. The pre-call check
+  is O(1) in responses.
 - **Transport.** A dropped stream re-issues the turn against the history already on disk rather than
   ending the run, with a separate allowance for output-cap continuations. A re-issued request never
   ends on an assistant message, because that is prefill and is refused while thinking is enabled.

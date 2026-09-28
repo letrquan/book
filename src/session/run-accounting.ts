@@ -57,18 +57,6 @@ function modelIdentityKey(identity: AgentModelIdentity): string {
 interface ExecutionState {
   readonly context: AgentRunContext;
   usage: Usage | null;
-  /**
-   * The same spend, split by the model each part of it was spent on, keyed the
-   * way a `usage` record names a model (`responseModel ?? requestedModel`, the
-   * key `store.ts` reads back into `carriedModels`).
-   *
-   * A record carries the model its own tokens came from, and a root that
-   * delegates is not a single model: a managed agent on a dearer one must be
-   * recorded as having spent it, or the restored carry re-prices the whole
-   * objective at a model that never served part of it. `usage` stays the sum of
-   * this, so the two can never disagree.
-   */
-  readonly usageByModel: Map<string, Usage>;
   costUsd: number | null;
   costStatus: 'known' | 'estimated' | 'unknown';
   readonly unknownModels: Set<string>;
@@ -104,30 +92,22 @@ interface RootState {
    * The root's inclusive spend already written to the session as `usage` records.
    *
    * Writer-side bookkeeping only: it never enters a snapshot, so no budget, cost
-   * figure or status is computed from it. See `takeUnpersistedUsage`.
+   * figure or status is computed from it. See `peekUnpersistedUsage`.
    */
   persistedUsage?: Usage;
   /**
-   * The root whose unwritten remainder this root took over, when a later root was
-   * seeded with its totals (#336).
+   * What this root's inclusive total was when a later root took it over (#336).
    *
-   * Closed the moment a record lands here, because everything the earlier root
-   * had not written is part of this root's delta. Left open, the earlier root's
-   * own flush writes the same tokens a second time and the next process restores
-   * an objective that appears to have cost more than it did.
+   * Everything up to here is inside the successor's carried spend, so the
+   * successor is the one to write it and this root's own flush must stop at it.
+   * Spend charged after the hand-over is above this line and stays this root's —
+   * which is the whole reason the hand-over records the figure rather than
+   * clearing the watermark: jumping the watermark to whatever the total had
+   * grown to marked that spend written while no record held it.
    */
+  handedOverAt?: Usage;
+  /** The root that took this one's totals over; its commit advances this one to `handedOverAt`. */
   tookOverFrom?: string;
-  /**
-   * The per-model counterpart of `persistedUsage`, over this process's spend
-   * only.
-   *
-   * A carry restored from disk is one pool with a set of model names and no
-   * per-model split, so it is the scalar watermark that covers it: the per-model
-   * map starts empty, and the in-process spend a per-model writer names is
-   * therefore all unwritten — which is exactly true. See
-   * `peekUnpersistedUsageByModel` for the part of the scalar delta that leaves.
-   */
-  readonly persistedByModel: Map<string, Usage>;
   readonly executions: Map<string, ExecutionState>;
 }
 
@@ -190,45 +170,36 @@ function subtractUsage(total: Usage, already: Usage | undefined): Usage {
 
 /**
  * A full cache hit leaves `promptTokens` at 0 on a provider that omits
- * `total_tokens`; the record still carries spend. The same rule the `onUsage`
- * writer applies before it appends, so the two agree on when there is nothing
- * left to write.
+ * `total_tokens`; the record still carries spend. The one test of whether a
+ * delta is worth a record, shared by every writer so they cannot disagree on
+ * when there is nothing left to write.
  */
-function isSpendlessUsage(usage: Usage): boolean {
+export function isSpendlessUsage(usage: Usage): boolean {
   return usage.totalTokens <= 0 && promptSizeTokens(usage) + usage.completionTokens <= 0;
 }
 
-/** One `usage` record's worth of a model's spend, before the token-count fields. */
-export interface UnpersistedUsage {
-  /** The whole inclusive delta no record covers yet. */
-  readonly total: Usage;
-  /**
-   * That delta split by the model each part of it was spent on, with the models
-   * that have nothing unwritten left dropped.
-   *
-   * One record per entry, rather than one record naming a single model, is what
-   * keeps the store's `carriedModels` complete: naming only the most expensive
-   * model would price the whole objective at it and lose the rest, so a resume
-   * would restore a carry whose rate nothing had actually been billed at.
-   */
-  readonly byModel: ReadonlyMap<string, Usage>;
-  /**
-   * The part of `total` the split cannot explain, or null when there is none.
-   *
-   * This is the remainder a previous root handed to this one, and a carry
-   * restored from disk, against a watermark: the records a restored carry was
-   * summed from are one pool of tokens, so which model spent them is not
-   * recoverable here. It is still spend the objective paid, so it is written
-   * under `fallbackModel` rather than dropped.
-   */
-  readonly unattributed: Usage | null;
-  /**
-   * The dearest model this root has spent on, for the record that has to name a
-   * model it cannot attribute. Naming the dearest is the direction
-   * `carriedCostUsd` re-prices a restored pool in (`headless.ts`): the restored
-   * total then stays an upper bound, which is what a spend ceiling needs.
-   */
-  readonly fallbackModel?: string;
+/** What to price a root's models at before it has spent anything at all. */
+const ZERO_USAGE: Usage = {
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+};
+
+/** The greater of two watermarks, field by field, so a root's floor only ever rises. */
+function maxUsage(left: Usage | undefined, right: Usage | undefined): Usage | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  return {
+    promptTokens: Math.max(left.promptTokens, right.promptTokens),
+    completionTokens: Math.max(left.completionTokens, right.completionTokens),
+    totalTokens: Math.max(left.totalTokens, right.totalTokens),
+    contextTokens: left.contextTokens ?? right.contextTokens,
+    cacheCreationInputTokens: Math.max(
+      left.cacheCreationInputTokens ?? 0,
+      right.cacheCreationInputTokens ?? 0,
+    ),
+    cacheReadInputTokens: Math.max(left.cacheReadInputTokens ?? 0, right.cacheReadInputTokens ?? 0),
+  };
 }
 
 function identityFor(
@@ -292,7 +263,6 @@ export class RunAccounting {
     const execution = {
       context,
       usage: null,
-      usageByModel: new Map<string, Usage>(),
       costUsd: 0,
       costStatus: 'known',
       unknownModels: new Set<string>(),
@@ -313,7 +283,6 @@ export class RunAccounting {
     this.roots.set(context.rootRunId, {
       rootRunId: context.rootRunId,
       budgetUsd,
-      persistedByModel: new Map(),
       executions: new Map(),
     });
     this.ensureExecution(this.roots.get(context.rootRunId)!, context);
@@ -328,7 +297,6 @@ export class RunAccounting {
   seedRoot(rootRunId: string, carried: CarriedSpend): void {
     const root = this.roots.get(rootRunId) ?? {
       rootRunId,
-      persistedByModel: new Map<string, Usage>(),
       executions: new Map<string, ExecutionState>(),
     };
     root.carried = carried;
@@ -336,11 +304,17 @@ export class RunAccounting {
     // watermark; a carry handed over in process names the part its writer got
     // through, and the remainder stays this root's to record.
     root.persistedUsage = carried.persistedUsage ?? carried.usage ?? undefined;
-    // The root it came from is not closed here: this root may never write (a
-    // `/review` that spent nothing, a run with nowhere to write), and closing it
-    // early would drop the remainder instead of moving it.
     if (carried.fromRootRunId && carried.fromRootRunId !== rootRunId) {
       root.tookOverFrom = carried.fromRootRunId;
+      // The source stops writing at the figure it handed on: everything below it
+      // is inside this root's carry, so this root is the one that records it.
+      // Recorded rather than subtracted off the source's watermark at once —
+      // this root may never write (a `/review` that spent nothing, a host with no
+      // store), and then the source must still be the fallback.
+      const source = this.roots.get(carried.fromRootRunId);
+      if (source) {
+        source.handedOverAt = this.inclusiveUsage(source, source.executions.values()) ?? undefined;
+      }
     }
     this.roots.set(rootRunId, root);
   }
@@ -363,6 +337,11 @@ export class RunAccounting {
    * background agent that answers between two runs is above the watermark, so the
    * next read carries it.
    *
+   * The floor is the greater of what has been written and what a later root took
+   * over: from the moment of a hand-over, this root writes only what it spends
+   * above the figure handed on, because everything below it is inside the
+   * successor's carry and would otherwise be written twice.
+   *
    * Null when the root has never been started here, or holds no inclusive usage to
    * record.
    */
@@ -371,65 +350,43 @@ export class RunAccounting {
     if (!root) return null;
     const inclusive = this.inclusiveUsage(root, root.executions.values());
     if (!inclusive) return null;
-    return subtractUsage(inclusive, root.persistedUsage);
+    return subtractUsage(inclusive, maxUsage(root.persistedUsage, root.handedOverAt));
   }
 
   /**
-   * `peekUnpersistedUsage`, split so a writer can name the model each record's
-   * tokens were spent on.
+   * The dearest model this root has spent on, for a `usage` record that has no
+   * response to take a model from — the flush at the end of a run, the one at
+   * dispose.
    *
-   * A writer that has no `metadata` to take a model from — the flush at the end
-   * of a run, the one at dispose — would otherwise record the root's whole
-   * unwritten delta under one name, and a child that ran a dearer model than
-   * its parent would be re-priced at whatever the record said. Null when the
-   * root holds nothing to write.
-   */
-  peekUnpersistedUsageByModel(rootRunId: string): UnpersistedUsage | null {
-    const root = this.roots.get(rootRunId);
-    if (!root) return null;
-    const total = this.peekUnpersistedUsage(rootRunId);
-    if (!total) return null;
-    // One sum per model across the root's executions, exactly as `total` is one
-    // sum across them: `persistedByModel` is a root-wide figure, so measuring a
-    // single child's spend against it would net off the parent's.
-    const spend = new Map<string, Usage>();
-    for (const execution of root.executions.values()) {
-      for (const [model, part] of execution.usageByModel) {
-        spend.set(model, addUsage(spend.get(model) ?? null, part));
-      }
-    }
-    const byModel = new Map<string, Usage>();
-    let attributed: Usage | null = null;
-    for (const [model, part] of spend) {
-      const delta = subtractUsage(part, root.persistedByModel.get(model));
-      if (isSpendlessUsage(delta)) continue;
-      byModel.set(model, delta);
-      attributed = addUsage(attributed, delta);
-    }
-    const unattributed = subtractUsage(total, attributed ?? undefined);
-    return {
-      total,
-      byModel,
-      unattributed: isSpendlessUsage(unattributed) ? null : unattributed,
-      fallbackModel: this.costliestModel(root, total),
-    };
-  }
-
-  /**
-   * The dearest model this root has spent on, for a record that has to name one
-   * it cannot attribute.
+   * `carriedCostUsd` (`headless.ts`) prices a restored carry at the most
+   * expensive model in `carriedModels`, so naming that one keeps the restored
+   * total at least as high as the spend really was: the carry is a single pool
+   * the records do not attribute, and one name is the most it can be said to
+   * have cost.
    *
    * Read as "the model most of this spend is worth". A model Book cannot price
    * cannot be ranked, so it is passed over; with nothing priceable to choose
    * from, the first model the root is known to have spent on is better than
    * none, because an unpriced name makes the restored carry unknown and fails
-   * every budget closed.
+   * every budget closed. Undefined when the root has spent under no model at all.
    */
-  private costliestModel(root: RootState, spend: Usage): string | undefined {
+  dearestModel(rootRunId: string): string | undefined {
+    const root = this.roots.get(rootRunId);
+    if (!root) return undefined;
+    const identities = new Map<string, AgentModelIdentity>();
+    for (const execution of root.executions.values()) {
+      for (const [key, identity] of execution.modelIdentities) {
+        if (!identities.has(key)) identities.set(key, identity);
+      }
+    }
+    // The figures are compared at this root's whole inclusive spend: which model
+    // is dearest is a property of the rate card, and every model here was asked
+    // to price the same pool.
+    const spend = this.inclusiveUsage(root, root.executions.values()) ?? ZERO_USAGE;
     let dearest: string | undefined;
     let dearestCost: number | undefined;
     let firstModel: string | undefined;
-    for (const identity of this.modelIdentities(root)) {
+    for (const identity of identities.values()) {
       const model = identity.responseModel ?? identity.requestedModel;
       firstModel ??= model;
       const quote = estimateUsageCost(model, spend);
@@ -440,16 +397,6 @@ export class RunAccounting {
       }
     }
     return dearest ?? firstModel;
-  }
-
-  private modelIdentities(root: RootState): AgentModelIdentity[] {
-    const identities = new Map<string, AgentModelIdentity>();
-    for (const execution of root.executions.values()) {
-      for (const [key, identity] of execution.modelIdentities) {
-        if (!identities.has(key)) identities.set(key, identity);
-      }
-    }
-    return [...identities.values()];
   }
 
   /**
@@ -465,21 +412,14 @@ export class RunAccounting {
     const root = this.roots.get(rootRunId);
     if (!root) return;
     root.persistedUsage = this.inclusiveUsage(root, root.executions.values()) ?? undefined;
-    root.persistedByModel.clear();
-    for (const execution of root.executions.values()) {
-      for (const [model, spend] of execution.usageByModel) {
-        root.persistedByModel.set(model, addUsage(root.persistedByModel.get(model) ?? null, spend));
-      }
-    }
-    // A record carrying this root's delta carries whatever it took over from the
-    // root before it, so that root has nothing left to write.
+    // This root's record covered everything it took over from the root before it,
+    // so that root has nothing left to write below the figure it handed on.
+    // Advancing it to anything beyond that — to whatever its total has since
+    // grown to — marked spend it never recorded as written, and a background
+    // child answering in that window lost its cost for good.
     if (root.tookOverFrom) {
       const source = this.roots.get(root.tookOverFrom);
-      if (source) {
-        source.persistedUsage =
-          this.inclusiveUsage(source, source.executions.values()) ?? undefined;
-        source.persistedByModel.clear();
-      }
+      if (source) source.persistedUsage = maxUsage(source.persistedUsage, source.handedOverAt);
     }
   }
 
@@ -496,7 +436,6 @@ export class RunAccounting {
   startExecution(context: AgentRunContext): void {
     const root = this.roots.get(context.rootRunId) ?? {
       rootRunId: context.rootRunId,
-      persistedByModel: new Map<string, Usage>(),
       executions: new Map<string, ExecutionState>(),
     };
     this.roots.set(context.rootRunId, root);
@@ -506,7 +445,6 @@ export class RunAccounting {
   record(context: AgentRunContext, usage: Usage, metadata: ProviderResponseMetadata): void {
     const root = this.roots.get(context.rootRunId) ?? {
       rootRunId: context.rootRunId,
-      persistedByModel: new Map<string, Usage>(),
       executions: new Map<string, ExecutionState>(),
     };
     this.roots.set(context.rootRunId, root);
@@ -522,10 +460,6 @@ export class RunAccounting {
         : estimateUsageCost(metadata.requestedModel, usage);
     const identity = identityFor(metadata, quote);
     execution.usage = addUsage(execution.usage, usage);
-    // The model a `usage` record of this request will be named after, which is
-    // what `store.ts` reads back into `carriedModels`.
-    const model = metadata.responseModel ?? metadata.requestedModel;
-    execution.usageByModel.set(model, addUsage(execution.usageByModel.get(model) ?? null, usage));
     execution.costStatus = mergeCostStatus(execution.costStatus, quote, identity);
     if (quote.status === 'known' && execution.costUsd !== null) {
       execution.costUsd += quote.costUsd;
@@ -547,7 +481,6 @@ export class RunAccounting {
   ): void {
     const root = this.roots.get(context.rootRunId) ?? {
       rootRunId: context.rootRunId,
-      persistedByModel: new Map<string, Usage>(),
       executions: new Map<string, ExecutionState>(),
     };
     this.roots.set(context.rootRunId, root);
@@ -647,12 +580,7 @@ export class RunAccounting {
       // inclusive cost — and `budgetStatus: 'exceeded'` for a child that spent
       // cents. A single execution's snapshot must describe that execution.
       return this.makeSnapshot(
-        {
-          rootRunId: root.rootRunId,
-          budgetUsd: root.budgetUsd,
-          persistedByModel: root.persistedByModel,
-          executions: root.executions,
-        },
+        { rootRunId: root.rootRunId, budgetUsd: root.budgetUsd, executions: root.executions },
         [execution],
         execution,
       );
@@ -663,7 +591,6 @@ export class RunAccounting {
   snapshotRoot(rootRunId: string): AgentRunAccounting {
     const root = this.roots.get(rootRunId) ?? {
       rootRunId,
-      persistedByModel: new Map<string, Usage>(),
       executions: new Map<string, ExecutionState>(),
     };
     return this.makeSnapshot(root, [...root.executions.values()], root.executions.get(rootRunId));
@@ -686,7 +613,6 @@ export class RunAccounting {
         // JSON object as `outcome.reason: 'budget_exceeded'`, so a supervisor
         // gating on the status restarted a run that had already spent its ceiling.
         carried: mergeCarried(roots),
-        persistedByModel: new Map(),
         executions: new Map(),
       },
       executions,

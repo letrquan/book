@@ -579,13 +579,21 @@ All notable changes to this project are documented in this file.
   paid for a review its own history said cost nothing. A background managed agent that answered after
   the root's last response, and a compaction judge, lost their spend the same way — and because a
   resumed session restores its carry by summing these records, the next process was handed a budget
-  that had never been spent, so `--max-budget-usd` re-authorized it. The writer is now one function:
-  it runs when a response reports usage (unchanged), when a root run ends whether it returned or
-  threw, and when the session is disposed after its managed children have been stopped. Each record
-  names the model its own tokens were spent on, so a child that ran a dearer model than its parent
-  is not re-priced at the parent's rate on the next resume, and a remainder handed from one root to
-  the next is written once rather than by both. A run whose session has moved on, or that has nowhere
-  to write, still leaves its spend for a writer that can.
+  that had never been spent, so `--max-budget-usd` re-authorized it. The writer is now one function,
+  reached from three places: a response reporting usage (unchanged), the end of a root run whether
+  it returned or threw, and the end of the session — `dispose`, and `reset`/a `/clear`/`/resume`
+  transition, each after the outgoing runtime's managed children are stopped and before its store is
+  released, so an agent charged while it shuts down is in the figure written. The end-of-session
+  flushes write to the target's own store and session, and do not consult the turn's lease: by then
+  it has been released, and honouring it skipped every target the TUI ever created, which is exactly
+  where a background agent's late spend went. Each flush writes **one** record for the whole
+  unwritten delta, named after the dearest model the root has spent on — `carriedCostUsd` prices a
+  restored carry at the most expensive model in `carriedModels` whatever the individual records said,
+  and the records do not attribute tokens to models, so one name keeps the restored total an upper
+  bound. A root that hands its totals to the next one records the figure it handed on and stops
+  writing there: the successor's carry already holds it, so the remainder is written once rather than
+  by both roots, and spend the source is charged after the hand-over is still its own. A run whose
+  session has moved on, or that has nowhere to write, still leaves its spend for a writer that can.
 - **Print mode and `query()` no longer document a plan decision they cannot make** (#340). Plan
   approval in a non-interactive host is asked as an ordinary `AskUserQuestion` with two options, so
   the `plan_approval` status is one of `approve`, `reject`, `revise`, or `stop` — `approve-fresh`,

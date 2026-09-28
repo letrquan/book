@@ -185,10 +185,12 @@ however long the session grew; add `--include-result-messages` if the loop wants
 
 `--max-budget-usd` accumulates across restarts of the same session, so the cap bounds the objective
 rather than each process. Spend reaches the session's `usage` records as each response reports it, and
-again when a root run ends and when the session is disposed: a managed worker that answers after the
-root's last response, and a `/review` the host performed itself, are written before the process exits,
-so nothing it paid is re-authorized by the next restart. Each record names the model its own tokens
-were spent on, and the restored carry is priced at the most expensive of them.
+again when a root run ends and when the session ends — on exit, on `/clear`, on `/resume`, each after
+the outgoing run's managed workers are stopped. A worker that answers after the root's last response,
+and a `/review` the host performed itself, are written before the process exits, so nothing it paid is
+re-authorized by the next restart. Each flush writes one record for everything still unwritten, named
+after the dearest model the run spent on; a resumed session prices the restored carry at the most
+expensive model its records name.
 
 Check on a run at any point, from any shell, with no provider configured:
 
