@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentRecord } from './types.js';
 import {
@@ -260,8 +260,14 @@ function armedRepository(): {
   const markers = join(sandbox, 'markers');
   mkdirSync(markers);
   const markerFor = (name: string) => join(markers, name);
-  // Forward slashes: the marker path is interpolated into an `sh` command, and sh eats a backslash.
+  // `core.hooksPath` is set to the ABSOLUTE path of this repository's own hooks directory. A
+  // developer or CI machine with a global `core.hooksPath` (husky, pre-commit) otherwise makes
+  // git ignore `.git/hooks` entirely, and the control below fails for a reason that has nothing
+  // to do with Book. Relative would be worse: git would resolve it against the agent worktree's
+  // own root, where these scripts do not live, and every marker assertion would be vacuous.
   const sh = (path: string) => path.replace(/\\/g, '/');
+  mkdirSync(join(root, '.git', 'hooks'), { recursive: true });
+  git(root, 'config', 'core.hooksPath', sh(join(root, '.git', 'hooks')));
   for (const hook of HOOKS) {
     const script = join(root, '.git', 'hooks', hook);
     writeFileSync(script, `#!/bin/sh\ntouch '${sh(markerFor(hook))}'\n`);
@@ -384,17 +390,74 @@ describe('a patch git never reads (#351)', () => {
       const patch = 'x'.repeat(4 * 1024 * 1024);
 
       await expect(
-        gitForTest(notARepository, ['apply', '--cached', '-'], { input: patch }),
+        gitForTest(notARepository, ['apply', '--cached', '-'], {
+          input: patch,
+          // The message is matched, so it must not be git's own translation of it, and the
+          // directory must not be inside a repository just because `tmpdir()` happens to sit
+          // under one on this machine — a home directory kept in version control for dotfiles
+          // makes every path below it one. Stopping the walk at the parent is what makes
+          // "not a repository" a property of the fixture rather than of the host.
+          env: {
+            LC_ALL: 'C',
+            LANGUAGE: 'C',
+            GIT_CEILING_DIRECTORIES: dirname(notARepository),
+          },
+        }),
       ).rejects.toThrow(/outside a repository/);
 
       // The write is still in flight when the promise settles and a broken pipe lands a tick
-      // later, so let the loop turn before looking at what it raised.
-      await new Promise((done) => setTimeout(done, 100));
+      // later. A wait long enough to cover a slow host is what makes "nothing was raised" a
+      // claim about the whole tail rather than about the next hundred milliseconds.
+      await new Promise((done) => setTimeout(done, 1000));
       expect(uncaught).toEqual([]);
       expect(unhandled).toEqual([]);
     } finally {
       process.removeListener('uncaughtException', onUncaught);
       process.removeListener('unhandledRejection', onUnhandled);
     }
+  });
+});
+
+describe('the agent commit signs nothing (#348)', () => {
+  it('neither runs gpg.program nor fails for want of a key', async () => {
+    // A separate repository from the hook flows above, and deliberately so: the cherry-pick that
+    // applies an agent's result onto the operator's branch signs as the operator configured,
+    // because that commit lands in their history under their identity. The commit in the agent's
+    // worktree is Book's own, authored as `Book Agent <agents@book.local>`, which has no key on
+    // any machine — so with `commit.gpgSign` set anywhere, every patcher commit fails outright,
+    // and a repository-configured `gpg.program` runs in place of failing.
+    const sandbox = mkdtempSync(join(tmpdir(), 'book-agent-gpg-'));
+    roots.push(sandbox);
+    const root = repository(join(sandbox, 'repo'));
+    const markers = join(sandbox, 'markers');
+    mkdirSync(markers);
+    const marker = join(markers, 'gpg');
+    const sh = (path: string) => path.replace(/\\/g, '/');
+    const program = join(sandbox, 'gpg.sh');
+    writeFileSync(program, `#!/bin/sh\ntouch '${sh(marker)}'\nexit 1\n`);
+    chmodSync(program, 0o755);
+    git(root, 'config', 'commit.gpgSign', 'true');
+    git(root, 'config', 'gpg.program', sh(program));
+
+    // The control, and it is a failing commit that proves the config is armed: the script exits
+    // 1, so a plain commit under this configuration cannot succeed. That is the same failure
+    // every patcher commit would have had on any machine where the signing key is missing, and
+    // `expect(candidate).toBeDefined()` below is the assertion that it no longer happens. Marker
+    // paths are removed afterwards, because repository config that could start this program is
+    // re-checked per test rather than assumed to have been set.
+    expect(() => git(root, 'commit', '--allow-empty', '-m', 'control')).toThrow();
+    expect(existsSync(marker), 'the control commit should have started gpg.program').toBe(true);
+    rmSync(marker);
+
+    const snapshot = await createSyntheticSnapshot(root, true);
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-gpg-wt-'));
+    roots.push(worktreeRoot);
+    const worktree = await createAgentWorktree(snapshot, 'signing-agent', worktreeRoot);
+    writeFileSync(join(worktree.path, 'staged.txt'), 'agent value\n');
+    const candidate = await commitAgentWork(agentRecord('signing-agent', worktree), snapshot);
+
+    expect(candidate).toBeDefined();
+    expect(existsSync(marker), 'gpg.program should not have run').toBe(false);
+    expect(markersPresent(markers)).toEqual([]);
   });
 });

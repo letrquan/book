@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { isTranscriptScrollActive } from '../scroll-activity.js';
 import { buildChildEnv } from '../../child-env.js';
-import { hardenedGitArgs } from '../../tools/git.js';
+import { hardenedGitArgs, hardenedGitEnv } from '../../tools/git.js';
 
 /**
  * Whether `dir` sits anywhere inside a working tree, without spawning anything.
@@ -139,7 +139,7 @@ function runGit(args: string[], cwd: string, signal: AbortSignal): Promise<strin
         encoding: 'utf8',
         windowsHide: true,
         signal,
-        env: buildChildEnv(process.env, { GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' }),
+        env: buildChildEnv(process.env, hardenedGitEnv()),
       },
       (error, stdout) => (error ? reject(error) : resolve(stdout.trim())),
     );

@@ -6,22 +6,13 @@ import { dirname, join, resolve } from 'path';
 import type { AgentApplyResult, AgentRecord, AgentSnapshot, PatchCandidate } from './types.js';
 import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
-import { hardenedGitArgs } from '../tools/git.js';
+import { hardenedGitArgs, hardenedGitEnv, HARDENED_DIFF_ARGS } from '../tools/git.js';
 
 interface GitResult {
   stdout: string;
   stderr: string;
   code: number;
 }
-
-/**
- * The two flags that close the routes a checkout owns for producing a diff, and they are
- * per-command rather than configuration, so they belong here and not in the hardening above.
- * `diff.external` names a program to produce the diff and a `.gitattributes` `textconv` line
- * names one per file; the second is a problem in its own right here, since its output is not a
- * patch `git apply` could read back.
- */
-const DIFF_ARGS = ['--no-ext-diff', '--no-textconv'] as const;
 
 /**
  * Every git command this module runs: a synthetic snapshot, an agent's worktree, the agent's
@@ -44,11 +35,7 @@ function git(
   options?: { env?: NodeJS.ProcessEnv; allowExitCodes?: number[]; input?: string },
 ): Promise<GitResult> {
   const argv = hardenedGitArgs(args);
-  const env = buildChildEnv(process.env, {
-    GIT_PAGER: 'cat',
-    GIT_TERMINAL_PROMPT: '0',
-    ...options?.env,
-  });
+  const env = buildChildEnv(process.env, { ...hardenedGitEnv(), ...options?.env });
   if (options?.input !== undefined) {
     return new Promise((resolvePromise, reject) => {
       const child = spawn('git', argv, {
@@ -66,6 +53,10 @@ function git(
         settled = true;
         outcome();
       };
+      // A stdin failure worth acting on is remembered rather than acted on, because `close` is
+      // the only event that knows the exit code, and the exit code is what decides. Settling here
+      // instead would reject before git had written the stderr that explains the failure.
+      let stdinError: Error | undefined;
       child.stdout.on('data', (chunk) => (stdout += chunk.toString()));
       child.stderr.on('data', (chunk) => (stderr += chunk.toString()));
       child.on('error', (error) => settle(() => reject(error)));
@@ -74,20 +65,30 @@ function git(
         settle(() => {
           if (code === 0 || options.allowExitCodes?.includes(code)) {
             resolvePromise({ stdout, stderr, code });
-          } else {
-            reject(new Error(stderr.trim() || stdout.trim() || `git ${args[0]} failed (${code})`));
+            return;
           }
+          // What git said comes first: a stdin error on a failed command is a consequence of it,
+          // and its own message is the one with no information in it. The stdin error is the
+          // fallback for a git that exited without a word.
+          reject(
+            new Error(
+              stderr.trim() ||
+                stdout.trim() ||
+                stdinError?.message ||
+                `git ${args[0]} failed (${code})`,
+            ),
+          );
         });
       });
       // Never removed, and attached before the write: git that exits without reading the patch —
       // not a repository, a rejected argument — leaves that write to fail with EPIPE, and a
       // stream carrying no `error` listener raises the failure on the host's event loop instead
-      // of on this promise. `close` has already decided the outcome by then, so a broken pipe is
-      // the news the exit code is telling, not a second account of it; anything else is a real
-      // failure and is reported as one.
+      // of on this promise. `EPIPE` and `EOF` mean git was gone before it read, which the exit
+      // code has already accounted for and is not news; anything else is a real failure, and is
+      // kept for `close` to weigh.
       child.stdin.on('error', (error: NodeJS.ErrnoException) => {
         if (error.code === 'EPIPE' || error.code === 'EOF') return;
-        settle(() => reject(error));
+        stdinError ??= error;
       });
       child.stdin.end(options.input);
     });
@@ -279,16 +280,22 @@ export async function commitAgentWork(
 ): Promise<PatchCandidate | undefined> {
   if (!record.worktree || !record.branch) return undefined;
   await git(record.worktree, ['add', '-A', '--', '.']);
-  const diff = await git(record.worktree, ['diff', ...DIFF_ARGS, '--cached', '--quiet'], {
+  const diff = await git(record.worktree, ['diff', ...HARDENED_DIFF_ARGS, '--cached', '--quiet'], {
     allowExitCodes: [1],
   });
   if (diff.code === 0) return undefined;
-  // Belt and braces: `core.hooksPath=` already leaves `pre-commit` and `commit-msg` nothing to
-  // find, and this commit is Book's work in Book's worktree rather than the operator's own, so
-  // neither of them should decide whether it happens.
+  // Belt and braces on both counts. `core.hooksPath=` already leaves `pre-commit` and `commit-msg`
+  // nothing to find, and this commit is Book's work in Book's worktree rather than the
+  // operator's own, so neither of them should decide whether it happens. `--no-gpg-sign` is not
+  // belt and braces: `commit.gpgSign` and `gpg.program` are configuration this commit would
+  // otherwise honor, and the identity it commits under — `Book Agent <agents@book.local>` — has
+  // no key on any machine, so every patcher commit would fail outright, or hang a headless run on
+  // pinentry, or start whatever program the configuration names. The cherry-pick that applies
+  // this work to the operator's branch is left signing as they configured: that commit lands in
+  // their history under their committer identity.
   await git(
     record.worktree,
-    ['commit', '--no-verify', '-m', `book agent ${record.id}: ${record.name}`],
+    ['commit', '--no-verify', '--no-gpg-sign', '-m', `book agent ${record.id}: ${record.name}`],
     {
       env: gitIdentityEnv(),
     },
@@ -306,7 +313,7 @@ async function candidateDelta(snapshot: AgentSnapshot, candidate: PatchCandidate
   return (
     await git(snapshot.repoRoot, [
       'diff',
-      ...DIFF_ARGS,
+      ...HARDENED_DIFF_ARGS,
       '--binary',
       '--full-index',
       candidate.baseCommit,
