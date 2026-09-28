@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { displayWidth } from './components/word-wrap.js';
+import type { Message } from '../types/messages.js';
 import {
   ACTIVITY_PHRASE_LISTS,
   MAX_PHRASE_WIDTH,
@@ -100,6 +101,73 @@ describe('toolActivityText', () => {
   it('still explains an unknown tool by name', () => {
     const text = toolActivityText({ id: 'x-1', name: 'FaxMachine', arguments: {} });
     expect(text).toContain('fax machine');
+  });
+});
+
+describe('deriveWorkingActivity with a plan step in flight', () => {
+  const base = {
+    isThinking: true,
+    isCompacting: false,
+    messages: [] as Message[],
+    streamingMessageId: null,
+    pendingPermission: false,
+    pendingPlanApproval: false,
+    pendingUserQuestion: false,
+    retryPhase: 'none' as const,
+    retryAttempt: 0,
+    retryMax: 0,
+    retryCountdownMs: 0,
+    elapsedSeconds: 0,
+  };
+  const running: Message = {
+    id: 'm1',
+    role: 'assistant',
+    content: '',
+    toolCalls: [{ id: 'c1', name: 'Read', arguments: { file_path: 'config.js' } }],
+    includeInContext: true,
+    timestamp: 1,
+  };
+
+  it('names the step instead of a reasoning phrase', () => {
+    expect(deriveWorkingActivity({ ...base, activeStep: 'Fixing the parser' })).toEqual({
+      label: 'Fixing the parser',
+      tone: 'normal',
+    });
+  });
+
+  it('names the step instead of the running tool', () => {
+    const activity = deriveWorkingActivity({
+      ...base,
+      messages: [running],
+      streamingMessageId: 'm1',
+      activeStep: 'Fixing the parser',
+    });
+    expect(activity?.label).toBe('Fixing the parser');
+  });
+
+  it('keeps the tool and reasoning phrases when no step is in flight', () => {
+    const tool = deriveWorkingActivity({ ...base, messages: [running], streamingMessageId: 'm1' });
+    expect(tool?.label).toBeTruthy();
+    expect(REASONING_PHASES).not.toContain(tool?.label);
+    expect(REASONING_PHASES).toContain(deriveWorkingActivity(base)?.label);
+  });
+
+  it('never outranks a wait on the reader, a retry or a compaction', () => {
+    const step = { activeStep: 'Fixing the parser' };
+    expect(deriveWorkingActivity({ ...base, ...step, pendingPermission: true })?.label).toBe(
+      'Waiting for permission',
+    );
+    expect(deriveWorkingActivity({ ...base, ...step, pendingUserQuestion: true })?.label).toBe(
+      'Waiting for your answer',
+    );
+    expect(
+      deriveWorkingActivity({ ...base, ...step, retryPhase: 'stalled', retryCountdownMs: 3000 })
+        ?.tone,
+    ).toBe('warning');
+    expect(deriveWorkingActivity({ ...base, ...step, isCompacting: true })?.label).toBe(
+      'Compacting…',
+    );
+    expect(deriveWorkingActivity({ ...base, ...step, isThinking: false })).toBeNull();
   });
 });
 

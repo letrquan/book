@@ -260,6 +260,8 @@ The transcript keeps the agent's reading out of the way. In the default compact 
 
 The ink itself is tuned for a long read: on a dark terminal the body text sits at about 12:1 rather than near-white, the headings and your own prompt are brighter than the body, and inline code takes a warm tone rather than a cool hue.
 
+The agent's plan is not a standing block. While a step is in flight, the working line names it and the status line shows `step 3/7` beside the folio. Each TodoWrite row in the transcript names the step it started and where the plan stands (`✓ Steps  Fix the parser   2 of 7 done`), so scrolling back shows how the plan moved. Ctrl+T opens the whole list as a `§ Steps` sheet, marked `◌` to do, `◔` in hand and a grey `✓` done like every other check on screen, and Ctrl+T closes it again. A bare `/task` shows your own task list.
+
 Two other built-in palettes use the same layout. `folio` swaps the red for a single gilt accent and uses it on the spinner as well. `apple` is the previous palette: near-black neutral surfaces, bright grey text, a blue composer and user accent, cyan for the agent, and a distinct hue per role. Select one with `"theme": "folio"` or `"theme": "apple"` in `settings.json`. A palette changes colours only: the layout above applies to every theme.
 
 Project themes can override any token in `.book/themes/<name>.json`, starting from `rubric`:

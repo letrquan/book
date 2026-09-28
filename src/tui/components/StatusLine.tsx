@@ -52,6 +52,8 @@ interface StatusLineProps {
   needsInputAgentCount?: number;
   /** Turns written so far; drawn at the right edge as the page's folio. */
   turnCount?: number;
+  /** The plan's place, `step 3/7`; drawn at the right edge before the folio. */
+  stepLabel?: string;
   terminalWidth?: number;
   compact?: boolean;
   reducedMotion?: boolean;
@@ -93,6 +95,12 @@ export function romanFolio(count: number): string {
 /** Columns kept clear between the last segment and the folio. */
 const FOLIO_GAP = 3;
 
+/** Narrowest row that still carries the plan's step. */
+const STEP_MIN_ROW_WIDTH = 32;
+
+/** Narrowest row that carries both the step and the folio; the folio goes first. */
+const STEP_AND_FOLIO_MIN_ROW_WIDTH = 56;
+
 /**
  * Single-row responsive status line.
  *
@@ -114,6 +122,7 @@ export function StatusLine({
   activeAgentCount = 0,
   needsInputAgentCount = 0,
   turnCount = 0,
+  stepLabel,
   terminalWidth = 80,
   compact = false,
   reducedMotion = false,
@@ -127,9 +136,13 @@ export function StatusLine({
   // The folio takes the right edge, like a page number in the outer margin. It
   // is the first thing a narrow row gives up.
   const rowWidth = Math.max(8, width - horizontalInset - 1);
+  // The plan's step sits beside the folio. It says more than the page number,
+  // so a narrowing row gives up the folio first.
+  const step = stepLabel && rowWidth >= STEP_MIN_ROW_WIDTH ? stepLabel : '';
   const rawFolio = romanFolio(turnCount);
-  const folio = rawFolio && rowWidth >= 40 ? rawFolio : '';
-  const contentWidth = folio ? rowWidth - displayWidth(folio) - FOLIO_GAP : rowWidth;
+  const folio = rawFolio && rowWidth >= (step ? STEP_AND_FOLIO_MIN_ROW_WIDTH : 40) ? rawFolio : '';
+  const tailWidth = displayWidth(step) + (step && folio ? FOLIO_GAP : 0) + displayWidth(folio);
+  const contentWidth = tailWidth > 0 ? rowWidth - tailWidth - FOLIO_GAP : rowWidth;
 
   const motionDisabled = reducedMotion || screenReader;
   const modeFlash = useTimedFlash(mode, 260, motionDisabled);
@@ -228,12 +241,16 @@ export function StatusLine({
           {run.text}
         </Text>
       ))}
-      {folio ? (
+      {tailWidth > 0 ? (
         <>
-          <Text>{' '.repeat(Math.max(FOLIO_GAP, rowWidth - used - displayWidth(folio)))}</Text>
-          <Text color={theme.inactive} italic>
-            {folio}
-          </Text>
+          <Text>{' '.repeat(Math.max(FOLIO_GAP, rowWidth - used - tailWidth))}</Text>
+          {step ? <Text color={theme.subtle}>{step}</Text> : null}
+          {step && folio ? <Text>{' '.repeat(FOLIO_GAP)}</Text> : null}
+          {folio ? (
+            <Text color={theme.inactive} italic>
+              {folio}
+            </Text>
+          ) : null}
         </>
       ) : null}
     </Box>

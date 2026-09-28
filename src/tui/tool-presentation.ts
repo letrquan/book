@@ -4,6 +4,8 @@ import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import { grepResultMetadata, readResultMetadata } from '../tools/result.js';
+import { normalizePersistedTodos } from '../tools/todo.js';
+import { stepProgress } from './steps.js';
 import { displayWidth, truncateDisplay } from './components/word-wrap.js';
 import { LABEL_COLUMN_WIDTH, MIN_TARGET_WIDTH, type TranscriptGrid } from './layout.js';
 import { isRenderableFileMutationDiff } from './file-mutation-display.js';
@@ -145,7 +147,7 @@ const LABELS: Record<string, string> = {
   GitLog: 'Git log',
   GitCommit: 'Git commit',
   GitBranch: 'Git branch',
-  TodoWrite: 'Update todos',
+  TodoWrite: 'Steps',
   Task: 'Task',
   InvokeSkill: 'Skill',
   AskUserQuestion: 'Ask',
@@ -282,6 +284,29 @@ function domainFor(value: string | undefined): string | undefined {
   }
 }
 
+/**
+ * A TodoWrite row's columns: the step the call set in flight and where the plan
+ * stands, `Reproduce the bug with a failing test   2 of 7 done`. Read from the
+ * arguments, so the row says it while the call runs, and scrolling back reads
+ * how the plan moved. A call that failed or was refused shows only its status:
+ * its arguments are a plan that never happened.
+ */
+function todoWriteColumns(
+  args: Record<string, unknown>,
+  status: ToolPresentationStatus,
+): { target: string | undefined; metadata: string[] } {
+  if (status === 'failure' || status === 'skipped') return { target: undefined, metadata: [] };
+  const todos = normalizePersistedTodos(
+    Array.isArray(args.todos)
+      ? (args.todos as Parameters<typeof normalizePersistedTodos>[0])
+      : undefined,
+  );
+  return {
+    target: todos.find((todo) => todo.status === 'in_progress')?.content,
+    metadata: todos.length > 0 ? [stepProgress(todos)] : [],
+  };
+}
+
 /** Derive all concise tool-row text without depending on Ink rendering. */
 export function deriveToolPresentation(
   name: string,
@@ -291,6 +316,8 @@ export function deriveToolPresentation(
 ): ToolPresentation {
   const canonicalName = canonicalToolName(name);
   const status = statusFor(result, Boolean(options.isPending));
+  // TodoWrite's row comes from its arguments, in both paths below.
+  const todoColumns = canonicalName === 'TodoWrite' ? todoWriteColumns(args, status) : undefined;
   const primary = getPrimaryArg(args);
   const mcp = parseMcpToolName(name);
   let title = LABELS[canonicalName] ?? canonicalName;
@@ -303,6 +330,7 @@ export function deriveToolPresentation(
     const structured = result.presentation;
     target = structured.target ?? target;
     metadata = [...(structured.metadata ?? [])];
+    if (todoColumns) ({ target, metadata } = todoColumns);
     previewType =
       structured.kind === 'diff'
         ? 'diff'
@@ -320,7 +348,8 @@ export function deriveToolPresentation(
     }
     const statusMetadata = resultStatusMetadata(status);
     if (statusMetadata && !metadata.includes(statusMetadata)) metadata.unshift(statusMetadata);
-    const duration = formatDuration(result.metrics?.durationMs);
+    // Writing the plan down takes no time worth reading; `0ms` was only noise.
+    const duration = todoColumns ? undefined : formatDuration(result.metrics?.durationMs);
     if (duration) metadata.push(duration);
     const retryAttempt = result.metrics?.retryAttempt;
     if (retryAttempt && retryAttempt > 1) metadata.push(`attempt ${retryAttempt}`);
@@ -332,7 +361,10 @@ export function deriveToolPresentation(
       title,
       target,
       metadata,
-      summary: structured.summary || `${title}${target ? `(${target})` : ''}`,
+      summary:
+        todoColumns || !structured.summary
+          ? `${title}${target ? `(${target})` : ''}`
+          : structured.summary,
       previewType,
       hasDetails,
       hasHiddenContent: hasDetails,
@@ -398,6 +430,8 @@ export function deriveToolPresentation(
     target = heading ?? lines.find((line) => line.length > 0);
     const steps = lines.filter((line) => /^\d+[.)]\s/.test(line)).length;
     if (steps > 0) metadata = [`${steps} ${steps === 1 ? 'step' : 'steps'}`];
+  } else if (todoColumns) {
+    ({ target, metadata } = todoColumns);
   } else if (canonicalName === 'Task') {
     target = stringArg(args, 'agent', 'subject', 'description', 'prompt') ?? target;
     if ((options.nestedActivityCount ?? 0) > 0) {
@@ -423,7 +457,8 @@ export function deriveToolPresentation(
 
   const statusMetadata = resultStatusMetadata(status);
   if (statusMetadata && !metadata.includes(statusMetadata)) metadata.unshift(statusMetadata);
-  const duration = formatDuration(result?.metrics?.durationMs);
+  // Writing the plan down takes no time worth reading; `0ms` was only noise.
+  const duration = todoColumns ? undefined : formatDuration(result?.metrics?.durationMs);
   if (duration) metadata.push(duration);
   if (result?.metrics?.retryAttempt && result.metrics.retryAttempt > 1)
     metadata.push(`attempt ${result.metrics.retryAttempt}`);
@@ -561,7 +596,6 @@ const SHORT_LABELS: Record<string, string> = {
   'Apply patch': 'Patch',
   'Edit notebook': 'Notebook',
   'Shell output': 'Shell',
-  'Update todos': 'Todos',
 };
 
 /** The three aligned columns of a tool row, already padded to the grid. */

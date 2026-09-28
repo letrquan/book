@@ -1041,6 +1041,160 @@ describe('runAgentLoop skill lifecycle', () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  function todoWriteProvider(onSecondTurn: (prompt: string) => void): Provider {
+    let turn = 0;
+    return {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        turn++;
+        if (turn === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: {
+              id: 'call-1',
+              name: 'TodoWrite',
+              arguments: {
+                todos: [{ content: 'Read the loader', status: 'in_progress' }],
+              },
+            },
+          };
+          yield { type: 'done' };
+        } else {
+          onSecondTurn(String(messages.at(-1)?.content ?? ''));
+          yield { type: 'text', content: 'Done.' };
+          yield { type: 'done' };
+        }
+      },
+    };
+  }
+
+  it('runs TodoWrite in default mode without a permission prompt', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-todo-default-'));
+    const home = mkdtempSync(join(tmpdir(), 'book-loop-todo-default-home-'));
+    vi.stubEnv('BOOK_HOME', home);
+    try {
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 2 });
+      let permissionPrompted = false;
+      let secondTurnPrompt = '';
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'Plan the work.',
+        [],
+        noopCallbacks({
+          onPermissionRequired: async () => {
+            permissionPrompted = true;
+            return 'deny';
+          },
+        }),
+        'default',
+        {
+          provider: todoWriteProvider((prompt) => (secondTurnPrompt = prompt)),
+          isNewSession: false,
+        },
+      );
+      expect(permissionPrompted).toBe(false);
+      expect(secondTurnPrompt).toContain('Todos updated (1)');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('still prompts for TodoWrite when a permissions.ask rule names it', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-todo-ask-'));
+    const home = mkdtempSync(join(tmpdir(), 'book-loop-todo-ask-home-'));
+    vi.stubEnv('BOOK_HOME', home);
+    try {
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 2 });
+      runtimeConfig.settings.permissions.ask = ['TodoWrite'];
+      let permissionPrompted = false;
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'Plan the work.',
+        [],
+        noopCallbacks({
+          onPermissionRequired: async () => {
+            permissionPrompted = true;
+            return 'allow';
+          },
+        }),
+        'default',
+        { provider: todoWriteProvider(() => {}), isNewSession: false },
+      );
+      expect(permissionPrompted).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('still blocks TodoWrite when a permissions.deny rule names it', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-todo-deny-'));
+    const home = mkdtempSync(join(tmpdir(), 'book-loop-todo-deny-home-'));
+    vi.stubEnv('BOOK_HOME', home);
+    try {
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 2 });
+      runtimeConfig.settings.permissions.deny = ['TodoWrite'];
+      let secondTurnPrompt = '';
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'Plan the work.',
+        [],
+        noopCallbacks({ onPermissionRequired: async () => 'allow' }),
+        'default',
+        {
+          provider: todoWriteProvider((prompt) => (secondTurnPrompt = prompt)),
+          isNewSession: false,
+        },
+      );
+      expect(secondTurnPrompt).toContain('Permission to use TodoWrite was denied');
+      expect(secondTurnPrompt).not.toContain('Todos updated');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('runs TodoWrite in dontAsk, which used to refuse it', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-todo-dontask-'));
+    const home = mkdtempSync(join(tmpdir(), 'book-loop-todo-dontask-home-'));
+    vi.stubEnv('BOOK_HOME', home);
+    try {
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 2 });
+      let permissionPrompted = false;
+      let secondTurnPrompt = '';
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'Plan the work.',
+        [],
+        noopCallbacks({
+          onPermissionRequired: async () => {
+            permissionPrompted = true;
+            return 'deny';
+          },
+        }),
+        'dontAsk',
+        {
+          provider: todoWriteProvider((prompt) => (secondTurnPrompt = prompt)),
+          isNewSession: false,
+        },
+      );
+      expect(permissionPrompted).toBe(false);
+      expect(secondTurnPrompt).toContain('Todos updated (1)');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 });
 
 // Helper: create a stream that yields text then done.

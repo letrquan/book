@@ -223,8 +223,8 @@ describe('built-in command contract', () => {
   it('validates managed-agent and task arguments before returning host effects', () => {
     const registry = createBuiltinCommandRegistry();
     expect(registry.execute('task', '', context())).toEqual({
-      type: 'local-message',
-      content: 'Usage: /task <subject>',
+      type: 'toggle-panel',
+      panel: 'tasks',
     });
     expect(registry.execute('agent', '', context())).toEqual(
       expect.objectContaining({

@@ -14,7 +14,7 @@ export const SPINNER_TIPS = [
   'Alt+V to attach a clipboard image',
   'Use /compact when context is getting long',
   'Use /theme to choose and save a color theme',
-  'Ctrl+T to toggle the task list',
+  "Ctrl+T to show the agent's steps",
   'Sessions auto-save — use -c to resume',
   'Ctrl+J or Shift+Enter for multiline input',
   'Type /task <subject> to add a task',

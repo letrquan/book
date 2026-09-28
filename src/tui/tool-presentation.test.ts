@@ -18,6 +18,7 @@ import {
   transcriptGrid,
 } from './layout.js';
 import { displayWidth } from './components/word-wrap.js';
+import { enrichToolResultPresentation, toolFailure, toolSuccess } from '../tools/result.js';
 
 type ResultOverrides = Partial<ToolResult> & {
   success?: boolean;
@@ -518,5 +519,73 @@ describe('decision tool rows', () => {
     expect(presentation.title).toBe('Ask');
     expect(presentation.target).toBe('Fallback, Scope');
     expect(presentation.metadata).toEqual(['2 questions']);
+  });
+});
+
+describe('TodoWrite rows', () => {
+  const todos = [
+    { content: 'Read the loader', status: 'completed' },
+    { content: 'Reproduce the bug', status: 'completed' },
+    { content: 'Fix the parser', status: 'in_progress', activeForm: 'Fixing the parser' },
+    { content: 'Run the suite', status: 'pending' },
+  ];
+
+  it('names the step in flight and where the plan stands, without a duration', () => {
+    const result = {
+      version: 2,
+      toolCallId: 'call-1',
+      status: 'success',
+      content: 'Todos updated (4).',
+      metrics: { durationMs: 3 },
+    } as ToolResult;
+    const presentation = deriveToolPresentation('TodoWrite', { todos }, result);
+    expect(presentation.title).toBe('Steps');
+    expect(presentation.target).toBe('Fix the parser');
+    expect(presentation.metadata).toEqual(['2 of 4 done']);
+  });
+
+  it('reads the same off a result the registry enriched', () => {
+    const result = enrichToolResultPresentation(
+      { ...toolSuccess('Todos updated (4).'), metrics: { durationMs: 3 } },
+      'TodoWrite',
+      { todos },
+    );
+    expect(result.presentation).toBeDefined();
+    const presentation = deriveToolPresentation('TodoWrite', { todos }, result);
+    expect(presentation.title).toBe('Steps');
+    expect(presentation.target).toBe('Fix the parser');
+    expect(presentation.metadata).toEqual(['2 of 4 done']);
+  });
+
+  it('says only that a refused or failed call failed', () => {
+    const failed = enrichToolResultPresentation(
+      toolFailure('Only one todo may be in_progress at a time (got 2).'),
+      'TodoWrite',
+      { todos },
+    );
+    const presentation = deriveToolPresentation('TodoWrite', { todos }, failed);
+    expect(presentation.target).toBeUndefined();
+    expect(presentation.metadata).toEqual(['failed']);
+  });
+
+  it('says the same while the call is still running', () => {
+    const presentation = deriveToolPresentation('TodoWrite', { todos });
+    expect(presentation.target).toBe('Fix the parser');
+    expect(presentation.metadata).toEqual(['2 of 4 done']);
+  });
+
+  it('leaves the target empty once no step is in flight', () => {
+    const finished = todos.map((todo) => ({ ...todo, status: 'completed' }));
+    const presentation = deriveToolPresentation('TodoWrite', { todos: finished });
+    expect(presentation.target).toBeUndefined();
+    expect(presentation.metadata).toEqual(['4 of 4 done']);
+  });
+
+  it('ignores malformed entries', () => {
+    const presentation = deriveToolPresentation('TodoWrite', {
+      todos: [null, 'x', { content: 'Fix the parser', status: 'in_progress' }],
+    });
+    expect(presentation.target).toBe('Fix the parser');
+    expect(presentation.metadata).toEqual(['0 of 1 done']);
   });
 });

@@ -40,6 +40,8 @@ interface WorkingIndicatorProps {
   terminalWidth?: number;
   reducedMotion?: boolean;
   screenReader?: boolean;
+  /** The plan step in flight, for the activity wording. */
+  activeStep?: string;
 }
 
 function useElapsedSeconds(active: boolean, disabled: boolean): number {
@@ -110,8 +112,8 @@ export interface ActivityPalette {
  * there made the one row that is actually *changing* the hardest row to pick
  * out — a moving glyph welded to a sentence that looked like every other
  * sentence. Sage is the agent's own voice, the same hue as the glyph in front
- * of it, so glyph and wording read as one live element: distinct from the plan
- * (clay) above it and from the transcript around it.
+ * of it, so glyph and wording read as one live element, distinct from the
+ * transcript around it.
  *
  * A blocked or retrying row is not the agent talking, so it keeps its status
  * colour and the row stops looking live.
@@ -151,6 +153,7 @@ export function WorkingIndicator({
   terminalWidth = 80,
   reducedMotion = false,
   screenReader = false,
+  activeStep,
 }: WorkingIndicatorProps) {
   const theme = useTheme();
   const motionDisabled = reducedMotion || screenReader;
@@ -178,6 +181,7 @@ export function WorkingIndicator({
     retryMax,
     retryCountdownMs,
     elapsedSeconds,
+    activeStep,
   });
 
   const width = transcriptGrid(terminalWidth).width;
