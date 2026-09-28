@@ -109,6 +109,22 @@ export interface AgentLoopCallbacks {
   onUsage?: (usage: Usage, response?: ProviderResponseMetadata) => void;
   /** Called when a tool changes the live permission mode. */
   onModeChange?: (mode: PermissionMode) => void;
+  /**
+   * Awaited before tool execution starts — before each serial call, and once
+   * before a parallel wave. It is the host's chance to flush whatever output
+   * announced the calls, and to hold the run until that output has been taken.
+   *
+   * A stream-json print run uses it to find out whether the reader is still
+   * there (#340): a closed pipe is only noticed on a write, and the notice
+   * arrives after the write returns, so a run whose reader left during a silent
+   * turn used to execute the calls of the turn it had already paid for, and a
+   * reader that left mid-batch used to get the next call as well. A hold that
+   * leaves the signal aborted settles the call as `cancelled_before_start`,
+   * exactly as an abort between calls does. A host with nothing to wait for
+   * should resolve immediately; the loop awaits this on the turn's critical
+   * path, once per call and never per streamed delta.
+   */
+  beforeToolExecution?: () => Promise<void>;
   /** Called when ExitPlanMode submits a plan for host approval. */
   onPlanApprovalRequired?: (plan: string) => Promise<PlanApprovalResult>;
   /**
