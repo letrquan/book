@@ -80,6 +80,7 @@ export interface AgentSessionRunCallbacks {
   onUsage?: AgentLoopCallbacks['onUsage'];
   getMode?: AgentLoopCallbacks['getMode'];
   onModeChange?: AgentLoopCallbacks['onModeChange'];
+  beforeToolExecution?: AgentLoopCallbacks['beforeToolExecution'];
   onCompact?: AgentLoopCallbacks['onCompact'];
   prepareCompact?: AgentLoopCallbacks['prepareCompact'];
   commitCompact?: AgentLoopCallbacks['commitCompact'];
@@ -1314,6 +1315,10 @@ export class AgentSession {
         },
         getMode: callbacks.getMode,
         onModeChange: callbacks.onModeChange,
+        // The root run's only: a managed child and a Task subagent run the loop
+        // with their own callbacks, and neither announces calls to a stream the
+        // host is reading for them.
+        beforeToolExecution: callbacks.beforeToolExecution,
         onPlanHandoff: callbacks.onPlanHandoff,
         // Passed through as is: the loop gates every compaction site on
         // `autoCompactEnabled`, the context-overflow recovery included.

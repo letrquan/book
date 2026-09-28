@@ -54,6 +54,7 @@ import { separateInlineReasoning } from './reasoning-tags.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { toolResultErrorMessage } from './tools/result.js';
 import { onAbort, throwIfAborted } from './async.js';
+import { createReaderFlush } from './reader-gone.js';
 
 /**
  * Re-price restored tokens.
@@ -141,11 +142,36 @@ export async function runHeadless(
 ): Promise<HeadlessResult> {
   const mode = resolvePermissionMode(config.settings, opts.mode);
   const stdout = opts.stdout ?? process.stdout;
+  /**
+   * The watch for a reader that has gone, and the hold a tool boundary takes on
+   * the records it is about to announce (#340). A closed pipe is only noticed on
+   * a write, and the notice arrives after the write returns, so a run whose
+   * reader left during a silent turn — nothing written, nothing to report it —
+   * used to execute the calls of a turn it had already paid for.
+   *
+   * `stream-json` on a real stream is the only case: a `text` or `json` answer
+   * is written once, at the end, and a host that passed a bare `{ write }` sink
+   * has no callback to report a failure through. Everything else keeps exactly
+   * the path it had.
+   */
+  const flush = opts.outputFormat === 'stream-json' ? createReaderFlush(stdout) : undefined;
+  /**
+   * The run's signal. Composed, not replaced, so a caller abort reads exactly
+   * as it did before — and a reader-gone abort carries no reason, the same as
+   * the closed-pipe abort in `cli/run.ts`, so the two classify alike and leave
+   * the same exit code.
+   */
+  const runSignal =
+    flush && opts.signal
+      ? AbortSignal.any([opts.signal, flush.signal])
+      : (flush?.signal ?? opts.signal);
   const emit = (obj: unknown) => {
     if (obj && typeof obj === 'object' && 'type' in obj) {
       opts.onEvent?.(obj as StreamJsonEvent);
     }
-    stdout.write(JSON.stringify(obj) + '\n');
+    const line = JSON.stringify(obj) + '\n';
+    if (flush) flush.write(line);
+    else stdout.write(line);
   };
   /**
    * What the event printers remember across one run: the managed children's
@@ -307,7 +333,7 @@ export async function runHeadless(
         emit,
         eventState,
       );
-      const response = await askUser(request, { signal: opts.signal });
+      const response = await askUser(request, { signal: runSignal });
       emitAgentEvent(
         { type: 'user_question_result', requestId: request.id, response },
         opts,
@@ -443,6 +469,15 @@ export async function runHeadless(
           emit({ type: 'mode_change', mode: newMode });
         }
       },
+      /**
+       * The hold at a tool boundary. The `tool_use` records for the calls about
+       * to run have been written by now, so waiting for them to be taken is
+       * what turns a reader that has gone into an abort BEFORE the call runs
+       * (#340) instead of one call later. Free when the reader has caught up,
+       * bounded when it has not, and absent — so a no-op — for every other
+       * output format and for a host sink with no callback to answer.
+       */
+      beforeToolExecution: flush ? () => flush.hold(runSignal) : undefined,
       onPlanApprovalRequired: async (plan) => {
         const decision = await decidePlanApproval(plan);
         if (typeof decision === 'object' && decision.decision === 'stop') {
@@ -498,7 +533,7 @@ export async function runHeadless(
             ...hints,
             trigger: 'auto',
             preContextTokens: usage ? usagePressureTokens(usage) : undefined,
-            signal: opts.signal,
+            signal: runSignal,
             onHookEvent: createHookEventHandler(opts, emit),
           },
         });
@@ -523,7 +558,7 @@ export async function runHeadless(
             ...hints,
             trigger: 'auto',
             preContextTokens: usage ? usagePressureTokens(usage) : undefined,
-            signal: hints?.signal ?? opts.signal,
+            signal: hints?.signal ?? runSignal,
             onHookEvent: createHookEventHandler(opts, emit),
           },
         });
@@ -541,7 +576,7 @@ export async function runHeadless(
           timelineStore: store,
           onCommitted: (_result, boundary) => compactBoundaries.push(boundary),
           options: {
-            signal: hints?.signal ?? opts.signal,
+            signal: hints?.signal ?? runSignal,
             onHookEvent: createHookEventHandler(opts, emit),
           },
         });
@@ -593,7 +628,7 @@ export async function runHeadless(
           mode,
           sessionId: runtimeSessionId,
           timelineStore: store,
-          signal: opts.signal,
+          signal: runSignal,
           callbacks: createRunCallbacks(runContext, (outcome) => {
             runOutcome = outcome;
           }),
@@ -680,7 +715,7 @@ export async function runHeadless(
             config,
             mode,
             sessionId: runtimeSessionId,
-            signal: opts.signal,
+            signal: runSignal,
             agents: {
               // Built only when an agent-backed command (`/review`) asks for it,
               // and attached to this session's runtime so it is disposed with the
@@ -727,13 +762,13 @@ export async function runHeadless(
         const stream = opts.stdin ?? process.stdin;
         // A prompt that never finishes arriving must not hold a cancelled run open.
         // A TTY returns at once inside `readPipedPrompt`, so it is never destroyed.
-        const release = destroyOnAbort(stream, opts.signal);
+        const release = destroyOnAbort(stream, runSignal);
         try {
           prompt = await readPipedPrompt(stream);
         } finally {
           release();
         }
-        throwIfAborted(opts.signal);
+        throwIfAborted(runSignal);
       }
       if (!prompt) {
         throw new Error(
@@ -754,7 +789,7 @@ export async function runHeadless(
           onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
         },
       );
-      const release = destroyOnAbort(stream, opts.signal);
+      const release = destroyOnAbort(stream, runSignal);
       try {
         for await (const chunk of stream) {
           parser.feed(chunk as string | Buffer);
@@ -762,7 +797,7 @@ export async function runHeadless(
       } finally {
         release();
       }
-      throwIfAborted(opts.signal);
+      throwIfAborted(runSignal);
       parser.flush();
       if (diagnostics.length > 0) throw new Error(diagnostics[0]?.message);
       if (opts.prompt) prompts.unshift(opts.prompt);
@@ -919,7 +954,7 @@ export async function runHeadless(
             options: {
               trigger: 'auto',
               preContextTokens: usagePressureTokens(lastUsage),
-              signal: opts.signal,
+              signal: runSignal,
               upcomingUserIntent: prompt,
               onHookEvent: createHookEventHandler(opts, emit),
             },
@@ -941,7 +976,7 @@ export async function runHeadless(
         timelineStore: store && sessionId ? store : undefined,
         expandShellInput: false,
         runtime,
-        signal: opts.signal,
+        signal: runSignal,
       });
       sessionName = recorded.sessionName;
       const contextMessage = recorded.contextMessage;
@@ -987,10 +1022,9 @@ export async function runHeadless(
         // run: a reader that goes away after the last turn already ended — after
         // it failed, most of all — changes nothing about how that run ended.
         const idle =
-          !opts.signal?.aborted &&
-          (await raceAbort(managedAgentManager.waitForIdle(), opts.signal));
+          !runSignal?.aborted && (await raceAbort(managedAgentManager.waitForIdle(), runSignal));
         if (!idle) {
-          if (mayReclassify) lastOutcome = classifyAbortReason(opts.signal?.reason, true);
+          if (mayReclassify) lastOutcome = classifyAbortReason(runSignal?.reason, true);
           break;
         }
         const pending = (await managedAgentManager.listPendingCompletions()).filter(
@@ -1036,7 +1070,7 @@ export async function runHeadless(
           timelineStore: store && sessionId ? store : undefined,
           expandShellInput: false,
           runtime,
-          signal: opts.signal,
+          signal: runSignal,
         });
         transcript.push(userMessage);
         const parentContext = batch[0]?.rootRunId
@@ -1111,7 +1145,7 @@ export async function runHeadless(
           config,
           registry,
           contextHistory,
-          opts.signal,
+          runSignal,
           store?.readImageAttachment
             ? (attachment) => store.readImageAttachment!(runtimeSessionId, attachment)
             : undefined,
@@ -1208,7 +1242,7 @@ export async function runHeadless(
           ? 'completion'
           : outcome.status === 'failed'
             ? 'error'
-            : outcome.status === 'cancelled' || opts.signal?.aborted
+            : outcome.status === 'cancelled' || runSignal?.aborted
               ? 'aborted'
               : 'completion';
       disposeSession();
@@ -1232,10 +1266,10 @@ export async function runHeadless(
     if (startedSessionId) {
       disposeSession();
       await agentSession
-        .endLifecycle(config, startedSessionId, opts.signal?.aborted ? 'aborted' : 'error', {
+        .endLifecycle(config, startedSessionId, runSignal?.aborted ? 'aborted' : 'error', {
           onHookEvent: createHookEventHandler(opts, emit),
-          endOutcome: opts.signal?.aborted
-            ? classifyAbortReason(opts.signal.reason, false)
+          endOutcome: runSignal?.aborted
+            ? classifyAbortReason(runSignal.reason, false)
             : createTerminalOutcome('failed', 'runtime_error', { partialOutput: false }),
         })
         .catch((hookError: unknown) => {

@@ -640,8 +640,28 @@ All notable changes to this project are documented in this file.
   already awaiting. A `git apply` that simply did not apply could take the session down with it.
   A listener is now attached before the write and never removed, mirroring what PR 343 did in
   `src/mcp.ts`: `EPIPE` and `EOF` mean git was gone before it read, which the `close` handler's
-  exit code has already accounted for and is not news; any other stdin error rejects the promise,
-  which now settles exactly once whichever of the two arrives first.
+  exit code has already accounted for and is not news; any other stdin error is kept until
+  `close`, which rejects with git's own stderr when there is any, so the promise settles once,
+  on git's account of what happened.
+- **A `stream-json` print run whose reader goes away no longer runs the calls it announced** (#340).
+  A closed pipe is only noticed on a write, and the notice arrives after the write returns, so a run
+  whose reader left while the model was silent — nothing written, nothing to report it — wrote that
+  turn's `tool_use` records into the closed pipe, **executed the calls behind them**, and only then
+  cancelled: `book -p … | head` on a turn that returned `Bash echo x > /tmp/marker` created the
+  marker after the reader had left. Print mode now holds the run at a tool boundary: before each
+  call, and once for a parallel wave, it waits for the flush of the records that announced it — the
+  write's own callback, the run's signal, or a one-second cap, whichever comes first — and a reader
+  that is gone cancels the run there, with every call settled as `cancelled_before_start` exactly as
+  any other abort does. The hold is free when the reader has caught up (no timer, no listener), so a
+  healthy run pays a microtask per call, and a reader that is merely slow costs the cap once and is
+  then left alone until it catches up. A call is also re-checked after its hooks and permission
+  answer, the one window a hold in front of it cannot cover, and a turn cancelled by the hold never
+  starts its deferred compaction, so a run that is about to end spends nothing more. All four codes
+  a closed far end arrives with — `EPIPE`, `EOF`, `ERR_STREAM_DESTROYED`, `ECONNRESET` — cancel the
+  run rather than crashing it: the CLI's `stdout`/`stderr` handler used to rethrow everything but
+  `EPIPE`, which turned the same fault into an uncaught exception, exit 1 and a skipped `SessionEnd`.
+  Nothing is added to the stream: no event, no heartbeat, no extra write, and a healthy reader sees
+  byte-identical output. The TUI, the `text` and `json` formats, and the SDK are untouched.
 - **Spend made after a root run's last response is now persisted** (#336). The session's `usage`
   records — the only durable statement of what a run cost, and the sum a resumed process restores —
   were written from one place: the callback a root's own responses report through. Spend

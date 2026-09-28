@@ -3,7 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { enterInteractiveScreen, runMainAction, shouldBridgeWslTerminal } from './run.js';
+import {
+  enterInteractiveScreen,
+  printPipeErrorHandler,
+  runMainAction,
+  shouldBridgeWslTerminal,
+} from './run.js';
 import { setExitCodeFn, setExitFn } from './exit.js';
 import { createRepeatingScriptedProvider, sseResponse } from '../test/scripted-provider.js';
 
@@ -96,6 +101,47 @@ describe('enterInteractiveScreen', () => {
       false,
     );
     expect(shouldBridgeWslTerminal('win32', { WT_SESSION: 'session' })).toBe(false);
+  });
+});
+
+describe('printPipeErrorHandler', () => {
+  const pipeError = (code: string): NodeJS.ErrnoException =>
+    Object.assign(new Error(`write ${code}`), { code });
+
+  it('cancels a stream-json run on stdout for every code a closed reader arrives with', () => {
+    for (const code of ['EPIPE', 'EOF', 'ERR_STREAM_DESTROYED', 'ECONNRESET']) {
+      const readerGone = new AbortController();
+      const handler = printPipeErrorHandler('stdout', 'stream-json', readerGone);
+      // The run has already been cancelled through the write's own callback by
+      // the time the stream's `error` event lands. Throwing here instead would
+      // turn the same closed reader into an uncaught exception — exit 1, and
+      // no SessionEnd.
+      expect(() => handler(pipeError(code))).not.toThrow();
+      expect(readerGone.signal.aborted).toBe(true);
+    }
+  });
+
+  it('leaves the run alone when the failure is not a closed reader', () => {
+    const readerGone = new AbortController();
+    const handler = printPipeErrorHandler('stdout', 'stream-json', readerGone);
+    expect(() => handler(pipeError('EACCES'))).toThrow('write EACCES');
+    expect(readerGone.signal.aborted).toBe(false);
+  });
+
+  it('never cancels on stderr, and never cancels a non-stream-json run on stdout', () => {
+    const onStderr = new AbortController();
+    expect(() =>
+      printPipeErrorHandler('stderr', 'stream-json', onStderr)(pipeError('EPIPE')),
+    ).not.toThrow();
+    expect(onStderr.signal.aborted).toBe(false);
+
+    for (const printFormat of ['text', 'json'] as const) {
+      const readerGone = new AbortController();
+      expect(() =>
+        printPipeErrorHandler('stdout', printFormat, readerGone)(pipeError('EPIPE')),
+      ).not.toThrow();
+      expect(readerGone.signal.aborted).toBe(false);
+    }
   });
 });
 
