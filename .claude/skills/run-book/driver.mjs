@@ -72,6 +72,9 @@ const SEND_GAP_MS = Number(opt('send-gap', '250'));
 const RECORD_FILE = opt('record', null);
 // Forwarded to the mock: the pause before each streamed delta (see mock-provider.mjs).
 const CHUNK_DELAY_MS = opt('chunk-delay-ms', null);
+// Forwarded to the mock as `--request-log`: where its request log goes, when you
+// want a known path rather than the private temp directory it makes per run.
+const MOCK_REQUEST_LOG = opt('mock-request-log', null);
 // Leave the startup splash on (the driver otherwise turns it off).
 const STARTUP_ANIMATION = flag('startup-animation');
 
@@ -123,6 +126,7 @@ async function startMock() {
   // Pass-through for the mock's own flags: `--mock-usage-from-estimate` etc.
   if (process.argv.includes('--mock-usage-from-estimate')) args.push('--usage-from-estimate');
   if (CHUNK_DELAY_MS) args.push('--chunk-delay-ms', CHUNK_DELAY_MS);
+  if (MOCK_REQUEST_LOG) args.push('--request-log', MOCK_REQUEST_LOG);
   mockProc = procSpawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   mockClosed = new Promise((resolveClosed) => mockProc.on('close', resolveClosed));
   // Keep the mock's stderr visible, and its tail for the error below.
@@ -131,6 +135,7 @@ async function startMock() {
     process.stderr.write(d);
     mockStderr = (mockStderr + d).slice(-2000);
   });
+  let mockRequestLog = null;
   await new Promise((res, rej) => {
     const portHint =
       'pass --mock-port <other>, and never kill mocks by name: on a shared machine they ' +
@@ -164,11 +169,15 @@ async function startMock() {
       if (!ready && String(d).includes('MOCK-PROVIDER-READY')) {
         ready = true;
         clearTimeout(timer);
+        // The log lives in a temp directory the mock names, so carry that name up: a
+        // random path on a line the script never sees is a log nobody can find.
+        mockRequestLog = String(d).match(/\(requests -> (.+)\)/)?.[1] ?? null;
         res();
       }
     });
   });
-  console.log(`[driver] mock provider on http://127.0.0.1:${MOCK_PORT}/v1`);
+  const log = mockRequestLog ? ` (requests -> ${mockRequestLog})` : '';
+  console.log(`[driver] mock provider on http://127.0.0.1:${MOCK_PORT}/v1${log}`);
 }
 
 // ---------------------------------------------------------------------------

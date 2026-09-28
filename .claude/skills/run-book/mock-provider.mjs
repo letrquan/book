@@ -82,12 +82,27 @@
  *
  * With no --script the server always replies with a single text turn taken from
  * --reply (default: a fixed sentence). Every request is appended as JSON to
- * book-mock-<port>.requests.jsonl in the OS temp directory (--request-log overrides
- * it) so you can assert on what Book sent; `n` is the request's ordinal and
- * `sequenceIndex` the scripted turn it was answered with (absent for matches).
+ * `requests.jsonl` inside a private temp directory the run creates
+ * (`book-mock-<port>-XXXXXX/` in the OS temp directory) once it is listening, so
+ * the log holds whole request bodies and nothing else on the machine can read or
+ * replace it; the path is named on the READY line. --request-log <path> puts it
+ * somewhere else instead, and is refused if it is a symbolic link. `n` is the
+ * request's ordinal and `sequenceIndex` the scripted turn it was answered with
+ * (absent for matches).
+ *
+ * A turn that is not the shape streaming expects (`{"text": 5}`) is answered with
+ * a 500 naming the turn, not a crash: the mock serves the rest of the run.
  */
 import { createServer } from 'node:http';
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  constants,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -103,9 +118,12 @@ const scriptPath = arg('script', null);
 const overflowAbove = Number(arg('overflow-above', '0'));
 const usageFromEstimate = argv.includes('--usage-from-estimate');
 const chunkDelayMs = Math.max(0, Number(arg('chunk-delay-ms', '0')) || 0);
-// os.tmpdir(), not /tmp: on Windows node resolves /tmp to C:\tmp, which usually does not
-// exist, and the best-effort writes below then lose every request without a word.
-const requestLog = arg('request-log', join(tmpdir(), `book-mock-${port}.requests.jsonl`));
+// The log path is settled once the port is ours, so a mock that never listened
+// creates nothing. `null` until then, and after a log that could not be opened:
+// the run is worth more than its log.
+const requestLogOverride = arg('request-log', null);
+let requestLogPath = null;
+let requestLogFd = null;
 
 const turns = scriptPath ? JSON.parse(readFileSync(scriptPath, 'utf8')) : [{ text: replyText }];
 const matchedTurns = turns
@@ -119,6 +137,105 @@ let sequencePosition = 0;
 
 /** Thrown out of a turn whose client went away (Esc aborts Book's request). */
 class ClientGone extends Error {}
+
+/**
+ * Open the request log, once, and keep the descriptor.
+ *
+ * Every request is then appended with `writeSync` on that descriptor rather than
+ * by naming the path again, so a path replaced between two requests cannot
+ * redirect the log anywhere. The default lives in a private `mkdtemp` directory
+ * (mode 0700 on POSIX) rather than at `<tmp>/book-mock-<port>.requests.jsonl`,
+ * which is a name anyone on the machine can predict, pre-create or read — the log
+ * holds whole request bodies.
+ *
+ * An explicit `--request-log` is truncated as it always was, but a symbolic link
+ * at that path is refused outright: a link is the one way a caller can point the
+ * mock's appends at a file it did not name. That refusal is fatal and happens
+ * before the server serves anything, so the driver reports it at once. (The
+ * `O_NOFOLLOW` on the open closes the same hole when the link appears in the
+ * window between the check and the open; it does not exist on Windows.)
+ */
+function openRequestLog() {
+  if (requestLogOverride) {
+    const existing = lstatSync(requestLogOverride, { throwIfNoEntry: false });
+    if (existing?.isSymbolicLink()) {
+      console.error(
+        `mock-provider: refusing the request log ${requestLogOverride}: it is a symbolic link`,
+      );
+      process.exit(1);
+    }
+    try {
+      writeFileSync(requestLogOverride, '');
+    } catch {
+      /* best-effort */
+    }
+    requestLogPath = requestLogOverride;
+    try {
+      // Numeric flags, so O_NOFOLLOW is a flag rather than the mode argument.
+      requestLogFd = openSync(
+        requestLogOverride,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | (constants.O_NOFOLLOW ?? 0),
+        0o600,
+      );
+    } catch (error) {
+      console.error(
+        `mock-provider: cannot log requests to ${requestLogOverride}: ${error.message}`,
+      );
+    }
+    return;
+  }
+  // os.tmpdir(), not /tmp: on Windows node resolves /tmp to C:\tmp, which usually does not
+  // exist, and the request log would then live somewhere the run cannot write.
+  try {
+    requestLogPath = join(mkdtempSync(join(tmpdir(), `book-mock-${port}-`)), 'requests.jsonl');
+    // 'wx': the directory is this run's own, so the log cannot already be there.
+    requestLogFd = openSync(requestLogPath, 'wx', 0o600);
+  } catch (error) {
+    requestLogPath = null;
+    console.error(`mock-provider: cannot log requests: ${error.message}`);
+  }
+}
+
+/** Why a scripted turn is unusable, or null when it can be streamed. */
+function turnProblem(turn) {
+  if (typeof turn !== 'object' || turn === null || Array.isArray(turn)) return 'is not an object';
+  if ('text' in turn && typeof turn.text !== 'string') return '`text` is not a string';
+  if ('status' in turn && typeof turn.status !== 'number') return '`status` is not a number';
+  for (const field of ['thinkMs', 'holdMs', 'chunkDelayMs']) {
+    if (field in turn && typeof turn[field] !== 'number') return `\`${field}\` is not a number`;
+  }
+  const hasTools = 'tools' in turn;
+  if (hasTools && !Array.isArray(turn.tools)) return '`tools` is not an array';
+  const calls = hasTools ? turn.tools : 'tool' in turn ? [turn.tool] : [];
+  for (const [index, call] of calls.entries()) {
+    const where = hasTools ? `\`tools[${index}]\`` : '`tool`';
+    if (typeof call !== 'object' || call === null || Array.isArray(call))
+      return `${where} is not an object`;
+    if (typeof call.name !== 'string') return `${where} has no string \`name\``;
+    if ('rawArguments' in call && typeof call.rawArguments !== 'string')
+      return `${where} has a \`rawArguments\` that is not a string`;
+  }
+  return null;
+}
+
+/**
+ * Answer a turn that cannot be sent, or report one that failed while it was.
+ *
+ * Before the headers that is a 500 Book's own loop can classify and retry, which
+ * is what a malformed scenario turn is: the scenario author's bug, on one request,
+ * not a reason for the mock to die mid-run. After the headers there is no status
+ * left to send, so the response is destroyed and the server carries on.
+ */
+function failTurn(res, which, reason) {
+  const message = `mock-provider: scenario turn ${which} is malformed: ${reason}`;
+  console.error(message);
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
+  res.writeHead(500, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: { message, type: 'mock_scenario_error' } }));
+}
 
 /**
  * A pause inside a turn (`thinkMs`, `holdMs`, a paced delta) that ends early when the client
@@ -268,7 +385,11 @@ async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 1
       usage:
         turn.usage ??
         (usageFromEstimate
-          ? { prompt_tokens: estimatedTokens, completion_tokens: 20, total_tokens: estimatedTokens + 20 }
+          ? {
+              prompt_tokens: estimatedTokens,
+              completion_tokens: 20,
+              total_tokens: estimatedTokens + 20,
+            }
           : { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }),
     });
     write('data: [DONE]\n\n');
@@ -282,52 +403,68 @@ async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 1
 const server = createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
+  // Everything a request can throw on, it throws here rather than as an uncaught
+  // exception: one of those ends the process, and a mock that outlives a mistake in
+  // a single scenario turn is the whole point of it.
   req.on('end', () => {
-    if (req.url?.endsWith('/models')) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ data: [{ id: 'mock-model', object: 'model' }] }));
-      return;
-    }
-    if (!req.url?.endsWith('/chat/completions')) {
-      res.writeHead(404).end('not found');
-      return;
-    }
-
-    let parsed = {};
     try {
-      parsed = JSON.parse(body || '{}');
-    } catch {
-      /* keep the raw body in the log below */
+      serve(req, res, body);
+    } catch (error) {
+      failTurn(res, 'request', error.message);
     }
+  });
+});
 
-    const n = requestCount;
-    requestCount += 1;
-    const estimatedTokens = estimateRequestTokens(parsed);
-    const prompt = lastUserMessageText(parsed);
-    const matched = matchedTurns.find((turn) => turn.pattern.test(prompt));
-    // A matched request (the reducer's, in practice) is never refused: the
-    // reducer may run on another model, and what the probe is after is the
-    // agent's own request being rejected and the recovery that follows.
-    const overflow = !matched && overflowAbove > 0 && estimatedTokens > overflowAbove;
-    let sequenceIndex;
-    let turn;
-    if (overflow) {
-      turn = undefined;
-    } else if (matched) {
-      // A checkpoint turn keeps its own fields (`chunkDelayMs`, `holdMs`); only the text is made.
-      turn = matched.checkpoint ? { ...matched, text: checkpointText() } : matched;
-    } else if (sequenceTurns.length === 0) {
-      // A script made only of `match` turns still has to answer ordinary requests.
-      turn = { text: replyText };
-    } else {
-      sequenceIndex = Math.min(sequencePosition, sequenceTurns.length - 1);
-      turn = sequenceTurns[sequenceIndex];
-      sequencePosition += 1;
-    }
-    const id = `chatcmpl-mock-${matched ? 'matched-' : ''}${n}`;
-    try {
-      appendFileSync(
-        requestLog,
+function serve(req, res, body) {
+  if (req.url?.endsWith('/models')) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ data: [{ id: 'mock-model', object: 'model' }] }));
+    return;
+  }
+  if (!req.url?.endsWith('/chat/completions')) {
+    res.writeHead(404).end('not found');
+    return;
+  }
+
+  let parsed = {};
+  try {
+    parsed = JSON.parse(body || '{}');
+  } catch {
+    /* keep the raw body in the log below */
+  }
+
+  const n = requestCount;
+  requestCount += 1;
+  const estimatedTokens = estimateRequestTokens(parsed);
+  const prompt = lastUserMessageText(parsed);
+  const matched = matchedTurns.find((turn) => turn.pattern.test(prompt));
+  // A matched request (the reducer's, in practice) is never refused: the
+  // reducer may run on another model, and what the probe is after is the
+  // agent's own request being rejected and the recovery that follows.
+  const overflow = !matched && overflowAbove > 0 && estimatedTokens > overflowAbove;
+  let sequenceIndex;
+  let turn;
+  if (overflow) {
+    turn = undefined;
+  } else if (matched) {
+    // A checkpoint turn keeps its own fields (`chunkDelayMs`, `holdMs`); only the text is made.
+    turn = matched.checkpoint ? { ...matched, text: checkpointText() } : matched;
+  } else if (sequenceTurns.length === 0) {
+    // A script made only of `match` turns still has to answer ordinary requests.
+    turn = { text: replyText };
+  } else {
+    sequenceIndex = Math.min(sequencePosition, sequenceTurns.length - 1);
+    turn = sequenceTurns[sequenceIndex];
+    sequencePosition += 1;
+  }
+  const id = `chatcmpl-mock-${matched ? 'matched-' : ''}${n}`;
+  // How a turn is named when it goes wrong: where it sits in the script, or the
+  // pattern it matched on.
+  const which = matched ? `match /${turn.match}/` : `${sequenceIndex}`;
+  try {
+    if (requestLogFd !== null) {
+      writeSync(
+        requestLogFd,
         JSON.stringify({
           n,
           matched: Boolean(matched),
@@ -337,43 +474,57 @@ const server = createServer((req, res) => {
           body: parsed,
         }) + '\n',
       );
-    } catch {
-      /* logging is best-effort */
     }
+  } catch {
+    /* logging is best-effort */
+  }
 
-    if (turn && typeof turn.status === 'number') {
-      // An HTTP error turn: `{"status": 503, "body": "..."}` answers with that
-      // status and body instead of a stream, the way a router wraps an upstream
-      // failure. The next request consumes the next turn, so a retry is scripted
-      // as the turn after it.
-      res.writeHead(turn.status, { 'Content-Type': 'application/json' });
-      res.end(typeof turn.body === 'string' ? turn.body : JSON.stringify(turn.body ?? {}));
-      return;
-    }
+  // Checked here, before any of the reply is written: a turn a scenario mistyped
+  // used to throw inside streamTurn — after the 200 was on the wire, where nothing
+  // caught it, so an unhandled rejection took the whole mock down mid-run. The
+  // script position has already advanced, so the next request is the next turn.
+  const problem = turn && turnProblem(turn);
+  if (problem) {
+    failTurn(res, which, problem);
+    return;
+  }
 
-    if (overflow) {
-      // The shape OpenAI uses; Book's classifier keys on the message text.
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          error: {
-            message: `This model's maximum context length is ${overflowAbove} tokens. However, your messages resulted in ${estimatedTokens} tokens. Please reduce the length of the messages.`,
-            type: 'invalid_request_error',
-            code: 'context_length_exceeded',
-          },
-        }),
-      );
-      return;
-    }
+  if (turn && typeof turn.status === 'number') {
+    // An HTTP error turn: `{"status": 503, "body": "..."}` answers with that
+    // status and body instead of a stream, the way a router wraps an upstream
+    // failure. The next request consumes the next turn, so a retry is scripted
+    // as the turn after it.
+    res.writeHead(turn.status, { 'Content-Type': 'application/json' });
+    res.end(typeof turn.body === 'string' ? turn.body : JSON.stringify(turn.body ?? {}));
+    return;
+  }
 
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    });
-    void streamTurn(res, turn, parsed.model ?? 'mock-model', id, prompt, estimatedTokens);
+  if (overflow) {
+    // The shape OpenAI uses; Book's classifier keys on the message text.
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        error: {
+          message: `This model's maximum context length is ${overflowAbove} tokens. However, your messages resulted in ${estimatedTokens} tokens. Please reduce the length of the messages.`,
+          type: 'invalid_request_error',
+          code: 'context_length_exceeded',
+        },
+      }),
+    );
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
   });
-});
+  // `.catch` and not `void`: a promise nobody handles that rejects takes the whole
+  // process with it, and a failure after these headers can only end the response.
+  streamTurn(res, turn, parsed.model ?? 'mock-model', id, prompt, estimatedTokens).catch((error) =>
+    failTurn(res, which, error.message),
+  );
+}
 
 // A port someone else holds is the common failure: say so in one line and exit, so the
 // driver (which watches this process) fails at once with the reason.
@@ -390,13 +541,11 @@ server.on('error', (error) => {
 });
 
 server.listen(port, '127.0.0.1', () => {
-  // Truncate the request log so each server run starts from a clean slate. Only once the
-  // port is ours: a second mock on a taken port must not wipe the first one's log.
-  try {
-    writeFileSync(requestLog, '');
-  } catch {
-    /* best-effort */
-  }
-  // The driver polls for this exact line.
-  console.log(`MOCK-PROVIDER-READY http://127.0.0.1:${port}/v1 (requests -> ${requestLog})`);
+  // Only once the port is ours: a second mock on a taken port must not create a log
+  // directory, wipe the first one's log, or exit on a path the first run is using.
+  openRequestLog();
+  // The driver polls for this exact line, and names the log from it.
+  console.log(
+    `MOCK-PROVIDER-READY http://127.0.0.1:${port}/v1 (requests -> ${requestLogPath ?? 'none'})`,
+  );
 });
