@@ -721,6 +721,28 @@ requestedModel`. A record's own model names only the response that triggered the
   no listener, so Node raised it as an uncaught exception: every test passed and the whole tier
   still reported `Errors 1 error` (`write EPIPE` or `write EOF`). The listener is now kept for
   the life of the stream.
+- **The transcript scrolls with the wheel or a trackpad the way Claude Code's does** (#347).
+  Measured by sending both the same wheel reports through Windows ConPTY on real sessions. A lone
+  notch still moves three rows, but notches turned in a run now move further each time and glide in
+  over two or three frames (a run 60 ms apart climbs 3, 8, 12, 15, 17, 19 rows, within a row or two
+  of Claude Code's answer), so 40 notches at 30 a second cover about 700 rows instead of 120 to 190;
+  reports denser than a notch can be turned share a speed limit instead. Scrolling up through
+  history that was never measured no longer jumps 13 to 26 rows on a notch: a row mounting above the
+  view is held at its estimated height until it is measured, then released in the same commit that
+  anchors the view, so every frame on the way moves exactly as far as the wheel asked. Measuring
+  that history no longer shows a false "new output below". Frames now come every 16 ms on Windows,
+  as Claude Code's do, instead of every 31: Ink's render throttle restarted its window on every
+  commit, so a stream of commits drew at half its cap, and Book replaces it with one that times each
+  draw from the last (`installInkFrameThrottle`; the Ink contract test fails if Ink's private layout
+  moves). Below that, three older costs are gone. Every wheel report also reached the composer,
+  which typed it into the draft for `InputBar` to strip again: an extra render per tick that took
+  the scroll's frame slot (a notch drew in about 45 ms; now about 10), and it moved the composer's
+  cursor to the end of the draft. React ran its development build: `runtime-env.ts` sets `NODE_ENV`
+  before React loads, but the bundled entry hoisted its static `ink` and `react` imports above it,
+  so the TUI now loads them with `import()` and the architecture check rejects a static React import
+  the CLI entry reaches. And on Windows, libuv timers fire on the 15.6 ms system tick, so the 17 ms
+  interval of a 60 fps cap waited two ticks; Windows now asks for 72 fps, a 14 ms interval one tick
+  serves.
 - **A Windows root and a path under it are compared in one spelling** (#300, #305). One directory
   has more than one name: the long form a user reads and the DOS 8.3 short form
   (`C:\Users\RUNNER~1\AppData\Local\Temp`), plus a drive letter in either case and separators either

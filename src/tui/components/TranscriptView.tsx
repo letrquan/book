@@ -12,16 +12,19 @@ import {
 } from 'react';
 import {
   createTranscriptScrollState,
+  createWheelMotion,
   getTranscriptHalfPageRows,
   getTranscriptPageRows,
-  getTranscriptWheelDrainRows,
   halfPageScrollDirection,
   reconcileTranscriptScroll,
   scrollTranscriptBy,
   scrollTranscriptToEnd,
   scrollTranscriptToStart,
+  wheelEaseStep,
+  wheelRows,
   type TranscriptMetrics,
   type TranscriptScrollState,
+  type WheelMotion,
 } from '../transcript-scroll.js';
 import { parseSgrMouseEvents, stripSgrMouseSequences } from '../mouse.js';
 import { writeClipboard } from '../clipboard.js';
@@ -44,6 +47,7 @@ import {
 import { useTheme } from '../theme.js';
 import { setTranscriptScrollHint } from '../ink-scroll-renderer.js';
 import { markTranscriptScrollActivity } from '../scroll-activity.js';
+import { resolveInkMaxFps } from '../../cli/tui-renderer-mode.js';
 import {
   ToolRowInteractionContext,
   type ToolSummaryRowRegistration,
@@ -93,7 +97,12 @@ export interface TranscriptScrollRequest {
 }
 
 const INITIAL_METRICS: TranscriptMetrics = { contentRows: 0, viewportRows: 1 };
-const MOUSE_WHEEL_ROWS = 3;
+/**
+ * Between wheel animation frames: a millisecond under the frame interval Ink draws at
+ * (`installInkFrameThrottle`). A draw other commits scheduled for the same frame then fires after
+ * the step and shows it, instead of drawing just before it and leaving the step for the frame after.
+ */
+const WHEEL_FRAME_MS = Math.ceil(1000 / resolveInkMaxFps(process.platform)) - 1;
 
 interface DragState {
   anchor: SelectionCell;
@@ -180,6 +189,7 @@ export function TranscriptView({
   const metricsRef = useRef(INITIAL_METRICS);
   const stateRef = useRef<TranscriptScrollState>(createTranscriptScrollState());
   const previousContentRowsRef = useRef(0);
+  const anchoredRowsRef = useRef(0);
   const previousFollowRequestRef = useRef(followRequestKey);
   // Seeded from the request in hand, the way `previousFollowRequestRef` is seeded
   // from `followRequestKey`. A remount is not a fresh request: `app.tsx` keys
@@ -189,7 +199,9 @@ export function TranscriptView({
   // and no longer following output.
   const previousScrollRequestRef = useRef(scrollRequest?.key ?? 0);
   const pendingWheelRowsRef = useRef(0);
+  const wheelMotionRef = useRef<WheelMotion>(createWheelMotion());
   const wheelImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
+  const wheelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const layoutMeasureImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
   const onToggleToolRef = useRef(onToggleTool);
   const onNotifyRef = useRef(onNotify);
@@ -233,6 +245,16 @@ export function TranscriptView({
     revision: number;
     snapshot: TranscriptViewportSnapshot;
   } | null>(null);
+  const publishViewport = useCallback((state: TranscriptScrollState) => {
+    const viewportRows = metricsRef.current.viewportRows;
+    const bucketRows = Math.max(1, getTranscriptHalfPageRows(viewportRows));
+    const bucket = `${Math.floor(state.scrollTop / bucketRows)}:${viewportRows}:${state.followBottom}`;
+    if (viewportBucketRef.current === bucket) return;
+
+    viewportBucketRef.current = bucket;
+    viewportRevisionRef.current++;
+    for (const listener of viewportListenersRef.current) listener();
+  }, []);
   const viewportStore = useMemo<TranscriptViewportStore>(
     () => ({
       subscribe: (listener) => {
@@ -254,20 +276,21 @@ export function TranscriptView({
         viewportSnapshotRef.current = { revision, snapshot };
         return snapshot;
       },
+      anchorRowsAbove: (endRow, deltaRows) => {
+        // Following the tail pins the view to the bottom anyway, and a row that reaches into the
+        // view changed what the reader is looking at, so the view stays where it is.
+        const state = stateRef.current;
+        if (state.followBottom || deltaRows === 0 || endRow > state.scrollTop) return;
+        // Not clamped: the content grows in the same commit, and the next measure reconciles.
+        const next = { ...state, scrollTop: Math.max(0, state.scrollTop + deltaRows) };
+        anchoredRowsRef.current += deltaRows;
+        stateRef.current = next;
+        setRenderedScrollTop(next.scrollTop);
+        publishViewport(next);
+      },
     }),
-    [],
+    [publishViewport],
   );
-
-  const publishViewport = useCallback((state: TranscriptScrollState) => {
-    const viewportRows = metricsRef.current.viewportRows;
-    const bucketRows = Math.max(1, getTranscriptHalfPageRows(viewportRows));
-    const bucket = `${Math.floor(state.scrollTop / bucketRows)}:${viewportRows}:${state.followBottom}`;
-    if (viewportBucketRef.current === bucket) return;
-
-    viewportBucketRef.current = bucket;
-    viewportRevisionRef.current++;
-    for (const listener of viewportListenersRef.current) listener();
-  }, []);
 
   const applyScrollState = useCallback(
     (next: TranscriptScrollState) => {
@@ -355,18 +378,25 @@ export function TranscriptView({
 
   const cancelWheelScroll = useCallback(() => {
     pendingWheelRowsRef.current = 0;
+    wheelMotionRef.current = createWheelMotion();
     if (wheelImmediateRef.current !== null) {
       clearImmediate(wheelImmediateRef.current);
       wheelImmediateRef.current = null;
     }
+    if (wheelTimerRef.current !== null) {
+      clearTimeout(wheelTimerRef.current);
+      wheelTimerRef.current = null;
+    }
   }, []);
 
-  const flushWheelScroll = useCallback(() => {
+  // One animation frame of wheel motion. Reports only move the target (`pendingWheelRowsRef`);
+  // this is the one place a wheel scroll is committed, so a burst of reports costs one commit per
+  // frame and the frame gets Ink's render slot.
+  const stepWheelScroll = useCallback(() => {
     wheelImmediateRef.current = null;
-    const rows = getTranscriptWheelDrainRows(
-      pendingWheelRowsRef.current,
-      metricsRef.current.viewportRows,
-    );
+    wheelTimerRef.current = null;
+    const rows = wheelEaseStep(pendingWheelRowsRef.current);
+    // Less than a row left: keep the remainder for the next report.
     if (rows === 0) return;
 
     pendingWheelRowsRef.current -= rows;
@@ -387,19 +417,23 @@ export function TranscriptView({
       pendingWheelRowsRef.current = 0;
       return;
     }
-    if (pendingWheelRowsRef.current !== 0) {
-      wheelImmediateRef.current = setImmediate(flushWheelScroll);
+    if (wheelEaseStep(pendingWheelRowsRef.current) !== 0) {
+      wheelTimerRef.current = setTimeout(stepWheelScroll, WHEEL_FRAME_MS);
     }
   }, [applyScrollState]);
 
   const scheduleWheelScroll = useCallback(
-    (rows: number) => {
+    (direction: -1 | 1) => {
+      const { rows, motion } = wheelRows(wheelMotionRef.current, direction, performance.now());
+      wheelMotionRef.current = motion;
+      // A report against the motion drops what is left of it instead of fighting it.
+      if (Math.sign(pendingWheelRowsRef.current) === -direction) pendingWheelRowsRef.current = 0;
       pendingWheelRowsRef.current += rows;
-      if (wheelImmediateRef.current !== null) return;
-      // Coalesce a burst of terminal reports without a fixed frame delay.
-      wheelImmediateRef.current = setImmediate(flushWheelScroll);
+      if (wheelImmediateRef.current !== null || wheelTimerRef.current !== null) return;
+      // Idle: the first frame goes out at once, so a lone notch draws without waiting on a timer.
+      wheelImmediateRef.current = setImmediate(stepWheelScroll);
     },
-    [flushWheelScroll],
+    [stepWheelScroll],
   );
 
   const measureTranscript = useCallback(() => {
@@ -412,11 +446,11 @@ export function TranscriptView({
     const previousMetrics = metricsRef.current;
     const nextMetrics = { contentRows, viewportRows };
 
-    if (
-      contentRows > previousContentRowsRef.current &&
-      !stateRef.current.followBottom &&
-      previousContentRowsRef.current > 0
-    ) {
+    // Rows the view was anchored past grew above it, as history was measured on the way up; they
+    // are not new output below.
+    const grownRows = contentRows - previousContentRowsRef.current - anchoredRowsRef.current;
+    anchoredRowsRef.current = 0;
+    if (grownRows > 0 && !stateRef.current.followBottom && previousContentRowsRef.current > 0) {
       setHasNewOutput(true);
     }
     previousContentRowsRef.current = contentRows;
@@ -561,11 +595,15 @@ export function TranscriptView({
       for (const event of events) {
         if (event.type === 'wheel') {
           if (dragRef.current || selectionRef.current) cancelDrag();
-          const rows = event.button === 'wheel-up' ? -MOUSE_WHEEL_ROWS : MOUSE_WHEEL_ROWS;
-          if (rows < 0 && stateRef.current.scrollTop === 0 && historyLoaderRef.current?.('page')) {
+          const direction = event.button === 'wheel-up' ? -1 : 1;
+          if (
+            direction < 0 &&
+            stateRef.current.scrollTop === 0 &&
+            historyLoaderRef.current?.('page')
+          ) {
             continue;
           }
-          scheduleWheelScroll(rows);
+          scheduleWheelScroll(direction);
           continue;
         }
 
@@ -642,12 +680,14 @@ export function TranscriptView({
     const handleResize = () => {
       clearSelection();
       dragRef.current = null;
+      // Rows rewrap at the new width, so a glide measured in the old rows would land elsewhere.
+      cancelWheelScroll();
     };
     stdout.on('resize', handleResize);
     return () => {
       stdout.off('resize', handleResize);
     };
-  }, [clearSelection, stdout]);
+  }, [cancelWheelScroll, clearSelection, stdout]);
 
   useInput(
     (input, key) => {

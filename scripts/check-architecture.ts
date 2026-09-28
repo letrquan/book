@@ -3,7 +3,14 @@ import { dirname, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 interface Violation {
-  kind: 'layer' | 'entrypoint' | 'cycle' | 'type-hub' | 'blocking-process' | 'process-exit';
+  kind:
+    | 'layer'
+    | 'entrypoint'
+    | 'cycle'
+    | 'type-hub'
+    | 'blocking-process'
+    | 'process-exit'
+    | 'eager-react';
   source: string;
   target: string;
   detail: string;
@@ -13,6 +20,14 @@ const IMPORT_PATTERN = /(?:import|export)\s+(type\s+)?(?:[^'";]+?\s+from\s+)?['"
 const CHILD_PROCESS_IMPORT_PATTERN = /from\s+['"](?:node:)?child_process['"]/;
 const SYNC_PROCESS_API_PATTERN = /\b(?:execFileSync|execSync|spawnSync)\b/;
 const PROCESS_EXIT_PATTERN = /\bprocess\.exit\s*\(/;
+/**
+ * Specifiers that evaluate React. `runtime-env.ts` defaults NODE_ENV to "production" so React
+ * loads its production build, but the CLI is a split bundle that hoists every static import of
+ * the entry above the entry's own body. Whatever the entry reaches through static imports is
+ * therefore evaluated before NODE_ENV is set, so the TUI must load these with `import()`.
+ */
+const REACT_SPECIFIER_PATTERN = /^(?:ink|react|react-reconciler|react-dom)(?:\/|$)/;
+const CLI_ENTRY = 'index.ts';
 /**
  * Modules allowed to terminate the process directly. Build entry points own their
  * own process lifetime, and `cli/exit.ts` is the injectable seam itself. Everything
@@ -63,6 +78,7 @@ export function checkArchitecture(srcRoot: string): Violation[] {
   const root = resolve(srcRoot);
   const files = sourceFiles(root);
   const graph = new Map<string, string[]>();
+  const reactImports = new Map<string, string[]>();
   const violations: Violation[] = [];
 
   if (existsSync(resolve(root, 'types.ts'))) {
@@ -99,6 +115,9 @@ export function checkArchitecture(srcRoot: string): Violation[] {
       });
     }
     for (const match of text.matchAll(IMPORT_PATTERN)) {
+      if (!match[1] && REACT_SPECIFIER_PATTERN.test(match[2])) {
+        reactImports.set(sourceName, [...(reactImports.get(sourceName) ?? []), match[2]]);
+      }
       const dependency = resolveImport(file, match[2]);
       if (!dependency || !dependency.startsWith(root)) continue;
       const targetName = relative(root, dependency).replaceAll('\\', '/');
@@ -155,6 +174,32 @@ export function checkArchitecture(srcRoot: string): Violation[] {
     visited.add(node);
   };
   for (const file of graph.keys()) visit(file);
+
+  // A TSX module imports react/jsx-runtime once compiled, so it counts as a React import too.
+  const reached = new Set<string>();
+  const pending = graph.has(CLI_ENTRY) ? [CLI_ENTRY] : [];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (reached.has(node)) continue;
+    reached.add(node);
+    pending.push(...(graph.get(node) ?? []));
+  }
+  for (const node of [...reached].sort()) {
+    const targets = [
+      ...(node.endsWith('.tsx') ? ['react/jsx-runtime'] : []),
+      ...(reactImports.get(node) ?? []),
+    ];
+    for (const target of targets) {
+      violations.push({
+        kind: 'eager-react',
+        source: node,
+        target,
+        detail:
+          'The CLI entry reaches React statically, so it loads before runtime-env.ts sets ' +
+          'NODE_ENV and runs its development build. Load it with a dynamic import().',
+      });
+    }
+  }
 
   return violations;
 }

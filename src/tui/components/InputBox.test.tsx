@@ -188,4 +188,31 @@ describe('InputBox', () => {
     expect(onEmptyChord).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it('ignores a mouse wheel report: no edit, and the cursor stays where it was', async () => {
+    const onChange = vi.fn();
+    const view = render(<Harness initial="abc" onChange={onChange} />);
+    await sleep(30);
+
+    view.stdin.write('\x1b[D');
+    await sleep(20);
+    view.stdin.write('\x1b[D');
+    await sleep(20);
+    view.stdin.write('\x1b[<64;40;20M');
+    await sleep(30);
+    expect(onChange).not.toHaveBeenCalled();
+
+    view.stdin.write('X');
+    await vi.waitFor(() => expect(onChange).toHaveBeenLastCalledWith('aXbc'));
+    expect(onChange).toHaveBeenCalledOnce();
+  });
+
+  it('keeps typed text that arrives in the same read as a mouse report', async () => {
+    const onChange = vi.fn();
+    const view = render(<Harness initial="" onChange={onChange} />);
+    await sleep(30);
+
+    view.stdin.write('a\x1b[<65;40;20Mb');
+    await vi.waitFor(() => expect(onChange).toHaveBeenLastCalledWith('ab'));
+  });
 });

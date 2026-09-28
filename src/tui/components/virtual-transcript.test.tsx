@@ -12,6 +12,8 @@ import {
   useVirtualTranscript,
   VirtualTranscriptRow,
 } from './virtual-transcript.js';
+import { DEFAULT_THEME, ThemeContext } from '../theme.js';
+import { TranscriptView } from './TranscriptView.js';
 
 describe('virtual transcript range', () => {
   it('keeps the viewport covered with overscan while preserving spacer rows', () => {
@@ -160,5 +162,78 @@ describe('useVirtualTranscript', () => {
     );
 
     expect(app.lastFrame()).toContain('total:103');
+  });
+});
+
+/** Every item is three rows tall but estimated at one, so each mount corrects its estimate. */
+function UnderEstimated({ count }: { count: number }) {
+  const items = Array.from({ length: count }, (_, index) => `item-${index}`);
+  const window = useVirtualTranscript({
+    items,
+    enabled: true,
+    terminalWidth: 20,
+    getKey: (item) => item,
+    estimateRows: () => 1,
+  });
+  return (
+    <Box flexDirection="column">
+      {window.topSpacerRows > 0 ? <Box height={window.topSpacerRows} flexShrink={0} /> : null}
+      {window.entries.map(({ item, key, measurementKey, reserveRows }) => (
+        <VirtualTranscriptRow
+          key={key}
+          measurementKey={measurementKey}
+          onMeasure={window.measure}
+          reserveRows={reserveRows}
+        >
+          <Text>{`${item}.a`}</Text>
+          <Text>{`${item}.b`}</Text>
+          <Text>{`${item}.c`}</Text>
+        </VirtualTranscriptRow>
+      ))}
+      {window.bottomSpacerRows > 0 ? <Box height={window.bottomSpacerRows} flexShrink={0} /> : null}
+    </Box>
+  );
+}
+
+describe('virtual transcript scroll anchoring', () => {
+  const transcriptLines = (frame: string | undefined) =>
+    (frame ?? '').split('\n').filter((line) => line.trim() && !line.includes('browsing history'));
+
+  async function settle(): Promise<void> {
+    for (let index = 0; index < 4; index++) {
+      await act(async () => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      });
+    }
+  }
+
+  // Scrolling up through history that was never measured mounts rows above the view whose
+  // estimates are wrong. Each notch must still move the text exactly three rows, in every frame
+  // drawn on the way, and measuring history is not new output below (#347).
+  it('keeps the text in view still while rows above it are measured', async () => {
+    const app = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={9} width={20}>
+          <UnderEstimated count={60} />
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+    await settle();
+
+    for (let step = 0; step < 10; step++) {
+      const before = transcriptLines(app.lastFrame());
+      const drawn = app.frames.length;
+      act(() => app.stdin.write('\x1b[<64;10;5M'));
+      await settle();
+      const after = transcriptLines(app.lastFrame());
+      expect(after.slice(3), `step ${step}`).toEqual(before.slice(0, before.length - 3));
+      for (const frame of app.frames.slice(drawn)) {
+        expect([before, after], `step ${step}`).toContainEqual(transcriptLines(frame));
+      }
+      expect(app.lastFrame(), `step ${step}`).not.toContain('new output');
+      // Past the wheel's run gap, so each notch is a lone notch of three rows.
+      await new Promise<void>((resolve) => setTimeout(resolve, 120));
+    }
+    app.unmount();
   });
 });
