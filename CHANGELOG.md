@@ -575,8 +575,8 @@ All notable changes to this project are documented in this file.
   but a write still queued on that pipe — a large request, or the cancellation sent on abort —
   can only fail once the server's end of it is closed, which is after. Its `error` event then had
   no listener, so Node raised it as an uncaught exception: every test passed and the whole tier
-  still reported `Errors 1 error` (`write EPIPE` on Windows, `EOF` elsewhere). The listener is
-  now kept for the life of the stream.
+  still reported `Errors 1 error` (`write EPIPE` or `write EOF`). The listener is now kept for
+  the life of the stream.
 - **A Windows root and a path under it are compared in one spelling** (#300, #305). One directory
   has more than one name: the long form a user reads and the DOS 8.3 short form
   (`C:\Users\RUNNER~1\AppData\Local\Temp`), plus a drive letter in either case and separators either
