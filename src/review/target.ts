@@ -3,7 +3,7 @@ import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from 'nod
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { ReviewScope } from './types.js';
 import { buildChildEnv } from '../child-env.js';
-import { hardenedGitArgs } from '../tools/git.js';
+import { hardenedGitArgs, hardenedGitEnv, HARDENED_DIFF_ARGS } from '../tools/git.js';
 
 interface GitResult {
   stdout: string;
@@ -23,20 +23,13 @@ export interface ReviewTarget {
 const MAX_REVIEW_DIFF_BYTES = 20 * 1024 * 1024;
 
 /**
- * The two flags that close the routes a checkout owns for producing a diff: `diff.external` names
- * a program to produce it, and a `.gitattributes` `textconv` line names one per file. On the
- * command as well as in the config, so the guarantee does not rest on the `-c` overrides being
- * consulted for this subcommand.
- */
-const DIFF_ARGS = ['--no-ext-diff', '--no-textconv'] as const;
-
-/**
  * A read-only report, and this module's git calls all are one: none of them changes the
  * repository, and none of them is a tool call the operator can be asked about, so a checkout's
- * own `.git/config` must not be able to make one run a program. `hardenedGitArgs` is the same
- * hardening the read-only Git tools carry — `core.fsmonitor` is a command `git diff` and
- * `git ls-files` execute, and `core.pager` a command git runs to page what they print. A pager
- * and a credential prompt it cannot wait on come with it, as in `readOnlyGit`.
+ * own configuration must not be able to make one run a program. `hardenedGitArgs` and
+ * `HARDENED_DIFF_ARGS` are the same hardening the read-only Git tools carry — `core.fsmonitor` is
+ * a command `git diff` and `git ls-files` execute, `core.pager` a command git runs to page what
+ * they print, and `diff.external` one it runs to produce them at all. A pager and a credential
+ * prompt it cannot wait on come with it in `hardenedGitEnv`, as in `readOnlyGit`.
  */
 function git(workspace: string, args: string[], allowExitCodes: number[] = []): Promise<GitResult> {
   return new Promise((resolvePromise, reject) => {
@@ -47,7 +40,7 @@ function git(workspace: string, args: string[], allowExitCodes: number[] = []): 
         cwd: workspace,
         encoding: 'utf8',
         maxBuffer: 50 * 1024 * 1024,
-        env: buildChildEnv(process.env, { GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' }),
+        env: buildChildEnv(process.env, hardenedGitEnv()),
       },
       (error, stdout, stderr) => {
         const code = typeof error?.code === 'number' ? error.code : error ? 1 : 0;
@@ -186,10 +179,18 @@ export async function resolveReviewTarget(
     const baseSha = (await git(workspace, ['merge-base', base, head])).stdout.trim();
     const headSha = await resolveCommit(workspace, head);
     const [files, diff] = await Promise.all([
-      git(workspace, ['diff', ...DIFF_ARGS, '--name-only', '-z', baseSha, headSha, ...pathArgs]),
       git(workspace, [
         'diff',
-        ...DIFF_ARGS,
+        ...HARDENED_DIFF_ARGS,
+        '--name-only',
+        '-z',
+        baseSha,
+        headSha,
+        ...pathArgs,
+      ]),
+      git(workspace, [
+        'diff',
+        ...HARDENED_DIFF_ARGS,
         '--binary',
         '--full-index',
         '--unified=5',
@@ -216,10 +217,10 @@ export async function resolveReviewTarget(
     ? (await git(workspace, ['merge-base', 'HEAD', scope.base])).stdout.trim()
     : await resolveCommit(workspace, 'HEAD');
   const [trackedFiles, trackedDiff, untrackedFiles] = await Promise.all([
-    git(workspace, ['diff', ...DIFF_ARGS, '--name-only', '-z', baseSha, ...pathArgs]),
+    git(workspace, ['diff', ...HARDENED_DIFF_ARGS, '--name-only', '-z', baseSha, ...pathArgs]),
     git(workspace, [
       'diff',
-      ...DIFF_ARGS,
+      ...HARDENED_DIFF_ARGS,
       '--binary',
       '--full-index',
       '--unified=5',

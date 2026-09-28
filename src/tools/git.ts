@@ -6,10 +6,12 @@ import { toolFailure, toolSuccess } from './result.js';
 type ExecFile = typeof execFile;
 
 /**
- * `-c` overrides the four read-only Git tools carry, so a repository's own configuration cannot
- * turn a read-only report into something that runs a program.
+ * `-c` overrides the Git tools and the managed-agent subsystem carry, so a checkout's own
+ * configuration cannot turn a git call into something that runs a program.
  *
- * `.git/config` is a file the clone brings with it, and a checkout can set any of these:
+ * The configuration belongs to the checkout, and a checkout may have come from an archive, a
+ * shared directory, or someone else's machine, so any of these can be set without the operator
+ * having made that choice themselves:
  *
  * - `core.fsmonitor` — a command `git status` executes to check whether the tree changed. This
  *   is the sharpest one: a status call is supposed to be inert and it will happily run whatever
@@ -19,21 +21,29 @@ type ExecFile = typeof execFile;
  *   reach it, but `GitLog` does on every commit that carries a `gpgsig` header.
  * - `core.pager` — a command Git runs to page its output. `execFile` never allocates a TTY, so
  *   git normally skips it, but the setting is read before that decision.
- * - `core.hooksPath` — where hooks live. None of the four read-only tools run a hook, so nothing
- *   here is reachable through them; it is set to an empty path so a future `git` subcommand that
- *   does has no hooks to find. It is here and *only* here: on `git commit` it would silently
- *   disable a hook the user installed.
- * - `core.untrackedCache`, `gc.auto` — background writers. `--no-optional-locks` below covers the
- *   index lock these need.
+ * - `core.hooksPath` — where hooks live, and where most of the effect of this list lands: a
+ *   `post-checkout` on `worktree add`, a `pre-commit` on an agent's commit, a
+ *   `reference-transaction` on every ref Book moves, a `prepare-commit-msg` on the
+ *   `cherry-pick` that applies a candidate. The four read-only tools here run no hook at all, so
+ *   for them this is belt and braces against a future subcommand; for
+ *   `src/agents/git-isolation.ts`, whose calls are writes nothing asks about (#348), switching
+ *   them off is the decision. It is **not** applied to `GitCommit` or to `runGit` generally: on
+ *   the operator's own commit it would silently disable a hook they installed, and their code
+ *   silently not running is a worse failure than the one this list prevents.
+ * - `core.untrackedCache`, `gc.auto`, `maintenance.auto` — background writers. `gc.auto=0` is not
+ *   the whole of it: `maintenance.auto` is separately on by default, so every commit spawns
+ *   `git maintenance run --auto`, which repacks and can run whatever strategies the configuration
+ *   registers while Book is moving refs. `--no-optional-locks` below covers the index lock these
+ *   need.
  *
  * `--no-optional-locks` is a top-level flag, not a config key, so it is added separately: it stops
  * Git taking `.git/index.lock` for a call that only reads, which a read-only worktree and a
  * concurrent `book` session would otherwise fight over.
  *
  * Each of these was checked against a real `git`, not read off this list — see
- * `git.test.ts`. Anything that is not reached through a non-TTY `execFile` (`column.ui`,
- * `pager.log`, `diff.external` without `--no-ext-diff`) is not here either, because the flags that
- * close those are per-command and belong in {@link READ_ONLY_GIT_ARGS}.
+ * `git.test.ts`. Anything not reached through a non-TTY `execFile` (`column.ui`, `pager.log`,
+ * `diff.external`) is not here either, because the flags that close those are per-command and
+ * belong in {@link HARDENED_DIFF_ARGS}, which every hardened caller that runs `git diff` uses.
  */
 const GIT_HARDENING_ARGS: readonly string[] = [
   '-c',
@@ -47,11 +57,50 @@ const GIT_HARDENING_ARGS: readonly string[] = [
   '-c',
   'gc.auto=0',
   '-c',
+  'maintenance.auto=false',
+  '-c',
   'log.showSignature=false',
   '--no-optional-locks',
 ];
 
-/** The hardening flags in front of the read-only tools' own arguments; see {@link GIT_HARDENING_ARGS}. */
+/**
+ * The per-command flags that close the two remaining routes a checkout owns for producing a diff,
+ * for every hardened caller that runs `git diff`: `diff.external` names a program to produce it,
+ * and a `.gitattributes` `textconv` line names one per file. They are command flags rather than
+ * configuration, which is why they are not in {@link GIT_HARDENING_ARGS}, and they are on the
+ * command as well as in the config so the guarantee does not rest on the `-c` overrides being
+ * consulted for the subcommand.
+ */
+export const HARDENED_DIFF_ARGS = ['--no-ext-diff', '--no-textconv'] as const;
+
+/**
+ * The environment every hardened call carries: a pager, so a checkout cannot name a program git
+ * pages its output with, and a credential prompt it cannot sit waiting on. Callers that have an
+ * environment of their own to merge (a tool's `ToolContext.env`, a temporary `GIT_INDEX_FILE`,
+ * git isolation's commit identity) spread this into it; the pager and the prompt are the floor,
+ * not a replacement.
+ *
+ * The return type is `Record<string, string>` rather than `NodeJS.ProcessEnv`: a caller's
+ * environment is `Record<string, string>` too, and spreading a wider one into it would make the
+ * whole object `string | undefined` where nothing may be undefined.
+ */
+export function hardenedGitEnv(): Record<string, string> {
+  return { GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' };
+}
+
+/**
+ * The hardening flags in front of a caller's own arguments; see {@link GIT_HARDENING_ARGS}.
+ *
+ * Four callers, and they read this differently. The read-only Git tools ({@link readOnlyGit}) take
+ * it because nothing asks before they run, so a checkout must not be able to start a program
+ * through one. `/review`'s target (`src/review/target.ts`) and the TUI status poll
+ * (`src/tui/hooks/useGitStatus.ts`) are the same: reports and background polls that fire with no
+ * prompt. Git isolation (`src/agents/git-isolation.ts`) is the one that takes it on writes as
+ * well — the agent's commit, the cherry-pick, `worktree add`, `update-ref` — where hooks being
+ * off is a decision (#348) rather than a consequence: that work is Book's, in Book's worktree,
+ * and a hook the operator installed is theirs to decide when it runs. The operator's own commits
+ * keep their hooks, through {@link runGit} below.
+ */
 export function hardenedGitArgs(args: readonly string[]): string[] {
   return [...GIT_HARDENING_ARGS, ...args];
 }
@@ -59,12 +108,14 @@ export function hardenedGitArgs(args: readonly string[]): string[] {
 /**
  * `runGit` runs a caller's arguments as given, and the caller chooses.
  *
- * The hardening is a property of the *read-only* tools, not of every git call this module makes:
- * applied to `git commit` it would disable the user's own pre-commit and commit-msg hooks, and
- * silently not running a user's hook is a worse failure than the one the hardening exists to
- * prevent. So the four read-only tools go through {@link readOnlyGit}, and `GitCommit` — the only
- * mutating tool here, and the only one that still asks — comes through here with its own argv and
- * the environment the user configured, exactly as it did before the hardening existed.
+ * The hardening is a property of the calls that are *not* the operator's own work, not of every
+ * git call this module makes. `GitCommit` is the operator's own work, and it is the only
+ * mutating tool here: it comes through this function with its own argv and the environment the
+ * user configured, exactly as it did before the hardening existed, so a `pre-commit` or
+ * `commit-msg` hook still runs. Silently not running the user's hook would be a worse failure
+ * than the one the hardening exists to prevent. The read-only tools go through
+ * {@link readOnlyGit}, and a caller whose work is Book's own builds its argv with
+ * {@link hardenedGitArgs} directly.
  */
 export async function runGit(
   args: string[],
@@ -102,11 +153,11 @@ export async function runGit(
   });
 }
 
-/** A read-only report: hardened, and with a pager and a credential prompt it cannot wait on. */
+/** A read-only report: hardened, and with the pager and credential prompt it cannot wait on. */
 function readOnlyGit(args: readonly string[], ctx: ToolContext) {
   return runGit(hardenedGitArgs(args), {
     ...ctx,
-    env: { ...ctx.env, GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' },
+    env: { ...ctx.env, ...hardenedGitEnv() },
   });
 }
 
@@ -150,9 +201,9 @@ async function gitBranch(_args: Record<string, unknown>, ctx: ToolContext): Prom
  * own configuration cannot make them execute a program (see {@link GIT_HARDENING_ARGS}). Exported
  * so that argument can be asserted per tool rather than taken on trust.
  *
- * `GitDiff` carries `--no-ext-diff` and `--no-textconv`, which close the two remaining routes a
- * checkout owns: `diff.external` names a program to produce the diff, and a `.gitattributes`
- * `textconv` line names one per file. `GitLog` carries `--no-show-signature` for the same reason
+ * `GitDiff` carries {@link HARDENED_DIFF_ARGS}, which close the two remaining routes a checkout
+ * owns: `diff.external` names a program to produce the diff, and a `.gitattributes` `textconv`
+ * line names one per file. `GitLog` carries `--no-show-signature` for the same reason
  * `log.showSignature=false` is in the hardening: verifying a signature runs `gpg.program`. The flag
  * is on the command as well as in the config so the guarantee does not rest on the `-c` override
  * being consulted for this subcommand. `GitCommit` is deliberately not here — it is a mutation,
@@ -160,7 +211,7 @@ async function gitBranch(_args: Record<string, unknown>, ctx: ToolContext): Prom
  */
 export const READ_ONLY_GIT_ARGS = {
   GitStatus: ['status', '--short'],
-  GitDiff: ['diff', '--no-ext-diff', '--no-textconv'],
+  GitDiff: ['diff', ...HARDENED_DIFF_ARGS],
   GitLog: ['log', '--oneline', '-20', '--no-show-signature'],
   GitBranch: ['branch', '-a'],
 } as const satisfies Readonly<Record<string, string[]>>;

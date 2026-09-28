@@ -6,6 +6,43 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **Book's own git work for managed agents runs with the checkout's hooks and background
+  programs off** (#348). `src/agents/git-isolation.ts` ran every command Book needs for an agent
+  with the checkout's own configuration and hooks, and a checkout's configuration may have come
+  from an archive, a shared directory, or someone else's machine rather than from the operator:
+  `core.fsmonitor` named a program `status`, `add`, `read-tree` and `write-tree` executed;
+  `worktree add` ran `post-checkout`; the agent's `commit` ran `pre-commit`, `commit-msg` and
+  `post-commit`; the `cherry-pick` that applies a candidate ran `prepare-commit-msg`; every ref
+  Book moved — `update-ref`, `branch -D`, that commit, the worktree itself — ran
+  `reference-transaction`; and every commit spawned `git maintenance run --auto`, which
+  `gc.auto=0` does not reach and which can prefetch or repack while Book moves refs. None of it
+  is a tool call the operator is asked about, so delegating an agent was a way for a checkout to
+  run a program. What is now off: **hooks**, repository and global, on every command including
+  the cherry-pick that applies an agent's result to your branch; **`core.fsmonitor`**; the
+  `diff.external` and `.gitattributes` `textconv` drivers, which would otherwise produce the patch
+  Book then feeds to `git apply`; **automatic maintenance** (`-c maintenance.auto=false`, new to
+  the hardening, beside `gc.auto=0`); and **signing of the agent's own commit**, which takes
+  `--no-gpg-sign` — the identity it commits under, `Book Agent <agents@book.local>`, has no key
+  on any machine, so `commit.gpgSign` left set made every patcher commit fail outright, hang on
+  pinentry, or start whatever `gpg.program` names. Every argv now goes through the same
+  `hardenedGitArgs` the read-only Git tools carry, applied inside the one `git()` function and
+  not at each call site, so a new call site cannot forget it; the agent's commit also takes
+  `--no-verify`; and `GIT_PAGER=cat` and `GIT_TERMINAL_PROMPT=0` are merged with the call site's
+  own environment. The flow is covered end to end — snapshot, worktree, agent commit, then apply,
+  down both the clean cherry-pick path and the dirty `git apply` path — against a repository whose
+  `core.fsmonitor` and six hooks each write a marker file outside the checkout, alongside a
+  control that shows the same hooks do fire for a plain `git commit` in it, and against a
+  repository whose `gpg.program` a control commit is seen to start.
+  **Still followed, on purpose:** clean/smudge and process filters and merge drivers named by
+  `.gitattributes`, because git-lfs depends on them and disabling them would mean rewriting the
+  user's content handling; a partial clone's lazy fetch of missing blobs, with whatever
+  `credential.helper` and `core.sshCommand` that needs; and signing of the commit the cherry-pick
+  puts on the operator's branch, which lands in their history under their committer identity and
+  is signed as they configured it. **Scope:** this reaches writes, and the decision is the
+  owner's: that work is Book's, in Book's worktree, so a hook the operator installed does not get
+  to decide whether it happens. The operator's own commits are untouched — `GitCommit` and
+  `runGit` still run the user's `pre-commit` and `commit-msg`, and the test that holds them to
+  that is unchanged.
 - **`additionalDirectories` is honored for reads and writes, and gated like every other
   project-declared authority** (#300). The setting was accepted from a checked-in `.book/settings.json`
   and did nothing, so the fix had to make it both real and safe. `Read`, `Glob` and `Grep` now serve
@@ -594,6 +631,18 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A patch git exits on before reading no longer crashes the host** (#351). `git()` in
+  `src/agents/git-isolation.ts` has two ways to reach git: `execFile`, or a `spawn` that writes a
+  patch to stdin. The `spawn` path attached no `error` listener to `child.stdin`, so a write that
+  failed — git exiting at once because the directory is not a repository or the argument is
+  rejected, which breaks the pipe before the last kilobyte of a 4 MB patch is written — surfaced as
+  an **uncaught exception in the Book process** rather than as the rejected promise the caller was
+  already awaiting. A `git apply` that simply did not apply could take the session down with it.
+  A listener is now attached before the write and never removed, mirroring what PR 343 did in
+  `src/mcp.ts`: `EPIPE` and `EOF` mean git was gone before it read, which the `close` handler's
+  exit code has already accounted for and is not news; any other stdin error is kept until
+  `close`, which rejects with git's own stderr when there is any, so the promise settles once,
+  on git's account of what happened.
 - **A `stream-json` print run whose reader goes away no longer runs the calls it announced** (#340).
   A closed pipe is only noticed on a write, and the notice arrives after the write returns, so a run
   whose reader left while the model was silent — nothing written, nothing to report it — wrote that

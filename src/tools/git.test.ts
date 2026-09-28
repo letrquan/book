@@ -5,7 +5,14 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { WORKSPACE_READ_ONLY_GIT_TOOLS } from '../permissions.js';
 import type { ToolContext } from '../types/tools.js';
-import { gitTools, hardenedGitArgs, READ_ONLY_GIT_ARGS, runGit } from './git.js';
+import {
+  gitTools,
+  hardenedGitArgs,
+  hardenedGitEnv,
+  HARDENED_DIFF_ARGS,
+  READ_ONLY_GIT_ARGS,
+  runGit,
+} from './git.js';
 
 const ctx: ToolContext = { workspaceRoot: '/workspace', env: { TEST_ENV: 'yes' } };
 type ExecCallback = (error: Error | null, stdout: string, stderr: string) => void;
@@ -152,7 +159,7 @@ describe('git hardening', () => {
     return entries;
   }
 
-  it('overrides the settings a repository owns that would run a program', () => {
+  it('overrides the settings a checkout owns that would run a program', () => {
     const config = configOf(hardenedGitArgs(['status', '--short']));
     // A command git executes to check whether the tree changed.
     expect(config.get('core.fsmonitor')).toBe('false');
@@ -162,15 +169,40 @@ describe('git hardening', () => {
     expect(config.get('core.hooksPath')).toBe('');
   });
 
+  it('stops the background writers, not only the ones gc.auto covers', () => {
+    // `gc.auto=0` is not the whole of it. `maintenance.auto` is separately on by default, so
+    // every commit spawns `git maintenance run --auto`, which repacks and can run whatever
+    // strategies the configuration registers — a prefetch, a credential or ssh program — while
+    // Book is mid-flow and moving refs. Checked here as a key, because that is what a
+    // `-c key=value` pair in the argv is: asserting the exact argv length would make this test
+    // fail every time an unrelated flag is added.
+    const config = configOf(hardenedGitArgs(['status', '--short']));
+    expect(config.get('maintenance.auto')).toBe('false');
+    expect(config.get('gc.auto')).toBe('0');
+  });
+
   it('takes no index lock for a call that only reads', () => {
     expect(hardenedGitArgs(['status'])).toContain('--no-optional-locks');
   });
 
   it('closes the two routes a checkout owns for producing a diff', () => {
     // `diff.external` names a program to produce the diff; a `.gitattributes` `textconv` line
-    // names one per file. Both are repository settings read by a tool whose job is to report.
+    // names one per file. Both are checkout settings read by a tool whose job is to report. The
+    // flags are shared rather than restated per caller, so this asserts the one list every
+    // hardened caller that runs `git diff` reaches for.
+    expect([...HARDENED_DIFF_ARGS]).toEqual(['--no-ext-diff', '--no-textconv']);
     expect(READ_ONLY_GIT_ARGS.GitDiff).toContain('--no-ext-diff');
     expect(READ_ONLY_GIT_ARGS.GitDiff).toContain('--no-textconv');
+  });
+
+  it('gives every hardened call a pager and a credential prompt it cannot wait on', () => {
+    // One list, spread by the four callers that have an environment of their own to merge into
+    // it: a tool's `ToolContext.env`, git isolation's commit identity, `/review`'s call, the TUI
+    // poll. Asserted as a fresh object per call, since a shared mutable one would let one
+    // caller's configuration reach another's.
+    const env = hardenedGitEnv();
+    expect(env).toEqual({ GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' });
+    expect(hardenedGitEnv()).not.toBe(env);
   });
 
   it('covers exactly the tools that run without a prompt', () => {
