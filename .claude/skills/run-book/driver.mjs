@@ -34,7 +34,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
@@ -120,6 +120,9 @@ let mockClosed = Promise.resolve();
 // Set before the driver stops the mock (or a signal reaches it too), so only an unexpected
 // exit is reported.
 let mockStopping = false;
+// The log path the mock's READY line named, kept for cleanup(): a hard kill of the mock
+// skips the mock's own removal of the directory it made.
+let mockRequestLog = null;
 async function startMock() {
   const args = [join(HERE, 'mock-provider.mjs'), '--port', String(MOCK_PORT)];
   if (MOCK_SCRIPT) args.push('--script', MOCK_SCRIPT);
@@ -135,7 +138,7 @@ async function startMock() {
     process.stderr.write(d);
     mockStderr = (mockStderr + d).slice(-2000);
   });
-  let mockRequestLog = null;
+  let mockOut = '';
   await new Promise((res, rej) => {
     const portHint =
       'pass --mock-port <other>, and never kill mocks by name: on a shared machine they ' +
@@ -166,14 +169,18 @@ async function startMock() {
       );
     });
     mockProc.stdout.on('data', (d) => {
-      if (!ready && String(d).includes('MOCK-PROVIDER-READY')) {
-        ready = true;
-        clearTimeout(timer);
-        // The log lives in a temp directory the mock names, so carry that name up: a
-        // random path on a line the script never sees is a log nobody can find.
-        mockRequestLog = String(d).match(/\(requests -> (.+)\)/)?.[1] ?? null;
-        res();
-      }
+      if (ready) return;
+      // The READY line can arrive in pieces, and the log path is only readable from
+      // a whole line — so the buffer grows until one is complete.
+      mockOut += d;
+      const line = mockOut
+        .split('\n')
+        .find((candidate) => candidate.includes('MOCK-PROVIDER-READY'));
+      if (line === undefined) return;
+      ready = true;
+      clearTimeout(timer);
+      mockRequestLog = line.match(/\(requests -> (.+)\)/)?.[1] ?? null;
+      res();
     });
   });
   const log = mockRequestLog ? ` (requests -> ${mockRequestLog})` : '';
@@ -689,6 +696,28 @@ function releasePty() {
   }
 }
 
+/**
+ * Remove the request log directory the mock made for this run.
+ *
+ * The mock removes its own, but only on a stop its handlers run for — and a hard
+ * kill on Windows (which is what `mockProc.kill()` is there) runs none of them, so
+ * a directory of whole request bodies would outlive the run that wrote it. The
+ * driver does it instead, and only in the two cases where that is its own
+ * directory to remove: no `--mock-request-log` was passed, so the mock chose the
+ * path itself, and the directory carries the mock's own `book-mock-` prefix.
+ * A log the caller named with `--mock-request-log` is theirs and is kept.
+ */
+function removeMockLogDir() {
+  if (MOCK_REQUEST_LOG || !mockRequestLog) return;
+  const dir = dirname(mockRequestLog);
+  if (!basename(dir).startsWith('book-mock-')) return;
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch (error) {
+    console.error(`[driver] could not remove the mock's request log ${dir}: ${error.message}`);
+  }
+}
+
 // One cleanup, whichever path asks first (the command loop, fail(), or a signal).
 let cleanupPromise = null;
 function cleanup() {
@@ -702,6 +731,7 @@ function cleanup() {
     mockProc?.kill();
     // Let the mock's piped stderr drain before the driver exits, or its last lines are lost.
     await Promise.race([mockClosed, sleep(1000)]);
+    removeMockLogDir();
     if (RECORD_FILE) {
       try {
         // Version 2: the size the run started at, and every resize interleaved with

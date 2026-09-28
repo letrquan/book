@@ -77,14 +77,15 @@ EOF
 | `quit` | Ctrl-C twice and wait for exit. |
 
 Options: `--mock` (start the mock provider), `--mock-script <json>`, `--mock-port` (8919),
-`--mock-usage-from-estimate` (forwarded to the mock as `--usage-from-estimate`), `--mock-request-log
-<file>` (forwarded as `--request-log`, so the request log lands on a path you chose rather than in
-the private temp directory the mock otherwise makes; the mock's READY line and the driver both
-print the path), `--chunk-delay-ms <n>` (forwarded, see below), `--sessions` (keep session
-persistence on, so sessions pre-seeded in `<book-home>/.book/sessions/*.jsonl` show on the title
-page and in `/resume`; a seeded file needs a `session_meta` line whose `cwd` is the workspace
-normalized as the store does it, lowercase on Windows, plus at least one `user` record, because the
-store recounts messages from the records),
+`--mock-usage-from-estimate` (forwarded to the mock as `--usage-from-estimate`),
+`--chunk-delay-ms <n>` (forwarded, see below),
+`--mock-request-log <file>` (forwarded as `--request-log`: the request log lands on a path you
+chose and is kept, rather than in the private temp directory the mock otherwise makes and removes
+when it stops; the mock's READY line and the driver both print the path),
+`--sessions` (keep session persistence on, so sessions pre-seeded in
+`<book-home>/.book/sessions/*.jsonl` show on the title page and in `/resume`; a seeded file needs
+a `session_meta` line whose `cwd` is the workspace normalized as the store does it, lowercase on
+Windows, plus at least one `user` record, because the store recounts messages from the records),
 `--workspace <dir>`, `--book-home <dir>` (default: a fresh temp dir, removed when the driver exits;
 a home the driver made that holds a managed-agent worktree, or any home with a persistent
 background job still running in this workspace, is kept along with the scratch workspace, because
@@ -138,11 +139,16 @@ Book refuses to start without `BOOK_API_KEY`, and a real key costs money and mak
 non-deterministic. This serves the OpenAI-compatible SSE subset that
 `src/provider/openai-compatible.ts` consumes, replying with a scripted sequence — turn N answers the
 Nth request, the last turn repeats forever. Every request is appended to a `requests.jsonl` so you
-can assert on what Book actually sent. The log lives in a private temp directory the mock creates
+can assert on what Book actually sent. That log lives in a private temp directory the mock creates
 per run, in the OS temp directory, and its path is printed on the mock's `MOCK-PROVIDER-READY` line
-and by the driver. `--request-log <file>` (the driver's `--mock-request-log <file>`) puts it
-somewhere you chose instead; a symbolic link at that path is refused, so the log cannot be pointed
-at a file you did not name.
+and by the driver. **The default log lasts as long as the run** — the directory is removed when the
+mock stops, so a log of whole request bodies does not pile up in a shared temp directory. To read
+it after the run, pass `--request-log <file>` to the mock, or
+`--mock-request-log <file>` to the driver: that keeps the log wherever you put it, and a symbolic
+link at that path is refused, so the log cannot be pointed at a file you did not name.
+
+`--port 0` takes any free port, and the READY line names the one actually bound — how a script
+avoids a port race when several runs share a machine.
 
 ```json
 [
@@ -212,14 +218,14 @@ with sharp, which is a devDependency `npm ci` installs. A resize in the recordin
 replay terminal where it happened, so a script that resized mid-run replays correctly; every frame
 is drawn at its own size from the top left, on one canvas sized to the largest size the run drove.
 Identical frames merge into one longer frame and a pause is cut to `--max-hold` ms; `--end-hold`
-sets the last frame's. `--start-at <regex>`
-starts at the first screen that matches, and `--until <regex> --after <ms>` stops that long after one
-does. A `.png` output is the final frame alone, which is how a screenshot of an exact moment is
-taken: `--until "Permission required" --after 2000`. `--rows a:b` crops to screen rows a..b-1 of
-each frame (negative counts from that frame's own bottom, since a frame before a resize is shorter),
-and `--title <text>` adds a window title bar. Chunks less than 6 ms apart are applied together, so a
-frame the renderer wrote in pieces is never sampled half-drawn. A version-1 recording (no
-`version`, no resize entries) replays as it always did.
+sets the last frame's. `--start-at <regex>` starts at the first screen that matches, and
+`--until <regex> --after <ms>` stops that long after one does. A `.png` output is the final
+frame alone, which is how a screenshot of an exact moment is taken:
+`--until "Permission required" --after 2000`. `--rows a:b` crops to screen rows a..b-1 of each
+frame (negative counts from that frame's own bottom, since a frame before a resize is
+shorter), and `--title <text>` adds a window title bar. Chunks less than 6 ms apart are
+applied together, so a frame the renderer wrote in pieces is never sampled half-drawn. A
+version-1 recording (no `version`, no resize entries) replays as it always did.
 
 ### `readme-media.sh` — the README's GIF and screenshots
 

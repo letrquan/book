@@ -580,13 +580,17 @@ All notable changes to this project are documented in this file.
   (#327). The log sat at a predictable `<tmp>/book-mock-<port>.requests.jsonl`, was truncated at
   startup and appended per request by name, so a path pre-created as a symbolic link received whole
   request bodies. It now lives in a temp directory the mock creates for the run once it is listening
-  (mode 0700), opened once and appended through that descriptor; an explicit `--request-log` is
-  still honoured but is opened with `O_NOFOLLOW`, and a symbolic link at that path is refused before
-  the server serves anything. A scenario turn of the wrong shape — `{"text": 5}` — used to throw
-  after the 200 was on the wire, where nothing caught it, and the unhandled rejection took the whole
-  mock down mid-run; turns are checked before the reply is written, and a bad one is answered with a
-  500 naming the turn while the run continues. The driver prints the log path it was given and
-  forwards `--mock-request-log` to the mock.
+  (mode 0700), opened once — with `O_TRUNC` and, where it exists, `O_NOFOLLOW` — and appended
+  through that descriptor; an explicit `--request-log` is still honoured, and a symbolic link at
+  that path, or a log that cannot be opened at all, is refused before the server serves anything.
+  That directory is removed when the mock stops (normal exit, SIGINT, SIGTERM, SIGHUP), and by the
+  driver after a hard kill, so a log of whole request bodies does not outlive its run: pass
+  `--request-log` (the driver's `--mock-request-log`) to keep it. A scenario turn of the wrong shape
+  — `{"text": 5}` — used to throw after the 200 was on the wire, where nothing caught it, and the
+  unhandled rejection took the whole mock down mid-run; turns are checked before the reply is
+  written, and a bad one is answered with a 500 naming the turn while the run continues. The
+  driver prints the log path it was given, and `--port 0` now takes any free port and names the
+  bound one on the READY line, so two runs on one machine cannot race for a port.
 - **A Windows root and a path under it are compared in one spelling** (#300, #305). One directory
   has more than one name: the long form a user reads and the DOS 8.3 short form
   (`C:\Users\RUNNER~1\AppData\Local\Temp`), plus a drive letter in either case and separators either
