@@ -11,6 +11,11 @@ export type McpFixtureMode =
   | 'crash'
   | 'call-silence'
   | 'stderr-call-silence'
+  /**
+   * Completes the handshake, then closes its own stdin and stays alive: a write the client
+   * queues afterwards can only fail when this process is reaped.
+   */
+  | 'close-stdin'
   /** Elicits a form during tools/call and echoes the client's answer back. */
   | 'elicit'
   /** Puts this process's own NODE_ENV in the tool description, for env-seam assertions. */
@@ -32,6 +37,18 @@ function respond(message) {
 let clientCapabilities = {};
 let nextServerRequestId = 1000;
 const awaitingElicitation = new Map();
+
+/**
+ * Drop the request pipe but stay alive. Anything the client writes from here on has nowhere
+ * to go, so it sits in the pipe buffer until this process is reaped — at which point the
+ * write fails, however long after the client tore the transport down that was.
+ */
+function closeStdin() {
+  setTimeout(() => {
+    process.stdin.destroy();
+    setInterval(() => {}, 1000);
+  }, 0);
+}
 
 process.stdin.setEncoding('utf8');
 let buffer = '';
@@ -96,6 +113,7 @@ process.stdin.on('data', chunk => {
           }]
         }
       });
+      if (mode === 'close-stdin') closeStdin();
     } else if (request.method === 'tools/call' && mode === 'elicit') {
       if (!clientCapabilities.elicitation) {
         respond({
