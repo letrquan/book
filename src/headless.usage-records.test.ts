@@ -548,3 +548,119 @@ describe('print-mode usage records for spend after the root run ends (#336)', ()
     });
   });
 });
+
+/**
+ * A host-performed command between two prompts: `[prompt, /review, prompt]`
+ * (#336).
+ *
+ * The handled branch used to `continue` without rebuilding the carry, so the
+ * third prompt re-seeded a total that still named the *first* prompt's root. That
+ * stale carry skipped the review's spend entirely — it was not in the third
+ * prompt's budget, and its model names never reached `carriedModels` — and
+ * re-seeding the old root re-stamped that root's hand-over floor against a total
+ * it had never passed on, sealing anything it spent in the meantime.
+ */
+describe('print-mode usage records across a host-performed command', () => {
+  it('carries the review spend forward, and loses and duplicates nothing', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'book-usage-cmd-'));
+    const home = mkdtempSync(join(tmpdir(), 'book-usage-cmd-home-'));
+    const previousHome = process.env.BOOK_HOME;
+    process.env.BOOK_HOME = home;
+    const git = (...args: string[]): string =>
+      execFileSync('git', args, {
+        cwd: repo,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    try {
+      git('init', '-q');
+      git('config', 'user.email', 'book-tests@example.invalid');
+      git('config', 'user.name', 'Book Tests');
+      writeFileSync(join(repo, 'a.ts'), 'export const value = 1;\n', 'utf8');
+      git('add', '.');
+      git('commit', '-qm', 'initial');
+      writeFileSync(join(repo, 'a.ts'), 'export const value = 2;\n', 'utf8');
+
+      const config = defaultConfig({ baseUrl: 'http://localhost/v1', workspace: repo });
+      config.settings.agents.persist = false;
+      config.settings.agents.telemetry = false;
+      const store = new SessionStore(repo);
+      const sessionId = store.create({ cwd: repo });
+
+      // Prompt 1 spends 100/10; its still-running agent adds 10/1 afterwards.
+      // The `/review`'s reviewer spends 30/12, then prompt 3 spends 200/20.
+      const LATE: Usage = { promptTokens: 10, completionTokens: 1, totalTokens: 11 };
+      const record = vi.spyOn(RunAccounting.prototype, 'record');
+      const seed = vi.spyOn(RunAccounting.prototype, 'seedRoot');
+      let charged = false;
+      let turn = 0;
+      const provider = createRepeatingScriptedProvider(() => {
+        turn++;
+        if (turn === 1) return settledTurn('first answer', 100, 10);
+        // The review's single reviewer agent, then the third prompt's turn.
+        if (turn === 2) {
+          return sseResponse([
+            JSON.stringify({ choices: [{ delta: { content: REVIEWER_REPORT } }] }),
+            usageChunk(30, 12, 'stop'),
+          ]);
+        }
+        return settledTurn('third answer', 200, 20);
+      });
+      vi.stubGlobal('fetch', provider.fetch);
+
+      await runHeadless(config, createDefaultRegistry({ agents: true }), {
+        inputFormat: 'stream-json',
+        outputFormat: 'text',
+        history: [],
+        stdin: Readable.from([
+          `${JSON.stringify({ type: 'user', content: 'first' })}\n`,
+          `${JSON.stringify({ type: 'user', content: '/review' })}\n`,
+          `${JSON.stringify({ type: 'user', content: 'third' })}\n`,
+        ]),
+        sessionStore: store,
+        sessionId,
+        mode: 'bypassPermissions',
+        stdout: { write: () => true },
+        onAgentEvent: (event) => {
+          // Prompt 1's result record: its turn is reported, and the review has
+          // not started. The agent answering now is charged above everything
+          // prompt 1 will ever hand on.
+          if (event.type !== 'result' || charged) return;
+          charged = true;
+          const accounting = record.mock.instances.at(-1) as RunAccounting | undefined;
+          const root = record.mock.calls.at(-1)?.[0];
+          accounting?.record(childOf(root as AgentRunContext), LATE, lateMeta());
+        },
+      });
+
+      expect(provider.requests).toHaveLength(3);
+      expect(charged).toBe(true);
+      // Every charge, once: 100/10, the late 10/1, the review's 30/12, and
+      // prompt 3's own 200/20. A stale carry would write the review's 42 a
+      // second time under prompt 3's root; a sealed floor would drop the late 11.
+      const totals = persistedTotals(store, sessionId);
+      expect(totals.promptTokens).toBe(100 + 10 + 30 + 200);
+      expect(totals.completionTokens).toBe(10 + 1 + 12 + 20);
+      expect(totals.totalTokens).toBe(110 + 11 + 42 + 220);
+
+      // The review's spend is inside the carry prompt 3 is budgeted against, so
+      // the last seed names a root whose total includes it — not prompt 1's.
+      const seeded = seed.mock.calls.map((call) => call[1].usage?.totalTokens ?? 0);
+      expect(seeded).toHaveLength(2);
+      expect(seeded[0]).toBe(110 + 11);
+      expect(seeded[1]).toBe(110 + 11 + 42);
+      // The source named by the last seed is the review's root, not prompt 1's:
+      // re-seeding prompt 1's root is what re-stamped its floor.
+      expect(seed.mock.calls[1]?.[1].fromRootRunId).not.toBe(seed.mock.calls[0]?.[1].fromRootRunId);
+
+      // And a resume restores all of it, once.
+      const resumed = await runProcess(store, sessionId, () => settledTurn('after', 50, 5));
+      expect(resumed).toBe(1);
+      expect(persistedTotals(store, sessionId).promptTokens).toBe(100 + 10 + 30 + 200 + 50);
+    } finally {
+      if (previousHome === undefined) delete process.env.BOOK_HOME;
+      else process.env.BOOK_HOME = previousHome;
+      for (const dir of [repo, home]) rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+});

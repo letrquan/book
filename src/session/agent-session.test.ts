@@ -2317,6 +2317,202 @@ describe('AgentSession end-of-run and end-of-session usage flushes', () => {
     // The replacement is installed, and it is the session's runtime now.
     expect(agentSession.getRuntime()).not.toBe(runtime);
   });
+
+  it('persists compaction spend, which no turn of its own will ever report', async () => {
+    // A manual `/compact` is a model call charged to a root, and the root it
+    // mints never runs a turn: nothing calls `onUsage` for it, so only the
+    // end-of-session flush can write it — and only if the root is registered.
+    const captured = capture();
+    const { runtime } = captured;
+    const judge = usage(20, 5);
+    const runContext = createAgentRunContext({
+      sessionId: SESSION_ID,
+      runId: 'manual-compact',
+      source: 'tui',
+      startedAt: 1,
+    });
+    const session = new AgentSession({
+      runtime,
+      compactRunner: async (_config, _history, options) => {
+        options.onUsage?.(
+          judge,
+          meta('response-compact') as Parameters<NonNullable<typeof options.onUsage>>[1],
+        );
+        return compactedResult();
+      },
+    });
+
+    await session.compact({
+      config: defaultConfig(),
+      history: [],
+      sessionId: SESSION_ID,
+      transcriptOrdinal: 0,
+      runContext,
+      runtime,
+      timelineStore: timeline(captured),
+      options: { trigger: 'manual' },
+    });
+    session.dispose();
+
+    expect(captured.persisted().map((entry) => entry.totalTokens)).toEqual([25]);
+    expect(captured.carried()).toMatchObject(judge);
+  });
+
+  it('persists a compaction that ran before a cancelled send ever registered its root', async () => {
+    // The host auto-compacts in `beforePrepare`, and a send cancelled between
+    // there and `run()` returns without reaching the registration inside `run()`.
+    // The compactor's spend is then charged to a root nothing will ever flush.
+    const captured = capture();
+    const { runtime } = captured;
+    const judge = usage(20, 5);
+    const session = new AgentSession({
+      runtime,
+      compactRunner: async (_config, _history, options) => {
+        options.onUsage?.(
+          judge,
+          meta('response-compact') as Parameters<NonNullable<typeof options.onUsage>>[1],
+        );
+        return compactedResult();
+      },
+    });
+
+    const outcome = await session.send({
+      config: defaultConfig(),
+      sessionId: SESSION_ID,
+      registry,
+      mode: 'default',
+      history: [],
+      timelineStore: timeline(captured),
+      callbacks: events,
+      createUserMessage: () => ({
+        id: 'user-1',
+        role: 'user' as const,
+        content: 'go',
+        includeInContext: true,
+        timestamp: 1,
+      }),
+      displayMessage: 'go',
+      contextMessage: 'go',
+      beforePrepare: async (control) => {
+        await session.compact({
+          config: defaultConfig(),
+          history: [],
+          sessionId: SESSION_ID,
+          transcriptOrdinal: 0,
+          runContext: control.runContext,
+          runtime,
+          timelineStore: timeline(captured),
+          options: { trigger: 'auto' },
+        });
+        throw new Error('cancelled before the turn started');
+      },
+    });
+    expect(outcome.status).toBe('failed');
+
+    session.dispose();
+    expect(captured.persisted().map((entry) => entry.totalTokens)).toEqual([25]);
+    expect(captured.carried()).toMatchObject(judge);
+  });
+
+  it('survives a store that throws: the run ends, the swap happens, the rest is written', async () => {
+    // `store.append` is synchronous fs I/O. Called from the run's `finally` and
+    // from the runtime swap, a throw replaced a completed run's outcome with a
+    // filesystem error, aborted the sweep part-way, and left the session on a
+    // disposed runtime.
+    const captured = capture();
+    const { runtime } = captured;
+    const turn = usage(100, 10);
+    const late = usage(50, 5);
+    const runLoop: AgentLoopRunner = async (_c, _r, _p, _h, callbacks, _m, options) => {
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, turn, meta('response-root'));
+      }
+      callbacks.onUsage?.(turn, meta('response-root'));
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, late, meta('response-child'));
+      }
+      return [];
+    };
+    const session = new AgentSession({ runtime, runLoop });
+    // One root's store fails; the other's still has to be written.
+    const failing = new Set([SESSION_ID]);
+    const realAppend = captured.store.append.bind(captured.store);
+    const flakyStore = {
+      append: (sessionId: string, record: SessionRecord) => {
+        if (failing.has(sessionId)) throw new Error('EIO: disk on fire');
+        return realAppend(sessionId, record);
+      },
+    };
+    // Root A writes through the failing store, root B through the real one.
+    const rootA = createAgentRunContext({
+      sessionId: SESSION_ID,
+      runId: 'root-a-turn',
+      rootRunId: 'root-a',
+      source: 'tui',
+      startedAt: 1,
+    });
+    const rootB = createAgentRunContext({
+      sessionId: 'session-b',
+      runId: 'root-b-turn',
+      rootRunId: 'root-b',
+      source: 'tui',
+      startedAt: 2,
+    });
+    session.trackRunUsage('root-a', { sessionId: SESSION_ID, timelineStore: flakyStore });
+    runtime.runAccounting.startRoot(rootA);
+    runtime.runAccounting.record(rootA, turn, meta('response-a'));
+    session.trackRunUsage('root-b', { sessionId: 'session-b', timelineStore: timeline(captured) });
+    runtime.runAccounting.startRoot(rootB);
+    runtime.runAccounting.record(rootB, usage(30, 3), meta('response-b'));
+
+    expect(() => session.reset('test-reset')).not.toThrow();
+    // The failed write left its watermark alone, so the spend is still owed.
+    expect(runtime.isDisposed).toBe(true);
+    expect(session.getRuntime()).not.toBe(runtime);
+    // Root B, whose store worked, was still flushed by the same sweep.
+    expect(captured.persisted().map((entry) => entry.totalTokens)).toEqual([33]);
+  });
+
+  it('names every model the root spent on, so a pricey child is not under-priced', async () => {
+    // The per-response writer holds the root's whole unpersisted delta and names
+    // the reporting response's model. A cheap root whose pricier managed children
+    // all finished before its last response therefore produced records naming only
+    // the cheap one, and the flush writers — which would have named the pricey one —
+    // found nothing left to write. `carriedModels` never saw it, so the restored
+    // carry was priced at the cheap rate.
+    const captured = capture();
+    const { runtime } = captured;
+    const turn = usage(100, 10);
+    const child = usage(50, 5);
+    const childMeta: ProviderResponseMetadata = {
+      provider: 'anthropic',
+      requestedModel: 'claude-opus-5',
+      responseModel: 'claude-opus-5',
+      responseId: 'response-child',
+    } as unknown as ProviderResponseMetadata;
+    const runLoop: AgentLoopRunner = async (_c, _r, _p, _h, callbacks, _m, options) => {
+      // The child finishes first, on the dearer model.
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, child, childMeta);
+      }
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, turn, meta('response-root'));
+      }
+      callbacks.onUsage?.(turn, meta('response-root'));
+      return [];
+    };
+    const session = new AgentSession({ runtime, runLoop });
+    await session.run(
+      runRequest(captured, 'turn-1', {
+        timelineStore: timeline(captured),
+      }),
+    );
+    session.dispose();
+
+    const models = captured.store.load('session-1').carriedModels?.map((model) => model);
+    expect(models).toContain('claude-opus-5');
+    expect(models).toContain('gpt-5');
+  });
 });
 
 describe('AgentSession deferred compaction', () => {

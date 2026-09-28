@@ -311,10 +311,14 @@ export class RunAccounting {
       // Recorded rather than subtracted off the source's watermark at once —
       // this root may never write (a `/review` that spent nothing, a host with no
       // store), and then the source must still be the fallback.
+      //
+      // Stamped from the CARRY, never from the source's live total. A handled
+      // command and every prompt after it re-seed the same source, and a source
+      // that keeps spending in between — a background agent answering while the
+      // review runs — would have its floor pushed past spend the successor never
+      // inherited: below the floor and inside nobody's carry, so it is lost.
       const source = this.roots.get(carried.fromRootRunId);
-      if (source) {
-        source.handedOverAt = this.inclusiveUsage(source, source.executions.values()) ?? undefined;
-      }
+      if (source) source.handedOverAt = carried.usage ?? undefined;
     }
     this.roots.set(rootRunId, root);
   }
@@ -368,27 +372,20 @@ export class RunAccounting {
    * cannot be ranked, so it is passed over; with nothing priceable to choose
    * from, the first model the root is known to have spent on is better than
    * none, because an unpriced name makes the restored carry unknown and fails
-   * every budget closed. Undefined when the root has spent under no model at all.
+   * every budget closed. Undefined when neither this root nor the one it took
+   * over from is known to have spent under any model.
    */
   dearestModel(rootRunId: string): string | undefined {
     const root = this.roots.get(rootRunId);
     if (!root) return undefined;
-    const identities = new Map<string, AgentModelIdentity>();
-    for (const execution of root.executions.values()) {
-      for (const [key, identity] of execution.modelIdentities) {
-        if (!identities.has(key)) identities.set(key, identity);
-      }
-    }
+    const models = this.modelsFor(rootRunId);
     // The figures are compared at this root's whole inclusive spend: which model
     // is dearest is a property of the rate card, and every model here was asked
     // to price the same pool.
     const spend = this.inclusiveUsage(root, root.executions.values()) ?? ZERO_USAGE;
     let dearest: string | undefined;
     let dearestCost: number | undefined;
-    let firstModel: string | undefined;
-    for (const identity of identities.values()) {
-      const model = identity.responseModel ?? identity.requestedModel;
-      firstModel ??= model;
+    for (const model of models) {
       const quote = estimateUsageCost(model, spend);
       if (quote.status !== 'known') continue;
       if (dearestCost === undefined || quote.costUsd > dearestCost) {
@@ -396,7 +393,39 @@ export class RunAccounting {
         dearestCost = quote.costUsd;
       }
     }
-    return dearest ?? firstModel;
+    return dearest ?? models[0];
+  }
+
+  /**
+   * Every model this root has spent on, children included, for a `usage` record
+   * to name so a restored carry is priced at the dearest of them.
+   *
+   * A root that took another one's totals over and spent nothing itself still
+   * has to write that remainder, and the models that spent it are the source's —
+   * so a successor with no execution of its own inherits the source's names
+   * rather than writing a record that prices the carry at nothing.
+   */
+  modelsFor(rootRunId: string): string[] {
+    const models: string[] = [];
+    const seen = new Set<string>();
+    const rootRunIds = [rootRunId];
+    // A hand-over chain, walked once: a root that took over from another that
+    // took over from a third is bounded by the prompts in this process, but the
+    // walk is still bounded by what it has actually seen.
+    for (let index = 0; index < rootRunIds.length; index++) {
+      const root = this.roots.get(rootRunIds[index]!);
+      if (!root) continue;
+      rootRunIds.push(...(root.tookOverFrom ? [root.tookOverFrom] : []));
+      for (const execution of root.executions.values()) {
+        for (const identity of execution.modelIdentities.values()) {
+          const model = identity.responseModel ?? identity.requestedModel;
+          if (!model || seen.has(model)) continue;
+          seen.add(model);
+          models.push(model);
+        }
+      }
+    }
+    return models;
   }
 
   /**

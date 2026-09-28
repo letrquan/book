@@ -541,10 +541,13 @@ describe('spend attribution across snapshot kinds', () => {
       accounting.record(rootOne, usage(100, 10), meta);
       accounting.commitPersistedUsage('root-1');
 
+      // The carry a host hands on is the source's own inclusive total, which is
+      // what `headless.ts` snapshots — not a figure reconstructed by hand.
+      const inclusive = accounting.snapshotRoot('root-1').inclusiveUsage;
       accounting.seedRoot('root-2', {
-        usage: usage(110, 11),
+        usage: inclusive,
         costUsd: 0.1,
-        persistedUsage: usage(110, 11),
+        persistedUsage: accounting.persistedUsage('root-1'),
         fromRootRunId: 'root-1',
       });
       // Charged after the hand-over: above the line, so still root 1's to write.
@@ -586,6 +589,45 @@ describe('spend attribution across snapshot kinds', () => {
 
       expect(accounting.peekUnpersistedUsage('root-1')).toMatchObject(usage(0, 0));
       expect(accounting.peekUnpersistedUsage('root-2')).toMatchObject(usage(5, 1));
+    });
+
+    it('stamps the hand-over with the figure handed on, never a later total', () => {
+      // A handled command (`/review`) and every prompt after it re-seed the same
+      // source. Stamping the source's floor with whatever its total had grown to
+      // by then seals spend the successor's carry never contained — it sits under
+      // the floor, in nobody's delta, and is lost. The figure handed on is the
+      // carry's own: that is precisely what the successor inherited.
+      const accounting = new RunAccounting();
+      const rootOne = context('root-1-turn', 'root-1');
+      accounting.startRoot(rootOne);
+      accounting.record(rootOne, usage(100, 10), meta);
+      accounting.commitPersistedUsage('root-1');
+      // Its background agent answers after the first prompt: inclusive 110.
+      accounting.startExecution(context('root-1-late', 'root-1'));
+      accounting.record(context('root-1-late', 'root-1'), usage(10, 1), meta);
+
+      // A stale carry is re-seeded by a later prompt; the figure it carries is
+      // what the successor is to write, so the floor may not move past it.
+      accounting.seedRoot('root-2', {
+        usage: usage(110, 11),
+        costUsd: 0.1,
+        persistedUsage: usage(100, 10),
+        fromRootRunId: 'root-1',
+      });
+      // Root 1 is charged again, during the review.
+      accounting.startExecution(context('root-1-review', 'root-1'));
+      accounting.record(context('root-1-review', 'root-1'), usage(20, 2), meta);
+      // And the stale carry is seeded once more.
+      accounting.seedRoot('root-3', {
+        usage: usage(110, 11),
+        costUsd: 0.1,
+        persistedUsage: usage(100, 10),
+        fromRootRunId: 'root-1',
+      });
+
+      // The 20/2 above the handed-on 110/11 is still root 1's to write: sealing
+      // it under the floor would drop it from every delta in the process.
+      expect(accounting.peekUnpersistedUsage('root-1')).toMatchObject(usage(20, 2));
     });
   });
 
@@ -630,6 +672,31 @@ describe('spend attribution across snapshot kinds', () => {
       } as unknown as ProviderResponseMetadata);
 
       expect(accounting.dearestModel('root')).toBe('some-local-model');
+    });
+
+    it('names the source models for a successor that spent nothing itself', () => {
+      // A successor that only inherited a remainder still has to write it, and
+      // the models that spent it are the source's. Naming none would leave the
+      // restored carry priced at nothing.
+      const accounting = new RunAccounting();
+      const rootOne = context('root-1-turn', 'root-1');
+      accounting.startRoot(rootOne);
+      accounting.record(rootOne, usage(100, 10), meta);
+      const inclusive = accounting.snapshotRoot('root-1').inclusiveUsage;
+      accounting.seedRoot('root-2', {
+        usage: inclusive,
+        costUsd: 0.1,
+        persistedUsage: undefined,
+        fromRootRunId: 'root-1',
+      });
+      // Root 2 never runs a turn of its own.
+      accounting.startRoot(context('root-2', 'root-2'));
+
+      expect(accounting.modelsFor('root-2')).toEqual(['claude-sonnet-5']);
+      expect(accounting.dearestModel('root-2')).toBe('claude-sonnet-5');
+      // A root nobody seeded still names only what it spent itself.
+      expect(accounting.modelsFor('root-1')).toEqual(['claude-sonnet-5']);
+      expect(accounting.modelsFor('missing')).toEqual([]);
     });
   });
 });

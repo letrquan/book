@@ -265,6 +265,19 @@ export interface UsageRecordData {
   usage: Usage;
   requestedModel?: string;
   responseModel?: string;
+  /**
+   * Every model this record's tokens were spent on, root-wide and children
+   * included.
+   *
+   * One record covers a whole unpersisted delta, which a root that delegates can
+   * have spent across several models, and `store.ts` prices the restored carry at
+   * the most expensive model it knows. `requestedModel` / `responseModel` name
+   * the response that triggered the write, which for the per-response writer is
+   * the cheap parent even when a dearer child finished earlier — so without this
+   * the carry is priced below what it cost. A record written before this field
+   * existed reads exactly as it did.
+   */
+  models?: string[];
 }
 
 /** Payload stored in a SessionRecord of type `compact`. */

@@ -530,6 +530,10 @@ export class SessionStore {
           };
           const model = entry.responseModel ?? entry.requestedModel;
           if (model) carriedModels.add(model);
+          // The root-wide set, which is what the carry is actually priced at: a
+          // record's own `requestedModel` names the response that triggered the
+          // write, not every model the delta it covers was spent on.
+          for (const spent of entry.models ?? []) carriedModels.add(spent);
         }
         continue;
       }

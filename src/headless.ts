@@ -861,6 +861,18 @@ export async function runHeadless(
           // and a second top-level object there breaks `JSON.parse(stdout)`.
           emit({ type: 'command_result', ...handled });
         }
+        // A handled command spent real money — a `/review`'s reviewer agents are
+        // the whole cost of the line — so the carry has to move with it. Leaving
+        // it naming the previous prompt's root made every later prompt re-seed a
+        // STALE total that still credited the old root: the handled command's own
+        // spend was missing from the next root's budget, and re-seeding the old
+        // root re-stamped its hand-over floor against a total it had not passed on.
+        carriedSpend = {
+          usage: accounting.inclusiveUsage,
+          costUsd: accounting.inclusiveCostUsd,
+          persistedUsage: runtime.runAccounting.persistedUsage(runContext.rootRunId),
+          fromRootRunId: runContext.rootRunId,
+        };
         continue;
       }
       const prompt = dispatch.prompt;

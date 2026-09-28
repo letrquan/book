@@ -243,11 +243,11 @@ Work aimed at running an objective unattended for days rather than hours. All of
   cannot be evaluated. A `usage` record is written for whatever a response reports, and again when a
   root run ends and when the session ends — `dispose`, `/clear`, `/resume` — each after the outgoing
   runtime's managed children are stopped, so a managed child that answers after the root's last
-  response, and a host-performed `/review` whose root model is never called, reach the store. A flush
-  writes one record for the whole unwritten delta, named after the dearest model the root spent on,
-  and the restored carry is priced at the most expensive of the models its records name. A root
-  handing its totals to the next writes only what it spends after the hand-over. The pre-call check
-  is O(1) in responses.
+  response, a host-performed `/review`, and a compaction's own model calls all reach the store. A
+  flush writes one record for the whole unwritten delta, and every record names every model its root
+  spent on, so a cheaper root with a pricier child is not restored below what it cost. A root handing
+  its totals to the next writes only what it spends after the hand-over. The pre-call check is O(1) in
+  responses.
 - **Transport.** A dropped stream re-issues the turn against the history already on disk rather than
   ending the run, with a separate allowance for output-cap continuations. A re-issued request never
   ends on an assistant message, because that is prefill and is refused while thinking is enabled.

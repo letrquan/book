@@ -45,6 +45,7 @@ import type {
 } from '../types/tools.js';
 import { collectAtMentionObservations, expandUserInput } from '../input/input-expansion.js';
 import { observationKey } from '../tools/file-provenance.js';
+import { createDebugLogger } from '../debug-log.js';
 import { AgentInteractionController } from './agent-interactions.js';
 import {
   AgentSessionOperations,
@@ -64,6 +65,8 @@ import { createRunAmbientSnapshot } from './run-ambient.js';
 import { deriveSessionName } from './name.js';
 
 export type AgentLoopRunner = typeof runAgentLoop;
+
+const log = createDebugLogger('session:usage');
 
 type AgentLoopOptions = NonNullable<Parameters<AgentLoopRunner>[6]>;
 type SessionTimelineStore = Pick<SessionStoreInterface, 'append'> &
@@ -577,6 +580,29 @@ export class AgentSession {
   }
 
   /**
+   * Register a compaction's root the way `run` registers a turn's.
+   *
+   * A compactor's model calls are charged to a run context, and no turn of that
+   * root may ever run — a manual `/compact` mints a root of its own, and a send
+   * cancelled between the host's auto-compact in `beforePrepare` and `run()`
+   * never reaches `run`'s own registration. Without this, that spend is charged
+   * to a root no flush knows about, and leaves the process unwritten.
+   */
+  private registerUsageTarget(
+    request: Pick<
+      AgentSessionCompactRequest | AgentSessionCommitCompactRequest,
+      'runContext' | 'timelineStore' | 'sessionId'
+    >,
+    runtime: SessionRuntime,
+  ): void {
+    if (!request.runContext || !request.timelineStore || !request.sessionId) return;
+    this.usageTargets.set(request.runContext.rootRunId, {
+      target: { sessionId: request.sessionId, timelineStore: request.timelineStore },
+      runtime,
+    });
+  }
+
+  /**
    * Write what a root has spent and no `usage` record covers, as one record
    * named after the response the host is being told about.
    *
@@ -613,8 +639,11 @@ export class AgentSession {
       data: {
         version: 1,
         usage: recordUsage,
+        // The response that triggered this write, which is not the same thing as
+        // the models the delta covers: a dearer child may have finished before it.
         requestedModel: metadata?.requestedModel,
         responseModel: metadata?.responseModel,
+        models: runtime.runAccounting.modelsFor(rootRunId),
       },
     } satisfies SessionRecord);
     runtime.runAccounting.commitPersistedUsage(rootRunId);
@@ -637,6 +666,12 @@ export class AgentSession {
    * not pass it: by then every operation lease has been released, so consulting
    * one would skip every target the TUI ever registered — which is where a
    * background agent's late spend goes.
+   *
+   * A store that throws is contained here. This runs from a run's `finally` and
+   * from the runtime swap, so an escaping filesystem error would replace a
+   * completed run's outcome, abort the sweep part-way, and leave the session
+   * installed on a disposed runtime. Nothing was written, so the watermark stays
+   * where it was and the spend remains owed to the next writer that can.
    */
   private flushRunUsage(rootRunId: string, requireCurrent: boolean): void {
     const entry = this.usageTargets.get(rootRunId);
@@ -651,16 +686,25 @@ export class AgentSession {
     // record forty restarts is forty independent budget caps. Cost is not stored
     // — pricing changes between processes, so it is re-derived from the tokens
     // at bootstrap, deliberately at the most expensive model involved.
-    store.append(target.sessionId, {
-      type: 'usage',
-      timestamp: Date.now(),
-      data: {
-        version: 1,
-        usage: recordUsage,
-        requestedModel: runtime.runAccounting.dearestModel(rootRunId),
-      } satisfies UsageRecordData,
-    });
-    runtime.runAccounting.commitPersistedUsage(rootRunId);
+    try {
+      store.append(target.sessionId, {
+        type: 'usage',
+        timestamp: Date.now(),
+        data: {
+          version: 1,
+          usage: recordUsage,
+          requestedModel: runtime.runAccounting.dearestModel(rootRunId),
+          models: runtime.runAccounting.modelsFor(rootRunId),
+        } satisfies UsageRecordData,
+      });
+      runtime.runAccounting.commitPersistedUsage(rootRunId);
+    } catch (error) {
+      log.warn('usage record could not be appended; spend left unpersisted', {
+        rootRunId,
+        sessionId: target.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
@@ -899,6 +943,7 @@ export class AgentSession {
   async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {
     const runtime = request.runtime ?? this.runtime;
     if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
+    this.registerUsageTarget(request, runtime);
     const result = await this.compactRunner(request.config, request.history, {
       ...this.accountedOptions(request.options, request.runContext, runtime),
       sessionId: request.sessionId,
@@ -919,6 +964,7 @@ export class AgentSession {
   ): Promise<AgentSessionPrepareCompactOutcome> {
     const runtime = request.runtime ?? this.runtime;
     if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
+    this.registerUsageTarget(request, runtime);
     const result = await this.compactRunner(request.config, request.history, {
       ...this.accountedOptions(request.options, request.runContext, runtime),
       sessionId: request.sessionId,
@@ -961,6 +1007,9 @@ export class AgentSession {
     }
     const snapshotIds = new Set(prepared.snapshot.map((message) => message.id));
     const delta = request.history.filter((message) => !snapshotIds.has(message.id));
+    // The judge spends too, charged to the same root as the reducer it reviews.
+    if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
+    this.registerUsageTarget(request, runtime);
     const accounted = this.accountedOptions(
       { ...request.options, trigger: prepared.trigger },
       request.runContext,
