@@ -2,6 +2,7 @@ import {
   estimateUsageCost,
   hasKnownPricing,
   PRICING_VERSION,
+  promptSizeTokens,
   type UsageCostEstimate,
 } from '../pricing.js';
 import type { Usage } from '../types/messages.js';
@@ -91,9 +92,22 @@ interface RootState {
    * The root's inclusive spend already written to the session as `usage` records.
    *
    * Writer-side bookkeeping only: it never enters a snapshot, so no budget, cost
-   * figure or status is computed from it. See `takeUnpersistedUsage`.
+   * figure or status is computed from it. See `peekUnpersistedUsage`.
    */
   persistedUsage?: Usage;
+  /**
+   * What this root's inclusive total was when a later root took it over (#336).
+   *
+   * Everything up to here is inside the successor's carried spend, so the
+   * successor is the one to write it and this root's own flush must stop at it.
+   * Spend charged after the hand-over is above this line and stays this root's —
+   * which is the whole reason the hand-over records the figure rather than
+   * clearing the watermark: jumping the watermark to whatever the total had
+   * grown to marked that spend written while no record held it.
+   */
+  handedOverAt?: Usage;
+  /** The root that took this one's totals over; its commit advances this one to `handedOverAt`. */
+  tookOverFrom?: string;
   readonly executions: Map<string, ExecutionState>;
 }
 
@@ -112,6 +126,15 @@ export interface CarriedSpend {
    * first record writes it instead of skipping it for good.
    */
   persistedUsage?: Usage;
+  /**
+   * The root in this process these totals came from, when one root hands its
+   * totals to the next (#336).
+   *
+   * Naming it is what keeps the two roots from both writing the remainder: the
+   * new root's delta covers it, so the one it came from is closed as soon as a
+   * record lands.
+   */
+  fromRootRunId?: string;
 }
 
 function addUsage(current: Usage | null, next: Usage): Usage {
@@ -142,6 +165,40 @@ function subtractUsage(total: Usage, already: Usage | undefined): Usage {
     totalTokens: at(total.totalTokens, already?.totalTokens),
     cacheReadInputTokens: at(total.cacheReadInputTokens, already?.cacheReadInputTokens),
     cacheCreationInputTokens: at(total.cacheCreationInputTokens, already?.cacheCreationInputTokens),
+  };
+}
+
+/**
+ * A full cache hit leaves `promptTokens` at 0 on a provider that omits
+ * `total_tokens`; the record still carries spend. The one test of whether a
+ * delta is worth a record, shared by every writer so they cannot disagree on
+ * when there is nothing left to write.
+ */
+export function isSpendlessUsage(usage: Usage): boolean {
+  return usage.totalTokens <= 0 && promptSizeTokens(usage) + usage.completionTokens <= 0;
+}
+
+/** What to price a root's models at before it has spent anything at all. */
+const ZERO_USAGE: Usage = {
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+};
+
+/** The greater of two watermarks, field by field, so a root's floor only ever rises. */
+function maxUsage(left: Usage | undefined, right: Usage | undefined): Usage | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  return {
+    promptTokens: Math.max(left.promptTokens, right.promptTokens),
+    completionTokens: Math.max(left.completionTokens, right.completionTokens),
+    totalTokens: Math.max(left.totalTokens, right.totalTokens),
+    contextTokens: left.contextTokens ?? right.contextTokens,
+    cacheCreationInputTokens: Math.max(
+      left.cacheCreationInputTokens ?? 0,
+      right.cacheCreationInputTokens ?? 0,
+    ),
+    cacheReadInputTokens: Math.max(left.cacheReadInputTokens ?? 0, right.cacheReadInputTokens ?? 0),
   };
 }
 
@@ -247,6 +304,22 @@ export class RunAccounting {
     // watermark; a carry handed over in process names the part its writer got
     // through, and the remainder stays this root's to record.
     root.persistedUsage = carried.persistedUsage ?? carried.usage ?? undefined;
+    if (carried.fromRootRunId && carried.fromRootRunId !== rootRunId) {
+      root.tookOverFrom = carried.fromRootRunId;
+      // The source stops writing at the figure it handed on: everything below it
+      // is inside this root's carry, so this root is the one that records it.
+      // Recorded rather than subtracted off the source's watermark at once —
+      // this root may never write (a `/review` that spent nothing, a host with no
+      // store), and then the source must still be the fallback.
+      //
+      // Stamped from the CARRY, never from the source's live total. A handled
+      // command and every prompt after it re-seed the same source, and a source
+      // that keeps spending in between — a background agent answering while the
+      // review runs — would have its floor pushed past spend the successor never
+      // inherited: below the floor and inside nobody's carry, so it is lost.
+      const source = this.roots.get(carried.fromRootRunId);
+      if (source) source.handedOverAt = carried.usage ?? undefined;
+    }
     this.roots.set(rootRunId, root);
   }
 
@@ -268,6 +341,11 @@ export class RunAccounting {
    * background agent that answers between two runs is above the watermark, so the
    * next read carries it.
    *
+   * The floor is the greater of what has been written and what a later root took
+   * over: from the moment of a hand-over, this root writes only what it spends
+   * above the figure handed on, because everything below it is inside the
+   * successor's carry and would otherwise be written twice.
+   *
    * Null when the root has never been started here, or holds no inclusive usage to
    * record.
    */
@@ -276,7 +354,78 @@ export class RunAccounting {
     if (!root) return null;
     const inclusive = this.inclusiveUsage(root, root.executions.values());
     if (!inclusive) return null;
-    return subtractUsage(inclusive, root.persistedUsage);
+    return subtractUsage(inclusive, maxUsage(root.persistedUsage, root.handedOverAt));
+  }
+
+  /**
+   * The dearest model this root has spent on, for a `usage` record that has no
+   * response to take a model from — the flush at the end of a run, the one at
+   * dispose.
+   *
+   * `carriedCostUsd` (`headless.ts`) prices a restored carry at the most
+   * expensive model in `carriedModels`, so naming that one keeps the restored
+   * total at least as high as the spend really was: the carry is a single pool
+   * the records do not attribute, and one name is the most it can be said to
+   * have cost.
+   *
+   * Read as "the model most of this spend is worth". A model Book cannot price
+   * cannot be ranked, so it is passed over; with nothing priceable to choose
+   * from, the first model the root is known to have spent on is better than
+   * none, because an unpriced name makes the restored carry unknown and fails
+   * every budget closed. Undefined when neither this root nor the one it took
+   * over from is known to have spent under any model.
+   */
+  dearestModel(rootRunId: string): string | undefined {
+    const root = this.roots.get(rootRunId);
+    if (!root) return undefined;
+    const models = this.modelsFor(rootRunId);
+    // The figures are compared at this root's whole inclusive spend: which model
+    // is dearest is a property of the rate card, and every model here was asked
+    // to price the same pool.
+    const spend = this.inclusiveUsage(root, root.executions.values()) ?? ZERO_USAGE;
+    let dearest: string | undefined;
+    let dearestCost: number | undefined;
+    for (const model of models) {
+      const quote = estimateUsageCost(model, spend);
+      if (quote.status !== 'known') continue;
+      if (dearestCost === undefined || quote.costUsd > dearestCost) {
+        dearest = model;
+        dearestCost = quote.costUsd;
+      }
+    }
+    return dearest ?? models[0];
+  }
+
+  /**
+   * Every model this root has spent on, children included, for a `usage` record
+   * to name so a restored carry is priced at the dearest of them.
+   *
+   * A root that took another one's totals over and spent nothing itself still
+   * has to write that remainder, and the models that spent it are the source's —
+   * so a successor with no execution of its own inherits the source's names
+   * rather than writing a record that prices the carry at nothing.
+   */
+  modelsFor(rootRunId: string): string[] {
+    const models: string[] = [];
+    const seen = new Set<string>();
+    const rootRunIds = [rootRunId];
+    // A hand-over chain, walked once: a root that took over from another that
+    // took over from a third is bounded by the prompts in this process, but the
+    // walk is still bounded by what it has actually seen.
+    for (let index = 0; index < rootRunIds.length; index++) {
+      const root = this.roots.get(rootRunIds[index]!);
+      if (!root) continue;
+      rootRunIds.push(...(root.tookOverFrom ? [root.tookOverFrom] : []));
+      for (const execution of root.executions.values()) {
+        for (const identity of execution.modelIdentities.values()) {
+          const model = identity.responseModel ?? identity.requestedModel;
+          if (!model || seen.has(model)) continue;
+          seen.add(model);
+          models.push(model);
+        }
+      }
+    }
+    return models;
   }
 
   /**
@@ -292,6 +441,15 @@ export class RunAccounting {
     const root = this.roots.get(rootRunId);
     if (!root) return;
     root.persistedUsage = this.inclusiveUsage(root, root.executions.values()) ?? undefined;
+    // This root's record covered everything it took over from the root before it,
+    // so that root has nothing left to write below the figure it handed on.
+    // Advancing it to anything beyond that — to whatever its total has since
+    // grown to — marked spend it never recorded as written, and a background
+    // child answering in that window lost its cost for good.
+    if (root.tookOverFrom) {
+      const source = this.roots.get(root.tookOverFrom);
+      if (source) source.persistedUsage = maxUsage(source.persistedUsage, source.handedOverAt);
+    }
   }
 
   /**

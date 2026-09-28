@@ -14,7 +14,7 @@ import { runSessionEnd, runSessionStart } from './lifecycle.js';
 import type { SessionLifecycleOptions } from './lifecycle.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
-import type { AgentLoopCallbacks } from '../types/providers.js';
+import type { AgentLoopCallbacks, ProviderResponseMetadata } from '../types/providers.js';
 import type {
   CompactBoundary,
   CompactRecordData,
@@ -27,6 +27,7 @@ import type {
   SessionRecord,
   SessionStoreInterface,
   TurnCheckpointRecordData,
+  UsageRecordData,
 } from '../types/sessions.js';
 import type { Message, Usage } from '../types/messages.js';
 import { createAgentRunContext, type AgentRunContext, type AgentRunSource } from '../types/runs.js';
@@ -44,7 +45,7 @@ import type {
 } from '../types/tools.js';
 import { collectAtMentionObservations, expandUserInput } from '../input/input-expansion.js';
 import { observationKey } from '../tools/file-provenance.js';
-import { promptSizeTokens } from '../pricing.js';
+import { createDebugLogger } from '../debug-log.js';
 import { AgentInteractionController } from './agent-interactions.js';
 import {
   AgentSessionOperations,
@@ -58,11 +59,14 @@ import {
   type AgentSessionSnapshot,
 } from './agent-events.js';
 import { selectSession, type SessionBootstrap } from './resolve.js';
+import { isSpendlessUsage } from './run-accounting.js';
 import { SessionRuntime, type SessionRuntimeOptions } from './runtime.js';
 import { createRunAmbientSnapshot } from './run-ambient.js';
 import { deriveSessionName } from './name.js';
 
 export type AgentLoopRunner = typeof runAgentLoop;
+
+const log = createDebugLogger('session:usage');
 
 type AgentLoopOptions = NonNullable<Parameters<AgentLoopRunner>[6]>;
 type SessionTimelineStore = Pick<SessionStoreInterface, 'append'> &
@@ -299,7 +303,18 @@ export type AgentSessionTransitionResult =
 
 type AgentSessionListener = (snapshot: AgentSessionSnapshot) => void;
 
-/** Shared owner for agent-loop execution, interaction promises, and operation lifetime. */
+/** Where a root's `usage` records go, and whether that place can still be written. */
+export interface AgentSessionUsageTarget {
+  sessionId: string;
+  /** Absent for a run with nowhere to write; its spend is left for a later writer. */
+  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+  /** False once the session has moved on, which is what stops a stale run writing. */
+  isCurrent?: () => boolean;
+}
+
+/**
+ * Shared owner for agent-loop execution, interaction promises, and operation lifetime.
+ */
 export class AgentSession {
   readonly interactions = new AgentInteractionController();
   readonly operations = new AgentSessionOperations();
@@ -318,6 +333,21 @@ export class AgentSession {
   private lifecycleEnd?: Promise<void>;
   private runtime: SessionRuntime;
   private readonly registryFactory?: AgentSessionDependencies['registryFactory'];
+  /**
+   * Every root this session has run, and where its spend is written (#336).
+   *
+   * `onUsage` persists what a run's own responses report, which leaves two
+   * shapes of spend with nowhere to go: whatever a managed child spent after the
+   * root's last response, and a root whose model was never called at all — a
+   * `/review` the host performed. Neither reaches a store on the way out, so the
+   * process ends holding tokens no later process restores, and `--max-budget-usd`
+   * re-authorises them. Registered by `run()` and by hosts that create a root
+   * themselves (`trackRunUsage`), and drained by `dispose`.
+   */
+  private readonly usageTargets = new Map<
+    string,
+    { target: AgentSessionUsageTarget; runtime: SessionRuntime }
+  >();
 
   constructor(dependencies: AgentSessionDependencies = {}) {
     this.runLoop = dependencies.runLoop ?? runAgentLoop;
@@ -485,8 +515,20 @@ export class AgentSession {
     return this.runtime;
   }
 
+  /**
+   * Stop the outgoing runtime, write what it spent, and install its replacement.
+   *
+   * The one place a runtime goes away, so it is where its spend is written: the
+   * children are stopped first, so a managed agent charged during the teardown is
+   * in the figures the flush reads, and its targets are released with it rather
+   * than walked by every later sweep. A `/resume` or `/rewind` that reached the
+   * replacement without this left the outgoing runtime's unpersisted spend behind
+   * with it, and the resumed session restored a carry short of what it had cost.
+   */
   replaceRuntime(options: SessionRuntimeOptions = {}, via = 'session_transition'): SessionRuntime {
-    this.runtime.dispose(via);
+    const outgoing = this.runtime;
+    outgoing.dispose(via);
+    this.releaseRunUsage(outgoing);
     this.runtime = new SessionRuntime(options);
     return this.runtime;
   }
@@ -515,7 +557,171 @@ export class AgentSession {
     this.interactions.cancelAll(via);
     this.operations.reset({ bookTerminalReason: 'session_disposed' });
     this.runGeneration++;
+    // Children first, then the store: a managed agent is charged as it is
+    // stopped, and its spend is in the figures the flush writes. A child still
+    // unwinding on another turn — the abort is not the loop's return — is past a
+    // synchronous dispose, which is the one thing it cannot wait for.
     this.runtime.dispose(via);
+    this.releaseRunUsage(this.runtime);
+  }
+
+  /**
+   * Record that `rootRunId`'s spend belongs in `target`, so the flush at the end
+   * of the session can persist what no response of that root reported.
+   *
+   * `run()` registers every root it runs. A host that starts a root itself and
+   * never sends a turn — a print-mode `/review`, whose reviewer agents spend
+   * under a root the root model is never asked for — registers it here, or its
+   * spend leaves the process with it. Re-registering a root replaces the target,
+   * so a run under an existing root keeps writing to where that root writes.
+   */
+  trackRunUsage(rootRunId: string, target: AgentSessionUsageTarget): void {
+    this.usageTargets.set(rootRunId, { target, runtime: this.runtime });
+  }
+
+  /**
+   * Register a compaction's root the way `run` registers a turn's.
+   *
+   * A compactor's model calls are charged to a run context, and no turn of that
+   * root may ever run — a manual `/compact` mints a root of its own, and a send
+   * cancelled between the host's auto-compact in `beforePrepare` and `run()`
+   * never reaches `run`'s own registration. Without this, that spend is charged
+   * to a root no flush knows about, and leaves the process unwritten.
+   */
+  private registerUsageTarget(
+    request: Pick<
+      AgentSessionCompactRequest | AgentSessionCommitCompactRequest,
+      'runContext' | 'timelineStore' | 'sessionId'
+    >,
+    runtime: SessionRuntime,
+  ): void {
+    if (!request.runContext || !request.timelineStore || !request.sessionId) return;
+    this.usageTargets.set(request.runContext.rootRunId, {
+      target: { sessionId: request.sessionId, timelineStore: request.timelineStore },
+      runtime,
+    });
+  }
+
+  /**
+   * Write what a root has spent and no `usage` record covers, as one record
+   * named after the response the host is being told about.
+   *
+   * The `onUsage` writer, and the reason it is one function rather than a
+   * closure: every host reaches it the same way, so the watermark it moves and
+   * the ones `flushRunUsage` moves are the same figure, written once. Cost is
+   * not stored — pricing changes between processes, so it is re-derived from the
+   * tokens at bootstrap, deliberately at the most expensive model involved.
+   *
+   * The watermark moves only where a record really lands. A turn that reaches no
+   * store — a session that moved on, a run with nowhere to write — leaves its
+   * spend unpersisted instead, for the next writer under this root to record;
+   * counted as written, no record would ever hold it and no restart would
+   * restore it.
+   */
+  private persistReportedUsage(
+    rootRunId: string,
+    reported: Usage,
+    metadata: ProviderResponseMetadata | undefined,
+  ): void {
+    const entry = this.usageTargets.get(rootRunId);
+    if (!entry) return;
+    const { target, runtime } = entry;
+    const recordUsage = runtime.runAccounting.peekUnpersistedUsage(rootRunId) ?? reported;
+    if (isSpendlessUsage(recordUsage)) return;
+    const store = target.isCurrent?.() === false ? undefined : target.timelineStore;
+    if (!store) return;
+    // `RunAccounting.roots` is rebuilt with the process, so without a durable
+    // record forty restarts is forty independent budget caps. The 'usage'
+    // SessionRecord type was already declared with no writers; this is it.
+    store.append(target.sessionId, {
+      type: 'usage',
+      timestamp: Date.now(),
+      data: {
+        version: 1,
+        usage: recordUsage,
+        // The response that triggered this write, which is not the same thing as
+        // the models the delta covers: a dearer child may have finished before it.
+        requestedModel: metadata?.requestedModel,
+        responseModel: metadata?.responseModel,
+        models: runtime.runAccounting.modelsFor(rootRunId),
+      },
+    } satisfies SessionRecord);
+    runtime.runAccounting.commitPersistedUsage(rootRunId);
+  }
+
+  /**
+   * Write what a root has spent and no `usage` record covers, if it can be
+   * written at all.
+   *
+   * One record for the whole delta, so what this writes and what it then commits
+   * are the same figure by construction. It is named after the dearest model the
+   * root has spent on rather than after any one of them: `carriedCostUsd`
+   * (`headless.ts`) prices a restored carry at the most expensive model in
+   * `carriedModels` regardless of which record said what, and the records do not
+   * attribute tokens to models, so one name is all the restored pool can be said
+   * to have cost.
+   *
+   * `requireCurrent` is the end of a run, where the target's own currency still
+   * decides whether it is the session to write to. The end-of-session sweep does
+   * not pass it: by then every operation lease has been released, so consulting
+   * one would skip every target the TUI ever registered — which is where a
+   * background agent's late spend goes.
+   *
+   * A store that throws is contained here. This runs from a run's `finally` and
+   * from the runtime swap, so an escaping filesystem error would replace a
+   * completed run's outcome, abort the sweep part-way, and leave the session
+   * installed on a disposed runtime. Nothing was written, so the watermark stays
+   * where it was and the spend remains owed to the next writer that can.
+   */
+  private flushRunUsage(rootRunId: string, requireCurrent: boolean): void {
+    const entry = this.usageTargets.get(rootRunId);
+    if (!entry) return;
+    const { target, runtime } = entry;
+    const recordUsage = runtime.runAccounting.peekUnpersistedUsage(rootRunId);
+    if (!recordUsage || isSpendlessUsage(recordUsage)) return;
+    const store =
+      requireCurrent && target.isCurrent?.() === false ? undefined : target.timelineStore;
+    if (!store) return;
+    // `RunAccounting.roots` is rebuilt with the process, so without a durable
+    // record forty restarts is forty independent budget caps. Cost is not stored
+    // — pricing changes between processes, so it is re-derived from the tokens
+    // at bootstrap, deliberately at the most expensive model involved.
+    try {
+      store.append(target.sessionId, {
+        type: 'usage',
+        timestamp: Date.now(),
+        data: {
+          version: 1,
+          usage: recordUsage,
+          requestedModel: runtime.runAccounting.dearestModel(rootRunId),
+          models: runtime.runAccounting.modelsFor(rootRunId),
+        } satisfies UsageRecordData,
+      });
+      runtime.runAccounting.commitPersistedUsage(rootRunId);
+    } catch (error) {
+      log.warn('usage record could not be appended; spend left unpersisted', {
+        rootRunId,
+        sessionId: target.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Write what the roots of a runtime that is going away spent, and drop their
+   * targets: nothing can be charged to a root whose runtime is gone, so keeping
+   * its target would only make every later sweep walk it.
+   *
+   * Whatever lease a target carries is ignored — a `send()` lease has been
+   * released by the time any of these runs, so consulting one would skip every
+   * target the TUI ever made.
+   */
+  private releaseRunUsage(runtime: SessionRuntime): void {
+    for (const [rootRunId, entry] of [...this.usageTargets.entries()]) {
+      if (entry.runtime !== runtime) continue;
+      this.flushRunUsage(rootRunId, false);
+      this.usageTargets.delete(rootRunId);
+    }
   }
 
   async startLifecycle(
@@ -737,6 +943,7 @@ export class AgentSession {
   async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {
     const runtime = request.runtime ?? this.runtime;
     if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
+    this.registerUsageTarget(request, runtime);
     const result = await this.compactRunner(request.config, request.history, {
       ...this.accountedOptions(request.options, request.runContext, runtime),
       sessionId: request.sessionId,
@@ -757,6 +964,7 @@ export class AgentSession {
   ): Promise<AgentSessionPrepareCompactOutcome> {
     const runtime = request.runtime ?? this.runtime;
     if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
+    this.registerUsageTarget(request, runtime);
     const result = await this.compactRunner(request.config, request.history, {
       ...this.accountedOptions(request.options, request.runContext, runtime),
       sessionId: request.sessionId,
@@ -799,6 +1007,9 @@ export class AgentSession {
     }
     const snapshotIds = new Set(prepared.snapshot.map((message) => message.id));
     const delta = request.history.filter((message) => !snapshotIds.has(message.id));
+    // The judge spends too, charged to the same root as the reducer it reviews.
+    if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
+    this.registerUsageTarget(request, runtime);
     const accounted = this.accountedOptions(
       { ...request.options, trigger: prepared.trigger },
       request.runContext,
@@ -963,6 +1174,17 @@ export class AgentSession {
         allowedTools: request.options?.allowedTools,
       }),
     );
+    // The root's spend has a durable home for as long as this session lives, so
+    // the flush at the end of the session can write what no response of this run
+    // reported (#336).
+    this.usageTargets.set(runContext.rootRunId, {
+      target: {
+        sessionId: request.sessionId,
+        timelineStore: request.timelineStore,
+        isCurrent: request.isCurrent,
+      },
+      runtime,
+    });
     const finalizeOutcome = (outcome: AgentTerminalOutcome): AgentTerminalOutcome => {
       if (!terminalOutcome) {
         terminalOutcome = outcome;
@@ -1082,42 +1304,12 @@ export class AgentSession {
           // second run under the same root writes a token twice. Read the run
           // context this run resolved, not the request's: a caller that passed none
           // is still charged to the root minted above, and keying off the request
-          // skipped the watermark and wrote only the reported turn. Cost is still
-          // not stored: it is re-derived from tokens at bootstrap, deliberately at
-          // the most expensive model involved.
-          const unpersisted = runtime.runAccounting.peekUnpersistedUsage(runContext.rootRunId);
-          const recordUsage = unpersisted ?? nextUsage;
-          // A full cache hit leaves `promptTokens` at 0 on a provider that omits
-          // `total_tokens`; the record still carries spend.
-          if (
-            recordUsage.totalTokens <= 0 &&
-            promptSizeTokens(recordUsage) + recordUsage.completionTokens <= 0
-          )
-            return;
-          // `RunAccounting.roots` is rebuilt with the process, so without a durable
-          // record forty restarts is forty independent budget caps. The 'usage'
-          // SessionRecord type was already declared with no writers; this is it.
-          // Cost is not stored — pricing can change between processes, so it is
-          // re-derived from tokens at bootstrap.
-          //
-          // The watermark moves only here, where the record really lands. A turn
-          // that reaches no store — a session that moved on, a run with nowhere to
-          // write — leaves its spend unpersisted instead, for the next writer under
-          // this root to record; counted as written, no record would ever hold it.
-          const store = request.isCurrent?.() === false ? undefined : request.timelineStore;
-          if (store) {
-            store.append(request.sessionId, {
-              type: 'usage',
-              timestamp: Date.now(),
-              data: {
-                version: 1,
-                usage: recordUsage,
-                requestedModel: metadata?.requestedModel,
-                responseModel: metadata?.responseModel,
-              },
-            } satisfies SessionRecord);
-            runtime.runAccounting.commitPersistedUsage(runContext.rootRunId);
-          }
+          // skipped the watermark and wrote only the reported turn. The figure is
+          // written whole, under the model of the response reporting it, because
+          // this response is the one the host is being told about; a writer with no
+          // response to name a model from splits the same delta per model
+          // (`flushRunUsage`).
+          this.persistReportedUsage(runContext.rootRunId, nextUsage, metadata);
           callbacks.onUsage?.(nextUsage, metadata);
         },
         getMode: callbacks.getMode,
@@ -1193,26 +1385,39 @@ export class AgentSession {
         onHookEvent: callbacks.onHookEvent,
         onAgentEvent: (event: AgentRuntimeEvent) => emit(event),
       };
-      const messages = await this.runLoop(
-        request.config,
-        request.registry,
-        request.prompt,
-        effectiveHistory,
-        baseLoopCallbacks,
-        request.mode,
-        {
-          ...request.options,
-          runtime,
-          runContext,
-          resolveAttachment:
-            request.options?.resolveAttachment ??
-            (request.timelineStore?.readImageAttachment
-              ? (attachment) =>
-                  request.timelineStore!.readImageAttachment!(request.sessionId, attachment)
-              : undefined),
-          signal: request.signal,
-        },
-      );
+      let messages: Message[];
+      try {
+        messages = await this.runLoop(
+          request.config,
+          request.registry,
+          request.prompt,
+          effectiveHistory,
+          baseLoopCallbacks,
+          request.mode,
+          {
+            ...request.options,
+            runtime,
+            runContext,
+            resolveAttachment:
+              request.options?.resolveAttachment ??
+              (request.timelineStore?.readImageAttachment
+                ? (attachment) =>
+                    request.timelineStore!.readImageAttachment!(request.sessionId, attachment)
+                : undefined),
+            signal: request.signal,
+          },
+        );
+      } finally {
+        // The root run has ended, whether it returned or threw (#336). Whatever it
+        // spent without a response to report it — a compaction judge's last call, a
+        // managed child that answered as the run finished — is written now rather
+        // than left to the end of the session: a host that runs another root
+        // afterwards hands that root the whole carry, and only the writer that
+        // reads the watermark knows which part of it is already on disk. Spend
+        // charged after this point is the dispose flush's, which is why the two
+        // write the same figure rather than one of them.
+        this.flushRunUsage(runContext.rootRunId, true);
+      }
       const partialOutput =
         streamedAssistantText.length > 0 ||
         messages.slice(effectiveHistory.length).some((message) => message.role === 'assistant');

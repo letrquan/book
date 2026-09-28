@@ -1945,6 +1945,576 @@ describe('AgentSession usage records across runs sharing a root', () => {
   });
 });
 
+/**
+ * Spend charged after a root's last response, and the three flushes that have to
+ * catch it: the end of the run, the end of the session (`dispose`), and a
+ * `reset` that replaces the runtime under it (#336).
+ *
+ * Each case asserts the same two things, because either half alone passes
+ * happily while the bug is present: the record exists by the time the run
+ * resolves (so the run-end flush ran, not just the dispose one), and a resumed
+ * session's carry adds up to every charge the session made — nothing lost, and
+ * nothing written twice.
+ */
+describe('AgentSession end-of-run and end-of-session usage flushes', () => {
+  const workspaces: string[] = [];
+  afterEach(() => {
+    for (const dir of workspaces) rmSync(dir, { recursive: true, force: true });
+    workspaces.length = 0;
+  });
+
+  const usage = (promptTokens: number, completionTokens: number) => ({
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+  });
+  const meta = (responseId: string): ProviderResponseMetadata =>
+    ({
+      provider: 'openai-compatible',
+      requestedModel: 'gpt-5',
+      responseModel: 'gpt-5',
+      responseId,
+    }) as unknown as ProviderResponseMetadata;
+  const registry = {} as ToolRegistry;
+  const events = { onEvent: () => {}, onTurnStart: () => {} };
+  const SESSION_ID = 'session-1';
+
+  interface Captured {
+    runtime: SessionRuntime;
+    store: SessionStore;
+    records: SessionRecord[];
+    /** The `usage` records written so far, in order. */
+    persisted: () => Usage[];
+    /**
+     * What a process resuming this session would restore: the sum of the
+     * records, the way `cli/run.ts` reads it. Every scenario ends on this, so a
+     * lost charge and a double-written one both fail the same assertion.
+     */
+    carried: () => Usage | undefined;
+  }
+
+  /** A real store, so a scenario can be resumed rather than only read back. */
+  function capture(): Captured {
+    const root = mkdtempSync(join(tmpdir(), 'book-usage-flush-'));
+    workspaces.push(root);
+    const runtime = new SessionRuntime();
+    const store = new SessionStore(root);
+    const sessionId = store.create({ cwd: root, id: SESSION_ID });
+    const records: SessionRecord[] = [];
+    return {
+      runtime,
+      store,
+      records,
+      persisted: () =>
+        records
+          .filter((record) => record.type === 'usage')
+          .map((record) => (record.data as { usage: Usage }).usage),
+      carried: () => store.load(sessionId).carriedUsage,
+    };
+  }
+
+  /** Appends to the real store and to the ordered list, as one seam would. */
+  function timeline(captured: Captured): Pick<SessionStore, 'append'> {
+    return {
+      append: (sessionId, record) => {
+        captured.records.push(record);
+        captured.store.append(sessionId, record);
+        return captured.store;
+      },
+    };
+  }
+
+  const runRequest = (
+    captured: Captured,
+    runId: string,
+    overrides: Partial<Parameters<AgentSession['run']>[0]> = {},
+  ): Parameters<AgentSession['run']>[0] => ({
+    config: defaultConfig(),
+    registry,
+    prompt: 'prompt',
+    history: [],
+    sessionId: 'session-1',
+    runContext: createAgentRunContext({
+      sessionId: 'session-1',
+      runId,
+      source: 'tui',
+      startedAt: 1,
+    }),
+    timelineStore: timeline(captured),
+    callbacks: events,
+    ...overrides,
+  });
+
+  it('writes what a managed child spent after the last response when the run ends', async () => {
+    const captured = capture();
+    const { runtime } = captured;
+    const child = usage(50, 5);
+    // A loop that reports its turn and only then lets a background child answer,
+    // which is charged to the root and reported to nobody.
+    const runLoop: AgentLoopRunner = async (_c, _r, _p, _h, callbacks, _m, options) => {
+      const turn = usage(100, 10);
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, turn, meta('response-root'));
+      }
+      callbacks.onUsage?.(turn, meta('response-root'));
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, child, meta('response-child'));
+      }
+      return [];
+    };
+    const withLoop = new AgentSession({ runtime, runLoop });
+
+    await withLoop.run(runRequest(captured, 'turn-1'));
+
+    // Before dispose: the run-end flush is what wrote this.
+    expect(captured.persisted()).toEqual([
+      { ...usage(100, 10), cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+      { ...child, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+    ]);
+    // The dispose sweep finds the watermark already committed and adds nothing.
+    withLoop.dispose();
+    expect(captured.persisted()).toHaveLength(2);
+    expect(captured.records.filter((record) => record.type === 'usage')).toHaveLength(2);
+    // A resumed session restores exactly the turn and the child, once each.
+    expect(captured.carried()).toMatchObject(usage(150, 15));
+  });
+
+  it('writes a turn handed over to a later root exactly once, never losing the part charged after it', async () => {
+    // Root 1 runs, then hands its totals to root 2. Root 2's first `onUsage` writes
+    // what root 1 left behind plus its own turn. A child of root 1 that answers
+    // AFTER the hand-over is charged above what root 2 inherited, so it is root 1's
+    // to write — and marking it written when root 2 committed (because the whole
+    // of root 1's then-current total was taken as covered) loses it outright.
+    const captured = capture();
+    const { runtime } = captured;
+    const afterHandover = usage(70, 7);
+    const firstTurn = usage(100, 10);
+    const secondTurn = usage(200, 20);
+    // One session and one loop for both roots, as a multi-prompt host has it.
+    const runLoop: AgentLoopRunner = async (_c, _r, _p, _h, callbacks, _m, options) => {
+      const turn = options?.runContext?.runId === 'root-1-turn' ? firstTurn : secondTurn;
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, turn, meta('response-root'));
+      }
+      callbacks.onUsage?.(turn, meta('response-root'));
+      return [];
+    };
+    const roots = {
+      one: createAgentRunContext({
+        sessionId: 'session-1',
+        runId: 'root-1-turn',
+        rootRunId: 'root-1',
+        source: 'tui',
+        startedAt: 1,
+      }),
+      two: createAgentRunContext({
+        sessionId: 'session-1',
+        runId: 'root-2-turn',
+        rootRunId: 'root-2',
+        source: 'tui',
+        startedAt: 2,
+      }),
+    };
+    const agentSession = new AgentSession({ runtime, runLoop });
+    await agentSession.run(runRequest(captured, 'root-1-turn', { runContext: roots.one }));
+
+    // The hand-over a multi-prompt host performs between the two turns.
+    const beforeHandover = runtime.runAccounting.snapshotRoot('root-1').inclusiveUsage;
+    runtime.runAccounting.seedRoot('root-2', {
+      usage: beforeHandover,
+      costUsd: null,
+      persistedUsage: runtime.runAccounting.persistedUsage('root-1'),
+      fromRootRunId: 'root-1',
+    });
+    // The child answers now: after the hand-over, before root 2 reports anything.
+    runtime.runAccounting.record(roots.one, afterHandover, meta('response-late'));
+
+    await agentSession.run(runRequest(captured, 'root-2-turn', { runContext: roots.two }));
+    agentSession.dispose();
+
+    // Root 1's own turn, then root 2's turn, then the child's 70+7 — written by
+    // root 1, which inherited only up to the hand-over, and only once.
+    expect(captured.persisted().map((entry) => entry.totalTokens)).toEqual([110, 220, 77]);
+    // Every charge the session made, and nothing twice.
+    expect(captured.carried()).toMatchObject(usage(370, 37));
+  });
+
+  it('writes a handed-over remainder once even when the successor never reports a turn', async () => {
+    // A host-performed command: root 2 is started, inherits root 1's totals, and
+    // never runs a turn, so no `onUsage` of its own ever fires. Whatever root 1
+    // left unwritten is inside root 2's carry and so is root 2's to write; root 1
+    // must not write the same tokens as well.
+    const captured = capture();
+    const { runtime } = captured;
+    const remainder = usage(50, 5);
+    const firstTurn = usage(100, 10);
+    const rootOne = createAgentRunContext({
+      sessionId: 'session-1',
+      runId: 'root-1-turn',
+      rootRunId: 'root-1',
+      source: 'tui',
+      startedAt: 1,
+    });
+    const runLoop: AgentLoopRunner = async (_c, _r, _p, _h, callbacks, _m, options) => {
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, firstTurn, meta('response-root'));
+      }
+      callbacks.onUsage?.(firstTurn, meta('response-root'));
+      if (options?.runContext) {
+        // Charged after the turn reported, so no record of root 1's own covers it.
+        runtime.runAccounting.record(options.runContext, remainder, meta('response-child'));
+      }
+      return [];
+    };
+    const session1 = new AgentSession({ runtime, runLoop });
+    await session1.run(runRequest(captured, 'root-1-turn', { runContext: rootOne }));
+
+    const beforeHandover = runtime.runAccounting.snapshotRoot('root-1').inclusiveUsage;
+    // The same seam a print-mode host uses for a root it starts itself: registered
+    // on the one session, never run.
+    session1.trackRunUsage('root-2', {
+      sessionId: 'session-1',
+      timelineStore: timeline(captured),
+    });
+    runtime.runAccounting.startRoot(
+      createAgentRunContext({
+        sessionId: 'session-1',
+        runId: 'root-2',
+        rootRunId: 'root-2',
+        source: 'tui',
+        startedAt: 2,
+      }),
+    );
+    runtime.runAccounting.seedRoot('root-2', {
+      usage: beforeHandover,
+      costUsd: null,
+      persistedUsage: runtime.runAccounting.persistedUsage('root-1'),
+      fromRootRunId: 'root-1',
+    });
+    session1.dispose();
+
+    // The turn, then the remainder — once, by whichever root wrote it.
+    expect(captured.persisted().map((entry) => entry.totalTokens)).toEqual([110, 55]);
+    // The successor's record carried root 1's remainder, so the resume restores
+    // both turns and neither of them twice.
+    expect(captured.carried()).toMatchObject(usage(150, 15));
+  });
+
+  it('persists a send-registered root whose child spends after the turn, on dispose', async () => {
+    // The TUI path: `send()` registers its target with the operation lease, which
+    // `dispose` has already released by the time it flushes. Consulting that lease
+    // there skipped every target the TUI ever created, so a background agent that
+    // answered after its turn was lost on quit.
+    const captured = capture();
+    const { runtime } = captured;
+    const child = usage(50, 5);
+    const turn = usage(100, 10);
+    const runLoop: AgentLoopRunner = async (_c, _r, _p, _h, callbacks, _m, options) => {
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, turn, meta('response-root'));
+      }
+      callbacks.onUsage?.(turn, meta('response-root'));
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, child, meta('response-child'));
+      }
+      return [];
+    };
+    const agentSession = new AgentSession({ runtime, runLoop });
+    const message = {
+      id: 'user-1',
+      role: 'user' as const,
+      content: 'go',
+      includeInContext: true,
+      timestamp: 1,
+    };
+    const result = await agentSession.send({
+      config: defaultConfig(),
+      sessionId: 'session-1',
+      registry,
+      mode: 'default',
+      history: [],
+      timelineStore: timeline(captured),
+      callbacks: events,
+      createUserMessage: () => message,
+      displayMessage: 'go',
+      contextMessage: 'go',
+      runContext: createAgentRunContext({
+        sessionId: 'session-1',
+        runId: 'turn-1',
+        source: 'tui',
+        startedAt: 1,
+      }),
+    });
+    expect(result.status).toBe('completed');
+
+    agentSession.dispose();
+
+    expect(captured.persisted().map((entry) => entry.totalTokens)).toEqual([110, 55]);
+    // What a TUI quit would leave on disk: the turn and the late child, once each.
+    expect(captured.carried()).toMatchObject(usage(150, 15));
+  });
+
+  it('persists spend charged while a reset stops the old runtime', async () => {
+    // `reset` replaces the runtime, which stops the managed children. A child
+    // charged during that teardown belongs to the outgoing runtime, so the flush
+    // has to happen after the children stop and before the runtime is gone.
+    const captured = capture();
+    const { runtime } = captured;
+    const duringTeardown = usage(40, 4);
+    const turn = usage(100, 10);
+    const runLoop: AgentLoopRunner = async (_c, _r, _p, _h, callbacks, _m, options) => {
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, turn, meta('response-root'));
+      }
+      callbacks.onUsage?.(turn, meta('response-root'));
+      return [];
+    };
+    const agentSession = new AgentSession({ runtime, runLoop });
+    const rootRunId = 'turn-1';
+    await agentSession.run(
+      runRequest(captured, rootRunId, {
+        runContext: createAgentRunContext({
+          sessionId: 'session-1',
+          runId: rootRunId,
+          source: 'tui',
+          startedAt: 1,
+        }),
+      }),
+    );
+    // A managed child that answers as the runtime tears down.
+    const realDispose = SessionRuntime.prototype.dispose;
+    const disposeSpy = vi.spyOn(SessionRuntime.prototype, 'dispose').mockImplementation(function (
+      this: SessionRuntime,
+      reason?: string,
+    ) {
+      runtime.runAccounting.record(
+        createAgentRunContext({
+          sessionId: 'session-1',
+          runId: 'turn-1-child',
+          rootRunId,
+          parentRunId: rootRunId,
+          source: 'tui',
+          startedAt: 2,
+        }),
+        duringTeardown,
+        meta('response-teardown'),
+      );
+      realDispose.call(this, reason);
+    });
+
+    agentSession.reset('test-reset');
+    disposeSpy.mockRestore();
+
+    expect(captured.persisted().map((entry) => entry.totalTokens)).toEqual([110, 44]);
+    // The charge made while the old runtime was stopping is on disk, once.
+    expect(captured.carried()).toMatchObject(usage(140, 14));
+    // The outgoing runtime's targets are released with it: nothing can be charged
+    // to a root whose runtime is gone, and holding its target would make every
+    // later sweep walk a runtime that is no longer the session's.
+    const targets = (agentSession as unknown as { usageTargets: Map<string, { runtime: unknown }> })
+      .usageTargets;
+    expect([...targets.values()].some((entry) => entry.runtime === runtime)).toBe(false);
+    // The replacement is installed, and it is the session's runtime now.
+    expect(agentSession.getRuntime()).not.toBe(runtime);
+  });
+
+  it('persists compaction spend, which no turn of its own will ever report', async () => {
+    // A manual `/compact` is a model call charged to a root, and the root it
+    // mints never runs a turn: nothing calls `onUsage` for it, so only the
+    // end-of-session flush can write it — and only if the root is registered.
+    const captured = capture();
+    const { runtime } = captured;
+    const judge = usage(20, 5);
+    const runContext = createAgentRunContext({
+      sessionId: SESSION_ID,
+      runId: 'manual-compact',
+      source: 'tui',
+      startedAt: 1,
+    });
+    const session = new AgentSession({
+      runtime,
+      compactRunner: async (_config, _history, options) => {
+        options.onUsage?.(
+          judge,
+          meta('response-compact') as Parameters<NonNullable<typeof options.onUsage>>[1],
+        );
+        return compactedResult();
+      },
+    });
+
+    await session.compact({
+      config: defaultConfig(),
+      history: [],
+      sessionId: SESSION_ID,
+      transcriptOrdinal: 0,
+      runContext,
+      runtime,
+      timelineStore: timeline(captured),
+      options: { trigger: 'manual' },
+    });
+    session.dispose();
+
+    expect(captured.persisted().map((entry) => entry.totalTokens)).toEqual([25]);
+    expect(captured.carried()).toMatchObject(judge);
+  });
+
+  it('persists a compaction that ran before a cancelled send ever registered its root', async () => {
+    // The host auto-compacts in `beforePrepare`, and a send cancelled between
+    // there and `run()` returns without reaching the registration inside `run()`.
+    // The compactor's spend is then charged to a root nothing will ever flush.
+    const captured = capture();
+    const { runtime } = captured;
+    const judge = usage(20, 5);
+    const session = new AgentSession({
+      runtime,
+      compactRunner: async (_config, _history, options) => {
+        options.onUsage?.(
+          judge,
+          meta('response-compact') as Parameters<NonNullable<typeof options.onUsage>>[1],
+        );
+        return compactedResult();
+      },
+    });
+
+    const outcome = await session.send({
+      config: defaultConfig(),
+      sessionId: SESSION_ID,
+      registry,
+      mode: 'default',
+      history: [],
+      timelineStore: timeline(captured),
+      callbacks: events,
+      createUserMessage: () => ({
+        id: 'user-1',
+        role: 'user' as const,
+        content: 'go',
+        includeInContext: true,
+        timestamp: 1,
+      }),
+      displayMessage: 'go',
+      contextMessage: 'go',
+      beforePrepare: async (control) => {
+        await session.compact({
+          config: defaultConfig(),
+          history: [],
+          sessionId: SESSION_ID,
+          transcriptOrdinal: 0,
+          runContext: control.runContext,
+          runtime,
+          timelineStore: timeline(captured),
+          options: { trigger: 'auto' },
+        });
+        throw new Error('cancelled before the turn started');
+      },
+    });
+    expect(outcome.status).toBe('failed');
+
+    session.dispose();
+    expect(captured.persisted().map((entry) => entry.totalTokens)).toEqual([25]);
+    expect(captured.carried()).toMatchObject(judge);
+  });
+
+  it('survives a store that throws: the run ends, the swap happens, the rest is written', async () => {
+    // `store.append` is synchronous fs I/O. Called from the run's `finally` and
+    // from the runtime swap, a throw replaced a completed run's outcome with a
+    // filesystem error, aborted the sweep part-way, and left the session on a
+    // disposed runtime.
+    const captured = capture();
+    const { runtime } = captured;
+    const turn = usage(100, 10);
+    const late = usage(50, 5);
+    const runLoop: AgentLoopRunner = async (_c, _r, _p, _h, callbacks, _m, options) => {
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, turn, meta('response-root'));
+      }
+      callbacks.onUsage?.(turn, meta('response-root'));
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, late, meta('response-child'));
+      }
+      return [];
+    };
+    const session = new AgentSession({ runtime, runLoop });
+    // One root's store fails; the other's still has to be written.
+    const failing = new Set([SESSION_ID]);
+    const realAppend = captured.store.append.bind(captured.store);
+    const flakyStore = {
+      append: (sessionId: string, record: SessionRecord) => {
+        if (failing.has(sessionId)) throw new Error('EIO: disk on fire');
+        return realAppend(sessionId, record);
+      },
+    };
+    // Root A writes through the failing store, root B through the real one.
+    const rootA = createAgentRunContext({
+      sessionId: SESSION_ID,
+      runId: 'root-a-turn',
+      rootRunId: 'root-a',
+      source: 'tui',
+      startedAt: 1,
+    });
+    const rootB = createAgentRunContext({
+      sessionId: 'session-b',
+      runId: 'root-b-turn',
+      rootRunId: 'root-b',
+      source: 'tui',
+      startedAt: 2,
+    });
+    session.trackRunUsage('root-a', { sessionId: SESSION_ID, timelineStore: flakyStore });
+    runtime.runAccounting.startRoot(rootA);
+    runtime.runAccounting.record(rootA, turn, meta('response-a'));
+    session.trackRunUsage('root-b', { sessionId: 'session-b', timelineStore: timeline(captured) });
+    runtime.runAccounting.startRoot(rootB);
+    runtime.runAccounting.record(rootB, usage(30, 3), meta('response-b'));
+
+    expect(() => session.reset('test-reset')).not.toThrow();
+    // The failed write left its watermark alone, so the spend is still owed.
+    expect(runtime.isDisposed).toBe(true);
+    expect(session.getRuntime()).not.toBe(runtime);
+    // Root B, whose store worked, was still flushed by the same sweep.
+    expect(captured.persisted().map((entry) => entry.totalTokens)).toEqual([33]);
+  });
+
+  it('names every model the root spent on, so a pricey child is not under-priced', async () => {
+    // The per-response writer holds the root's whole unpersisted delta and names
+    // the reporting response's model. A cheap root whose pricier managed children
+    // all finished before its last response therefore produced records naming only
+    // the cheap one, and the flush writers — which would have named the pricey one —
+    // found nothing left to write. `carriedModels` never saw it, so the restored
+    // carry was priced at the cheap rate.
+    const captured = capture();
+    const { runtime } = captured;
+    const turn = usage(100, 10);
+    const child = usage(50, 5);
+    const childMeta: ProviderResponseMetadata = {
+      provider: 'anthropic',
+      requestedModel: 'claude-opus-5',
+      responseModel: 'claude-opus-5',
+      responseId: 'response-child',
+    } as unknown as ProviderResponseMetadata;
+    const runLoop: AgentLoopRunner = async (_c, _r, _p, _h, callbacks, _m, options) => {
+      // The child finishes first, on the dearer model.
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, child, childMeta);
+      }
+      if (options?.runContext) {
+        runtime.runAccounting.record(options.runContext, turn, meta('response-root'));
+      }
+      callbacks.onUsage?.(turn, meta('response-root'));
+      return [];
+    };
+    const session = new AgentSession({ runtime, runLoop });
+    await session.run(
+      runRequest(captured, 'turn-1', {
+        timelineStore: timeline(captured),
+      }),
+    );
+    session.dispose();
+
+    const models = captured.store.load('session-1').carriedModels?.map((model) => model);
+    expect(models).toContain('claude-opus-5');
+    expect(models).toContain('gpt-5');
+  });
+});
+
 describe('AgentSession deferred compaction', () => {
   const step = (id: string, role: Message['role'], content: string): Message => ({
     id,

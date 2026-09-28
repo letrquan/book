@@ -219,11 +219,13 @@ saying nothing was applied; in `json` and `stream-json` the result payload carri
 or `invalid_approval_response`. The run's terminal outcome is `completed`/`normal_completion` and
 the process **exits 0** — "finished, and deliberately changed nothing" is expressed by
 `plan.status`, not by an exit code. Under `stream-json` the decision is also announced as
-`{"type":"plan_approval","status":"stop"}`; `status` is one of `approve`, `approve-fresh`,
-`reject`, `revise`, or `stop`. Queued `--input-format stream-json` prompts after a plan stop are
-not run. SDK `query()` callers see the stop through the forwarded `tool_use` event (the full plan)
-and its `tool_result` (`structuredError.code = "plan_approval_unavailable"`); the `plan` object is
-not yet carried on the SDK `result` event.
+`{"type":"plan_approval","status":"stop"}`; `status` is one of `approve`, `reject`, `revise`, or
+`stop`. `approve-fresh` — approving with a fresh context — exists only in the interactive TUI, which
+owns the conversation it would reseed; print mode and `query()` cannot produce it. Queued
+`--input-format stream-json` prompts after a plan stop are not run. SDK `query()` callers see the stop
+through the forwarded `tool_use` event (the full plan) and its `tool_result`
+(`structuredError.code = "plan_approval_unavailable"`); the `plan` object is not yet carried on the SDK
+`result` event.
 
 **Exit codes.** Print mode exits 1 when the run fails or throws — a slash command this host cannot
 perform, a command invoked with a bad argument, or a failure inside a host-performed command such as
@@ -259,7 +261,7 @@ The `result` event's `answer` is the model's final answer: empty when the model 
 empty on a plan stop, where the plan is the deliverable (see `plan`, which print mode's `text` output
 prints instead). The `json` and `stream-json` result documents carry it too.
 
-`AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop` — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. A managed child's own line for the operator — a call it had refused — emits `agent_notice` (`{type, agentId, message}`); in text mode the same text is written to stderr as a `notice: …` line, and, like the host notices below, it is not silenced by `--quiet`, since it is something that did not happen rather than progress. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK. Host notices (such as saved memories or review candidates) emit `notice` (`{type: 'notice', message}`).
+`AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `reject`, `revise`, or `stop` (`approve-fresh` is the TUI's alone) — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. A managed child's own line for the operator — a call it had refused — emits `agent_notice` (`{type, agentId, message}`); in text mode the same text is written to stderr as a `notice: …` line, and, like the host notices below, it is not silenced by `--quiet`, since it is something that did not happen rather than progress. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK. Host notices (such as saved memories or review candidates) emit `notice` (`{type: 'notice', message}`).
 
 Auth and model selection come from settings / env (`BOOK_API_KEY`, `BOOK_MODEL`, and provider blocks), not from `query()` options. See `src/sdk.ts` for the full `QueryEvent` / `QueryOptions` surface.
 

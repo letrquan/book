@@ -583,6 +583,48 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Spend made after a root run's last response is now persisted** (#336). The session's `usage`
+  records — the only durable statement of what a run cost, and the sum a resumed process restores —
+  were written from one place: the callback a root's own responses report through. Spend
+  `RunAccounting` was charged afterwards reached no store at all, so it left with the process. A
+  host-run `/review` in print mode is the clearest case: its reviewer agents' requests are charged to
+  the run's root, no response of that root is ever made to report them, and the session ended having
+  paid for a review its own history said cost nothing. A background managed agent that answered after
+  the root's last response, and a compaction judge, lost their spend the same way — and because a
+  resumed session restores its carry by summing these records, the next process was handed a budget
+  that had never been spent, so `--max-budget-usd` re-authorized it. The writer is now one function,
+  reached from three places: a response reporting usage (unchanged), the end of a root run whether it
+  returned or threw, and the end of the session — `dispose`, and `reset`/a `/clear`/`/resume`
+  transition, each after the outgoing runtime's managed children are stopped and before its store is
+  released. Whatever the children had already been charged for by then is in the figure written; a
+  managed child still unwinding asynchronously past that synchronous stop can still be missed, and the
+  next run's delta is what recovers it. The end-of-session flushes write to the target's own store and
+  session, and do not consult the turn's lease: by then it has been released, and honouring it skipped
+  every target the TUI ever created, which is exactly where a background agent's late spend went. Each
+  flush writes **one** record for the whole unwritten delta, and every record — a response's and a
+  flush's alike — carries a new `models` field naming every model its root has spent on, children
+  included, which `store.ts` folds into `carriedModels` beside the existing `responseModel ??
+requestedModel`. A record's own model names only the response that triggered the write, which for a
+  cheap root whose pricier children all finished first is the cheap one, and the carry was then priced
+  below what it had cost. Roots the host runs itself are registered the same way, so a TUI `/review`
+  (previously one unregistered root per reviewer, lens and verifier) and a compaction's own model calls
+  — a manual `/compact`, and an auto-compact in a send cancelled before its turn began — reach a
+  record. A root that hands its totals to the next one records the figure it handed on and stops
+  writing there: the successor's carry already holds it, so the remainder is written once rather than
+  by both roots, and spend the source is charged after the hand-over is still its own. A handled
+  command carries the same rule: `/review` between two prompts now rebuilds the carry instead of leaving
+  the next prompt to re-seed a total that still named the first prompt's root, which had both dropped
+  the review's spend from the next prompt's budget and re-stamped that root's hand-over floor against a
+  total it had never passed on. A run whose session has moved on, or that has nowhere to write, still
+  leaves its spend for a writer that can, and a store whose append fails no longer replaces a finished
+  run's outcome or aborts a sweep part-way: that root's watermark stays where it was, so the spend is
+  still owed, and the other roots are still written.
+- **Print mode and `query()` no longer document a plan decision they cannot make** (#340). Plan
+  approval in a non-interactive host is asked as an ordinary `AskUserQuestion` with two options, so
+  the `plan_approval` status is one of `approve`, `reject`, `revise`, or `stop` — `approve-fresh`,
+  which approves with a fresh context, belongs to the interactive TUI, the only host that owns the
+  conversation it would reseed. `docs/guide/cli.md` listed it for both hosts. A unit test now pins
+  every answer shape — Approve, Reject, free text, decline, cancel, invalid — to one of the four.
 - **The C++ outline no longer backtracks exponentially on repeated `template<…>` units** (#326). The
   pattern behind `Read { outline: true }` allowed a `template<…>` prefix on each repeated return-type
   word, so `template<a> ` read two ways — as that prefix, or as the word `template` plus the generic
