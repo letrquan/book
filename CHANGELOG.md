@@ -570,6 +570,27 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **`sharp` is installed, so the run-book skill's media scripts work** (#335). `sharp` was named
+  only under `overrides`, left there by an audit advisory for a dev dependency that has since gone,
+  so nothing installed it: `record-gif.mjs` required it at the top and failed at once, and
+  `readme-media.sh` runs `record-gif.mjs`, so regenerating `docs/media/` died on a fresh
+  `npm ci`. It is a devDependency now, and the override follows that direct range (`"$sharp"`), so
+  a transitive sharp keeps the version the advisory pinned.
+- **The mock provider's request log is private, and a bad scenario turn no longer kills the mock**
+  (#327). The log sat at a predictable `<tmp>/book-mock-<port>.requests.jsonl`, was truncated at
+  startup and appended per request by name, so a path pre-created as a symbolic link received whole
+  request bodies. It now lives in a temp directory the mock creates for the run once it is listening
+  (mode 0700), opened once — with `O_TRUNC` and, where it exists, `O_NOFOLLOW` — and appended
+  through that descriptor; an explicit `--request-log` is still honoured, and a symbolic link at
+  that path, or a log that cannot be opened at all, is refused before the server serves anything.
+  That directory is removed when the mock stops (normal exit, SIGINT, SIGTERM, SIGHUP), and by the
+  driver after a hard kill, so a log of whole request bodies does not outlive its run: pass
+  `--request-log` (the driver's `--mock-request-log`) to keep it. A scenario turn of the wrong shape
+  — `{"text": 5}` — used to throw after the 200 was on the wire, where nothing caught it, and the
+  unhandled rejection took the whole mock down mid-run; turns are checked before the reply is
+  written, and a bad one is answered with a 500 naming the turn while the run continues. The
+  driver prints the log path it was given, and `--port 0` now takes any free port and names the
+  bound one on the READY line, so two runs on one machine cannot race for a port.
 - **An MCP stdio write that failed after teardown no longer crashes the process** (#338). The
   transport's no-op `error` listener on the server's stdin was removed when the transport closed,
   but a write still queued on that pipe — a large request, or the cancellation sent on abort —
