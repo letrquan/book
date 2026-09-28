@@ -121,9 +121,9 @@ All notable changes to this project are documented in this file.
   folio, the TodoWrite row in the transcript names the step it started and `2 of 7 done` (so
   scrolling back shows how the plan moved), and Ctrl+T opens the whole list as a sheet,
   `─ § Steps ──── 2 of 7 done ─`, which follows the step in flight and closes with Ctrl+T. Steps are
-  marked `◌` to do, `◔` in hand, `✓` done. A bare `/task` now shows your own task list, which no
-  longer shares Ctrl+T, and TodoWrite joins `MemorySave` as always allowed: it no longer asks
-  permission, and `dontAsk` no longer refuses it.
+  marked `◌` to do, `◔` in hand, and a grey `✓` done, like a finished tool row. A bare `/task` now
+  shows your own task list, which no longer shares Ctrl+T, and TodoWrite joins `MemorySave` as
+  always allowed: it no longer asks permission, and `dontAsk` no longer refuses it.
 - **The transcript is easier on the eyes.** The Rubric palette is calmer: the body text comes
   down one step, to about 12:1 on a dark terminal rather than near-white, so headings and your
   own prompt have somewhere to stand above it; inline code takes a warm tone instead of the one
