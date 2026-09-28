@@ -893,26 +893,59 @@ describe('BashOutput wait_ms', () => {
     expect(result.content).toMatch(/call BashOutput with wait_ms/i);
   });
 
+  /**
+   * End the shell an aborted wait left running, and prove the tree kill reached its process.
+   *
+   * `KillShell` reads no `ctx.signal`, so the shell is alive and killable even though the call that
+   * was waiting on it was aborted. A kill that reached only the shell wrapper would leave the
+   * process holding the temp directory for the rest of the run, and nothing after this test would
+   * report it (#339) — so a survivor is killed here rather than outliving the test that found it.
+   */
+  async function endShell(c: ToolContext, shellId: string, pid: number): Promise<void> {
+    await killShell.execute({ shell_id: shellId }, c);
+    try {
+      await waitForPidGone(pid);
+    } catch (error) {
+      try {
+        process.kill(pid);
+      } catch {
+        // Already gone; there is nothing left to end.
+      }
+      throw error;
+    }
+  }
+
   it('stops waiting and leaves the shell running when the call is aborted', async () => {
     const controller = new AbortController();
     const c = ctxWith({ signal: controller.signal });
+    const pidPath = join(dir, 'wait-abort.pid');
     const command = nodeCommand(
       'wait-abort.cjs',
-      `console.log('alive-still'); setInterval(() => {}, 1000);\n`,
+      `require('fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+console.log('alive-still'); setInterval(() => {}, 1000);
+`,
     );
     const started = await bash.execute({ command, run_in_background: true }, c);
     const shellId = shellIdFrom(started);
     await waitForOutput(c, shellId, /alive-still/);
+    // The shell is meant to keep running, so nothing but the tree kill below ends it — and the
+    // kill is checked here, while the pid is still the process this test started.
+    const pid = Number(readFileSync(pidPath, 'utf8'));
+    expect(pid).toBeGreaterThan(0);
 
-    const began = Date.now();
-    setTimeout(() => controller.abort('stop waiting'), 150);
-    const result = await bashOutput.execute({ shell_id: shellId, wait_ms: 30_000 }, c);
-    const elapsed = Date.now() - began;
+    try {
+      const began = Date.now();
+      setTimeout(() => controller.abort('stop waiting'), 150);
+      const result = await bashOutput.execute({ shell_id: shellId, wait_ms: 30_000 }, c);
+      const elapsed = Date.now() - began;
 
-    expect(elapsed).toBeLessThan(5_000);
-    // Nothing was killed: the shell is still there to be waited on again.
-    expect(c.backgroundShells?.shells.get(shellId)?.status).toBe('running');
-    expect(result.status).toBe('success');
+      expect(elapsed).toBeLessThan(5_000);
+      // Nothing was killed: the shell is still there to be waited on again.
+      expect(c.backgroundShells?.shells.get(shellId)?.status).toBe('running');
+      expect(result.status).toBe('success');
+    } finally {
+      await endShell(c, shellId, pid);
+    }
   }, 20_000);
 
   it('refuses a wait over the limit in force here', async () => {
