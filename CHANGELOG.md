@@ -38,11 +38,41 @@ All notable changes to this project are documented in this file.
   user's content handling; a partial clone's lazy fetch of missing blobs, with whatever
   `credential.helper` and `core.sshCommand` that needs; and signing of the commit the cherry-pick
   puts on the operator's branch, which lands in their history under their committer identity and
-  is signed as they configured it. **Scope:** this reaches writes, and the decision is the
+  still signs — from their own global or system configuration, as of the entry below, because a
+  repository's signing settings name programs. **Scope:** this reaches writes, and the decision is the
   owner's: that work is Book's, in Book's worktree, so a hook the operator installed does not get
   to decide whether it happens. The operator's own commits are untouched — `GitCommit` and
   `runGit` still run the user's `pre-commit` and `commit-msg`, and the test that holds them to
   that is unchanged.
+- **The cherry-pick that applies an agent's result reads signing configuration from the operator's
+  own git config, and never from the repository's** (#348, on top of #355). PR 355 put hooks,
+  `core.fsmonitor`, external diff drivers and automatic maintenance behind `hardenedGitArgs` on
+  every command Book's managed-agent subsystem runs, but it left the one write that produces a
+  commit in the operator's history signing however the checkout was configured: a repository-local
+  `.git/config` setting `commit.gpgSign=true` with `gpg.program=<anything>` (or any of the keys
+  beside it — `gpg.format`, `gpg.openpgp.program`, `gpg.ssh.program`, `gpg.ssh.defaultKeyCommand`,
+  `user.signingKey`, including every file the config pulls in with `include`/`includeIf`, which git
+  reports in the including file's own scope) had Book start that program, unprompted, at the moment
+  it applied an agent's work to a clean branch. The decision is unchanged — that commit is the
+  operator's, under their committer identity, and it still signs — and the source of the settings
+  is what moved. `src/agents/git-signing.ts` reads the signing keys with
+  `git config --show-scope` through the same hardened call the rest of `git-isolation.ts` uses, and
+  the cherry-pick now carries `-c` pins for exactly the keys a repository scope sets: each pinned
+  to the operator's own value, or to git's built-in default where they have none, or to an empty
+  value for the ssh paths that have no default, with the operator's value always last so it is the
+  one in force. A key no repository scope sets is not pinned at all, so signing an operator has
+  configured in their global or system config — or, through `GIT_CONFIG_PARAMETERS` and
+  `GIT_CONFIG_COUNT`, their own environment — is byte for byte what it was, and the commit still
+  lands signed by their own signer. **One limitation:** an ssh signer who leaves `user.signingKey`
+  unset globally and relies on `gpg.ssh.defaultKeyCommand`, in a repository that sets its own
+  `user.signingKey`, gets a failed apply — `user.signingKey needs to be set for ssh signing` —
+  because there is no key to carry across and a repository's is not one to borrow. Setting
+  `user.signingKey` globally is the fix, and it is documented in `docs/guide/agents-and-review.md`.
+  Covered end to end across the full clean flow — snapshot, worktree, agent commit, apply — against
+  a repository arming five programs of its own, one of them reachable only through an included
+  file, each of which a control commit is seen to start; a control that the operator's own signer
+  still signs the applied commit; and a repository that turns signing on where the operator has
+  configured none, which now leaves the commit unsigned instead of failing.
 - **`additionalDirectories` is honored for reads and writes, and gated like every other
   project-declared authority** (#300). The setting was accepted from a checked-in `.book/settings.json`
   and did nothing, so the fix had to make it both real and safe. `Read`, `Glob` and `Grep` now serve

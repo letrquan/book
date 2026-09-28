@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { AgentRecord } from './types.js';
+import type { AgentApplyResult, AgentRecord } from './types.js';
 import {
   applyVerifiedCandidate,
   commitAgentWork,
@@ -24,6 +24,15 @@ import {
 } from './git-isolation.js';
 
 const roots: string[] = [];
+
+/**
+ * Config values name files on this machine, and a backslash in a git config value is an escape
+ * sequence rather than a path separator. Forward slashes are what Git for Windows and every other
+ * git take, and every test below writes its config values through this.
+ */
+function forwardSlashes(path: string): string {
+  return path.replace(/\\/g, '/');
+}
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -69,15 +78,45 @@ function agentRecord(id: string, worktree: { path: string; branch: string }): Ag
 const savedBookHome = process.env.BOOK_HOME;
 let bookHome: string;
 
+// Every test in this file runs git, and git reads `~/.gitconfig` and the system config for all of
+// it unless it is told otherwise. A developer or CI machine may have `commit.gpgSign` set, may
+// name a `gpg.program`, and may have no identity at all: a test that then signs, or fails to
+// sign, proves nothing about Book, and one that failed only on that machine would be a mystery.
+// So each test is pointed at config files it controls — the previous values are restored
+// afterwards — and a test that wants signing config writes it here itself.
+const savedGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+const savedGitConfigSystem = process.env.GIT_CONFIG_SYSTEM;
+let globalConfig = '';
+let systemConfig = '';
+
+/** Write the operator's own git config for the test that is running. */
+function writeGlobalConfig(body: string): void {
+  writeFileSync(globalConfig, body);
+}
+
 beforeEach(() => {
   bookHome = mkdtempSync(join(tmpdir(), 'book-home-'));
   roots.push(bookHome);
   process.env.BOOK_HOME = bookHome;
+  const gitConfig = mkdtempSync(join(tmpdir(), 'book-gitconfig-'));
+  roots.push(gitConfig);
+  globalConfig = join(gitConfig, 'global.gitconfig');
+  systemConfig = join(gitConfig, 'system.gitconfig');
+  // Empty files rather than no files: git reads both, and an empty one says "configured, with
+  // nothing in it" in a way no test can read the host's configuration through.
+  writeFileSync(globalConfig, '');
+  writeFileSync(systemConfig, '');
+  process.env.GIT_CONFIG_GLOBAL = globalConfig;
+  process.env.GIT_CONFIG_SYSTEM = systemConfig;
 });
 
 afterEach(() => {
   if (savedBookHome === undefined) delete process.env.BOOK_HOME;
   else process.env.BOOK_HOME = savedBookHome;
+  if (savedGitConfigGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+  else process.env.GIT_CONFIG_GLOBAL = savedGitConfigGlobal;
+  if (savedGitConfigSystem === undefined) delete process.env.GIT_CONFIG_SYSTEM;
+  else process.env.GIT_CONFIG_SYSTEM = savedGitConfigSystem;
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
 
@@ -265,7 +304,7 @@ function armedRepository(): {
   // git ignore `.git/hooks` entirely, and the control below fails for a reason that has nothing
   // to do with Book. Relative would be worse: git would resolve it against the agent worktree's
   // own root, where these scripts do not live, and every marker assertion would be vacuous.
-  const sh = (path: string) => path.replace(/\\/g, '/');
+  const sh = forwardSlashes;
   mkdirSync(join(root, '.git', 'hooks'), { recursive: true });
   git(root, 'config', 'core.hooksPath', sh(join(root, '.git', 'hooks')));
   for (const hook of HOOKS) {
@@ -432,7 +471,7 @@ describe('the agent commit signs nothing (#348)', () => {
     const markers = join(sandbox, 'markers');
     mkdirSync(markers);
     const marker = join(markers, 'gpg');
-    const sh = (path: string) => path.replace(/\\/g, '/');
+    const sh = forwardSlashes;
     const program = join(sandbox, 'gpg.sh');
     writeFileSync(program, `#!/bin/sh\ntouch '${sh(marker)}'\nexit 1\n`);
     chmodSync(program, 0o755);
@@ -459,5 +498,189 @@ describe('the agent commit signs nothing (#348)', () => {
     expect(candidate).toBeDefined();
     expect(existsSync(marker), 'gpg.program should not have run').toBe(false);
     expect(markersPresent(markers)).toEqual([]);
+  });
+});
+
+/**
+ * The signing program git starts for an openpgp commit: a `#!/bin/sh` script that reads the commit
+ * git wrote to it, writes a marker, tells git a signature was created on the status fd git watches,
+ * and prints a dummy armored signature.
+ *
+ * The status line is what git actually looks for — the literal `"\n[GNUPG:] SIG_CREATED "` on
+ * `--status-fd=2` — and the marker is what says this program ran, so a commit carrying a
+ * `gpgsig` header built from it is a commit this program signed. No gpg is involved, and none is
+ * needed: git accepts what the program writes, and no test here verifies the signature. Git for
+ * Windows runs a `#!` script through its own sh, so the shebang is what makes this portable
+ * rather than the executable bit.
+ *
+ * `openpgp` is the format it stands in for, and the reading of stdin is what that means: git
+ * signs ssh by handing the program a path to sign and writing nothing at all, so a program that
+ * waits for a commit to arrive waits forever.
+ */
+function fakeSigner(at: string, name: string): { path: string; marker: string } {
+  const marker = join(at, `${name}.marker`);
+  const path = join(at, `${name}.sh`);
+  writeFileSync(
+    path,
+    [
+      '#!/bin/sh',
+      'cat > /dev/null',
+      `: > '${forwardSlashes(marker)}'`,
+      `printf '\\n[GNUPG:] SIG_CREATED D 1 8 00 0 FAKE\\n' >&2`,
+      `printf -- '-----BEGIN PGP SIGNATURE-----\\n\\nZmFrZS1zaWduYXR1cmU=\\n-----END PGP SIGNATURE-----\\n'`,
+      '',
+    ].join('\n'),
+  );
+  chmodSync(path, 0o755);
+  return { path, marker };
+}
+
+/**
+ * A signing program that would be a failure if it ran: it writes its own marker and exits
+ * non-zero, so the apply it was reached from fails as well. Two signals rather than one, because
+ * a program that exits 0 with a signature would let a flow look intact while the wrong program
+ * signed it.
+ *
+ * It reads nothing from stdin, and that is not an oversight. Git signs openpgp by writing the
+ * commit to the program, but signs ssh by handing it a path to sign as an argument
+ * (`-Y sign -n git -f <key> <file>`) and writing nothing at all — so a script that reads stdin to
+ * the end hangs there forever, holding up the very cherry-pick whose failure it was written to
+ * report.
+ */
+function markerProgram(at: string, name: string): { path: string; marker: string } {
+  const marker = join(at, `${name}.marker`);
+  const path = join(at, `${name}.sh`);
+  writeFileSync(path, `#!/bin/sh\n: > '${forwardSlashes(marker)}'\nexit 1\n`);
+  chmodSync(path, 0o755);
+  return { path, marker };
+}
+
+/**
+ * The full clean flow, the one `cherry-picks a validated candidate into a clean unchanged parent`
+ * uses: snapshot, worktree, a file the agent changes, the agent's commit, and the apply that
+ * cherry-picks it onto an unchanged clean parent.
+ */
+async function applyCleanCandidate(root: string, id: string): Promise<AgentApplyResult> {
+  const snapshot = await createSyntheticSnapshot(root, true);
+  expect(snapshot.dirty).toBe(false);
+  const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-signing-wt-'));
+  roots.push(worktreeRoot);
+  const worktree = await createAgentWorktree(snapshot, id, worktreeRoot);
+  writeFileSync(join(worktree.path, 'staged.txt'), 'agent value\n');
+  const candidate = await commitAgentWork(agentRecord(id, worktree), snapshot);
+  expect(candidate).toBeDefined();
+  return applyVerifiedCandidate(snapshot, candidate!);
+}
+
+describe('signing of the commit the cherry-pick applies (#348)', () => {
+  it('signs as the global signer and never starts a program the repository named', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'book-apply-signing-'));
+    roots.push(sandbox);
+    const root = repository(join(sandbox, 'repo'));
+
+    // The operator's own signer: the one program this cherry-pick is allowed to start, and the one
+    // that has to sign — the applied commit lands in the operator's history.
+    const signer = fakeSigner(sandbox, 'global-signer');
+    writeGlobalConfig(
+      `[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = ${forwardSlashes(signer.path)}\n`,
+    );
+
+    // The repository's own signing configuration, every program it names armed to write its own
+    // marker. The last one is reached only through a file `.git/config` includes, which is the
+    // case a check reading `.git/config` alone would miss: git reports an included entry with
+    // the scope of the file that included it.
+    const program = markerProgram(sandbox, 'repo-gpg-program');
+    const openpgp = markerProgram(sandbox, 'repo-gpg-openpgp-program');
+    const ssh = markerProgram(sandbox, 'repo-gpg-ssh-program');
+    const defaultKeyCommand = markerProgram(sandbox, 'repo-gpg-ssh-defaultkeycommand');
+    const x509 = markerProgram(sandbox, 'repo-gpg-x509-program');
+    const included = join(sandbox, 'included-signing.cfg');
+    writeFileSync(included, `[gpg "x509"]\n\tprogram = ${forwardSlashes(x509.path)}\n`);
+    git(root, 'config', 'gpg.program', forwardSlashes(program.path));
+    git(root, 'config', 'gpg.openpgp.program', forwardSlashes(openpgp.path));
+    git(root, 'config', 'gpg.format', 'ssh');
+    git(root, 'config', 'gpg.ssh.program', forwardSlashes(ssh.path));
+    git(root, 'config', 'gpg.ssh.defaultKeyCommand', forwardSlashes(defaultKeyCommand.path));
+    git(root, 'config', 'user.signingKey', 'REPOSITORY-CHOSEN-KEY');
+    git(root, 'config', '--add', 'include.path', forwardSlashes(included));
+
+    // The control, and it is what makes the markers below mean something: with the operator's
+    // `commit.gpgSign` and this repository's `gpg.format=ssh`, a plain commit in this checkout
+    // signs with the repository's ssh program and fails. Without it, "no marker" would also be
+    // true of a repository whose signing configuration was never live in the first place.
+    expect(() => git(root, 'commit', '--allow-empty', '-m', 'control')).toThrow();
+    expect(
+      existsSync(ssh.marker),
+      'the control commit should have started the repository gpg.ssh.program',
+    ).toBe(true);
+    rmSync(ssh.marker, { force: true });
+
+    const applied = await applyCleanCandidate(root, 'repo-signing-agent');
+
+    // The flow still has to do its job: a cherry-pick that refused to sign for a reason of its
+    // own would satisfy every marker assertion as readily as the fix does.
+    expect(applied.status).toBe('applied');
+    expect(readFileSync(join(root, 'staged.txt'), 'utf8').replace(/\r\n/g, '\n')).toBe(
+      'agent value\n',
+    );
+    for (const armed of [program, openpgp, ssh, defaultKeyCommand, x509]) {
+      expect(existsSync(armed.marker), `${armed.path} should not have run`).toBe(false);
+    }
+    // And the signing that does happen is the operator's, not the repository's: the global
+    // signer ran, and what it produced is in the applied commit.
+    expect(
+      existsSync(signer.marker),
+      'the global signer should have signed the applied commit',
+    ).toBe(true);
+    expect(git(root, 'cat-file', '-p', 'HEAD')).toContain('gpgsig -----BEGIN PGP SIGNATURE-----');
+  });
+
+  it('signs the applied commit with the signer the operator configured globally', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'book-apply-global-signing-'));
+    roots.push(sandbox);
+    const root = repository(join(sandbox, 'repo'));
+    const signer = fakeSigner(sandbox, 'global-signer');
+    writeGlobalConfig(
+      `[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = ${forwardSlashes(signer.path)}\n`,
+    );
+    // The repository configures nothing: this is the shape the cherry-pick had before any of it
+    // was pinned, and the result has to be the same commit it always was.
+
+    const applied = await applyCleanCandidate(root, 'globally-signed-agent');
+
+    expect(applied.status).toBe('applied');
+    expect(existsSync(signer.marker), 'the global signer should have run').toBe(true);
+    const commit = git(root, 'cat-file', '-p', 'HEAD');
+    expect(commit).toContain('gpgsig -----BEGIN PGP SIGNATURE-----');
+    expect(commit).toContain('ZmFrZS1zaWduYXR1cmU=');
+  });
+
+  it('leaves the applied commit unsigned when the operator has configured no signing', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'book-apply-unsigned-'));
+    roots.push(sandbox);
+    const root = repository(join(sandbox, 'repo'));
+    // The global config is the empty file every test in this file starts from, so there is no
+    // signing program to run even in principle: git's own default is one this machine has no
+    // reason to have a key for.
+    const program = markerProgram(sandbox, 'repo-gpg-program');
+    git(root, 'config', 'commit.gpgSign', 'true');
+    git(root, 'config', 'gpg.program', forwardSlashes(program.path));
+
+    // The control again: under this configuration a plain commit in the checkout is a signing
+    // commit that starts the repository's program and fails.
+    expect(() => git(root, 'commit', '--allow-empty', '-m', 'control')).toThrow();
+    expect(
+      existsSync(program.marker),
+      'the control commit should have started the repository gpg.program',
+    ).toBe(true);
+    rmSync(program.marker, { force: true });
+
+    const applied = await applyCleanCandidate(root, 'unsigned-agent');
+
+    expect(applied.status).toBe('applied');
+    expect(existsSync(program.marker), 'the repository gpg.program should not have run').toBe(
+      false,
+    );
+    expect(git(root, 'cat-file', '-p', 'HEAD')).not.toContain('gpgsig');
   });
 });

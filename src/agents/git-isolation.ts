@@ -7,6 +7,7 @@ import type { AgentApplyResult, AgentRecord, AgentSnapshot, PatchCandidate } fro
 import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 import { hardenedGitArgs, hardenedGitEnv, HARDENED_DIFF_ARGS } from '../tools/git.js';
+import { signingPinArgs } from './git-signing.js';
 
 interface GitResult {
   stdout: string;
@@ -375,7 +376,14 @@ export async function applyVerifiedCandidate(
 
   if (!snapshot.dirty) {
     try {
-      await git(snapshot.repoRoot, ['cherry-pick', candidate.headCommit]);
+      // This is the only call here that writes a commit into the operator's history, so it is the
+      // only one that signs, and signing is the last thing a checkout can still own through it: a
+      // repository-local `commit.gpgSign` with a `gpg.program` of its own is a program Book would
+      // start, in a flow nothing asked about (#348). The commit still signs, and signs as the
+      // operator configured, because the pins carry their own value forward — see `git-signing.ts`
+      // for what is read, from where, and the one signing shape that cannot be carried over.
+      const signingPins = await signingPinArgs(snapshot.repoRoot);
+      await git(snapshot.repoRoot, [...signingPins, 'cherry-pick', candidate.headCommit]);
       const appliedCommit = (await git(snapshot.repoRoot, ['rev-parse', 'HEAD'])).stdout.trim();
       return { status: 'applied', commit: appliedCommit };
     } catch (error) {
