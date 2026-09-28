@@ -11,6 +11,7 @@ import {
   previousWordBoundary,
   type EditState,
 } from '../line-edit.js';
+import { stripSgrMouseSequences } from '../mouse.js';
 
 interface InputBoxProps {
   value: string;
@@ -118,7 +119,13 @@ export function InputBox({
   };
 
   useInput(
-    (input, key) => {
+    (rawInput, key) => {
+      // TranscriptView owns mouse reports. Ink hands them to every handler, and typed into the
+      // draft here they cost a whole extra render per wheel tick — the frame slot the scroll
+      // itself needed — and moved the cursor to the end of the draft once InputBar stripped
+      // them again. Text typed in the same read as a report is kept.
+      const input = stripSgrMouseSequences(rawInput);
+      if (rawInput && !input) return;
       const parentValue = liveValueRef?.current;
       if (parentValue !== undefined && parentValue !== valueRef.current) {
         valueRef.current = parentValue;

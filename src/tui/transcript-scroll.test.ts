@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
   createTranscriptScrollState,
+  createWheelMotion,
   getMaxScrollTop,
   getTranscriptHalfPageRows,
   getTranscriptPageRows,
-  getTranscriptWheelDrainRows,
   pagerChordsAvailable,
   reconcileTranscriptScroll,
   scrollTranscriptBy,
   scrollTranscriptToEnd,
   scrollTranscriptToStart,
+  wheelEaseStep,
+  wheelRows,
 } from './transcript-scroll.js';
 
 const metrics = { contentRows: 10, viewportRows: 4 };
@@ -87,12 +89,68 @@ describe('transcript scroll model', () => {
     expect(getTranscriptHalfPageRows(5)).toBe(2);
     expect(getTranscriptHalfPageRows(1)).toBe(1);
   });
+});
 
-  it('bounds each wheel drain while preserving direction', () => {
-    expect(getTranscriptWheelDrainRows(0, 20)).toBe(0);
-    expect(getTranscriptWheelDrainRows(-3, 20)).toBe(-3);
-    expect(getTranscriptWheelDrainRows(99, 20)).toBe(10);
-    expect(getTranscriptWheelDrainRows(-99, 5)).toBe(-3);
+describe('wheel motion', () => {
+  /** Rows each of `count` reports `gapMs` apart moves, all in one direction. */
+  function run(gapMs: number, count: number, direction: -1 | 1 = 1): number[] {
+    let motion = createWheelMotion();
+    const rows: number[] = [];
+    for (let index = 0; index < count; index++) {
+      const next = wheelRows(motion, direction, 1_000 + index * gapMs);
+      motion = next.motion;
+      rows.push(next.rows);
+    }
+    return rows;
+  }
+  const total = (rows: number[]) => rows.reduce((sum, value) => sum + value, 0);
+
+  it('moves the distance Claude Code moves for the same reports', () => {
+    // Measured on Windows by sending Claude Code these reports and tracking the transcript:
+    // [gap between reports in ms, reports, rows the transcript moved in all].
+    const measured: Array<[number, number, number]> = [
+      [200, 2, 6],
+      [100, 2, 6],
+      [50, 2, 10],
+      [25, 2, 11],
+      [12, 2, 12],
+      [60, 10, 160],
+      [16, 10, 96],
+      [8, 10, 82],
+      [4, 10, 34],
+    ];
+    for (const [gapMs, count, rows] of measured) {
+      const moved = total(run(gapMs, count));
+      const label = `${count} reports ${gapMs} ms apart`;
+      expect(moved, label).toBeGreaterThanOrEqual(rows * 0.7);
+      expect(moved, label).toBeLessThanOrEqual(rows * 1.3);
+    }
+    expect(run(1_000, 1)).toEqual([3]);
+  });
+
+  it('starts a run over after a pause or a change of direction', () => {
+    let motion = createWheelMotion();
+    ({ motion } = wheelRows(motion, 1, 0));
+    const quick = wheelRows(motion, 1, 30);
+    expect(quick.rows).toBeGreaterThan(3);
+
+    expect(wheelRows(quick.motion, -1, 60).rows).toBe(-3);
+    expect(wheelRows(quick.motion, 1, 200).rows).toBe(3);
+  });
+
+  it('eases a move in over frames in whole rows, never past the target', () => {
+    expect(wheelEaseStep(3)).toBe(3);
+    expect(wheelEaseStep(-3)).toBe(-3);
+    expect(wheelEaseStep(0.9)).toBe(0);
+    expect(wheelEaseStep(1.5)).toBe(1);
+
+    const steps: number[] = [];
+    let left = 20;
+    for (let step = wheelEaseStep(left); step !== 0; step = wheelEaseStep(left)) {
+      steps.push(step);
+      left -= step;
+    }
+    expect(steps).toEqual([15, 4, 1]);
   });
 });
 

@@ -28,3 +28,14 @@ export function isCiEnvironment(env: NodeJS.ProcessEnv = process.env): boolean {
   const set = (key: string) => key in env && env[key] !== '0' && env[key] !== 'false';
   return set('CI') || set('CONTINUOUS_INTEGRATION');
 }
+
+/**
+ * The frame cap handed to Ink's `render({ maxFps })`. Ink throttles renders to
+ * `ceil(1000 / maxFps)` ms, and on Windows libuv timers fire only on the 15.6 ms system tick:
+ * the 17 ms that 60 fps asks for waits two ticks (31 ms) and caps the TUI at about 32 fps, so a
+ * transcript scrolled with the wheel or a trackpad moves in visible steps. 72 fps asks for
+ * 14 ms, which one tick serves. Elsewhere timers are precise and 60 fps means 60.
+ */
+export function resolveInkMaxFps(platform: NodeJS.Platform = process.platform): number {
+  return platform === 'win32' ? 72 : 60;
+}
