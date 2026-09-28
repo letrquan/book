@@ -48,12 +48,17 @@ function textDelta(content: string): string {
   return `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
 }
 
-function toolDelta(id: string, name: string, args: Record<string, unknown>): string {
+/**
+ * One tool call in a turn. `index` is the wire's own slot for it, so a turn
+ * with two calls needs two of these: the same index twice is one call, with
+ * both argument fragments merged into it.
+ */
+function toolDelta(id: string, name: string, args: Record<string, unknown>, index = 0): string {
   return `data: ${JSON.stringify({
     choices: [
       {
         delta: {
-          tool_calls: [{ index: 0, id, function: { name, arguments: JSON.stringify(args) } }],
+          tool_calls: [{ index, id, function: { name, arguments: JSON.stringify(args) } }],
         },
       },
     ],
@@ -76,6 +81,20 @@ function createSink(
   options: {
     /** Fail every write with EPIPE once the first turn's answer has arrived. */
     closeAfterFirstTurn?: boolean;
+    /**
+     * Fail every write with EPIPE once this many `tool_use` records have been
+     * written: the reader took a whole batch's announcements and then left,
+     * while the first call of it is still running.
+     */
+    closeAfterToolUse?: number;
+    /**
+     * Deliver the failing callback on `process.nextTick`, as a pipe write that
+     * fails synchronously does on Linux: the write returns before the callback
+     * arrives, so anything checking the run's signal in between sees it healthy.
+     */
+    failOnNextTick?: boolean;
+    /** The code a failed write reports; EPIPE is what a closed pipe gives. */
+    failureCode?: string;
     /** Hold each write's callback open this long — a reader that is slow, not gone. */
     callbackDelayMs?: number;
     /** Never call the callback at all — a writer that cannot be waited on. */
@@ -85,20 +104,45 @@ function createSink(
   const lines: string[] = [];
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let readerGone = false;
+  let toolUseRecords = 0;
+  const gone = (callback: (error?: Error | null) => void): void => {
+    const error = Object.assign(new Error(`write ${options.failureCode ?? 'EPIPE'}`), {
+      code: options.failureCode ?? 'EPIPE',
+    });
+    if (options.failOnNextTick) {
+      process.nextTick(() => callback(error));
+      return;
+    }
+    callback(error);
+  };
   const stream = new Writable({
     write(chunk: unknown, _encoding, callback) {
       if (readerGone) {
-        callback(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+        gone(callback);
         return;
       }
       const line = String(chunk);
       lines.push(line);
-      if (options.closeAfterFirstTurn && !readerGone) {
+      if (!readerGone) {
         try {
           const event = JSON.parse(line) as { type?: string; complete?: boolean };
           // The reader takes everything through the first answer and then goes,
           // so this line is the last one it gets.
-          if (event.type === 'assistant' && event.complete === true) readerGone = true;
+          if (
+            options.closeAfterFirstTurn &&
+            event.type === 'assistant' &&
+            event.complete === true
+          ) {
+            readerGone = true;
+          }
+          // Or through a whole batch's announcements, which leaves it closing
+          // while the batch's first call is still running.
+          if (event.type === 'tool_use') {
+            toolUseRecords++;
+            if (toolUseRecords >= (options.closeAfterToolUse ?? Number.POSITIVE_INFINITY)) {
+              readerGone = true;
+            }
+          }
         } catch {
           // A line that is not a record is none of this sink's business.
         }
@@ -173,6 +217,8 @@ async function runScript(options: {
   workspace?: string;
   /** How many of the script's turns call the marker; every one is a tool batch. */
   toolCallTurns?: number;
+  /** Serial calls in the first turn — a batch the reader can leave in the middle of. */
+  serialBatch?: boolean;
 }): Promise<ScriptedRun> {
   const fetchCalls = { count: 0 };
   vi.stubGlobal(
@@ -180,7 +226,14 @@ async function runScript(options: {
     vi.fn(async () => {
       fetchCalls.count++;
       if (fetchCalls.count === 1) {
-        return sse([textDelta('Working on it.'), toolDelta('mark-1', 'Mark', { label: 'first' })]);
+        const second = options.serialBatch
+          ? toolDelta('mark-2', 'Mark', { label: 'second' }, 1)
+          : '';
+        return sse([
+          textDelta('Working on it.'),
+          toolDelta('mark-1', 'Mark', { label: 'first' }),
+          second,
+        ]);
       }
       if (fetchCalls.count === 2 && (options.toolCallTurns ?? 2) > 1) {
         return sse([textDelta('Almost.'), toolDelta('mark-2', 'Mark', { label: 'second' })]);
@@ -286,7 +339,45 @@ describe('runHeadless — stream-json reader goes away', () => {
     expect(normalize(eventsOf(plainWrites))).toEqual(normalize(eventsOf(sink.lines)));
   });
 
-  it('waits at most the cap for a slow reader and still finishes the run', async () => {
+  it('does not start the next serial call of a batch after the reader leaves mid-batch', async () => {
+    // The reader took both of the batch's announcements and went while the
+    // first call was still running. That call's own `tool_result` is the write
+    // that fails, and on a real pipe it fails synchronously while the callback
+    // arrives on the next tick — so the next call's own abort check runs in
+    // between, and the hold in front of that call is the only thing that can
+    // stop it.
+    const sink = createSink({ closeAfterToolUse: 2, failOnNextTick: true });
+    try {
+      const run = await runScript({ sink, serialBatch: true });
+
+      expect(run.ran).toEqual(['first']);
+      expect(run.fetchCalls).toBe(1);
+      expect(run.result.outcome).toEqual({
+        status: 'cancelled',
+        reason: 'caller_cancelled',
+        partialOutput: true,
+      });
+      // Nothing after the announcements reached the reader — not the first
+      // call's result, and not the second call's anything.
+      expect(run.lines.filter((line) => line.includes('"tool_result"'))).toEqual([]);
+      expect(run.lines.filter((line) => line.includes('"tool_use"')).length).toBe(2);
+    } finally {
+      sink.dispose();
+    }
+  });
+
+  it('runs every call of a healthy serial batch', async () => {
+    const sink = createSink();
+    try {
+      const run = await runScript({ sink, serialBatch: true, toolCallTurns: 1 });
+      expect(run.ran).toEqual(['first', 'second']);
+      expect(run.result.outcome).toMatchObject({ status: 'completed' });
+    } finally {
+      sink.dispose();
+    }
+  });
+
+  it('waits the cap for a slow reader, then stops waiting at the next boundary', async () => {
     const sink = createSink({ callbackDelayMs: 3000 });
     try {
       // One tool batch, so the run's whole wait for a writer that would not
@@ -297,9 +388,26 @@ describe('runHeadless — stream-json reader goes away', () => {
       // It waited, gave the writer up, and went on: this reader is slow, not gone.
       expect(run.ran).toEqual(['first']);
       expect(run.result.outcome).toMatchObject({ status: 'completed' });
+      expect(run.elapsedMs).toBeGreaterThanOrEqual(900);
       expect(run.elapsedMs).toBeLessThan(3000);
     } finally {
       sink.dispose();
+    }
+  });
+
+  it('cancels cleanly on the other codes a closed far end arrives with', async () => {
+    for (const failureCode of ['EOF', 'ECONNRESET', 'ERR_STREAM_DESTROYED']) {
+      const sink = createSink({ closeAfterFirstTurn: true, failureCode });
+      try {
+        const run = await runScript({ sink });
+        expect(run.ran).toEqual(['first']);
+        expect(run.result.outcome).toMatchObject({
+          status: 'cancelled',
+          reason: 'caller_cancelled',
+        });
+      } finally {
+        sink.dispose();
+      }
     }
   });
 

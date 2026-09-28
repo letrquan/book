@@ -2239,6 +2239,15 @@ export async function runAgentLoop(
         toolCalls[index] = registry.normalizeCall(toolCalls[index]);
       }
 
+      /**
+       * The host's first word on this turn's calls, before the turn spends
+       * anything on their behalf: a stream-json print run holds here so a reader
+       * that has gone cancels the run before the reducer below is even asked
+       * for a request. Every call is held for again before it starts; this one
+       * is the hold that costs nothing when the reader has caught up.
+       */
+      if (toolCalls.length > 0) await callbacks.beforeToolExecution?.();
+
       // Deferred compaction starts here, not at the boundary after the tools:
       // the response has just reported the pressure, the tools have not run,
       // and `newHistory` ends at the last complete bundle -- this turn's
@@ -2248,6 +2257,9 @@ export async function runAgentLoop(
       // is the head start the reducer gets.
       if (
         toolCalls.length > 0 &&
+        // A hold that cancelled the turn above has already settled every call;
+        // a reducer request now would be paid for a run that is over.
+        !signal?.aborted &&
         config.autoCompactEnabled !== false &&
         deferredCompactionAvailable() &&
         !pendingCompaction() &&
@@ -2269,17 +2281,20 @@ export async function runAgentLoop(
       }
 
       const toolResults: Array<ToolResult | undefined> = new Array(toolCalls.length);
+      /** A call that never started, settled the way any abort settles one. */
+      const cancelledBeforeStart = (call: ToolCall): ToolResult =>
+        toolFailure('CANCELLED: Agent execution was interrupted', {
+          toolCallId: call.id,
+          code: 'cancelled_before_start',
+          status: 'cancelled',
+        });
       const prepareToolCall = async (
         callIndex: number,
         parallel: boolean,
       ): Promise<PreparedLoopCall | undefined> => {
         const originalCall = toolCalls[callIndex];
         if (signal?.aborted) {
-          toolResults[callIndex] = toolFailure('CANCELLED: Agent execution was interrupted', {
-            toolCallId: originalCall.id,
-            code: 'cancelled_before_start',
-            status: 'cancelled',
-          });
+          toolResults[callIndex] = cancelledBeforeStart(originalCall);
           return undefined;
         }
 
@@ -2999,22 +3014,25 @@ export async function runAgentLoop(
         return fallback;
       };
 
-      // Once per turn with calls, before the first one is prepared, so a host
-      // learns anything it needs to learn while nothing has run yet. A hook
-      // that leaves the signal aborted does not run the turn:
-      // `prepareToolCall` settles every call as `cancelled_before_start` and
-      // the loop's own exit classifies the abort. A turn with no calls awaits
-      // nothing — it announced nothing.
-      if (toolCalls.length > 0 && callbacks.beforeToolExecution) {
-        await callbacks.beforeToolExecution();
-      }
-
+      // Every call and every wave is held for before it starts, not once per
+      // turn: the reader can go away while an earlier call of the same turn is
+      // still running, and that call's own `tool_result` is the write that
+      // carries the news. A hold that leaves the signal aborted does not run
+      // what follows — `prepareToolCall` settles the call as
+      // `cancelled_before_start`, and the loop's own exit classifies the abort.
       for (let callIndex = 0; callIndex < toolCalls.length;) {
         const definition = registry.getTool(toolCalls[callIndex].name);
         const parallel = definition?.policy?.concurrency === 'parallel';
         if (!parallel) {
+          await callbacks.beforeToolExecution?.();
           const entry = await prepareToolCall(callIndex, false);
-          if (entry) await finishCall(entry, await executeToolCall(entry));
+          if (entry) {
+            // Preparation awaited hooks and a permission answer, either of
+            // which can take long enough for the run to be cancelled in
+            // between — the one abort a hold before it cannot see.
+            if (signal?.aborted) toolResults[entry.index] = cancelledBeforeStart(entry.call);
+            else await finishCall(entry, await executeToolCall(entry));
+          }
           publishResult(callIndex, resultAt(callIndex));
           // A COPY. The runtime's array is mutated in place (M2's discipline, so the
           // context and the runtime cannot diverge), which means every call would
@@ -3034,24 +3052,32 @@ export async function runAgentLoop(
         ) {
           callIndex++;
         }
+        // One hold for the wave: its calls run together, so there is nothing to
+        // learn between them.
+        await callbacks.beforeToolExecution?.();
         const entries: PreparedLoopCall[] = [];
         for (let index = waveStart; index < callIndex; index++) {
           const entry = await prepareToolCall(index, true);
           if (entry) entries.push(entry);
         }
-        const settled = await Promise.allSettled(entries.map((entry) => executeToolCall(entry)));
-        for (let index = 0; index < entries.length; index++) {
-          const execution = settled[index];
-          const result =
-            execution.status === 'fulfilled'
-              ? execution.value
-              : toolFailure(
-                  execution.reason instanceof Error
-                    ? execution.reason.message
-                    : String(execution.reason),
-                  { toolCallId: entries[index].call.id, code: 'tool_exception' },
-                );
-          await finishCall(entries[index], result);
+        if (signal?.aborted) {
+          // Cancelled while the wave was being prepared: none of it ran.
+          for (const entry of entries) toolResults[entry.index] = cancelledBeforeStart(entry.call);
+        } else {
+          const settled = await Promise.allSettled(entries.map((entry) => executeToolCall(entry)));
+          for (let index = 0; index < entries.length; index++) {
+            const execution = settled[index];
+            const result =
+              execution.status === 'fulfilled'
+                ? execution.value
+                : toolFailure(
+                    execution.reason instanceof Error
+                      ? execution.reason.message
+                      : String(execution.reason),
+                    { toolCallId: entries[index].call.id, code: 'tool_exception' },
+                  );
+            await finishCall(entries[index], result);
+          }
         }
         for (let index = waveStart; index < callIndex; index++) {
           publishResult(index, resultAt(index));

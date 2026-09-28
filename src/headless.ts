@@ -54,6 +54,7 @@ import { separateInlineReasoning } from './reasoning-tags.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { toolResultErrorMessage } from './tools/result.js';
 import { onAbort, throwIfAborted } from './async.js';
+import { createReaderFlush } from './reader-gone.js';
 
 /**
  * Re-price restored tokens.
@@ -134,68 +135,6 @@ async function raceAbort(
   }
 }
 
-/** A `write` that reports what happened to the record through a callback. */
-type CallbackWriter = {
-  write(chunk: string, callback: (error?: Error | null) => void): boolean;
-};
-
-/**
- * `stdout` as a writer whose `write` takes a callback, when it is one.
- *
- * `process.stdout` and any `Writable` a host passes are; the bare
- * `{ write: () => true }` sink the SDK uses is not, and has no way to report a
- * failed write at all. A rest-args `write` is read as "no" — a sink that
- * forwards nothing is exactly the case where waiting for it would wait forever.
- */
-function asCallbackWriter(stdout: { write: (s: string) => boolean }): CallbackWriter | undefined {
-  const write = stdout.write as unknown as CallbackWriter['write'];
-  return write.length >= 2 ? (stdout as unknown as CallbackWriter) : undefined;
-}
-
-/**
- * Write failures that mean nobody is reading any more. A closed pipe is EPIPE
- * on POSIX and Windows alike; the rest are the shapes the same fault takes on
- * the way through a stream.
- */
-const READER_GONE_CODES: ReadonlySet<string> = new Set([
-  'EPIPE',
-  'EOF',
-  'ERR_STREAM_DESTROYED',
-  'ECONNRESET',
-]);
-
-function isReaderGoneError(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | null | undefined)?.code;
-  return code !== undefined && READER_GONE_CODES.has(code);
-}
-
-/**
- * How long a tool boundary waits for the records announcing it to be taken.
- *
- * A reader that is gone answers within milliseconds — measured on Windows at
- * 1 to 2 ms after the write, for a native pipe and for Git Bash alike — while a
- * reader that is merely slow must not hold the run at a tool boundary. So the
- * wait ends at the first of: the write's callback, the run's signal, the cap.
- */
-const READER_FLUSH_CAP_MS = 1000;
-
-function awaitFlush(
-  flush: Promise<void> | undefined,
-  signal: AbortSignal | undefined,
-  capMs: number,
-): Promise<void> {
-  if (!flush || signal?.aborted) return Promise.resolve();
-  return new Promise<void>((resolve) => {
-    const release = (): void => {
-      clearTimeout(timer);
-      resolve();
-    };
-    const timer = setTimeout(release, capMs);
-    onAbort(signal, release);
-    flush.then(release, release);
-  });
-}
-
 export async function runHeadless(
   config: AgentConfig,
   registry: ToolRegistry,
@@ -204,56 +143,35 @@ export async function runHeadless(
   const mode = resolvePermissionMode(config.settings, opts.mode);
   const stdout = opts.stdout ?? process.stdout;
   /**
-   * The abort for a reader that has gone, owned here rather than left to the
-   * `error` event on `process.stdout` (#340). A closed pipe is only noticed on
+   * The watch for a reader that has gone, and the hold a tool boundary takes on
+   * the records it is about to announce (#340). A closed pipe is only noticed on
    * a write, and the notice arrives after the write returns, so a run whose
-   * reader left during a silent turn heard about it a whole tool call too late
-   * and executed the calls of the turn it had already paid for. `emit` reads
-   * the write's own error, and the loop is held at the tool boundary until the
-   * last write has been answered — see `beforeToolExecution` below.
+   * reader left during a silent turn — nothing written, nothing to report it —
+   * used to execute the calls of a turn it had already paid for.
    *
    * `stream-json` on a real stream is the only case: a `text` or `json` answer
    * is written once, at the end, and a host that passed a bare `{ write }` sink
-   * has no callback to report a failure through.
+   * has no callback to report a failure through. Everything else keeps exactly
+   * the path it had.
    */
-  const writer = opts.outputFormat === 'stream-json' ? asCallbackWriter(stdout) : undefined;
-  const readerGone = writer ? new AbortController() : undefined;
+  const flush = opts.outputFormat === 'stream-json' ? createReaderFlush(stdout) : undefined;
   /**
    * The run's signal. Composed, not replaced, so a caller abort reads exactly
-   * as it did before — and `readerGone.abort()` carries no reason, the same as
+   * as it did before — and a reader-gone abort carries no reason, the same as
    * the closed-pipe abort in `cli/run.ts`, so the two classify alike and leave
    * the same exit code.
    */
   const runSignal =
-    readerGone && opts.signal
-      ? AbortSignal.any([opts.signal, readerGone.signal])
-      : (readerGone?.signal ?? opts.signal);
-  /**
-   * The newest write's completion. Writes to one stream are ordered, so its
-   * callback covers every record before it and one promise per record is one
-   * too many to keep.
-   */
-  let lastWrite: Promise<void> | undefined;
+    flush && opts.signal
+      ? AbortSignal.any([opts.signal, flush.signal])
+      : (flush?.signal ?? opts.signal);
   const emit = (obj: unknown) => {
     if (obj && typeof obj === 'object' && 'type' in obj) {
       opts.onEvent?.(obj as StreamJsonEvent);
     }
     const line = JSON.stringify(obj) + '\n';
-    if (!writer || !readerGone) {
-      stdout.write(line);
-      return;
-    }
-    // The write is made outside the promise so that a sink which throws on
-    // `write` throws out of `emit`, as it did when this was a bare
-    // `stdout.write`, instead of becoming a rejected promise nobody holds yet.
-    let taken: (() => void) | undefined;
-    lastWrite = new Promise<void>((resolve) => {
-      taken = resolve;
-    });
-    writer.write(line, (error) => {
-      if (error && isReaderGoneError(error)) readerGone.abort();
-      taken?.();
-    });
+    if (flush) flush.write(line);
+    else stdout.write(line);
   };
   /**
    * What the event printers remember across one run: the managed children's
@@ -552,16 +470,14 @@ export async function runHeadless(
         }
       },
       /**
-       * The hold at the tool boundary. The `tool_use` records for this turn
-       * have been written by now, so waiting for them to be taken is what
-       * turns a reader that has gone into an abort BEFORE the calls run
-       * (#340) instead of one turn later. Bounded, so a slow reader costs the
-       * cap once per batch; absent — and so a no-op — for every other output
-       * format and for a host sink with no callback to answer.
+       * The hold at a tool boundary. The `tool_use` records for the calls about
+       * to run have been written by now, so waiting for them to be taken is
+       * what turns a reader that has gone into an abort BEFORE the call runs
+       * (#340) instead of one call later. Free when the reader has caught up,
+       * bounded when it has not, and absent — so a no-op — for every other
+       * output format and for a host sink with no callback to answer.
        */
-      beforeToolExecution: readerGone
-        ? () => awaitFlush(lastWrite, runSignal, READER_FLUSH_CAP_MS)
-        : undefined,
+      beforeToolExecution: flush ? () => flush.hold(runSignal) : undefined,
       onPlanApprovalRequired: async (plan) => {
         const decision = await decidePlanApproval(plan);
         if (typeof decision === 'object' && decision.decision === 'stop') {

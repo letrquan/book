@@ -38,6 +38,7 @@ import { resolvePermissionMode } from '../permission-mode.js';
 import { spawn } from 'node:child_process';
 import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
+import { isReaderGoneError } from '../reader-gone.js';
 
 const SESSION_ROOT = join(resolveBookHome(), 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
@@ -116,6 +117,30 @@ function writeTerminalControl(stdout: Pick<NodeJS.WriteStream, 'write'>, sequenc
 
 function collectSnapshotReferences(store: SessionStore, cwd: string): Set<string> {
   return store.listSnapshotReferences(cwd);
+}
+
+/**
+ * A print run's `error` handler for `process.stdout` and `process.stderr`.
+ *
+ * A closed reader is not a failure to report: the run is over for whoever was
+ * reading, so the handler cancels it and returns. Every code a closed far end
+ * arrives with is recognised, not just EPIPE — the run is already cancelled
+ * through the failing write's own callback by the time the stream's `error`
+ * event lands, so rethrowing a second code for the same fault would turn one
+ * closed reader into an uncaught exception: exit 1, and no SessionEnd.
+ *
+ * Anything else is a real failure of the process's own output, and is thrown
+ * rather than reported as a reader that left.
+ */
+export function printPipeErrorHandler(
+  stream: 'stdout' | 'stderr',
+  printFormat: 'text' | 'json' | 'stream-json',
+  readerGone: AbortController,
+): (error: NodeJS.ErrnoException) => void {
+  return (error: NodeJS.ErrnoException) => {
+    if (!isReaderGoneError(error)) throw error;
+    if (stream === 'stdout' && printFormat === 'stream-json') readerGone.abort();
+  };
 }
 
 export function enterInteractiveScreen(
@@ -253,12 +278,8 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
             (signal): signal is AbortSignal => signal !== undefined,
           ),
         );
-        const onClosedPipe = (stream: 'stdout' | 'stderr') => (error: NodeJS.ErrnoException) => {
-          if (error.code !== 'EPIPE') throw error;
-          if (stream === 'stdout' && printFormat === 'stream-json') readerGone.abort();
-        };
-        process.stderr.on('error', onClosedPipe('stderr'));
-        process.stdout.on('error', onClosedPipe('stdout'));
+        process.stderr.on('error', printPipeErrorHandler('stderr', printFormat, readerGone));
+        process.stdout.on('error', printPipeErrorHandler('stdout', printFormat, readerGone));
         result = await runHeadless(config, registry, {
           prompt: typeof options.print === 'string' ? (options.print as string) : undefined,
           inputFormat: options.inputFormat as 'text' | 'stream-json',

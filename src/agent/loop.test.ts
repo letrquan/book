@@ -5883,6 +5883,107 @@ describe('runAgentLoop deferred compaction', () => {
     expect(onCompact).not.toHaveBeenCalled();
   });
 
+  it('holds the turn before it starts the reducer for that turn', async () => {
+    // The reducer is a request the run pays for. A run that is about to be
+    // cancelled for a reader that has gone must not have asked for one, so the
+    // host's hold comes first and an abort in it stops the reducer dead.
+    let providerCalls = 0;
+    const order: string[] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'echo-1', name: 'Echo', arguments: { value: 'x' } },
+          };
+          yield { type: 'done', usage: pressure };
+          return;
+        }
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    const prepareCompact = vi.fn(async (snapshot: Message[]) => {
+      order.push('reducer');
+      return preparedFor(snapshot);
+    });
+    const commitCompact = vi.fn(accepting);
+    const onCompact = vi.fn(async () => compactedForRetry());
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 2,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onCompact,
+        prepareCompact,
+        commitCompact,
+        beforeToolExecution: async () => {
+          order.push('hold');
+        },
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(order[0]).toBe('hold');
+    expect(order).toContain('reducer');
+    expect(prepareCompact).toHaveBeenCalledOnce();
+  });
+
+  it('starts no reducer for a turn the hold cancelled', async () => {
+    const controller = new AbortController();
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'echo-1', name: 'Echo', arguments: { value: 'x' } },
+        };
+        yield { type: 'done', usage: pressure };
+      },
+    };
+    const prepareCompact = vi.fn(async (snapshot: Message[]) => preparedFor(snapshot));
+    const commitCompact = vi.fn(accepting);
+    const onCompact = vi.fn(async () => compactedForRetry());
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 2,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onCompact,
+        prepareCompact,
+        commitCompact,
+        beforeToolExecution: async () => {
+          controller.abort();
+        },
+      }),
+      'default',
+      { provider, signal: controller.signal, isNewSession: false },
+    );
+
+    expect(prepareCompact).not.toHaveBeenCalled();
+    expect(commitCompact).not.toHaveBeenCalled();
+    expect(providerCalls).toBe(1);
+  });
+
   it('awaits a pending reducer at the gate even when the history holds no tool result', async () => {
     let providerCalls = 0;
     const seen: string[][] = [];
@@ -8640,7 +8741,7 @@ describe('beforeToolExecution', () => {
     expect(providerCalls).toBe(1);
   });
 
-  it('awaits the hook once per turn with calls, and never on a text-only turn', async () => {
+  it('awaits the hook before each serial call, and once for a parallel wave', async () => {
     const runs: string[] = [];
     let providerCalls = 0;
     const provider: Provider = {
@@ -8648,6 +8749,8 @@ describe('beforeToolExecution', () => {
       stream: async function* () {
         providerCalls++;
         if (providerCalls === 1) {
+          // Two serial calls: the reader can go away while the first is still
+          // running, so each one is held for.
           yield {
             type: 'tool_call',
             toolCall: { id: 'mark-1', name: 'Mark', arguments: { label: 'one' } },
@@ -8663,26 +8766,129 @@ describe('beforeToolExecution', () => {
         yield { type: 'done' };
       },
     };
-    let awaits = 0;
+    const serialRegistry = markerRegistry(runs);
+    let serialHolds = 0;
 
     await runAgentLoop(
       defaultConfig({ maxTurns: 3 }),
-      markerRegistry(runs),
+      serialRegistry,
       'mark twice',
       [],
       noopCallbacks({
         beforeToolExecution: async () => {
-          awaits++;
+          serialHolds++;
         },
       }),
       'default',
       { provider, isNewSession: false },
     );
 
-    // Two calls in one turn are one batch, and the text-only turns after it
-    // announce nothing to flush.
-    expect(awaits).toBe(1);
+    // Once for the turn before its reducer, and once before each of its two
+    // calls; the text-only turn after it announces nothing.
     expect(runs).toEqual(['one', 'two']);
-    expect(providerCalls).toBe(2);
+    expect(serialHolds).toBeGreaterThanOrEqual(3);
+
+    // A parallel wave runs together, so one hold covers all of it.
+    const waveRuns: string[] = [];
+    const waveRegistry = createRegistry();
+    waveRegistry.register({
+      name: 'Mark',
+      description: 'Record that it ran',
+      parameters: { type: 'object', properties: { label: { type: 'string' } } },
+      policy: { concurrency: 'parallel' },
+      execute: (args) => {
+        waveRuns.push(String(args.label ?? ''));
+        return Promise.resolve(toolSuccess('marked'));
+      },
+    });
+    let waveHolds = 0;
+    let waveCalls = 0;
+    const waveProvider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        waveCalls++;
+        if (waveCalls === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'wave-1', name: 'Mark', arguments: { label: 'a' } },
+          };
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'wave-2', name: 'Mark', arguments: { label: 'b' } },
+          };
+          yield { type: 'done' };
+          return;
+        }
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 2 }),
+      waveRegistry,
+      'mark the wave',
+      [],
+      noopCallbacks({
+        beforeToolExecution: async () => {
+          waveHolds++;
+        },
+      }),
+      'default',
+      { provider: waveProvider, isNewSession: false },
+    );
+
+    expect(waveRuns).toEqual(['a', 'b']);
+    // The turn's own hold, and one for the wave — never one per call in it.
+    expect(waveHolds).toBe(2);
+  });
+
+  it('does not start a call whose preparation was cancelled meanwhile', async () => {
+    // The hold answers, then `prepareToolCall` awaits hooks and permission. An
+    // abort landing inside that window is the one the hold cannot see.
+    const runs: string[] = [];
+    const registry = createRegistry();
+    registry.register({
+      name: 'Mark',
+      description: 'Record that it ran',
+      parameters: { type: 'object', properties: { label: { type: 'string' } } },
+      execute: (args) => {
+        runs.push(String(args.label ?? ''));
+        return Promise.resolve(toolSuccess('marked'));
+      },
+    });
+    const controller = new AbortController();
+    let hooks = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'mark-1', name: 'Mark', arguments: { label: 'one' } },
+        };
+        yield { type: 'text', content: 'later' };
+        yield { type: 'done' };
+      },
+    };
+    const results: ToolResult[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 2 }),
+      registry,
+      'mark it',
+      [],
+      noopCallbacks({
+        onToolResult: (result) => results.push(result),
+        onPermissionRequired: async () => {
+          if (hooks++ === 0) controller.abort();
+          return 'allow' as const;
+        },
+      }),
+      'default',
+      { provider, signal: controller.signal, isNewSession: false },
+    );
+
+    expect(runs).toEqual([]);
+    expect(results[0]?.structuredError?.code).toBe('cancelled_before_start');
   });
 });
