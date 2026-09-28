@@ -183,6 +183,19 @@ describe('git hardening', () => {
     );
     expect(gitTools.map((tool) => tool.name).sort()).toContain('GitCommit');
   });
+
+  /**
+   * #324: the same hole reached from the other end. Grep used to read a path that starts with
+   * `-` as a ripgrep option, so a repository could name a program and have it run. A read-only
+   * Git tool has the same shape — fixed argv, model arguments added in front of it, no prompt —
+   * and the only thing that has kept it shut is that these tools take no arguments at all. A
+   * parameter is therefore a review, not a detail, and this fails when one appears.
+   */
+  it('declares no parameters on the tools that run without a prompt', () => {
+    for (const tool of gitTools.filter((candidate) => candidate.name !== 'GitCommit')) {
+      expect(tool.parameters).toEqual({ type: 'object', properties: {}, required: [] });
+    }
+  });
 });
 
 /**
