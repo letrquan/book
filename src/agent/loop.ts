@@ -2999,6 +2999,16 @@ export async function runAgentLoop(
         return fallback;
       };
 
+      // Once per turn with calls, before the first one is prepared, so a host
+      // learns anything it needs to learn while nothing has run yet. A hook
+      // that leaves the signal aborted does not run the turn:
+      // `prepareToolCall` settles every call as `cancelled_before_start` and
+      // the loop's own exit classifies the abort. A turn with no calls awaits
+      // nothing — it announced nothing.
+      if (toolCalls.length > 0 && callbacks.beforeToolExecution) {
+        await callbacks.beforeToolExecution();
+      }
+
       for (let callIndex = 0; callIndex < toolCalls.length;) {
         const definition = registry.getTool(toolCalls[callIndex].name);
         const parallel = definition?.policy?.concurrency === 'parallel';

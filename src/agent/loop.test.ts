@@ -8569,3 +8569,120 @@ describe('a reply cut off at the output cap (#312)', () => {
     expect(stored?.reasoningContent).toBeUndefined();
   });
 });
+
+/**
+ * The host seam a stream-json print run uses to flush the records announcing a
+ * turn's tool calls before any of them runs (#340). Nothing else about the tool
+ * phase changes: the calls are prepared, gated and executed exactly as before,
+ * and a run that is not aborting cannot tell the hook was there.
+ */
+describe('beforeToolExecution', () => {
+  /**
+   * A tool that records its own execution, synchronously, before it yields. The
+   * case the async abort misses: a call whose work is already done by the time
+   * the signal lands, so nothing downstream can undo it.
+   */
+  function markerRegistry(runs: string[]): ReturnType<typeof createRegistry> {
+    const registry = createRegistry();
+    registry.register({
+      name: 'Mark',
+      description: 'Record that it ran',
+      parameters: { type: 'object', properties: { label: { type: 'string' } } },
+      execute: (args) => {
+        runs.push(String(args.label ?? ''));
+        return Promise.resolve(toolSuccess('marked'));
+      },
+    });
+    return registry;
+  }
+
+  it('cancels every call of the turn when the hook aborts the run', async () => {
+    const runs: string[] = [];
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'mark-1', name: 'Mark', arguments: { label: 'first' } },
+        };
+        yield { type: 'text', content: 'working' };
+        yield { type: 'done' };
+      },
+    };
+    const controller = new AbortController();
+    const results: ToolResult[] = [];
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 2 }),
+      markerRegistry(runs),
+      'mark it',
+      [],
+      noopCallbacks({
+        onToolResult: (result) => results.push(result),
+        onTerminal: (outcome) => outcomes.push(outcome),
+        beforeToolExecution: async () => {
+          controller.abort();
+        },
+      }),
+      'default',
+      { provider, signal: controller.signal, isNewSession: false },
+    );
+
+    expect(runs).toEqual([]);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.structuredError?.code).toBe('cancelled_before_start');
+    expect(outcomes.at(-1)).toMatchObject({ status: 'cancelled', reason: 'caller_cancelled' });
+    // The run is over: a continuation turn would be a second request bought for
+    // a reader that is not there to read it.
+    expect(providerCalls).toBe(1);
+  });
+
+  it('awaits the hook once per turn with calls, and never on a text-only turn', async () => {
+    const runs: string[] = [];
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'mark-1', name: 'Mark', arguments: { label: 'one' } },
+          };
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'mark-2', name: 'Mark', arguments: { label: 'two' } },
+          };
+          yield { type: 'done' };
+          return;
+        }
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    let awaits = 0;
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 3 }),
+      markerRegistry(runs),
+      'mark twice',
+      [],
+      noopCallbacks({
+        beforeToolExecution: async () => {
+          awaits++;
+        },
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    // Two calls in one turn are one batch, and the text-only turns after it
+    // announce nothing to flush.
+    expect(awaits).toBe(1);
+    expect(runs).toEqual(['one', 'two']);
+    expect(providerCalls).toBe(2);
+  });
+});

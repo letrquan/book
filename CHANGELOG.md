@@ -594,6 +594,20 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A `stream-json` print run whose reader goes away no longer runs the calls of the turn it
+  announced** (#340). A closed pipe is only noticed on a write, and the notice arrives after the
+  write returns, so a run whose reader left while the model was silent — nothing written, nothing
+  to report it — wrote that turn's `tool_use` records into the closed pipe, **executed the calls
+  behind them**, and only then cancelled: `book -p … | head` on a turn that returned
+  `Bash echo x > /tmp/marker` created the marker after the reader had left. Print mode now holds
+  the run at the tool boundary. It waits for the flush of the records that announced the turn's
+  calls — the write's own callback, the run's signal, or a one-second cap, whichever comes first —
+  and a reader that is gone (EPIPE, and the other shapes a closed far end takes) cancels the run
+  with every call settled as `cancelled_before_start`, exactly as any other abort does. Nothing is
+  added to the stream: no event, no heartbeat, no extra write, and a healthy reader sees
+  byte-identical output. A reader that is merely slow costs the cap once per tool batch, and the
+  run then proceeds exactly as it did before. The TUI, the `text` and `json` formats, and the SDK
+  are untouched.
 - **Spend made after a root run's last response is now persisted** (#336). The session's `usage`
   records — the only durable statement of what a run cost, and the sum a resumed process restores —
   were written from one place: the callback a root's own responses report through. Spend

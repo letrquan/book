@@ -232,7 +232,10 @@ perform, a command invoked with a bad argument, or a failure inside a host-perfo
 `/review`. A cancelled run exits 0 wherever the cancel landed, since cancelling is not failing; a run
 that failed exits 1 even if its reader goes away afterwards; Ctrl+C (SIGINT) or SIGTERM cancels the
 run, runs SessionEnd hooks, and exits 130 or 143, and a second one exits at once. Everything else
-exits 0.
+exits 0. A `stream-json` reader that goes away — `book -p … | head`, a supervisor that closed the pipe
+— cancels the run at the latest before its next tool call runs: the records announcing those calls
+are flushed first, and a call is never started for a reader that is not there. A reader that is
+healthy sees exactly the output it saw before.
 
 ## SDK usage
 
