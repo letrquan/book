@@ -60,6 +60,24 @@ export function sheetContentWidth(sheetWidth: number, minimum = 1): number {
   return Math.max(minimum, Math.floor(sheetWidth) - PANEL_CHROME);
 }
 
+/**
+ * Text columns of a sheet row that leads with a one-cell marker and a space.
+ *
+ * A sheet row that carries status is `[marker][space][text]`, the same shape as
+ * a tool row: the glyph lands on the column a tool row's `✓` occupies and the
+ * text starts at {@link CONTENT_COLUMN}. So the marker costs a sheet its full
+ * {@link GUTTER_WIDTH} before it puts a character down, and the text that
+ * follows has that much less room inside {@link sheetContentWidth}. A row
+ * without a marker is indented by {@link SHEET_GUTTER_INDENT} to reach the same
+ * column, and reads as one kind of row with the rest of the transcript.
+ */
+export function sheetRowTextWidth(sheetWidth: number, minimum = 1): number {
+  return Math.max(minimum, sheetContentWidth(sheetWidth) - GUTTER_WIDTH);
+}
+
+/** The markerless row's gutter: the marker columns, left blank. */
+export const SHEET_GUTTER_INDENT = ' '.repeat(GUTTER_WIDTH);
+
 /** Columns between two side-by-side columns of a sheet, such as /help's. */
 export const SHEET_COLUMN_GAP = 4;
 

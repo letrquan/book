@@ -9,6 +9,8 @@ import {
   frameGrid,
   indentedGrid,
   railContentWidth,
+  SHEET_GUTTER_INDENT,
+  sheetRowTextWidth,
   transcriptGrid,
 } from './layout.js';
 
@@ -171,5 +173,27 @@ describe('panelGrid', () => {
       expect(panelContentWidth(width)).toBe(panelGrid(width).width - 4);
     }
     expect(panelContentWidth(20)).toBe(24);
+  });
+});
+
+describe('sheetRowTextWidth', () => {
+  it('gives back the gutter a marked row leads with', () => {
+    for (const width of [40, 60, 80, 120, 200]) {
+      // A step row is `[icon][space][text]`, so the text starts one gutter in.
+      expect(sheetRowTextWidth(width)).toBe(Math.max(1, width - 4 - GUTTER_WIDTH));
+    }
+  });
+
+  it('never returns a negative budget at a nonsense width', () => {
+    for (const width of [0, 1, 4, 5, 6]) {
+      expect(sheetRowTextWidth(width)).toBe(1);
+    }
+  });
+
+  it('spaces a markerless row to the same content column', () => {
+    // The blank variant of the gutter exists so a row without a status still
+    // starts its text where every other row's does.
+    expect(SHEET_GUTTER_INDENT).toBe(' '.repeat(GUTTER_WIDTH));
+    expect(SHEET_GUTTER_INDENT.length).toBe(CONTENT_COLUMN);
   });
 });

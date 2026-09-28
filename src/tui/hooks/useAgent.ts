@@ -290,17 +290,39 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const [mode, setMode] = useState<PermissionMode>(() =>
     resolvePermissionMode(config.settings, session.permissionMode),
   );
-  const [agentTodos, setAgentTodos] = useState<Todo[]>([]);
+  const [agentSession] = useState(() =>
+    createInteractiveAgentSession({
+      runtime: createSeededRuntime(session, initialTranscript),
+      additionalTools: session.additionalTools,
+    }),
+  );
+  // The plan a resumed session persisted is the plan on screen from the first
+  // frame: the Steps sheet (Ctrl+T) and the working line both read this, and a
+  // session that is halfway through step 3 must not look like one that has no
+  // plan until its next tool call happens to report it back.
+  const [agentTodos, setAgentTodos] = useState<Todo[]>(() => [...agentSession.getRuntime().todos]);
   // Whether the agent wrote its plan during the current prompt. The working
   // line and the status line only name a step from a plan that is current: a
   // step left in progress by an interrupted or finished turn is not the work a
   // later prompt is doing.
   const [agentPlanCurrent, setAgentPlanCurrent] = useState(false);
-  const agentTodosKeyRef = useRef('[]');
-  const planKeyAtSendRef = useRef('[]');
-  useEffect(() => {
-    agentTodosKeyRef.current = JSON.stringify(agentTodos);
-  }, [agentTodos]);
+  // The plan on screen, as JSON, and the plan the accepted send started from.
+  // Both are read synchronously -- `onTodos` runs mid-turn, once per tool call,
+  // and a mirror updated from a `useEffect` would be a render behind it.
+  const agentTodosKeyRef = useRef(JSON.stringify(agentSession.getRuntime().todos));
+  const planKeyAtSendRef = useRef(agentTodosKeyRef.current);
+  // Every write to the plan goes through here, so the key that decides whether
+  // a later report is news can never fall behind the state it describes.
+  const projectAgentPlan = useCallback((todos: Todo[]) => {
+    agentTodosKeyRef.current = JSON.stringify(todos);
+    setAgentTodos(todos);
+  }, []);
+  // A new session, a cleared one, or one reseeded for a handoff: no plan, and
+  // nothing that claims the new turn wrote one.
+  const resetAgentPlan = useCallback(() => {
+    projectAgentPlan([]);
+    setAgentPlanCurrent(false);
+  }, [projectAgentPlan]);
   // Set when the user approves a plan with "fresh context"; a post-send effect
   // starts a new conversation seeded with the approved plan.
   const [pendingHandoff, setPendingHandoff] = useState<{
@@ -317,12 +339,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // Without this, /model would silently no-op (send closes over `config`).
   const [liveConfig, setLiveConfig] = useState<AgentConfig>(() => withoutRuntimeState(config));
   const [ownedProviders, setOwnedProviders] = useState(() => readOwnedProviders());
-  const [agentSession] = useState(() =>
-    createInteractiveAgentSession({
-      runtime: createSeededRuntime(session, initialTranscript),
-      additionalTools: session.additionalTools,
-    }),
-  );
   const { interactions, operations } = agentSession;
   const [interactionSnapshot, setInteractionSnapshot] = useState(() => interactions.getSnapshot());
   const { pendingPermission, pendingPlanApproval, pendingUserQuestions, pendingElicitations } =
@@ -515,8 +531,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setUsage(null);
       hostUsageRef.current = null;
       lastHostCompactAttemptRef.current = null;
-      setAgentTodos([]);
-      setAgentPlanCurrent(false);
       setTurnDurationMs(0);
       setRetryPhase('none');
       setRetryAttempt(0);
@@ -542,7 +556,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         todos: nextRuntime.todos.length,
         tasks: nextRuntime.tasks.length,
       });
-      setAgentTodos([...nextRuntime.todos]);
+      // The session the conversation is now in did not write this plan; the
+      // first turn that reports a change to it is the one that earns the step.
+      projectAgentPlan([...nextRuntime.todos]);
+      setAgentPlanCurrent(false);
       setLiveConfig((current) => ({
         ...current,
         memoryContext: current.settings.memory.enabled
@@ -550,7 +567,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           : undefined,
       }));
     },
-    [agentSession],
+    [agentSession, projectAgentPlan],
   );
 
   const resetConversationState = useCallback(
@@ -693,9 +710,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     ): Promise<AgentSessionSendResult> => {
       setCompactUi(null);
 
-      planKeyAtSendRef.current = agentTodosKeyRef.current;
-      setAgentPlanCurrent(false);
-
       const generation = sessionGenerationRef.current;
       const activeSessionId = sessionIdRef.current;
       let operationIsCurrent = () => false;
@@ -748,6 +762,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         operationIsCurrent = control.isCurrent;
         activeRunContext = control.runContext;
         activeSignal = control.signal;
+        // The plan this turn started from, read from the runtime — the loop
+        // mutates that array in place, so it is the plan the turn is actually
+        // working through, not a render-old copy of it.
+        //
+        // Taken here, and only here, because `beforePrepare` runs once the send
+        // has been accepted. A send rejected as already in flight (the
+        // managed-agent completion and background-shell paths both retry while
+        // a turn is running) never reaches this line, so a retry cannot reset
+        // the flag or move the baseline out from under the turn it retried.
+        planKeyAtSendRef.current = JSON.stringify(agentSession.getRuntime().todos);
+        setAgentPlanCurrent(false);
         // Cross-turn auto-compact before appending the new user message.
         const contextLimit = resolveContextLimit(liveConfig);
         const hostCompactAttemptKey = `${usagePressureTokens(hostUsageRef.current)}:${contextHistoryRef.current.length}`;
@@ -972,8 +997,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           },
           onTodos: (todos) => {
             if (!stillCurrent()) return;
-            setAgentTodos(todos as Todo[]);
-            if (JSON.stringify(todos) !== planKeyAtSendRef.current) setAgentPlanCurrent(true);
+            // The loop reports the plan after EVERY tool call, not just after
+            // TodoWrite, and hands over a fresh copy each time. Compare the
+            // report with the one already on screen before writing anything: a
+            // 200-tool turn must not re-render the app 200 times for a plan
+            // that has not moved, and a re-report is not the agent writing a
+            // plan, so it must not light up the working line either.
+            const key = JSON.stringify(todos);
+            if (key === agentTodosKeyRef.current) return;
+            projectAgentPlan(todos as Todo[]);
+            if (key !== planKeyAtSendRef.current) setAgentPlanCurrent(true);
           },
           onTurnStart: (turn) => {
             if (!stillCurrent()) return;
@@ -1721,8 +1754,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setUsage(null);
     hostUsageRef.current = null;
     lastHostCompactAttemptRef.current = null;
-    setAgentTodos([]);
-    setAgentPlanCurrent(false);
+    resetAgentPlan();
     streamingIdRef.current = null;
     setStreamingMessageId(null);
     // The send lease is released by send()'s finally after abort.
@@ -1730,7 +1762,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     clearCountdown();
     setRetryPhase('none');
     setRetryCountdownMs(0);
-  }, [agentSession, clearCountdown, operations]);
+  }, [agentSession, clearCountdown, operations, resetAgentPlan]);
 
   const cycleMode = useCallback(() => {
     const modes: PermissionMode[] = [

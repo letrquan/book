@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import { useTheme } from '../theme.js';
 import { STATUS_INDICATORS } from '../status-indicators.js';
-import { GUTTER_WIDTH, sheetContentWidth } from '../layout.js';
+import { SHEET_GUTTER_INDENT, sheetRowTextWidth } from '../layout.js';
 import { stepProgress, stepWindow } from '../steps.js';
 import type { Todo } from '../../tools/todo.js';
 import { SoftPanel } from './chrome.js';
@@ -21,7 +21,7 @@ import { truncateDisplay } from './word-wrap.js';
  */
 export function StepsSheet({ todos, width }: { todos: readonly Todo[]; width: number }) {
   const theme = useTheme();
-  const textWidth = Math.max(1, sheetContentWidth(width) - GUTTER_WIDTH);
+  const textWidth = sheetRowTextWidth(width);
   const { before, rows, after } = stepWindow(todos);
   const beforeFinished = before.every((todo) => todo.status === 'completed');
   return (
@@ -36,7 +36,7 @@ export function StepsSheet({ todos, width }: { todos: readonly Todo[]; width: nu
       {before.length > 0 ? (
         <Box>
           <Text color={theme[STATUS_INDICATORS.completed.colorToken]}>
-            {beforeFinished ? `${STATUS_INDICATORS.completed.icon} ` : ' '.repeat(GUTTER_WIDTH)}
+            {beforeFinished ? `${STATUS_INDICATORS.completed.icon} ` : SHEET_GUTTER_INDENT}
           </Text>
           <Text color={theme.inactive}>
             {beforeFinished ? `${before.length} done` : `${before.length} earlier`}
@@ -58,7 +58,7 @@ export function StepsSheet({ todos, width }: { todos: readonly Todo[]; width: nu
         );
       })}
       {after > 0 ? (
-        <Text color={theme.inactive}>{`${' '.repeat(GUTTER_WIDTH)}+${after} more`}</Text>
+        <Text color={theme.inactive}>{`${SHEET_GUTTER_INDENT}+${after} more`}</Text>
       ) : null}
     </SoftPanel>
   );
