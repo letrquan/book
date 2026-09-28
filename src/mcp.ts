@@ -230,7 +230,11 @@ class StdioProcessTransport implements Transport {
       this.onerror?.(error);
       this.teardown();
     };
-    // Swallowed here; write failures surface through the send() callback.
+    // Swallowed here; write failures surface through the send() callback. This one
+    // listener is never removed: a write queued on stdin — a large request, or the
+    // cancellation sent on abort — can fail after teardown, once the server's pipe is
+    // closed, and a stream left with no `error` handler raises that as an uncaught
+    // exception (#338).
     const onStdinError = () => {};
     const onExit = () => this.teardown();
     const onClose = () => this.teardown();
@@ -239,7 +243,8 @@ class StdioProcessTransport implements Transport {
       child.stdout?.removeListener('data', onStdoutData);
       child.stderr?.removeListener('data', onStderrData);
       child.removeListener('error', onChildError);
-      child.stdin?.removeListener('error', onStdinError);
+      // `child.stdin`'s no-op error listener is deliberately not removed: a write still
+      // queued on it can only fail once the child is gone, which is exactly when this runs.
       child.removeListener('exit', onExit);
       child.removeListener('close', onClose);
       this.cleanupListeners = () => {};

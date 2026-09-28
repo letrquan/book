@@ -88,7 +88,9 @@ describe('MCP connection safety', () => {
       expect(spawned[0].listenerCount('error')).toBe(0);
       expect(spawned[0].listenerCount('exit')).toBe(0);
       expect(spawned[0].listenerCount('close')).toBe(0);
-      expect(spawned[0].stdin?.listenerCount('error') ?? 0).toBe(0);
+      // The one listener teardown leaves behind: a write queued on stdin fails only once the
+      // child is gone, so removing it here would raise that failure as an uncaught exception.
+      expect(spawned[0].stdin?.listenerCount('error') ?? 0).toBe(1);
       expect(spawned[0].stdout?.listenerCount('data') ?? 0).toBe(0);
       expect(spawned[0].stderr?.listenerCount('data') ?? 0).toBe(0);
       expect(Date.now() - startedAt).toBeLessThan(1000);
@@ -283,6 +285,62 @@ describe('MCP stdio transport lifecycle', () => {
     expect(closedServers).toEqual(['fixture']);
     await waitForExit(child);
   });
+
+  it('does not raise a write that fails after the transport tore its listeners down', async () => {
+    // #338: a request large enough to still be queued when the child is reaped fails on the
+    // closed pipe. Teardown had already removed the transport's `error` listener by then, so
+    // the failure left the stream with no handler and Node raised it as an uncaught exception —
+    // the whole tier reported "Errors 1 error" with every test green. The listener stays.
+    const item = fixture({ fixture: 'close-stdin' });
+    const result = await connectMcpServers(item.workspace, {
+      home: item.workspace,
+      initializationTimeoutMs: 2_000,
+      requestTimeoutMs: 2_000,
+    });
+    const connection = result.connections[0];
+    const transport = connection.client.transport!;
+    const uncaught: string[] = [];
+    const onUncaught = (error: unknown) =>
+      uncaught.push(error instanceof Error ? error.message : String(error));
+    const onUnhandledRejection = (reason: unknown) =>
+      uncaught.push(reason instanceof Error ? reason.message : String(reason));
+    process.on('uncaughtException', onUncaught);
+    process.on('unhandledRejection', onUnhandledRejection);
+    try {
+      const severalMiB = { value: 'x'.repeat(4 * 1024 * 1024) };
+      // The server closed its stdin, so this is queued rather than delivered.
+      const writing = transport
+        .send({
+          jsonrpc: '2.0',
+          id: 9_000,
+          method: 'tools/call',
+          params: { name: 'echo', arguments: severalMiB },
+        })
+        .then(
+          () => 'delivered' as const,
+          () => 'failed' as const,
+        );
+
+      await disconnectMcpServers(result.connections);
+      // Disconnecting reaps the child, which is what fails the write still sitting in the pipe.
+      const outcome = await Promise.race([
+        writing,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error('the queued write never settled')), 2_000).unref(),
+        ),
+      ]);
+      expect(outcome).toBe('failed');
+      // The stream raises `error` before the write callback settles, so one more beat after
+      // the child is reaped is enough to catch anything the teardown destroy raises after it.
+      await waitForExit(connection.process!);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.removeListener('uncaughtException', onUncaught);
+      process.removeListener('unhandledRejection', onUnhandledRejection);
+      await waitForExit(connection.process!);
+    }
+  }, 20_000);
 
   it('rejects a request once the stdin pipe is destroyed', async () => {
     const { item, result } = await connectSuccess();
