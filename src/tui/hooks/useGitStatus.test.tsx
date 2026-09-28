@@ -8,7 +8,7 @@ const calls = vi.hoisted(
   () =>
     [] as Array<{
       args: string[];
-      options: { signal: AbortSignal };
+      options: { signal: AbortSignal; env: NodeJS.ProcessEnv };
       callback: (error: Error | null, stdout: string) => void;
     }>,
 );
@@ -17,11 +17,12 @@ vi.mock('node:child_process', () => ({
   execFile: (
     _file: string,
     args: string[],
-    options: { signal: AbortSignal },
+    options: { signal: AbortSignal; env: NodeJS.ProcessEnv },
     callback: (error: Error | null, stdout: string) => void,
   ) => calls.push({ args, options, callback }),
 }));
 
+import { hardenedGitArgs } from '../../tools/git.js';
 import { isInsideWorkTree, sameStatus, useGitStatus } from './useGitStatus.js';
 
 const roots: string[] = [];
@@ -103,7 +104,37 @@ describe('useGitStatus outside the repository root', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].args).toEqual(['rev-parse', '--abbrev-ref', 'HEAD']);
+    expect(calls[0].args).toEqual(hardenedGitArgs(['rev-parse', '--abbrev-ref', 'HEAD']));
+    view.unmount();
+  });
+});
+
+/**
+ * The poll spawns `git` in the workspace every five seconds, for as long as the session lasts,
+ * and it is not a tool call: nothing asks before it runs. A checkout's own `.git/config` comes
+ * with the clone, and `core.fsmonitor` there names a program `git status` executes — so the same
+ * hardening the read-only Git tools carry belongs on this argv too (see `hardenedGitArgs`).
+ */
+describe('useGitStatus argv', () => {
+  it('hardens the poll and gives it a pager and a credential prompt it cannot wait on', async () => {
+    vi.useFakeTimers();
+    const workspace = mkdtempSync(join(tmpdir(), 'book-git-status-argv-'));
+    roots.push(workspace);
+    mkdirSync(join(workspace, '.git'));
+
+    const view = render(<Harness workspace={workspace} />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      // Hardened argv, the poll's own command last: one of the two it makes.
+      expect([
+        hardenedGitArgs(['rev-parse', '--abbrev-ref', 'HEAD']),
+        hardenedGitArgs(['status', '--short']),
+      ]).toContainEqual(call.args);
+      expect(call.options.env.GIT_PAGER).toBe('cat');
+      expect(call.options.env.GIT_TERMINAL_PROMPT).toBe('0');
+    }
     view.unmount();
   });
 });

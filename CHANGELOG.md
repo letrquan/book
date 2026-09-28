@@ -110,6 +110,19 @@ All notable changes to this project are documented in this file.
   keyed on the resolved absolute path rather than the display spelling (the message still names the
   spelling the model wrote). A file in an honored root keeps its `../` prefix, so `notes.txt` in
   `/srv/app` and `notes.txt` in the workspace still do not share an entry.
+- **`Grep` now ends its options with `--`, so a path starting with `-` can't be read as a ripgrep
+  option** (#324). The scope's path went to `rg` as an operand with nothing separating it from the
+  options, and ripgrep's `--pre` names a program to run on every file it searches. A repository
+  that commits a directory named `--pre=.` beside an executable `x` therefore turned a model call of
+  `Grep { path: "--pre=./x" }` into `--pre=./x`, and `rg` ran `./x` over everything it searched —
+  with no prompt, because a workspace `Grep` is auto-allowed. The argv is now built by one function
+  that ends it with `--`, so the path is the only thing after the separator, and the pattern and
+  the include stay behind `--regexp` and `--glob`. Two other places that shape is kept: `/review`
+  refuses a ref that starts with `-` (`Invalid git ref: …`) before it reaches `git merge-base` or
+  `git rev-parse` — git reads such an argument as an option rather than a ref, which is defense in
+  depth rather than a known code-execution path — and a test holds the read-only Git tools to
+  declaring no parameters at all, so a parameter added to one has to be reviewed rather than
+  inherited.
 
 ### Changed
 
@@ -570,6 +583,15 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The C++ outline no longer backtracks exponentially on repeated `template<…>` units** (#326). The
+  pattern behind `Read { outline: true }` allowed a `template<…>` prefix on each repeated return-type
+  word, so `template<a> ` read two ways — as that prefix, or as the word `template` plus the generic
+  `<a>` — and every repetition doubled the work. A line of forty of them took tens of seconds and
+  blocked the event loop while it did, and a model only had to be pointed at such a file to get
+  there. A template head is a unit of the return type now, and a type word refuses to start where a
+  head starts, so each unit has exactly one parse and the repetition is linear. Because the head is
+  a unit rather than a prefix, it is read at any position and in either spelling, so
+  `template<typename T> template <typename U> void bar(U u) {` outlines as it should.
 - **`sharp` is installed, so the run-book skill's media scripts work** (#335). `sharp` was named
   only under `overrides`, left there by an audit advisory for a dev dependency that has since gone,
   so nothing installed it: `record-gif.mjs` required it at the top and failed at once, and
