@@ -1,5 +1,4 @@
-import { render } from 'ink';
-import { createElement } from 'react';
+import type { Instance } from 'ink';
 import { freezeAgentConfig, loadConfig } from '../config.js';
 import { runHeadless } from '../headless.js';
 import { createDefaultRegistry } from '../tools/registry.js';
@@ -33,7 +32,8 @@ import {
 import { installInkScrollRenderer } from './ink-scroll-renderer.js';
 import { installFrameCapture } from './frame-buffer.js';
 import { hasInkTrailingNewlineFix } from './ink-renderer.js';
-import { isCiEnvironment, resolveTuiRendererMode } from './tui-renderer-mode.js';
+import { installInkFrameThrottle } from './ink-frame-throttle.js';
+import { isCiEnvironment, resolveInkMaxFps, resolveTuiRendererMode } from './tui-renderer-mode.js';
 import { resolvePermissionMode } from '../permission-mode.js';
 import { spawn } from 'node:child_process';
 import { buildChildEnv } from '../child-env.js';
@@ -350,9 +350,15 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       });
     }
 
-    const [{ App }, { loadInteractiveAssets }] = await Promise.all([
+    // Ink and React load here, not at the top of the file: the CLI is a split bundle that hoists
+    // every static import of the entry above its body, so a static import would evaluate React
+    // before runtime-env.ts sets NODE_ENV and ship its development build. The architecture check
+    // rejects a static React or Ink import the CLI entry can reach.
+    const [{ App }, { loadInteractiveAssets }, { render }, { createElement }] = await Promise.all([
       import('../tui/app.js'),
       import('../tui/interactive-assets.js'),
+      import('ink'),
+      import('react'),
     ]);
     const interactiveAssets = loadInteractiveAssets(config);
     // Session MCP owner: user-global and previously approved project servers
@@ -360,7 +366,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     // one-time trust prompt inside the TUI.
     const mcpHost = new McpSessionHost(config.workspace, config.settings);
     mcpHost.start();
-    let app: ReturnType<typeof render> | undefined;
+    let app: Instance | undefined;
     // App runs this inside Ink's suspendTerminal(), which erases Ink's frame before it and repaints
     // the whole frame after it, so this only wipes whatever else is on the screen.
     const redrawViewport = () => {
@@ -392,11 +398,14 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           exitOnCtrlC: false,
           isScreenReaderEnabled: config.accessibility.screenReader,
           incrementalRendering: rendererMode !== 'safe',
-          maxFps: 60,
+          maxFps: resolveInkMaxFps(process.platform),
           // Ink 7 also turns live frames off for a non-TTY stdout, which the WSL bridge uses.
           interactive: !isCiEnvironment(),
         },
       );
+      // Ink's throttle restarts its window on every commit, so a steady stream of commits drew at
+      // about half `maxFps`; this one times each draw from the last.
+      await installInkFrameThrottle(process.stdout);
       // Phase 1b: read idle earlier sessions of this workspace for memories the model
       // missed. Background and best-effort: it never blocks or fails the session, and an exit
       // aborts it; a session it did not finish is read at the next start. It reads through its

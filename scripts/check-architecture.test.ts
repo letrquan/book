@@ -66,6 +66,60 @@ describe('checkArchitecture', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('rejects a static React or Ink import the CLI entry reaches', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      mkdirSync(join(dir, 'cli'));
+      writeFileSync(join(dir, 'index.ts'), "import './cli/run.js';\n");
+      writeFileSync(
+        join(dir, 'cli', 'run.ts'),
+        "import { render } from 'ink';\nimport type { Instance } from 'ink';\nexport { render };\n",
+      );
+      expect(checkArchitecture(dir)).toEqual([
+        expect.objectContaining({ kind: 'eager-react', source: 'cli/run.ts', target: 'ink' }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('allows React behind a dynamic import and outside the CLI entry graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      mkdirSync(join(dir, 'cli'));
+      writeFileSync(join(dir, 'index.ts'), "import './cli/run.js';\n");
+      writeFileSync(
+        join(dir, 'cli', 'run.ts'),
+        "export async function start() {\n  const { render } = await import('ink');\n" +
+          "  const { App } = await import('../view.js');\n  return [render, App];\n}\n",
+      );
+      writeFileSync(
+        join(dir, 'view.tsx'),
+        "import { Text } from 'ink';\nexport const App = () => <Text>hi</Text>;\n",
+      );
+      expect(checkArchitecture(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('treats a TSX module the CLI entry reaches as a React import', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      writeFileSync(join(dir, 'index.ts'), "import './banner.js';\n");
+      writeFileSync(join(dir, 'banner.tsx'), 'export const Banner = () => null;\n');
+      expect(checkArchitecture(dir)).toEqual([
+        expect.objectContaining({
+          kind: 'eager-react',
+          source: 'banner.tsx',
+          target: 'react/jsx-runtime',
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('checkArchitecture process termination', () => {

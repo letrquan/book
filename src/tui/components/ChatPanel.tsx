@@ -355,7 +355,7 @@ export function ChatPanelInner({
       {virtualTimeline.topSpacerRows > 0 ? (
         <Box height={virtualTimeline.topSpacerRows} flexShrink={0} />
       ) : null}
-      {virtualTimeline.entries.map(({ item: entry, index, key, measurementKey }) => {
+      {virtualTimeline.entries.map(({ item: entry, index, key, measurementKey, reserveRows }) => {
         let row: React.ReactNode;
         if ('transcriptOrdinal' in entry) {
           row = (
@@ -469,6 +469,7 @@ export function ChatPanelInner({
             key={key}
             measurementKey={measurementKey}
             onMeasure={virtualTimeline.measure}
+            reserveRows={reserveRows}
           >
             {row}
           </VirtualTranscriptRow>
