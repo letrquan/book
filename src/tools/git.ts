@@ -6,8 +6,8 @@ import { toolFailure, toolSuccess } from './result.js';
 type ExecFile = typeof execFile;
 
 /**
- * `-c` overrides the four read-only Git tools carry, so a repository's own configuration cannot
- * turn a read-only report into something that runs a program.
+ * `-c` overrides the Git tools and the managed-agent subsystem carry, so a repository's own
+ * configuration cannot turn a git call into something that runs a program.
  *
  * `.git/config` is a file the clone brings with it, and a checkout can set any of these:
  *
@@ -19,10 +19,15 @@ type ExecFile = typeof execFile;
  *   reach it, but `GitLog` does on every commit that carries a `gpgsig` header.
  * - `core.pager` — a command Git runs to page its output. `execFile` never allocates a TTY, so
  *   git normally skips it, but the setting is read before that decision.
- * - `core.hooksPath` — where hooks live. None of the four read-only tools run a hook, so nothing
- *   here is reachable through them; it is set to an empty path so a future `git` subcommand that
- *   does has no hooks to find. It is here and *only* here: on `git commit` it would silently
- *   disable a hook the user installed.
+ * - `core.hooksPath` — where hooks live, and where most of the effect of this list lands: a
+ *   `post-checkout` on `worktree add`, a `pre-commit` on an agent's commit, a
+ *   `reference-transaction` on every ref Book moves, a `prepare-commit-msg` on the
+ *   `cherry-pick` that applies a candidate. The four read-only tools here run no hook at all, so
+ *   for them this is belt and braces against a future subcommand; for
+ *   `src/agents/git-isolation.ts`, whose calls are writes nothing asks about (#348), switching
+ *   them off is the decision. It is **not** applied to `GitCommit` or to `runGit` generally: on
+ *   the operator's own commit it would silently disable a hook they installed, and their code
+ *   silently not running is a worse failure than the one this list prevents.
  * - `core.untrackedCache`, `gc.auto` — background writers. `--no-optional-locks` below covers the
  *   index lock these need.
  *
@@ -51,7 +56,18 @@ const GIT_HARDENING_ARGS: readonly string[] = [
   '--no-optional-locks',
 ];
 
-/** The hardening flags in front of the read-only tools' own arguments; see {@link GIT_HARDENING_ARGS}. */
+/**
+ * The hardening flags in front of a caller's own arguments; see {@link GIT_HARDENING_ARGS}.
+ *
+ * Two callers, and they read this flag differently. The read-only Git tools
+ * ({@link readOnlyGit}) take it because nothing asks before they run, so a repository that
+ * arrived with a clone must not be able to start a program through one. Git isolation
+ * (`src/agents/git-isolation.ts`) takes it on writes as well — the agent's commit, the
+ * cherry-pick, `worktree add`, `update-ref` — where hooks being off is a decision (#348) rather
+ * than a consequence: that work is Book's, in Book's worktree, and a hook the operator installed
+ * is theirs to decide when it runs. The operator's own commits keep their hooks, through
+ * {@link runGit} below.
+ */
 export function hardenedGitArgs(args: readonly string[]): string[] {
   return [...GIT_HARDENING_ARGS, ...args];
 }
@@ -59,12 +75,14 @@ export function hardenedGitArgs(args: readonly string[]): string[] {
 /**
  * `runGit` runs a caller's arguments as given, and the caller chooses.
  *
- * The hardening is a property of the *read-only* tools, not of every git call this module makes:
- * applied to `git commit` it would disable the user's own pre-commit and commit-msg hooks, and
- * silently not running a user's hook is a worse failure than the one the hardening exists to
- * prevent. So the four read-only tools go through {@link readOnlyGit}, and `GitCommit` — the only
- * mutating tool here, and the only one that still asks — comes through here with its own argv and
- * the environment the user configured, exactly as it did before the hardening existed.
+ * The hardening is a property of the calls that are *not* the operator's own work, not of every
+ * git call this module makes. `GitCommit` is the operator's own work, and it is the only
+ * mutating tool here: it comes through this function with its own argv and the environment the
+ * user configured, exactly as it did before the hardening existed, so a `pre-commit` or
+ * `commit-msg` hook still runs. Silently not running the user's hook would be a worse failure
+ * than the one the hardening exists to prevent. The read-only tools go through
+ * {@link readOnlyGit}, and a caller whose work is Book's own builds its argv with
+ * {@link hardenedGitArgs} directly.
  */
 export async function runGit(
   args: string[],

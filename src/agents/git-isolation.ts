@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'path';
 import type { AgentApplyResult, AgentRecord, AgentSnapshot, PatchCandidate } from './types.js';
 import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
+import { hardenedGitArgs } from '../tools/git.js';
 
 interface GitResult {
   stdout: string;
@@ -13,30 +14,80 @@ interface GitResult {
   code: number;
 }
 
+/**
+ * The two flags that close the routes a checkout owns for producing a diff, and they are
+ * per-command rather than configuration, so they belong here and not in the hardening above.
+ * `diff.external` names a program to produce the diff and a `.gitattributes` `textconv` line
+ * names one per file; the second is a problem in its own right here, since its output is not a
+ * patch `git apply` could read back.
+ */
+const DIFF_ARGS = ['--no-ext-diff', '--no-textconv'] as const;
+
+/**
+ * Every git command this module runs: a synthetic snapshot, an agent's worktree, the agent's
+ * commit, and the cherry-pick or patch that applies the result.
+ *
+ * The argv goes through {@link hardenedGitArgs} and the environment carries a pager and a
+ * credential prompt it cannot wait on, here as in the read-only Git tools. What is different is
+ * the one that matters for this module: several of these are writes — `commit`, `cherry-pick`,
+ * `worktree add`, `update-ref` — and a checkout could own a hook, an `fsmonitor`, or a diff driver
+ * for any of them. None of this is the operator's work, and none of it is a call anything asks
+ * before, so a repository can run a program by delegating an agent (#348). Turning hooks off for
+ * it is the decision here; the operator's own commits, `GitCommit` included, keep theirs.
+ *
+ * It is applied inside `git()` rather than at each call site, on both the `execFile` and the
+ * `spawn` path, so a new call site cannot forget it.
+ */
 function git(
   cwd: string,
   args: string[],
   options?: { env?: NodeJS.ProcessEnv; allowExitCodes?: number[]; input?: string },
 ): Promise<GitResult> {
+  const argv = hardenedGitArgs(args);
+  const env = buildChildEnv(process.env, {
+    GIT_PAGER: 'cat',
+    GIT_TERMINAL_PROMPT: '0',
+    ...options?.env,
+  });
   if (options?.input !== undefined) {
     return new Promise((resolvePromise, reject) => {
-      const child = spawn('git', args, {
+      const child = spawn('git', argv, {
         cwd,
-        env: buildChildEnv(process.env, options.env),
+        env,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let stdout = '';
       let stderr = '';
+      // `close` and a stdin write can both report the same failed command, and a spawn that
+      // never happened reports twice. One outcome, whichever arrives first (#351).
+      let settled = false;
+      const settle = (outcome: () => void) => {
+        if (settled) return;
+        settled = true;
+        outcome();
+      };
       child.stdout.on('data', (chunk) => (stdout += chunk.toString()));
       child.stderr.on('data', (chunk) => (stderr += chunk.toString()));
-      child.on('error', reject);
+      child.on('error', (error) => settle(() => reject(error)));
       child.on('close', (codeValue) => {
         const code = codeValue ?? 1;
-        if (code === 0 || options.allowExitCodes?.includes(code)) {
-          resolvePromise({ stdout, stderr, code });
-        } else {
-          reject(new Error(stderr.trim() || stdout.trim() || `git ${args[0]} failed (${code})`));
-        }
+        settle(() => {
+          if (code === 0 || options.allowExitCodes?.includes(code)) {
+            resolvePromise({ stdout, stderr, code });
+          } else {
+            reject(new Error(stderr.trim() || stdout.trim() || `git ${args[0]} failed (${code})`));
+          }
+        });
+      });
+      // Never removed, and attached before the write: git that exits without reading the patch —
+      // not a repository, a rejected argument — leaves that write to fail with EPIPE, and a
+      // stream carrying no `error` listener raises the failure on the host's event loop instead
+      // of on this promise. `close` has already decided the outcome by then, so a broken pipe is
+      // the news the exit code is telling, not a second account of it; anything else is a real
+      // failure and is reported as one.
+      child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+        if (error.code === 'EPIPE' || error.code === 'EOF') return;
+        settle(() => reject(error));
       });
       child.stdin.end(options.input);
     });
@@ -45,10 +96,10 @@ function git(
   return new Promise((resolvePromise, reject) => {
     execFile(
       'git',
-      args,
+      argv,
       {
         cwd,
-        env: buildChildEnv(process.env, options?.env),
+        env,
         encoding: 'utf8',
         maxBuffer: 50 * 1024 * 1024,
       },
@@ -63,6 +114,10 @@ function git(
     );
   });
 }
+
+/** Exported only for `git-isolation.test.ts`: no exported path reaches `git()`'s `input` branch
+ * without a real snapshot, and #351 needs a patch git exits on before reading. */
+export const gitForTest = git;
 
 function gitIdentityEnv(): NodeJS.ProcessEnv {
   return {
@@ -224,11 +279,20 @@ export async function commitAgentWork(
 ): Promise<PatchCandidate | undefined> {
   if (!record.worktree || !record.branch) return undefined;
   await git(record.worktree, ['add', '-A', '--', '.']);
-  const diff = await git(record.worktree, ['diff', '--cached', '--quiet'], { allowExitCodes: [1] });
-  if (diff.code === 0) return undefined;
-  await git(record.worktree, ['commit', '-m', `book agent ${record.id}: ${record.name}`], {
-    env: gitIdentityEnv(),
+  const diff = await git(record.worktree, ['diff', ...DIFF_ARGS, '--cached', '--quiet'], {
+    allowExitCodes: [1],
   });
+  if (diff.code === 0) return undefined;
+  // Belt and braces: `core.hooksPath=` already leaves `pre-commit` and `commit-msg` nothing to
+  // find, and this commit is Book's work in Book's worktree rather than the operator's own, so
+  // neither of them should decide whether it happens.
+  await git(
+    record.worktree,
+    ['commit', '--no-verify', '-m', `book agent ${record.id}: ${record.name}`],
+    {
+      env: gitIdentityEnv(),
+    },
+  );
   const headCommit = (await git(record.worktree, ['rev-parse', 'HEAD'])).stdout.trim();
   return {
     baseCommit: snapshot.commit,
@@ -242,6 +306,7 @@ async function candidateDelta(snapshot: AgentSnapshot, candidate: PatchCandidate
   return (
     await git(snapshot.repoRoot, [
       'diff',
+      ...DIFF_ARGS,
       '--binary',
       '--full-index',
       candidate.baseCommit,

@@ -6,6 +6,30 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **Book's own git work for managed agents runs no hooks and no fsmonitor** (#348).
+  `src/agents/git-isolation.ts` ran every command Book needs for an agent with the repository's own
+  configuration and hooks. That configuration arrives with the clone, so it is the repository's:
+  `core.fsmonitor` named a program `status`, `add`, `read-tree` and `write-tree` executed;
+  `worktree add` ran `post-checkout`; the agent's `commit` ran `pre-commit`, `commit-msg` and
+  `post-commit`; the `cherry-pick` that applies a candidate ran `prepare-commit-msg`; and every
+  ref Book moved — `update-ref`, `branch -D`, that commit, the worktree itself — ran
+  `reference-transaction`. None of it is a tool call the operator is asked about, so delegating an
+  agent was a way for a checkout to start a program. Every argv now goes through the same
+  `hardenedGitArgs` the read-only Git tools carry (`-c core.fsmonitor=false`, an empty
+  `-c core.hooksPath`, `-c core.pager=cat`, `-c core.untrackedCache=false`, `-c gc.auto=0`,
+  `-c log.showSignature=false`, `--no-optional-locks`), applied inside the one `git()` function
+  and not at each call site, so a new call site cannot forget it; the agent's commit also takes
+  `--no-verify`; both `git diff` calls add `--no-ext-diff --no-textconv`, so neither a
+  `diff.external` driver nor a `.gitattributes` `textconv` filter can produce the patch either;
+  and `GIT_PAGER=cat` and `GIT_TERMINAL_PROMPT=0` are merged with the call site's own environment.
+  The flow is covered end to end — snapshot, worktree, agent commit, then apply, down both the
+  clean cherry-pick path and the dirty `git apply` path — against a repository whose
+  `core.fsmonitor` and six hooks each write a marker file outside the checkout, alongside a
+  control that shows the same hooks do fire for a plain `git commit` in it.
+  **Scope:** this reaches writes, and the decision is the owner's: that work is Book's, in Book's
+  worktree, so a hook the operator installed does not get to decide whether it happens. The
+  operator's own commits are untouched — `GitCommit` and `runGit` still run the user's
+  `pre-commit` and `commit-msg`, and the test that holds them to that is unchanged.
 - **`additionalDirectories` is honored for reads and writes, and gated like every other
   project-declared authority** (#300). The setting was accepted from a checked-in `.book/settings.json`
   and did nothing, so the fix had to make it both real and safe. `Read`, `Glob` and `Grep` now serve
@@ -594,6 +618,17 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A patch git exits on before reading no longer crashes the host** (#351). `git()` in
+  `src/agents/git-isolation.ts` has two ways to reach git: `execFile`, or a `spawn` that writes a
+  patch to stdin. The `spawn` path attached no `error` listener to `child.stdin`, so a write that
+  failed — git exiting at once because the directory is not a repository or the argument is
+  rejected, which breaks the pipe before the last kilobyte of a 4 MB patch is written — surfaced as
+  an **uncaught exception in the Book process** rather than as the rejected promise the caller was
+  already awaiting. A `git apply` that simply did not apply could take the session down with it.
+  A listener is now attached before the write and never removed, mirroring what PR 343 did in
+  `src/mcp.ts`: `EPIPE` and `EOF` mean git was gone before it read, which the `close` handler's
+  exit code has already accounted for and is not news; any other stdin error rejects the promise,
+  which now settles exactly once whichever of the two arrives first.
 - **Spend made after a root run's last response is now persisted** (#336). The session's `usage`
   records — the only durable statement of what a run cost, and the sum a resumed process restores —
   were written from one place: the callback a root's own responses report through. Spend
