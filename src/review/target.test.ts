@@ -192,7 +192,7 @@ describe('resolveReviewTarget', () => {
     },
   );
 
-  it('does not read an untracked symlink, only names it', async () => {
+  it('does not read an untracked symlink, only names it', async (ctx) => {
     // Every untracked entry was read whole, and a symlink resolves through itself: an
     // untracked link to a file outside the repository pasted that file's contents into the
     // review diff. The link is reported as a link, with the target it names.
@@ -200,7 +200,16 @@ describe('resolveReviewTarget', () => {
     roots.push(outside);
     const secret = join(outside, 'credentials.txt');
     writeFileSync(secret, 'SECRET-CONTENT\n', 'utf8');
-    symlinkSync(secret, join(root, 'link.txt'));
+    try {
+      symlinkSync(secret, join(root, 'link.txt'));
+    } catch (error) {
+      // Windows only lets an unprivileged process create a file symlink with Developer Mode on
+      // or elevated; junction targets are exempt, which is why the other fixtures use them. The
+      // assertion below needs a real file link, so skip where the privilege is missing rather
+      // than fail at setup — CI's Windows runners are Developer Mode machines, so it runs there.
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') ctx.skip();
+      throw error;
+    }
 
     const target = await resolveReviewTarget(root, scope());
 
