@@ -184,7 +184,11 @@ selector reads. It leaves the conversation out, so the last line of a multi-hour
 however long the session grew; add `--include-result-messages` if the loop wants the history too.
 
 `--max-budget-usd` accumulates across restarts of the same session, so the cap bounds the objective
-rather than each process.
+rather than each process. Spend reaches the session's `usage` records as each response reports it, and
+again when a root run ends and when the session is disposed: a managed worker that answers after the
+root's last response, and a `/review` the host performed itself, are written before the process exits,
+so nothing it paid is re-authorized by the next restart. Each record names the model its own tokens
+were spent on, and the restored carry is priced at the most expensive of them.
 
 Check on a run at any point, from any shell, with no provider configured:
 

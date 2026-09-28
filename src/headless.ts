@@ -807,6 +807,13 @@ export async function runHeadless(
             : undefined,
       });
       runtime.runAccounting.startRoot(runContext, opts.maxBudgetUsd);
+      // The root exists before a turn does, so the session can persist its spend
+      // even when no turn ever runs under it: a `/review` performed by the host
+      // spends entirely in its reviewer agents, and no response of the root will
+      // ever report it (#336).
+      if (store && sessionId) {
+        agentSession.trackRunUsage(runContext.rootRunId, { sessionId, timelineStore: store });
+      }
       // Carry spend forward from earlier processes of this session, so a USD cap
       // bounds the objective rather than one process.
       if (carriedSpend) {
@@ -941,6 +948,10 @@ export async function runHeadless(
         usage: spentSoFar.inclusiveUsage,
         costUsd: spentSoFar.inclusiveCostUsd,
         persistedUsage: runtime.runAccounting.persistedUsage(runContext.rootRunId),
+        // Naming the root the totals came from: the next root's first record
+        // carries this one's remainder, so this one is closed rather than left to
+        // write the same tokens a second time at the end of the session (#336).
+        fromRootRunId: runContext.rootRunId,
       };
       // An unapprovable plan is the deliverable: queued prompts would only
       // re-plan against a workspace nothing is allowed to change.
@@ -1228,7 +1239,16 @@ export async function runHeadless(
   }
 }
 
-/** Wire status for the `plan_approval` stream-json event: approve | approve-fresh | reject | revise | stop. */
+/**
+ * Wire status for the `plan_approval` stream-json event: approve | reject |
+ * revise | stop.
+ *
+ * This host asks the plan as a user question with two options, so it has no way
+ * to answer `approve-fresh` — approving with a fresh context reseeds a
+ * conversation, which only the interactive TUI owns. `bypassPermissions` answers
+ * `approve` and a host with no handler answers `stop`; a free-text answer is the
+ * approver's revision feedback, so it is `revise`.
+ */
 function planApprovalStatus(decision: PlanApprovalResult): string {
   return typeof decision === 'string' ? decision : decision.decision;
 }

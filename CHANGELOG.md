@@ -570,6 +570,28 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Spend made after a root run's last response is now persisted** (#336). The session's `usage`
+  records — the only durable statement of what a run cost, and the sum a resumed process restores —
+  were written from one place: the callback a root's own responses report through. Spend
+  `RunAccounting` was charged afterwards reached no store at all, so it left with the process. A
+  host-run `/review` in print mode is the clearest case: its reviewer agents' requests are charged to
+  the run's root, no response of that root is ever made to report them, and the session ended having
+  paid for a review its own history said cost nothing. A background managed agent that answered after
+  the root's last response, and a compaction judge, lost their spend the same way — and because a
+  resumed session restores its carry by summing these records, the next process was handed a budget
+  that had never been spent, so `--max-budget-usd` re-authorized it. The writer is now one function:
+  it runs when a response reports usage (unchanged), when a root run ends whether it returned or
+  threw, and when the session is disposed after its managed children have been stopped. Each record
+  names the model its own tokens were spent on, so a child that ran a dearer model than its parent
+  is not re-priced at the parent's rate on the next resume, and a remainder handed from one root to
+  the next is written once rather than by both. A run whose session has moved on, or that has nowhere
+  to write, still leaves its spend for a writer that can.
+- **Print mode and `query()` no longer document a plan decision they cannot make** (#340). Plan
+  approval in a non-interactive host is asked as an ordinary `AskUserQuestion` with two options, so
+  the `plan_approval` status is one of `approve`, `reject`, `revise`, or `stop` — `approve-fresh`,
+  which approves with a fresh context, belongs to the interactive TUI, the only host that owns the
+  conversation it would reseed. `docs/guide/cli.md` listed it for both hosts. A unit test now pins
+  every answer shape — Approve, Reject, free text, decline, cancel, invalid — to one of the four.
 - **A Windows root and a path under it are compared in one spelling** (#300, #305). One directory
   has more than one name: the long form a user reads and the DOS 8.3 short form
   (`C:\Users\RUNNER~1\AppData\Local\Temp`), plus a drive letter in either case and separators either

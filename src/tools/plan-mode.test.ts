@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ToolContext, UserQuestionRequest } from '../types/tools.js';
+import type { ToolContext, UserQuestionRequest, UserQuestionResponse } from '../types/tools.js';
 import {
   buildPlanApprovalQuestion,
   planApprovalFromUserQuestionResponse,
@@ -189,5 +189,37 @@ describe('plan approval as a user question', () => {
       });
     }
     expect(planNotAppliedMessage('approval_unavailable')).toContain('non-interactive host');
+  });
+
+  // `approve-fresh` reseeds the context with the approved plan, which needs a
+  // host that owns a conversation to reseed. Print mode and `query()` answer the
+  // plan through an ordinary question, so this host can only ever produce the
+  // four decisions below — and a decision it cannot produce must not be
+  // documented as one it can (issue 340).
+  it('never answers approve-fresh, whatever the host sends back', () => {
+    const request = buildPlanApprovalQuestion('Do it.', 'req-7');
+    // The host keys its answer by the question it was asked.
+    const asked = question(request);
+    const responses: UserQuestionResponse[] = [
+      { action: 'answer', answers: { [asked]: 'Approve' } },
+      { action: 'answer', answers: { [asked]: 'Approve and start a fresh context' } },
+      { action: 'answer', answers: { [asked]: 'Reject' } },
+      { action: 'answer', answers: { [asked]: '  revise it instead  ' } },
+      { action: 'answer', answers: { [asked]: '' } },
+      { action: 'decline', message: 'no approver' },
+      { action: 'cancel' },
+      { action: 'answer', answers: { 'Some other question?': 'Approve' } },
+    ];
+    const decisions = responses.map((response) =>
+      planApprovalFromUserQuestionResponse(request, response),
+    );
+
+    expect(
+      decisions.map((decision) => (typeof decision === 'string' ? decision : decision.decision)),
+    ).toEqual(['approve', 'revise', 'reject', 'revise', 'stop', 'stop', 'stop', 'stop']);
+    for (const decision of decisions) {
+      expect(decision).not.toBe('approve-fresh');
+      if (typeof decision !== 'string') expect(decision.decision).not.toBe('approve-fresh');
+    }
   });
 });
