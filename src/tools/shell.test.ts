@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -841,6 +841,23 @@ setInterval(() => {}, 1000);\n`,
  * `wait_ms` trades one turn for a wait.
  */
 describe('BashOutput wait_ms', () => {
+  // The abort case below ends its shell with a tree kill rather than a graceful stop, so the
+  // pid it reported is checked afterwards: a kill that reached only the wrapper would leave the
+  // process holding the temp directory for the rest of the run, and nothing would report it (#339).
+  const reportedPids: number[] = [];
+
+  afterAll(async () => {
+    const survivors: number[] = [];
+    for (const pid of reportedPids) {
+      try {
+        await waitForPidGone(pid);
+      } catch {
+        survivors.push(pid);
+      }
+    }
+    expect(survivors).toEqual([]);
+  });
+
   it('returns as soon as a shell finishes, well inside the wait it was given', async () => {
     const c = ctx();
     const command = nodeCommand(
@@ -896,13 +913,21 @@ describe('BashOutput wait_ms', () => {
   it('stops waiting and leaves the shell running when the call is aborted', async () => {
     const controller = new AbortController();
     const c = ctxWith({ signal: controller.signal });
+    const pidPath = join(dir, 'wait-abort.pid');
     const command = nodeCommand(
       'wait-abort.cjs',
-      `console.log('alive-still'); setInterval(() => {}, 1000);\n`,
+      `require('fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+console.log('alive-still'); setInterval(() => {}, 1000);
+`,
     );
     const started = await bash.execute({ command, run_in_background: true }, c);
     const shellId = shellIdFrom(started);
     await waitForOutput(c, shellId, /alive-still/);
+    // The shell is meant to keep running, so this is the only pid that can prove the afterEach
+    // tree kill reached it — and the guard above is what notices when it does not.
+    const pid = Number(readFileSync(pidPath, 'utf8'));
+    expect(pid).toBeGreaterThan(0);
+    reportedPids.push(pid);
 
     const began = Date.now();
     setTimeout(() => controller.abort('stop waiting'), 150);

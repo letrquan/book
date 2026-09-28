@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { runHooks } from './hooks.js';
 import { isProcessAlive } from './jobs/process-tree.js';
 import type { HookEntry, HookEvent } from './settings.js';
@@ -174,6 +174,23 @@ describe('runHooks — process tree', () => {
     return { command: `"${process.execPath}" "${parent}"`, env: {} };
   }
 
+  // Every pid these fixtures reported, checked once the block is done. A hook that survives the
+  // run holding the temp directory it inherited is the failure these tests exist to catch (#339),
+  // and nothing after this file would see it: the next suite just finds a locked directory.
+  const reportedPids: number[] = [];
+
+  afterAll(async () => {
+    const survivors: number[] = [];
+    for (const pid of reportedPids) {
+      try {
+        await waitFor(() => !isProcessAlive(pid), `pid ${pid} to end`, 5_000);
+      } catch {
+        survivors.push(pid);
+      }
+    }
+    expect(survivors).toEqual([]);
+  });
+
   async function waitFor(predicate: () => boolean, what: string, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (!predicate()) {
@@ -189,10 +206,34 @@ describe('runHooks — process tree', () => {
     return parent > 0 && grandchild > 0 ? { parent, grandchild } : undefined;
   }
 
+  /** One pid on its own, as a fixture that reports only the process it started writes it. */
+  function readPid(pidPath: string): number | undefined {
+    if (!existsSync(pidPath)) return undefined;
+    const [pid] = readFileSync(pidPath, 'utf8').split(' ').map(Number);
+    return pid > 0 ? pid : undefined;
+  }
+
+  async function readPidEventually(pidPath: string, what: string): Promise<number> {
+    let pid: number | undefined;
+    await waitFor(
+      () => {
+        pid = readPid(pidPath);
+        return pid !== undefined;
+      },
+      what,
+      5_000,
+    );
+    return pid!;
+  }
+
+  function reapPid(pid: number | undefined): void {
+    if (pid === undefined) return;
+    reportedPids.push(pid);
+    if (isProcessAlive(pid)) process.kill(pid, 'SIGKILL');
+  }
+
   function killSurvivors(pids: { parent: number; grandchild: number } | undefined): void {
-    for (const pid of pids ? [pids.parent, pids.grandchild] : []) {
-      if (isProcessAlive(pid)) process.kill(pid, 'SIGKILL');
-    }
+    for (const pid of pids ? [pids.parent, pids.grandchild] : []) reapPid(pid);
   }
 
   it('ends the whole process tree when a hook is cancelled', async () => {
@@ -290,9 +331,12 @@ describe('runHooks — process tree', () => {
   it('keeps the answer of a hook that exits before its timeout but leaves its pipes held', async () => {
     const pidPath = join(dir, 'background.pid');
     const background = join(dir, 'background.cjs');
+    // Its own pid alone: this process has no parent tree to report, and a leading `0` left the
+    // reader unable to parse it at all — so nothing ever reaped it, and on Windows it outlived
+    // the run still holding the directory it inherited (#339).
     writeFileSync(
       background,
-      `require('fs').writeFileSync(${JSON.stringify(pidPath)}, '0 ' + process.pid);
+      `require('fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
 setInterval(() => {}, 1000);
 `,
     );
@@ -304,6 +348,7 @@ setInterval(() => {}, 1000);
         ? `start "" /b "${process.execPath}" "${background}" & echo {"action":"block","message":"late"}`
         : `"${process.execPath}" "${background}" & echo '{"action":"block","message":"late"}'`;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let backgroundPid: number | undefined;
     try {
       const results = await runHooks([{ command, env: {} }], 'PreToolUse', ctx(), {
         timeoutMs: 2_000,
@@ -311,12 +356,14 @@ setInterval(() => {}, 1000);
       });
       expect(results[0]).toMatchObject({ action: 'block', message: 'late' });
       expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('timed out'));
+      // It is meant to outlive the hook, so reading its pid is the only thing standing between
+      // it and the end of the run — and this wait is the assertion: a swallowed timeout would
+      // leave the process exactly as leaked as before.
+      backgroundPid = await readPidEventually(pidPath, 'the background pid');
+      expect(backgroundPid).toBeGreaterThan(0);
     } finally {
       warn.mockRestore();
-      await waitFor(() => readPids(pidPath) !== undefined, 'the background pid', 5_000).catch(
-        () => undefined,
-      );
-      killSurvivors(readPids(pidPath));
+      reapPid(backgroundPid);
     }
   }, 20_000);
 
