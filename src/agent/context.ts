@@ -610,11 +610,20 @@ async function ensureSessionState(
 ): Promise<void> {
   let newest: Message | undefined;
   let checkpoint: Message | undefined;
+  /** Paths observed after the newest checkpoint: fresher than what it recorded. */
+  let observedSince = new Set<string>();
   for (const msg of history) {
     if (!msg.includeInContext) continue;
+    if (msg.kind === 'checkpoint') {
+      checkpoint = msg;
+      observedSince = new Set();
+    } else if (checkpoint) {
+      for (const observation of msg.fileObservations ?? []) {
+        observedSince.add(observation.path.replace(/\\/g, '/'));
+      }
+    }
     if (msg.role !== 'user') continue;
     newest = msg;
-    if (msg.kind === 'checkpoint') checkpoint = msg;
   }
   if (!newest || newest.sessionState !== undefined) return;
 
@@ -631,7 +640,9 @@ async function ensureSessionState(
     outstandingAgents,
     todos,
     pendingMemoryCandidates,
-    staleFiles: checkpoint ? await collectStaleCheckpointFiles(config.workspace, checkpoint) : [],
+    staleFiles: checkpoint
+      ? await collectStaleCheckpointFiles(config.workspace, checkpoint, observedSince)
+      : [],
   });
 }
 

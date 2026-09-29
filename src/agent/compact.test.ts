@@ -543,20 +543,110 @@ describe('runCompact', () => {
     expect(result.checkpoint.coverage?.reasons).toEqual(['summary-truncated']);
   });
 
-  it('shortens a summary over its budget at the last heading that fits', async () => {
-    const sections = Array.from(
-      { length: 20 },
-      (_, index) => `## Section ${index}\n${'word '.repeat(150)}`,
-    ).join('\n\n');
+  it('shortens a summary over its budget section by section, so every heading survives', async () => {
+    const sections = [
+      '## Goal\nShip it.',
+      `## Progress\n${'- a long progress line\n'.repeat(600)}`,
+      '## Next Steps\n- open the PR',
+      '## Critical Context\nsrc/x.ts',
+    ].join('\n\n');
     summaryReply(sections);
     const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
     if (result.status !== 'compacted') throw new Error(result.status);
     const budget = resolveCompactBudgets(makeConfig()).checkpointBudget;
-    expect(result.checkpoint.state.summary.length).toBeLessThanOrEqual(budget * 4);
-    expect(result.checkpoint.state.summary).toMatch(
-      /\n\n\[summary shortened to fit the checkpoint budget\]$/,
+    const summary = result.checkpoint.state.summary;
+    expect(summary.length).toBeLessThanOrEqual(budget * 4);
+    for (const heading of ['## Goal', '## Progress', '## Next Steps', '## Critical Context']) {
+      expect(summary).toContain(heading);
+    }
+    expect(summary).toContain('- open the PR');
+    expect(summary).toMatch(/\n\n\[summary shortened to fit the checkpoint budget\]$/);
+    // A shortened summary is recorded as such.
+    expect(result.checkpoint.coverage?.reasons).toContain('summary-truncated');
+    expect(result.degraded).toBe(true);
+  });
+
+  it('summarizes the newest message when even clipped it cannot fit a small window', async () => {
+    const newest: Message = {
+      id: 'wave',
+      role: 'assistant',
+      content: '',
+      includeInContext: true,
+      timestamp: 0,
+      toolCalls: Array.from({ length: 4 }, (_, index) => ({
+        id: `w${index}`,
+        name: 'Read',
+        arguments: { file_path: `f${index}` },
+      })),
+      toolResults: Array.from({ length: 4 }, (_, index) =>
+        toolResult(`w${index}`, 'z'.repeat(12_000)),
+      ),
+    };
+    // A 32k local model under the default 64k reserve, with 8k of request overhead:
+    // the tail has a few hundred tokens, and even 125 per result is over it.
+    const result = await runCompact(makeConfig({ maxTokens: 64_000 }), [...twoTurns, newest], {
+      trigger: 'auto',
+      requestOverheadTokens: 8_000,
+    });
+    if (result.status !== 'compacted') throw new Error(result.status);
+    expect(result.retainedCount).toBe(0);
+    expect(promptOf()).toContain('→ Read f0');
+    const budgets = resolveCompactBudgets(makeConfig({ maxTokens: 64_000 }), {
+      requestOverheadTokens: 8_000,
+    });
+    expect(result.postContextTokens + 8_000).toBeLessThan(budgets.usableContextLimit);
+  });
+
+  it('does not spend a second call on a reply the cap cut off inside its thinking', async () => {
+    summaryReply('<think>still planning when the cap', ['length']);
+    const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
+    expect(mockedStream).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ status: 'compacted', strategy: 'degraded-fallback' });
+    if (result.status !== 'compacted') return;
+    expect(result.checkpoint.coverage?.reasons).toEqual(
+      expect.arrayContaining(['summary-truncated', 'invalid-checkpoint']),
     );
-    expect(result.checkpoint.state.summary).toMatch(/word\s*\n\n\[summary shortened/);
+  });
+
+  it('lists the files of a message the tail dropped to meet the target', async () => {
+    // A span that touched sixteen files with long paths makes the file list
+    // cost more than the room reserved for it, and a summary at its budget
+    // leaves no slack: the target then drops the oldest kept message, e1.
+    const longPath = (index: number) => `src/${'deeply/nested/'.repeat(12)}module-${index}.ts`;
+    // Summarized: too big for the tail, and it read the sixteen long paths.
+    const wide: Message = {
+      id: 'big',
+      role: 'assistant',
+      content: 'x'.repeat(20_000),
+      includeInContext: true,
+      timestamp: 1,
+      fileObservations: Array.from({ length: 16 }, (_, index) =>
+        observation(longPath(index), 'read', 1),
+      ),
+    };
+    const step = (id: string, extra: Partial<Message> = {}): Message => ({
+      id,
+      role: 'assistant',
+      content: `${id} `.padEnd(3_960, 'w'),
+      includeInContext: true,
+      timestamp: 2,
+      ...extra,
+    });
+    const history: Message[] = [
+      { id: 'u1', role: 'user', content: 'go', includeInContext: true, timestamp: 0 },
+      wide,
+      { id: 'w1', role: 'assistant', content: 'surveyed', includeInContext: true, timestamp: 1 },
+      step('e1', { fileObservations: [observation('src/foo.ts', 'edit', 2)] }),
+      ...Array.from({ length: 8 }, (_, index) => step(`s${index}`)),
+    ];
+    summaryReply(`## Goal\n${'x'.repeat(6_300)}`);
+    const result = await runCompact(makeConfig(), history, { trigger: 'auto' });
+    if (result.status !== 'compacted') throw new Error(result.status);
+    const kept = result.replacementHistory.map((message) => message.id);
+    expect(kept).not.toContain('e1');
+    expect(kept).not.toContain('w1');
+    expect(result.checkpoint.coverage?.reasons).toContain('post-budget');
+    expect(result.checkpoint.files[0].path).toBe('src/foo.ts');
   });
 
   it('keeps the recent steps of a run with one user turn and many tool calls', async () => {
@@ -1678,8 +1768,9 @@ describe('judgeCompaction', () => {
   it('gives up on a judge that does not answer in time, as inconclusive rather than a stop', async () => {
     const { applied: result, delta } = await applied();
     mockedStream.mockImplementation(async function* (_config, _messages, _tools, options) {
+      // A stalled route: nothing arrives until the request is aborted.
       await new Promise((resolve) => options?.signal?.addEventListener('abort', resolve));
-      throw new Error('This operation was aborted');
+      yield { type: 'text', content: '' };
     });
     const started = Date.now();
     const verdict = await judgeCompaction(makeConfig(), result, delta, { timeoutMs: 50 });

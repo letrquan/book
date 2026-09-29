@@ -16,7 +16,7 @@ import type {
   ProviderResponseMetadata,
   SystemPromptZones,
 } from '../types/providers.js';
-import type { FileObservation, ToolDefinition } from '../types/tools.js';
+import type { FileObservation, ToolDefinition, ToolResult } from '../types/tools.js';
 import { createProvider, type Provider } from '../provider/index.js';
 import { isEffortChosen, resolveEffortExplicit, resolveReducerModelConfig } from '../config.js';
 import { isContextOverflowError } from '../provider/reliability.js';
@@ -114,6 +114,8 @@ const MESSAGE_OVERHEAD_TOKENS = 6;
 const TOOL_OVERHEAD_TOKENS = 12;
 /** Floor per-tool-result token limit that scales with the retained tail. */
 const RETAINED_TOOL_RESULT_MAX_TOKENS = 2_000;
+/** Per-result clips tried on the newest message before it is summarized instead of kept. */
+const NEWEST_MESSAGE_CLIP_LADDER = [RETAINED_TOOL_RESULT_MAX_TOKENS, 500, 125] as const;
 /** Files the host lists under the summary, newest first: at most this many, and fewer on a small window. */
 const MAX_CHECKPOINT_FILES = 40;
 const MIN_CHECKPOINT_FILES = 5;
@@ -383,6 +385,18 @@ export function usagePressureTokens(usage: Usage | null | undefined): number {
     : usage.totalTokens;
 }
 
+/**
+ * Whether provider-counted usage has reached `fraction` of the compaction gate --
+ * the one comparison every usage trigger makes, so none can read a different line.
+ */
+export function usageAtGate(
+  usage: Usage | null | undefined,
+  config: Pick<AgentConfig, 'modelInfo' | 'maxTokens'>,
+  fraction = 1,
+): boolean {
+  return !!usage && usagePressureTokens(usage) >= compactionGate(config) * fraction;
+}
+
 export function shouldCompact(
   usage: Usage | null,
   contextLimit: number,
@@ -485,8 +499,18 @@ export function estimateProviderRequestTokens(
   return tokens;
 }
 
-function estimateTextTokens(text: string): number {
+/** Book's token estimate for text: four characters a token. */
+export function estimateTextTokens(text: string): number {
   return text ? Math.ceil(text.length / 4) : 0;
+}
+
+/** Where a tool result's exact output can be read back: its spill file, or its session reference. */
+export function toolResultRetrievalRef(message: Pick<Message, 'id'>, result: ToolResult): string {
+  return (
+    result.artifacts?.outputPath ??
+    result.artifacts?.eventRef ??
+    `session://current/tool-result/${message.id}/${result.toolCallId}`
+  );
 }
 
 export type CompactTail = 'residual' | 'short';
@@ -691,7 +715,6 @@ function clipText(text: string, maxChars: number): string {
 }
 
 function messageLabel(message: Message): string {
-  if (message.kind === 'checkpoint') return 'Earlier checkpoint';
   return message.role === 'user' ? 'User' : 'Assistant';
 }
 
@@ -777,7 +800,7 @@ interface SummaryPromptInput {
 }
 
 function buildSummaryPrompt(input: SummaryPromptInput): string {
-  const words = Math.max(80, Math.floor(input.summaryBudgetTokens * 0.7));
+  const words = Math.max(80, Math.floor(input.summaryBudgetTokens * 0.45));
   const notes: string[] = [];
   if (input.carriedTurnCount) {
     notes.push(
@@ -853,18 +876,35 @@ export function cleanSummaryText(text: string): string {
 }
 
 /**
- * `text` within `budgetTokens`: whole, or cut at the last heading that fits, or
- * at a line, with a note saying it was shortened.
+ * `text` within `budgetTokens`. Over budget, every `## ` section keeps its
+ * heading and a share of the room in proportion to its size, cut at a line --
+ * so Next Steps and Critical Context survive a long Progress section instead
+ * of being the part a cut from the end drops -- with a note that it was shortened.
  */
-function fitSummary(text: string, budgetTokens: number): string {
+function fitSummary(text: string, budgetTokens: number): { text: string; shortened: boolean } {
   const maxChars = Math.max(64, budgetTokens * 4);
-  if (text.length <= maxChars) return text;
+  if (text.length <= maxChars) return { text, shortened: false };
   const room = Math.max(0, maxChars - SUMMARY_SHORTENED_NOTE.length - 2);
-  const head = text.slice(0, room);
-  const heading = head.lastIndexOf('\n## ');
-  const line = head.lastIndexOf('\n');
-  const cut = heading > room * 0.5 ? heading : line > room * 0.5 ? line : room;
-  return `${text.slice(0, cut).trimEnd()}\n\n${SUMMARY_SHORTENED_NOTE}`;
+  const sections = text.split(/\n(?=## )/);
+  const cutAtLine = (section: string, limit: number): string => {
+    if (section.length <= limit) return section;
+    const head = section.slice(0, Math.max(0, limit - 2));
+    const line = head.lastIndexOf('\n');
+    return `${line > limit * 0.3 ? head.slice(0, line) : head}\n…`;
+  };
+  // Water-filling, smallest first: a section under its fair share keeps all of
+  // itself, and what it leaves goes to the ones that are over.
+  const shares = new Array<number>(sections.length);
+  let remaining = room - (sections.length - 1);
+  const order = [...sections.keys()].sort((a, b) => sections[a].length - sections[b].length);
+  order.forEach((index, position) => {
+    const fair = Math.floor(remaining / (order.length - position));
+    shares[index] = Math.max(0, Math.min(sections[index].length, fair));
+    remaining -= shares[index];
+  });
+  let fitted = sections.map((section, index) => cutAtLine(section, shares[index])).join('\n');
+  if (fitted.length > room) fitted = cutAtLine(fitted, room);
+  return { text: `${fitted.trimEnd()}\n\n${SUMMARY_SHORTENED_NOTE}`, shortened: true };
 }
 
 /** The summary a checkpoint carries when no summarizer produced one: what was already known, and what happened last. */
@@ -876,7 +916,7 @@ function deterministicSummary(
 ): string {
   const parts: string[] = [];
   if (previousSummary?.trim()) {
-    parts.push(fitSummary(previousSummary.trim(), Math.floor(budgetTokens * 0.7)));
+    parts.push(fitSummary(previousSummary.trim(), Math.floor(budgetTokens * 0.7)).text);
   }
   parts.push(note);
   const recent = summarized
@@ -884,7 +924,7 @@ function deterministicSummary(
     .slice(-3)
     .map((message) => `- ${clipText(message.content.trim().replace(/\s+/g, ' '), 600)}`);
   if (recent.length) parts.push(`## Recent assistant messages\n${recent.join('\n')}`);
-  return fitSummary(parts.join('\n\n'), budgetTokens);
+  return fitSummary(parts.join('\n\n'), budgetTokens).text;
 }
 
 /** A v2 checkpoint's content as text: its summary, then the rules and threads the fitter kept. */
@@ -1137,8 +1177,11 @@ export async function runCompact(
       }
       const cleaned = cleanSummaryText(generated.text);
       if (!cleaned) {
-        // One more try: an empty reply is a flake more often than a verdict.
-        if (!emptyRetried) {
+        // One more try: an empty reply is a flake more often than a verdict. Not
+        // when the cap cut it off -- inside inline thinking, most often -- since the
+        // same request at the same cap ends the same way.
+        if (generated.truncated) reasons.add('summary-truncated');
+        if (!emptyRetried && !generated.truncated) {
           emptyRetried = true;
           continue;
         }
@@ -1155,20 +1198,18 @@ export async function runCompact(
   }
 
   const fallbackUsed = summaryText === undefined;
-  const summary = fallbackUsed
-    ? deterministicSummary(previousSummary, summarized, checkpointBudget, fallbackNote)
-    : fitSummary(summaryText!, checkpointBudget);
+  let summary: string;
+  if (fallbackUsed) {
+    summary = deterministicSummary(previousSummary, summarized, checkpointBudget, fallbackNote);
+  } else {
+    const fitted = fitSummary(summaryText!, checkpointBudget);
+    summary = fitted.text;
+    if (fitted.shortened) reasons.add('summary-truncated');
+  }
   const currentCoverage = computeCurrentCoverage(
     fallbackUsed ? [] : input.included,
     fallbackUsed ? summarized : input.omitted,
   );
-  const files = buildCheckpointFiles(
-    summarized,
-    priorCheckpoint,
-    contextHistory,
-    checkpointFileLimit(checkpointBudget),
-  );
-
   const retained = [...selection.retained];
   let carried = selection.carried;
   const postBudgetOmitted = new Set<string>();
@@ -1181,26 +1222,40 @@ export async function runCompact(
   ];
   const compactId = crypto.randomUUID();
   const targetTokens = budgets.targetTokens;
-  const statistics: ConversationCheckpointV2['statistics'] = {
-    summarizedMessages: preMessageCount - retained.length,
-    retainedMessages: retained.length,
-    preTokens,
-    postTokens: 0,
-  };
+  /**
+   * Host-owned, like everything on the record: the suspect inputs by reference,
+   * for the stream-json boundary and the benchmark. Never in the model's text.
+   */
+  const audit = suspectInputs.length
+    ? {
+        omittedInheritedConstraints: 0,
+        suspectInputs: suspectInputs.slice(0, 8).map((suspect) => suspect.eventRef),
+        suspectInputCount: suspectInputs.length,
+      }
+    : undefined;
   const buildCheckpoint = (summaryBody: string): ConversationCheckpointV2 => ({
     version: 2,
     generation,
     state: { summary: summaryBody, status: fallbackUsed ? 'unknown' : 'active' },
     constraints: [],
-    files,
+    // What the tail's own drops touched is listed too: those messages are
+    // neither summarized nor kept, and the list is their only trace.
+    files: buildCheckpointFiles(
+      [...summarized, ...omittedFromTail],
+      priorCheckpoint,
+      contextHistory,
+      checkpointFileLimit(checkpointBudget),
+    ),
     episodes: [],
     openThreads: [],
     statistics: {
-      ...statistics,
       summarizedMessages: preMessageCount - retained.length,
       retainedMessages: retained.length,
+      preTokens,
+      postTokens: 0,
     },
     coverage: mergeCoverage(priorCheckpoint, currentCoverage, postBudgetOmitted, reasons),
+    ...(audit ? { audit } : {}),
     ...(carried.turns.length > 0 || carried.droppedCount > 0
       ? {
           carriedTurns: {
@@ -1266,7 +1321,9 @@ export async function runCompact(
         estimateHistoryTokens(retained) -
         carriedTurnsTokens(carried) -
         (estimateMessageTokens(checkpointMessage) - estimateTextTokens(summaryBody));
-      summaryBody = fitSummary(summaryBody, Math.max(64, room));
+      const fitted = fitSummary(summaryBody, Math.max(64, room));
+      summaryBody = fitted.text;
+      if (fitted.shortened) reasons.add('summary-truncated');
       settle();
       continue;
     }
@@ -1324,7 +1381,7 @@ export async function runCompact(
     summarizerInputTokens: estimateTextTokens(input.text),
     summarizerOmitted: input.omitted.length,
     summaryTokens: estimateTextTokens(summaryBody),
-    files: files.length,
+    files: checkpoint.files.length,
     carriedCount: carried.turns.length,
     carriedClippedCount: carried.clippedCount,
     carriedDroppedCount: carried.droppedCount,
@@ -1397,9 +1454,9 @@ async function runPreCompactHooks(
  * result live on the same assistant message, so any boundary is a valid cut,
  * and a run with one user turn and two hundred tool calls keeps its recent
  * steps instead of nothing (27 of 38 real compactions kept nothing when the
- * unit was the user-led bundle). The newest message is always kept -- it is
- * the step in progress -- with its results clipped to the short cap if it
- * alone is over the budget.
+ * unit was the user-led bundle). The newest message is kept -- it is the
+ * step in progress -- with its results clipped down a ladder if it alone is
+ * over the budget, and summarized with the rest only when even that cannot fit.
  */
 function selectRecentMessages(
   history: readonly Message[],
@@ -1436,10 +1493,14 @@ function selectRecentMessages(
     let clipped = clipHistoryToolResults([candidate[index]], retainedToolResultMaxTokens)[0];
     let tokens = estimateMessageTokens(clipped);
     if (retained.length === 0) {
-      if (tokens > budget) {
-        clipped = clipHistoryToolResults([candidate[index]], RETAINED_TOOL_RESULT_MAX_TOKENS)[0];
+      for (const cap of NEWEST_MESSAGE_CLIP_LADDER) {
+        if (tokens <= budget) break;
+        clipped = clipHistoryToolResults([candidate[index]], cap)[0];
         tokens = estimateMessageTokens(clipped);
       }
+      // Even clipped it does not fit (a small window, a long reply): it is
+      // summarized with the rest rather than kept at a size the request cannot carry.
+      if (tokens > budget) break;
     } else if (used + tokens > budget) {
       break;
     }
@@ -1627,14 +1688,13 @@ export function clipHistoryToolResults(
     let clippedAny = false;
     const toolResults = message.toolResults.map((result) => {
       const content = result.content;
+      // A masked result already costs only its placeholder.
+      if (result.maskedPlaceholder !== undefined) return result;
       if (estimateTextTokens(content) <= maxTokens) return result;
       clippedAny = true;
       const maxChars = maxTokens * 4;
       const half = Math.floor((maxChars - 100) / 2);
-      const ref =
-        result.artifacts?.outputPath ??
-        result.artifacts?.eventRef ??
-        `session://current/tool-result/${message.id}/${result.toolCallId}`;
+      const ref = toolResultRetrievalRef(message, result);
       const clipped = `${content.slice(0, half)}\n[... compacted tool output; retrieve ${ref} ...]\n${content.slice(-half)}`;
       return {
         ...result,

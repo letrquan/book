@@ -36,41 +36,49 @@ always writes valid JSON.
 
 ### 1. Tool-output masking (new, deterministic, runs before any summarizer)
 
-`maskStaleToolOutputs(history, options)` in `src/agent/tool-output-masking.ts`. Replaces the content
-of old successful tool results with a one-line placeholder that keeps the tool name, the primary
-argument and a retrieval reference:
+`maskStaleToolOutputs(history, options)` in `src/agent/tool-output-masking.ts`. The model reads a
+one-line placeholder in place of an old successful tool result -- the tool name, the primary
+argument and how to get the output back -- set as `ToolResult.maskedPlaceholder`, which
+`toolResultModelContent` returns instead of `content`. The content itself is kept, so the
+summarizer, the judge and the record still read every byte:
 
 ```
-[tool output cleared to save context: Read src/agent/loop.ts (412 lines); retrieve session://current/tool-result/<messageId>/<callId>]
+[tool output cleared to save context: Read src/agent/loop.ts (~4000 tokens); run it again to see it, or read the recorded output at session://current/tool-result/<messageId>/<callId>]
 ```
 
-Rules, each from a measured result:
+Rules, each from a measured result or a review finding:
 
-- **Protected recent budget.** The newest results totalling `protectTokens` (default 40k, scaled to
-  the window) are never touched (OpenCode, Gemini CLI).
-- **Batched.** Masking runs only when at least `minClearTokens` (default 20k) would be cleared at
-  once, so the provider's prefix cache is invalidated rarely, not on every request (Anthropic's
-  `clear_at_least`; "Token Reduction Is Not Cost Reduction", 2607.12161: cache traffic is ~80% of
-  the bill).
-- **Never mask a failed result.** Error feedback is what the agent debugs from (masking errors raised
-  error rates 18.6% → 22.6%, 2606.00408).
-- **Never mask small results** (≤ 500 tokens): the placeholder would save nothing.
-- **Idempotent.** An already-masked result is recognised and left alone.
+- **The newest steps are never masked.** The newest ten steps with tool results (the observation
+  window "The Complexity Trap" used), whatever they cost -- the newest is the wave the model has
+  not seen yet -- and beyond them the newest `protectTokens` (40k, 20% of the gate on a smaller
+  window). On a small window this protects everything and compaction does the work, rather than
+  masking a file the agent read one step earlier.
+- **Only output the agent can get back.** Re-runnable reads (`Read`, `Grep`, `Glob`, the git and
+  session-history reads) always; `Bash`, `WebFetch`, `WebSearch` only where the session records
+  the output and the history tools can read it back; `BashOutput` never (it returns only what is
+  new since the last read). Aliased names are read as the tool they name.
+- **Batched.** Masking runs only when at least `minClearTokens` (20k, 10% of the gate) would be
+  cleared at once, so the provider's prefix cache is invalidated rarely, not on every request
+  (Anthropic's `clear_at_least`; "Token Reduction Is Not Cost Reduction", 2607.12161: cache traffic
+  is ~80% of the bill).
+- **Never a failed result** (masking errors raised error rates 18.6% → 22.6%, 2606.00408), **never a
+  small one** (≤ 500 tokens), and **idempotent**.
 - The tool call and its arguments stay, so exact paths and commands survive (the edit gate reads the
   runtime observation ledger, not the history, so a masked `Read` does not block a later `Edit`).
 
-The loop applies it at the preflight gate **before** compaction: when the request is over
-`maskThreshold` (0.6 × the preflight gate) it masks; if the request is then under the gate, no
-compaction runs. "The Complexity Trap" (2508.21433): masking matches LLM summarization on
-SWE-bench Verified at about half the cost, and the hybrid — mask first, summarize as the last
-resort — was cheapest.
+The loop masks at the preflight gate **before** compaction, once the request is over 0.6 × the
+gate; if the request is then under the gate, no compaction runs. It also masks at a turn boundary
+before committing a settled deferred compaction, and drops that compaction when masking alone
+brings the request back under the line it started at. "The Complexity Trap" (2508.21433): masking
+matches LLM summarization on SWE-bench Verified at about half the cost, and the hybrid -- mask
+first, summarize as the last resort -- was cheapest.
 
 ### 2. The retained tail is cut at message boundaries
 
 `selectRecentMessages` replaces `selectRecentBundles`. It walks back from the newest message,
 clipping each retained message's tool results to `retainedToolResultMaxTokens`, and keeps messages
-while they fit `recentBudget`. The newest message is always kept (clipped to the short cap if it
-alone is over). Tool calls and their results live on the same assistant message, so any message
+while they fit `recentBudget`. The newest message is kept with its results clipped down a ladder
+(2,000, 500, 125 tokens) and is summarized with the rest only when even that cannot fit. Tool calls and their results live on the same assistant message, so any message
 boundary is a valid cut. Nothing depends on a user turn existing any more; `planRefreshTurns` stays
 for the plan restatement it also does, but is no longer what makes compaction retain anything.
 
@@ -125,7 +133,8 @@ The structured record rides on the message as `checkpointData` (a minimal
 `ConversationCheckpointV2`: `version: 2`, `generation`, `state.summary`, host-built `files` with
 their observations, empty `constraints`/`episodes`/`openThreads`, `statistics`, `coverage`,
 `carriedTurns`). It is also the compact record's `checkpoint`, so `isValidCompactRecord` keeps
-passing and an older `book` binary still resumes a session this one compacted.
+passing and an older `book` binary still loads a session this one compacted (it reads the
+checkpoint as an ordinary message).
 `collectStaleCheckpointFiles` reads `checkpointData.files` and falls back to parsing a v2 JSON
 checkpoint for sessions compacted before this change.
 

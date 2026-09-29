@@ -16,7 +16,7 @@ import type { Message } from '../types/messages.js';
  */
 
 /** Cap the freshness pass so a large checkpoint cannot stall a turn on hashing. */
-const MAX_CHECKPOINT_FILES = 40;
+const MAX_CHECKPOINT_FILES = 30;
 
 const PLAN_MODE_LINE =
   '- Plan mode: active — mutation tools are unavailable this turn; explore read-only, then call ExitPlanMode with your plan and wait for approval before making any file changes.';
@@ -133,20 +133,19 @@ interface CheckpointFile {
 }
 
 /**
- * The files a checkpoint lists, with their observations: v3 keeps them on the
- * message's structured record; a v2 checkpoint's content is the JSON itself.
+ * The files a checkpoint lists: v3 keeps them on the message's record; an older
+ * checkpoint's content is the JSON itself, read leniently -- only `files` matters
+ * here, and a document the full v2 schema would refuse still names them.
  */
-function checkpointFilesOf(
-  message: Pick<Message, 'content' | 'contextContent' | 'checkpointData'>,
-): { files?: CheckpointFile[] } {
-  if (message.checkpointData) return { files: message.checkpointData.files };
+function checkpointFilesOf(message: Message): { files?: CheckpointFile[] } | undefined {
+  if (message.checkpointData) return message.checkpointData;
   const content = message.contextContent ?? message.content;
   const jsonStart = content.indexOf('{');
-  if (jsonStart < 0) return {};
+  if (jsonStart < 0) return undefined;
   try {
     return JSON.parse(content.slice(jsonStart)) as { files?: CheckpointFile[] };
   } catch {
-    return {};
+    return undefined;
   }
 }
 
@@ -159,16 +158,24 @@ function checkpointFilesOf(
  */
 export async function collectStaleCheckpointFiles(
   workspace: string,
-  checkpointMessage: Pick<Message, 'content' | 'contextContent' | 'checkpointData'>,
+  checkpointMessage: Message,
+  /**
+   * Paths the agent has observed since the checkpoint (read, edited, written):
+   * its knowledge of them is newer than the checkpoint's, so they are not stale
+   * whatever the checkpoint recorded. Without this, a file the agent edited
+   * after compacting was reported stale on every turn.
+   */
+  observedSince: ReadonlySet<string> = new Set(),
 ): Promise<string[]> {
   const checkpoint = checkpointFilesOf(checkpointMessage);
-  if (!checkpoint.files?.length) return [];
+  if (!checkpoint?.files?.length) return [];
 
   const currentWorkspaceId = workspaceIdentity(workspace);
   const hashes = new Map<string, string>();
   const stale: string[] = [];
 
   for (const file of checkpoint.files.slice(0, MAX_CHECKPOINT_FILES)) {
+    if (observedSince.has(file.path.replace(/\\/g, '/'))) continue;
     const observation = file.observation;
     if (!observation?.sha256 || observation.workspaceId !== currentWorkspaceId) {
       stale.push(file.path);

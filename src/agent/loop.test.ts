@@ -8903,24 +8903,24 @@ describe('tool-output masking at the preflight gate (compaction v3)', () => {
     modelInfo: { contextWindow: 40_000, maxOutputTokens: 4_000 },
   };
 
-  /** A build session that read sixty files: ~90k tokens of re-derivable output against a 40k window. */
+  /**
+   * A build session that read sixty files one step at a time: ~72k tokens of
+   * re-derivable output against a 40k window. The newest ten steps are kept.
+   */
   function readHistory(count: number): Message[] {
-    const ids = Array.from({ length: count }, (_, index) => `read-${index}`);
     return [
       { id: 'mask-user', role: 'user', content: 'build it', includeInContext: true, timestamp: 0 },
-      {
-        id: 'mask-assistant',
+      ...Array.from({ length: count }, (_, index): Message => ({
+        id: `mask-step-${index}`,
         role: 'assistant',
         content: '',
         includeInContext: true,
-        toolCalls: ids.map((id) => ({
-          id,
-          name: 'Read',
-          arguments: { file_path: `src/${id}.ts` },
-        })),
-        toolResults: ids.map((id) => toolSuccess('r'.repeat(6_000), { toolCallId: id })),
+        toolCalls: [
+          { id: `read-${index}`, name: 'Read', arguments: { file_path: `src/read-${index}.ts` } },
+        ],
+        toolResults: [toolSuccess('r'.repeat(4_800), { toolCallId: `read-${index}` })],
         timestamp: 0,
-      },
+      })),
     ];
   }
 
@@ -8950,7 +8950,7 @@ describe('tool-output masking at the preflight gate (compaction v3)', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain('[tool output cleared to save context: Read src/read-0.ts');
     // The newest outputs are kept whole, and the call that produced each one stays.
-    expect(sent[0]).toContain('r'.repeat(6_000));
+    expect(sent[0]).toContain('r'.repeat(4_800));
     expect(sent[0]).toContain('src/read-59.ts');
     expect(result.at(-1)?.content).toBe('ok');
   });

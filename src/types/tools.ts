@@ -189,6 +189,12 @@ export interface ToolResult<TData = unknown> {
   status: ToolResultStatus;
   /** Concise provider-facing content. */
   content: string;
+  /**
+   * Set by tool-output masking (`agent/tool-output-masking.ts`): the line the model
+   * reads in place of `content`, which is kept whole for the summarizer and the
+   * record. `toolResultModelContent` is the one reader that honours it.
+   */
+  maskedPlaceholder?: string;
   /** Machine-readable payload for consumers that should not parse content. */
   data?: TData;
   structuredError?: ToolResultError;

@@ -153,9 +153,12 @@ fresh verification pass.
 - Compaction: `compactStrategy` is fixed to the production `summary` path and is the only
   strategy. Since compaction v3 (2026-09-29, `plans/compaction-v3-plan.md`) it runs in two steps.
   First, from 60% of the loop's preflight gate, old successful re-derivable tool outputs are
-  masked (`src/agent/tool-output-masking.ts`): the newest 40k tokens of tool output (20% of the
-  gate on a smaller window) are kept, failures, small results and non-re-derivable tools are never
-  touched, and a pass runs only when it clears a batch (up to 20k tokens). Then, at the gate, the
+  masked (`src/agent/tool-output-masking.ts`): the model reads a one-line placeholder
+  (`ToolResult.maskedPlaceholder`) while the output stays on the result for the summarizer and the
+  record; the newest ten tool steps and the newest 40k tokens of output (20% of the gate on a
+  smaller window) are kept; `Bash`/`WebFetch`/`WebSearch` are masked only where the session records
+  them; failures, small results, `BashOutput` and non-re-derivable tools are never touched; and a
+  pass runs only when it clears a batch (up to 20k tokens). Then, at the gate, the
   older span is summarized by one summarizer call into a Markdown handoff under fixed headings
   (Goal, Constraints & Preferences, Progress, Key Decisions, Current State, Next Steps, Critical
   Context), carrying the previous summary forward; any non-empty reply is accepted (thinking
@@ -164,15 +167,19 @@ fresh verification pass.
   tools' file observations. The user's own turns are kept verbatim as `kind: 'carried'` messages
   ahead of the checkpoint (15% of the retained tail, ≤12k tokens, clipped 1024→512→256, dropped
   oldest first with the brief last), and the retained tail is cut at message boundaries, newest
-  first, with the newest message always kept. The model reads text; the structured record rides on
-  the message as `checkpointData` and is the compact record's `checkpoint` (still `version: 2`, so
-  older binaries resume). The summary budget is min(6,144, 5% of the window). Every usage-based
-  trigger reads the provider's count against the same gate as the preflight (`compactionGate`);
-  a deferred compaction starts at 85% of it. The Carried Ledger, the type-aware fit, the
+  first; the newest message is clipped down a ladder and summarized only when even that cannot
+  fit. The model reads text; the structured record rides on the message as `checkpointData` and is
+  the compact record's `checkpoint` (still `version: 2`, so an older binary loads the session,
+  reading the checkpoint as an ordinary message). The summary budget is min(6,144, 5% of the
+  window); a longer summary is shortened section by section and marked `summary-truncated`. Every
+  usage-based trigger reads the provider's count against the same gate as the preflight
+  (`usageAtGate`); a boundary at the gate compacts synchronously, and a deferred compaction starts
+  at 85% of it and is dropped when masking alone brings the request back under that line. The Carried Ledger, the type-aware fit, the
   inherited-constraint audit and the scripted-reducer fidelity harness are gone; a v2 JSON
   checkpoint is read as the previous summary with its rules, threads and ledger entries rendered
   as text. The span is still scanned for text addressed to a summarizer (`suspect_inputs` to the
-  `PreCompact` hook, a warning on the card), and the deferred path and its judge are unchanged
+  `PreCompact` hook, a warning on the card, and by reference on the record's `audit`), and the
+  deferred path's judge now gives up after two minutes as `inconclusive`
   (`plans/async-compaction-plan.md`). Measured by replaying real compactions from `~/.book` with
   `npm run eval:compact-replay`: see `plans/compaction-v3-plan.md` for the baseline and the v3
   run. History of the earlier design: `plans/carried-ledger-plan.md`,

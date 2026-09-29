@@ -303,20 +303,31 @@ transcript: every event stays in the session file and retrievable with `SessionH
 `SessionHistoryRead`. Since compaction v3 (`plans/compaction-v3-plan.md`) it works in two steps,
 the cheap one first.
 
-**Old tool outputs are masked.** Once a request passes 60% of the compaction gate, the content of
-old, successful, re-derivable tool results -- `Read`, `Grep`, `Glob`, `Bash`, `BashOutput`,
-`WebFetch`, `WebSearch`, the git reads and the session-history tools -- is replaced by one line
-that keeps the tool name, its path or command and a reference to read the exact output back:
-`[tool output cleared to save context: Read src/agent/loop.ts (~4000 tokens); retrieve …]`. The
-newest tool output (up to 40k tokens, 20% of the gate on a smaller window) is never touched, and
-neither is a failed result, a small one, or the output of a tool that cannot be re-derived (a
-subagent's report, an answer to `AskUserQuestion`, a skill). Masking runs only when it would clear
-a batch at once (up to 20k tokens), so the prompt a provider caches is rewritten rarely rather
-than on every request. When masking brings the request under the gate, nothing is summarized. The
-tool calls stay, so paths and commands survive, and the edit gate reads Book's own observation
-ledger, so a masked `Read` does not stop a later `Edit`; the agent reads the file again if it
-needs the text. On SWE-bench Verified this kind of masking matched LLM summarization at about half
-the cost ("The Complexity Trap", arXiv 2508.21433).
+**Old tool outputs are masked.** Once a request passes 60% of the compaction gate, the model stops
+reading old, successful tool output it could get back: it reads one line instead, naming the tool
+and its path or command -- `[tool output cleared to save context: Read src/agent/loop.ts (~4000
+tokens); run it again to see it, or read the recorded output at session://…]`. The output itself
+stays on the result, so the summarizer, the judge and the session record still have every byte;
+only the provider request is spared it. Which outputs qualify:
+
+- **Re-runnable reads** -- `Read`, `Grep`, `Glob`, the git reads and the session-history tools --
+  whenever they are old enough.
+- **`Bash`, `WebFetch` and `WebSearch`**, whose output a rerun would not reproduce, only where the
+  session records it and the history tools can read it back (not in a subagent or a run without
+  persistence).
+- **Never**: a failed result (the agent debugs from it), a small one, `BashOutput` (it returns only
+  what is new since the last read), and any tool whose output cannot be re-derived -- a subagent's
+  report, an answer to `AskUserQuestion`, a skill.
+
+The newest ten steps that carry tool results are never masked, whatever they cost -- the newest is
+the wave the model has not seen yet -- and beyond them the newest 40k tokens of output (20% of the
+gate on a smaller window) are kept too. On a small window that protects everything, and compaction
+does the work instead: better than masking a file read one step earlier and watching the agent
+read it again. Masking runs only when it would clear a batch at once (up to 20k tokens), so the
+prompt a provider caches is rewritten rarely rather than on every request, and when it brings the
+request under the gate nothing is summarized. The edit gate reads Book's own observation ledger,
+so a masked `Read` does not stop a later `Edit`. On SWE-bench Verified masking of this kind matched
+LLM summarization at about half the cost ("The Complexity Trap", arXiv 2508.21433).
 
 **Then the older span is summarized, once.** At the gate, the history is split into three parts:
 
@@ -332,27 +343,35 @@ the cost ("The Complexity Trap", arXiv 2508.21433).
   survives, a rule stated without a directive word, or in another language, survives with it.
 - **The most recent messages** are kept verbatim, newest first, with their tool results clipped,
   up to the residual tail (about 76k tokens at a 272k window). The tail is cut at message
-  boundaries, so a run with one brief and two hundred tool calls keeps its recent steps; the
-  newest message is always kept.
+  boundaries, so a run with one brief and two hundred tool calls keeps its recent steps. The newest
+  message is kept when it can be: its results are clipped down a ladder (2,000, 500, 125 tokens
+  each), and only when even that cannot fit a small window is it summarized with the rest.
 - **Everything else** goes to the summarizer in one request: the previous checkpoint's summary as
   `<previous-summary>`, then the span as a transcript with tool results clipped to 2,000
-  characters (errors to 4,000) and reasoning to a short excerpt. If that is over the summarizer's
-  input cap, the clips tighten, and only past the last rung are the oldest messages left out
-  (they stay retrievable, and the checkpoint is marked degraded with `pass-limit`).
+  characters (errors to 4,000) and reasoning to a short excerpt -- the real output, masked or not.
+  If that is over the summarizer's input cap, the clips tighten, and only past the last rung are
+  the oldest messages left out (they stay retrievable, and the checkpoint is marked degraded with
+  `pass-limit`).
 
 The summarizer writes a Markdown handoff under fixed headings -- Goal, Constraints & Preferences,
 Progress (Done / In Progress / Blocked), Key Decisions, Current State, Next Steps, Critical Context
 -- carrying the previous summary forward. Whatever it writes is accepted: `<think>` or
-`<analysis>` blocks and a surrounding fence are stripped, an empty reply is asked for once more,
-and a reply cut off at the output cap is kept with a note and marked degraded
-(`summary-truncated`). Nothing checks quotes or event references; the strict JSON checkpoint this
-replaced was rejected on 20 of 38 real compactions. Book then appends a `## Files` list it builds
-itself from what the tools recorded -- each file the span read, edited or created, newest first,
-up to 40 -- and the checkpoint the model reads is that text, not a JSON document. The structured
-record (generation, the files with their observations, coverage) rides on the message as
-`checkpointData`, which is also what the compaction record stores, so a session resumed by an
-older `book` still loads. The summary's budget is 6,144 tokens at a 272k window (5% of the window
-on a smaller one); a longer summary is cut at the last heading that fits.
+`<analysis>` blocks and a surrounding fence are stripped, an empty reply is asked for once more
+(not when the output cap cut it off, since the same request would end the same way), and a reply
+cut off at the cap is kept with a note. Nothing checks quotes or event references; the strict JSON
+checkpoint this replaced was rejected on 20 of 38 real compactions. The summary's budget is 6,144
+tokens at a 272k window (5% of the window on a smaller one); a longer one is shortened section by
+section, so every heading survives with a share of the room. A truncated or shortened summary marks
+the checkpoint degraded (`summary-truncated`).
+
+Book then appends a `## Files` list it builds itself from what the tools recorded -- each file the
+span read, edited or created, including any in a message the tail dropped to meet its target,
+newest first, up to 40 -- and the checkpoint the model reads is that text, not a JSON document.
+The structured record (generation, the files with their observations, coverage, and the suspect
+inputs below by reference) rides on the message as `checkpointData`, which is also what the
+compaction record stores. An older `book` still loads a session this one compacted, reading the
+checkpoint as an ordinary message. The session state names a listed file as stale when it changed
+on disk, unless the agent has read or edited it since the checkpoint.
 
 When no summary can be had -- the summarizer answers nothing twice, or is refused at every size
 tried -- the checkpoint says so, keeps the previous summary and the last few assistant messages,
@@ -370,22 +389,26 @@ compaction Book scans the span about to be summarized -- tool-result bodies and 
 expansions, never what you or the model wrote -- for a sentence that speaks to a summarizer and
 asks it to leave something out. A hit is handed to your `PreCompact` hook as `suspect_inputs`
 (event reference and a short excerpt, withheld when it matches the secret detector), so a script
-can refuse the compaction; named to the summarizer as data; never quoted into the checkpoint; and
-shown to you as a warning on the compaction card. It does not mark coverage degraded.
+can refuse the compaction; named to the summarizer as data; recorded on the checkpoint's record by
+reference (the stream-json `compact_boundary.audit`), never quoted into the text; and shown to you
+as a warning on the compaction card. It does not mark coverage degraded.
 `npm run eval:compact -- --adversarial` plants six framings of the instruction in a tool result
 and runs the same probes as the plain benchmark.
 
 **The turn that nears the gate does not wait for the summarizer.** When a response reports usage
 over 85% of the gate and the model has tool calls to make, Book starts the summarizer on a
 snapshot of the history _before_ the tools run and lets the tool wave be its head start; the turn
-goes on over the full history. At the next turn boundary a **judge** (one small call on the compact
-model, low effort) reads the checkpoint as the agent would and the steps taken while the
-summarizer ran, and answers whether the checkpoint holds every fact, value and constraint those
-steps relied on. Accepted: the checkpoint replaces the older history and the steps taken meanwhile
-follow it verbatim. Rejected: the checkpoint is dropped and Book compacts synchronously at that
-boundary. A judge that fails or does not answer in JSON is `inconclusive` and accepts. If the next
-request would not fit while the summarizer is still running, Book waits for that one rather than
-start a second; the overflow-recovery path stays synchronous. The design is
+goes on over the full history. At the next turn boundary masking runs first, and when it alone
+brings the request back under that 85% line the prepared checkpoint is dropped rather than
+committed. Otherwise a **judge** (one small call on the compact model, low effort, at most two
+minutes) reads the checkpoint as the agent would and the steps taken while the summarizer ran,
+and answers whether the checkpoint holds every fact, value and constraint those steps relied on.
+Accepted: the checkpoint replaces the older history and the steps taken meanwhile follow it
+verbatim. Rejected: the checkpoint is dropped and Book compacts synchronously at that boundary. A
+judge that fails, times out or does not answer in JSON is `inconclusive` and accepts. A usage
+reading already at the gate at a turn boundary compacts synchronously there. If the next request
+would not fit while the summarizer is still running, Book waits for that one rather than start a
+second; the overflow-recovery path stays synchronous. The design is
 `plans/async-compaction-plan.md`; `npm run eval:compact -- --deferred <k>` measures the judge
 without the loop.
 

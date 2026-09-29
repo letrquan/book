@@ -29,10 +29,10 @@ import {
   compactionGate,
   DEFERRED_COMPACT_GATE_FRACTION,
   estimateHistoryTokens,
+  usageAtGate,
   estimateProviderRequestTokens,
   LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS,
   resolveCompactBudgets,
-  shouldCompact,
   usagePressureTokens,
 } from './compact.js';
 import {
@@ -783,6 +783,31 @@ export async function runAgentLoop(
     let lastCompactAttemptKey: string | null = null;
     const deferredCompactionAvailable = (): boolean =>
       Boolean(callbacks.prepareCompact && callbacks.commitCompact);
+    /**
+     * Mask old re-derivable tool outputs in place once a request of `requestTokens`
+     * passes the masking line of `gate` (`plans/compaction-v3-plan.md` §1). A pass
+     * that clears too little changes nothing, so the prompt is rewritten in
+     * batches rather than per request. Returns the tokens cleared.
+     */
+    const maskStaleOutputs = (requestTokens: number, gate: number): number => {
+      if (config.autoCompactEnabled === false) return 0;
+      if (requestTokens < Math.floor(gate * MASK_GATE_FRACTION)) return 0;
+      const masked = maskStaleToolOutputs(
+        newHistory,
+        // Output that running the call again would not reproduce is masked only
+        // where the session records it and the history tools can read it back.
+        toolOutputMaskOptions(gate, Boolean(registry.getTool('SessionHistoryRead'))),
+      );
+      if (masked.maskedCount === 0) return 0;
+      newHistory.length = 0;
+      newHistory.push(...masked.history);
+      log.info('stale tool outputs masked', {
+        masked: masked.maskedCount,
+        clearedTokens: masked.clearedTokens,
+        requestTokens,
+      });
+      return masked.clearedTokens;
+    };
     /** Start the reducer on a copy of the history; the turn goes on meanwhile. */
     const startDeferredCompaction = (usage: Usage, hints: CompactRequestHints): void => {
       const controller = new AbortController();
@@ -982,6 +1007,22 @@ export async function runAgentLoop(
       // decides anything on stale numbers.
       let synchronousThisBoundary = false;
       let compactionSettledThisBoundary = false;
+      // Masking runs before a settled deferred compaction is committed: when it
+      // alone brings the request back under the line the deferred one started at,
+      // that one is dropped rather than committed -- it would summarize history
+      // that no longer has to go, and put back the tail it snapshotted before the
+      // outputs were masked.
+      if (pendingCompaction()?.settled !== undefined && lastRequestEstimate) {
+        const gate = compactionGate(effectiveConfig);
+        const estimate = estimateHistoryTokens(newHistory) + lastRequestEstimate.overheadTokens;
+        const cleared = maskStaleOutputs(estimate, gate);
+        if (cleared > 0 && estimate - cleared < Math.floor(gate * DEFERRED_COMPACT_GATE_FRACTION)) {
+          log.info('deferred compaction dropped: masking brought the request under the gate', {
+            requestTokens: estimate - cleared,
+          });
+          abortPendingCompaction('no longer needed');
+        }
+      }
       if (pendingCompaction()?.settled !== undefined) {
         const outcome = await commitDeferredCompaction(false);
         if (signal?.aborted) break;
@@ -1005,7 +1046,7 @@ export async function runAgentLoop(
         config.autoCompactEnabled !== false &&
         callbacks.onCompact &&
         contextLimit != null &&
-        shouldCompact(lastUsage, compactionGate(effectiveConfig), 1)
+        usageAtGate(lastUsage, effectiveConfig)
       ) {
         const attemptKey = `${usagePressureTokens(lastUsage)}:${newHistory.length}`;
         if (
@@ -1018,28 +1059,20 @@ export async function runAgentLoop(
             requestOverheadTokens: lastRequestEstimate?.overheadTokens,
             estimatedRequestTokens: lastRequestEstimate?.requestTokens,
           };
-          if (deferredCompactionAvailable() && lastUsage && !synchronousThisBoundary) {
-            // There is headroom -- the threshold sits below the window -- so the
-            // reducer runs on a snapshot while this turn proceeds on the full
-            // history, and the checkpoint is judged and committed at the next
-            // boundary against the steps taken meanwhile.
-            log.info('auto-compact triggered (deferred)', {
-              tokens: usagePressureTokens(lastUsage),
-              contextLimit,
-            });
-            startDeferredCompaction(lastUsage, hints);
-          } else {
-            log.info('auto-compact triggered', {
-              tokens: usagePressureTokens(lastUsage),
-              contextLimit,
-            });
-            try {
-              const result = await callbacks.onCompact(newHistory, lastUsage, hints);
-              applyCompaction(result);
-              // skipped/failed: keep lastUsage so the host can still act; do not retry same snapshot
-            } catch {
-              // non-fatal: continue with full history this turn
-            }
+          // At the gate there is no headroom left to run a summarizer beside the
+          // turn -- the next request would wait for it at once -- so this one is
+          // synchronous. The deferred start is the response site below, at 85%.
+          log.info('auto-compact triggered', {
+            tokens: usagePressureTokens(lastUsage),
+            contextLimit,
+            deferredFallback: synchronousThisBoundary,
+          });
+          try {
+            const result = await callbacks.onCompact(newHistory, lastUsage, hints);
+            applyCompaction(result);
+            // skipped/failed: keep lastUsage so the host can still act; do not retry same snapshot
+          } catch {
+            // non-fatal: continue with full history this turn
           }
         }
       }
@@ -1173,26 +1206,8 @@ export async function runAgentLoop(
       const preflightThreshold = budgets.preflightThreshold;
 
       // Old re-derivable tool outputs are cleared before a summarizer is asked for
-      // anything (`plans/compaction-v3-plan.md` §1). A pass that clears too little
-      // changes nothing, so the prompt is rewritten in batches rather than per request.
-      if (
-        config.autoCompactEnabled !== false &&
-        requestTokens >= Math.floor(preflightThreshold * MASK_GATE_FRACTION)
-      ) {
-        const masked = maskStaleToolOutputs(newHistory, toolOutputMaskOptions(preflightThreshold));
-        if (masked.maskedCount > 0) {
-          newHistory.length = 0;
-          newHistory.push(...masked.history);
-          const before = requestTokens;
-          await rebuildRequest();
-          log.info('stale tool outputs masked', {
-            masked: masked.maskedCount,
-            clearedTokens: masked.clearedTokens,
-            requestTokens: before,
-            after: requestTokens,
-          });
-        }
-      }
+      // anything (`plans/compaction-v3-plan.md` §1).
+      if (maskStaleOutputs(requestTokens, preflightThreshold) > 0) await rebuildRequest();
 
       // A reducer already running on a snapshot is worth more than a second one
       // started now: when the request is over the gate, wait for it, judge it,
@@ -2293,7 +2308,7 @@ export async function runAgentLoop(
         deferredCompactionAvailable() &&
         !pendingCompaction() &&
         turnUsage &&
-        shouldCompact(turnUsage, compactionGate(effectiveConfig), DEFERRED_COMPACT_GATE_FRACTION)
+        usageAtGate(turnUsage, effectiveConfig, DEFERRED_COMPACT_GATE_FRACTION)
       ) {
         const attemptKey = `${usagePressureTokens(turnUsage)}:${newHistory.length}`;
         if (attemptKey !== lastCompactAttemptKey) {
