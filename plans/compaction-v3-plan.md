@@ -192,18 +192,20 @@ lower.
 through 9router, each replayed on the model the session was using). The v2 baseline ran on this
 branch's first commit; v3 replayed exactly the same cases with `--cases-from`.
 
-| Same nine cases                           | v2 baseline          | v3            |
-| ----------------------------------------- | -------------------- | ------------- |
-| Degraded                                  | 7                    | 0             |
-| Summary stored as raw JSON                | 6                    | 0             |
-| Retained tail empty                       | 7                    | 0             |
-| Post-compaction history, median           | 4,472 tokens         | 23,106 tokens |
-| Wall time, median                         | 98 s                 | 25 s          |
-| Summarizer calls, median                  | 2                    | 1             |
-| Judge against the agent's real next steps | 7 accepted, 2 reject | 9 accepted    |
-| Prompt / completion tokens, all nine      | 2.82M / 130k         | 0.70M / 39k   |
+| Same nine cases                           | v2 baseline          | v3 (first commit) | v3 after two review rounds |
+| ----------------------------------------- | -------------------- | ----------------- | -------------------------- |
+| Degraded                                  | 7                    | 0                 | 0                          |
+| Summary stored as raw JSON                | 6                    | 0                 | 0                          |
+| Retained tail empty                       | 7                    | 0                 | 0                          |
+| Post-compaction history, median           | 4,472 tokens         | 23,106 tokens     | 23,068 tokens              |
+| Wall time, median                         | 98 s                 | 25 s              | 32 s                       |
+| Summarizer calls, median                  | 2                    | 1                 | 1                          |
+| Judge against the agent's real next steps | 7 accepted, 2 reject | 9 accepted        | 7 accepted, 2 reject       |
+| Prompt / completion tokens, all nine      | 2.82M / 130k         | 0.70M / 39k       | 0.67M / 36k                |
 
-Caveats: the judge is the same model family as the summarizer and reads only the next six real
+The judge column moves between runs of the same code (9 then 7 accepted), so it does not separate
+v3 from v2; the two v3 rejects name details the agent would read again (a spec's sections, one
+function's return type), the two v2 rejects named a shell id and a worktree path. Caveats: the judge is the same model family as the summarizer and reads only the next six real
 steps, so "accepted" is a floor on sufficiency, not a proof of it; the Gemini and space-bunny
 replays ran against their 1M windows, so their histories fit the residual tail and v3 kept the
 short tail instead (which is why their post size is ~22k); the masking layer is not in this
