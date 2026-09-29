@@ -7,12 +7,12 @@ import type { AgentApplyResult, AgentRecord, AgentSnapshot, PatchCandidate } fro
 import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 import { hardenedGitArgs, hardenedGitEnv, HARDENED_DIFF_ARGS } from '../tools/git.js';
-
-interface GitResult {
-  stdout: string;
-  stderr: string;
-  code: number;
-}
+import {
+  signingPinArgs,
+  type HardenedRunner,
+  type RunOptions,
+  type RunResult,
+} from './git-signing.js';
 
 /**
  * Every git command this module runs: a synthetic snapshot, an agent's worktree, the agent's
@@ -26,20 +26,30 @@ interface GitResult {
  * before, so a repository can run a program by delegating an agent (#348). Turning hooks off for
  * it is the decision here; the operator's own commits, `GitCommit` included, keep theirs.
  *
- * It is applied inside `git()` rather than at each call site, on both the `execFile` and the
- * `spawn` path, so a new call site cannot forget it.
+ * It is applied inside {@link run} rather than at each call site, so a new call site cannot forget
+ * it, and `git-signing.ts` is given that function rather than a runner of its own for the same
+ * reason: a fix here reaches every read that decides how a commit is signed.
+ *
+ * Three properties of a child are load-bearing for the reads this module makes, and all three
+ * live here rather than at the call sites because each one has a way of failing *open*:
+ *
+ * - **A non-numeric error never resolves.** `allowExitCodes` names real exit codes, so only a real
+ *   exit code can satisfy it. A `maxBuffer` overrun, a missing `git`, a signal or a timeout all
+ *   arrive with a string code, a null code, or no code at all, and each of them used to be read as
+ *   exit 1 — which `git config --get-regexp` uses for "no match". A signing read that resolved on a
+ *   truncated answer would pin nothing and let a repository's configuration through untouched.
+ * - **stdin is closed, not an open pipe.** A signer that reads stdin — an ssh key with a
+ *   passphrase and no agent, a loopback pinentry — otherwise waits on a pipe nobody will ever
+ *   write to, for as long as the session lasts. Only the calls that write a patch get one.
+ * - **A call that can start a program is bounded.** A signing program that never returns is the
+ *   same hang from the other side.
  */
-function git(
-  cwd: string,
-  args: string[],
-  options?: { env?: NodeJS.ProcessEnv; allowExitCodes?: number[]; input?: string },
-): Promise<GitResult> {
-  const argv = hardenedGitArgs(args);
-  const env = buildChildEnv(process.env, { ...hardenedGitEnv(), ...options?.env });
-  if (options?.input !== undefined) {
+function run(command: string, args: string[], options: RunOptions): Promise<RunResult> {
+  const env = buildChildEnv(process.env, { ...hardenedGitEnv(), ...options.env });
+  if (options.input !== undefined) {
     return new Promise((resolvePromise, reject) => {
-      const child = spawn('git', argv, {
-        cwd,
+      const child = spawn(command, args, {
+        cwd: options.cwd,
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -60,9 +70,17 @@ function git(
       child.stdout.on('data', (chunk) => (stdout += chunk.toString()));
       child.stderr.on('data', (chunk) => (stderr += chunk.toString()));
       child.on('error', (error) => settle(() => reject(error)));
-      child.on('close', (codeValue) => {
-        const code = codeValue ?? 1;
+      child.on('close', (codeValue, signal) => {
         settle(() => {
+          // A signalled child has no exit code to reason about, so it is a failure whatever
+          // `allowExitCodes` names — including the timeout this call set for it.
+          if (signal !== null) {
+            reject(
+              new Error(stderr.trim() || stdinError?.message || `git was killed with ${signal}`),
+            );
+            return;
+          }
+          const code = codeValue ?? 1;
           if (code === 0 || options.allowExitCodes?.includes(code)) {
             resolvePromise({ stdout, stderr, code });
             return;
@@ -95,26 +113,83 @@ function git(
   }
 
   return new Promise((resolvePromise, reject) => {
-    execFile(
-      'git',
-      argv,
+    const child = execFile(
+      command,
+      args,
       {
-        cwd,
+        cwd: options.cwd,
         env,
         encoding: 'utf8',
+        // One buffer for every call: a signing read that overruns it has to fail rather than
+        // resolve on a prefix, and this size is what makes that impractical rather than what makes
+        // it correct.
         maxBuffer: 50 * 1024 * 1024,
+        timeout: options.timeoutMs,
       },
       (error, stdout, stderr) => {
-        const code = typeof error?.code === 'number' ? error.code : error ? 1 : 0;
-        if (!error || options?.allowExitCodes?.includes(code)) {
+        // Node reports a failure three ways and only one of them is an exit code: `killed` and
+        // `signal` cover a timeout and a signal, and a `maxBuffer` overrun or a missing binary
+        // arrives as a string in `code`. None of those may resolve as if it were the "no match"
+        // that exit 1 means, so an exit code is used only where there is one.
+        const code = exitCodeOf(error);
+        if (code === undefined) {
+          reject(new Error(failureDescription(error, stderr, command)));
+          return;
+        }
+        if (code === 0 || options.allowExitCodes?.includes(code)) {
           resolvePromise({ stdout, stderr, code });
           return;
         }
-        reject(new Error(stderr.trim() || stdout.trim() || error.message));
+        reject(
+          new Error(
+            stderr.trim() || stdout.trim() || error?.message || `${command} failed (${code})`,
+          ),
+        );
       },
     );
+    // `execFile` leaves the child's stdin an open pipe that nothing will ever write to, and a
+    // child that reads it waits for an end that never comes: an ssh signer asking for a passphrase,
+    // a pinentry on a loopback socket. Closing it now is what makes such a read fail, which is
+    // what a command Book did not choose to read input from should do. (Checked against a real
+    // git: a program that reads stdin to the end otherwise holds its call open indefinitely.)
+    child.stdin?.end();
   });
 }
+
+/** How a child process can fail without ever producing an exit code. */
+interface ProcessFailure extends Error {
+  code?: number | string;
+  killed?: boolean;
+  signal?: string | null;
+}
+
+/** A child's exit code, or `undefined` for anything that is not one — which is a failure, not a 1. */
+function exitCodeOf(error: ProcessFailure | null): number | undefined {
+  // No error at all is the success case, and it is the one shape of "no exit code" that is not a
+  // failure: `execFile` reports it by passing `null`, not by passing a code.
+  if (!error) return 0;
+  if (error.killed || error.signal) return undefined;
+  return typeof error.code === 'number' ? error.code : undefined;
+}
+
+function failureDescription(error: ProcessFailure | null, stderr: string, command: string): string {
+  if (error?.killed) return `${command} was killed after its timeout and produced no result`;
+  if (error?.signal) return `${command} was killed with ${error.signal}`;
+  if (typeof error?.code === 'string') return `${command} failed: ${error.code}`;
+  return stderr.trim() || error?.message || `${command} failed`;
+}
+
+/** git, with the argv hardening that belongs to git and not to {@link run}. */
+function git(
+  cwd: string,
+  args: string[],
+  options: Omit<RunOptions, 'cwd'> = {},
+): Promise<RunResult> {
+  return run('git', hardenedGitArgs(args), { ...options, cwd });
+}
+
+/** The runner `git-signing.ts` reads the signing configuration through; see {@link HardenedRunner}. */
+const hardenedRunner: HardenedRunner = run;
 
 /** Exported only for `git-isolation.test.ts`: no exported path reaches `git()`'s `input` branch
  * without a real snapshot, and #351 needs a patch git exits on before reading. */
@@ -290,9 +365,10 @@ export async function commitAgentWork(
   // belt and braces: `commit.gpgSign` and `gpg.program` are configuration this commit would
   // otherwise honor, and the identity it commits under — `Book Agent <agents@book.local>` — has
   // no key on any machine, so every patcher commit would fail outright, or hang a headless run on
-  // pinentry, or start whatever program the configuration names. The cherry-pick that applies
-  // this work to the operator's branch is left signing as they configured: that commit lands in
-  // their history under their committer identity.
+  // pinentry, or start whatever program the configuration names. The cherry-pick that applies this
+  // work to the operator's branch is a different question: that commit is the operator's own, in
+  // their history, under their identity, so it still signs — and `git-signing.ts` is what decides
+  // which configuration that signing reads.
   await git(
     record.worktree,
     ['commit', '--no-verify', '--no-gpg-sign', '-m', `book agent ${record.id}: ${record.name}`],
@@ -338,6 +414,24 @@ async function precheckDelta(snapshot: AgentSnapshot, patch: string): Promise<vo
   }
 }
 
+/** How long the cherry-pick may take before it is killed and the pick it started is aborted. */
+const CHERRY_PICK_TIMEOUT_MS = 300_000;
+
+/**
+ * Whether the repository is in the middle of a cherry-pick somebody else started.
+ *
+ * `CHERRY_PICK_HEAD` is git's own record of one, and `rev-parse --verify` answers "no" with exit
+ * 1 rather than an error, which is why this asks for it and reads the answer rather than trusting
+ * a quiet repository to mean no pick. It is checked before anything is written, and the `--abort`
+ * in {@link applyVerifiedCandidate} runs only for a pick that call started.
+ */
+async function hasPendingCherryPick(repoRoot: string): Promise<boolean> {
+  const result = await git(repoRoot, ['rev-parse', '-q', '--verify', 'CHERRY_PICK_HEAD'], {
+    allowExitCodes: [1],
+  });
+  return result.code === 0;
+}
+
 export async function applyVerifiedCandidate(
   snapshot: AgentSnapshot,
   candidate: PatchCandidate,
@@ -353,6 +447,17 @@ export async function applyVerifiedCandidate(
   ).stdout.trim();
   if (actualHead !== candidate.headCommit) {
     return { status: 'conflicted', error: 'Patch candidate commit no longer resolves exactly.' };
+  }
+
+  // Somebody else's interrupted cherry-pick is the operator's, and it owns the working tree this
+  // would write to. Book starts a cherry-pick only to be able to abort the one it started, so a
+  // pick it did not start is a pick it must leave exactly as it found it.
+  if (await hasPendingCherryPick(snapshot.repoRoot)) {
+    return {
+      status: 'conflicted',
+      error:
+        'A cherry-pick is already in progress in this repository. Book did not start it and will not abort it; finish it (git cherry-pick --continue) or undo it (git cherry-pick --abort), then apply the agent result again.',
+    };
   }
 
   const current = await currentWorkspaceFingerprint(snapshot.repoRoot, snapshot.includeUntracked);
@@ -374,8 +479,35 @@ export async function applyVerifiedCandidate(
   }
 
   if (!snapshot.dirty) {
+    // Signing is what this closes for the cherry-pick: it is the only call here that writes a
+    // commit into the operator's history, so it is the only one that signs, and a
+    // repository-local `commit.gpgSign` with a `gpg.program` of its own is a program Book would
+    // start, in a flow nothing asked about (#348). The commit still signs, and signs as the
+    // operator configured, because the pins carry their own value forward — see `git-signing.ts`
+    // for what is read, from where, and the one signing shape that cannot be carried over.
+    // Filters and merge drivers still run on this checkout, deliberately, because git-lfs depends
+    // on them (#357); they are configuration a repository can own in a way signing now is not.
+    //
+    // The read is a separate step, before the `try` below, because it is not a cherry-pick: a
+    // failure here means no pick has started, and reporting it as a rolled-back pick would be
+    // wrong twice over — it would blame the pick for a read that never reached one, and the
+    // `--abort` would follow to a repository that has nothing to abort.
+    let signingPins: string[];
     try {
-      await git(snapshot.repoRoot, ['cherry-pick', candidate.headCommit]);
+      signingPins = await signingPinArgs(snapshot.repoRoot, hardenedRunner);
+    } catch (error) {
+      return {
+        status: 'conflicted',
+        error: `Could not read the signing configuration for the cherry-pick: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    try {
+      // Bounded because this is the one call that can start a program the operator named: a
+      // signer waiting on a passphrase it will never be given is a hang, and an unbounded one
+      // would outlive the session. The abort below then cleans up the pick this call started.
+      await git(snapshot.repoRoot, [...signingPins, 'cherry-pick', candidate.headCommit], {
+        timeoutMs: CHERRY_PICK_TIMEOUT_MS,
+      });
       const appliedCommit = (await git(snapshot.repoRoot, ['rev-parse', 'HEAD'])).stdout.trim();
       return { status: 'applied', commit: appliedCommit };
     } catch (error) {
