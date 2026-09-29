@@ -28,7 +28,7 @@ import type {
   RewindTarget,
   PlanRecordData,
 } from '../../types/sessions.js';
-import { shouldCompact, usagePressureTokens } from '../../agent/compact.js';
+import { compactionGate, shouldCompact, usagePressureTokens } from '../../agent/compact.js';
 import { resolveContextLimit } from '../../models.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
 import type { Todo } from '../../tools/todo.js';
@@ -801,7 +801,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         if (
           liveConfig.autoCompactEnabled !== false &&
           contextLimit != null &&
-          shouldCompact(hostUsageRef.current, contextLimit) &&
+          shouldCompact(hostUsageRef.current, compactionGate(liveConfig), 1) &&
           lastHostCompactAttemptRef.current !== hostCompactAttemptKey
         ) {
           lastHostCompactAttemptRef.current = hostCompactAttemptKey;

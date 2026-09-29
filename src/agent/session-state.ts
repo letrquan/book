@@ -3,6 +3,7 @@ import { readFile, stat } from 'fs/promises';
 import { resolve } from 'path';
 import { workspaceIdentity } from '../tools/file-provenance.js';
 import { normalizePromptPath, promptCurrentDate, promptElapsed } from './prompt-determinism.js';
+import type { Message } from '../types/messages.js';
 
 /**
  * Per-turn workspace facts. They travel at the tail of the newest user turn
@@ -15,7 +16,7 @@ import { normalizePromptPath, promptCurrentDate, promptElapsed } from './prompt-
  */
 
 /** Cap the freshness pass so a large checkpoint cannot stall a turn on hashing. */
-const MAX_CHECKPOINT_FILES = 30;
+const MAX_CHECKPOINT_FILES = 40;
 
 const PLAN_MODE_LINE =
   '- Plan mode: active — mutation tools are unavailable this turn; explore read-only, then call ExitPlanMode with your plan and wait for approval before making any file changes.';
@@ -132,6 +133,24 @@ interface CheckpointFile {
 }
 
 /**
+ * The files a checkpoint lists, with their observations: v3 keeps them on the
+ * message's structured record; a v2 checkpoint's content is the JSON itself.
+ */
+function checkpointFilesOf(
+  message: Pick<Message, 'content' | 'contextContent' | 'checkpointData'>,
+): { files?: CheckpointFile[] } {
+  if (message.checkpointData) return { files: message.checkpointData.files };
+  const content = message.contextContent ?? message.content;
+  const jsonStart = content.indexOf('{');
+  if (jsonStart < 0) return {};
+  try {
+    return JSON.parse(content.slice(jsonStart)) as { files?: CheckpointFile[] };
+  } catch {
+    return {};
+  }
+}
+
+/**
  * Report which checkpoint files drifted since the agent last observed them.
  *
  * The checkpoint's own bytes stay frozen — re-rendering an old message at build
@@ -140,17 +159,9 @@ interface CheckpointFile {
  */
 export async function collectStaleCheckpointFiles(
   workspace: string,
-  checkpointContent: string,
+  checkpointMessage: Pick<Message, 'content' | 'contextContent' | 'checkpointData'>,
 ): Promise<string[]> {
-  const jsonStart = checkpointContent.indexOf('{');
-  if (jsonStart < 0) return [];
-
-  let checkpoint: { files?: CheckpointFile[] };
-  try {
-    checkpoint = JSON.parse(checkpointContent.slice(jsonStart));
-  } catch {
-    return [];
-  }
+  const checkpoint = checkpointFilesOf(checkpointMessage);
   if (!checkpoint.files?.length) return [];
 
   const currentWorkspaceId = workspaceIdentity(workspace);

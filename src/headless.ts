@@ -27,7 +27,7 @@ import {
   type AgentTerminalOutcome,
 } from './types/terminal.js';
 import { createAgentRunContext, type AgentRunContext, type AgentRunResult } from './types/runs.js';
-import { shouldCompact, usagePressureTokens } from './agent/compact.js';
+import { compactionGate, shouldCompact, usagePressureTokens } from './agent/compact.js';
 import { resolveContextLimit } from './models.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { seedObservationLedger } from './tools/file-provenance.js';
@@ -931,7 +931,7 @@ export async function runHeadless(
       if (
         config.autoCompactEnabled !== false &&
         contextLimit != null &&
-        shouldCompact(lastUsage, contextLimit) &&
+        shouldCompact(lastUsage, compactionGate(config), 1) &&
         lastHostCompactAttemptKey !== hostCompactAttemptKey
       ) {
         lastHostCompactAttemptKey = hostCompactAttemptKey;

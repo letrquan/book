@@ -7226,7 +7226,9 @@ describe('requests the window cannot hold (#238, #244 review)', () => {
   /**
    * A resumed build session: every tool result sits under the flat 2,000-token
    * clip, so clipping cannot shrink the request, and ~90k tokens of them cannot
-   * go to a model with a 40k window.
+   * go to a model with a 40k window. The tool is one whose output masking leaves
+   * alone (a subagent's report cannot be re-derived), so only compaction can
+   * shrink it.
    */
   function smallResultHistory(count: number): Message[] {
     const ids = Array.from({ length: count }, (_, index) => `small-result-${index}`);
@@ -7243,7 +7245,7 @@ describe('requests the window cannot hold (#238, #244 review)', () => {
         role: 'assistant',
         content: '',
         includeInContext: true,
-        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolCalls: ids.map((id) => ({ id, name: 'Task', arguments: {} })),
         toolResults: ids.map((id) => toolSuccess('r'.repeat(6_000), { toolCallId: id })),
         timestamp: 0,
       },
@@ -7579,7 +7581,7 @@ describe('the last-resort compaction, review round 1 (#238, #244)', () => {
         role: 'assistant',
         content: '',
         includeInContext: true,
-        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolCalls: ids.map((id) => ({ id, name: 'Task', arguments: {} })),
         toolResults: ids.map((id) => toolSuccess('r'.repeat(6_000), { toolCallId: id })),
         timestamp: 0,
       },
@@ -7729,7 +7731,7 @@ describe('the last-resort compaction, review round 1 (#238, #244)', () => {
         role: 'assistant',
         content: '',
         includeInContext: true,
-        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolCalls: ids.map((id) => ({ id, name: 'Task', arguments: {} })),
         toolResults: ids.map((id) => toolSuccess('y'.repeat(40_000), { toolCallId: id })),
         timestamp: 0,
       },
@@ -7802,7 +7804,7 @@ describe('the last-resort compaction, review round 2 (#238, #244)', () => {
         role: 'assistant',
         content: '',
         includeInContext: true,
-        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolCalls: ids.map((id) => ({ id, name: 'Task', arguments: {} })),
         toolResults: ids.map((id) => toolSuccess('r'.repeat(size), { toolCallId: id })),
         timestamp: 0,
       },
@@ -7985,7 +7987,7 @@ describe('the last-resort compaction, review round 2 (#238, #244)', () => {
         role: 'assistant',
         content: '',
         includeInContext: true,
-        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolCalls: ids.map((id) => ({ id, name: 'Task', arguments: {} })),
         toolResults: ids.map((id) => toolSuccess('y'.repeat(40_000), { toolCallId: id })),
         timestamp: 0,
       },
@@ -8026,7 +8028,7 @@ describe('the last-resort compaction, review round 3 (#238, #244)', () => {
         role: 'assistant',
         content: '',
         includeInContext: true,
-        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolCalls: ids.map((id) => ({ id, name: 'Task', arguments: {} })),
         toolResults: ids.map((id) => toolSuccess('r'.repeat(size), { toolCallId: id })),
         timestamp: 0,
       },
@@ -8890,5 +8892,66 @@ describe('beforeToolExecution', () => {
 
     expect(runs).toEqual([]);
     expect(results[0]?.structuredError?.code).toBe('cancelled_before_start');
+  });
+});
+
+describe('tool-output masking at the preflight gate (compaction v3)', () => {
+  const window = {
+    maxTurns: 1,
+    maxTokens: 4_000,
+    autoCompactEnabled: true,
+    modelInfo: { contextWindow: 40_000, maxOutputTokens: 4_000 },
+  };
+
+  /** A build session that read sixty files: ~90k tokens of re-derivable output against a 40k window. */
+  function readHistory(count: number): Message[] {
+    const ids = Array.from({ length: count }, (_, index) => `read-${index}`);
+    return [
+      { id: 'mask-user', role: 'user', content: 'build it', includeInContext: true, timestamp: 0 },
+      {
+        id: 'mask-assistant',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: ids.map((id) => ({
+          id,
+          name: 'Read',
+          arguments: { file_path: `src/${id}.ts` },
+        })),
+        toolResults: ids.map((id) => toolSuccess('r'.repeat(6_000), { toolCallId: id })),
+        timestamp: 0,
+      },
+    ];
+  }
+
+  it('clears old outputs before asking for a summary, and needs none when that is enough', async () => {
+    const sent: string[] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        sent.push(JSON.stringify(messages));
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done' };
+      },
+    };
+    const compact = vi.fn(async (): Promise<CompactResult> => compactedForRetry());
+
+    const result = await runAgentLoop(
+      defaultConfig(window),
+      createRegistry(),
+      'continue',
+      readHistory(60),
+      noopCallbacks({ onCompact: compact }),
+      'auto',
+      { provider, isNewSession: false },
+    );
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain('[tool output cleared to save context: Read src/read-0.ts');
+    // The newest outputs are kept whole, and the call that produced each one stays.
+    expect(sent[0]).toContain('r'.repeat(6_000));
+    expect(sent[0]).toContain('src/read-59.ts');
+    expect(result.at(-1)?.content).toBe('ok');
   });
 });

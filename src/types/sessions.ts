@@ -297,7 +297,12 @@ export interface CheckpointSourceRef {
 }
 
 export type CompactCoverageReason =
-  'pass-limit' | 'context-overflow' | 'invalid-checkpoint' | 'post-budget';
+  | 'pass-limit'
+  | 'context-overflow'
+  | 'invalid-checkpoint'
+  | 'post-budget'
+  /** The summary reached the summarizer's output cap and was kept as far as it went. */
+  | 'summary-truncated';
 
 export interface ConversationCheckpointCoverage {
   /** This generation's coverage. Answers "is the checkpoint I just made sound?" */

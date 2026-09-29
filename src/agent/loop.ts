@@ -26,6 +26,8 @@ import type { PreparedToolCall, ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
 import {
   clipHistoryToolResults,
+  compactionGate,
+  DEFERRED_COMPACT_GATE_FRACTION,
   estimateHistoryTokens,
   estimateProviderRequestTokens,
   LARGE_REQUEST_OVERFLOW_FLOOR_TOKENS,
@@ -33,6 +35,11 @@ import {
   shouldCompact,
   usagePressureTokens,
 } from './compact.js';
+import {
+  MASK_GATE_FRACTION,
+  maskStaleToolOutputs,
+  toolOutputMaskOptions,
+} from './tool-output-masking.js';
 import { hasDeclaredContextWindow, resolveContextLimit, resolveModelKey } from '../models.js';
 import {
   createModelWindowStore,
@@ -998,7 +1005,7 @@ export async function runAgentLoop(
         config.autoCompactEnabled !== false &&
         callbacks.onCompact &&
         contextLimit != null &&
-        shouldCompact(lastUsage, contextLimit)
+        shouldCompact(lastUsage, compactionGate(effectiveConfig), 1)
       ) {
         const attemptKey = `${usagePressureTokens(lastUsage)}:${newHistory.length}`;
         if (
@@ -1164,6 +1171,28 @@ export async function runAgentLoop(
       const budgets = resolveCompactBudgets(effectiveConfig, { requestOverheadTokens });
       const usableContextLimit = budgets.usableContextLimit;
       const preflightThreshold = budgets.preflightThreshold;
+
+      // Old re-derivable tool outputs are cleared before a summarizer is asked for
+      // anything (`plans/compaction-v3-plan.md` §1). A pass that clears too little
+      // changes nothing, so the prompt is rewritten in batches rather than per request.
+      if (
+        config.autoCompactEnabled !== false &&
+        requestTokens >= Math.floor(preflightThreshold * MASK_GATE_FRACTION)
+      ) {
+        const masked = maskStaleToolOutputs(newHistory, toolOutputMaskOptions(preflightThreshold));
+        if (masked.maskedCount > 0) {
+          newHistory.length = 0;
+          newHistory.push(...masked.history);
+          const before = requestTokens;
+          await rebuildRequest();
+          log.info('stale tool outputs masked', {
+            masked: masked.maskedCount,
+            clearedTokens: masked.clearedTokens,
+            requestTokens: before,
+            after: requestTokens,
+          });
+        }
+      }
 
       // A reducer already running on a snapshot is worth more than a second one
       // started now: when the request is over the gate, wait for it, judge it,
@@ -2264,14 +2293,14 @@ export async function runAgentLoop(
         deferredCompactionAvailable() &&
         !pendingCompaction() &&
         turnUsage &&
-        shouldCompact(turnUsage, resolveContextLimit(effectiveConfig))
+        shouldCompact(turnUsage, compactionGate(effectiveConfig), DEFERRED_COMPACT_GATE_FRACTION)
       ) {
         const attemptKey = `${usagePressureTokens(turnUsage)}:${newHistory.length}`;
         if (attemptKey !== lastCompactAttemptKey) {
           lastCompactAttemptKey = attemptKey;
           log.info('auto-compact triggered (deferred, ahead of the tool wave)', {
             tokens: usagePressureTokens(turnUsage),
-            contextLimit: resolveContextLimit(effectiveConfig),
+            gate: compactionGate(effectiveConfig),
           });
           startDeferredCompaction(turnUsage, {
             requestOverheadTokens: lastRequestEstimate?.overheadTokens,

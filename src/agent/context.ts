@@ -631,12 +631,7 @@ async function ensureSessionState(
     outstandingAgents,
     todos,
     pendingMemoryCandidates,
-    staleFiles: checkpoint
-      ? await collectStaleCheckpointFiles(
-          config.workspace,
-          checkpoint.contextContent ?? checkpoint.content,
-        )
-      : [],
+    staleFiles: checkpoint ? await collectStaleCheckpointFiles(config.workspace, checkpoint) : [],
   });
 }
 
