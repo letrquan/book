@@ -174,3 +174,29 @@ v2 code before any change; the same cases are re-run on v3.
 Acceptance: degraded rate near zero; retained tail non-empty on every case that has more than one
 message after the previous checkpoint; judge sufficiency no worse than baseline; median wall time
 lower.
+
+## Results (2026-09-29)
+
+`npm run eval:compact-replay -- --since 2026-09-17 --per-model 3` picked nine real compactions
+(three each on `cx/gpt-5.6-luna`, `ag/gemini-3.8-flash-high`, `cmc/stealth/space-bunny-alpha`,
+through 9router, each replayed on the model the session was using). The v2 baseline ran on this
+branch's first commit; v3 replayed exactly the same cases with `--cases-from`.
+
+| Same nine cases                           | v2 baseline          | v3            |
+| ----------------------------------------- | -------------------- | ------------- |
+| Degraded                                  | 7                    | 0             |
+| Summary stored as raw JSON                | 6                    | 0             |
+| Retained tail empty                       | 7                    | 0             |
+| Post-compaction history, median           | 4,472 tokens         | 23,106 tokens |
+| Wall time, median                         | 98 s                 | 25 s          |
+| Summarizer calls, median                  | 2                    | 1             |
+| Judge against the agent's real next steps | 7 accepted, 2 reject | 9 accepted    |
+| Prompt / completion tokens, all nine      | 2.82M / 130k         | 0.70M / 39k   |
+
+Caveats: the judge is the same model family as the summarizer and reads only the next six real
+steps, so "accepted" is a floor on sufficiency, not a proof of it; the Gemini and space-bunny
+replays ran against their 1M windows, so their histories fit the residual tail and v3 kept the
+short tail instead (which is why their post size is ~22k); the masking layer is not in this
+measurement (it runs in the loop, not in `runCompact`) and is covered by unit and loop tests. One
+judge call on Gemini took about fifteen minutes to answer (it accepted); that latency is the
+deferred path's, unchanged by this work.

@@ -38,19 +38,20 @@
  * matches it WITHOUT consuming a position in the sequence. That is how a
  * scripted session survives Book's own model calls landing at unpredictable
  * indices: the compaction reducer's request, for one, arrives whenever the
- * preflight gate fires. `{ "match": "BEGIN HISTORICAL EVENTS", "checkpoint": true }`
- * answers the reducer with a minimal valid ConversationCheckpointV2 (the host
- * overwrites its generation), so compaction takes its healthy path rather than
- * the deterministic fallback. Only a user-role last message is matched: after a
+ * preflight gate fires. `{ "match": "Write the handoff summary", "checkpoint": true }`
+ * answers the summarizer with a short Markdown handoff under the headings it asks
+ * for, so compaction takes its healthy path rather than the deterministic
+ * fallback; any non-empty text would do, since v3 accepts the summary as prose.
+ * Only a user-role last message is matched: after a
  * tool call the last message is the tool result, and a Read of a file that
  * happens to contain the marker must not hijack the main agent's turn. Patterns
  * are compiled at load, so an invalid one fails before READY.
  *
- * A reply's text may cite the events Book showed the reducer: `{{event:N}}` is
- * replaced with the Nth (1-based) `session://current/event/<id>` reference in
- * the request's last user message, so a scripted checkpoint can carry sources
- * the host's validator accepts even though message ids are minted at runtime.
- * A placeholder with no Nth event is left as written.
+ * A reply's text may cite events: `{{event:N}}` is replaced with the Nth (1-based)
+ * `session://current/event/<id>` reference in the request's last user message.
+ * The v3 summarizer transcript carries no event references, so this only
+ * resolves against prompts that do (a judge's, or an older Book's reducer); a
+ * placeholder with no Nth event is left as written.
  *
  * `--usage-from-estimate` reports `prompt_tokens` as the mock's own chars/4
  * estimate of the request instead of a fixed 100, so Book's usage-triggered
@@ -357,18 +358,35 @@ function estimateRequestTokens(parsed) {
   return Math.ceil(JSON.stringify(parsed.messages ?? []).length / 4);
 }
 
-/** A minimal checkpoint the reducer's validator accepts; the host sets the generation itself. */
+/** A short Markdown handoff under the headings the v3 summarizer asks for. */
 function checkpointText() {
-  return JSON.stringify({
-    version: 2,
-    generation: 1,
-    state: { summary: 'Mock checkpoint.', status: 'active' },
-    constraints: [],
-    files: [],
-    episodes: [],
-    openThreads: [],
-    statistics: { summarizedMessages: 0, retainedMessages: 0, preTokens: 0, postTokens: 0 },
-  });
+  return [
+    '## Goal',
+    'Mock checkpoint.',
+    '',
+    '## Constraints & Preferences',
+    'None.',
+    '',
+    '## Progress',
+    '### Done',
+    '- Read the files.',
+    '### In Progress',
+    'None.',
+    '### Blocked',
+    'None.',
+    '',
+    '## Key Decisions',
+    'None.',
+    '',
+    '## Current State',
+    'MOCK-CHECKPOINT',
+    '',
+    '## Next Steps',
+    '- Answer the user.',
+    '',
+    '## Critical Context',
+    'None.',
+  ].join('\n');
 }
 
 /** `{{event:N}}` -> the Nth event reference the reducer was shown, so scripted sources resolve. */

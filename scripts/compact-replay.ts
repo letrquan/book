@@ -11,6 +11,7 @@
  *   npm run eval:compact-replay -- --since 2026-09-17 --per-model 4
  *   npm run eval:compact-replay -- --model 9router/cmc/stealth/space-bunny-alpha --limit 6
  *   npm run eval:compact-replay -- --sessions db7d16ed,b221dec7 --label v3
+ *   npm run eval:compact-replay -- --cases-from .book/reports/compact-replay-baseline-….json --label v3
  *
  * By default each case replays on the model the session was using, routed
  * through `--provider` (default `9router`) when the recorded model id has no
@@ -41,6 +42,8 @@ interface Options {
   limit?: number;
   perModel?: number;
   sessionPrefixes?: string[];
+  /** A previous report whose cases are replayed exactly, by session and record line. */
+  casesFrom?: string;
   model?: string;
   provider: string;
   concurrency: number;
@@ -131,6 +134,7 @@ function parseArgs(argv: readonly string[]): Options {
     else if (flag === '--limit') options.limit = positive();
     else if (flag === '--per-model') options.perModel = positive();
     else if (flag === '--sessions') options.sessionPrefixes = value().split(',').filter(Boolean);
+    else if (flag === '--cases-from') options.casesFrom = resolve(value());
     else if (flag === '--model') options.model = value();
     else if (flag === '--provider') options.provider = value();
     else if (flag === '--concurrency') options.concurrency = positive();
@@ -207,6 +211,15 @@ function discoverCases(options: Options): ReplayCase[] {
     });
   }
   cases.sort((left, right) => left.timestamp - right.timestamp);
+  if (options.casesFrom) {
+    const report = JSON.parse(readFileSync(options.casesFrom, 'utf8')) as {
+      results: Array<{ sessionId: string; line: number }>;
+    };
+    const wanted = report.results.map((result) => `${result.sessionId}:${result.line}`);
+    return wanted
+      .map((key) => cases.find((item) => `${item.sessionId}:${item.line}` === key))
+      .filter((item): item is ReplayCase => item !== undefined);
+  }
   let selected = cases;
   if (options.perModel) {
     const counts = new Map<string, number>();

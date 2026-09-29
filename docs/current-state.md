@@ -151,60 +151,32 @@ fresh verification pass.
   `sandbox.allowUnsandboxedCommands` defaults to `true`, so unsandboxed execution stays permitted
   until it is explicitly refused.
 - Compaction: `compactStrategy` is fixed to the production `summary` path and is the only
-  strategy. Every summary checkpoint carries a host-owned Carried Ledger
-  (`src/agent/carried-ledger.ts`) of user-authored constraints, extracted deterministically from
-  the user's own typed turns, readable but not writable by the reducer, not evictable by the
-  fitter, capped at 32 entries / 1024 tokens / 35% of the checkpoint budget, and disclosed in the
-  checkpoint header. It has no setting: it is always on and costs no extra model call. Since Phase 1
-  (2026-09-05, revised 2026-09-06 after review) the tail an auto-compaction keeps verbatim is the
-  residual of the post-compaction target rather than a flat 20k cap. The target is half the loop's
-  preflight gate net of the measured request overhead, which is about 79k tokens of tail at the
-  272k default window with the default output reserve and no overhead, and the per-result clip
-  scales with it. The loop and the compactor share one budget resolver. The short 20k tail is kept
-  by the recovery compaction after a provider rejects a request, and by any compaction that would
-  otherwise retain everything. Measured over the eight-generation fidelity corpus:
-  `verbatimUserRetention` 1.0 on both arms, final retention 0.667 at 32k and 0.833 at 272k, and
-  post-history utilization 0.47 and 0.48 against the loop's gate, recorded as per-arm floors in
-  `FIDELITY_ARMS`. Design: `plans/carried-ledger-plan.md`. Since Carried Turns (2026-09-14, Phase
-  3 of that plan) the user's own turns in the compacted span are kept verbatim as `kind: 'carried'`
-  messages ahead of the checkpoint and the reducer summarizes only assistant and tool activity;
-  they are paid for from the retained tail (15%, ≤12k tokens), clipped 1024→512→256 before any is
-  dropped, dropped oldest first with the brief last, and disclosed in the header. The fidelity
-  corpus gained two cue-less/Vietnamese `user-statement` facts and the double now grounds only on
-  the prompt it is shown, so the floors were re-measured: at 272k final retention 1.0 (0.571 before
-  on the same corpus and double), mean 0.804, `userTurnRetention` 1.0, utilization 0.488; at 32k
-  the change is neutral (final 0.643, `userTurnRetention` 0.5, utilization 0.476) because the
-  newest ~7.5k bundle leaves the carried set ~270 tokens. Since P2 (2026-09-16) a ledger entry a
-  later entry restated or withdrew in as many words (rescission cues: "instead of", "rather
-  than", "no longer", "stop using", "switch from", "was wrong", "is obsolete", "no longer
-  applies") is withheld from the ledger the model reads and counted in `supersededCount`; a value
-  changed with no cue is still not detected and falls to the "later one wins" reading rule. Since
-  P3 (2026-09-17) `fitCheckpoint` evicts by kind and dependency rather than by age -- uncited
-  finished episodes and uncited files first, the narrative shortened before any rule or thread,
-  cited episodes kept ahead of uncited ones, open threads then constraints oldest first down to
-  the newest, the deep 64/32/16-character rungs only after eviction -- and records what it dropped
-  in a host-owned `fit` tally the header discloses for constraints and open threads. The harness
-  double records facts by kind and reports `retentionByKind` with per-kind floors; at 32k the
-  finished episode the CRLF thread cites now survives (final retention 0.667 → 0.733 on the
-  by-kind double), 272k stays at 1.0. Since P4 (2026-09-17) the span about to be summarized is
-  scanned (`src/agent/compact-audit.ts`) for tool-result or `@file`/`!`-expansion sentences that
-  address a summarizer and ask it to leave something out; hits reach the `PreCompact` hook as
-  `suspect_inputs` (a block refuses the compaction and the TUI says so), are named to the reducer
-  as data, recorded on the checkpoint's host-owned `audit` by reference only, and shown as a
-  warning on the compaction card (which now stays for a warned success). Inherited reducer
-  constraints neither cited nor restated nor held by the ledger are counted in the same `audit`
-  and disclosed in a `[reducer: …]` header line, never restored.
-  `npm run eval:compact -- --adversarial` is the provider-backed measurement; the deterministic double cannot be steered,
-  so the harness only checks the plumbing. Since P5 phase 1 (2026-09-17,
-  `plans/async-compaction-plan.md`) a response that reports usage over the threshold and has
-  tool calls starts the reducer on a snapshot ahead of the tool wave (`prepareCompact`), the turn
-  goes on over the full history, and at the next boundary a low-effort judge call on the compact
-  model reads the checkpoint and the steps taken meanwhile (`judgeCompaction`) before
-  `commitCompact` applies the result with those steps verbatim behind it and writes the record;
-  rejected or inapplicable falls back to the synchronous path, inconclusive accepts, the verdict
-  is recorded (`judge` on the result, the compact record and stream-json). The TUI and headless
-  hosts wire it; managed agents and the pre-turn host compaction stay synchronous.
-  Evidence: `plans/compaction-research-2026-09.md`.
+  strategy. Since compaction v3 (2026-09-29, `plans/compaction-v3-plan.md`) it runs in two steps.
+  First, from 60% of the loop's preflight gate, old successful re-derivable tool outputs are
+  masked (`src/agent/tool-output-masking.ts`): the newest 40k tokens of tool output (20% of the
+  gate on a smaller window) are kept, failures, small results and non-re-derivable tools are never
+  touched, and a pass runs only when it clears a batch (up to 20k tokens). Then, at the gate, the
+  older span is summarized by one summarizer call into a Markdown handoff under fixed headings
+  (Goal, Constraints & Preferences, Progress, Key Decisions, Current State, Next Steps, Critical
+  Context), carrying the previous summary forward; any non-empty reply is accepted (thinking
+  blocks and a fence stripped), an empty one is retried once, and a reply cut off at the output
+  cap is kept and marked `summary-truncated`. The host appends a `## Files` list built from the
+  tools' file observations. The user's own turns are kept verbatim as `kind: 'carried'` messages
+  ahead of the checkpoint (15% of the retained tail, ≤12k tokens, clipped 1024→512→256, dropped
+  oldest first with the brief last), and the retained tail is cut at message boundaries, newest
+  first, with the newest message always kept. The model reads text; the structured record rides on
+  the message as `checkpointData` and is the compact record's `checkpoint` (still `version: 2`, so
+  older binaries resume). The summary budget is min(6,144, 5% of the window). Every usage-based
+  trigger reads the provider's count against the same gate as the preflight (`compactionGate`);
+  a deferred compaction starts at 85% of it. The Carried Ledger, the type-aware fit, the
+  inherited-constraint audit and the scripted-reducer fidelity harness are gone; a v2 JSON
+  checkpoint is read as the previous summary with its rules, threads and ledger entries rendered
+  as text. The span is still scanned for text addressed to a summarizer (`suspect_inputs` to the
+  `PreCompact` hook, a warning on the card), and the deferred path and its judge are unchanged
+  (`plans/async-compaction-plan.md`). Measured by replaying real compactions from `~/.book` with
+  `npm run eval:compact-replay`: see `plans/compaction-v3-plan.md` for the baseline and the v3
+  run. History of the earlier design: `plans/carried-ledger-plan.md`,
+  `plans/compaction-research-2026-09.md`.
 - Tool discovery: `auto`; the practical core stays loaded and `ToolSearch` activates deferred
   authorized tools on the next turn.
 - Tool execution: serial by default; only the reviewed read-only/Git set is scheduled in bounded

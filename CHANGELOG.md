@@ -205,6 +205,45 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Compaction v3: masked tool outputs, a Markdown handoff, a tail cut by message**
+  (`plans/compaction-v3-plan.md`). Replayed on the owner's real sessions, 20 of 38 compactions
+  since 2026-09-17 had come back degraded -- every one because the strict JSON checkpoint failed
+  validation somewhere, after which the reducer's nearly valid reply was stored as a string in
+  `state.summary` with every list empty -- and 27 of 38 kept no recent message at all, because the
+  retained tail was sized in whole user-led bundles and a run with one brief and two hundred tool
+  calls is one bundle. Now:
+  - **Old tool outputs are masked first.** From 60% of the preflight gate, old successful output
+    of re-derivable tools (`Read`, `Grep`, `Glob`, `Bash`, `WebFetch`, the git reads, …) is
+    replaced by a one-line placeholder naming the call and a retrieval reference; the newest 40k
+    tokens, failures, small results and non-re-derivable tools are never touched, and a pass runs
+    only when it clears a batch. When that is enough, nothing is summarized
+    (`src/agent/tool-output-masking.ts`).
+  - **One summarizer call writes a Markdown handoff** under fixed headings, carrying the previous
+    summary forward. Any non-empty reply is accepted: no schema, no quote or event-reference
+    validation, no repair prompt. An empty reply is retried once; a reply cut off at the output
+    cap is kept and marked `summary-truncated`. Oversized spans tighten their clips instead of
+    rolling through several chunked requests.
+  - **The host lists the files the span touched** (`## Files`), from the tools' observations, and
+    the checkpoint the model reads is text, not JSON: hashes and statistics live on the message as
+    `checkpointData`, which is also the compact record's `checkpoint`, still `version: 2`, so an
+    older `book` resumes a session this one compacted.
+  - **The retained tail is cut at message boundaries**, newest first; the newest message is always
+    kept. User turns are still carried verbatim ahead of the checkpoint.
+  - **One gate for every trigger.** The usage-based triggers (host pre-turn, loop boundary) read
+    the provider's count against the preflight gate, 0.8 of the usable window, instead of 0.8 of
+    the raw window, which at 272k had put them 51k tokens above it; a deferred compaction starts at
+    85% of the gate.
+  - **`generation` advances on every path.** A degraded fallback cloned the previous checkpoint's
+    generation, so a degraded chain read g2, g2, g2 with a frozen summary.
+  - **Removed:** the Carried Ledger and its cue extraction, the type-aware fit ladder, the
+    inherited-constraint audit and its `[reducer: …]` and `[fit: …]` header lines, multi-chunk
+    reduction, and the scripted-reducer fidelity harness with its floors. A v2 checkpoint is read
+    as the previous summary with its rules, threads and ledger entries rendered as text. The
+    summary budget is min(6,144, 5% of the window), up from 4,096 shared with references.
+  - **New measurement:** `npm run eval:compact-replay` replays real compactions from
+    `<BOOK_HOME>/sessions` on a real model and judges each against the steps the agent really took
+    next; `--cases-from` replays an earlier report's cases exactly.
+
 - **The agent's plan left the bottom of the transcript.** It was the last block drawn in the old
   style: a red `Plan` label and meter, markers in the `¶` column, and a five-row window that listed
   finished steps and hid the ones between. While a step is in flight the working line names it
