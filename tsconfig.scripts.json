@@ -4,6 +4,7 @@
   "include": [
     "scripts/compact-eval.ts",
     "scripts/compact-eval-worker.ts",
+    "scripts/compact-replay.ts",
     "scripts/verify-ink.ts",
     "scripts/package-smoke.ts",
     "scripts/prompt-eval.ts",
