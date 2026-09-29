@@ -2124,6 +2124,13 @@ Answer {"sufficient": true} when it does. Answer {"sufficient": false, "missing"
  * before it answers; the summarizer reserves the same margin for the same reason.
  */
 const JUDGE_MAX_OUTPUT_TOKENS = 512 + REDUCER_OUTPUT_MIN_MARGIN_TOKENS;
+/**
+ * The longest a judge call may hold the boundary it runs at. The commit waits
+ * for it, so a route that stalls held the agent's turn with it: one replayed
+ * Gemini judge took about fifteen minutes to answer. Past this the verdict is
+ * inconclusive, which commits the checkpoint, as a failed judge does.
+ */
+export const JUDGE_TIMEOUT_MS = 120_000;
 const JUDGE_DELTA_TOOL_RESULT_MAX_TOKENS = 512;
 const JUDGE_MAX_MISSING = 12;
 
@@ -2189,7 +2196,7 @@ export async function judgeCompaction(
   options: Pick<
     RunCompactOptions,
     'signal' | 'provider' | 'beforeModelCall' | 'onUsage' | 'onUsageMissing'
-  > = {},
+  > & { timeoutMs?: number } = {},
 ): Promise<CompactJudgeVerdict> {
   const steps = delta
     .filter((message) => message.includeInContext && message.kind !== 'local')
@@ -2244,11 +2251,13 @@ Return JSON only: {"sufficient": true} or {"sufficient": false, "missing": ["...
         effortExplicit: resolveEffortExplicit(judgeConfig, effort, isEffortChosen(judgeConfig)),
       }
     : judgeConfig;
+  const timeout = AbortSignal.timeout(options.timeoutMs ?? JUDGE_TIMEOUT_MS);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
   const generated = await generateCheckpoint(
     requestConfig,
     prompt,
     JUDGE_MAX_OUTPUT_TOKENS,
-    options.signal,
+    signal,
     provider,
     {
       beforeModelCall: options.beforeModelCall,
@@ -2259,7 +2268,8 @@ Return JSON only: {"sufficient": true} or {"sufficient": false, "missing": ["...
   );
   if (!generated.ok) {
     if (generated.result.status === 'failed' && generated.result.reason === 'aborted') {
-      return inconclusive('aborted', 1);
+      // The run's own cancellation is a stop; the judge's clock running out is not.
+      return inconclusive(options.signal?.aborted ? 'aborted' : 'timeout', 1);
     }
     if (generated.result.status === 'failed' && generated.result.reason === 'budget-overflow') {
       return inconclusive(generated.result.error, 0);

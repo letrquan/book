@@ -1675,6 +1675,27 @@ describe('judgeCompaction', () => {
     expect(mockedStream).not.toHaveBeenCalled();
   });
 
+  it('gives up on a judge that does not answer in time, as inconclusive rather than a stop', async () => {
+    const { applied: result, delta } = await applied();
+    mockedStream.mockImplementation(async function* (_config, _messages, _tools, options) {
+      await new Promise((resolve) => options?.signal?.addEventListener('abort', resolve));
+      throw new Error('This operation was aborted');
+    });
+    const started = Date.now();
+    const verdict = await judgeCompaction(makeConfig(), result, delta, { timeoutMs: 50 });
+    expect(verdict).toMatchObject({ verdict: 'inconclusive', note: 'timeout', modelCalls: 1 });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    // The run's own cancellation still reads as a stop.
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 20);
+    expect(
+      await judgeCompaction(makeConfig(), result, delta, {
+        signal: controller.signal,
+        timeoutMs: 10_000,
+      }),
+    ).toMatchObject({ verdict: 'inconclusive', note: 'aborted' });
+  });
+
   it('counts steps that carried text addressed to a summarizer', async () => {
     const { applied: result } = await applied();
     judgeReply('{"sufficient": true}');
