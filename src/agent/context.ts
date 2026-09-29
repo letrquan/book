@@ -6,9 +6,10 @@ import { resolveShell, shellPromptLine } from '../shell-selection.js';
 import type { ImageAttachment, Message } from '../types/messages.js';
 import type { ProviderMessage, SystemPromptZones } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
-import type { ToolContext } from '../types/tools.js';
+import type { FileObservation, ToolContext } from '../types/tools.js';
 import { createHash } from 'crypto';
 import { collectStaleCheckpointFiles, renderSessionState } from './session-state.js';
+import { normalizeObservedPath, supersedesObservation } from '../tools/file-provenance.js';
 import { normalizePromptPath } from './prompt-determinism.js';
 import {
   applySkillOverrides,
@@ -610,11 +611,26 @@ async function ensureSessionState(
 ): Promise<void> {
   let newest: Message | undefined;
   let checkpoint: Message | undefined;
+  /** The newest observation of each path after the newest checkpoint. */
+  let observedSince = new Map<string, FileObservation>();
   for (const msg of history) {
     if (!msg.includeInContext) continue;
+    if (msg.kind === 'checkpoint') {
+      checkpoint = msg;
+      observedSince = new Map();
+    } else if (checkpoint) {
+      for (const observation of msg.fileObservations ?? []) {
+        // An outline shows declarations, not content: it is not knowledge of the
+        // file a drift can be judged against, and never displaces a real read.
+        if (observation.operation === 'outline') continue;
+        const key = normalizeObservedPath(observation.path);
+        if (supersedesObservation(observedSince.get(key), observation)) {
+          observedSince.set(key, observation);
+        }
+      }
+    }
     if (msg.role !== 'user') continue;
     newest = msg;
-    if (msg.kind === 'checkpoint') checkpoint = msg;
   }
   if (!newest || newest.sessionState !== undefined) return;
 
@@ -632,10 +648,7 @@ async function ensureSessionState(
     todos,
     pendingMemoryCandidates,
     staleFiles: checkpoint
-      ? await collectStaleCheckpointFiles(
-          config.workspace,
-          checkpoint.contextContent ?? checkpoint.content,
-        )
+      ? await collectStaleCheckpointFiles(config.workspace, checkpoint, observedSince)
       : [],
   });
 }

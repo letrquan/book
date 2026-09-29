@@ -65,7 +65,8 @@ src/
                         message formatter
     session-state.ts    Per-turn <session-state> block + checkpoint freshness deltas
     prompt-determinism.ts  SYSTEM_PROMPT_VERSION, frozen date, evaluation path masking
-    compact.ts          Context compaction logic
+    compact.ts          Context compaction (summarizer handoff, carried turns, tail)
+    tool-output-masking.ts  Masks old re-derivable tool outputs before compaction
   agents/               Managed-agent subsystem (explorer/patcher/validator profiles):
                         manager.ts, store.ts (atomic JSON state), profiles.ts,
                         profile-resolver.ts, capabilities.ts, git-isolation.ts (worktrees),

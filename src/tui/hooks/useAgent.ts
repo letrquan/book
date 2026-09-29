@@ -28,7 +28,8 @@ import type {
   RewindTarget,
   PlanRecordData,
 } from '../../types/sessions.js';
-import { shouldCompact, usagePressureTokens } from '../../agent/compact.js';
+import { compactionGate, usageAtGate, usagePressureTokens } from '../../agent/compact.js';
+import { maskAtGate } from '../../agent/tool-output-masking.js';
 import { resolveContextLimit } from '../../models.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
 import type { Todo } from '../../tools/todo.js';
@@ -795,13 +796,27 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // the flag or move the baseline out from under the turn it retried.
         planKeyAtSendRef.current = JSON.stringify(agentSession.getRuntime().todos);
         setAgentPlanCurrent(false);
-        // Cross-turn auto-compact before appending the new user message.
+        // Cross-turn auto-compact before appending the new user message -- masking
+        // first, as in the loop: when it alone brings the last request's count
+        // under the gate, nothing is summarized.
+        if (
+          liveConfig.autoCompactEnabled !== false &&
+          usageAtGate(hostUsageRef.current, liveConfig)
+        ) {
+          const pressure = usagePressureTokens(hostUsageRef.current);
+          const gate = compactionGate(liveConfig);
+          const masked = maskAtGate(contextHistoryRef.current, gate, pressure, gate);
+          if (masked.maskedCount > 0) {
+            contextHistoryRef.current = masked.history;
+            if (masked.underLine) hostUsageRef.current = null;
+          }
+        }
         const contextLimit = resolveContextLimit(liveConfig);
         const hostCompactAttemptKey = `${usagePressureTokens(hostUsageRef.current)}:${contextHistoryRef.current.length}`;
         if (
           liveConfig.autoCompactEnabled !== false &&
           contextLimit != null &&
-          shouldCompact(hostUsageRef.current, contextLimit) &&
+          usageAtGate(hostUsageRef.current, liveConfig) &&
           lastHostCompactAttemptRef.current !== hostCompactAttemptKey
         ) {
           lastHostCompactAttemptRef.current = hostCompactAttemptKey;

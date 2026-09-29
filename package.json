@@ -67,6 +67,7 @@
     "bench:runtime": "tsx src/tui/__benchmarks__/runtime.bench.ts",
     "eval:edit": "tsx scripts/edit-eval.ts",
     "eval:compact": "tsx scripts/compact-eval.ts",
+    "eval:compact-replay": "tsx scripts/compact-replay.ts",
     "eval:memory": "tsx scripts/memory-eval.ts",
     "eval:skills": "tsx scripts/skill-eval.ts",
     "eval:review": "tsx scripts/review-eval.ts",

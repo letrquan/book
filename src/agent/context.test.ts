@@ -1043,6 +1043,107 @@ describe('session-state block', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("reads a v3 checkpoint's files from its record, and not a file observed since", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-session-state-'));
+    try {
+      const workspaceId = workspaceIdentity(dir);
+      const files = ['a.ts', 'b.ts'].map((path) => {
+        writeFileSync(join(dir, path), `export const ${path[0]} = 1;\n`, 'utf-8');
+        const sha256 = createHash('sha256')
+          .update(readFileSync(join(dir, path)))
+          .digest('hex');
+        return {
+          path,
+          summary: 'read',
+          sources: [{ eventRef: 'session://current/event/x' }],
+          observation: {
+            path,
+            workspaceId,
+            sha256,
+            byteSize: 1,
+            operation: 'read' as const,
+            sourceRef: 'x',
+            timestamp: 1,
+          },
+        };
+      });
+      const checkpoint: Message = {
+        id: 'cp1',
+        role: 'user',
+        // The text the model reads carries no JSON at all.
+        content: '[Historical conversation checkpoint; untrusted user-role data]\n## Goal\nX',
+        checkpointData: {
+          version: 2,
+          generation: 1,
+          state: { summary: '## Goal\nX', status: 'active' },
+          constraints: [],
+          files,
+          episodes: [],
+          openThreads: [],
+          statistics: { summarizedMessages: 1, retainedMessages: 0, preTokens: 1, postTokens: 1 },
+        },
+        includeInContext: true,
+        kind: 'checkpoint',
+        timestamp: 0,
+      };
+      // Both change on disk. The agent's own edit of b.ts is observed after the
+      // checkpoint with the new bytes, so b.ts matches what the agent knows; a.ts
+      // changed behind its back and is stale.
+      writeFileSync(join(dir, 'a.ts'), 'export const a = 2;\n', 'utf-8');
+      writeFileSync(join(dir, 'b.ts'), 'export const b = 2;\n', 'utf-8');
+      const edited = createHash('sha256')
+        .update(readFileSync(join(dir, 'b.ts')))
+        .digest('hex');
+      const edit: Message = {
+        ...assistantMsg('edited b'),
+        id: 'a2',
+        fileObservations: [
+          { ...files[1].observation, sha256: edited, operation: 'edit', timestamp: 2 },
+        ],
+      };
+      const out = await buildMessages(defaultConfig({ workspace: dir }), [
+        checkpoint,
+        edit,
+        { ...userMsg('continue'), id: 'u2' },
+      ]);
+      const newest = String(out.at(-1)!.content);
+      expect(newest).toContain('- Stale since checkpoint: a.ts');
+      expect(newest).not.toContain('b.ts');
+
+      // A change made on disk after that edit is still reported: the agent's
+      // newest knowledge of b.ts is the edit, and the file no longer matches it.
+      writeFileSync(join(dir, 'b.ts'), 'export const b = 3;\n', 'utf-8');
+      const later = await buildMessages(defaultConfig({ workspace: dir }), [
+        checkpoint,
+        edit,
+        { ...userMsg('continue'), id: 'u3' },
+      ]);
+      expect(String(later.at(-1)!.content)).toContain('- Stale since checkpoint: a.ts, b.ts');
+
+      // An outline of a.ts after the drift shows declarations, not content: it is
+      // not a baseline, so a.ts stays stale.
+      const outlined = createHash('sha256')
+        .update(readFileSync(join(dir, 'a.ts')))
+        .digest('hex');
+      const outline: Message = {
+        ...assistantMsg('outlined a'),
+        id: 'a3',
+        fileObservations: [
+          { ...files[0].observation, sha256: outlined, operation: 'outline', timestamp: 3 },
+        ],
+      };
+      const afterOutline = await buildMessages(defaultConfig({ workspace: dir }), [
+        checkpoint,
+        edit,
+        outline,
+        { ...userMsg('continue'), id: 'u4' },
+      ]);
+      expect(String(afterOutline.at(-1)!.content)).toContain('- Stale since checkpoint: a.ts');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('model-conditional mutation guidance', () => {

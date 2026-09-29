@@ -297,7 +297,12 @@ export interface CheckpointSourceRef {
 }
 
 export type CompactCoverageReason =
-  'pass-limit' | 'context-overflow' | 'invalid-checkpoint' | 'post-budget';
+  | 'pass-limit'
+  | 'context-overflow'
+  | 'invalid-checkpoint'
+  | 'post-budget'
+  /** The summary reached the summarizer's output cap and was kept as far as it went. */
+  | 'summary-truncated';
 
 export interface ConversationCheckpointCoverage {
   /** This generation's coverage. Answers "is the checkpoint I just made sound?" */
@@ -324,10 +329,9 @@ export interface ConversationCheckpointCoverage {
 /**
  * One user-authored constraint, recorded verbatim by the host.
  *
- * Host-owned: the reducer never writes this. It is extracted from the user's
- * own turns by `agent/carried-ledger.ts` and re-attached after every
- * generation, which is what lets it outlive the model-authored narrative that
- * `fitCheckpoint` is free to rewrite.
+ * Legacy: written by the Carried Ledger before compaction v3 removed it
+ * (`plans/compaction-v3-plan.md`). Kept so a checkpoint written then still reads;
+ * v3 renders these entries into the previous summary and never writes new ones.
  */
 export interface CarriedConstraint {
   /** Stable across generations: derived from the normalized text. */
@@ -351,12 +355,9 @@ export interface CarriedConstraint {
 }
 
 /**
- * The Carried Ledger: a monotonic, host-owned record of what the user asked
- * for, ordered oldest to newest and never reordered.
- *
- * `fitCheckpoint` may not evict from it. Its growth is bounded by its own cap
- * (`capCarriedLedger`) instead, so "the fitter cannot touch it" does not turn
- * into "it eats the checkpoint budget".
+ * The Carried Ledger: a host-owned record of what the user asked for, oldest to
+ * newest. Legacy, like `CarriedConstraint`: read from checkpoints written before
+ * compaction v3, never written by it.
  */
 export interface CarriedLedger {
   version: 1;

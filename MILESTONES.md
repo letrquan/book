@@ -68,6 +68,13 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
       benchmark gained an `--adversarial` arm. P5 phase 1 landed 2026-09-17: the reducer runs on
       a snapshot ahead of the tool wave while the turn goes on, and a judge reads the steps taken
       meanwhile before the checkpoint replaces history (`plans/async-compaction-plan.md`).
+      Compaction v3 landed 2026-09-29 (`plans/compaction-v3-plan.md`): replayed on real sessions,
+      20 of 38 compactions had degraded on the strict JSON checkpoint and 27 of 38 kept no recent
+      message, so old tool outputs are now masked first, one summarizer call writes a Markdown
+      handoff that is accepted as text, the host lists the files touched, the tail is cut at
+      message boundaries, and every usage trigger reads the preflight gate; the Carried Ledger,
+      the fit ladder, the inherited-constraint audit and the scripted-reducer fidelity harness
+      are gone, and `npm run eval:compact-replay` is the measurement.
 - [ ] A control surface for a run in flight - at hour 30 the only interventions are `kill` and wait.
 - [x] Monotonic clock for every duration decided **inside one process** — the provider retry
       budget and model-discovery budget, the background-shell start/stop budgets, the

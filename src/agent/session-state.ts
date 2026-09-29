@@ -1,8 +1,10 @@
 import { createHash } from 'crypto';
 import { readFile, stat } from 'fs/promises';
 import { resolve } from 'path';
-import { workspaceIdentity } from '../tools/file-provenance.js';
+import { normalizeObservedPath, workspaceIdentity } from '../tools/file-provenance.js';
 import { normalizePromptPath, promptCurrentDate, promptElapsed } from './prompt-determinism.js';
+import type { Message } from '../types/messages.js';
+import { MAX_CHECKPOINT_FILES } from './compact.js';
 
 /**
  * Per-turn workspace facts. They travel at the tail of the newest user turn
@@ -15,7 +17,6 @@ import { normalizePromptPath, promptCurrentDate, promptElapsed } from './prompt-
  */
 
 /** Cap the freshness pass so a large checkpoint cannot stall a turn on hashing. */
-const MAX_CHECKPOINT_FILES = 30;
 
 const PLAN_MODE_LINE =
   '- Plan mode: active — mutation tools are unavailable this turn; explore read-only, then call ExitPlanMode with your plan and wait for approval before making any file changes.';
@@ -126,9 +127,33 @@ export function renderSessionState(input: SessionStateInput): string {
   ].join('\n');
 }
 
+interface CheckpointFileObservation {
+  workspaceId?: string;
+  sha256?: string;
+  byteSize?: number;
+  timestamp?: number;
+}
+
 interface CheckpointFile {
   path: string;
-  observation?: { workspaceId?: string; sha256?: string; byteSize?: number };
+  observation?: CheckpointFileObservation;
+}
+
+/**
+ * The files a checkpoint lists: v3 keeps them on the message's record; an older
+ * checkpoint's content is the JSON itself, read leniently -- only `files` matters
+ * here, and a document the full v2 schema would refuse still names them.
+ */
+function checkpointFilesOf(message: Message): { files?: CheckpointFile[] } | undefined {
+  if (message.checkpointData) return message.checkpointData;
+  const content = message.contextContent ?? message.content;
+  const jsonStart = content.indexOf('{');
+  if (jsonStart < 0) return undefined;
+  try {
+    return JSON.parse(content.slice(jsonStart)) as { files?: CheckpointFile[] };
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -140,25 +165,28 @@ interface CheckpointFile {
  */
 export async function collectStaleCheckpointFiles(
   workspace: string,
-  checkpointContent: string,
+  checkpointMessage: Message,
+  /**
+   * The newest observation of each path in the messages after the checkpoint,
+   * keyed by `normalizeObservedPath`. Where it is newer than the checkpoint's
+   * own, the file is judged against it: a file the agent edited after compacting
+   * is not stale for that, while a change made on disk since is still reported.
+   */
+  observedSince: ReadonlyMap<string, CheckpointFileObservation> = new Map(),
 ): Promise<string[]> {
-  const jsonStart = checkpointContent.indexOf('{');
-  if (jsonStart < 0) return [];
-
-  let checkpoint: { files?: CheckpointFile[] };
-  try {
-    checkpoint = JSON.parse(checkpointContent.slice(jsonStart));
-  } catch {
-    return [];
-  }
-  if (!checkpoint.files?.length) return [];
+  const checkpoint = checkpointFilesOf(checkpointMessage);
+  if (!checkpoint?.files?.length) return [];
 
   const currentWorkspaceId = workspaceIdentity(workspace);
   const hashes = new Map<string, string>();
   const stale: string[] = [];
 
   for (const file of checkpoint.files.slice(0, MAX_CHECKPOINT_FILES)) {
-    const observation = file.observation;
+    const since = observedSince.get(normalizeObservedPath(file.path));
+    const observation =
+      since && (since.timestamp ?? 0) >= (file.observation?.timestamp ?? 0)
+        ? since
+        : file.observation;
     if (!observation?.sha256 || observation.workspaceId !== currentWorkspaceId) {
       stale.push(file.path);
       continue;

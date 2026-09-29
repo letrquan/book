@@ -5615,6 +5615,128 @@ describe('runAgentLoop deferred compaction', () => {
     expect(seen[2].join('\n')).toContain('synchronous summary');
   });
 
+  it('compacts synchronously after a reject between 85% and the gate, instead of preparing again each turn', async () => {
+    // Gate 76.8k at this window; 70k is over the deferred line (65.3k) and under
+    // the gate. Every response reports it until a compaction lands, so without the
+    // fallback compacting at the line that started it, each tool turn would
+    // prepare a fresh summarizer and none would ever compact.
+    let compacted = false;
+    const after: Usage = {
+      promptTokens: 5_000,
+      completionTokens: 10,
+      totalTokens: 5_010,
+      contextTokens: 5_000,
+    };
+    const band: Usage = {
+      promptTokens: 70_000,
+      completionTokens: 10,
+      totalTokens: 70_010,
+      contextTokens: 70_000,
+    };
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls <= 3) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: `echo-${providerCalls}`, name: 'Echo', arguments: { value: 'x' } },
+          };
+          yield { type: 'done', usage: compacted ? after : band };
+          return;
+        }
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    const prepareCompact = vi.fn(async (snapshot: Message[]) => preparedFor(snapshot));
+    const commitCompact = vi.fn(async (): Promise<CompactResult> => ({
+      status: 'skipped',
+      reason: 'judge-rejected',
+      message: 'insufficient',
+      judge: { verdict: 'rejected', missing: ['the batch size'], modelCalls: 1, deltaMessages: 2 },
+    }));
+    const onCompact = vi.fn(async () => {
+      compacted = true;
+      return compactedForRetry();
+    });
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 4,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onCompact, prepareCompact, commitCompact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(prepareCompact).toHaveBeenCalledOnce();
+    expect(commitCompact).toHaveBeenCalledOnce();
+    expect(onCompact).toHaveBeenCalledOnce();
+  });
+
+  it('drops at run end a settled deferred compaction the request no longer needs', async () => {
+    const reads: Message[] = Array.from({ length: 11 }, (_, index) => ({
+      id: `end-read-${index}`,
+      role: 'assistant' as const,
+      content: '',
+      includeInContext: true,
+      timestamp: 0,
+      toolCalls: [{ id: `e${index}`, name: 'Read', arguments: { file_path: `e${index}.ts` } }],
+      toolResults: [toolSuccess('q'.repeat(16_000), { toolCallId: `e${index}` })],
+    }));
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'echo-end', name: 'Echo', arguments: { value: 'x' } },
+        };
+        yield {
+          type: 'done',
+          usage: {
+            promptTokens: 70_000,
+            completionTokens: 10,
+            totalTokens: 70_010,
+            contextTokens: 70_000,
+          },
+        };
+      },
+    };
+    const prepareCompact = vi.fn(async (snapshot: Message[]) => preparedFor(snapshot));
+    const commitCompact = vi.fn(accepting);
+
+    await runAgentLoop(
+      defaultConfig({
+        // The run ends after this one tool turn, with the deferred result settled.
+        maxTurns: 1,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'continue',
+      [{ ...userMsg('build it'), id: 'end-brief' }, ...reads],
+      noopCallbacks({
+        onCompact: vi.fn(async () => compactedForRetry()),
+        prepareCompact,
+        commitCompact,
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(prepareCompact).toHaveBeenCalledOnce();
+    expect(commitCompact).not.toHaveBeenCalled();
+  });
+
   it('awaits a reducer already in flight at the preflight gate instead of starting a second', async () => {
     let providerCalls = 0;
     const seen: string[][] = [];
@@ -5785,6 +5907,76 @@ describe('runAgentLoop deferred compaction', () => {
     expect(onCompact).not.toHaveBeenCalled();
     expect(commitCompact).not.toHaveBeenCalled();
     expect(prepareCompact).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops a settled deferred compaction once masking has brought the request under its line', async () => {
+    // Eleven 4k reads: the newest ten are protected and the eleventh alone is
+    // under the batch minimum, so the first request goes out unmasked, reports
+    // 85%+ of the gate, and starts a deferred compaction. The step that follows
+    // ages a second read out of the window: masking can now clear 8k, which puts
+    // the request back under the line -- the prepared checkpoint is dropped, and
+    // neither committed nor followed by a synchronous compaction.
+    const reads: Message[] = Array.from({ length: 11 }, (_, index) => ({
+      id: `old-read-${index}`,
+      role: 'assistant' as const,
+      content: '',
+      includeInContext: true,
+      timestamp: 0,
+      toolCalls: [{ id: `r${index}`, name: 'Read', arguments: { file_path: `f${index}.ts` } }],
+      toolResults: [toolSuccess('q'.repeat(16_000), { toolCallId: `r${index}` })],
+    }));
+    const seen: string[] = [];
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        providerCalls++;
+        seen.push(JSON.stringify(messages));
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'echo-1', name: 'Echo', arguments: { value: 'x' } },
+          };
+          yield {
+            type: 'done',
+            usage: {
+              promptTokens: 70_000,
+              completionTokens: 10,
+              totalTokens: 70_010,
+              contextTokens: 70_000,
+            },
+          };
+          return;
+        }
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    const prepareCompact = vi.fn(async (snapshot: Message[]) => preparedFor(snapshot));
+    const commitCompact = vi.fn(accepting);
+    const onCompact = vi.fn(async () => compactedForRetry());
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 3,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'continue',
+      [{ ...userMsg('build it'), id: 'brief' }, ...reads],
+      noopCallbacks({ onCompact, prepareCompact, commitCompact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(prepareCompact).toHaveBeenCalledOnce();
+    expect(commitCompact).not.toHaveBeenCalled();
+    expect(onCompact).not.toHaveBeenCalled();
+    expect(seen[0]).not.toContain('tool output cleared');
+    expect(seen[1]).toContain('[tool output cleared to save context: Read f0.ts');
+    expect(seen[1]).toContain('[tool output cleared to save context: Read f1.ts');
   });
 
   it('commits a checkpoint that finished during the last turn instead of throwing it away', async () => {
@@ -7226,7 +7418,9 @@ describe('requests the window cannot hold (#238, #244 review)', () => {
   /**
    * A resumed build session: every tool result sits under the flat 2,000-token
    * clip, so clipping cannot shrink the request, and ~90k tokens of them cannot
-   * go to a model with a 40k window.
+   * go to a model with a 40k window. The tool is one whose output masking leaves
+   * alone (a subagent's report cannot be re-derived), so only compaction can
+   * shrink it.
    */
   function smallResultHistory(count: number): Message[] {
     const ids = Array.from({ length: count }, (_, index) => `small-result-${index}`);
@@ -7243,7 +7437,7 @@ describe('requests the window cannot hold (#238, #244 review)', () => {
         role: 'assistant',
         content: '',
         includeInContext: true,
-        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolCalls: ids.map((id) => ({ id, name: 'Task', arguments: {} })),
         toolResults: ids.map((id) => toolSuccess('r'.repeat(6_000), { toolCallId: id })),
         timestamp: 0,
       },
@@ -7579,7 +7773,7 @@ describe('the last-resort compaction, review round 1 (#238, #244)', () => {
         role: 'assistant',
         content: '',
         includeInContext: true,
-        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolCalls: ids.map((id) => ({ id, name: 'Task', arguments: {} })),
         toolResults: ids.map((id) => toolSuccess('r'.repeat(6_000), { toolCallId: id })),
         timestamp: 0,
       },
@@ -7729,7 +7923,7 @@ describe('the last-resort compaction, review round 1 (#238, #244)', () => {
         role: 'assistant',
         content: '',
         includeInContext: true,
-        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolCalls: ids.map((id) => ({ id, name: 'Task', arguments: {} })),
         toolResults: ids.map((id) => toolSuccess('y'.repeat(40_000), { toolCallId: id })),
         timestamp: 0,
       },
@@ -7802,7 +7996,7 @@ describe('the last-resort compaction, review round 2 (#238, #244)', () => {
         role: 'assistant',
         content: '',
         includeInContext: true,
-        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolCalls: ids.map((id) => ({ id, name: 'Task', arguments: {} })),
         toolResults: ids.map((id) => toolSuccess('r'.repeat(size), { toolCallId: id })),
         timestamp: 0,
       },
@@ -7985,7 +8179,7 @@ describe('the last-resort compaction, review round 2 (#238, #244)', () => {
         role: 'assistant',
         content: '',
         includeInContext: true,
-        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolCalls: ids.map((id) => ({ id, name: 'Task', arguments: {} })),
         toolResults: ids.map((id) => toolSuccess('y'.repeat(40_000), { toolCallId: id })),
         timestamp: 0,
       },
@@ -8026,7 +8220,7 @@ describe('the last-resort compaction, review round 3 (#238, #244)', () => {
         role: 'assistant',
         content: '',
         includeInContext: true,
-        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolCalls: ids.map((id) => ({ id, name: 'Task', arguments: {} })),
         toolResults: ids.map((id) => toolSuccess('r'.repeat(size), { toolCallId: id })),
         timestamp: 0,
       },
@@ -8890,5 +9084,66 @@ describe('beforeToolExecution', () => {
 
     expect(runs).toEqual([]);
     expect(results[0]?.structuredError?.code).toBe('cancelled_before_start');
+  });
+});
+
+describe('tool-output masking at the preflight gate (compaction v3)', () => {
+  const window = {
+    maxTurns: 1,
+    maxTokens: 4_000,
+    autoCompactEnabled: true,
+    modelInfo: { contextWindow: 40_000, maxOutputTokens: 4_000 },
+  };
+
+  /**
+   * A build session that read sixty files one step at a time: ~72k tokens of
+   * re-derivable output against a 40k window. The newest ten steps are kept.
+   */
+  function readHistory(count: number): Message[] {
+    return [
+      { id: 'mask-user', role: 'user', content: 'build it', includeInContext: true, timestamp: 0 },
+      ...Array.from({ length: count }, (_, index): Message => ({
+        id: `mask-step-${index}`,
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        toolCalls: [
+          { id: `read-${index}`, name: 'Read', arguments: { file_path: `src/read-${index}.ts` } },
+        ],
+        toolResults: [toolSuccess('r'.repeat(4_800), { toolCallId: `read-${index}` })],
+        timestamp: 0,
+      })),
+    ];
+  }
+
+  it('clears old outputs before asking for a summary, and needs none when that is enough', async () => {
+    const sent: string[] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        sent.push(JSON.stringify(messages));
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done' };
+      },
+    };
+    const compact = vi.fn(async (): Promise<CompactResult> => compactedForRetry());
+
+    const result = await runAgentLoop(
+      defaultConfig(window),
+      createRegistry(),
+      'continue',
+      readHistory(60),
+      noopCallbacks({ onCompact: compact }),
+      'auto',
+      { provider, isNewSession: false },
+    );
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain('[tool output cleared to save context: Read src/read-0.ts');
+    // The newest outputs are kept whole, and the call that produced each one stays.
+    expect(sent[0]).toContain('r'.repeat(4_800));
+    expect(sent[0]).toContain('src/read-59.ts');
+    expect(result.at(-1)?.content).toBe('ok');
   });
 });

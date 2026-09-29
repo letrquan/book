@@ -143,6 +143,7 @@ function rawToolResultModelContent(result: ToolResult): string {
 }
 
 export function toolResultModelContent(result: ToolResult): string {
+  if (result.maskedPlaceholder !== undefined) return result.maskedPlaceholder;
   const raw = rawToolResultModelContent(result);
   if (Buffer.byteLength(raw) <= TOOL_RESULT_MAX_BYTES) return raw;
   // Reached only by callers that skipped `boundToolResultOutput`, which is
@@ -421,6 +422,11 @@ export function normalizeToolResult(result: ToolResult | LegacyToolResult): Tool
     toolCallId: result.toolCallId,
     status,
     content,
+    // Masking's placeholder survives a resume, or a restored compaction's tail
+    // would come back at full size.
+    ...('maskedPlaceholder' in result && result.maskedPlaceholder !== undefined
+      ? { maskedPlaceholder: result.maskedPlaceholder }
+      : {}),
     data: result.data,
     structuredError: error,
     presentation: result.presentation,

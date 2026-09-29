@@ -1,3 +1,4 @@
+import type { ConversationCheckpointV2 } from './sessions.js';
 import type { FileObservation, NestedToolInvocation, ToolCall, ToolResult } from './tools.js';
 
 export interface Usage {
@@ -151,5 +152,12 @@ export interface Message {
   /** UI-only visual treatment for local slash-command output. */
   localCommand?: LocalCommandDisplay;
   fileObservations?: FileObservation[];
+  /**
+   * On a `kind: 'checkpoint'` message: the structured record behind the text the
+   * model reads -- generation, host-built file list with observations, coverage.
+   * Never sent to the provider; the message's `content` is the rendered summary.
+   * Absent on checkpoints written before compaction v3, whose `content` is JSON.
+   */
+  checkpointData?: ConversationCheckpointV2;
   timestamp: number;
 }

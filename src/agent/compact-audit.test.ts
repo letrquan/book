@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import {
-  auditInheritedConstraints,
-  isCompactionDirective,
-  scanSuspectInputs,
-} from './compact-audit.js';
+import { isCompactionDirective, scanSuspectInputs } from './compact-audit.js';
 import type { Message } from '../types/messages.js';
 import { toolResult } from '../test/fixtures.js';
-import type { ConversationCheckpointV2 } from '../types/sessions.js';
 
 describe('isCompactionDirective', () => {
   it.each([
@@ -159,81 +154,5 @@ describe('scanSuspectInputs', () => {
       user('k1', directive, { kind: 'checkpoint' }),
     ];
     expect(scanSuspectInputs(messages)).toEqual([]);
-  });
-});
-
-describe('auditInheritedConstraints', () => {
-  const checkpoint = (
-    constraints: ConversationCheckpointV2['constraints'],
-  ): ConversationCheckpointV2 => ({
-    version: 2,
-    generation: 1,
-    state: { summary: 's', status: 'active' },
-    constraints,
-    files: [],
-    episodes: [],
-    openThreads: [],
-    statistics: { summarizedMessages: 0, retainedMessages: 0, preTokens: 0, postTokens: 0 },
-  });
-  const rule = (
-    text: string,
-    scope: ConversationCheckpointV2['constraints'][number]['scope'],
-    eventRef = 'session://current/event/1',
-  ) => ({ text, scope, sources: [{ eventRef }] });
-
-  it('counts a rule the output neither sources nor restates, whatever its scope', () => {
-    // The host demotes a model-authored global/workspace scope to task on
-    // parse, so scope carries no information here and every rule is audited.
-    const prior = checkpoint([
-      rule('Never deploy on Fridays.', 'task', 'session://current/event/1'),
-      rule('Keep the public query() signature.', 'task', 'session://current/event/2'),
-      rule('Batch size 1000 for this task.', 'unknown', 'session://current/event/3'),
-    ]);
-    const output = checkpoint([
-      // Same source, paraphrased: carried.
-      rule('The public query() signature must not change.', 'task', 'session://current/event/2'),
-    ]);
-    expect(auditInheritedConstraints(prior, output, undefined)).toBe(2);
-  });
-
-  it('accepts a restatement with a new source, and does not count a rule the ledger holds', () => {
-    const prior = checkpoint([
-      rule('Never deploy on Fridays.', 'global', 'session://current/event/1'),
-      rule('Always use pnpm 9.', 'workspace', 'session://current/event/2'),
-    ]);
-    const output = checkpoint([
-      rule('never deploy on fridays', 'global', 'session://current/event/9'),
-    ]);
-    const ledger = {
-      version: 1 as const,
-      constraints: [
-        {
-          id: 'x',
-          text: 'Always use pnpm 9.',
-          strength: 'strong' as const,
-          source: { eventRef: 'session://current/event/2' },
-          firstSeenGeneration: 1,
-          lastSeenGeneration: 1,
-        },
-      ],
-    };
-    expect(auditInheritedConstraints(prior, output, ledger)).toBe(0);
-  });
-
-  it('counts a rule written in another script', () => {
-    const prior = checkpoint([
-      rule('Đừng đụng vào thư mục vendor.', 'task', 'session://current/event/1'),
-      rule('ベンダーディレクトリを変更しない。', 'task', 'session://current/event/2'),
-    ]);
-    expect(auditInheritedConstraints(prior, checkpoint([]), undefined)).toBe(2);
-    // Restated with a new source, in the same script: carried.
-    const output = checkpoint([
-      rule('đừng đụng vào thư mục vendor', 'task', 'session://current/event/9'),
-    ]);
-    expect(auditInheritedConstraints(prior, output, undefined)).toBe(1);
-  });
-
-  it('is zero with no prior checkpoint', () => {
-    expect(auditInheritedConstraints(undefined, checkpoint([]), undefined)).toBe(0);
   });
 });
