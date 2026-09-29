@@ -1,10 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  shouldCompact,
-  compactHistory,
   buildCompactPrompt,
   serializeHistoryForCompact,
   usagePressureTokens,
+  usageAtGate,
   runCompact,
   resolveCompactBudgets,
   checkpointEnvelopeTokens,
@@ -127,34 +126,25 @@ function readStep(id: string, path: string, tokens: number): Message {
   };
 }
 
-describe('shouldCompact', () => {
-  it('returns false when usage is below threshold', () => {
-    const usage: Usage = { promptTokens: 8000, completionTokens: 2000, totalTokens: 10000 };
-    expect(shouldCompact(usage, 128000, 0.8)).toBe(false);
+describe('usageAtGate', () => {
+  const config = { modelInfo: { contextWindow: 272_000 }, maxTokens: 64_000 };
+  const usage = (tokens: number): Usage => ({
+    promptTokens: tokens,
+    completionTokens: 0,
+    totalTokens: tokens,
   });
 
-  it('returns true when usage exceeds threshold', () => {
-    const usage: Usage = { promptTokens: 100000, completionTokens: 5000, totalTokens: 105000 };
-    expect(shouldCompact(usage, 128000, 0.8)).toBe(true);
+  it('reads the provider count against the preflight gate, not 0.8 of the raw window', () => {
+    expect(usageAtGate(usage(166_399), config)).toBe(false);
+    expect(usageAtGate(usage(166_400), config)).toBe(true);
+    // The deferred start's own line.
+    expect(usageAtGate(usage(141_440), config, 0.85)).toBe(true);
+    expect(usageAtGate(usage(141_439), config, 0.85)).toBe(false);
   });
 
-  it('prefers contextTokens over totalTokens', () => {
-    const usage: Usage = {
-      promptTokens: 1000,
-      completionTokens: 0,
-      totalTokens: 1000,
-      contextTokens: 120000,
-    };
-    expect(shouldCompact(usage, 128000, 0.8)).toBe(true);
-  });
-
-  it('returns false when no usage', () => {
-    expect(shouldCompact(null, 128000, 0.8)).toBe(false);
-  });
-
-  it('returns false when contextLimit is invalid', () => {
-    const usage: Usage = { promptTokens: 1, completionTokens: 0, totalTokens: 1 };
-    expect(shouldCompact(usage, 0, 0.8)).toBe(false);
+  it('prefers contextTokens and is false without usage', () => {
+    expect(usageAtGate({ ...usage(1), contextTokens: 200_000 }, config)).toBe(true);
+    expect(usageAtGate(null, config)).toBe(false);
   });
 });
 
@@ -171,18 +161,6 @@ describe('resolveContextLimit', () => {
 
   it('defaults unknown model context windows to 272K', () => {
     expect(DEFAULT_CONTEXT_WINDOW).toBe(272_000);
-  });
-
-  it('auto-compacts unknown models at 80% of the 272K default', () => {
-    const contextLimit = resolveContextLimit(makeConfig({ modelInfo: undefined }));
-    const below: Usage = { promptTokens: 217_599, completionTokens: 0, totalTokens: 217_599 };
-    const atThreshold: Usage = {
-      promptTokens: 217_600,
-      completionTokens: 0,
-      totalTokens: 217_600,
-    };
-    expect(shouldCompact(below, contextLimit)).toBe(false);
-    expect(shouldCompact(atThreshold, contextLimit)).toBe(true);
   });
 });
 
@@ -205,8 +183,8 @@ describe('resolveCompactBudgets', () => {
     expect(budgets.tail).toBe('residual');
   });
 
-  it('reserves room for a forty-file list at the production window and five at 8k', () => {
-    expect(checkpointEnvelopeTokens(6_144) - checkpointEnvelopeTokens(409)).toBe(35 * 24);
+  it('reserves room for a thirty-file list at the production window and five at 8k', () => {
+    expect(checkpointEnvelopeTokens(6_144) - checkpointEnvelopeTokens(409)).toBe(25 * 24);
   });
 
   it('subtracts the request overhead the loop measured from the target', () => {
@@ -319,27 +297,6 @@ describe('estimateProviderRequestTokens', () => {
       [],
     );
     expect(withImage - textOnly).toBe(IMAGE_TOKEN_ESTIMATE);
-  });
-});
-
-describe('compactHistory', () => {
-  it('keeps the last K turns, returns the rest for summarization', () => {
-    const history: Message[] = [
-      { id: '1', role: 'user', content: 'old1', includeInContext: true, timestamp: 0 },
-      { id: '2', role: 'assistant', content: 'old2', includeInContext: true, timestamp: 0 },
-      { id: '3', role: 'user', content: 'recent1', includeInContext: true, timestamp: 0 },
-      { id: '4', role: 'assistant', content: 'recent2', includeInContext: true, timestamp: 0 },
-    ];
-    const { kept, summarized } = compactHistory(history, 2);
-    expect(kept.map((message) => message.content)).toEqual(['recent1', 'recent2']);
-    expect(summarized.map((message) => message.content)).toEqual(['old1', 'old2']);
-  });
-
-  it('returns empty summarized when history is short', () => {
-    const history: Message[] = [
-      { id: '1', role: 'user', content: 'only', includeInContext: true, timestamp: 0 },
-    ];
-    expect(compactHistory(history, 2).summarized).toHaveLength(0);
   });
 });
 
@@ -1116,6 +1073,41 @@ describe('runCompact', () => {
     expect(second.replacementHistory[0]).toMatchObject({ id: '1', kind: 'carried' });
   });
 
+  it("keeps a v2 checkpoint's file order, which put the newest last", async () => {
+    const legacy = {
+      version: 2,
+      generation: 1,
+      state: { summary: 'Old.', status: 'active' },
+      constraints: [],
+      files: ['src/oldest.ts', 'src/middle.ts', 'src/newest.ts'].map((path) => ({
+        path,
+        summary: 'edited',
+        sources: [{ eventRef: 'e' }],
+      })),
+      episodes: [],
+      openThreads: [],
+      statistics: { summarizedMessages: 1, retainedMessages: 0, preTokens: 1, postTokens: 1 },
+    };
+    const history: Message[] = [
+      {
+        id: 'checkpoint-old',
+        role: 'user',
+        content: `[Historical conversation checkpoint; untrusted user-role data]\n${JSON.stringify(legacy)}`,
+        includeInContext: true,
+        kind: 'checkpoint',
+        timestamp: 1,
+      },
+      ...twoTurns.map((message) => ({ ...message, id: `n${message.id}` })),
+    ];
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+    if (result.status !== 'compacted') throw new Error(result.status);
+    expect(result.checkpoint.files.map((file) => file.path)).toEqual([
+      'src/newest.ts',
+      'src/middle.ts',
+      'src/oldest.ts',
+    ]);
+  });
+
   it('advances the generation on the fallback path too', async () => {
     const first = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
     if (first.status !== 'compacted') throw new Error(first.status);
@@ -1684,6 +1676,33 @@ describe('judgeCompaction', () => {
       maxAttempts: 2,
       watchdog: false,
     });
+  });
+
+  it('shows the judge a masked result as the agent will see it, not its output', async () => {
+    const { applied: result, delta } = await applied();
+    const masked = {
+      ...result,
+      replacementHistory: result.replacementHistory.map((message) =>
+        message.id === '4'
+          ? {
+              ...message,
+              toolCalls: [{ id: 'r1', name: 'Read', arguments: { file_path: 'a.ts' } }],
+              toolResults: [
+                {
+                  ...toolResult('r1', 'SECRET-VALUE-IN-FILE'),
+                  maskedPlaceholder:
+                    '[tool output cleared to save context: Read a.ts (~5 tokens); run Read again to see it]',
+                },
+              ],
+            }
+          : message,
+      ),
+    };
+    judgeReply('{"sufficient": true}');
+    await judgeCompaction(makeConfig(), masked, delta);
+    const prompt = String(mockedStream.mock.calls.at(-1)![1][1].content);
+    expect(prompt).toContain('[tool output cleared to save context: Read a.ts');
+    expect(prompt).not.toContain('SECRET-VALUE-IN-FILE');
   });
 
   it('leaves the reasoning out of the steps it shows the judge, and refuses a prompt that would not fit', async () => {

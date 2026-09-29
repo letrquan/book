@@ -5787,6 +5787,76 @@ describe('runAgentLoop deferred compaction', () => {
     expect(prepareCompact).toHaveBeenCalledTimes(2);
   });
 
+  it('drops a settled deferred compaction once masking has brought the request under its line', async () => {
+    // Eleven 4k reads: the newest ten are protected and the eleventh alone is
+    // under the batch minimum, so the first request goes out unmasked, reports
+    // 85%+ of the gate, and starts a deferred compaction. The step that follows
+    // ages a second read out of the window: masking can now clear 8k, which puts
+    // the request back under the line -- the prepared checkpoint is dropped, and
+    // neither committed nor followed by a synchronous compaction.
+    const reads: Message[] = Array.from({ length: 11 }, (_, index) => ({
+      id: `old-read-${index}`,
+      role: 'assistant' as const,
+      content: '',
+      includeInContext: true,
+      timestamp: 0,
+      toolCalls: [{ id: `r${index}`, name: 'Read', arguments: { file_path: `f${index}.ts` } }],
+      toolResults: [toolSuccess('q'.repeat(16_000), { toolCallId: `r${index}` })],
+    }));
+    const seen: string[] = [];
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        providerCalls++;
+        seen.push(JSON.stringify(messages));
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'echo-1', name: 'Echo', arguments: { value: 'x' } },
+          };
+          yield {
+            type: 'done',
+            usage: {
+              promptTokens: 70_000,
+              completionTokens: 10,
+              totalTokens: 70_010,
+              contextTokens: 70_000,
+            },
+          };
+          return;
+        }
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    const prepareCompact = vi.fn(async (snapshot: Message[]) => preparedFor(snapshot));
+    const commitCompact = vi.fn(accepting);
+    const onCompact = vi.fn(async () => compactedForRetry());
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 3,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'continue',
+      [{ ...userMsg('build it'), id: 'brief' }, ...reads],
+      noopCallbacks({ onCompact, prepareCompact, commitCompact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(prepareCompact).toHaveBeenCalledOnce();
+    expect(commitCompact).not.toHaveBeenCalled();
+    expect(onCompact).not.toHaveBeenCalled();
+    expect(seen[0]).not.toContain('tool output cleared');
+    expect(seen[1]).toContain('[tool output cleared to save context: Read f0.ts');
+    expect(seen[1]).toContain('[tool output cleared to save context: Read f1.ts');
+  });
+
   it('commits a checkpoint that finished during the last turn instead of throwing it away', async () => {
     let providerCalls = 0;
     const provider: Provider = {

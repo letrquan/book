@@ -1,9 +1,8 @@
 import type { Message } from '../types/messages.js';
-import type { ToolResult } from '../types/tools.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { toolResultSucceeded } from '../tools/result.js';
-import { estimateTextTokens, toolResultRetrievalRef } from './compact.js';
+import { estimateTextTokens } from './compact.js';
 
 /**
  * Tool-output masking: the cheap half of context management, run before any
@@ -22,7 +21,13 @@ import { estimateTextTokens, toolResultRetrievalRef } from './compact.js';
  * rates (18.6% to 22.6%, arXiv 2606.00408), so failures are never masked.
  */
 
-/** Tools whose output running the call again reproduces. Masked whenever they are old enough. */
+/**
+ * The tools whose output is masked: the ones running the call again reproduces.
+ * Nothing else is -- a command's output depends on when it ran, a page changes,
+ * `BashOutput` returns only what is new since the last read, and the session's
+ * own copy of a tool result reads back clipped to a few thousand characters, so
+ * for any other tool a placeholder would promise output the agent cannot get.
+ */
 const RERUNNABLE_TOOLS = new Set([
   'Read',
   'Grep',
@@ -34,15 +39,6 @@ const RERUNNABLE_TOOLS = new Set([
   'SessionHistorySearch',
   'SessionHistoryRead',
 ]);
-
-/**
- * Tools whose output running them again does not reproduce -- a command's output
- * depends on when it ran, a page changes -- so they are masked only when the
- * session records the output and the history tools can read it back.
- * `BashOutput` is in neither set: it returns only what is new since the last
- * read, so its output exists nowhere else in the conversation.
- */
-const RECORDED_TOOLS = new Set(['Bash', 'WebFetch', 'WebSearch']);
 
 /** What a placeholder starts with. */
 export const MASKED_TOOL_OUTPUT_PREFIX = '[tool output cleared to save context';
@@ -78,8 +74,6 @@ export interface ToolOutputMaskOptions {
   protectTokens: number;
   /** The least a pass must clear; below it nothing is masked. */
   minClearTokens: number;
-  /** Whether the session records tool output the history tools can read back. */
-  recorded: boolean;
 }
 
 export interface ToolOutputMaskOutcome {
@@ -89,10 +83,7 @@ export interface ToolOutputMaskOutcome {
   clearedTokens: number;
 }
 
-export function toolOutputMaskOptions(
-  preflightThreshold: number,
-  recorded: boolean,
-): ToolOutputMaskOptions {
+export function toolOutputMaskOptions(preflightThreshold: number): ToolOutputMaskOptions {
   return {
     protectSteps: PROTECT_STEPS,
     protectTokens: Math.min(
@@ -103,25 +94,27 @@ export function toolOutputMaskOptions(
       1,
       Math.min(MIN_CLEAR_MAX_TOKENS, Math.floor(preflightThreshold * MIN_CLEAR_GATE_FRACTION)),
     ),
-    recorded,
   };
 }
 
-function placeholder(
-  message: Message,
-  result: ToolResult,
-  tool: string,
-  subject: string,
-  tokens: number,
-  recorded: boolean,
-): string {
-  const ref = toolResultRetrievalRef(message, result);
-  const again = RERUNNABLE_TOOLS.has(tool)
-    ? recorded
-      ? `run it again to see it, or read the recorded output at ${ref}`
-      : 'run it again to see it'
-    : `the recorded output is at ${ref}`;
-  return `${MASKED_TOOL_OUTPUT_PREFIX}: ${subject} (~${tokens} tokens); ${again}]`;
+/**
+ * Masking as every compaction trigger runs it first: nothing below the masking
+ * line of `gate`, else a pass over `history`. The caller decides from
+ * `clearedTokens` whether a summary is still needed.
+ */
+export function maskBeforeCompacting(
+  history: readonly Message[],
+  gate: number,
+  requestTokens: number,
+): ToolOutputMaskOutcome {
+  if (requestTokens < Math.floor(gate * MASK_GATE_FRACTION)) {
+    return { history: history as Message[], maskedCount: 0, clearedTokens: 0 };
+  }
+  return maskStaleToolOutputs(history, toolOutputMaskOptions(gate));
+}
+
+function placeholder(tool: string, subject: string, tokens: number): string {
+  return `${MASKED_TOOL_OUTPUT_PREFIX}: ${subject} (~${tokens} tokens); run ${tool} again to see it]`;
 }
 
 /**
@@ -154,16 +147,9 @@ export function maskStaleToolOutputs(
       const call = message.toolCalls?.find((item) => item.id === result.toolCallId);
       if (!call) continue;
       const tool = canonicalToolName(call.name);
-      if (!RERUNNABLE_TOOLS.has(tool) && !(options.recorded && RECORDED_TOOLS.has(tool))) continue;
+      if (!RERUNNABLE_TOOLS.has(tool)) continue;
       const primary = getPrimaryArg(call.arguments ?? {});
-      const text = placeholder(
-        message,
-        result,
-        tool,
-        `${tool}${primary ? ` ${primary}` : ''}`,
-        tokens,
-        options.recorded,
-      );
+      const text = placeholder(tool, `${tool}${primary ? ` ${primary}` : ''}`, tokens);
       const byCall = placeholders.get(message.id) ?? new Map<string, string>();
       byCall.set(result.toolCallId, text);
       placeholders.set(message.id, byCall);

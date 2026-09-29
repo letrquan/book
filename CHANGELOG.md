@@ -212,14 +212,14 @@ All notable changes to this project are documented in this file.
   `state.summary` with every list empty -- and 27 of 38 kept no recent message at all, because the
   retained tail was sized in whole user-led bundles and a run with one brief and two hundred tool
   calls is one bundle. Now:
-  - **Old tool outputs are masked first.** From 60% of the preflight gate, the model reads a
-    one-line placeholder naming the call and how to get the output back in place of old
-    successful output of re-runnable reads (`Read`, `Grep`, `Glob`, the git and history reads),
-    and of `Bash`/`WebFetch`/`WebSearch` where the session records it. The output stays on the
-    result for the summarizer and the record. The newest ten tool steps and 40k tokens, failures,
-    small results, `BashOutput` and non-re-derivable tools are never touched, and a pass runs only
-    when it clears a batch. When that is enough, nothing is summarized
-    (`src/agent/tool-output-masking.ts`).
+  - **Old tool outputs are masked first**, before every compaction trigger (loop preflight and
+    turn boundary, and the hosts' pre-turn check). From 60% of the gate, the model reads a
+    one-line placeholder naming the call in place of old successful output of the tools a rerun
+    reproduces (`Read`, `Grep`, `Glob`, the git and history reads); the output stays on the result
+    for the summarizer and the record, survives a resume, and `/context` counts the placeholder.
+    The newest ten tool steps and 40k tokens, failures, small results and every other tool are
+    never touched, and a pass runs only when it clears a batch. When that is enough, nothing is
+    summarized (`src/agent/tool-output-masking.ts`).
   - **One summarizer call writes a Markdown handoff** under fixed headings, carrying the previous
     summary forward. Any non-empty reply is accepted: no schema, no quote or event-reference
     validation, no repair prompt. An empty reply is retried once; a reply cut off at the output
@@ -229,7 +229,8 @@ All notable changes to this project are documented in this file.
     the checkpoint the model reads is text, not JSON: hashes and statistics live on the message as
     `checkpointData`, which is also the compact record's `checkpoint`, still `version: 2`, so an
     older `book` still loads a session this one compacted (reading the checkpoint as an ordinary
-    message). A file the agent read or edited since the checkpoint is no longer reported stale.
+    message). A listed file is stale when it no longer matches the agent's newest observation of
+    it, so the agent's own edit after compacting is not reported; the list holds 30 files.
   - **The retained tail is cut at message boundaries**, newest first; the newest message is
     clipped down a ladder and summarized only when even that cannot fit. User turns are still
     carried verbatim ahead of the checkpoint. A summary over its budget is shortened section by
@@ -237,8 +238,9 @@ All notable changes to this project are documented in this file.
   - **One gate for every trigger.** The usage-based triggers (host pre-turn, loop boundary) read
     the provider's count against the preflight gate, 0.8 of the usable window, instead of 0.8 of
     the raw window, which at 272k had put them 51k tokens above it. A boundary at the gate compacts
-    synchronously; a deferred compaction starts at 85% of the gate, is dropped when masking alone
-    brings the request back under that line, and its judge gives up after two minutes as
+    synchronously; a deferred compaction starts at 85% of the gate, is dropped when the request is
+    back under that line by the time it settles, and its judge -- which reads masked results as
+    the agent will -- gives up after two minutes as
     `inconclusive` (one replayed Gemini judge had held the boundary for about fifteen).
   - **`generation` advances on every path.** A degraded fallback cloned the previous checkpoint's
     generation, so a degraded chain read g2, g2, g2 with a frozen summary.

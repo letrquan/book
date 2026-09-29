@@ -117,7 +117,7 @@ const RETAINED_TOOL_RESULT_MAX_TOKENS = 2_000;
 /** Per-result clips tried on the newest message before it is summarized instead of kept. */
 const NEWEST_MESSAGE_CLIP_LADDER = [RETAINED_TOOL_RESULT_MAX_TOKENS, 500, 125] as const;
 /** Files the host lists under the summary, newest first: at most this many, and fewer on a small window. */
-const MAX_CHECKPOINT_FILES = 40;
+const MAX_CHECKPOINT_FILES = 30;
 const MIN_CHECKPOINT_FILES = 5;
 /** Tokens a listed file may cost: its path and what was done to it. */
 const CHECKPOINT_FILE_LINE_TOKENS = 24;
@@ -359,6 +359,8 @@ interface PriorCheckpoint {
   checkpoint?: ConversationCheckpointV2;
   /** Its summary as text, for the summarizer's `<previous-summary>`. */
   summaryText: string;
+  /** Whether its `files` are newest first (v3) or oldest first (v2 kept the newest at the end). */
+  filesNewestFirst: boolean;
 }
 
 export interface CarriedTurns {
@@ -395,14 +397,6 @@ export function usageAtGate(
   fraction = 1,
 ): boolean {
   return !!usage && usagePressureTokens(usage) >= compactionGate(config) * fraction;
-}
-
-export function shouldCompact(
-  usage: Usage | null,
-  contextLimit: number,
-  threshold = DEFAULT_COMPACT_THRESHOLD,
-): boolean {
-  return !!usage && contextLimit > 0 && usagePressureTokens(usage) >= contextLimit * threshold;
 }
 
 /**
@@ -671,17 +665,6 @@ export function resolveCompactBudgets(
   };
 }
 
-export function compactHistory(
-  history: Message[],
-  keepLast: number,
-): { kept: Message[]; summarized: Message[] } {
-  if (history.length <= keepLast) return { kept: history, summarized: [] };
-  return {
-    summarized: history.slice(0, history.length - keepLast),
-    kept: history.slice(history.length - keepLast),
-  };
-}
-
 /**
  * How the summarizer reads the span, loosest first. A rung that does not fit
  * the summarizer's input cap gives way to the next; past the last one the
@@ -719,7 +702,12 @@ function messageLabel(message: Message): string {
 }
 
 /** One message as the summarizer reads it at `level`. */
-function serializeForSummary(message: Message, level: SerializeLevel): string {
+function serializeForSummary(
+  message: Message,
+  level: SerializeLevel,
+  /** Show a masked result as its placeholder -- the agent's view -- rather than its output. */
+  agentView = false,
+): string {
   const lines: string[] = [];
   const reasoning = clipText(message.reasoningContent?.trim() ?? '', level.reasoningChars);
   if (reasoning) lines.push(`(reasoning) ${reasoning}`);
@@ -733,6 +721,10 @@ function serializeForSummary(message: Message, level: SerializeLevel): string {
     );
     const result = message.toolResults?.find((item) => item.toolCallId === call.id);
     if (!result) continue;
+    if (agentView && result.maskedPlaceholder !== undefined) {
+      lines.push(`  result: ${result.maskedPlaceholder}`);
+      continue;
+    }
     const ok = toolResultSucceeded(result);
     const body = ok
       ? result.content
@@ -885,25 +877,46 @@ function fitSummary(text: string, budgetTokens: number): { text: string; shorten
   const maxChars = Math.max(64, budgetTokens * 4);
   if (text.length <= maxChars) return { text, shortened: false };
   const room = Math.max(0, maxChars - SUMMARY_SHORTENED_NOTE.length - 2);
-  const sections = text.split(/\n(?=## )/);
-  const cutAtLine = (section: string, limit: number): string => {
-    if (section.length <= limit) return section;
-    const head = section.slice(0, Math.max(0, limit - 2));
+  const cutAtLine = (body: string, limit: number): string => {
+    if (body.length <= limit) return body;
+    if (limit < 8) return '';
+    const head = body.slice(0, limit - 2);
     const line = head.lastIndexOf('\n');
     return `${line > limit * 0.3 ? head.slice(0, line) : head}\n…`;
   };
-  // Water-filling, smallest first: a section under its fair share keeps all of
+  // Each section is its heading line, kept whole, and a body that shares the rest.
+  const sections = text.split(/\n(?=## )/).map((section) => {
+    const newline = section.indexOf('\n');
+    return newline < 0
+      ? { heading: section, body: '' }
+      : { heading: section.slice(0, newline), body: section.slice(newline + 1) };
+  });
+  const fixed = sections.reduce((sum, section) => sum + section.heading.length + 2, 0);
+  let remaining = room - fixed;
+  if (remaining < 0) {
+    // Not even the headings fit: keep what does, from the start.
+    return {
+      text: `${cutAtLine(text, room).trimEnd()}\n\n${SUMMARY_SHORTENED_NOTE}`,
+      shortened: true,
+    };
+  }
+  // Water-filling, smallest body first: a body under its fair share keeps all of
   // itself, and what it leaves goes to the ones that are over.
   const shares = new Array<number>(sections.length);
-  let remaining = room - (sections.length - 1);
-  const order = [...sections.keys()].sort((a, b) => sections[a].length - sections[b].length);
+  const order = [...sections.keys()].sort(
+    (a, b) => sections[a].body.length - sections[b].body.length,
+  );
   order.forEach((index, position) => {
     const fair = Math.floor(remaining / (order.length - position));
-    shares[index] = Math.max(0, Math.min(sections[index].length, fair));
+    shares[index] = Math.min(sections[index].body.length, fair);
     remaining -= shares[index];
   });
-  let fitted = sections.map((section, index) => cutAtLine(section, shares[index])).join('\n');
-  if (fitted.length > room) fitted = cutAtLine(fitted, room);
+  const fitted = sections
+    .map((section, index) => {
+      const body = cutAtLine(section.body, shares[index]);
+      return body ? `${section.heading}\n${body}` : section.heading;
+    })
+    .join('\n');
   return { text: `${fitted.trimEnd()}\n\n${SUMMARY_SHORTENED_NOTE}`, shortened: true };
 }
 
@@ -985,11 +998,21 @@ function readCheckpointMessage(message: Message): PriorCheckpoint {
     return {
       checkpoint: message.checkpointData,
       summaryText: message.checkpointData.state.summary,
+      filesNewestFirst: true,
     };
   }
   const legacy = parseLegacyCheckpoint(message.content);
-  if (legacy) return { checkpoint: legacy, summaryText: renderLegacySummaryText(legacy) };
-  return { summaryText: message.content.replace(CHECKPOINT_PREFIX, '').trim() };
+  if (legacy) {
+    return {
+      checkpoint: legacy,
+      summaryText: renderLegacySummaryText(legacy),
+      filesNewestFirst: false,
+    };
+  }
+  return {
+    summaryText: message.content.replace(CHECKPOINT_PREFIX, '').trim(),
+    filesNewestFirst: false,
+  };
 }
 
 /** The structured record on a checkpoint message: v3's `checkpointData`, or a v2 message's JSON. */
@@ -1243,6 +1266,7 @@ export async function runCompact(
     files: buildCheckpointFiles(
       [...summarized, ...omittedFromTail],
       priorCheckpoint,
+      selection.prior?.filesNewestFirst ?? true,
       contextHistory,
       checkpointFileLimit(checkpointBudget),
     ),
@@ -1878,12 +1902,14 @@ function operationRank(label: string): number {
 function buildCheckpointFiles(
   summarized: readonly Message[],
   prior: ConversationCheckpointV2 | undefined,
+  priorNewestFirst: boolean,
   history: readonly Message[],
   limit: number,
 ): ConversationCheckpointV2['files'] {
   const byPath = new Map<string, ConversationCheckpointV2['files'][number]>();
-  // The previous list is newest first; insertion order here is oldest first.
-  for (const file of [...(prior?.files ?? [])].reverse()) {
+  // Insertion order here is oldest first.
+  const priorFiles = prior?.files ?? [];
+  for (const file of priorNewestFirst ? [...priorFiles].reverse() : priorFiles) {
     byPath.set(normalizeObservedPath(file.path), {
       path: file.path,
       summary: file.summary,
@@ -2053,7 +2079,8 @@ function stabilizePostTokens(
   return postTokens;
 }
 
-function normalizeObservedPath(path: string): string {
+/** The key that matches a file observation to a checkpoint file: forward slashes. */
+export function normalizeObservedPath(path: string): string {
   return path.replace(/\\/g, '/');
 }
 
@@ -2246,6 +2273,7 @@ function serializeForJudge(message: Message): string {
   return serializeForSummary(
     clipHistoryToolResults([withoutReasoning(message)], JUDGE_DELTA_TOOL_RESULT_MAX_TOKENS)[0],
     SUMMARIZER_INPUT_LADDER[0],
+    true,
   );
 }
 

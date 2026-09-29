@@ -422,6 +422,11 @@ export function normalizeToolResult(result: ToolResult | LegacyToolResult): Tool
     toolCallId: result.toolCallId,
     status,
     content,
+    // Masking's placeholder survives a resume, or a restored compaction's tail
+    // would come back at full size.
+    ...('maskedPlaceholder' in result && result.maskedPlaceholder !== undefined
+      ? { maskedPlaceholder: result.maskedPlaceholder }
+      : {}),
     data: result.data,
     structuredError: error,
     presentation: result.presentation,

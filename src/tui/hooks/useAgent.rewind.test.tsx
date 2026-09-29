@@ -23,7 +23,8 @@ const agentLoopState = vi.hoisted(() => ({
 vi.mock('../../agent/compact.js', () => ({
   resolveContextLimit: () => 100,
   usageAtGate: () => true,
-  shouldCompact: () => true,
+  compactionGate: () => 80,
+  estimateTextTokens: (text: string) => Math.ceil(text.length / 4),
   usagePressureTokens: () => 1,
   runCompact: vi.fn(async () => {
     callOrder.push('compact');

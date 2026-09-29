@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../types/messages.js';
 import type { ToolResult } from '../types/tools.js';
-import { toolFailure, toolResultModelContent, toolSuccess } from '../tools/result.js';
+import {
+  normalizeToolResult,
+  toolFailure,
+  toolResultModelContent,
+  toolSuccess,
+} from '../tools/result.js';
 import { clipHistoryToolResults } from './compact.js';
 import {
   MASKED_TOOL_OUTPUT_PREFIX,
+  maskBeforeCompacting,
   maskStaleToolOutputs,
   toolOutputMaskOptions,
   type ToolOutputMaskOptions,
@@ -38,7 +44,6 @@ const options: ToolOutputMaskOptions = {
   protectSteps: 2,
   protectTokens: 10_000,
   minClearTokens: 5_000,
-  recorded: true,
 };
 
 const maskedIds = (history: readonly Message[]): string[] =>
@@ -62,7 +67,7 @@ describe('maskStaleToolOutputs', () => {
     expect(maskedIds(outcome.history)).toEqual(['a', 'b']);
     const result = outcome.history[0].toolResults![0];
     expect(result.maskedPlaceholder).toBe(
-      `${MASKED_TOOL_OUTPUT_PREFIX}: Read src/a-0.ts (~4000 tokens); run it again to see it, or read the recorded output at session://current/tool-result/a/a-call-0]`,
+      `${MASKED_TOOL_OUTPUT_PREFIX}: Read src/a-0.ts (~4000 tokens); run Read again to see it]`,
     );
     // The model reads the placeholder; the summarizer and the record keep every byte.
     expect(toolResultModelContent(result)).toBe(result.maskedPlaceholder);
@@ -83,7 +88,7 @@ describe('maskStaleToolOutputs', () => {
 
   it('keeps the recent steps the agent is working with, so a small window compacts instead of re-reading', () => {
     const history = [step('a', 'Read', 6_000), step('b', 'Read', 6_000)];
-    const outcome = maskStaleToolOutputs(history, toolOutputMaskOptions(28_800, true));
+    const outcome = maskStaleToolOutputs(history, toolOutputMaskOptions(28_800));
     expect(outcome.maskedCount).toBe(0);
   });
 
@@ -94,50 +99,34 @@ describe('maskStaleToolOutputs', () => {
     expect(outcome.history).toBe(history);
   });
 
-  it('never masks a failure, a small result, or a tool whose output exists nowhere else', () => {
+  it('masks only output a rerun reproduces: never a failure, a small result, a command or a page', () => {
     const history = [
-      step('fail', 'Bash', 8_000, 1, true),
+      step('fail', 'Read', 8_000, 1, true),
       step('small', 'Read', 400),
       step('ask', 'AskUserQuestion', 8_000),
       step('task', 'Task', 8_000),
-      step('incremental', 'BashOutput', 8_000),
-      step('read', 'Read', 8_000),
-      step('recent1', 'Read', 6_000),
-      step('recent2', 'Read', 6_000),
-    ];
-    expect(maskedIds(maskStaleToolOutputs(history, options).history)).toEqual(['read']);
-  });
-
-  it('masks output a rerun would not reproduce only where the session records it', () => {
-    const history = [
       step('bash', 'Bash', 8_000),
+      step('incremental', 'BashOutput', 8_000),
       step('web', 'WebFetch', 8_000),
       step('read', 'Read', 8_000),
+      step('grep', 'grep', 8_000),
       step('recent1', 'Read', 6_000),
       step('recent2', 'Read', 6_000),
     ];
-    const recorded = maskStaleToolOutputs(history, options);
-    expect(maskedIds(recorded.history)).toEqual(['bash', 'web', 'read']);
-    expect(recorded.history[0].toolResults![0].maskedPlaceholder).toContain(
-      '; the recorded output is at session://current/tool-result/bash/bash-call-0]',
-    );
-    const unrecorded = maskStaleToolOutputs(history, { ...options, recorded: false });
-    expect(maskedIds(unrecorded.history)).toEqual(['read']);
-    expect(unrecorded.history[2].toolResults![0].maskedPlaceholder).toMatch(
-      /; run it again to see it\]$/,
-    );
+    expect(maskedIds(maskStaleToolOutputs(history, options).history)).toEqual(['read', 'grep']);
   });
 
   it('reads a legacy alias as the tool it names', () => {
     const history = [
       step('a', 'read_file', 8_000),
-      step('b', 'bash', 8_000),
       step('recent1', 'Read', 6_000),
       step('recent2', 'Read', 6_000),
     ];
     const outcome = maskStaleToolOutputs(history, options);
-    expect(maskedIds(outcome.history)).toEqual(['a', 'b']);
-    expect(outcome.history[0].toolResults![0].maskedPlaceholder).toContain(': Read src/a-0.ts');
+    expect(maskedIds(outcome.history)).toEqual(['a']);
+    expect(outcome.history[0].toolResults![0].maskedPlaceholder).toContain(
+      ': Read src/a-0.ts (~8000 tokens); run Read again to see it]',
+    );
   });
 
   it('leaves an already-masked result alone on a second pass', () => {
@@ -154,17 +143,22 @@ describe('maskStaleToolOutputs', () => {
     expect(second.history).toBe(first.history);
   });
 
-  it('points at the spilled output file when there is one', () => {
-    const message = step('a', 'Bash', 6_000);
-    message.toolResults![0] = {
-      ...message.toolResults![0],
-      artifacts: { outputPath: '/home/u/.book/tool-output/a.txt' },
-    };
-    const history = [message, step('b', 'Read', 6_000), step('c', 'Read', 6_000)];
-    const outcome = maskStaleToolOutputs(history, { ...options, protectTokens: 0 });
-    expect(outcome.history[0].toolResults![0].maskedPlaceholder).toContain(
-      'the recorded output is at /home/u/.book/tool-output/a.txt]',
-    );
+  it('keeps its placeholder across a resume, which rebuilds every tool result', () => {
+    const history = [step('a', 'Read', 8_000), step('b', 'Read', 6_000), step('c', 'Read', 6_000)];
+    const masked = maskStaleToolOutputs(history, options).history[0].toolResults![0];
+    const restored = normalizeToolResult(JSON.parse(JSON.stringify(masked)) as ToolResult);
+    expect(restored.maskedPlaceholder).toBe(masked.maskedPlaceholder);
+    expect(restored.content).toBe(masked.content);
+  });
+
+  it('runs only past the masking line of the gate', () => {
+    const history = [
+      step('old', 'Read', 30_000),
+      ...Array.from({ length: 10 }, (_, index) => step(`recent${index}`, 'Read', 4_000)),
+    ];
+    // 60% of a 166.4k gate is 99,840.
+    expect(maskBeforeCompacting(history, 166_400, 99_839).maskedCount).toBe(0);
+    expect(maskBeforeCompacting(history, 166_400, 99_840).maskedCount).toBe(1);
   });
 
   it('is left alone by the tail clip, which it already undercuts', () => {
@@ -177,16 +171,14 @@ describe('maskStaleToolOutputs', () => {
   });
 
   it('scales its budgets with the preflight gate', () => {
-    expect(toolOutputMaskOptions(166_400, true)).toEqual({
+    expect(toolOutputMaskOptions(166_400)).toEqual({
       protectSteps: 10,
       protectTokens: 33_280,
       minClearTokens: 16_640,
-      recorded: true,
     });
-    expect(toolOutputMaskOptions(1_000_000, false)).toMatchObject({
+    expect(toolOutputMaskOptions(1_000_000)).toMatchObject({
       protectTokens: 40_000,
       minClearTokens: 20_000,
-      recorded: false,
     });
   });
 });

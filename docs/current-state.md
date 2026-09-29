@@ -154,11 +154,12 @@ fresh verification pass.
   strategy. Since compaction v3 (2026-09-29, `plans/compaction-v3-plan.md`) it runs in two steps.
   First, from 60% of the loop's preflight gate, old successful re-derivable tool outputs are
   masked (`src/agent/tool-output-masking.ts`): the model reads a one-line placeholder
-  (`ToolResult.maskedPlaceholder`) while the output stays on the result for the summarizer and the
-  record; the newest ten tool steps and the newest 40k tokens of output (20% of the gate on a
-  smaller window) are kept; `Bash`/`WebFetch`/`WebSearch` are masked only where the session records
-  them; failures, small results, `BashOutput` and non-re-derivable tools are never touched; and a
-  pass runs only when it clears a batch (up to 20k tokens). Then, at the gate, the
+  (`ToolResult.maskedPlaceholder`, kept across a resume) while the output stays on the result for
+  the summarizer and the record; only the tools a rerun reproduces (`Read`, `Grep`, `Glob`, the git
+  and history reads) are masked; the newest ten tool steps and the newest 40k tokens of output (20%
+  of the gate on a smaller window) are kept; failures and small results are never touched; a pass
+  runs only when it clears a batch (up to 20k tokens); and it runs before every compaction trigger,
+  the hosts' pre-turn check included. Then, at the gate, the
   older span is summarized by one summarizer call into a Markdown handoff under fixed headings
   (Goal, Constraints & Preferences, Progress, Key Decisions, Current State, Next Steps, Critical
   Context), carrying the previous summary forward; any non-empty reply is accepted (thinking
@@ -174,7 +175,7 @@ fresh verification pass.
   window); a longer summary is shortened section by section and marked `summary-truncated`. Every
   usage-based trigger reads the provider's count against the same gate as the preflight
   (`usageAtGate`); a boundary at the gate compacts synchronously, and a deferred compaction starts
-  at 85% of it and is dropped when masking alone brings the request back under that line. The Carried Ledger, the type-aware fit, the
+  at 85% of it and is dropped when the request is back under that line by the time it settles. The Carried Ledger, the type-aware fit, the
   inherited-constraint audit and the scripted-reducer fidelity harness are gone; a v2 JSON
   checkpoint is read as the previous summary with its rules, threads and ledger entries rendered
   as text. The span is still scanned for text addressed to a summarizer (`suspect_inputs` to the

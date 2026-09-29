@@ -6,7 +6,8 @@ import { resolveShell, shellPromptLine } from '../shell-selection.js';
 import type { ImageAttachment, Message } from '../types/messages.js';
 import type { ProviderMessage, SystemPromptZones } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
-import type { ToolContext } from '../types/tools.js';
+import type { FileObservation, ToolContext } from '../types/tools.js';
+import { normalizeObservedPath } from './compact.js';
 import { createHash } from 'crypto';
 import { collectStaleCheckpointFiles, renderSessionState } from './session-state.js';
 import { normalizePromptPath } from './prompt-determinism.js';
@@ -610,16 +611,18 @@ async function ensureSessionState(
 ): Promise<void> {
   let newest: Message | undefined;
   let checkpoint: Message | undefined;
-  /** Paths observed after the newest checkpoint: fresher than what it recorded. */
-  let observedSince = new Set<string>();
+  /** The newest observation of each path after the newest checkpoint. */
+  let observedSince = new Map<string, FileObservation>();
   for (const msg of history) {
     if (!msg.includeInContext) continue;
     if (msg.kind === 'checkpoint') {
       checkpoint = msg;
-      observedSince = new Set();
+      observedSince = new Map();
     } else if (checkpoint) {
       for (const observation of msg.fileObservations ?? []) {
-        observedSince.add(observation.path.replace(/\\/g, '/'));
+        const key = normalizeObservedPath(observation.path);
+        const known = observedSince.get(key);
+        if (!known || observation.timestamp >= known.timestamp) observedSince.set(key, observation);
       }
     }
     if (msg.role !== 'user') continue;

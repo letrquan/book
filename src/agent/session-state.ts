@@ -4,6 +4,7 @@ import { resolve } from 'path';
 import { workspaceIdentity } from '../tools/file-provenance.js';
 import { normalizePromptPath, promptCurrentDate, promptElapsed } from './prompt-determinism.js';
 import type { Message } from '../types/messages.js';
+import { normalizeObservedPath } from './compact.js';
 
 /**
  * Per-turn workspace facts. They travel at the tail of the newest user turn
@@ -127,9 +128,16 @@ export function renderSessionState(input: SessionStateInput): string {
   ].join('\n');
 }
 
+interface CheckpointFileObservation {
+  workspaceId?: string;
+  sha256?: string;
+  byteSize?: number;
+  timestamp?: number;
+}
+
 interface CheckpointFile {
   path: string;
-  observation?: { workspaceId?: string; sha256?: string; byteSize?: number };
+  observation?: CheckpointFileObservation;
 }
 
 /**
@@ -160,12 +168,12 @@ export async function collectStaleCheckpointFiles(
   workspace: string,
   checkpointMessage: Message,
   /**
-   * Paths the agent has observed since the checkpoint (read, edited, written):
-   * its knowledge of them is newer than the checkpoint's, so they are not stale
-   * whatever the checkpoint recorded. Without this, a file the agent edited
-   * after compacting was reported stale on every turn.
+   * The newest observation of each path in the messages after the checkpoint,
+   * keyed by `normalizeObservedPath`. Where it is newer than the checkpoint's
+   * own, the file is judged against it: a file the agent edited after compacting
+   * is not stale for that, while a change made on disk since is still reported.
    */
-  observedSince: ReadonlySet<string> = new Set(),
+  observedSince: ReadonlyMap<string, CheckpointFileObservation> = new Map(),
 ): Promise<string[]> {
   const checkpoint = checkpointFilesOf(checkpointMessage);
   if (!checkpoint?.files?.length) return [];
@@ -175,8 +183,11 @@ export async function collectStaleCheckpointFiles(
   const stale: string[] = [];
 
   for (const file of checkpoint.files.slice(0, MAX_CHECKPOINT_FILES)) {
-    if (observedSince.has(file.path.replace(/\\/g, '/'))) continue;
-    const observation = file.observation;
+    const since = observedSince.get(normalizeObservedPath(file.path));
+    const observation =
+      since && (since.timestamp ?? 0) >= (file.observation?.timestamp ?? 0)
+        ? since
+        : file.observation;
     if (!observation?.sha256 || observation.workspaceId !== currentWorkspaceId) {
       stale.push(file.path);
       continue;

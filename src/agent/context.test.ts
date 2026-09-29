@@ -1087,13 +1087,20 @@ describe('session-state block', () => {
         kind: 'checkpoint',
         timestamp: 0,
       };
-      // Both drift; the agent then edits b.ts itself, so only a.ts is stale.
+      // Both change on disk. The agent's own edit of b.ts is observed after the
+      // checkpoint with the new bytes, so b.ts matches what the agent knows; a.ts
+      // changed behind its back and is stale.
       writeFileSync(join(dir, 'a.ts'), 'export const a = 2;\n', 'utf-8');
       writeFileSync(join(dir, 'b.ts'), 'export const b = 2;\n', 'utf-8');
+      const edited = createHash('sha256')
+        .update(readFileSync(join(dir, 'b.ts')))
+        .digest('hex');
       const edit: Message = {
         ...assistantMsg('edited b'),
         id: 'a2',
-        fileObservations: [{ ...files[1].observation, operation: 'edit', timestamp: 2 }],
+        fileObservations: [
+          { ...files[1].observation, sha256: edited, operation: 'edit', timestamp: 2 },
+        ],
       };
       const out = await buildMessages(defaultConfig({ workspace: dir }), [
         checkpoint,
@@ -1103,6 +1110,16 @@ describe('session-state block', () => {
       const newest = String(out.at(-1)!.content);
       expect(newest).toContain('- Stale since checkpoint: a.ts');
       expect(newest).not.toContain('b.ts');
+
+      // A change made on disk after that edit is still reported: the agent's
+      // newest knowledge of b.ts is the edit, and the file no longer matches it.
+      writeFileSync(join(dir, 'b.ts'), 'export const b = 3;\n', 'utf-8');
+      const later = await buildMessages(defaultConfig({ workspace: dir }), [
+        checkpoint,
+        edit,
+        { ...userMsg('continue'), id: 'u3' },
+      ]);
+      expect(String(later.at(-1)!.content)).toContain('- Stale since checkpoint: a.ts, b.ts');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
