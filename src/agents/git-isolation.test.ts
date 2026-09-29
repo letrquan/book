@@ -1,5 +1,6 @@
 import { execFileSync } from 'child_process';
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -94,6 +95,51 @@ function writeGlobalConfig(body: string): void {
   writeFileSync(globalConfig, body);
 }
 
+/**
+ * The rest of git's environment, which is the rest of the ways a host can decide what a test
+ * observes, and each of them decides something the tests below are asserting about.
+ *
+ * `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT` with its `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*`
+ * pairs are `-c` overrides, which git reports in the `command` scope — the one scope this change
+ * counts as the operator's own, so a stray pair on a developer's or CI machine's environment would
+ * be a source for a signing pin, and the tests would be measuring their own machine's signing
+ * setup rather than Book's. The rest name the repository, worktree, index, object and common
+ * directory git operates on: a `GIT_DIR` pointing anywhere would redirect every call in the file at
+ * another checkout. Deleted for the test and put back after it; a test that wants one sets it in
+ * its own body, where it is a deliberate part of the fixture.
+ */
+const GIT_ENV_TO_SCRUB = [
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_CONFIG_COUNT',
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_COMMON_DIR',
+];
+
+let scrubbedGitEnv = new Map<string, string | undefined>();
+
+function scrubGitEnv(): Map<string, string | undefined> {
+  const named = new Set<string>(GIT_ENV_TO_SCRUB);
+  for (const name of Object.keys(process.env)) {
+    if (name.startsWith('GIT_CONFIG_KEY_') || name.startsWith('GIT_CONFIG_VALUE_')) named.add(name);
+  }
+  const saved = new Map<string, string | undefined>();
+  for (const name of named) {
+    saved.set(name, process.env[name]);
+    delete process.env[name];
+  }
+  return saved;
+}
+
+function restoreGitEnv(saved: Map<string, string | undefined>): void {
+  for (const [name, value] of saved) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+}
+
 beforeEach(() => {
   bookHome = mkdtempSync(join(tmpdir(), 'book-home-'));
   roots.push(bookHome);
@@ -108,6 +154,7 @@ beforeEach(() => {
   writeFileSync(systemConfig, '');
   process.env.GIT_CONFIG_GLOBAL = globalConfig;
   process.env.GIT_CONFIG_SYSTEM = systemConfig;
+  scrubbedGitEnv = scrubGitEnv();
 });
 
 afterEach(() => {
@@ -117,6 +164,7 @@ afterEach(() => {
   else process.env.GIT_CONFIG_GLOBAL = savedGitConfigGlobal;
   if (savedGitConfigSystem === undefined) delete process.env.GIT_CONFIG_SYSTEM;
   else process.env.GIT_CONFIG_SYSTEM = savedGitConfigSystem;
+  restoreGitEnv(scrubbedGitEnv);
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
 
@@ -604,10 +652,10 @@ describe('signing of the commit the cherry-pick applies (#348)', () => {
     git(root, 'config', 'user.signingKey', 'REPOSITORY-CHOSEN-KEY');
     git(root, 'config', '--add', 'include.path', forwardSlashes(included));
 
-    // The control, and it is what makes the markers below mean something: with the operator's
-    // `commit.gpgSign` and this repository's `gpg.format=ssh`, a plain commit in this checkout
-    // signs with the repository's ssh program and fails. Without it, "no marker" would also be
-    // true of a repository whose signing configuration was never live in the first place.
+    // The control, and it is what makes the `gpg.ssh.program` marker mean something: with the
+    // operator's `commit.gpgSign` and this repository's `gpg.format=ssh`, a plain commit in this
+    // checkout does sign with the repository's ssh program, and fails. It says nothing about the
+    // other two — see the loop below.
     expect(() => git(root, 'commit', '--allow-empty', '-m', 'control')).toThrow();
     expect(
       existsSync(ssh.marker),
@@ -623,8 +671,20 @@ describe('signing of the commit the cherry-pick applies (#348)', () => {
     expect(readFileSync(join(root, 'staged.txt'), 'utf8').replace(/\r\n/g, '\n')).toBe(
       'agent value\n',
     );
-    for (const armed of [program, openpgp, ssh, defaultKeyCommand, x509]) {
+    // `gpg.program` and `gpg.openpgp.program` are the programs a plain openpgp commit in this
+    // checkout would start, so those two are a plain tripwire; `gpg.ssh.program` is the one the
+    // control above is seen to start.
+    for (const armed of [program, openpgp, ssh]) {
       expect(existsSync(armed.marker), `${armed.path} should not have run`).toBe(false);
+    }
+    // These two are assertions, not proof: no commit in this configuration can reach them. The
+    // format in force is `ssh` for the control above and `openpgp` for the applied commit, so the
+    // x509 program is only read for a third format, and `gpg.ssh.defaultKeyCommand` only when git
+    // looks for an ssh key of its own — which this repository's `user.signingKey` answers, so it is
+    // never consulted. They are kept because a pin that stopped neutralizing either would be a
+    // defect worth seeing; what proves the include is live is the case below.
+    for (const unreachable of [defaultKeyCommand, x509]) {
+      expect(existsSync(unreachable.marker), `${unreachable.path} should not have run`).toBe(false);
     }
     // And the signing that does happen is the operator's, not the repository's: the global
     // signer ran, and what it produced is in the applied commit.
@@ -683,4 +743,153 @@ describe('signing of the commit the cherry-pick applies (#348)', () => {
     );
     expect(git(root, 'cat-file', '-p', 'HEAD')).not.toContain('gpgsig');
   });
+
+  it('never signs from a file the repository config includes', async () => {
+    // The include case, live, and separate from the case above for the reason that case's own
+    // comment now gives: there, the format in force is the operator's, so the included program is
+    // never the one that would run and its marker proves nothing. Here nothing is in the
+    // repository's `.git/config` at all — no `git config --local` ever wrote a signing key — and
+    // everything comes from a file the config pulls in, which is how a clone arrives with its
+    // signing already armed. Git reports an entry read that way with the scope of the file that
+    // included it, so a check that only ever read `.git/config` itself would find nothing here.
+    const sandbox = mkdtempSync(join(tmpdir(), 'book-apply-include-'));
+    roots.push(sandbox);
+    const root = repository(join(sandbox, 'repo'));
+    const program = markerProgram(sandbox, 'included-gpg-program');
+    const included = join(sandbox, 'included-signing.cfg');
+    writeFileSync(
+      included,
+      `[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = ${forwardSlashes(program.path)}\n`,
+    );
+    git(root, 'config', '--add', 'include.path', forwardSlashes(included));
+    // The global config is the empty one every test in this file starts from, so the operator has
+    // configured no signing at all and git's own default would leave the applied commit unsigned.
+    expect(git(root, 'config', '--global', '--list')).toBe('');
+
+    // The control, and here it is exact rather than partial: a plain commit in this checkout reads
+    // the included file, starts the program it names, and fails, and `git config --show-scope`
+    // reports the key in the `local` scope. Both halves are read back from a real git, so the
+    // assertions below are about this fix rather than about a fixture that was never armed.
+    expect(() => git(root, 'commit', '--allow-empty', '-m', 'control')).toThrow();
+    expect(
+      existsSync(program.marker),
+      'the control commit should have started the included gpg.program',
+    ).toBe(true);
+    expect(git(root, 'config', '--show-scope', '--get', 'gpg.program')).toBe(
+      `local\t${forwardSlashes(program.path)}`,
+    );
+    rmSync(program.marker, { force: true });
+
+    const applied = await applyCleanCandidate(root, 'included-signing-agent');
+
+    expect(applied.status).toBe('applied');
+    expect(existsSync(program.marker), 'the included gpg.program should not have run').toBe(false);
+    expect(git(root, 'cat-file', '-p', 'HEAD')).not.toContain('gpgsig');
+  });
+});
+
+describe('a cherry-pick Book did not start (#348)', () => {
+  it("refuses to apply over a pending one and leaves the operator's pick in place", async () => {
+    // The pick in progress is the operator's: it owns the working tree and the index this would
+    // write to, and Book starts a pick only so that it can abort the one it started. So the
+    // refusal comes before anything is written, and the `--abort` that cleans up a failed apply
+    // never runs — a rollback that reached this repository would destroy the operator's own
+    // unfinished work.
+    const root = repository();
+    const snapshot = await createSyntheticSnapshot(root, true);
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-pending-pick-wt-'));
+    roots.push(worktreeRoot);
+    const worktree = await createAgentWorktree(snapshot, 'pending-pick-agent', worktreeRoot);
+    writeFileSync(join(worktree.path, 'staged.txt'), 'agent value\n');
+    const candidate = await commitAgentWork(agentRecord('pending-pick-agent', worktree), snapshot);
+    expect(candidate).toBeDefined();
+
+    // The operator interrupts their own cherry-pick. The conflict is the point: it is what leaves
+    // `CHERRY_PICK_HEAD` behind with the file in a conflicted state, which is exactly the state
+    // Book has to recognize rather than write over.
+    git(root, 'branch', 'operator-side');
+    git(root, 'checkout', 'operator-side');
+    writeFileSync(join(root, 'staged.txt'), 'operator value\n');
+    git(root, 'commit', '-am', 'operator side');
+    git(root, 'checkout', '-');
+    writeFileSync(join(root, 'staged.txt'), 'agent value\n');
+    git(root, 'commit', '-am', 'agent side');
+    expect(() => git(root, 'cherry-pick', 'operator-side')).toThrow();
+    expect(git(root, 'rev-parse', '-q', '--verify', 'CHERRY_PICK_HEAD')).toBe(
+      git(root, 'rev-parse', 'operator-side'),
+    );
+    const headBefore = git(root, 'rev-parse', 'HEAD');
+
+    const applied = await applyVerifiedCandidate(snapshot, candidate!);
+
+    expect(applied.status).toBe('conflicted');
+    expect(applied.error).toContain('A cherry-pick is already in progress');
+    // Still the operator's, still theirs to finish, and still mid-conflict: Book neither continued
+    // it nor aborted it, the conflict markers it was left with are untouched, and nothing was
+    // committed.
+    expect(git(root, 'rev-parse', '-q', '--verify', 'CHERRY_PICK_HEAD')).toBe(
+      git(root, 'rev-parse', 'operator-side'),
+    );
+    expect(readFileSync(join(root, 'staged.txt'), 'utf8')).toContain('<<<<<<<');
+    expect(git(root, 'rev-parse', 'HEAD')).toBe(headBefore);
+  });
+});
+
+describe('a signing configuration that cannot be read whole (#348)', () => {
+  it('refuses to apply, and starts no cherry-pick, when the read is truncated', async () => {
+    // The read fails open if a truncated answer is taken for an empty configuration, and
+    // `git config --get-regexp` exits 1 for both "no match" and "nothing useful came back". A
+    // repository can reach the second one: pad `.git/config` past the buffer the answer is read
+    // into, with the signing keys after the padding, and truncation loses exactly the two keys
+    // that would have been pinned. Resolving that as an empty answer would pin nothing and hand
+    // the cherry-pick straight to the program the padding was there to hide.
+    const sandbox = mkdtempSync(join(tmpdir(), 'book-apply-oversized-'));
+    roots.push(sandbox);
+    const root = repository(join(sandbox, 'repo'));
+    const program = markerProgram(sandbox, 'oversized-gpg-program');
+
+    const snapshot = await createSyntheticSnapshot(root, true);
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-oversized-wt-'));
+    roots.push(worktreeRoot);
+    const worktree = await createAgentWorktree(snapshot, 'oversized-agent', worktreeRoot);
+    writeFileSync(join(worktree.path, 'staged.txt'), 'agent value\n');
+    const candidate = await commitAgentWork(agentRecord('oversized-agent', worktree), snapshot);
+    expect(candidate).toBeDefined();
+
+    // Padded after the candidate exists, so the only calls that pay to parse a 50+ MiB config
+    // are the ones the apply itself makes. `MAX_BUFFER` is the size that answer is read into, so
+    // the padding has to exceed it and the keys have to follow the padding, where a truncated
+    // answer would never have seen them.
+    appendFileSync(
+      join(root, '.git', 'config'),
+      `[gpg]\n\tpad = ${'x'.repeat(51 * 1024 * 1024)}\n\tprogram = ${forwardSlashes(
+        program.path,
+      )}\n[commit]\n\tgpgsign = true\n`,
+    );
+    // Read back rather than assumed: the fixture really does arm the program, so "no marker"
+    // below is about Book.
+    expect(git(root, 'config', '--show-scope', '--get', 'gpg.program')).toBe(
+      `local\t${forwardSlashes(program.path)}`,
+    );
+
+    const applied = await applyVerifiedCandidate(snapshot, candidate!);
+
+    // The security claim first, because it is the one that is not a nicety: no pick ran, so the
+    // program the repository named never started, and there is nothing in the working tree for a
+    // rollback to have rolled back.
+    expect(applied.status).toBe('conflicted');
+    expect(existsSync(program.marker), 'the repository gpg.program should not have run').toBe(
+      false,
+    );
+    // Reported as what it is — a read that failed, before any pick started — rather than as a
+    // cherry-pick that failed and was rolled back, which is what the same failure reported while
+    // the read sat inside the pick's own `try`.
+    expect(applied.error).toContain('Could not read the signing configuration');
+    expect(git(root, 'rev-parse', 'HEAD')).toBe(snapshot.baseHead);
+    expect(() => git(root, 'rev-parse', '-q', '--verify', 'CHERRY_PICK_HEAD')).toThrow();
+    expect(readFileSync(join(root, 'staged.txt'), 'utf8')).toContain('base staged.txt');
+    // Every git call in the apply re-reads and re-parses the whole padded config, which is about a
+    // second a call here and eleven calls; the budget above is for that parse, not for a wait, and
+    // every assertion above is about what the apply did.
+  }, 120_000);
 });

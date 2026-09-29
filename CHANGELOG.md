@@ -55,24 +55,36 @@ All notable changes to this project are documented in this file.
   reports in the including file's own scope) had Book start that program, unprompted, at the moment
   it applied an agent's work to a clean branch. The decision is unchanged — that commit is the
   operator's, under their committer identity, and it still signs — and the source of the settings
-  is what moved. `src/agents/git-signing.ts` reads the signing keys with
-  `git config --show-scope` through the same hardened call the rest of `git-isolation.ts` uses, and
-  the cherry-pick now carries `-c` pins for exactly the keys a repository scope sets: each pinned
-  to the operator's own value, or to git's built-in default where they have none, or to an empty
-  value for the ssh paths that have no default, with the operator's value always last so it is the
-  one in force. A key no repository scope sets is not pinned at all, so signing an operator has
-  configured in their global or system config — or, through `GIT_CONFIG_PARAMETERS` and
-  `GIT_CONFIG_COUNT`, their own environment — is byte for byte what it was, and the commit still
-  lands signed by their own signer. **One limitation:** an ssh signer who leaves `user.signingKey`
-  unset globally and relies on `gpg.ssh.defaultKeyCommand`, in a repository that sets its own
-  `user.signingKey`, gets a failed apply — `user.signingKey needs to be set for ssh signing` —
-  because there is no key to carry across and a repository's is not one to borrow. Setting
-  `user.signingKey` globally is the fix, and it is documented in `docs/guide/agents-and-review.md`.
-  Covered end to end across the full clean flow — snapshot, worktree, agent commit, apply — against
-  a repository arming five programs of its own, one of them reachable only through an included
-  file, each of which a control commit is seen to start; a control that the operator's own signer
-  still signs the applied commit; and a repository that turns signing on where the operator has
-  configured none, which now leaves the commit unsigned instead of failing.
+  is what moved. `src/agents/git-signing.ts` reads the signing keys with `git config --show-scope`
+  through the same hardened call the rest of `git-isolation.ts` uses, and the cherry-pick now
+  carries `-c` pins for every key that names or chooses a signing program: each pinned to git's
+  built-in default, or to an empty value for the ssh paths that have none, and then to the
+  operator's own value where they have one, so their value is the one in force. **Those pins are
+  unconditional** — safety cannot rest on the read having been complete and on the configuration
+  not having changed between the read and the cherry-pick, and both are a checkout's to decide. A
+  pin costs nothing where nothing disagrees: the last `-c` is the operator's own value, which is
+  the configuration they already had, so signing they configured in their global or system config —
+  or, through `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`, their own environment — is what it
+  was, and the commit still lands signed by their own signer. `user.signingKey` and any unknown
+  `gpg.*` key are still pinned only when a repository scope sets one, since they have no neutral
+  value; `user.signingKey` then carries the operator's own key, their `gpg.ssh.defaultKeyCommand`
+  run the way git runs it (whitespace-split, no shell, in the repository, bounded), or the
+  committer identity git would default to. **Two things change for an operator who configured
+  signing per repository:** a `user.signingKey` or `commit.gpgSign` set in a single checkout's
+  `.git/config` no longer applies to this one commit, and the operator's own `gpg.ssh.defaultKeyCommand`
+  is now run rather than reported as a limitation — an ssh signer who relies on it, in a repository
+  that sets its own `user.signingKey`, signs as before instead of failing. Setting a per-repository
+  key in the global config under `[includeIf "gitdir:..."]` still works: that file is the
+  operator's, and the value in it is honored. The read fails closed — a configuration that cannot
+  be read whole (git older than 2.26, or an answer too large to arrive intact) is reported as a
+  failure before any cherry-pick starts, rather than being read as a configuration that configures
+  nothing — and a cherry-pick already in progress is the operator's: the apply refuses and leaves
+  it alone. Both are covered in `docs/guide/agents-and-review.md`. Covered end to end across the
+  full clean flow — snapshot, worktree, agent commit, apply — against a repository arming five
+  programs of its own; a repository whose signing settings arrive only through an included file,
+  with the included program read back as a live `local` value; a control that the operator's own
+  signer still signs the applied commit; and a repository that turns signing on where the operator
+  has configured none, which now leaves the commit unsigned instead of failing.
 - **`additionalDirectories` is honored for reads and writes, and gated like every other
   project-declared authority** (#300). The setting was accepted from a checked-in `.book/settings.json`
   and did nothing, so the fix had to make it both real and safe. `Read`, `Glob` and `Grep` now serve
