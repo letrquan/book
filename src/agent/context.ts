@@ -7,9 +7,9 @@ import type { ImageAttachment, Message } from '../types/messages.js';
 import type { ProviderMessage, SystemPromptZones } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
 import type { FileObservation, ToolContext } from '../types/tools.js';
-import { normalizeObservedPath } from './compact.js';
 import { createHash } from 'crypto';
 import { collectStaleCheckpointFiles, renderSessionState } from './session-state.js';
+import { normalizeObservedPath, supersedesObservation } from '../tools/file-provenance.js';
 import { normalizePromptPath } from './prompt-determinism.js';
 import {
   applySkillOverrides,
@@ -620,9 +620,13 @@ async function ensureSessionState(
       observedSince = new Map();
     } else if (checkpoint) {
       for (const observation of msg.fileObservations ?? []) {
+        // An outline shows declarations, not content: it is not knowledge of the
+        // file a drift can be judged against, and never displaces a real read.
+        if (observation.operation === 'outline') continue;
         const key = normalizeObservedPath(observation.path);
-        const known = observedSince.get(key);
-        if (!known || observation.timestamp >= known.timestamp) observedSince.set(key, observation);
+        if (supersedesObservation(observedSince.get(key), observation)) {
+          observedSince.set(key, observation);
+        }
       }
     }
     if (msg.role !== 'user') continue;

@@ -5615,6 +5615,128 @@ describe('runAgentLoop deferred compaction', () => {
     expect(seen[2].join('\n')).toContain('synchronous summary');
   });
 
+  it('compacts synchronously after a reject between 85% and the gate, instead of preparing again each turn', async () => {
+    // Gate 76.8k at this window; 70k is over the deferred line (65.3k) and under
+    // the gate. Every response reports it until a compaction lands, so without the
+    // fallback compacting at the line that started it, each tool turn would
+    // prepare a fresh summarizer and none would ever compact.
+    let compacted = false;
+    const after: Usage = {
+      promptTokens: 5_000,
+      completionTokens: 10,
+      totalTokens: 5_010,
+      contextTokens: 5_000,
+    };
+    const band: Usage = {
+      promptTokens: 70_000,
+      completionTokens: 10,
+      totalTokens: 70_010,
+      contextTokens: 70_000,
+    };
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls <= 3) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: `echo-${providerCalls}`, name: 'Echo', arguments: { value: 'x' } },
+          };
+          yield { type: 'done', usage: compacted ? after : band };
+          return;
+        }
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    const prepareCompact = vi.fn(async (snapshot: Message[]) => preparedFor(snapshot));
+    const commitCompact = vi.fn(async (): Promise<CompactResult> => ({
+      status: 'skipped',
+      reason: 'judge-rejected',
+      message: 'insufficient',
+      judge: { verdict: 'rejected', missing: ['the batch size'], modelCalls: 1, deltaMessages: 2 },
+    }));
+    const onCompact = vi.fn(async () => {
+      compacted = true;
+      return compactedForRetry();
+    });
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 4,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onCompact, prepareCompact, commitCompact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(prepareCompact).toHaveBeenCalledOnce();
+    expect(commitCompact).toHaveBeenCalledOnce();
+    expect(onCompact).toHaveBeenCalledOnce();
+  });
+
+  it('drops at run end a settled deferred compaction the request no longer needs', async () => {
+    const reads: Message[] = Array.from({ length: 11 }, (_, index) => ({
+      id: `end-read-${index}`,
+      role: 'assistant' as const,
+      content: '',
+      includeInContext: true,
+      timestamp: 0,
+      toolCalls: [{ id: `e${index}`, name: 'Read', arguments: { file_path: `e${index}.ts` } }],
+      toolResults: [toolSuccess('q'.repeat(16_000), { toolCallId: `e${index}` })],
+    }));
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'echo-end', name: 'Echo', arguments: { value: 'x' } },
+        };
+        yield {
+          type: 'done',
+          usage: {
+            promptTokens: 70_000,
+            completionTokens: 10,
+            totalTokens: 70_010,
+            contextTokens: 70_000,
+          },
+        };
+      },
+    };
+    const prepareCompact = vi.fn(async (snapshot: Message[]) => preparedFor(snapshot));
+    const commitCompact = vi.fn(accepting);
+
+    await runAgentLoop(
+      defaultConfig({
+        // The run ends after this one tool turn, with the deferred result settled.
+        maxTurns: 1,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      echoRegistry(),
+      'continue',
+      [{ ...userMsg('build it'), id: 'end-brief' }, ...reads],
+      noopCallbacks({
+        onCompact: vi.fn(async () => compactedForRetry()),
+        prepareCompact,
+        commitCompact,
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(prepareCompact).toHaveBeenCalledOnce();
+    expect(commitCompact).not.toHaveBeenCalled();
+  });
+
   it('awaits a reducer already in flight at the preflight gate instead of starting a second', async () => {
     let providerCalls = 0;
     const seen: string[][] = [];

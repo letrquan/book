@@ -1120,6 +1120,26 @@ describe('session-state block', () => {
         { ...userMsg('continue'), id: 'u3' },
       ]);
       expect(String(later.at(-1)!.content)).toContain('- Stale since checkpoint: a.ts, b.ts');
+
+      // An outline of a.ts after the drift shows declarations, not content: it is
+      // not a baseline, so a.ts stays stale.
+      const outlined = createHash('sha256')
+        .update(readFileSync(join(dir, 'a.ts')))
+        .digest('hex');
+      const outline: Message = {
+        ...assistantMsg('outlined a'),
+        id: 'a3',
+        fileObservations: [
+          { ...files[0].observation, sha256: outlined, operation: 'outline', timestamp: 3 },
+        ],
+      };
+      const afterOutline = await buildMessages(defaultConfig({ workspace: dir }), [
+        checkpoint,
+        edit,
+        outline,
+        { ...userMsg('continue'), id: 'u4' },
+      ]);
+      expect(String(afterOutline.at(-1)!.content)).toContain('- Stale since checkpoint: a.ts');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

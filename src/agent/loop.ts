@@ -35,7 +35,7 @@ import {
   resolveCompactBudgets,
   usagePressureTokens,
 } from './compact.js';
-import { maskBeforeCompacting } from './tool-output-masking.js';
+import { maskAtGate, maskBeforeCompacting } from './tool-output-masking.js';
 import { hasDeclaredContextWindow, resolveContextLimit, resolveModelKey } from '../models.js';
 import {
   createModelWindowStore,
@@ -775,6 +775,8 @@ export async function runAgentLoop(
      * counts, and sizes it against the gate that includes the overhead.
      */
     let lastRequestEstimate: { requestTokens: number; overheadTokens: number } | null = null;
+    /** The estimate of the request `lastUsage` measured: the pair `estimatorDrift` divides. */
+    let lastUsageEstimate = 0;
     /** Avoid re-attempting compact for the same pressure snapshot after skip/fail. */
     let lastCompactAttemptKey: string | null = null;
     const deferredCompactionAvailable = (): boolean =>
@@ -811,9 +813,41 @@ export async function runAgentLoop(
      * below 1.
      */
     const estimatorDrift = (): number =>
-      lastUsage && lastRequestEstimate && lastRequestEstimate.requestTokens > 0
-        ? Math.max(1, usagePressureTokens(lastUsage) / lastRequestEstimate.requestTokens)
+      lastUsage && lastUsageEstimate > 0
+        ? Math.max(1, usagePressureTokens(lastUsage) / lastUsageEstimate)
         : 1;
+    /** The next request as it stands, on the provider's scale: the history now, plus the overhead the last request carried. */
+    const projectedRequestTokens = (): number =>
+      (estimateHistoryTokens(newHistory) + (lastRequestEstimate?.overheadTokens ?? 0)) *
+      estimatorDrift();
+    /**
+     * Drop a settled deferred compaction the request no longer needs: masked by
+     * now (an earlier preflight, or the pass previewed here), it is back under the
+     * line the compaction started at, so committing would summarize history that
+     * no longer has to go and put back a tail snapshotted before the masking. The
+     * pass is applied only when it decides the drop. Returns whether it dropped.
+     */
+    const releaseUnneededDeferred = (): boolean => {
+      if (pendingCompaction()?.settled === undefined || config.autoCompactEnabled === false) {
+        return false;
+      }
+      const gate = compactionGate(effectiveConfig);
+      const decision = maskAtGate(
+        newHistory,
+        gate,
+        projectedRequestTokens(),
+        Math.floor(gate * DEFERRED_COMPACT_GATE_FRACTION),
+        estimatorDrift(),
+      );
+      if (!decision.underLine) return false;
+      applyMasking(decision, projectedRequestTokens());
+      log.info('deferred compaction dropped: the request is back under the gate');
+      abortPendingCompaction('no longer needed');
+      // The provider's count predates the drop; the preflight measures anew.
+      lastUsage = null;
+      lastCompactAttemptKey = null;
+      return true;
+    };
     /** Start the reducer on a copy of the history; the turn goes on meanwhile. */
     const startDeferredCompaction = (usage: Usage, hints: CompactRequestHints): void => {
       const controller = new AbortController();
@@ -1010,34 +1044,16 @@ export async function runAgentLoop(
 
       // A deferred compaction that finished while the last turn ran is
       // committed here, at the boundary, before the pressure check below
-      // decides anything on stale numbers.
+      // decides anything on stale numbers -- unless the request no longer needs it.
       let compactionSettledThisBoundary = false;
-      // A settled deferred compaction is dropped rather than committed when the
-      // request no longer needs it -- the history as it stands now, masked by an
-      // earlier preflight or by the pass previewed here, is back under the line it
-      // started at: committing would summarize history that no longer has to go,
-      // and put back the tail it snapshotted before the outputs were masked. The
-      // pass is applied only then; before a commit it would rewrite a prompt the
-      // commit replaces anyway.
-      if (pendingCompaction()?.settled !== undefined && lastRequestEstimate) {
-        const gate = compactionGate(effectiveConfig);
-        // The deferred start read the provider's count, so the estimate is scaled
-        // by how far the last request's estimate undercounted it.
-        const drift = estimatorDrift();
-        const estimate = estimateHistoryTokens(newHistory) + lastRequestEstimate.overheadTokens;
-        const preview = previewMasking(estimate * drift, gate);
-        const remaining = (estimate - preview.clearedTokens) * drift;
-        if (remaining < Math.floor(gate * DEFERRED_COMPACT_GATE_FRACTION)) {
-          applyMasking(preview, estimate);
-          log.info('deferred compaction dropped: the request is back under the gate', {
-            requestTokens: Math.round(remaining),
-          });
-          abortPendingCompaction('no longer needed');
-          // The provider's count predates the drop; the preflight measures anew.
-          lastUsage = null;
-          lastCompactAttemptKey = null;
-        }
-      }
+      /**
+       * The share of the gate the synchronous path compacts at. A deferred one
+       * that was rejected, failed, or no longer applied started at 85%, and this
+       * boundary compacts there too; otherwise usage between 85% and the gate
+       * would start a fresh summarizer on every tool turn.
+       */
+      let synchronousFraction = 1;
+      releaseUnneededDeferred();
       if (pendingCompaction()?.settled !== undefined) {
         const outcome = await commitDeferredCompaction(false);
         if (signal?.aborted) break;
@@ -1046,6 +1062,7 @@ export async function runAgentLoop(
           // its turn on this same boundary, under a fresh dedupe key, rather
           // than a second deferred attempt on the same pressure.
           lastCompactAttemptKey = null;
+          synchronousFraction = DEFERRED_COMPACT_GATE_FRACTION;
         } else if (outcome === 'settled') {
           // A prepare a hook refused, or one skipped, is not retried on this
           // pressure: the hook would refuse again, and the boundary's dedupe
@@ -1060,7 +1077,7 @@ export async function runAgentLoop(
         config.autoCompactEnabled !== false &&
         callbacks.onCompact &&
         contextLimit != null &&
-        usageAtGate(lastUsage, effectiveConfig)
+        usageAtGate(lastUsage, effectiveConfig, synchronousFraction)
       ) {
         const attemptKey = `${usagePressureTokens(lastUsage)}:${newHistory.length}`;
         if (
@@ -1078,10 +1095,19 @@ export async function runAgentLoop(
           // run a summarizer beside the turn -- the next request would wait for it
           // at once -- so what remains is synchronous. The deferred start is the
           // response site below, at 85%.
-          const pressure = usagePressureTokens(lastUsage);
+          // The request about to be sent carries the last wave's output too, which
+          // the provider's count of the previous request cannot see.
+          const pressure = Math.max(usagePressureTokens(lastUsage), projectedRequestTokens());
           const gate = compactionGate(effectiveConfig);
-          const cleared = applyMasking(previewMasking(pressure, gate), pressure);
-          if (pressure - cleared * estimatorDrift() < gate) {
+          const decision = maskAtGate(
+            newHistory,
+            gate,
+            pressure,
+            Math.floor(gate * synchronousFraction),
+            estimatorDrift(),
+          );
+          applyMasking(decision, pressure);
+          if (decision.underLine) {
             lastUsage = null;
           } else {
             log.info('auto-compact triggered', { tokens: pressure, contextLimit });
@@ -1548,6 +1574,7 @@ export async function runAgentLoop(
             if (event.usage) {
               turnUsage = event.usage;
               lastUsage = turnUsage;
+              lastUsageEstimate = lastRequestEstimate?.requestTokens ?? 0;
             }
             responseMetadata = {
               provider: provider.id,
@@ -2334,14 +2361,29 @@ export async function runAgentLoop(
         const attemptKey = `${usagePressureTokens(turnUsage)}:${newHistory.length}`;
         if (attemptKey !== lastCompactAttemptKey) {
           lastCompactAttemptKey = attemptKey;
-          log.info('auto-compact triggered (deferred, ahead of the tool wave)', {
-            tokens: usagePressureTokens(turnUsage),
-            gate: compactionGate(effectiveConfig),
-          });
-          startDeferredCompaction(turnUsage, {
-            requestOverheadTokens: lastRequestEstimate?.overheadTokens,
-            estimatedRequestTokens: lastRequestEstimate?.requestTokens,
-          });
+          // Mask before the snapshot: the summarizer then never reads what masking
+          // would have cleared, a commit does not put unmasked outputs back, and
+          // when masking alone is enough nothing is started at all.
+          const gate = compactionGate(effectiveConfig);
+          const pressure = usagePressureTokens(turnUsage);
+          const decision = maskAtGate(
+            newHistory,
+            gate,
+            pressure,
+            Math.floor(gate * DEFERRED_COMPACT_GATE_FRACTION),
+            estimatorDrift(),
+          );
+          applyMasking(decision, pressure);
+          if (!decision.underLine) {
+            log.info('auto-compact triggered (deferred, ahead of the tool wave)', {
+              tokens: pressure,
+              gate,
+            });
+            startDeferredCompaction(turnUsage, {
+              requestOverheadTokens: lastRequestEstimate?.overheadTokens,
+              estimatedRequestTokens: lastRequestEstimate?.requestTokens,
+            });
+          }
         }
       }
 
@@ -3597,7 +3639,7 @@ export async function runAgentLoop(
     // the whole thing on the user's next send. One still in flight is aborted
     // by the `finally`; there is no boundary left for it.
     if (!signal?.aborted && pendingCompaction()?.settled !== undefined) {
-      await commitDeferredCompaction(false);
+      if (!releaseUnneededDeferred()) await commitDeferredCompaction(false);
     }
 
     callbacks.onDone();

@@ -175,7 +175,9 @@ fresh verification pass.
   window); a longer summary is shortened section by section and marked `summary-truncated`. Every
   usage-based trigger reads the provider's count against the same gate as the preflight
   (`usageAtGate`); a boundary at the gate compacts synchronously, and a deferred compaction starts
-  at 85% of it and is dropped when the request is back under that line by the time it settles. The Carried Ledger, the type-aware fit, the
+  at 85% of it, is dropped when the request is back under that line by the time it settles (at a
+  boundary or at run end), and after a judge reject compacts synchronously at that 85% line. The
+  Carried Ledger, the type-aware fit, the
   inherited-constraint audit and the scripted-reducer fidelity harness are gone; a v2 JSON
   checkpoint is read as the previous summary with its rules, threads and ledger entries rendered
   as text. The span is still scanned for text addressed to a summarizer (`suspect_inputs` to the

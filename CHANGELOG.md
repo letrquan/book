@@ -215,11 +215,12 @@ All notable changes to this project are documented in this file.
   - **Old tool outputs are masked first**, before every compaction trigger (loop preflight and
     turn boundary, and the hosts' pre-turn check). From 60% of the gate, the model reads a
     one-line placeholder naming the call in place of old successful output of the tools a rerun
-    reproduces (`Read`, `Grep`, `Glob`, the git and history reads); the output stays on the result
-    for the summarizer and the record, survives a resume, and `/context` counts the placeholder.
-    The newest ten tool steps and 40k tokens, failures, small results and every other tool are
-    never touched, and a pass runs only when it clears a batch. When that is enough, nothing is
-    summarized (`src/agent/tool-output-masking.ts`).
+    reproduces (`Read`, `Grep`, `Glob`, the git and history reads), saying that a rerun shows
+    its current output; the output stays on the result for the summarizer and the record, survives
+    a resume, and `/context` counts the placeholder. The newest ten tool steps and 40k tokens as
+    sent, failures, small results and every other tool are never touched, and a pass runs only
+    when it clears a batch. When that is enough, nothing is summarized, and every trigger decides
+    that with the same arithmetic (`maskAtGate` in `src/agent/tool-output-masking.ts`).
   - **One summarizer call writes a Markdown handoff** under fixed headings, carrying the previous
     summary forward. Any non-empty reply is accepted: no schema, no quote or event-reference
     validation, no repair prompt. An empty reply is retried once; a reply cut off at the output
@@ -238,10 +239,13 @@ All notable changes to this project are documented in this file.
   - **One gate for every trigger.** The usage-based triggers (host pre-turn, loop boundary) read
     the provider's count against the preflight gate, 0.8 of the usable window, instead of 0.8 of
     the raw window, which at 272k had put them 51k tokens above it. A boundary at the gate compacts
-    synchronously; a deferred compaction starts at 85% of the gate, is dropped when the request is
-    back under that line by the time it settles, and its judge -- which reads masked results as
-    the agent will -- gives up after two minutes as
-    `inconclusive` (one replayed Gemini judge had held the boundary for about fifteen).
+    synchronously; a deferred compaction starts at 85% of the gate (and not when masking alone
+    brings the request under that line), is dropped when the request is back under it by the time
+    it settles -- at a turn boundary or at the end of the run -- and, rejected, is followed by a
+    synchronous compaction at that same 85% line rather than a fresh summarizer on every turn. Its
+    judge reads masked results as the agent will, counts a cleared-output line as retrievable
+    rather than missing, and gives up after two minutes as `inconclusive` (one replayed Gemini
+    judge had held the boundary for about fifteen).
   - **`generation` advances on every path.** A degraded fallback cloned the previous checkpoint's
     generation, so a degraded chain read g2, g2, g2 with a frozen summary.
   - **Removed:** the Carried Ledger and its cue extraction, the type-aware fit ladder, the

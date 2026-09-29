@@ -484,7 +484,8 @@ describe('runCompact', () => {
     });
     if (result.status !== 'compacted') return;
     expect(result.checkpoint.coverage?.reasons).toContain('invalid-checkpoint');
-    expect(result.checkpoint.state.summary).toContain('The summarizer returned no usable summary');
+    // The note leads, so no shortening of what follows can cut it.
+    expect(result.checkpoint.state.summary).toMatch(/^The summarizer returned no usable summary/);
     expect(result.checkpoint.state.status).toBe('unknown');
   });
 
@@ -1620,6 +1621,8 @@ describe('judgeCompaction', () => {
     const [config, messages, , request] = mockedStream.mock.calls.at(-1)!;
     expect(config.effort).toBe('low');
     expect(messages[0].content).toContain('audit a historical checkpoint');
+    // A masked line is output the agent can get back, not something missing.
+    expect(messages[0].content).toContain('do not count it as missing');
     const prompt = messages[1].content as string;
     expect(prompt).toContain('[Historical conversation checkpoint');
     expect(prompt.indexOf('do Y')).toBeGreaterThan(
@@ -1691,7 +1694,7 @@ describe('judgeCompaction', () => {
                 {
                   ...toolResult('r1', 'SECRET-VALUE-IN-FILE'),
                   maskedPlaceholder:
-                    '[tool output cleared to save context: Read a.ts (~5 tokens); run Read again to see it]',
+                    '[tool output cleared to save context: Read a.ts (~5 tokens); run Read again to see its current output]',
                 },
               ],
             }

@@ -28,7 +28,7 @@ import {
 } from './types/terminal.js';
 import { createAgentRunContext, type AgentRunContext, type AgentRunResult } from './types/runs.js';
 import { compactionGate, usageAtGate, usagePressureTokens } from './agent/compact.js';
-import { maskBeforeCompacting } from './agent/tool-output-masking.js';
+import { maskAtGate } from './agent/tool-output-masking.js';
 import { resolveContextLimit } from './models.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { seedObservationLedger } from './tools/file-provenance.js';
@@ -932,11 +932,11 @@ export async function runHeadless(
       if (config.autoCompactEnabled !== false && usageAtGate(lastUsage, config)) {
         const pressure = usagePressureTokens(lastUsage);
         const gate = compactionGate(config);
-        const masked = maskBeforeCompacting(contextHistory, gate, pressure);
+        const masked = maskAtGate(contextHistory, gate, pressure, gate);
         if (masked.maskedCount > 0) {
           contextHistory.length = 0;
           contextHistory.push(...masked.history);
-          if (pressure - masked.clearedTokens < gate) lastUsage = null;
+          if (masked.underLine) lastUsage = null;
         }
       }
       const contextLimit = resolveContextLimit(config);

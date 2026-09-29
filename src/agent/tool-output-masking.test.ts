@@ -10,6 +10,7 @@ import {
 import { clipHistoryToolResults } from './compact.js';
 import {
   MASKED_TOOL_OUTPUT_PREFIX,
+  maskAtGate,
   maskBeforeCompacting,
   maskStaleToolOutputs,
   toolOutputMaskOptions,
@@ -67,7 +68,7 @@ describe('maskStaleToolOutputs', () => {
     expect(maskedIds(outcome.history)).toEqual(['a', 'b']);
     const result = outcome.history[0].toolResults![0];
     expect(result.maskedPlaceholder).toBe(
-      `${MASKED_TOOL_OUTPUT_PREFIX}: Read src/a-0.ts (~4000 tokens); run Read again to see it]`,
+      `${MASKED_TOOL_OUTPUT_PREFIX}: Read src/a-0.ts (~4000 tokens); run Read again to see its current output]`,
     );
     // The model reads the placeholder; the summarizer and the record keep every byte.
     expect(toolResultModelContent(result)).toBe(result.maskedPlaceholder);
@@ -125,7 +126,7 @@ describe('maskStaleToolOutputs', () => {
     const outcome = maskStaleToolOutputs(history, options);
     expect(maskedIds(outcome.history)).toEqual(['a']);
     expect(outcome.history[0].toolResults![0].maskedPlaceholder).toContain(
-      ': Read src/a-0.ts (~8000 tokens); run Read again to see it]',
+      ': Read src/a-0.ts (~8000 tokens); run Read again to see its current output]',
     );
   });
 
@@ -161,13 +162,47 @@ describe('maskStaleToolOutputs', () => {
     expect(maskBeforeCompacting(history, 166_400, 99_840).maskedCount).toBe(1);
   });
 
-  it('is left alone by the tail clip, which it already undercuts', () => {
+  it('is clipped by the tail clip like any result, keeping the placeholder the model reads', () => {
     const history = [step('a', 'Read', 8_000), step('b', 'Read', 6_000), step('c', 'Read', 6_000)];
     const masked = maskStaleToolOutputs(history, options).history;
     const clipped = clipHistoryToolResults(masked, 500);
-    expect(clipped[0]).toBe(masked[0]);
     const result: ToolResult = clipped[0].toolResults![0];
-    expect(result.content).toHaveLength(32_000);
+    expect(result.maskedPlaceholder).toBe(masked[0].toolResults![0].maskedPlaceholder);
+    expect(result.content.length).toBeLessThan(2_100);
+    expect(toolResultModelContent(result)).toBe(result.maskedPlaceholder);
+  });
+
+  it('measures its protected window in what is sent, so masked results do not use it up', () => {
+    // Ten masked steps at the front of the protected window cost a placeholder
+    // each, not the 8k they replaced: the unmasked read behind them is still
+    // inside the 10k token window.
+    const alreadyMasked = maskStaleToolOutputs(
+      [
+        ...Array.from({ length: 10 }, (_, index) => step(`m${index}`, 'Read', 8_000)),
+        step('x1', 'Read', 6_000),
+        step('x2', 'Read', 6_000),
+      ],
+      options,
+    ).history.slice(0, 10);
+    expect(alreadyMasked.every((message) => message.toolResults![0].maskedPlaceholder)).toBe(true);
+    const history = [step('keep', 'Read', 6_000), ...alreadyMasked];
+    const outcome = maskStaleToolOutputs(history, { ...options, protectSteps: 0 });
+    expect(maskedIds(outcome.history).filter((id) => id === 'keep')).toEqual([]);
+  });
+
+  it('decides with the same arithmetic wherever it is asked, scaling what it clears by the drift', () => {
+    const history = [
+      step('old', 'Read', 30_000),
+      ...Array.from({ length: 10 }, (_, index) => step(`recent${index}`, 'Read', 4_000)),
+    ];
+    const clearing = maskStaleToolOutputs(history, toolOutputMaskOptions(166_400)).clearedTokens;
+    expect(maskAtGate(history, 166_400, 170_000, 166_400).underLine).toBe(
+      170_000 - clearing < 166_400,
+    );
+    // At a drift of 1.2 the same pass is worth more on the provider's scale.
+    const drifted = maskAtGate(history, 166_400, 190_000, 166_400, 1.2);
+    expect(drifted.underLine).toBe(190_000 - clearing * 1.2 < 166_400);
+    expect(maskAtGate(history, 166_400, 90_000, 80_000).maskedCount).toBe(0);
   });
 
   it('scales its budgets with the preflight gate', () => {

@@ -310,19 +310,21 @@ running again reproduces: `Read`, `Grep`, `Glob`, the git reads and the session-
 reads one line instead, naming the call:
 
 ```
-[tool output cleared to save context: Read src/agent/loop.ts (~4000 tokens); run Read again to see it]
+[tool output cleared to save context: Read src/agent/loop.ts (~4000 tokens); run Read again to see its current output]
 ```
 
-The output itself stays on the result, so the summarizer and the session record still have every
-byte, and `/context` counts the line, which is what is sent. Nothing else is masked: a command's
+The line says "current" because a rerun shows the file or diff as it is now, after the agent's own
+edits. The output itself stays on the result, so the summarizer reads the real output and the
+session record keeps it (a step a compaction keeps in its tail has it clipped like any other
+result), and `/context` counts the line, which is what is sent. Nothing else is masked: a command's
 output depends on when it ran, a page changes, `BashOutput` returns only what is new since the
 last read, and the session's own copy of a tool result reads back clipped to a few thousand
 characters -- so for those a placeholder would promise output the agent cannot get. A failed
 result (the agent debugs from it) and a small one are never masked either.
 
 The newest ten steps that carry tool results are never masked, whatever they cost -- the newest is
-the wave the model has not seen yet -- and beyond them the newest 40k tokens of output (20% of the
-gate on a smaller window) are kept too. On a small window that protects everything, and compaction
+the wave the model has not seen yet -- and beyond them the newest 40k tokens of output as sent (20%
+of the gate on a smaller window; a result already masked counts as its line) are kept too. On a small window that protects everything, and compaction
 does the work instead: better than masking a file read one step earlier and watching the agent
 read it again. Masking runs only when it would clear a batch at once (up to 20k tokens), so the
 prompt a provider caches is rewritten rarely rather than on every request, and when it brings the
@@ -374,10 +376,10 @@ inputs below by reference) rides on the message as `checkpointData`, which is al
 compaction record stores. An older `book` still loads a session this one compacted, reading the
 checkpoint as an ordinary message. The session state names a listed file as stale when it no
 longer matches the agent's newest knowledge of it: the checkpoint's observation, or a later read
-or edit of the file.
+or edit of the file (an outline, which shows declarations only, does not count).
 
 When no summary can be had -- the summarizer answers nothing twice, or is refused at every size
-tried -- the checkpoint says so, keeps the previous summary and the last few assistant messages,
+tried -- the checkpoint says so first, keeps the previous summary and the last few assistant messages,
 and lists the files; it never contains a model's raw reply. The generation advances on every path.
 A checkpoint written by an older Book (JSON) is read as the previous summary, with its rules, its
 open threads and its carried-ledger entries rendered as text, so nothing is lost across the
@@ -401,13 +403,16 @@ and runs the same probes as the plain benchmark.
 **The turn that nears the gate does not wait for the summarizer.** When a response reports usage
 over 85% of the gate and the model has tool calls to make, Book starts the summarizer on a
 snapshot of the history _before_ the tools run and lets the tool wave be its head start; the turn
-goes on over the full history. At the next turn boundary, when the request -- masked by then, or by
-a pass run there -- is back under that 85% line, the prepared checkpoint is dropped rather than
-committed. Otherwise a **judge** (one small call on the compact model, low effort, at most two
+goes on over the full history. At the next turn boundary, or when the run ends first, a prepared
+checkpoint is dropped rather than committed when the request -- masked by then, or by a pass run
+there -- is back under that 85% line. Otherwise a **judge** (one small call on the compact model, low effort, at most two
 minutes) reads the checkpoint as the agent would and the steps taken while the summarizer ran,
-and answers whether the checkpoint holds every fact, value and constraint those steps relied on.
+and answers whether the checkpoint holds every fact, value and constraint those steps relied on (a
+cleared-output line is output the agent gets back by rerunning the call, not a missing fact).
 Accepted: the checkpoint replaces the older history and the steps taken meanwhile follow it
-verbatim. Rejected: the checkpoint is dropped and Book compacts synchronously at that boundary. A
+verbatim. Rejected: the checkpoint is dropped and Book compacts synchronously at that boundary,
+even when the request is under the gate -- the 85% line that started the summary is the line, so a
+run sitting between the two does not prepare and reject a new summary on every turn. A
 judge that fails, times out or does not answer in JSON is `inconclusive` and accepts. A usage
 reading already at the gate at a turn boundary compacts synchronously there. If the next request
 would not fit while the summarizer is still running, Book waits for that one rather than start a

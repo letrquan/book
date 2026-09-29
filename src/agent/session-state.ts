@@ -1,10 +1,10 @@
 import { createHash } from 'crypto';
 import { readFile, stat } from 'fs/promises';
 import { resolve } from 'path';
-import { workspaceIdentity } from '../tools/file-provenance.js';
+import { normalizeObservedPath, workspaceIdentity } from '../tools/file-provenance.js';
 import { normalizePromptPath, promptCurrentDate, promptElapsed } from './prompt-determinism.js';
 import type { Message } from '../types/messages.js';
-import { normalizeObservedPath } from './compact.js';
+import { MAX_CHECKPOINT_FILES } from './compact.js';
 
 /**
  * Per-turn workspace facts. They travel at the tail of the newest user turn
@@ -17,7 +17,6 @@ import { normalizeObservedPath } from './compact.js';
  */
 
 /** Cap the freshness pass so a large checkpoint cannot stall a turn on hashing. */
-const MAX_CHECKPOINT_FILES = 30;
 
 const PLAN_MODE_LINE =
   '- Plan mode: active — mutation tools are unavailable this turn; explore read-only, then call ExitPlanMode with your plan and wait for approval before making any file changes.';

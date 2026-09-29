@@ -97,6 +97,29 @@ export function toolOutputMaskOptions(preflightThreshold: number): ToolOutputMas
   };
 }
 
+export interface ToolOutputMaskDecision extends ToolOutputMaskOutcome {
+  /** Whether the request, less what the pass clears, is under `line`: no summary is needed. */
+  underLine: boolean;
+}
+
+/**
+ * The one decision every compaction trigger makes first: mask, then see whether
+ * a summary is still needed. `pressureTokens` is the request as the trigger
+ * measures it (a provider count, or an estimate scaled by `drift`, the factor by
+ * which the loop's estimate undercounts the provider); what the pass clears is an
+ * estimate and is scaled by the same factor before it is subtracted.
+ */
+export function maskAtGate(
+  history: readonly Message[],
+  gate: number,
+  pressureTokens: number,
+  line: number,
+  drift = 1,
+): ToolOutputMaskDecision {
+  const outcome = maskBeforeCompacting(history, gate, pressureTokens);
+  return { ...outcome, underLine: pressureTokens - outcome.clearedTokens * drift < line };
+}
+
 /**
  * Masking as every compaction trigger runs it first: nothing below the masking
  * line of `gate`, else a pass over `history`. The caller decides from
@@ -113,8 +136,13 @@ export function maskBeforeCompacting(
   return maskStaleToolOutputs(history, toolOutputMaskOptions(gate));
 }
 
+/**
+ * What the model reads instead. Running the call again shows the output as it is
+ * now -- after the agent's own edits, a different file or diff -- which is what
+ * the agent works from; the wording says so rather than promising the old bytes.
+ */
 function placeholder(tool: string, subject: string, tokens: number): string {
-  return `${MASKED_TOOL_OUTPUT_PREFIX}: ${subject} (~${tokens} tokens); run ${tool} again to see it]`;
+  return `${MASKED_TOOL_OUTPUT_PREFIX}: ${subject} (~${tokens} tokens); run ${tool} again to see its current output]`;
 }
 
 /**
@@ -139,7 +167,12 @@ export function maskStaleToolOutputs(
       const result = message.toolResults[resultIndex];
       const tokens = estimateTextTokens(result.content);
       if (steps <= Math.max(1, options.protectSteps) || protectedTokens < options.protectTokens) {
-        protectedTokens += tokens;
+        // The protected window is measured in what is sent: a result already
+        // masked costs its placeholder, not the output it replaced.
+        protectedTokens +=
+          result.maskedPlaceholder !== undefined
+            ? estimateTextTokens(result.maskedPlaceholder)
+            : tokens;
         continue;
       }
       if (tokens <= MIN_MASKED_RESULT_TOKENS) continue;

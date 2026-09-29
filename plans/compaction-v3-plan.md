@@ -43,7 +43,7 @@ argument and how to get the output back -- set as `ToolResult.maskedPlaceholder`
 summarizer, the judge and the record still read every byte:
 
 ```
-[tool output cleared to save context: Read src/agent/loop.ts (~4000 tokens); run Read again to see it]
+[tool output cleared to save context: Read src/agent/loop.ts (~4000 tokens); run Read again to see its current output]
 ```
 
 Rules, each from a measured result or a review finding:

@@ -16,6 +16,11 @@ export function workspaceIdentity(workspaceRoot: string): string {
   return createHash('sha256').update(stable).digest('hex').slice(0, 24);
 }
 
+/** A path as observations and checkpoint files are matched on: forward slashes. */
+export function normalizeObservedPath(path: string): string {
+  return path.replace(/\\/g, '/');
+}
+
 export function observationKey(workspaceId: string, path: string): string {
   const normalized = path.replace(/\\/g, '/');
   // Case-insensitive filesystems (Windows) must key differently-cased spellings

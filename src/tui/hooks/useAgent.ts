@@ -29,7 +29,7 @@ import type {
   PlanRecordData,
 } from '../../types/sessions.js';
 import { compactionGate, usageAtGate, usagePressureTokens } from '../../agent/compact.js';
-import { maskBeforeCompacting } from '../../agent/tool-output-masking.js';
+import { maskAtGate } from '../../agent/tool-output-masking.js';
 import { resolveContextLimit } from '../../models.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
 import type { Todo } from '../../tools/todo.js';
@@ -805,10 +805,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         ) {
           const pressure = usagePressureTokens(hostUsageRef.current);
           const gate = compactionGate(liveConfig);
-          const masked = maskBeforeCompacting(contextHistoryRef.current, gate, pressure);
+          const masked = maskAtGate(contextHistoryRef.current, gate, pressure, gate);
           if (masked.maskedCount > 0) {
             contextHistoryRef.current = masked.history;
-            if (pressure - masked.clearedTokens < gate) hostUsageRef.current = null;
+            if (masked.underLine) hostUsageRef.current = null;
           }
         }
         const contextLimit = resolveContextLimit(liveConfig);
