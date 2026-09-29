@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import type { FileObservation, ToolContext } from '../types/tools.js';
 import { fileTools } from './file.js';
-import { seedObservationLedger } from './file-provenance.js';
+import { normalizeObservedPath, observationKey, seedObservationLedger } from './file-provenance.js';
 
 const read = fileTools.find((tool) => tool.name === 'Read')!;
 const edit = fileTools.find((tool) => tool.name === 'Edit')!;
@@ -26,6 +26,17 @@ async function observeBoth(): Promise<{ readSeen: FileObservation; outlineSeen: 
     outlineSeen: outlined.artifacts!.fileObservations![0],
   };
 }
+
+describe('normalizeObservedPath', () => {
+  it('matches the ledger key, so a checkpoint and the ledger agree on which file is which', () => {
+    expect(normalizeObservedPath('src\\agent\\Loop.ts')).toBe(
+      process.platform === 'win32' ? 'src/agent/loop.ts' : 'src/agent/Loop.ts',
+    );
+    expect(observationKey('ws', 'src\\agent\\Loop.ts')).toBe(
+      `ws:${normalizeObservedPath('src/agent/Loop.ts')}`,
+    );
+  });
+});
 
 describe('seedObservationLedger: a resumed parallel batch', () => {
   it('keeps the Read when the outline of the same file came first in the batch and finished last', async () => {

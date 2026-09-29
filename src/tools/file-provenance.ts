@@ -16,16 +16,18 @@ export function workspaceIdentity(workspaceRoot: string): string {
   return createHash('sha256').update(stable).digest('hex').slice(0, 24);
 }
 
-/** A path as observations and checkpoint files are matched on: forward slashes. */
+/**
+ * A path as observations and checkpoint files are matched on: forward slashes, and on
+ * case-insensitive filesystems (Windows) one spelling for every casing of the same file,
+ * mirroring workspaceIdentity's root folding. A matching key only; never display it.
+ */
 export function normalizeObservedPath(path: string): string {
-  return path.replace(/\\/g, '/');
+  const normalized = path.replace(/\\/g, '/');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 export function observationKey(workspaceId: string, path: string): string {
-  const normalized = path.replace(/\\/g, '/');
-  // Case-insensitive filesystems (Windows) must key differently-cased spellings
-  // of the same file identically, mirroring workspaceIdentity's root folding.
-  return `${workspaceId}:${process.platform === 'win32' ? normalized.toLowerCase() : normalized}`;
+  return `${workspaceId}:${normalizeObservedPath(path)}`;
 }
 
 /**
