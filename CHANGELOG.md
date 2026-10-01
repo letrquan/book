@@ -815,6 +815,28 @@ All notable changes to this project are documented in this file.
   unit-style test in the same file, against an environment carrying an inherited `BOOK_HOME`,
   `BOOK_WORKSPACE`, `BOOK_TUI_RENDERER`, `BOOK_DEBUG` and the five provider settings.
 
+- **Scrolling a long session no longer stalls on Ink's own frame** (#353). The first scroll
+  through a heavy session stalled 40-250 ms at a time, and the profile of a real 4 MB session on
+  Windows puts that time in Ink, not in Book's components: Ink's private `Output.get` was 29% of
+  the stall, `renderNodeToOutput` 19%, Yoga layout 14% and the React render 14%, while DiffBlock
+  and the Markdown renderer were 2.5% between them. The cause was that Ink builds a fresh
+  `Output`, with fresh caches, for every frame: every frame re-tokenized every visible line and
+  turned every row's cells back into a string, even for the rows that were the same text the
+  frame before, one row higher. `Output.prototype.get` is now replaced in `src/cli/` by
+  `ink-output-cache.ts`, which walks the operations exactly the way Ink's own `get` does,
+  collects the fragments each output row is made of, and takes that row's string from a cache
+  keyed by the row's width and its fragments, length-prefixed so no line's content can collide
+  two rows. A row's string is still built by Ink's own `get` on a scratch `Output` holding only
+  that row's fragments, and the width and styled-character caches are shared across frames, so
+  the frames are byte-identical to what Ink drew rather than merely close. Set
+  `BOOK_INK_OUTPUT_CACHE=off` to leave Ink's `get` in place. **Measured** on the shipped code, on a
+  quiet box, on a real 4 MB session at 120x40 on Windows, over 40 wheel-up reports at 30/s, 7
+  interleaved runs each: stalls over 40 ms fell from 1.4 to 0.4 per run, their summed time from
+  73 ms to 18 ms, and the worst stall per run from 54 ms to 35 ms (median) and from 62 ms to 43 ms
+  (worst). Under load — a game running — the figures are the prototype's: 9.0 to 4.4 stalls per run
+  and 509 ms to 221 ms. Frames were byte-identical to Ink's own `get` throughout: 0 mismatches over
+  315 real frames of the built CLI.
+
 - **Paging back through history no longer claims that new output arrived below it** (#354).
   Scrolling up to the hydrated start asks the transcript's history loader for an older page —
   the wheel animation at row 0, a wheel report that lands there, `PageUp`, the `Ctrl+U` half
