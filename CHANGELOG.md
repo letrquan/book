@@ -731,6 +731,72 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A Grep over a workspace with a very long line no longer holds the whole line in memory**
+  (#349). ripgrep prints one JSON event per line, and the reader between its stdout and Book's own
+  parsing accumulated into a string until it saw the newline that ends an event — with nothing
+  capping that accumulation. ripgrep streams, so the cost was never ripgrep's: a file whose matching
+  line is longer than any of Book's own buffers — a minified bundle, a data fixture, a line of
+  base64 — arrived as one string held whole, in a tool that is auto-allowed to search the workspace
+  and so is never asked about. `RipgrepLineReader` in `src/tools/file.ts` caps the buffer at
+  `GREP_EVENT_MAX_CHARS` (1 MiB): a line over the cap is dropped rather than held, the reader stays
+  in a discarding state until that line's newline arrives, and the events after it are still
+  reported, so one huge match line costs one match. The dropped line is not emitted truncated either
+  — a JSON prefix does not parse, and the reader reads a parse failure as "this is not the ripgrep we
+  asked for" and re-runs the whole search on the portable backend, which is the next entry's problem.
+  The reader now ends the drop at the line's own newline when the chunk that crossed the cap already
+  carried it — previously the discarding state outlived that newline and swallowed the _next_ event,
+  which cost a second match on top of the one already dropped — and a dropped line is counted in the
+  page rather than only in the reader: the result carries `(N events skipped: line over 1 MiB)` in
+  every output mode and reports itself `truncated`, so a search whose only event was the oversized
+  line no longer answers `No matches found` — which is a statement about files the search never
+  finished asking. Covered end to end through a fake `rg` on `PATH` that prints one oversized event
+  and then an ordinary one (the second is reported at the line number it was given, which is what
+  distinguishes it from the portable fallback reporting both files), through a second fake `rg` whose
+  only event is the oversized one, and against the reader itself for the bound.
+- **A Grep whose pattern backtracks now gives up instead of holding the event loop** (#349). The
+  portable backend — the one used where ripgrep is not installed, and behind
+  `BOOK_GREP_BACKEND=typescript` — ran the model's own regex on the main thread. A pattern like
+  `(a+)+$` against a line of a's that ends in something else is exponential: in the test below, 190
+  seconds of an event loop that could run nothing, and no way out of it — not the abort signal the
+  caller holds, not the yield between files, not the session's own timers, because the loop an
+  interrupt would have to run is the one V8 is inside. The matching now happens in a `node:vm`
+  context created per search, where the same regex is the same work but V8's `timeout` can interrupt
+  it mid-backtrack. What crosses the boundary in is the pattern, its flags, and the lines (or, for
+  `multiline`, the file); what comes back is a list of match positions, so line numbers, the head
+  limit, `clipGrepText`, the context window, the output modes and the yielding between files are
+  all unchanged — line-mode matching is batched at the interval the loop used to yield on, so a slow
+  file is interrupted between batches rather than at its end. A run that outruns its per-file budget
+  of 1.5s, or the search's 10s (counted only inside the sandbox, so reading files and yielding cost
+  the search nothing), fails with a new `regex_timeout` code and a message naming the pattern, the
+  time it spent, and the way out: simplify the pattern, or narrow the search with `path`/`include`.
+  That failure is now the _last_ resort rather than the first: matches already collected are results
+  the model asked for and they are already read, so a pattern that runs away on one later file or
+  batch stops the search and returns them, with a notice naming the file it stopped at and what was
+  not searched from it, and `truncated` set. Only a search that has found nothing at all when a
+  budget runs out still fails, because there is nothing to report instead. The reported time is the
+  matching time actually spent (or the budget the run that timed out was given), not the nominal
+  ceiling the search was allowed. `invalid_regex` is untouched — the host still compiles the pattern
+  before a file is read, so an invalid one is reported as before and never reaches the sandbox.
+- **The TUI integration suite no longer boots a session against the developer's own Book home**
+  (#358). `startAndWait` spread `process.env` into the PTY child's environment and then set `HOME`
+  and `USERPROFILE` to the temporary workspace, which is not enough: Book resolves its home from
+  `BOOK_HOME` first, so a shell that exported `BOOK_HOME` for its own Book handed every session here
+  a pointer at the developer's real Book home rather than the temporary workspace the test made. Every
+  other `BOOK_` override in the environment — `BOOK_TUI_RENDERER`, a BYOK provider — reached the child
+  the same way. The environment is now built by `buildTuiChildEnv`, a pure function of the inherited
+  environment, the temporary root, and one test's `extraEnv`: every inherited key beginning with
+  `BOOK_` is dropped, `BOOK_HOME` is set to `<testRoot>/.book`, and `extraEnv` is applied last so a
+  test can still override anything. The provider settings are the exception, and now the only one:
+  `BOOK_API_KEY`, `BOOK_BASE_URL`, `BOOK_PROVIDER`, `BOOK_MODEL` and `BOOK_EFFORT` pass through,
+  because they say which provider to stream from rather than where Book keeps its state — dropping
+  `BOOK_BASE_URL` pointed the API-key streaming tests at the default provider, so the tests meant to
+  stream from a developer's own endpoint streamed from somewhere else. `BOOK_HOME`, `BOOK_WORKSPACE`,
+  `BOOK_TUI_RENDERER` and every other `BOOK_` variable still go, and `BOOK_API_KEY` is still read from
+  the inherited environment, because the streaming tests need a real key when the machine has one and
+  the placeholder stands in when it does not. Covered by a
+  unit-style test in the same file, against an environment carrying an inherited `BOOK_HOME`,
+  `BOOK_WORKSPACE`, `BOOK_TUI_RENDERER`, `BOOK_DEBUG` and the five provider settings.
+
 - **Paging back through history no longer claims that new output arrived below it** (#354).
   Scrolling up to the hydrated start asks the transcript's history loader for an older page —
   the wheel animation at row 0, a wheel report that lands there, `PageUp`, the `Ctrl+U` half
