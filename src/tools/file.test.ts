@@ -9,7 +9,7 @@ vi.mock('../async.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../async.js')>();
   return { ...actual, yieldToEventLoop: vi.fn(actual.yieldToEventLoop) };
 });
-import { buildRipgrepArgs, fileTools } from './file.js';
+import { buildRipgrepArgs, fileTools, GREP_EVENT_MAX_CHARS, RipgrepLineReader } from './file.js';
 import { createRegistry } from './registry.js';
 import { boundToolResultOutput, TOOL_RESULT_MAX_BYTES } from './result.js';
 import type { ToolContext } from '../types/tools.js';
@@ -28,7 +28,7 @@ import {
 } from 'fs';
 import { writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
-import { dirname, basename, join, resolve } from 'path';
+import { dirname, basename, delimiter, join, resolve } from 'path';
 import { shortPathName, withLowercaseDriveLetter } from '../test/short-path.js';
 
 let dir: string;
@@ -1254,6 +1254,72 @@ describe('grep', () => {
     expect(result.content).toContain('fallback.txt:1: portable-backend-marker');
   });
 
+  // #349: the portable backend runs the model's own regex on the main thread, and a pattern like
+  // `(a+)+$` backtracks exponentially against a line that fails it near the end. Nothing
+  // interrupts that — not the abort signal, not the yield between files, not the caller — so one
+  // model-written pattern holds the whole session's event loop for as long as it likes.
+  it('gives up on a catastrophic pattern instead of hanging the event loop (#349)', async () => {
+    // 64 a's then a b: the match fails at the last character, after every partition of the run has
+    // been tried, so the number of attempts doubles with each added character.
+    writeFileSync(join(dir, 'catastrophic.txt'), `${'a'.repeat(64)}b`);
+
+    const started = Date.now();
+    const result = await grep.execute(
+      { pattern: '(a+)+$', include: '*.txt' },
+      { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' } },
+    );
+    const elapsed = Date.now() - started;
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.code).toBe('regex_timeout');
+    expect(result.structuredError?.message).toMatch(/simplif/i);
+    // Generous, because a loaded runner is slow; bounded, because the whole point is that the
+    // search returns. A per-file budget of a second or two, plus one for the whole search.
+    expect(elapsed).toBeLessThan(20_000);
+  }, 60_000);
+
+  // The bound is on a regex that misbehaves, not on the search: an ordinary pattern over an
+  // ordinary file is still reported, whichever backend ran it.
+  it('still reports the matches a bounded regex found', async () => {
+    writeFileSync(join(dir, 'plain.txt'), 'plain-marker\n');
+    writeFileSync(join(dir, 'catastrophic.txt'), `${'a'.repeat(64)}b`);
+
+    const result = await grep.execute(
+      { pattern: 'plain-marker', include: '*.txt' },
+      { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' } },
+    );
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('plain.txt:1: plain-marker');
+  });
+
+  // The same timeout, in a file the search has already found something in. Those matches are what
+  // the model asked for and they are already read, so a pattern that runs away on one later batch
+  // makes the page partial rather than empty — and the page says which file it stopped at, because
+  // that is the file the model has to narrow the pattern on. One file, so the batches are ordered:
+  // the cheap matches are in the first batch, the run that never finishes in the second.
+  it('keeps the matches it found when a later batch runs out of budget (#349)', async () => {
+    // A batch is 2048 lines: the first is cheap and matches, the second cannot finish matching at
+    // all, so the search stops there with the first batch's matches already in hand.
+    const cheap = Array.from({ length: 2_048 }, (_, index) => (index < 50 ? 'a' : 'b'));
+    writeFileSync(join(dir, 'partial.txt'), [...cheap, `${'a'.repeat(64)}b`].join('\n'));
+
+    const result = await grep.execute(
+      { pattern: '(a+)+$', include: '*.txt' },
+      { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' } },
+    );
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('partial.txt:1: a');
+    expect(result.content).toContain('partial.txt:50: a');
+    // The file it stopped at, and that the search did not finish it.
+    expect(result.content).toContain('partial.txt');
+    expect(result.content).toMatch(/stopped/i);
+    expect(result.content).toMatch(/refine the pattern or narrow the search/);
+    expect(result.pagination?.truncated).toBe(true);
+    expect(result.structuredError).toBeUndefined();
+  }, 30_000);
+
   it('preserves count, files-only, context, multiline, and limit behavior', async () => {
     writeFileSync(join(dir, 'a.ts'), 'before\nconst first = 1;\nafter\nconst second = 2;');
     writeFileSync(join(dir, 'b.ts'), 'const third = 3;');
@@ -1362,6 +1428,97 @@ describe('grep', () => {
       expect(existsSync(marker)).toBe(false);
       expect(result.status).toBe('success');
       expect(result.content).toContain('a.txt:1: preprocessor-marker');
+    },
+  );
+
+  // #349: ripgrep prints one JSON event per line, and the reader waits for a newline before it
+  // parses one, so a file whose matching line is very long — a minified bundle, a data fixture,
+  // a line of base64 — arrives as a single string held whole before anything is looked at. The
+  // search has to survive that: the oversized line is dropped and the events after it are still
+  // reported. Driven through a fake `rg` rather than the real one, because what is under test is
+  // the reader's bound, not ripgrep's choice of lines; Windows has no PATH lookup to steer.
+  it.skipIf(process.platform === 'win32')(
+    'drops a ripgrep line over the reader cap and keeps reporting later matches (#349)',
+    async () => {
+      writeFileSync(join(dir, 'huge.txt'), 'x');
+      writeFileSync(join(dir, 'later.txt'), 'x');
+      const bin = mkdtempSync(join(tmpdir(), 'book-fake-rg-'));
+      try {
+        const script = [
+          `const huge = 'H' + 'x'.repeat(${4} * ${GREP_EVENT_MAX_CHARS});`,
+          'const events = [',
+          "  { path: 'huge.txt', text: huge, line: 1 },",
+          "  { path: 'later.txt', text: 'later-marker', line: 3 },",
+          '];',
+          'for (const event of events) {',
+          '  process.stdout.write(JSON.stringify({',
+          "    type: 'match',",
+          '    data: {',
+          '      path: { text: event.path },',
+          '      lines: { text: event.text },',
+          '      line_number: event.line,',
+          '    },',
+          "  }) + '\\n');",
+          '}',
+        ].join('\n');
+        writeFileSync(join(bin, 'rg'), `#!/usr/bin/env node\n${script}\n`);
+        chmodSync(join(bin, 'rg'), 0o755);
+
+        const result = await grep.execute(
+          { pattern: 'x', include: '*.txt' },
+          { ...ctx, env: { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` } },
+        );
+
+        // Line 3, not line 1: the portable fallback would have reported both files at line 1,
+        // so this is proof the events came from the fake rg rather than from the fallback.
+        expect(result.status).toBe('success');
+        expect(result.content).toContain('later.txt:3: later-marker');
+        expect(result.content).not.toContain('huge.txt');
+        // The drop is a result the search could not show, so the page says so rather than
+        // reporting a search that appears to have found everything.
+        expect(result.content).toContain('1 event skipped: line over 1 MiB');
+        expect(result.pagination?.truncated).toBe(true);
+      } finally {
+        rmSync(bin, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // The line a reader drops for being over the cap is still a line the search looked at and did not
+  // report, so a search whose only event was that line has not found nothing — it has reported
+  // nothing it could hold. "No matches found" is the answer to a different question.
+  it.skipIf(process.platform === 'win32')(
+    'reports a dropped ripgrep line instead of reporting no matches (#349)',
+    async () => {
+      writeFileSync(join(dir, 'huge.txt'), 'x');
+      const bin = mkdtempSync(join(tmpdir(), 'book-fake-rg-'));
+      try {
+        const script = [
+          `const huge = 'H' + 'x'.repeat(${4} * ${GREP_EVENT_MAX_CHARS});`,
+          'process.stdout.write(JSON.stringify({',
+          "  type: 'match',",
+          '  data: {',
+          "    path: { text: 'huge.txt' },",
+          '    lines: { text: huge },',
+          '    line_number: 1,',
+          '  },',
+          "}) + '\\n');",
+        ].join('\n');
+        writeFileSync(join(bin, 'rg'), `#!/usr/bin/env node\n${script}\n`);
+        chmodSync(join(bin, 'rg'), 0o755);
+
+        const result = await grep.execute(
+          { pattern: 'x', include: '*.txt' },
+          { ...ctx, env: { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` } },
+        );
+
+        expect(result.status).toBe('success');
+        expect(result.content).toContain('1 event skipped: line over 1 MiB');
+        expect(result.content).not.toContain('No matches found');
+        expect(result.pagination?.truncated).toBe(true);
+      } finally {
+        rmSync(bin, { recursive: true, force: true });
+      }
     },
   );
 
@@ -1491,6 +1648,88 @@ describe('buildRipgrepArgs', () => {
       expect(argv.slice(separator + 1)).toEqual([relativePath || '.']);
       expect(argv.slice(0, separator)).not.toContain(relativePath);
     }
+  });
+});
+
+/**
+ * The reader's own contract (#349): a line it can hold, a line it drops, and what happens to the
+ * stream afterwards. Pure, so the bound is asserted on the buffer rather than inferred from how
+ * much memory a whole search took.
+ */
+describe('RipgrepLineReader', () => {
+  const readAll = (chunks: string[], maxChars = GREP_EVENT_MAX_CHARS) => {
+    const lines: string[] = [];
+    const reader = new RipgrepLineReader((line) => lines.push(line), maxChars);
+    let peak = 0;
+    for (const chunk of chunks) {
+      reader.push(chunk);
+      peak = Math.max(peak, reader.bufferedLength);
+    }
+    return { lines, peak, reader };
+  };
+
+  it('emits a line as soon as its newline arrives, and holds nothing after it', () => {
+    const { lines, peak, reader } = readAll(['{"a":1}\n{"b":2}\n']);
+
+    expect(lines).toEqual(['{"a":1}', '{"b":2}']);
+    expect(reader.bufferedLength).toBe(0);
+    expect(peak).toBeLessThanOrEqual(GREP_EVENT_MAX_CHARS);
+  });
+
+  it('reassembles a line split across chunks', () => {
+    const { lines } = readAll(['{"text":"half', '-of-a-line"}\n']);
+
+    expect(lines).toEqual(['{"text":"half-of-a-line"}']);
+  });
+
+  it('waits for the rest of an unfinished line instead of parsing half an event', () => {
+    const { lines } = readAll(['{"a":1', '2}\n']);
+
+    expect(lines).toEqual(['{"a":12}']);
+  });
+
+  // The bound is the point: a line over the cap is not held, not truncated into a JSON fragment
+  // that would fail to parse, and not allowed to end the search.
+  it('drops a line over the cap, keeps holding less than the cap, and resumes at the next one', () => {
+    const oversized = 'x'.repeat(4_000);
+    const { lines, peak, reader } = readAll([oversized, '\n', '{"path":"later.txt"}\n'], 1_000);
+
+    expect(lines).toEqual(['{"path":"later.txt"}']);
+    expect(reader.droppedLines).toBe(1);
+    expect(reader.isDiscarding).toBe(false);
+    expect(peak).toBeLessThanOrEqual(1_000);
+  });
+
+  // The cap can be crossed by a chunk that already holds the oversized line's own newline, and
+  // then that newline is the end of the line: discarding has to stop there. Leaving it running
+  // swallows the *next* line instead, which is the one event after the drop the model still needs.
+  it('ends the drop at the newline in the same chunk that crossed the cap', () => {
+    const chunk = `${'b'.repeat(200)}\n{"path":"one.txt"}\n{"path":"two.txt"}\n`;
+    const { lines, peak, reader } = readAll(['a'.repeat(900), chunk], 1_000);
+
+    expect(lines).toEqual(['{"path":"one.txt"}', '{"path":"two.txt"}']);
+    expect(reader.droppedLines).toBe(1);
+    expect(reader.isDiscarding).toBe(false);
+    expect(peak).toBeLessThanOrEqual(1_000);
+  });
+
+  it('stays under the cap however the chunks of an oversized line fall', () => {
+    const chunks = Array.from({ length: 40 }, () => 'y'.repeat(500));
+
+    const { lines, peak, reader } = readAll([...chunks, '\n', 'after\n'], 1_000);
+
+    expect(lines).toEqual(['after']);
+    expect(peak).toBeLessThanOrEqual(1_000);
+    expect(reader.droppedLines).toBe(1);
+  });
+
+  it('keeps every line of a stream that stays under the cap', () => {
+    const events = Array.from({ length: 50 }, (_, index) => `{"n":${index}}`);
+
+    const { lines, reader } = readAll([events.join('\n') + '\n']);
+
+    expect(lines).toEqual(events);
+    expect(reader.droppedLines).toBe(0);
   });
 });
 
