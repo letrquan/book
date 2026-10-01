@@ -62,6 +62,42 @@ interface TuiSession {
 }
 
 /**
+ * The environment a PTY session boots in, as a pure function of the inherited environment, the
+ * temporary workspace, and whatever one test adds.
+ *
+ * `BOOK_HOME` and the rest of Book's own `BOOK_` variables are the developer's, not the test's:
+ * a shell that exports `BOOK_HOME` — or `BOOK_MODEL`, or anything else Book reads from its own
+ * prefix — hands every session here a pointer at the developer's real Book home rather than the
+ * temporary workspace this test made, so the suite behaves differently on a machine with those
+ * exported than on CI, and can read state the test never created. `HOME` and `USERPROFILE` are
+ * not enough of an answer, because Book resolves its home from `BOOK_HOME` first. So the whole
+ * prefix goes, and the two Book variables this file does choose are set here instead:
+ * `BOOK_HOME` under the temporary root, and the API key placeholder.
+ */
+export function buildTuiChildEnv(
+  inherited: NodeJS.ProcessEnv,
+  testRoot: string,
+  extraEnv: Record<string, string> = {},
+): Record<string, string | undefined> {
+  const withoutBookOverrides: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(inherited)) {
+    if (!key.startsWith('BOOK_')) withoutBookOverrides[key] = value;
+  }
+
+  return {
+    ...withoutBookOverrides,
+    // Ink suppresses intermediate frames in CI, but this child is an interactive PTY.
+    CI: 'false',
+    CONTINUOUS_INTEGRATION: 'false',
+    HOME: testRoot,
+    USERPROFILE: testRoot,
+    BOOK_HOME: join(testRoot, '.book'),
+    BOOK_API_KEY: inherited.BOOK_API_KEY ?? 'sk-test-placeholder',
+    ...extraEnv,
+  };
+}
+
+/**
  * Start a TUI and wait until the initial render is visible (detected by
  * the presence of the "Ask me anything" placeholder in the input bar).
  */
@@ -74,16 +110,7 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
     join(testRoot, '.book', 'settings.json'),
     JSON.stringify({ ui: { startupAnimation: false } }),
   );
-  const env = {
-    ...process.env,
-    // Ink suppresses intermediate frames in CI, but this child is an interactive PTY.
-    CI: 'false',
-    CONTINUOUS_INTEGRATION: 'false',
-    HOME: testRoot,
-    USERPROFILE: testRoot,
-    BOOK_API_KEY: process.env.BOOK_API_KEY ?? 'sk-test-placeholder',
-    ...extraEnv,
-  };
+  const env = buildTuiChildEnv(process.env, testRoot, extraEnv);
   const nodePath = process.execPath;
   const pty = spawn(nodePath, [DIST_INDEX, '--workspace', testRoot, '--no-session-persistence'], {
     cwd: PROJECT_ROOT,
@@ -316,6 +343,55 @@ afterEach(async () => {
     await session.close();
     session = null;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Tests — the environment a session boots in (#358)
+// ---------------------------------------------------------------------------
+
+describe('buildTuiChildEnv', () => {
+  const testRoot = join(tmpdir(), 'book-tui-abc123');
+
+  // The developer's shell exports BOOK_HOME for their own Book; a session that inherits it boots
+  // against their real home rather than the temporary workspace this file made, so the suite's
+  // result depends on the machine it ran on.
+  it('points the child Book home at the temporary workspace, not at an inherited one', () => {
+    const env = buildTuiChildEnv(
+      {
+        HOME: join(tmpdir(), 'developer-home'),
+        USERPROFILE: join(tmpdir(), 'developer-home'),
+        PATH: '/usr/bin',
+        BOOK_HOME: join(tmpdir(), 'elsewhere'),
+        BOOK_MODEL: 'inherited-model',
+      },
+      testRoot,
+    );
+
+    expect(env.BOOK_HOME).toBe(join(testRoot, '.book'));
+    expect(env.BOOK_MODEL).toBeUndefined();
+    expect(env.HOME).toBe(testRoot);
+    expect(env.USERPROFILE).toBe(testRoot);
+    // Everything else the machine had is still there; only Book's own prefix is dropped.
+    expect(env.PATH).toBe('/usr/bin');
+    expect(env.CI).toBe('false');
+  });
+
+  it('keeps the API key placeholder and lets a test override win', () => {
+    const placeholder = buildTuiChildEnv({}, testRoot);
+    expect(placeholder.BOOK_API_KEY).toBe('sk-test-placeholder');
+
+    const withKey = buildTuiChildEnv({ BOOK_API_KEY: 'sk-real-key' }, testRoot);
+    expect(withKey.BOOK_API_KEY).toBe('sk-real-key');
+
+    const withExtra = buildTuiChildEnv(
+      { BOOK_HOME: join(tmpdir(), 'elsewhere'), BOOK_MODEL: 'inherited-model' },
+      testRoot,
+      { BOOK_HOME: join(testRoot, 'other-book-home'), BOOK_TUI_RENDERER: 'safe' },
+    );
+    expect(withExtra.BOOK_HOME).toBe(join(testRoot, 'other-book-home'));
+    expect(withExtra.BOOK_MODEL).toBeUndefined();
+    expect(withExtra.BOOK_TUI_RENDERER).toBe('safe');
+  });
 });
 
 // ---------------------------------------------------------------------------

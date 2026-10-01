@@ -1,5 +1,6 @@
 import { open, readFile as readTextFile, stat } from 'fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
+import vm from 'node:vm';
 import { basename, extname, join, resolve as resolvePath } from 'node:path';
 import fg from 'fast-glob';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
@@ -1728,6 +1729,127 @@ function sumMatches(matches: Record<string, GrepFileMatches> | undefined): numbe
   return Object.values(matches).reduce((total, file) => total + file.matches.length, 0);
 }
 
+/**
+ * How long one file's regex may run inside the sandbox before the search gives up on it (#349).
+ * Ordinary patterns finish in microseconds, so this is a ceiling on a pattern that is not
+ * ordinary rather than a budget the search spends.
+ */
+const GREP_REGEX_FILE_BUDGET_MS = 1_500;
+
+/**
+ * How long a whole search may spend inside the sandbox, so a pattern that is slow on every file
+ * it is pointed at is reported once rather than once per file. Only time actually spent matching
+ * counts; reading a file, and the yield between files, cost the search nothing here.
+ */
+const GREP_REGEX_TOTAL_BUDGET_MS = 10_000;
+
+/**
+ * What has to be left of the search's budget for another run to start at all. A leftover of a
+ * few milliseconds would interrupt an ordinary batch and report a timeout the pattern did not
+ * earn, so the search stops here instead, up to this much early.
+ */
+const GREP_REGEX_MIN_BUDGET_MS = 250;
+
+/**
+ * The matching half of the portable backend, run where a `timeout` can interrupt it.
+ *
+ * The portable backend exists for the machines without ripgrep, and it runs the model's own regex
+ * on the main thread: `(a+)+$` against a line of a's that ends in something else is exponential,
+ * and for the minutes it takes, nothing in the process can run — not the abort signal the caller
+ * holds, not the yield between files, not the session's own timers. Inside a `vm` context the same
+ * regex is the same work, but V8 can interrupt it mid-backtrack, which is the whole point.
+ *
+ * Only the payload crosses the boundary, and only indices cross back: the caller owns line
+ * numbering, the head limit, and the clipping, so what the sandbox returns is a list of where the
+ * matches are, never the file content it read.
+ */
+const GREP_MATCH_SCRIPT = `
+(function () {
+  var payload = __bookGrepPayload;
+  var regex = new RegExp(payload.pattern, payload.flags);
+  var found = [];
+  var index;
+  if (payload.multiline) {
+    regex.lastIndex = 0;
+    var match;
+    while ((match = regex.exec(payload.text)) !== null) {
+      found.push({ index: match.index, text: match[0] });
+      if (found.length >= payload.limit) break;
+      // A pattern that matches the empty string does not advance lastIndex on its own.
+      if (match.index === regex.lastIndex) regex.lastIndex++;
+    }
+  } else {
+    for (index = 0; index < payload.lines.length; index++) {
+      regex.lastIndex = 0;
+      if (regex.test(payload.lines[index])) {
+        found.push({ line: index });
+        if (found.length >= payload.limit) break;
+      }
+    }
+  }
+  return found;
+})()
+`;
+
+/** One match as the sandbox reports it: an offset in `text`, or a line index in `lines`. */
+interface SandboxMatch {
+  line?: number;
+  index?: number;
+  text?: string;
+}
+
+type SandboxOutcome =
+  { kind: 'ok'; matches: SandboxMatch[] } | { kind: 'timeout' } | { kind: 'invalid' };
+
+/**
+ * The file, or the lines of it, as the sandbox receives them: the pattern and its flags, and how
+ * many matches are still wanted.
+ */
+type SandboxPayload = { pattern: string; flags: string; limit: number } & (
+  { multiline: true; text: string } | { multiline: false; lines: string[] }
+);
+
+/**
+ * A compiled matcher in its own context, reused across the files of one search.
+ */
+class GrepRegexSandbox {
+  private readonly context: vm.Context;
+  private readonly script: vm.Script;
+
+  constructor() {
+    this.context = vm.createContext({});
+    this.script = new vm.Script(GREP_MATCH_SCRIPT);
+  }
+
+  run(payload: SandboxPayload, timeoutMs: number): SandboxOutcome {
+    this.context.__bookGrepPayload = payload;
+    try {
+      const found = this.script.runInContext(this.context, { timeout: timeoutMs });
+      return { kind: 'ok', matches: found as SandboxMatch[] };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
+        return { kind: 'timeout' };
+      }
+      // Only the pattern can fail to compile, and the host compiled it already to reject an
+      // invalid one before any file was read. Judged by name, not by `instanceof`: an error raised
+      // inside the context belongs to that realm, so the host's SyntaxError is not its prototype.
+      if ((error as Error).name === 'SyntaxError') return { kind: 'invalid' };
+      throw error;
+    }
+  }
+}
+
+/** What the model is told when a pattern outruns the budget, and the code that goes with it. */
+function regexTimeoutFailure(pattern: string, budgetMs: number): ToolResult {
+  return toolFailure(
+    `Grep gave up on pattern ${pattern} after ${budgetMs}ms of matching. A pattern like ` +
+      `(a+)+$ backtracks exponentially against a line it cannot match at the end. Simplify ` +
+      `the pattern — search for the literal text, bound the repetition, or narrow the search ` +
+      `with path/include — and run it again.`,
+    { code: 'regex_timeout' },
+  );
+}
+
 async function grepSearchPortable(
   args: Record<string, unknown>,
   ctx: ToolContext,
@@ -1743,9 +1865,10 @@ async function grepSearchPortable(
     Math.max(1, Number.isFinite(requestedHeadLimit) ? Math.floor(requestedHeadLimit) : 1),
   );
 
-  let regex: RegExp;
   try {
-    regex = new RegExp(pattern, multiline ? 'gms' : 'g');
+    // Compiled here for the verdict, not for use: the pattern itself is compiled in the sandbox,
+    // where a run of it can be interrupted.
+    new RegExp(pattern, multiline ? 'gms' : 'g');
   } catch {
     return toolFailure(`Invalid regex: ${pattern}`, { code: 'invalid_regex' });
   }
@@ -1792,10 +1915,19 @@ async function grepSearchPortable(
   }
 
   const matchesByFile = new Map<string, GrepFileMatches>();
+  const sandbox = new GrepRegexSandbox();
   let totalMatches = 0;
+  let regexBudgetLeft = GREP_REGEX_TOTAL_BUDGET_MS;
+
+  /** How long the next sandbox run may take: the file's own ceiling, and what is left of the search's. */
+  const budgetForNextRun = () => Math.min(GREP_REGEX_FILE_BUDGET_MS, regexBudgetLeft);
+  const budgetSpent = () => regexBudgetLeft < GREP_REGEX_MIN_BUDGET_MS;
 
   for (let fileIndex = 0; fileIndex < inWorkspaceFiles.length; fileIndex++) {
     if (totalMatches >= headLimit) break;
+    if (budgetSpent()) {
+      return regexTimeoutFailure(pattern, GREP_REGEX_TOTAL_BUDGET_MS);
+    }
     const { file, filePath } = inWorkspaceFiles[fileIndex];
     let content: string;
     try {
@@ -1810,37 +1942,72 @@ async function grepSearchPortable(
     const matches: GrepMatch[] = [];
 
     if (multiline) {
-      regex.lastIndex = 0;
-      let match: RegExpExecArray | null;
+      // A multiline match is a match across the file, so the sandbox holds the whole of it and
+      // the line counting below is what the caller can still be interrupted during. A pattern that
+      // backtracks here is what the per-file budget is for.
+      const budget = budgetForNextRun();
+      const started = Date.now();
+      const outcome = sandbox.run(
+        { pattern, flags: 'gms', limit: headLimit - totalMatches, multiline: true, text: content },
+        budget,
+      );
+      regexBudgetLeft -= Date.now() - started;
+      if (outcome.kind === 'timeout') return regexTimeoutFailure(pattern, budget);
+      if (outcome.kind === 'invalid') {
+        return toolFailure(`Invalid regex: ${pattern}`, { code: 'invalid_regex' });
+      }
       let line = 1;
       let countedUntil = 0;
       let iterations = 0;
-      while ((match = regex.exec(content)) !== null) {
-        for (let index = countedUntil; index < match.index; index++) {
+      for (const match of outcome.matches) {
+        const matchIndex = match.index ?? 0;
+        for (let index = countedUntil; index < matchIndex; index++) {
           if (content.charCodeAt(index) === 10) line++;
           if (index > countedUntil && index % LINE_YIELD_INTERVAL === 0) {
             await yieldToEventLoop(ctx.signal);
           }
         }
-        countedUntil = match.index;
-        matches.push({ line, text: clipGrepText(match[0].replace(/\n/g, '\\n')) });
+        countedUntil = matchIndex;
+        matches.push({ line, text: clipGrepText((match.text ?? '').replace(/\n/g, '\\n')) });
         totalMatches++;
         iterations++;
         if (totalMatches >= headLimit) break;
-        if (match.index === regex.lastIndex) regex.lastIndex++;
         if (iterations % PATH_YIELD_INTERVAL === 0) await yieldToEventLoop(ctx.signal);
       }
     } else {
-      for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-        regex.lastIndex = 0;
-        if (regex.test(lines[lineIndex])) {
+      // Line by line, in batches as long as the yield interval the loop used to keep: a batch is
+      // one sandbox run, so a slow pattern is interrupted between batches rather than at the end
+      // of the file.
+      for (let batchStart = 0; batchStart < lines.length; batchStart += LINE_YIELD_INTERVAL) {
+        if (budgetSpent()) {
+          return regexTimeoutFailure(pattern, GREP_REGEX_TOTAL_BUDGET_MS);
+        }
+        const budget = budgetForNextRun();
+        const batch = lines.slice(batchStart, batchStart + LINE_YIELD_INTERVAL);
+        const started = Date.now();
+        const outcome = sandbox.run(
+          {
+            pattern,
+            flags: 'g',
+            limit: headLimit - totalMatches,
+            multiline: false,
+            lines: batch,
+          },
+          budget,
+        );
+        regexBudgetLeft -= Date.now() - started;
+        if (outcome.kind === 'timeout') return regexTimeoutFailure(pattern, budget);
+        if (outcome.kind === 'invalid') {
+          return toolFailure(`Invalid regex: ${pattern}`, { code: 'invalid_regex' });
+        }
+        for (const match of outcome.matches) {
+          const lineIndex = batchStart + (match.line ?? 0);
           matches.push({ line: lineIndex + 1, text: clipGrepText(lines[lineIndex]) });
           totalMatches++;
           if (totalMatches >= headLimit) break;
         }
-        if (lineIndex > 0 && lineIndex % LINE_YIELD_INTERVAL === 0) {
-          await yieldToEventLoop(ctx.signal);
-        }
+        if (totalMatches >= headLimit) break;
+        await yieldToEventLoop(ctx.signal);
       }
     }
 
@@ -1932,6 +2099,85 @@ interface RipgrepJsonEvent {
 
 type RipgrepOutcome = { kind: 'success'; result: ToolResult } | { kind: 'fallback' };
 
+/**
+ * The longest ripgrep event the reader will hold, in characters (#349).
+ *
+ * ripgrep writes one JSON event per line, so the reader accumulates until it sees a newline, and
+ * one line can be a whole file: a minified bundle, a data fixture, a line of base64. The
+ * accumulation is what makes that unbounded — not ripgrep, which is streaming, but the string the
+ * reader keeps while it waits for the newline that ends the event.
+ */
+export const GREP_EVENT_MAX_CHARS = 1024 * 1024;
+
+/**
+ * The line splitter between ripgrep's stdout and `processEvent`.
+ *
+ * Every complete line is handed on, and the buffer between them is bounded: a line longer than
+ * `maxChars` is dropped rather than held, and the reader stays in a discarding state until that
+ * line's newline arrives, so the search continues with the events after it. The dropped line is
+ * not emitted truncated either — a JSON prefix does not parse, and the reader treats a parse
+ * failure as "ripgrep is not what we asked it to be" and falls back to the portable backend, which
+ * re-runs the same search under the budgets of the vm sandbox rather than ripgrep's.
+ */
+export class RipgrepLineReader {
+  private pending = '';
+  private discarding = false;
+  private dropped = 0;
+
+  constructor(
+    private readonly onLine: (line: string) => void,
+    private readonly maxChars: number = GREP_EVENT_MAX_CHARS,
+  ) {}
+
+  /** Characters held for the line being assembled; zero whenever the buffer is between lines. */
+  get bufferedLength(): number {
+    return this.pending.length;
+  }
+
+  /** True while the tail of an oversized line is being skipped, up to its newline. */
+  get isDiscarding(): boolean {
+    return this.discarding;
+  }
+
+  /** How many lines over the cap this reader has dropped. */
+  get droppedLines(): number {
+    return this.dropped;
+  }
+
+  push(chunk: string): void {
+    let start = 0;
+    while (start < chunk.length) {
+      if (this.discarding) {
+        const newline = chunk.indexOf('\n', start);
+        if (newline < 0) return;
+        this.discarding = false;
+        start = newline + 1;
+        continue;
+      }
+      const newline = chunk.indexOf('\n', start);
+      if (newline < 0) {
+        this.append(chunk.slice(start));
+        return;
+      }
+      this.append(chunk.slice(start, newline));
+      start = newline + 1;
+      const line = this.pending;
+      this.pending = '';
+      if (line) this.onLine(line);
+    }
+  }
+
+  private append(part: string): void {
+    if (this.pending.length + part.length > this.maxChars) {
+      this.pending = '';
+      this.discarding = true;
+      this.dropped++;
+      return;
+    }
+    this.pending += part;
+  }
+}
+
 function stopSearchProcess(proc: ChildProcess): void {
   if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGTERM');
 }
@@ -2018,7 +2264,6 @@ async function grepSearchWithRipgrep(
       env: buildChildEnv(process.env, ctx.env),
     });
     let settled = false;
-    let pending = '';
     let totalMatches = 0;
     let outputBytes = 0;
     let outputTruncated = false;
@@ -2109,24 +2354,18 @@ async function grepSearchWithRipgrep(
       else fail(error);
     });
     proc.stdout?.setEncoding('utf8');
-    proc.stdout?.on('data', (chunk: string) => {
-      pending += chunk;
-      let newline = pending.indexOf('\n');
-      while (newline >= 0) {
-        const line = pending.slice(0, newline);
-        pending = pending.slice(newline + 1);
-        if (line) {
-          try {
-            processEvent(JSON.parse(line) as RipgrepJsonEvent);
-          } catch {
-            stopSearchProcess(proc);
-            finish({ kind: 'fallback' });
-            return;
-          }
-        }
-        newline = pending.indexOf('\n');
+    const reader = new RipgrepLineReader((line) => {
+      // The reader hands over every line of a chunk, and a parse failure means the rest of them
+      // are not worth reading: the outcome is the portable backend's search, not this one's.
+      if (settled) return;
+      try {
+        processEvent(JSON.parse(line) as RipgrepJsonEvent);
+      } catch {
+        stopSearchProcess(proc);
+        finish({ kind: 'fallback' });
       }
     });
+    proc.stdout?.on('data', (chunk: string) => reader.push(chunk));
     proc.once('close', (code) => {
       if (settled) return;
       if (code !== 0 && code !== 1 && totalMatches === 0 && !outputTruncated) {
