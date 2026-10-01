@@ -900,15 +900,21 @@ describe('AgentStore lease heartbeat', () => {
     process.on('unhandledRejection', onUnhandled);
     try {
       await held.started;
-      // Mid-heartbeat: the lock and the temp file are there and the rename has not happened. The
-      // lease is there too, from the constructor, which is exactly why the removal has to wait for
-      // that rename: removing it now would let the rename put it back, and the lease would outlive
-      // the process it names.
+      // Mid-heartbeat: the lock and the temp file are there and the rename has not happened, and
+      // the lease is there too from the constructor.
       expect(contents(root)).toHaveLength(3);
       expect(contents(root).some((name) => name.endsWith('.tmp'))).toBe(true);
       expect(existsSync(leasePath(root))).toBe(true);
 
       agents.dispose();
+      // Read with no await between the call and the read. A removal that waits for the write in
+      // flight is a removal that does not happen for a process that exits in between, and a lease
+      // left on disk is what another instance reads as a live owner until it goes stale — minutes
+      // for a Book that is never coming back. So `dispose()` unlinks the lease itself, and the
+      // held write is a re-creation risk, not part of the removal.
+      expect(existsSync(leasePath(root)), 'the lease should be gone when dispose() returns').toBe(
+        false,
+      );
       await new Promise((done) => setTimeout(done, 40));
       // Nothing started after the dispose, so there is no later write to land behind it.
       expect(disk.renamed).toEqual([]);
@@ -921,6 +927,69 @@ describe('AgentStore lease heartbeat', () => {
       process.off('unhandledRejection', onUnhandled);
       held.release();
     }
+  });
+
+  it('removes a lease whose write had already passed the point of no return', async () => {
+    // The other end of the same window, and the reason the unlink is repeated when the write settles
+    // rather than only at the end of it. `canCommit` is asked immediately before the rename, so a
+    // write that is *inside* the rename has already passed that question — and the file that rename
+    // produces is the one `dispose()` had just deleted. The rename here is held before it moves a
+    // byte, so the ordering is the one that matters: the store unlinks, the write then lands, and
+    // the settled write has to take the file away again.
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const renamed: string[] = [];
+    let held = false;
+    let unblock = (): void => {};
+    const blocked = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    let reached = (): void => {};
+    const atRename = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const agents = new AgentStore('repo', root, true, {
+      instanceId,
+      writerOptions: {
+        fsAsync: {
+          open: (path, flags, mode) => openAsync(path, flags, mode),
+          rename: async (from, to) => {
+            if (held) {
+              reached();
+              await blocked;
+            }
+            await renameAsync(from, to);
+            renamed.push(to);
+          },
+        },
+      },
+      heartbeatMs: 5,
+      pid: 4321,
+      hostname: 'test-host',
+      now: () => 1_000,
+    });
+    // The constructor's lease is written synchronously and never reaches this double, so the hold is
+    // armed afterwards and catches the first heartbeat.
+    expect(existsSync(leasePath(root))).toBe(true);
+    held = true;
+    await atRename;
+
+    agents.dispose();
+    expect(existsSync(leasePath(root)), 'the lease should be gone when dispose() returns').toBe(
+      false,
+    );
+
+    // The write `dispose()` could not stop. That it lands is the premise rather than the assertion:
+    // a test where the rename never happened would pass for the wrong reason.
+    unblock();
+    await waitFor(
+      () => renamed.includes(leasePath(root)),
+      'the held heartbeat to put the lease back',
+    );
+    await waitFor(
+      () => !existsSync(leasePath(root)),
+      'the lease the settled write left behind to be removed again',
+    );
+    expect(contents(root)).toEqual([]);
   });
 
   it('keeps agent records synchronous, because a caller is told when they are durable', async () => {

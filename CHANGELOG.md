@@ -735,9 +735,12 @@ All notable changes to this project are documented in this file.
   record while the child lived on. Every call now carries a bounded timeout — 120 s, which the
   cherry-pick that applies a candidate raises for itself, since killing that one costs the
   operator a re-apply — and the controller's signal is threaded through the calls that have one,
-  so a stopped agent stops its git. Both paths kill the child outright and settle the promise on
-  their own terms rather than through `execFile`'s timeout, which waits for output that a grandchild
-  holding the pipe may never release. **A signal-killed child was read as exit 1**, and
+  so a stopped agent stops its git. Both paths stop the child on their own terms rather than through
+  `execFile`'s timeout, which waits for output that a grandchild holding the pipe may never release,
+  and both send SIGTERM before SIGKILL rather than killing outright, so a mutating git gets to
+  release the `index.lock` it took — SIGKILL left that lock on the operator's repository and the
+  next call in it failed on a lock no process was holding. Either way the promise settles without
+  waiting for a `close` that may never arrive. **A signal-killed child was read as exit 1**, and
   `removeAgentWorktree` accepts 1 and 128 as "already gone", so a killed cleanup reported itself
   done; a child with no exit code is now a failure whatever `allowExitCodes` names. And **the error
   named `-c`** wherever it fell back to composing its own message — `args[0]` on an argv whose first
@@ -758,8 +761,11 @@ All notable changes to this project are documented in this file.
   `GIT_*` variables redirected Book's writes** — a Book launched from a hook or a CI step carried
   `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` or `GIT_OBJECT_DIRECTORY` and wrote snapshots, refs
   and worktrees into another repository or index; they are now stripped from the internal git
-  environment, keeping `GIT_AUTHOR_*` and `GIT_COMMITTER_*` and any variable the call site sets
-  itself, which is how the snapshot's temporary index still works. **`removeAgentWorktree` ran from
+  environment: only the variables that choose which repository or index is operated on are removed,
+  while everything that configures git — `GIT_ASKPASS`, `GIT_SSH_COMMAND`, `GIT_SSL_*`,
+  `GIT_EXEC_PATH`, `GIT_CONFIG_*`, `GIT_CEILING_DIRECTORIES` — is the operator's and is kept, as is
+  `GIT_AUTHOR_*` and `GIT_COMMITTER_*` and any variable the call site sets itself, which is how the
+  snapshot's temporary index still works. **`removeAgentWorktree` ran from
   inside the worktree it removes** when the workspace is no longer a repository, so the removal
   failed on Windows, the failure was swallowed, and the directory leaked; the cleanup now runs from
   the caller's repository, or from the repository the worktree's own `.git` pointer names — which is
@@ -769,6 +775,16 @@ All notable changes to this project are documented in this file.
   branch either. And the two minor module edges: `gitForTest` moved behind
   `src/agents/git-isolation-internal.ts`, which nothing under `src/` imports, and
   `child.stdout`/`child.stderr` have the `error` listener a pipe closing under them can require.
+  **And five more, in the same place.** A plan's snapshot is no longer created with the
+  `AbortSignal` of whichever agent asked for it first, so stopping one agent in a plan no longer
+  cancels the shared snapshot the others were waiting on. A timed-out or cancelled call refuses
+  before it spawns, rather than starting a git that outlives the abort meant to stop it. A worktree
+  is adopted only when the repository behind its pointer resolves and its admin index is there, and
+  a killed or failed `worktree add` leaves no worktree, administrative record or Book-created branch
+  behind, so the retry starts clean. A relative `gitdir` in a worktree's `.git` file, which git 2.48
+  writes, is resolved against the directory holding that file. And a cherry-pick whose
+  `cherry-pick --abort` itself failed is reported as `conflicted` even with no unmerged paths left,
+  because a repository still mid-cherry-pick is not a state to retry into.
   **Unchanged, and documented where the decision lives:** `.gitattributes` clean/smudge and process
   filters, merge drivers, and a partial clone's lazy fetch still run what the checkout names, because
   git-lfs needs the filters and no `-c` can wildcard them off; that gap is described in the module
@@ -788,8 +804,9 @@ All notable changes to this project are documented in this file.
   **a tick that arrives while a write is running is skipped, not queued**, because a queued write is
   one whose content was already stale and a slow disk turns the queue into a growing one; a skipped
   heartbeat costs nothing, because the lease is fresh for three heartbeats. **The lease is removed
-  after any write in flight, never before**, so a rename cannot land after dispose deleted the file
-  and leave a live lease naming a process that is gone. And **no rejection escapes**: a failed
+  synchronously by `dispose()` and again once a write in flight settles**, so neither a process that
+  exits straight after disposing nor a rename that was already under way when it disposed can leave a
+  live lease naming a process that is gone. And **no rejection escapes**: a failed
   heartbeat is logged and dropped, as it always was. The lease a store takes in its constructor is
   still written synchronously, because that is the one a caller depends on the moment the
   constructor returns — a store asked whether its own instance is alive is answered from that file —

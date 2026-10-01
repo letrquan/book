@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { delimiter, dirname, join } from 'path';
+import { delimiter, dirname, join, relative } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentApplyResult, AgentRecord } from './types.js';
 import type { RunResult } from './git-signing.js';
@@ -106,8 +106,13 @@ function writeGlobalConfig(body: string): void {
  * be a source for a signing pin, and the tests would be measuring their own machine's signing
  * setup rather than Book's. The rest name the repository, worktree, index, object and common
  * directory git operates on: a `GIT_DIR` pointing anywhere would redirect every call in the file at
- * another checkout. Deleted for the test and put back after it; a test that wants one sets it in
- * its own body, where it is a deliberate part of the fixture.
+ * another checkout, and a `GIT_INDEX_VERSION` or `GIT_NAMESPACE` left on a developer's environment
+ * would make the assertions about which of them Book strips measure the host instead. The
+ * configuration an operator keeps — the ssh command, the askpass, the CA bundle — is scrubbed for
+ * the same reason from the other direction: the tests below set those deliberately, and a host with
+ * its own would make "Book kept what the operator set" unreadable. Deleted for the test and put
+ * back after it; a test that wants one sets it in its own body, where it is a deliberate part of
+ * the fixture.
  */
 const GIT_ENV_TO_SCRUB = [
   'GIT_CONFIG_PARAMETERS',
@@ -115,8 +120,20 @@ const GIT_ENV_TO_SCRUB = [
   'GIT_DIR',
   'GIT_WORK_TREE',
   'GIT_INDEX_FILE',
+  'GIT_INDEX_VERSION',
   'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
   'GIT_COMMON_DIR',
+  'GIT_NAMESPACE',
+  'GIT_PREFIX',
+  'GIT_CEILING_DIRECTORIES',
+  'GIT_SSH_COMMAND',
+  'GIT_ASKPASS',
+  'GIT_SSL_CAINFO',
+  'GIT_SSL_NO_VERIFY',
+  'GIT_EXEC_PATH',
+  'GIT_PROXY_COMMAND',
+  'GIT_TERMINAL_PROMPT',
 ];
 
 let scrubbedGitEnv = new Map<string, string | undefined>();
@@ -940,6 +957,129 @@ function silentGit(exitCode: number): string {
   return dir;
 }
 
+/**
+ * A `git` on `PATH` that ignores SIGTERM and holds its output pipes open through a grandchild.
+ *
+ * `sleepingGit` above is what a call must be able to stop; this is what it must be able to *make
+ * stop*. A child that exits on SIGTERM proves only that the signal reached it — which the old
+ * `SIGKILL`-on-timeout path satisfied while telling an operator's repository that a mutating git had
+ * no chance to release the `.git/index.lock` it took. SIGKILL-on-timeout is what this exists to
+ * rule out, so the child has to be one that SIGKILL is the only thing left to do.
+ *
+ * The `trap` is what makes SIGTERM a no-op, and the backgrounded `sleep` is the second half: it
+ * inherits the output pipes, so `close` cannot arrive even after the shell itself is gone, which is
+ * the shape of a `credential.helper` or a filter that started a process of its own. Its pid is
+ * written out too, because a test that leaves a `sleep 120` behind is a test that breaks every
+ * other one in the file.
+ */
+function stubbornGit(): { dir: string; pidFile: string; grandchildPidFile: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'book-stubborn-git-'));
+  roots.push(dir);
+  const pidFile = join(dir, 'pid');
+  const grandchildPidFile = join(dir, 'grandchild-pid');
+  writeFileSync(
+    join(dir, 'git'),
+    [
+      '#!/bin/sh',
+      `printf '%s' "$$" > ${forwardSlashes(pidFile)}`,
+      // A git that cannot be asked nicely: a `credential.helper` waiting on a prompt, an editor,
+      // an SSH agent that has stopped answering. `TERM` is what git and every helper it starts
+      // actually trap, so this is the realistic version rather than a convenient one.
+      "trap '' TERM",
+      `sleep 120 &`,
+      `printf '%s' "$!" > ${forwardSlashes(grandchildPidFile)}`,
+      'wait',
+      '',
+    ].join('\n'),
+  );
+  chmodSync(join(dir, 'git'), 0o755);
+  return { dir, pidFile, grandchildPidFile };
+}
+
+/**
+ * A `git` on `PATH` that stops itself when asked, and records that it was asked.
+ *
+ * This is the git that a `SIGKILL`-on-timeout never lets happen. Its `wait` is what makes the trap
+ * runnable — a shell blocked on a foreground `sleep` runs the handler only once that sleep is over,
+ * which is two minutes from now — and the handler is the only thing in the script that can write the
+ * marker, so the marker's absence is a statement about how the call was stopped rather than about
+ * the script.
+ */
+function politenessGit(): {
+  dir: string;
+  pidFile: string;
+  signalledFile: string;
+  childPidFile: string;
+} {
+  const dir = mkdtempSync(join(tmpdir(), 'book-polite-git-'));
+  roots.push(dir);
+  const pidFile = join(dir, 'pid');
+  const signalledFile = join(dir, 'signalled');
+  const childPidFile = join(dir, 'child-pid');
+  writeFileSync(
+    join(dir, 'git'),
+    [
+      '#!/bin/sh',
+      `printf '%s' "$$" > ${forwardSlashes(pidFile)}`,
+      'sleep 120 &',
+      'child=$!',
+      `printf '%s' "$child" > ${forwardSlashes(childPidFile)}`,
+      // The background child goes with the handler so the output pipes close and the call settles
+      // the way it does for a real git that honours the signal: through `close`, not through the
+      // escalation, which is what keeps this a test of the *first* signal.
+      `trap 'kill "$child" 2>/dev/null; printf term > ${forwardSlashes(signalledFile)}; exit 143' TERM`,
+      'wait "$child"',
+      '',
+    ].join('\n'),
+  );
+  chmodSync(join(dir, 'git'), 0o755);
+  return { dir, pidFile, signalledFile, childPidFile };
+}
+
+/** Kill the `sleep` a polite `git` left running, so a failing test does not outlive the suite. */
+async function reapPolitenessGit(fake: { childPidFile: string }): Promise<void> {
+  if (!existsSync(fake.childPidFile)) return;
+  const pid = Number(readFileSync(fake.childPidFile, 'utf8'));
+  if (!Number.isInteger(pid)) return;
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // Already gone, which is the outcome being cleaned up after.
+  }
+  await waitForExit(pid);
+}
+
+/**
+ * A `git` on `PATH` that records having been started and succeeds.
+ *
+ * For the claim that is about a child that must never exist: nothing this script does can write the
+ * marker except its own first line, so the marker's absence after a call means no program ran.
+ */
+function markerGit(): { dir: string; markerFile: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'book-marker-git-'));
+  roots.push(dir);
+  const markerFile = join(dir, 'started');
+  writeFileSync(
+    join(dir, 'git'),
+    ['#!/bin/sh', `printf started > ${forwardSlashes(markerFile)}`, 'exit 0', ''].join('\n'),
+  );
+  chmodSync(join(dir, 'git'), 0o755);
+  return { dir, markerFile };
+}
+
+/** Kill whatever a stubborn `git` left running, so a failing test does not outlive the suite. */
+async function reapStubbornGit(fake: { grandchildPidFile: string }): Promise<void> {
+  if (!existsSync(fake.grandchildPidFile)) return;
+  const pid = Number(readFileSync(fake.grandchildPidFile, 'utf8'));
+  if (!Number.isInteger(pid)) return;
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // Already gone, which is the outcome these tests are asserting.
+  }
+  await waitForExit(pid);
+}
+
 /** Whether a process is still there, which is a claim about the OS and not about a promise. */
 function processAlive(pid: number): boolean {
   try {
@@ -1106,6 +1246,118 @@ describe('the internal git runner is bounded (#357)', () => {
       process.env.PATH = previousPath;
     }
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'signals a mutating git to stop before killing it, so it can release what it locked',
+    async () => {
+      // A mutating git — `cherry-pick`, `worktree add`, `add -A`, `update-ref` — takes
+      // `.git/index.lock` for as long as it runs, and takes it off itself on the way out. A timeout
+      // that answered SIGKILL gave it no way out, so the lock outlived the call and the next call in
+      // the same repository failed on a lock no process was holding. What the kill cannot prove and
+      // SIGTERM can is the only evidence that matters here: the handler ran, so the git was a git
+      // that was asked to stop rather than one that was reaped.
+      for (const input of [undefined, 'a patch the git never reads\n']) {
+        const fake = politenessGit();
+        const previousPath = process.env.PATH;
+        process.env.PATH = `${fake.dir}${delimiter}${previousPath ?? ''}`;
+        try {
+          await expect(
+            gitForTest(fake.dir, ['worktree', 'add', '-b', 'some/branch', '/tmp/x'], {
+              timeoutMs: 300,
+              ...(input === undefined ? {} : { input }),
+            }),
+          ).rejects.toThrow();
+          // The handler writes this and nothing else can, and the shell reaches it only through the
+          // signal: `SIGKILL` would have left the file absent while the rejection looked identical.
+          expect(
+            existsSync(fake.signalledFile),
+            'the git should have been asked to stop first',
+          ).toBe(true);
+          const pid = Number(readFileSync(fake.pidFile, 'utf8'));
+          expect(await waitForExit(pid), `the stopped git (pid ${pid}) should be gone`).toBe(true);
+        } finally {
+          process.env.PATH = previousPath;
+          await reapPolitenessGit(fake);
+        }
+      }
+    },
+    30_000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'kills a git that ignores SIGTERM rather than waiting on it forever',
+    async () => {
+      // The second half of the same escalation, and the half a spawn has to get right on its own:
+      // `close` waits for the output pipes, and a child with a grandchild holding them never
+      // closes. So SIGTERM alone on this path is not a slower kill — it is no kill at all, and the
+      // promise a caller is waiting on never settles. Both branches are covered because the input
+      // one is the `cherry-pick` that applies a candidate, which is the longest call here.
+      for (const input of [undefined, 'a patch the git never reads\n']) {
+        const fake = stubbornGit();
+        const previousPath = process.env.PATH;
+        process.env.PATH = `${fake.dir}${delimiter}${previousPath ?? ''}`;
+        try {
+          const settled: { resolved?: RunResult; rejected?: Error } = await gitForTest(
+            fake.dir,
+            ['cherry-pick', '--continue'],
+            {
+              timeoutMs: 300,
+              ...(input === undefined ? {} : { input }),
+            },
+          ).then(
+            (result) => ({ resolved: result }),
+            (error: Error) => ({ rejected: error }),
+          );
+
+          expect(
+            settled.resolved,
+            'the call must reject rather than wait for a close that never comes',
+          ).toBeUndefined();
+          expect(settled.rejected!.message).toMatch(/timed out|timeout/i);
+          const pid = Number(readFileSync(fake.pidFile, 'utf8'));
+          expect(
+            await waitForExit(pid, 10_000),
+            `the stubborn git (pid ${pid}) should have been killed`,
+          ).toBe(true);
+        } finally {
+          process.env.PATH = previousPath;
+          await reapStubbornGit(fake);
+        }
+      }
+    },
+    40_000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'starts no child at all for a signal that was already aborted',
+    async () => {
+      // A signal that has already fired is not a request to start and then stop: it is a statement
+      // that this work is over. Spawning anyway leaves a `worktree add` writing a checkout and a
+      // branch for an agent that was stopped before it began, with nothing left to read either.
+      const fake = markerGit();
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${fake.dir}${delimiter}${previousPath ?? ''}`;
+      try {
+        for (const input of [undefined, 'a patch the git never reads\n']) {
+          const controller = new AbortController();
+          controller.abort();
+          await expect(
+            gitForTest(fake.dir, ['worktree', 'add', '-b', 'some/branch', '/tmp/x'], {
+              signal: controller.signal,
+              ...(input === undefined ? {} : { input }),
+            }),
+          ).rejects.toThrow(/cancelled/);
+        }
+        // The marker is written by the program itself, so its absence is about the child never
+        // having existed rather than about a child that came and went.
+        await new Promise((done) => setTimeout(done, 300));
+        expect(existsSync(fake.markerFile), 'no git should have been started').toBe(false);
+      } finally {
+        process.env.PATH = previousPath;
+      }
+    },
+    20_000,
+  );
 });
 
 describe('a worktree add that fails after creating its branch (#357)', () => {
@@ -1158,6 +1410,82 @@ describe('a worktree add that fails after creating its branch (#357)', () => {
     // Book did not create this one, so it is not Book's to delete: `branch -D` would destroy a
     // branch an operator had made, and the operator's own commit on it.
     expect(git(root, 'rev-parse', `refs/heads/${branch}`)).toBe(operatorCommit);
+  });
+
+  it('does not adopt a worktree an interrupted add left half-made', async () => {
+    const root = repository();
+    const snapshot = await createSyntheticSnapshot(root, true);
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-wt-halfmade-'));
+    roots.push(worktreeRoot);
+    const agentId = 'half-made-agent';
+    const path = join(worktreeRoot, snapshot.repoHash, agentId);
+    // A real worktree, and then the two things a git killed partway through a checkout leaves
+    // missing: the checkout itself, and the index git writes as it goes. `worktree add` creates the
+    // pointer file before any of that, so the pointer file alone said "a worktree Book already
+    // made" and the agent got an empty directory that looked like a repository — the run appeared
+    // to work and produced an empty patch.
+    const worktree = await createAgentWorktree(snapshot, agentId, worktreeRoot);
+    const administrative = join(root, '.git', 'worktrees', agentId);
+    expect(existsSync(join(administrative, 'index'))).toBe(true);
+    rmSync(administrative, { recursive: true, force: true });
+    for (const name of ['.git', 'staged.txt', 'unstaged.txt', 'old-name.txt', 'deleted.txt']) {
+      rmSync(join(worktree.path, name), { force: true, recursive: true });
+    }
+    expect(existsSync(join(path, '.git'))).toBe(false);
+
+    // And the same shape with the pointer file present and the index gone, which is the state git
+    // leaves behind when it is killed between writing the pointer and finishing the checkout.
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, '.git'), 'gitdir: ../nowhere\n');
+    expect(existsSync(join(path, '.git'))).toBe(true);
+
+    const recreated = await createAgentWorktree(snapshot, agentId, worktreeRoot);
+
+    // Adopted only once it is a worktree again, and complete: the files are back, because this is
+    // a real checkout rather than the remains of one.
+    expect(recreated.path).toBe(path);
+    expect(recreated.branch).toBe(`book-agent/${snapshot.repoHash}/${agentId}`);
+    expect(readFileSync(join(path, 'staged.txt'), 'utf8').trim()).toBe('base staged.txt');
+    expect(
+      git(root, 'worktree', 'list')
+        .split('\n')
+        .filter((line) => line.includes(agentId)),
+    ).toHaveLength(1);
+  });
+
+  it('leaves nothing of a refused add behind, and leaves what was not its own alone', async () => {
+    // `worktree add -b` creates the branch before it looks at the path, so a path it refuses still
+    // costs a branch. What it does *not* leave is a worktree: git refuses before it writes a
+    // pointer or an administrative directory, so the cleanup after the failure has a branch to
+    // delete and a path that is not Book's to touch. The line between those two is the whole claim
+    // — the directory here is an operator's, and a cleanup that removed anything presenting itself
+    // as a worktree must still not remove a directory that does not.
+    const root = repository();
+    const snapshot = await createSyntheticSnapshot(root, true);
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-wt-refused-add-'));
+    roots.push(worktreeRoot);
+    const agentId = 'refused-add-agent';
+    const branch = `book-agent/${snapshot.repoHash}/${agentId}`;
+    const path = join(worktreeRoot, snapshot.repoHash, agentId);
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'not-a-worktree.txt'), "somebody else's directory\n");
+
+    await expect(createAgentWorktree(snapshot, agentId, worktreeRoot)).rejects.toThrow(
+      /already exists/,
+    );
+
+    // The branch is gone, which is what makes the retry possible at all.
+    expect(() => git(root, 'show-ref', '--verify', `refs/heads/${branch}`)).toThrow();
+    // The obstruction is exactly as it was: not a worktree, so not Book's to delete.
+    expect(readdirSync(path)).toEqual(['not-a-worktree.txt']);
+    expect(existsSync(join(path, '.git'))).toBe(false);
+    expect(git(root, 'worktree', 'list')).not.toContain(agentId);
+
+    // And with the obstruction out of the way, the next attempt is a normal one.
+    rmSync(path, { recursive: true, force: true });
+    const worktree = await createAgentWorktree(snapshot, agentId, worktreeRoot);
+    expect(worktree).toEqual({ path, branch });
+    expect(readFileSync(join(path, 'staged.txt'), 'utf8').trim()).toBe('base staged.txt');
   });
 });
 
@@ -1228,9 +1556,34 @@ describe('a cherry-pick that failed (#357)', () => {
     expect(failed.error).toMatch(/mid-cherry-pick/);
     expect(failed.error).toContain('git cherry-pick --abort');
     expect(failed.error).toContain('could not apply');
-    // The status still reflects the conflict, which is a fact about the content; only the
-    // rollback claim changed.
     expect(failed.status).toBe('conflicted');
+  });
+
+  it('never calls an unrolled-back pick a retryable one, conflicted content or not', () => {
+    // The same abort failure, this time with nothing unmerged — a signing failure, a filter that
+    // would not run — which is the case that was reported as `not_applied`. That status means
+    // "nothing was written, so running it again is reasonable", and it is exactly what is not
+    // known here: the pick is still in progress, the next `cherry-pick` in that repository fails
+    // before it starts, and `applyVerifiedCandidate` refuses to begin one while `CHERRY_PICK_HEAD`
+    // exists. A reader told "not applied" commits into a repository waiting for them.
+    const unfinished = cherryPickFailureResult({
+      pickError: 'gpg failed to sign the data',
+      unmergedPaths: [],
+      abortError: 'git cherry-pick --abort failed (128)',
+    });
+    expect(unfinished.status).not.toBe('not_applied');
+    // `conflicted` is the status every other "an operator has to look at this first" outcome
+    // already reports, and it is the only non-retryable status this module has.
+    expect(unfinished.status).toBe('conflicted');
+    expect(unfinished.error).toMatch(/mid-cherry-pick/);
+
+    // The rolled-back pick keeps the narrow claim, which is a fact and is what the status is for.
+    const rolledBack = cherryPickFailureResult({
+      pickError: 'gpg failed to sign the data',
+      unmergedPaths: [],
+    });
+    expect(rolledBack.status).toBe('not_applied');
+    expect(rolledBack.error).toContain('rolled back');
   });
 });
 
@@ -1285,7 +1638,181 @@ describe('ambient GIT_* variables in the internal git environment (#357)', () =>
     expect(snapshot.tree).toBe(git(root, 'rev-parse', `${snapshot.baseHead}^{tree}`));
     expect(readFileSync(join(root, '.git', 'index'))).toEqual(before);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps the operator GIT_* configuration that does not choose a repository',
+    async () => {
+      // Deleting everything that begins `GIT_` is the blunt way to be sure an ambient `GIT_DIR`
+      // cannot redirect a call, and it took the operator's configuration with it: the ssh command
+      // for a host behind a jump box, the CA bundle for a self-signed remote, the askpass for a
+      // repository that is not public. Those are the settings that make a call work rather than
+      // fail, and none of them names a repository. The discriminator is what the variable *is*,
+      // not how it is spelled, so this is the whole list rather than one of the shapes.
+      const root = repository();
+      // Read before the observer goes on `PATH`: the test's own `git` lookup has to reach the real
+      // one, and an observer that reported its own `--exec-path` would be a second record in a file
+      // this test is about to count.
+      const execPath = execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim();
+      const observer = observerGit();
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${observer.dir}${delimiter}${previousPath ?? ''}`;
+      const preserved: Record<string, string> = {
+        GIT_SSH_COMMAND: 'ssh -o ProxyCommand=none',
+        GIT_ASKPASS: '/bin/false',
+        GIT_SSL_CAINFO: '/etc/ssl/certs/ca-certificates.crt',
+        GIT_EXEC_PATH: execPath,
+        GIT_CEILING_DIRECTORIES: mkdtempSync(join(tmpdir(), 'book-ceiling-')),
+        GIT_AUTHOR_NAME: 'The Operator',
+        GIT_CONFIG_GLOBAL: globalConfig,
+      };
+      Object.assign(process.env, preserved);
+      try {
+        await gitForTest(root, ['rev-parse', 'HEAD']);
+      } finally {
+        process.env.PATH = previousPath;
+        for (const name of Object.keys(preserved)) delete process.env[name];
+      }
+
+      const seen = observedEnvironments(observer.environmentsFile);
+      expect(seen, 'the observer git should have run once').toHaveLength(1);
+      const environment = environmentOf(seen[0]!);
+      for (const [name, value] of Object.entries(preserved)) {
+        expect(environment.get(name), `${name} should reach git as the operator set it`).toBe(
+          value,
+        );
+      }
+      // The prompt is Book's own setting, not the operator's, and it is set last: no ambient value
+      // and no call site can put a credential prompt back on a terminal Book is not watching.
+      expect(environment.get('GIT_TERMINAL_PROMPT')).toBe('0');
+      // And the repository pointers are still gone, which is the half of the claim that has to keep
+      // holding while the other half is loosened.
+      for (const name of [
+        'GIT_DIR',
+        'GIT_WORK_TREE',
+        'GIT_INDEX_FILE',
+        'GIT_INDEX_VERSION',
+        'GIT_OBJECT_DIRECTORY',
+        'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+        'GIT_COMMON_DIR',
+        'GIT_NAMESPACE',
+        'GIT_PREFIX',
+      ]) {
+        expect(environment.has(name), `${name} should not reach git`).toBe(false);
+      }
+    },
+    20_000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'removes every repository-selection variable, not only the two a snapshot might see',
+    async () => {
+      const root = repository();
+      const observer = observerGit();
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${observer.dir}${delimiter}${previousPath ?? ''}`;
+      // The rest of the selection variables, each pointed at a directory that exists so that a
+      // value which survived would show up as a repository error rather than as silence. A `GIT_DIR`
+      // alone was the only one of these a test could see before, which is why the others went
+      // untested while the scrub claimed to cover them.
+      process.env.GIT_WORK_TREE = root;
+      process.env.GIT_COMMON_DIR = join(root, '.git');
+      process.env.GIT_INDEX_VERSION = '4';
+      process.env.GIT_NAMESPACE = 'a-namespace';
+      process.env.GIT_PREFIX = 'a-prefix/';
+      process.env.GIT_OBJECT_DIRECTORY = join(root, '.git', 'objects');
+      process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES = join(root, '.git', 'objects');
+      try {
+        await gitForTest(root, ['rev-parse', 'HEAD']);
+      } finally {
+        process.env.PATH = previousPath;
+        for (const name of [
+          'GIT_WORK_TREE',
+          'GIT_COMMON_DIR',
+          'GIT_INDEX_VERSION',
+          'GIT_NAMESPACE',
+          'GIT_PREFIX',
+          'GIT_OBJECT_DIRECTORY',
+          'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+        ]) {
+          delete process.env[name];
+        }
+      }
+
+      const seen = observedEnvironments(observer.environmentsFile);
+      expect(seen, 'the observer git should have run once').toHaveLength(1);
+      for (const name of [
+        'GIT_DIR',
+        'GIT_WORK_TREE',
+        'GIT_INDEX_FILE',
+        'GIT_INDEX_VERSION',
+        'GIT_OBJECT_DIRECTORY',
+        'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+        'GIT_COMMON_DIR',
+        'GIT_NAMESPACE',
+        'GIT_PREFIX',
+      ]) {
+        expect(environmentOf(seen[0]!).has(name), `${name} should not reach git`).toBe(false);
+      }
+    },
+    20_000,
+  );
 });
+
+/**
+ * A `git` on `PATH` that writes the environment it was started with to a file, then does the real
+ * thing.
+ *
+ * Book's own git is the only way to see what its environment is, and reading that back out of git's
+ * behaviour means one variable at a time: a `GIT_DIR` shows up as another repository's history, a
+ * `GIT_CEILING_DIRECTORIES` shows up as nothing at all, and a `GIT_SSL_CAINFO` shows up as an
+ * unrelated failure. Asking the program what it was given is the only way to assert a *set* of
+ * variables rather than the side effects of one of them, which is what both claims in this block
+ * are. Every run appends one record, so a test that expects one call can say so.
+ *
+ * The real git is exec'd, so the call still succeeds: a failing child would prove nothing about
+ * which environment reached it, only about the subcommand.
+ */
+function observerGit(): { dir: string; environmentsFile: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'book-observer-git-'));
+  roots.push(dir);
+  const real = execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim();
+  const environmentsFile = join(dir, 'environments');
+  const script = [
+    '#!/bin/sh',
+    `env >> ${JSON.stringify(environmentsFile)}`,
+    `printf '\\n' >> ${JSON.stringify(environmentsFile)}`,
+    `exec ${JSON.stringify(join(real, 'git'))} "$@"`,
+    '',
+  ];
+  writeFileSync(join(dir, 'git'), script.join('\n'));
+  chmodSync(join(dir, 'git'), 0o755);
+  return { dir, environmentsFile };
+}
+
+/**
+ * Every environment the observer saw, one per call, as the `NAME=VALUE` lines git was given.
+ *
+ * The records are separated by a blank line so a value that itself contains a newline cannot merge
+ * two calls into one, and the trailing blank line of the last record is dropped here rather than
+ * becoming an empty record.
+ */
+function observedEnvironments(environmentsFile: string): string[] {
+  if (!existsSync(environmentsFile)) return [];
+  return readFileSync(environmentsFile, 'utf8')
+    .split('\n\n')
+    .map((record) => record.trimEnd())
+    .filter((record) => record.length > 0);
+}
+
+/** One `NAME=VALUE` record as a map, so a test asks about a name rather than about a line. */
+function environmentOf(record: string): Map<string, string> {
+  return new Map(
+    record
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
+  );
+}
 
 describe('removing a worktree the workspace no longer holds (#357)', () => {
   it('deletes the branch from outside the worktree, even when it is no longer a repository', async () => {
@@ -1340,4 +1867,38 @@ describe('removing a worktree the workspace no longer holds (#357)', () => {
     expect(existsSync(worktree.path)).toBe(false);
     expect(() => git(root, 'show-ref', '--verify', `refs/heads/${worktree.branch}`)).toThrow();
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'reads a relative gitdir pointer as git 2.48 writes it',
+    async () => {
+      // git 2.48 writes the `gitdir:` line relative whenever the worktree is somewhere it can be
+      // written relative — a sibling directory, a checkout inside the repository's own tree. Taking
+      // that line as given resolved it against the process's own directory rather than against the
+      // directory the `.git` file is in, so on any other cwd the cleanup looked for a repository
+      // that does not exist, fell back to the worktree, and ran its `branch -D` from inside the
+      // directory it was deleting — where the branch survived.
+      //
+      // git 2.43 is what is on this machine, so the fixture is written by hand rather than
+      // produced by a `worktree add`, and the assertion is that *git* still agrees that this is a
+      // worktree of `root`: the relative pointer resolves to the same administrative directory the
+      // absolute one did.
+      const root = repository();
+      const snapshot = await createSyntheticSnapshot(root, true);
+      const worktree = await createAgentWorktree(snapshot, 'relative-gitdir-agent', root);
+      const administrative = join(root, '.git', 'worktrees', 'relative-gitdir-agent');
+      const relativeGitdir = relative(worktree.path, administrative);
+      expect(relativeGitdir).not.toBe(administrative);
+      writeFileSync(join(worktree.path, '.git'), `gitdir: ${forwardSlashes(relativeGitdir)}\n`);
+      // The control: git resolves the relative form itself, against the `.git` file's directory.
+      expect(git(worktree.path, 'rev-parse', '--absolute-git-dir')).toBe(
+        forwardSlashes(administrative),
+      );
+
+      await removeAgentWorktree(agentRecord('relative-gitdir-agent', worktree));
+
+      expect(existsSync(worktree.path)).toBe(false);
+      expect(() => git(root, 'show-ref', '--verify', `refs/heads/${worktree.branch}`)).toThrow();
+    },
+    20_000,
+  );
 });

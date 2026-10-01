@@ -73,6 +73,13 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
   const env = internalGitEnv(options.env);
   const timeoutMs = options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
   const signal = options.signal;
+  // An already-aborted signal must not start the child at all: the work it was asked to do is over,
+  // and a child started now would outlive the abort that was supposed to stop it — a `worktree
+  // add` that keeps going after its agent was stopped writes a checkout and a branch nothing asked
+  // for (#357).
+  if (signal?.aborted) {
+    return Promise.reject(new Error(stoppedDescription(command, args, 'aborted', null, timeoutMs)));
+  }
   if (options.input !== undefined) {
     return new Promise((resolvePromise, reject) => {
       const child = spawn(command, args, {
@@ -85,9 +92,12 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
       // `close` and a stdin write can both report the same failed command, and a spawn that
       // never happened reports twice. One outcome, whichever arrives first (#351).
       let settled = false;
+      let cancelEscalation: (() => void) | undefined;
       const settle = (outcome: () => void) => {
         if (settled) return;
         settled = true;
+        if (timer) clearTimeout(timer);
+        cancelEscalation?.();
         outcome();
       };
       // How this child was stopped, when it was: the reason is what the message says, and a
@@ -95,18 +105,18 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
       let stoppedBy: 'timeout' | 'aborted' | undefined;
       const stopChild = (reason: 'timeout' | 'aborted') => {
         if (stoppedBy === undefined) stoppedBy = reason;
-        child.kill('SIGTERM');
+        cancelEscalation = stopEscalating(child, () =>
+          settle(() =>
+            reject(
+              new Error(stoppedDescription(command, args, stoppedBy, child.signalCode, timeoutMs)),
+            ),
+          ),
+        );
       };
       const onAbort = () => stopChild('aborted');
       const timer = timeoutMs > 0 ? setTimeout(() => stopChild('timeout'), timeoutMs) : undefined;
       timer?.unref?.();
-      // An already-aborted signal must not start the child at all: the work it was asked to do is
-      // over, and a child started now would outlive the abort that was supposed to stop it.
-      if (signal?.aborted) {
-        stopChild('aborted');
-      } else {
-        signal?.addEventListener('abort', onAbort, { once: true });
-      }
+      signal?.addEventListener('abort', onAbort, { once: true });
       // A stdin failure worth acting on is remembered rather than acted on, because `close` is
       // the only event that knows the exit code, and the exit code is what decides. Settling here
       // instead would reject before git had written the stderr that explains the failure.
@@ -179,14 +189,43 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
 
   return new Promise((resolvePromise, reject) => {
     let settled = false;
+    let cancelEscalation: (() => void) | undefined;
     // Both closures below read `timer`, which is assigned after `child`: `execFile`'s callback is
     // always asynchronous, so nothing settles before there is a timer to clear.
     const settle = (outcome: () => void) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      cancelEscalation?.();
       outcome();
     };
+    let stoppedBy: 'timeout' | 'aborted' | undefined;
+    // The abort is handled here rather than by `execFile`'s own `signal` option, because that one
+    // sends SIGTERM, calls straight back, and is finished with the child: a git that traps or
+    // ignores SIGTERM, or a grandchild of its own holding the output pipe, outlives the rejection
+    // that was supposed to stop it (#357). Both paths stop a child the same way — see
+    // {@link stopEscalating}.
+    const stopCall = (reason: 'timeout' | 'aborted') => {
+      if (stoppedBy === undefined) stoppedBy = reason;
+      cancelEscalation = stopEscalating(child, () =>
+        settle(() =>
+          reject(
+            new Error(
+              failureDescription(
+                { killed: true },
+                '',
+                command,
+                args,
+                timeoutMs,
+                reason === 'aborted',
+              ),
+            ),
+          ),
+        ),
+      );
+    };
+    const onAbort = () => stopCall('aborted');
     const child = execFile(
       command,
       args,
@@ -198,12 +237,11 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
         // resolve on a prefix, and this size is what makes that impractical rather than what makes
         // it correct.
         maxBuffer: 50 * 1024 * 1024,
-        // No `timeout` option here. `execFile`'s own timeout kills the child but still waits for
-        // its output to close, and a grandchild holding that pipe — a shell script, a
-        // `credential.helper` that started something of its own — means it never does, so the
-        // callback that would report the timeout may never arrive. The timer below is the one that
-        // both kills and settles.
-        signal,
+        // No `timeout` and no `signal` option here. `execFile`'s own timeout kills the child but
+        // still waits for its output to close, and a grandchild holding that pipe — a shell script,
+        // a `credential.helper` that started something of its own — means it never does, so the
+        // callback that would report the timeout may never arrive; its `signal` sends SIGTERM and
+        // then stops looking. The timer below bounds the call and `stopEscalating` ends the child.
       },
       (error, stdout, stderr) => {
         // Node reports a failure three ways and only one of them is an exit code: `killed` and
@@ -221,7 +259,7 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
                   command,
                   args,
                   timeoutMs,
-                  signal?.aborted === true,
+                  stoppedBy === 'aborted',
                 ),
               ),
             ),
@@ -245,23 +283,9 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
         );
       },
     );
-    // The call this timer bounds, settled by the timer itself: the child is killed outright, so
-    // nothing it started survives it, and the promise rejects without waiting for output that may
-    // never close (#357).
-    const timer =
-      timeoutMs > 0
-        ? setTimeout(() => {
-            child.kill('SIGKILL');
-            settle(() =>
-              reject(
-                new Error(
-                  failureDescription({ killed: true }, '', command, args, timeoutMs, false),
-                ),
-              ),
-            );
-          }, timeoutMs)
-        : undefined;
+    const timer = timeoutMs > 0 ? setTimeout(() => stopCall('timeout'), timeoutMs) : undefined;
     timer?.unref?.();
+    signal?.addEventListener('abort', onAbort, { once: true });
     // `execFile` leaves the child's stdin an open pipe that nothing will ever write to, and a
     // child that reads it waits for an end that never comes: an ssh signer asking for a passphrase,
     // a pinentry on a loopback socket. Closing it now is what makes such a read fail, which is
@@ -281,6 +305,64 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
  * through it a session, open forever (#357). The cherry-pick still names its own, longer budget.
  */
 const DEFAULT_GIT_TIMEOUT_MS = 120_000;
+
+/**
+ * How long a signalled child has to be on its way out before it is killed outright.
+ *
+ * Two seconds is far longer than git needs to unwind — to delete the `index.lock` it took, to
+ * roll a half-written ref back, to leave a worktree's administrative directory consistent — and
+ * far shorter than a caller that has already been bounded by {@link DEFAULT_GIT_TIMEOUT_MS} should
+ * then sit waiting. This is only the shape of the escalation, not the budget of the call.
+ */
+const KILL_GRACE_MS = 2_000;
+
+/** The part of a child process this module has to be able to stop and then ask about. */
+interface StoppableChild {
+  kill(signal: NodeJS.Signals): boolean;
+  /** The exit code, or `null` while the child is running. */
+  exitCode: number | null;
+  /** The signal that killed it, or `null` while it has not been killed. */
+  signalCode: NodeJS.Signals | null;
+}
+
+/**
+ * Stop a child that has to end now — SIGTERM first, then SIGKILL only if it is still alive when
+ * the grace is up — and hand back how to call that off.
+ *
+ * **SIGTERM first is the whole point, and skipping it was a bug of its own.** A mutating git takes
+ * `.git/index.lock` for as long as it runs — `cherry-pick`, `worktree add`, `add -A`,
+ * `update-ref` all do — and releases it on the way out, which is the only thing that releases it.
+ * `SIGKILL` gives the process no way out, so a call bounded by being killed outright left a lock
+ * behind on the operator's repository, and the next call in it — the cleanup, the operator's next
+ * commit — failed on a lock no process is holding (#357). It is also what a program gets the
+ * chance to be a program rather than be reaped: a signing helper or a filter that releases
+ * something on its way out gets to.
+ *
+ * The escalation is what makes the stop a fact rather than a request. SIGTERM alone leaves a child
+ * that traps it, or that has a grandchild holding the pipes open, running while the promise this
+ * call is awaited by has already rejected — which is the hang the timeout exists to prevent, one
+ * level down. So when the grace is up, anything still alive is killed, and `settled` runs whether
+ * or not the child was ever going to close: a `close` that may never arrive cannot be the only way
+ * this promise settles.
+ *
+ * The returned function cancels a grace that has not come due, for the callers that settle first —
+ * a child that honoured SIGTERM settles from its own `close`, and nothing should kill anything
+ * after that.
+ */
+function stopEscalating(child: StoppableChild, settled: () => void): () => void {
+  child.kill('SIGTERM');
+  if (child.exitCode !== null || child.signalCode !== null) {
+    // Already gone — a timeout that fired in the same tick as the exit — and there is nothing left
+    // to escalate to. The caller settles from the exit it already has.
+    return () => {};
+  }
+  const escalation = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    settled();
+  }, KILL_GRACE_MS);
+  escalation.unref?.();
+  return () => clearTimeout(escalation);
+}
 
 /**
  * The subcommand an argv actually runs, for a message that has to name it.
@@ -369,17 +451,47 @@ function failureDescription(
 }
 
 /**
+ * The variables that say **which repository** git operates on, and the only ones this module
+ * removes from the environment.
+ *
+ * Each of them outranks the directory a call is started in: a shell that exported `GIT_DIR` to work
+ * inside a bare repository, a CI step, a hook, or a CI job that shares a runner is enough. Every
+ * call in this module is *Book's* write to a repository the caller named — a snapshot object, a
+ * worktree, a branch, a commit on the operator's branch — so an ambient one of those would send
+ * those writes somewhere nobody asked about, and a stray `GIT_INDEX_FILE` would stage an agent's
+ * work into the wrong index (#357).
+ *
+ * The list is deliberately this list and not "everything beginning `GIT_`". Deleting the rest took
+ * away the operator's configuration for operations Book performs on their behalf: `GIT_SSH_COMMAND`
+ * and `core.sshCommand`'s environment, `GIT_SSL_CAINFO` and `GIT_SSL_NO_VERIFY`, `GIT_ASKPASS`,
+ * `GIT_EXEC_PATH`, `GIT_PROXY_COMMAND` — the settings a corporate network, an offline clone, or a
+ * self-signed remote needs, none of which chooses a repository and all of which silently change a
+ * call from working to failing when they are removed. `GIT_CEILING_DIRECTORIES` is kept for the same
+ * reason and one more: it makes git's upward search *stop earlier*, which narrows where Book can be
+ * pointed rather than redirecting it.
+ */
+const GIT_REPOSITORY_SELECTION_VARIABLES: ReadonlySet<string> = new Set([
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  // The index *format* rather than the index's location, and kept in this list for the same
+  // reason as the index itself: a snapshot stages into a temporary index of its own, and an
+  // ambient version would have git write that index in a format the operator's own git may refuse
+  // to read back.
+  'GIT_INDEX_VERSION',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_NAMESPACE',
+  'GIT_PREFIX',
+]);
+
+/**
  * The environment Book's own git runs with, which is not the operator's shell environment.
  *
- * `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_COMMON_DIR` and the
- * rest of git's repository-selection variables outrank the directory a call is started in: a
- * shell that exported `GIT_DIR` to work inside a bare repository, a CI step, a hook, or a CI job
- * that shares a runner is enough. Every call in this module is *Book's* write to a repository the
- * caller named — a snapshot object, a worktree, a branch, a commit on the operator's branch — so
- * an ambient one of those would send those writes somewhere nobody asked about, and a stray
- * `GIT_INDEX_FILE` would stage an agent's work into the wrong index.
- *
- * What is kept is the two kinds that are not a repository pointer:
+ * {@link GIT_REPOSITORY_SELECTION_VARIABLES} is what comes out; everything else the operator set is
+ * theirs and is left alone, including the two kinds that are most obviously not repository
+ * pointers:
  *
  * - **`GIT_AUTHOR_*` and `GIT_COMMITTER_*`**, which are identity rather than location. They are
  *   how a caller names the author of a commit Book is about to make on its behalf, and
@@ -388,19 +500,19 @@ function failureDescription(
  *   operates on*. This module reads configuration on purpose — that is what decides how the
  *   cherry-pick signs — so an operator who points `GIT_CONFIG_GLOBAL` at their own file, or a
  *   hermetic test that points it at an empty one, is being obeyed rather than overridden.
+ *
+ * What is added is the hardening's own environment, spread **last** so that a pager and a
+ * credential prompt cannot be turned back on by a call site or by an ambient variable: no call here
+ * reads from a terminal Book is watching, so `GIT_TERMINAL_PROMPT=0` is what keeps a git that wants
+ * a passphrase from waiting for one that will never be typed (#357).
  */
 function internalGitEnv(overrides: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
   const ambient = buildChildEnv(process.env);
-  for (const name of Object.keys(ambient)) {
-    if (!name.startsWith('GIT_')) continue;
-    if (name.startsWith('GIT_AUTHOR_') || name.startsWith('GIT_COMMITTER_')) continue;
-    if (name.startsWith('GIT_CONFIG_')) continue;
-    delete ambient[name];
-  }
-  // The call site's own environment is spread last, so a `GIT_INDEX_FILE` naming a temporary
-  // index — the snapshot's, the pre-check's — is Book's own decision and outranks the ambient one
-  // it has just removed.
-  return { ...ambient, ...hardenedGitEnv(), ...overrides };
+  for (const name of GIT_REPOSITORY_SELECTION_VARIABLES) delete ambient[name];
+  // The call site's own environment is spread next, so a `GIT_INDEX_FILE` naming a temporary index
+  // — the snapshot's, the pre-check's — is Book's own decision and outranks the ambient one it has
+  // just removed.
+  return { ...ambient, ...overrides, ...hardenedGitEnv() };
 }
 
 /** git, with the argv hardening that belongs to git and not to {@link run}. */
@@ -437,6 +549,16 @@ const hardenedRunner: HardenedRunner = run;
  * that is read-only is the machinery failing, and calling those conflicts sends the reader looking
  * for markers that are not there.
  *
+ * The two answers cross on **status**, and which way they cross is the point of this signature.
+ * `not_applied` means "nothing was written, and running it again is a reasonable thing to try" — a
+ * rolled-back pick with no unmerged paths is exactly that. `conflicted` is the status every other
+ * "an operator has to look at this before anything else happens" outcome in this module already
+ * uses, and a repository left mid-cherry-pick is that outcome even when nothing conflicted: the
+ * next `cherry-pick` in it fails outright, and `applyVerifiedCandidate` refuses to start one while
+ * `CHERRY_PICK_HEAD` exists, so a status that reads as "just try again" sends a retry into a
+ * repository that is waiting for a `--continue` or an `--abort` it was never told about. It is the
+ * closest status the vocabulary has, and it is the closest to the truth.
+ *
  * Reached through `git-isolation-internal.ts`, which is where the test-only exports live; see that
  * module for why this one is among them.
  */
@@ -451,7 +573,11 @@ export function cherryPickFailureResult(facts: {
   const conflicted = facts.unmergedPaths.length > 0;
   if (facts.abortError) {
     return {
-      status: conflicted ? 'conflicted' : 'not_applied',
+      // Not `conflicted ? 'conflicted' : 'not_applied'`, which is what the conflict claim alone
+      // decides: a pick whose rollback did not run is not retryable whether or not it conflicted,
+      // and reporting the narrower of the two claims is what made an operator commit into a
+      // repository that was still mid-pick.
+      status: 'conflicted',
       error: `Cherry-pick failed (${facts.pickError}) and the rollback did not complete (${facts.abortError}), so this repository may be left mid-cherry-pick: finish it with git cherry-pick --continue or undo it with git cherry-pick --abort.`,
     };
   }
@@ -622,17 +748,86 @@ async function branchExists(
  * reads like the agent's work is still there rather than like a branch Book leaked (#357). The
  * caller checks whether the branch was there first: a branch that already existed is the
  * operator's, with their commits on it, and `branch -D` on it would destroy work Book never made.
+ *
+ * Bound by its own timeout rather than by the caller's signal, because every caller of this is a
+ * cleanup running *because* the add it belongs to failed or was aborted — see
+ * {@link removeWorktree}.
  */
 async function deleteBranchBookCreated(
   repoRoot: string,
   branch: string,
   existed: boolean,
-  signal?: AbortSignal,
 ): Promise<void> {
   if (existed) return;
-  await git(repoRoot, ['branch', '-D', branch], { allowExitCodes: [1, 128], signal }).catch(
+  await git(repoRoot, ['branch', '-D', branch], { allowExitCodes: [1, 128] }).catch(() => {});
+}
+
+/**
+ * Whether the worktree at `path` is one an agent can work in, rather than a directory an
+ * interrupted `worktree add` left behind.
+ *
+ * The pointer file is not the test, and treating it as one is what this replaces (#357).
+ * `worktree add` writes `<path>/.git` before it checks anything out — before it has a branch worth
+ * the name and before there is a working tree — so a run whose add was killed by this module's own
+ * timeout, by the agent's stop, or by a signal that took the process with it, leaves exactly that
+ * file behind. The old `existsSync(join(path, '.git'))` read it as "a worktree Book already made",
+ * adopted it, and handed the agent a checkout with no files in it: a run that appears to work and
+ * produces an empty patch, against a branch nobody can use.
+ *
+ * Two reads, because one is not enough. `rev-parse --verify HEAD` goes through the pointer, the
+ * administrative directory and the object store at once, so it fails for every half-state that
+ * pointer cannot reach — an administrative directory `worktree prune` already removed, a pointer
+ * into another repository, a branch whose commit is gone. HEAD resolving on its own says less than
+ * it looks: it resolves from the administrative directory alone, with no index and no checkout, so
+ * the index is checked too. A checkout writes it as it goes, and a git killed partway through
+ * leaves the administrative directory without one.
+ */
+async function worktreeIsComplete(path: string, signal?: AbortSignal): Promise<boolean> {
+  if (!existsSync(join(path, '.git'))) return false;
+  try {
+    const administrative = (
+      await git(path, ['rev-parse', '--absolute-git-dir'], { signal })
+    ).stdout.trim();
+    if (!existsSync(join(administrative, 'index'))) return false;
+    await git(path, ['rev-parse', '--verify', 'HEAD'], { signal });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove the worktree at `path`, the record git keeps for it, and the directory itself.
+ *
+ * Two calls and then a directory, because each one is what lets the next one work. `worktree
+ * remove --force` deletes the checkout and its administrative directory together, and it is the
+ * only one of the three that refuses while a git still holds an index lock from the killed call
+ * — which is why it runs first and why the others are allowed to fail. `worktree prune` then
+ * clears an entry git could not remove.
+ *
+ * The directory is last because git is what normally removes it, and it is here because git
+ * refuses a path it does not recognise as one of its worktrees — which is exactly what a killed
+ * add has left. The `.git` at that path is the guard, and it is the whole claim: what goes is a
+ * directory that presents itself as a git repository under Book's own agent path, which is
+ * only thing this function is ever called on. A directory without one is not a worktree, and is
+ * left for git's own refusal to report rather than removed on a guess.
+ *
+ * Deliberately **not** given the caller's signal. This runs because an add failed *or was aborted*,
+ * and a cleanup bound to the very signal that stopped it would not run at all — which is the state
+ * the retry then has to clean up instead. Each call is bounded by its own timeout, so the cleanup
+ * cannot hang on the disk the add hung on.
+ */
+async function removeWorktree(repoRoot: string, path: string): Promise<void> {
+  await git(repoRoot, ['worktree', 'remove', '--force', path], { allowExitCodes: [128] }).catch(
     () => {},
   );
+  await git(repoRoot, ['worktree', 'prune'], { allowExitCodes: [128] }).catch(() => {});
+  if (pointsAtWorktree(path)) rmSync(path, { recursive: true, force: true });
+}
+
+/** Whether `path` holds a linked worktree, which is what a worktree Book would be replacing. */
+function pointsAtWorktree(path: string): boolean {
+  return existsSync(join(path, '.git'));
 }
 
 export async function createAgentWorktree(
@@ -644,20 +839,48 @@ export async function createAgentWorktree(
 ): Promise<{ path: string; branch: string }> {
   const path = join(worktreeRoot, snapshot.repoHash, agentId);
   const branch = `book-agent/${snapshot.repoHash}/${agentId}`;
-  // A worktree Book already made is adopted as it is, so a run that finds its own directory from a
-  // previous attempt does not fail on it. Anything else at that path is git's business: a file, or
-  // a directory with something in it, is refused by `worktree add` with a real error, which is the
-  // only outcome that says the worktree does not exist rather than reporting one that does (#357).
-  if (existsSync(join(path, '.git'))) return { path, branch };
-  mkdirSync(dirname(path), { recursive: true });
+  // A worktree Book already made, and made completely, is adopted as it is, so a run that finds its
+  // own directory from a previous attempt does not fail on it. Anything else at that path is git's
+  // business: a file, a directory with something in it, or the remains of an add that was killed —
+  // each refused by `worktree add` with a real error, which is the only outcome that says the
+  // worktree does not exist rather than reporting one that does (#357).
+  if (await worktreeIsComplete(path, signal)) return { path, branch };
   // Read before the add, because it is what the add's own branch is worth cleaning up: only a
   // branch that did not exist before this call is one this call created.
   const existed = await branchExists(snapshot.repoRoot, branch, signal);
+  // What a previous attempt left goes first, and the branch goes with the worktree rather than with
+  // the decision above. An add killed after creating the branch leaves both, and the retry is then
+  // refused by "a branch named ... already exists" before it ever reaches the checkout — so a
+  // half-made worktree has to take its branch with it or the next run cannot make a new one.
+  //
+  // Tied to the worktree on purpose: a path that is not a worktree is not Book's, and a directory
+  // somebody else put there must never cost an operator the branch they made under this name. The
+  // failed-add path below is the opposite case and does delete the branch on its own, because there
+  // Book has just been told it created it.
+  if (pointsAtWorktree(path)) {
+    await removeWorktree(snapshot.repoRoot, path);
+    await deleteBranchBookCreated(snapshot.repoRoot, branch, false);
+  }
+  mkdirSync(dirname(path), { recursive: true });
   try {
     await git(snapshot.repoRoot, ['worktree', 'add', '-b', branch, path, startCommit], { signal });
   } catch (error) {
-    await deleteBranchBookCreated(snapshot.repoRoot, branch, existed, signal);
+    // A failed or aborted add can have created the worktree, its administrative directory and the
+    // branch before it got to the checkout. All three go, so the next attempt is not refused by
+    // "already exists" on any of them.
+    await removeWorktree(snapshot.repoRoot, path);
+    await deleteBranchBookCreated(snapshot.repoRoot, branch, existed);
     throw error;
+  }
+  if (!(await worktreeIsComplete(path, signal))) {
+    // An add that reported success and left nothing usable is not a worktree to hand an agent, and
+    // is removed for the same reason the failed add above is: what is left behind would be adopted
+    // as a finished checkout by the next run, which is the failure this check exists to catch.
+    await removeWorktree(snapshot.repoRoot, path);
+    await deleteBranchBookCreated(snapshot.repoRoot, branch, existed);
+    throw new Error(
+      `git worktree add reported success but ${path} is not a usable worktree; it was removed so the next attempt starts clean.`,
+    );
   }
   return { path, branch };
 }
@@ -695,12 +918,22 @@ function removalRoot(record: AgentRecord, repoRoot: string | undefined): string 
  * fails to start anything at all, on every platform, so the second call would never run. Two levels
  * up is `<repo>/.git` for an ordinary repository and the bare repository itself for a bare one, and
  * git resolves a repository from both.
+ *
+ * The pointer is not always absolute. git 2.48 writes it relative whenever the worktree is
+ * somewhere the pointer can be written relative — a sibling directory, a checkout inside the
+ * repository's own tree — so taking it as given resolved `<cwd>/<pointer>`, which on any other cwd
+ * is a directory that does not exist, and the cleanup then ran from the worktree it was in the
+ * middle of deleting (#357). git's own rule is the directory the `.git` file sits in, and
+ * `resolve(worktree, gitdir)` is that rule for both forms: an absolute pointer is left exactly as
+ * it is, a relative one is taken from the worktree root.
  */
 function repositoryOfWorktree(worktree: string): string | undefined {
   try {
     const pointer = readFileSync(join(worktree, '.git'), 'utf8').trim();
     const match = /^gitdir:\s*(.+)$/m.exec(pointer);
-    return match?.[1]?.trim() ? dirname(dirname(match[1].trim())) : undefined;
+    const gitdir = match?.[1]?.trim();
+    if (!gitdir) return undefined;
+    return dirname(dirname(resolve(worktree, gitdir)));
   } catch {
     return undefined;
   }

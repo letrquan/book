@@ -47,7 +47,33 @@ export type AtomicWriteResult =
       message: string;
       attempts: number;
       elapsedMs: number;
+    }
+  | {
+      /**
+       * The caller withdrew this write before it landed, through
+       * {@link AtomicAsyncWriteOptions.canCommit}. Not a failure: the target is left exactly as it
+       * was, which is what the caller withdrawing a write is asking for.
+       */
+      status: 'cancelled';
+      target: string;
+      attempts: number;
+      elapsedMs: number;
     };
+
+/** What one {@link AtomicJsonWriter.writeAsync} call is allowed to decide for itself. */
+export interface AtomicAsyncWriteOptions {
+  /**
+   * Asked immediately before the rename, which is the only step of the write that changes the
+   * target.
+   *
+   * A write that has begun is not one whose result the caller still wants: a lease heartbeat that
+   * was already running when the store was disposed has a caller that no longer exists, and landing
+   * would put back the very file that dispose removed. The question is asked at the last moment that
+   * can still be answered `no` — everything before the rename has only ever touched a temp file —
+   * and the temp file is removed rather than left, so a withdrawn write leaves nothing behind.
+   */
+  canCommit?: () => boolean;
+}
 
 export interface AtomicLockOwner {
   schemaVersion: 1;
@@ -233,7 +259,17 @@ export class AtomicJsonWriter {
     this.onStaleLock = options.onStaleLock;
   }
 
-  write(target: string, value: unknown, preparedTemp?: string): AtomicWriteResult {
+  /**
+   * `cancelled` is excluded from the return type because it cannot happen here: a withdrawal is
+   * something a caller asks for through {@link AtomicAsyncWriteOptions.canCommit}, and a caller
+   * blocking on this call has nothing to withdraw it with. The union is what the caller can
+   * actually observe.
+   */
+  write(
+    target: string,
+    value: unknown,
+    preparedTemp?: string,
+  ): Exclude<AtomicWriteResult, { status: 'cancelled' }> {
     const startedAt = this.now();
     const deadline = startedAt + this.deadlineMs;
     const lockPath = `${target}.lock`;
@@ -402,8 +438,15 @@ export class AtomicJsonWriter {
    * The deadline and the retry ladder are the synchronous ones, and the result is the same
    * {@link AtomicWriteResult}, so a caller reads a `busy` or `unavailable` here the way it reads
    * one from {@link write}.
+   *
+   * {@link AtomicAsyncWriteOptions.canCommit} is the one thing this path has that the synchronous
+   * one does not, and it exists because this path is the one a caller can no longer wait for.
    */
-  async writeAsync(target: string, value: unknown): Promise<AtomicWriteResult> {
+  async writeAsync(
+    target: string,
+    value: unknown,
+    options: AtomicAsyncWriteOptions = {},
+  ): Promise<AtomicWriteResult> {
     const startedAt = this.now();
     const deadline = startedAt + this.deadlineMs;
     const lockPath = `${target}.lock`;
@@ -518,6 +561,17 @@ export class AtomicJsonWriter {
       }
 
       while (true) {
+        if (options.canCommit && !options.canCommit()) {
+          // Asked once per attempt, so a write whose caller gave up while it waited out a
+          // contended rename does not land on the attempt after that.
+          await unlinkQuietlyAsync(this.asyncFs, tempPath);
+          return {
+            status: 'cancelled',
+            target,
+            attempts,
+            elapsedMs: this.now() - startedAt,
+          };
+        }
         attempts++;
         try {
           await this.asyncFs.rename(tempPath, target);

@@ -504,7 +504,9 @@ export class AgentStore {
   }
 
   private discardFailedRequiredWrite(result: AtomicWriteResult): AtomicWriteResult {
-    if (result.status === 'ok' || !result.tempPath) return result;
+    // A `cancelled` write is not here: it removed its own temp file on the way out, because its
+    // caller asked for it not to land, and there is no half-written file to clean up.
+    if (result.status === 'ok' || result.status === 'cancelled' || !result.tempPath) return result;
     try {
       unlinkSync(result.tempPath);
     } catch {
@@ -564,7 +566,7 @@ export class AgentStore {
     const pending = this.pendingWrites.get(target);
     if (!pending || pending.flushing) return okResult(target);
     pending.flushing = true;
-    let result: AtomicWriteResult;
+    let result: Exclude<AtomicWriteResult, { status: 'cancelled' }>;
     try {
       result = this.writer.write(target, pending.value, pending.tempPath);
     } catch (error) {
@@ -992,12 +994,29 @@ export class AgentStore {
         this.safeLog('shutdown flush failed', { target: targetTypeFor(target) });
       }
     }
-    // The lease goes last, and after a heartbeat write that is still running: that write's rename is
-    // the last thing that can put the file back, and a lease that outlives the process is one other
-    // instance reads as live until it goes stale (#357).
+    // The lease goes now, synchronously and best effort, whatever else is in flight (#357).
+    //
+    // Waiting for a heartbeat write that is still running is what this used to do, and both halves
+    // of that were wrong. A process that exits between `dispose()` returning and that write settling
+    // leaves the lease on disk, and another instance reads it as a live owner until it goes stale —
+    // minutes, for a Book that is not coming back. And a write that never settles, on a disk that
+    // has stopped answering, blocked the removal for good, which is the one case where the lease
+    // most needs to be gone. Neither depends on the write: the unlink below is this store's own
+    // file, and a write in flight is a *re-creation* of it, not part of it.
+    this.removeLease();
+    // The write still in flight gets the file back, because its final step is a rename. So the
+    // rename is refused once the store is disposed — `refreshLease` asks before it lands — and the
+    // unlink is repeated after the write settles, which covers a rename that had already passed that
+    // check when `dispose()` ran. Two steps, because either one alone leaves a window: the check
+    // alone for the write that had got that far, the unlink alone for the lease an operator can read
+    // in the meantime.
     const inFlight = this.leaseWrite;
-    if (inFlight) void inFlight.then(() => this.removeLease());
-    else this.removeLease();
+    if (inFlight) {
+      void inFlight.then(
+        () => this.removeLease(),
+        () => this.removeLease(),
+      );
+    }
   }
 
   private refreshForeignSummaries(): void {
@@ -1069,20 +1088,28 @@ export class AgentStore {
    *   is a queue that grows: each tick adds an `fsync` the next tick would have made stale.
    *   A skipped heartbeat costs nothing, because the lease is still fresh — {@link LEASE_FRESH_MS}
    *   is three heartbeats, so one missed tick is not a stale lease.
-   * - **The lease is removed after any write in flight, never before.** Dispose deletes the lease
-   *   file so no other instance reads a live lease for a process that is gone; a rename landing
-   *   after that delete would recreate it. So the removal waits for the write to settle, which is
-   *   also why nothing is awaited synchronously here: `dispose()` is synchronous because its
-   *   callers are.
+   * - **The lease is never put back by a write that outlives `dispose()`.** Dispose deletes the
+   *   lease file so no other instance reads a live lease for a process that is gone, and the final
+   *   step of a write is a rename — so a heartbeat still running when the store was disposed would
+   *   recreate the file it was meant to outlive. The `canCommit` below is that write being asked
+   *   whether its own store is still the one that wants the result, at the last moment before the
+   *   rename that would put the file back, and `dispose()` unlinks again once the write settles for
+   *   the rename that had already passed that check.
    */
   private refreshLease(): void {
     if (!this.enabled || this.disposed) return;
     // A write still running owns the lease file's contents; a second one would only rewrite it.
     if (this.leaseWrite) return;
     const write = this.writer
-      .writeAsync(this.leasePath, this.leaseDocument())
+      .writeAsync(this.leasePath, this.leaseDocument(), {
+        canCommit: () => !this.disposed,
+      })
       .then((result) => {
-        if (result.status !== 'ok') this.safeLog('lease refresh failed', { status: result.status });
+        // A write withdrawn by `dispose()` is the expected outcome of a heartbeat that was already
+        // running, not a failure worth a log line about it.
+        if (result.status !== 'ok' && result.status !== 'cancelled') {
+          this.safeLog('lease refresh failed', { status: result.status });
+        }
       })
       .catch(() => {
         // Heartbeat failures are non-fatal; agent writes carry the same owner metadata.
