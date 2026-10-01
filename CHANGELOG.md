@@ -725,6 +725,23 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Paging back through history no longer claims that new output arrived below it** (#354).
+  Scrolling up to the hydrated start asks the transcript's history loader for an older page —
+  the wheel animation at row 0, a wheel report that lands there, `PageUp`, the `Ctrl+U` half
+  page, `Ctrl+Home` — and the rows that page mounts are **prepended**, above the view.
+  `measureTranscript` in `src/tui/components/TranscriptView.tsx` read every row of content
+  growth as output appended below, so the growth it measured next was the history the reader
+  had just asked for: browsing back through a long session put "browsing history · new output
+  below" in the hint while nothing had arrived below at all, and the marker cleared only when
+  the reader went back to the tail. Every loader call site now goes through one
+  `requestHistory` helper, which records that a page was taken; the measurement that reads
+  growth while that record stands treats the growth as having arrived from above and clears
+  the record, and returning to the tail clears it as well. The scroll behaviour is otherwise
+  untouched: the page is still prepended and the view still lands on the rows the reader was
+  looking at. Output that really does arrive below still raises the hint, which the test beside
+  it holds with a loader that declines the page. **Accepted limit:** output appended below in
+  the same measurement as a page is prepended is not distinguishable here and reads as the
+  page, so that measurement raises no marker; the hint returns on the next append.
 - **A patch git exits on before reading no longer crashes the host** (#351). `git()` in
   `src/agents/git-isolation.ts` has two ways to reach git: `execFile`, or a `spawn` that writes a
   patch to stdin. The `spawn` path attached no `error` listener to `child.stdin`, so a write that
