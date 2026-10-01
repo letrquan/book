@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { removeWhenReleased } from '../test/remove-when-released.js';
 import { persistentEnvironmentOverrides, shellTools } from './shell.js';
 import { createDefaultRegistry } from './registry.js';
 import { getPrimaryArg } from './primary-arg.js';
@@ -95,6 +96,35 @@ async function waitForPidGone(pid: number, timeoutMs = 5_000): Promise<void> {
 }
 
 /**
+ * Wait until the detached runner of a finished persistent job has exited.
+ *
+ * `BashOutput` returns as soon as it can read the terminal record, and the runner publishes that
+ * record before it exits — it writes `status: exited` and only then calls `process.exit()` on a
+ * 10ms timer — so the test can end while the runner is still alive with the temp dir as its cwd,
+ * which is what the Windows cleanup needs the directory released for (#350).
+ *
+ * Only the runner is waited on. The supervisor is always gone before the terminal record exists:
+ * the runner's `close` handler, which publishes the record, fires only once the supervisor process
+ * has exited, so by now that pid may already have been reused by an unrelated process on the user's
+ * machine. For the same reason nothing is killed when the wait runs out — a pid can be reused on
+ * Windows, and killing a stranger's process is far worse than a red test. A runner that outlives
+ * the wait is a real leak, so the test fails and says which pid it was.
+ */
+async function waitOutPersistentJob(store: BackgroundShellStore, shellId: string): Promise<void> {
+  const shell = store.shells.get(shellId);
+  expect(shell, `no shell record for ${shellId}`).toBeDefined();
+  expect(typeof shell?.runnerPid, `no runner pid recorded for ${shellId}`).toBe('number');
+  const runnerPid = shell!.runnerPid!;
+  try {
+    await waitForPidGone(runnerPid, 10_000);
+  } catch {
+    throw new Error(
+      `Persistent job ${shellId}'s runner (pid ${runnerPid}) did not exit after publishing its terminal record: a leaked process, left running rather than killed`,
+    );
+  }
+}
+
+/**
  * A context whose shell manager has already been disposed, so a foreground command that reaches
  * its timeout cannot be moved to the background and is killed exactly as it was before #302.
  *
@@ -138,7 +168,9 @@ afterEach(async () => {
       }
     }
   }
-  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  // Every command here ran with this directory as its cwd, and on Windows a process that is still
+  // tearing down keeps it open, so the removal is polled for rather than retried blind (#350).
+  await removeWhenReleased(dir);
 });
 
 describe('Bash shell tools', () => {
@@ -990,6 +1022,9 @@ console.log('alive-still'); setInterval(() => {}, 1000);
     expect(result.content).toContain('persistent-done');
     expect(result.content).toMatch(/exit=0/);
     expect(Date.now() - began).toBeLessThan(15_000);
+    // The wait above returned on the terminal record, which the runner publishes *before* it
+    // exits, so the job's runner can still be alive here holding this temp dir open.
+    await waitOutPersistentJob(store, shellId!);
   }, 60_000);
 });
 

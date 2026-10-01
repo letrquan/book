@@ -731,6 +731,24 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The persistent-job shell test now waits out the job's own runner, and the Windows cleanup is
+  shared** (#350). `BashOutput` returns as soon as it can read a job's terminal record, and the
+  runner publishes that record before it exits, so the test could end while the runner was still
+  alive with the test's temp directory as its working directory, and Windows then refused to remove
+  that directory with EBUSY. The test now waits for the runner pid it recorded to be gone, and
+  reports a runner that outlives the wait rather than killing it, because a pid can already have
+  been reused by an unrelated process. The removal itself is `removeWhenReleased`, now a shared
+  test helper: it polls until Windows lets go, which `rmSync` does not do on Node 24 whatever
+  `maxRetries` says.
+- **Delegation overhead is judged against a probe of the machine's own speed, taken on the same
+  cycle** (#367). The absolute ceiling failed on a Windows runner doing ordinary file work 20-60x
+  slower than usual for a few seconds while its timers still fired on time, which the stall guard
+  cannot see; each cycle is now bracketed by a probe that does the same kind of record write the
+  harness's store does, and every sample is judged against the larger of the absolute ceiling and
+  five times its own probe. Five sits above the healthy cost on this box (best samples 1.7-3.0x
+  their own probe, whether quiet or loaded) while still leaving the absolute ceiling the binding
+  one on a quiet machine, so a regression there is still caught as sharply as before, and the judge
+  is covered by deterministic tests with synthetic numbers.
 - **A Grep over a workspace with a very long line no longer holds the whole line in memory**
   (#349). ripgrep prints one JSON event per line, and the reader between its stdout and Book's own
   parsing accumulated into a string until it saw the newline that ends an event — with nothing
