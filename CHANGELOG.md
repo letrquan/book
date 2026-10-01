@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **High-severity dependency advisories cleared** (#361). `undici` moves to 8.11.2 and the
+  transitive `brace-expansion` to 5.0.12, so `npm audit --audit-level=high` is clean. The routine
+  minor and patch bumps from the dependabot groups ride along: `@modelcontextprotocol/sdk`
+  1.31.0, `ignore`, `marked`, `@types/node`, `@typescript-eslint/*` 8.70.1, `knip` and
+  `prettier`. Vitest 5 stays out.
+
 - **Book's own git work for managed agents runs with the checkout's hooks and background
   programs off** (#348). `src/agents/git-isolation.ts` ran every command Book needs for an agent
   with the checkout's own configuration and hooks, and a checkout's configuration may have come
