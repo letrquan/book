@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   createRowCachedGet,
   installInkOutputCache,
@@ -63,6 +63,11 @@ function make(width: number, height: number, commands: Command[]): InkOutput {
 }
 
 describe('row-cached Ink output', () => {
+  afterEach(() => {
+    // No case here may leave Ink patched for the next one, or for the contract tier beside it.
+    Output.prototype.get = originalGet;
+  });
+
   function cache(limits?: Partial<RowCacheLimits>): RowCachedGet {
     return createRowCachedGet({ originalGet, sliceAnsi, Output, limits });
   }
@@ -242,7 +247,14 @@ describe('row-cached Ink output', () => {
     const commands = rowsFrom(6, 0);
     agree(20, 6, commands, rowCache);
     const first = rowCache.stats();
-    expect(first).toEqual({ frames: 1, rows: 6, rowHits: 0 });
+    expect(first).toEqual({
+      frames: 1,
+      rows: 6,
+      rowHits: 0,
+      fallbacks: 0,
+      rowCacheSize: 6,
+      sliceCacheSize: 0,
+    });
 
     const frame = agree(20, 6, commands, rowCache);
     const second = rowCache.stats();
@@ -303,9 +315,103 @@ describe('row-cached Ink output', () => {
     expect(missesIn(stats)).toBeGreaterThan(0);
   });
 
-  it('stays off when BOOK_INK_OUTPUT_CACHE turns it off', async () => {
-    expect(await installInkOutputCache({ BOOK_INK_OUTPUT_CACHE: 'off' })).toBe(false);
-    expect(await installInkOutputCache({ BOOK_INK_OUTPUT_CACHE: '0' })).toBe(false);
+  it('hands a frame back to Ink when a transformer returns a line with a newline in it', () => {
+    const rowCache = cache();
+    // Ink keeps such a line on one row, with the newline a single cell. Re-sending it to a scratch
+    // Output would split it there instead, and the rows after it would come back shifted.
+    const commands: Command[] = [
+      {
+        kind: 'write',
+        x: 0,
+        y: 0,
+        text: 'one\ntwo\nthree',
+        transformers: [(line) => `${line}\n!`],
+      },
+      { kind: 'write', x: 0, y: 3, text: 'untransformed' },
+    ];
+    const expected = originalGet.call(make(20, 5, commands));
+    expect(rowCache.get.call(make(20, 5, commands))).toEqual(expected);
+    // A repeated frame must be identical too, so none of this frame reached the row cache.
+    expect(rowCache.get.call(make(20, 5, commands))).toEqual(expected);
+    expect(rowCache.stats().fallbacks).toBe(2);
+  });
+
+  it('evicts the oldest rows past the limit rather than clearing the cache', () => {
+    const rowCache = cache({ rowCache: 4 });
+    const commands = rowsFrom(6, 0);
+    for (let frame = 0; frame < 3; frame++) {
+      expect(rowCache.get.call(make(20, 6, commands))).toEqual(
+        originalGet.call(make(20, 6, commands)),
+      );
+      expect(rowCache.stats().rowCacheSize).toBeLessThanOrEqual(4);
+    }
+    // Four rows, not none: the cache was trimmed to its limit and never emptied.
+    expect(rowCache.stats().rowCacheSize).toBe(4);
+  });
+
+  it('keeps a row that is used every frame while other rows churn past the limit', () => {
+    const rowCache = cache({ rowCache: 4 });
+    const pinned: Command = { kind: 'write', x: 0, y: 0, text: 'pinned row' };
+    const churn = (index: number): Command[] => [
+      pinned,
+      { kind: 'write', x: 0, y: 1, text: `churn ${index}` },
+    ];
+    let previous = rowCache.stats();
+    for (let index = 0; index < 12; index++) {
+      const commands = churn(index);
+      expect(rowCache.get.call(make(20, 2, commands))).toEqual(
+        originalGet.call(make(20, 2, commands)),
+      );
+      const stats = rowCache.stats();
+      // The first frame builds both rows; every later frame still finds the pinned one cached.
+      expect(stats.rowHits - previous.rowHits).toBe(index === 0 ? 0 : 1);
+      expect(stats.rowCacheSize).toBeLessThanOrEqual(4);
+      previous = stats;
+    }
+    // The very first churning row was evicted on the way, so building it again misses: the pinned
+    // row is still a hit, which is the whole point of the ordering.
+    expect(missesIn(rowCache.stats())).toBe(13);
+    rowCache.get.call(make(20, 2, churn(0)));
+    expect(missesIn(rowCache.stats())).toBe(14);
+  });
+
+  it('trims the shared Ink maps to their limits rather than emptying them', () => {
+    const rowCache = cache({ widths: 8 });
+    const commands: Command[] = [];
+    for (let index = 0; index < 12; index++) {
+      commands.push({ kind: 'write', x: 0, y: index, text: `row ${index} measured once` });
+    }
+    const wide = make(20, 12, commands);
+    rowCache.get.call(wide);
+    const shared = wide.caches;
+    expect(shared.widths.size).toBeGreaterThan(8);
+
+    // The next frame trims at its start. It writes nothing, so it cannot refill the map either.
+    const empty = make(20, 1, []);
+    rowCache.get.call(empty);
+    expect(empty.caches).toBe(shared);
+    expect(shared.widths.size).toBe(8);
+  });
+
+  it('stays off for every spelling of off in BOOK_INK_OUTPUT_CACHE', async () => {
+    for (const value of ['false', 'OFF', 'no', ' off ']) {
+      expect(await installInkOutputCache({ BOOK_INK_OUTPUT_CACHE: value })).toBe(false);
+      // Not merely false: Ink's own `get` is still the one Ink shipped.
+      expect(Output.prototype.get).toBe(originalGet);
+    }
+  });
+
+  it('installs once, and reports a second install as already in place', async () => {
+    expect(await installInkOutputCache({})).toBe(true);
+    const installed = Output.prototype.get;
+    expect(installed).not.toBe(originalGet);
+    expect(await installInkOutputCache({})).toBe(true);
+    expect(Output.prototype.get).toBe(installed);
+  });
+
+  it('keeps the cache in place when a later call turns the environment off', async () => {
+    expect(await installInkOutputCache({})).toBe(true);
+    expect(await installInkOutputCache({ BOOK_INK_OUTPUT_CACHE: 'off' })).toBe(true);
   });
 });
 

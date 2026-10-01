@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { parseEnvBoolean } from '../env-boolean.js';
 import { inkBuildDir } from './ink-renderer.js';
 
 /**
@@ -21,13 +22,18 @@ import { inkBuildDir } from './ink-renderer.js';
  * why the frames are byte-identical rather than merely close. Sharing one set of width and
  * styled-character caches across frames is the other half: a line measured once stays measured.
  *
- * A measurement prototype cut stalls over 40 ms during 40 wheel-up reports at 30/s from 9.0 to 4.4
- * per run, and their summed time from 509 ms to 221 ms over 7 interleaved runs each, with frames
- * byte-identical to Ink's own `get` across about 270 real frames.
+ * Measured on the shipped code, on a quiet box, over the real 4 MB session at 120x40 on Windows and
+ * 40 wheel-up reports at 30/s, 7 interleaved runs each: stalls over 40 ms fell from 1.4 to 0.4 per
+ * run, their summed time from 73 ms to 18 ms, and the worst stall per run from 54 ms to 35 ms at
+ * the median and from 62 ms to 43 ms at the worst. Under load, with a game running, the
+ * measurement prototype's figures are the ones that hold: 9.0 to 4.4 stalls per run and 509 ms to
+ * 221 ms summed. Frames were byte-identical to Ink's own `get` throughout — 0 mismatches over 315
+ * real frames of the built CLI.
  *
  * `installInkOutputCache` refuses to touch Ink unless `isInkOutputShape` accepts it, and
- * `ink-renderer.contract.test.ts` pins that shape against the installed Ink, so an Ink upgrade that
- * changes `Output` fails the contract tier instead of quietly changing what the TUI draws.
+ * `ink-renderer.contract.test.ts` pins that shape and the frames themselves against the installed
+ * Ink, so an Ink upgrade that changes `Output` fails the contract tier instead of quietly changing
+ * what the TUI draws.
  */
 
 /** Ink's private clip rectangle. A bound is undefined when the clip is not on that axis. */
@@ -83,7 +89,11 @@ export interface InkOutputConstructor {
 /** `slice-ansi`, resolved from Ink's own location so it is the copy Ink measures with. */
 export type SliceAnsi = (text: string, from: number, to: number) => string;
 
-/** Entry sizes, each clearing its map once it grows past the limit. */
+/**
+ * Entry sizes. A key here is a whole line or a whole rendered row, held for the life of the
+ * process, so the defaults are kept small: past them the least recently used key is dropped rather
+ * than the map being emptied, because an emptied map makes the next frame miss every row.
+ */
 export interface RowCacheLimits {
   styledChars: number;
   widths: number;
@@ -94,10 +104,10 @@ export interface RowCacheLimits {
 
 const DEFAULT_LIMITS: RowCacheLimits = {
   styledChars: 1024,
-  widths: 16384,
-  blockWidths: 4096,
-  sliceCache: 4096,
-  rowCache: 4096,
+  widths: 8192,
+  blockWidths: 1024,
+  sliceCache: 2048,
+  rowCache: 2048,
 };
 
 export interface RowCachedGetOptions {
@@ -109,13 +119,17 @@ export interface RowCachedGetOptions {
 }
 
 /**
- * How many frames and rows have been rendered, and how many of those rows needed no work: a row
- * that came from the cache, and a row nothing was written to, which is its own empty string.
+ * How many frames and rows have been rendered, how many of those rows needed no work — a row that
+ * came from the cache, and a row nothing was written to, which is its own empty string — how many
+ * frames were handed straight back to Ink, and how full Book's own two caches are.
  */
 export interface OutputCacheStats {
   frames: number;
   rows: number;
   rowHits: number;
+  fallbacks: number;
+  rowCacheSize: number;
+  sliceCacheSize: number;
 }
 
 export interface RowCachedGet {
@@ -126,8 +140,38 @@ export interface RowCachedGet {
 /** One write's place and final text on a row, after clipping and transformers. */
 type InkFragment = [x: number, line: string];
 
-function bound(map: Map<unknown, unknown>, limit: number): void {
-  if (map.size > limit) map.clear();
+/** Drops the oldest key, which a `Map` yields first because it iterates in insertion order. */
+function evictOldest<T>(cache: Map<string, T>): void {
+  const oldest = cache.keys().next().value;
+  if (oldest !== undefined) cache.delete(oldest);
+}
+
+/**
+ * Reads a key and makes it the newest again, so that a row in use on every frame is the last one a
+ * full cache drops. A `Map` iterates in insertion order, so re-setting is the whole of recency.
+ */
+function refresh<T>(cache: Map<string, T>, key: string): T | undefined {
+  const value = cache.get(key);
+  if (value === undefined) return undefined;
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+/** Stores a value, dropping the oldest key first when the map is already at its limit. */
+function remember<T>(cache: Map<string, T>, key: string, value: T, limit: number): void {
+  if (cache.size >= limit) evictOldest(cache);
+  cache.set(key, value);
+}
+
+/**
+ * Drops the oldest keys until the map is at or below `limit`. For Ink's own shared maps, which are
+ * filled inside Ink's methods and so cannot be held at a limit as they are written: they are
+ * trimmed once at the start of each frame, never emptied, since emptying one would make the frame
+ * that follows it re-measure every line — the stall this module exists to remove.
+ */
+function trim<T>(cache: Map<string, T>, limit: number): void {
+  while (cache.size > limit) evictOldest(cache);
 }
 
 /**
@@ -140,7 +184,7 @@ export function createRowCachedGet(options: RowCachedGetOptions): RowCachedGet {
   const limits: RowCacheLimits = { ...DEFAULT_LIMITS, ...options.limits };
   const rowCache = new Map<string, string>();
   const sliceCache = new Map<string, string>();
-  const counters = { frames: 0, rows: 0, rowHits: 0 };
+  const counters = { frames: 0, rows: 0, rowHits: 0, fallbacks: 0 };
   let sharedCaches: InkOutputCaches | null = null;
 
   const get = function (this: InkOutput): InkOutputFrame {
@@ -149,11 +193,9 @@ export function createRowCachedGet(options: RowCachedGetOptions): RowCachedGet {
     if (sharedCaches === null) sharedCaches = this.caches;
     const caches = sharedCaches;
     this.caches = caches;
-    bound(caches.styledChars, limits.styledChars);
-    bound(caches.widths, limits.widths);
-    bound(caches.blockWidths, limits.blockWidths);
-    bound(sliceCache, limits.sliceCache);
-    bound(rowCache, limits.rowCache);
+    trim(caches.styledChars, limits.styledChars);
+    trim(caches.widths, limits.widths);
+    trim(caches.blockWidths, limits.blockWidths);
 
     const rows: InkFragment[][] = [];
     for (let y = 0; y < this.height; y++) rows.push([]);
@@ -183,10 +225,10 @@ export function createRowCachedGet(options: RowCachedGetOptions): RowCachedGet {
             const width = caches.getStringWidth(line);
             const to = x + width > x2 ? x2 - x : width;
             const key = `${from},${to},${line.length},${line}`;
-            const cached = sliceCache.get(key);
+            const cached = refresh(sliceCache, key);
             if (cached !== undefined) return cached;
             const sliced = sliceAnsi(line, from, to);
-            sliceCache.set(key, sliced);
+            remember(sliceCache, key, sliced, limits.sliceCache);
             return sliced;
           });
           if (x < x1) x = x1;
@@ -200,11 +242,21 @@ export function createRowCachedGet(options: RowCachedGetOptions): RowCachedGet {
       }
       let offsetY = 0;
       for (const [index, original] of lines.entries()) {
-        // Ink's quirk: a line the output has no row for is dropped without advancing the offset,
-        // which puts every line after it one row too low. Kept, because frames must match.
+        // Ink's quirk: a line the output has no row for is dropped without advancing the offset, so
+        // every later line of the same write lands on that missing row and is dropped with it.
+        // Kept, because the frames must match.
         if (!rows[y + offsetY]) continue;
         let line = original;
         for (const transformer of transformers) line = transformer(line, index);
+        // A transformer can hand back a line with a newline in it, which Ink keeps on this one row
+        // with the newline a single cell. The scratch Output below splits its writes on newlines,
+        // so its rows would come back shifted; this frame is given back to Ink whole, and none of
+        // it reaches the row cache.
+        if (line.includes('\n')) {
+          counters.fallbacks++;
+          counters.frames++;
+          return originalGet.call(this);
+        }
         rows[y + offsetY].push([x, line]);
         offsetY++;
       }
@@ -224,7 +276,7 @@ export function createRowCachedGet(options: RowCachedGetOptions): RowCachedGet {
       // Length-prefixed, so no line's content can make two different rows share a key.
       let key = `${this.width}|`;
       for (const [x, line] of fragments) key += `${x},${line.length},${line}`;
-      const cached = rowCache.get(key);
+      const cached = refresh(rowCache, key);
       if (cached === undefined) {
         misses.push(row);
         missKeys.push(key);
@@ -247,14 +299,18 @@ export function createRowCachedGet(options: RowCachedGetOptions): RowCachedGet {
       misses.forEach((row, index) => {
         const text = built[index] ?? '';
         frame[row] = text;
-        rowCache.set(missKeys[index], text);
+        remember(rowCache, missKeys[index], text, limits.rowCache);
       });
     }
     counters.frames++;
     return { output: frame.join('\n'), height: this.height };
   };
 
-  return { get, stats: () => ({ ...counters }) };
+  Object.defineProperty(get, INSTALLED_MARK, { value: true });
+  return {
+    get,
+    stats: () => ({ ...counters, rowCacheSize: rowCache.size, sliceCacheSize: sliceCache.size }),
+  };
 }
 
 /** Whether a candidate carries the parts of Ink's `Output` this module reads. */
@@ -284,26 +340,42 @@ export function isInkOutputShape(candidate: unknown): candidate is InkOutputCons
   );
 }
 
-let installed = false;
+/**
+ * Set on the installed `get` itself, which is where "is the cache in place" belongs: a module-level
+ * flag would be mutable state the module owns, and would outlive an `Output` that was replaced.
+ */
+const INSTALLED_MARK = Symbol('book.rowCachedInkGet');
+
+/** Whether a candidate class's `Output.prototype.get` is already the row-cached one. */
+function isRowCachedGet(candidate: unknown): boolean {
+  if (typeof candidate !== 'function') return false;
+  const prototype = (candidate as { prototype?: { get?: unknown } }).prototype;
+  const get = prototype?.get as { [INSTALLED_MARK]?: unknown } | undefined;
+  return get?.[INSTALLED_MARK] === true;
+}
 
 /**
- * Replaces Ink's `Output.prototype.get` with the row-cached one, once per process. Returns false
- * and leaves Ink untouched when `BOOK_INK_OUTPUT_CACHE` is `off` or `0`, and when Ink's private
+ * Replaces Ink's `Output.prototype.get` with the row-cached one, once per process, and returns
+ * whether the cached `get` is installed after this call.
+ *
+ * Returns true without touching anything when `Output.prototype.get` already carries the mark: the
+ * cache is in place, whatever this call's environment says, and a second wrap would be a race
+ * against the first. Returns false, leaving Ink alone, when `BOOK_INK_OUTPUT_CACHE` reads as false —
+ * `0`, `false`, `off` or `no`, in any case and with spaces around it — and when Ink's private
  * `Output` or the `slice-ansi` copy beside it cannot be read, so an upgrade that changes either
- * costs speed rather than correctness — `ink-renderer.contract.test.ts` fails on that upgrade.
+ * costs speed rather than correctness: `ink-renderer.contract.test.ts` fails on that upgrade.
  */
 export async function installInkOutputCache(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<boolean> {
-  if (env.BOOK_INK_OUTPUT_CACHE === 'off' || env.BOOK_INK_OUTPUT_CACHE === '0') return false;
-  if (installed) return true;
   try {
     const outputPath = join(inkBuildDir(), 'output.js');
+    const outputModule = await import(pathToFileURL(outputPath).href);
+    if (isRowCachedGet(outputModule.default)) return true;
+    if (parseEnvBoolean(env.BOOK_INK_OUTPUT_CACHE) === false) return false;
     const sliceAnsiPath = createRequire(outputPath).resolve('slice-ansi');
-    const [{ default: Output }, { default: sliceAnsi }] = await Promise.all([
-      import(pathToFileURL(outputPath).href),
-      import(pathToFileURL(sliceAnsiPath).href),
-    ]);
+    const sliceAnsi = (await import(pathToFileURL(sliceAnsiPath).href)).default;
+    const Output: unknown = outputModule.default;
     if (!isInkOutputShape(Output) || typeof sliceAnsi !== 'function') return false;
     const originalGet = Output.prototype.get;
     Output.prototype.get = createRowCachedGet({
@@ -311,7 +383,6 @@ export async function installInkOutputCache(
       sliceAnsi: sliceAnsi as SliceAnsi,
       Output,
     }).get;
-    installed = true;
     return true;
   } catch {
     return false;
