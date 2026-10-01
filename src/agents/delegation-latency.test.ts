@@ -26,8 +26,8 @@ import { AgentStore } from './store.js';
  * so the stall guard below saw nothing and a 596ms best sample failed against a
  * 200ms ceiling. The relative half is a probe of the same kind of work the
  * harness's own store does, timed on the same cycle, so a machine doing that work
- * slowly raises its own ceiling — while a harness that grew an order of magnitude
- * on a machine running at normal speed still fails.
+ * slowly raises its own ceiling — while on a quiet machine the absolute ceiling is
+ * still the binding one, which is where a regression is caught.
  */
 
 const tempRoots: string[] = [];
@@ -143,8 +143,8 @@ async function measureRoundTrip(childRunMs: number): Promise<{
  * five is the measurement and the median is reported beside it. The GitHub Windows runners stall for
  * whole seconds at a time -- medians of 234ms and 610ms on days when the same code measured 7-37ms
  * everywhere else, three red runs in two days -- so there the ceiling is 2.5x; the Ubuntu cells of the
- * same matrix keep the tight one, which is where a regression is caught. A machine doing its ordinary
- * file work slowly raises this further, which is what #367 was about.
+ * same matrix keep the tight one. A machine doing its ordinary file work slowly raises this further,
+ * which is what #367 was about, and a machine that is not slow keeps this one binding.
  */
 function overheadCeilingMs(childRunMs: number): number {
   const windowsCi = process.platform === 'win32' && Boolean(process.env.CI);
@@ -164,22 +164,21 @@ const STALL_TOLERANCE_MS = 100;
 /**
  * How many probe-milliseconds the harness may cost before the machine is the suspect.
  *
- * Bounded from both sides by five quiet runs of the measurement on a Windows dev box: overheads of
- * 74-147ms at probes of 25-43ms, the best sample (the measurement — a stall can only add to a cycle)
- * landing at 74-89ms against a ~30ms probe. The lower bound is that a healthy best sample has to sit
- * at least 5x under the ceiling, which wants 15 at a 30ms probe. The upper bound is that an order
- * of magnitude of harness on a machine at normal speed still has to fail: 10 x 74ms is 740ms, which
- * a ceiling of `RATIO x 30ms` must stay under, so the ratio cannot pass ~24. 20 is the middle of
- * that window, and it costs nothing on a machine whose probe is small enough for the absolute
- * ceilings to still be the binding ones (200ms locally, 500ms on the Windows CI cells).
+ * Measured both ways on this Windows dev box — quiet, and loaded with 12 CPU and 3 fs workers until
+ * the test was starved — the overhead tracks the probe closely: the best sample costs 1.7-3.0x its
+ * own probe and no sample of either run costs more than about 6.1x, while the probe itself rises
+ * 3-4x under load. So 5 sits above the healthy cost with roughly 1.7x of headroom over the worst
+ * best-sample ratio seen, and it costs no detection strength on a quiet machine: 5 x a quiet probe
+ * (27-58ms) is 135-290ms, so at the fast end of that range the 200ms absolute ceiling is still the
+ * one that binds, and the relative half only takes over on a machine whose file work has gone slow.
  */
-const PROBE_CEILING_RATIO = 20;
+const PROBE_CEILING_RATIO = 5;
 
 /**
  * One cycle's numbers: what the delegation cost, what the machine was doing to the child's own
  * timer while it ran, and what the machine's file work cost around it.
  */
-export interface DelegationSample {
+interface DelegationSample {
   overheadMs: number;
   /** How late the child's own timer fired: the machine's stall, measured on the same cycle. */
   stallMs: number;
@@ -188,10 +187,10 @@ export interface DelegationSample {
 }
 
 /** The absolute half of the ceilings, so the judge can be exercised without measuring anything. */
-export interface DelegationCeilings {
+interface DelegationCeilings {
   /** Every sample, net of its own stall, must clear this. */
   worstCeilingMs: number;
-  /** The best sample, net of its own stall, must clear this. */
+  /** The best sample, raw, must clear this. */
   bestCeilingMs: number;
 }
 
@@ -211,53 +210,47 @@ function ceilingFor(absoluteCeilingMs: number, probeMs: number): { ms: number; w
     : { ms: absoluteCeilingMs, why: `the ${absoluteCeilingMs}ms absolute ceiling` };
 }
 
-/** The sample carrying the ceiling every sample has to clear. */
-function worstSample(samples: DelegationSample[]): DelegationSample {
-  return samples.reduce((chosen, sample) =>
-    netOverheadMs(sample) > netOverheadMs(chosen) ? sample : chosen,
-  );
-}
-
-/** The sample closest to the measurement itself: a stall can only add to a cycle. */
-function bestSample(samples: DelegationSample[]): DelegationSample {
-  return samples.reduce((chosen, sample) =>
-    netOverheadMs(sample) < netOverheadMs(chosen) ? sample : chosen,
-  );
+/**
+ * The samples as they were taken, each paired with the probe that ran beside it: `overheadMs@probeMs`,
+ * and `~stallMs` when the child's own timer was late. Sorting the two numbers separately would lose
+ * the pairing, and the pairing is the whole finding — whether an expensive sample came with a slow
+ * machine or with a slow harness.
+ */
+function describeSamples(samples: DelegationSample[]): string {
+  return samples
+    .map(
+      (sample) =>
+        `${sample.overheadMs}@${sample.probeMs}${sample.stallMs > 0 ? `~${sample.stallMs}` : ''}`,
+    )
+    .join(' ');
 }
 
 /**
  * Decide a run, from the numbers alone.
  *
- * Each sample is judged against `max(its absolute ceiling, PROBE_CEILING_RATIO * that sample's own
- * probe)`. The relative half is what makes the bound usable on a machine that has gone slow at
- * exactly this kind of work (#367); where it binds, it binds at several times the harness's normal
- * cost, so a harness an order of magnitude more expensive on a machine at normal speed is still
- * outside it — which is what the tests under this function hold down.
+ * Two checks, in the order the measurements have always had them. Every sample is judged net of its
+ * own stall against `max(worstCeilingMs, PROBE_CEILING_RATIO * that sample's own probe)` — every one
+ * of them, so a sample the runner's own teardown made slow cannot buy the run a pass. Then, unless
+ * the machine's own best cycle stalled, the sample with the smallest *raw* overhead is read as the
+ * measurement of the harness; it is judged raw, because the harness work is in the raw number and a
+ * per-sample stall subtracted from it would let an event loop blocked by harness work excuse itself.
  */
-export function judgeDelegation(
+function judgeDelegation(
   samples: DelegationSample[],
   childRunMs: number,
   ceilings: DelegationCeilings,
 ): { verdict: 'pass' | 'fail' | 'inconclusive'; reason: string } {
-  const context = `samples ${samples
-    .map((sample) => sample.overheadMs)
-    .sort((left, right) => left - right)
-    .join('/')}ms · probes ${samples
-    .map((sample) => sample.probeMs)
-    .sort((left, right) => left - right)
-    .join('/')}ms`;
+  const context = describeSamples(samples);
 
-  // The same precedence the measurements had: a worst sample too expensive to be the handoff is a
-  // failure even on a stalling machine, a machine whose own best cycle stalled is inconclusive, and
-  // only then is the best sample read as the measurement.
-  const worst = worstSample(samples);
-  const worstNet = netOverheadMs(worst);
-  const worstCeiling = ceilingFor(ceilings.worstCeilingMs, worst.probeMs);
-  if (worstNet > worstCeiling.ms) {
-    return {
-      verdict: 'fail',
-      reason: `worst net overhead ${worstNet}ms is over the ${worstCeiling.ms}ms ceiling from ${worstCeiling.why} (${context})`,
-    };
+  for (const sample of samples) {
+    const net = netOverheadMs(sample);
+    const ceiling = ceilingFor(ceilings.worstCeilingMs, sample.probeMs);
+    if (net > ceiling.ms) {
+      return {
+        verdict: 'fail',
+        reason: `a sample's net overhead ${net}ms is over the ${ceiling.ms}ms ceiling from ${ceiling.why} (${context})`,
+      };
+    }
   }
 
   const stall = Math.min(...samples.map((sample) => sample.stallMs));
@@ -268,19 +261,21 @@ export function judgeDelegation(
     };
   }
 
-  const best = bestSample(samples);
-  const bestNet = netOverheadMs(best);
+  const best = samples.reduce((chosen, sample) =>
+    sample.overheadMs < chosen.overheadMs ? sample : chosen,
+  );
   const bestCeiling = ceilingFor(ceilings.bestCeilingMs, best.probeMs);
-  if (bestNet > bestCeiling.ms) {
+  if (best.overheadMs > bestCeiling.ms) {
     return {
       verdict: 'fail',
-      reason: `best net overhead ${bestNet}ms is over the ${bestCeiling.ms}ms ceiling from ${bestCeiling.why} (${context})`,
+      reason: `best raw overhead ${best.overheadMs}ms is over the ${bestCeiling.ms}ms ceiling from ${bestCeiling.why} (${context})`,
     };
   }
 
+  const worstNet = Math.max(...samples.map(netOverheadMs));
   return {
     verdict: 'pass',
-    reason: `best net overhead ${bestNet}ms under the ${bestCeiling.ms}ms ceiling from ${bestCeiling.why}, worst ${worstNet}ms under ${worstCeiling.ms}ms (${context})`,
+    reason: `best raw overhead ${best.overheadMs}ms under the ${bestCeiling.ms}ms ceiling from ${bestCeiling.why}, every sample under its ceiling (worst net ${worstNet}ms of ${ceilings.worstCeilingMs}ms absolute) (${context})`,
   };
 }
 
@@ -291,8 +286,8 @@ export function judgeDelegation(
 describe('judgeDelegation', () => {
   const CHILD_RUN_MS = 200;
   const LOCAL_CEILINGS: DelegationCeilings = { bestCeilingMs: 200, worstCeilingMs: 2_000 };
-  /** What five quiet runs of the measurement cost on the dev box: probes of 25-43ms. */
-  const QUIET_PROBE_MS = 30;
+  /** What quiet runs of the measurement cost on the dev box: probes from 27ms up to 58ms. */
+  const QUIET_PROBE_MS = { fast: 27, slow: 58 };
   const sample = (overheadMs: number, probeMs: number, stallMs = 0): DelegationSample => ({
     overheadMs,
     stallMs,
@@ -302,7 +297,7 @@ describe('judgeDelegation', () => {
   it('forgives the #367 run, whose machine did the harness’s work 30x slower than normal', () => {
     // The CI run that failed: overheads of 596-2130ms with the child's own timer on time, on a
     // runner whose file work ran 20-60x slow for a few seconds. The probe would have read that.
-    const slowProbe = QUIET_PROBE_MS * 30;
+    const slowProbe = QUIET_PROBE_MS.fast * 30;
     const samples = [596, 612, 721, 840, 2130].map((overheadMs) => sample(overheadMs, slowProbe));
 
     const verdict = judgeDelegation(samples, CHILD_RUN_MS, LOCAL_CEILINGS);
@@ -314,7 +309,7 @@ describe('judgeDelegation', () => {
   it('still fails those overheads on a machine doing that work at normal speed', () => {
     // The same numbers with nothing wrong with the machine are a slow harness, not a slow runner.
     const samples = [596, 612, 721, 840, 2130].map((overheadMs) =>
-      sample(overheadMs, QUIET_PROBE_MS),
+      sample(overheadMs, QUIET_PROBE_MS.fast),
     );
 
     const verdict = judgeDelegation(samples, CHILD_RUN_MS, LOCAL_CEILINGS);
@@ -323,30 +318,76 @@ describe('judgeDelegation', () => {
     expect(verdict.reason).toMatch(/2000ms absolute ceiling/);
   });
 
-  it('fails an order of magnitude of harness on a quiet machine', () => {
-    const samples = [740, 780, 890, 930, 1470].map((overheadMs) =>
-      sample(overheadMs, QUIET_PROBE_MS),
-    );
+  // The quiet range is 27-58ms of probe, and a ceiling set from one end of it has to hold at the
+  // other: the slow end is where the relative ceiling outgrows the 200ms absolute one, and the fast
+  // end is where the absolute one still has to be what catches the regression.
+  it.each([QUIET_PROBE_MS.fast, QUIET_PROBE_MS.slow])(
+    'fails an order of magnitude of harness at a quiet probe of %ims',
+    (probeMs) => {
+      const samples = [740, 780, 890, 930, 1470].map((overheadMs) => sample(overheadMs, probeMs));
+
+      const verdict = judgeDelegation(samples, CHILD_RUN_MS, LOCAL_CEILINGS);
+
+      expect(verdict.verdict).toBe('fail');
+    },
+  );
+
+  it.each([QUIET_PROBE_MS.fast, QUIET_PROBE_MS.slow])(
+    'passes a quiet healthy run at a probe of %ims',
+    (probeMs) => {
+      const samples = [74, 81, 87, 94, 134].map((overheadMs) => sample(overheadMs, probeMs));
+
+      const verdict = judgeDelegation(samples, CHILD_RUN_MS, LOCAL_CEILINGS);
+
+      expect(verdict.verdict).toBe('pass');
+    },
+  );
+
+  it('fails a sample over its own ceiling even when the largest overhead has a looser one', () => {
+    // The review's case: a 2500ms cycle came with a 10ms probe, so its ceiling is the 2000ms
+    // absolute, and a 3000ms one came with a 200ms probe. Both are out, and the run has to name the
+    // 2500ms one, because a judge that read only the largest overhead would report the other and
+    // never have looked at the sample with the tighter ceiling.
+    const samples = [sample(2500, 10), sample(3000, 200)];
 
     const verdict = judgeDelegation(samples, CHILD_RUN_MS, LOCAL_CEILINGS);
 
     expect(verdict.verdict).toBe('fail');
-    expect(verdict.reason).toMatch(/best net overhead 740ms/);
+    expect(verdict.reason).toMatch(/2500ms/);
+    expect(verdict.reason).toMatch(/2000ms absolute ceiling/);
   });
 
-  it('passes a quiet healthy run', () => {
-    const samples = [74, 81, 87, 94, 134].map((overheadMs) => sample(overheadMs, QUIET_PROBE_MS));
+  it('fails on the smaller cycle when the larger one is under its own ceiling', () => {
+    // Where the relative half is what binds: a machine so slow that 5x its probe is past the
+    // absolute ceiling. The 2600ms cycle ran beside a 500ms probe (ceiling 2500) and the 3000ms one
+    // beside a 2000ms probe (ceiling 10000), so the largest overhead is comfortably inside its own
+    // ceiling, and judging only that one would pass a run whose other cycle was over.
+    const samples = [sample(3000, 2_000), sample(2600, 500)];
 
     const verdict = judgeDelegation(samples, CHILD_RUN_MS, LOCAL_CEILINGS);
 
-    expect(verdict.verdict).toBe('pass');
+    expect(verdict.verdict).toBe('fail');
+    expect(verdict.reason).toMatch(/2600ms/);
+    expect(verdict.reason).toMatch(/5x a 500ms probe/);
+  });
+
+  it('fails a best sample whose raw overhead is out of bounds, stall or not', () => {
+    // The best raw sample is 600ms, and 450ms of it is its own timer running late: read net, that
+    // is 150ms against a 200ms ceiling and the run would pass. The other cycle stalled only 50ms,
+    // so the stall guard does not fire either. The harness cost is the raw 600ms.
+    const samples = [sample(600, 30, 450), sample(650, 30, 50)];
+
+    const verdict = judgeDelegation(samples, CHILD_RUN_MS, LOCAL_CEILINGS);
+
+    expect(verdict.verdict).toBe('fail');
+    expect(verdict.reason).toMatch(/best raw overhead 600ms/);
   });
 
   it('is inconclusive when the machine could not fire its own timer', () => {
     // Every one of five samples slow and the timer 300ms late on all of them: on the numbers alone
-    // the best of them is 229ms against a 200ms ceiling, which is the runner, not the handoff.
+    // the best of them is 529ms against a 200ms ceiling, which is the runner, not the handoff.
     const samples = [529, 561, 600, 634, 667].map((overheadMs) =>
-      sample(overheadMs, QUIET_PROBE_MS, 300),
+      sample(overheadMs, QUIET_PROBE_MS.fast, 300),
     );
 
     const verdict = judgeDelegation(samples, CHILD_RUN_MS, LOCAL_CEILINGS);
@@ -368,16 +409,16 @@ it('keeps foreground delegation overhead small relative to the delegated work', 
     samples.push({ overheadMs, stallMs, probeMs: Math.max(probeBefore, probeAfter) });
   }
   const sorted = samples.map((sample) => sample.overheadMs).sort((left, right) => left - right);
-  const probes = samples.map((sample) => sample.probeMs).sort((left, right) => left - right);
   const verdict = judgeDelegation(samples, childRunMs, {
     bestCeilingMs: overheadCeilingMs(childRunMs),
     worstCeilingMs: 2_000,
   });
 
   // Printed rather than only asserted: the absolute number is the finding, and a
-  // ceiling that passes tells you nothing about where the real cost sits.
+  // ceiling that passes tells you nothing about where the real cost sits. The verdict's own
+  // reason carries each sample beside the probe that ran with it, which is the pairing.
   console.log(
-    `[delegation] child ${childRunMs}ms · overhead best ${sorted[0]}ms · median ${sorted[Math.floor(sorted.length / 2)]}ms · worst ${sorted[sorted.length - 1]}ms · samples ${sorted.join('/')}ms · probe ${probes[0]}-${probes[probes.length - 1]}ms · timer stall ${Math.min(...samples.map((sample) => sample.stallMs))}ms · ${verdict.verdict}: ${verdict.reason}`,
+    `[delegation] child ${childRunMs}ms · overhead best ${sorted[0]}ms · median ${sorted[Math.floor(sorted.length / 2)]}ms · worst ${sorted[sorted.length - 1]}ms · timer stall ${Math.min(...samples.map((sample) => sample.stallMs))}ms · ${verdict.verdict}: ${verdict.reason}`,
   );
 
   expect(verdict.verdict, verdict.reason).not.toBe('fail');
