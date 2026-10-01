@@ -62,26 +62,45 @@ interface TuiSession {
 }
 
 /**
+ * The provider settings a TUI session must inherit for a streaming test to mean anything.
+ *
+ * These are the settings that say *which* provider to talk to, not where Book keeps its state: a
+ * session that dropped `BOOK_BASE_URL` would stream from the default provider, and the point of
+ * running the streaming tests against a developer's own endpoint is that endpoint. `BOOK_HOME`,
+ * `BOOK_WORKSPACE`, `BOOK_TUI_RENDERER` and everything else on the prefix are the ones that point
+ * at a developer's own machine, so they still go.
+ */
+const TUI_PROVIDER_ENV_VARS = [
+  'BOOK_API_KEY',
+  'BOOK_BASE_URL',
+  'BOOK_PROVIDER',
+  'BOOK_MODEL',
+  'BOOK_EFFORT',
+] as const;
+
+/**
  * The environment a PTY session boots in, as a pure function of the inherited environment, the
  * temporary workspace, and whatever one test adds.
  *
  * `BOOK_HOME` and the rest of Book's own `BOOK_` variables are the developer's, not the test's:
- * a shell that exports `BOOK_HOME` — or `BOOK_MODEL`, or anything else Book reads from its own
- * prefix — hands every session here a pointer at the developer's real Book home rather than the
+ * a shell that exports `BOOK_HOME` — or `BOOK_TUI_RENDERER`, or anything else Book reads from its
+ * own prefix — hands every session here a pointer at the developer's real Book home rather than the
  * temporary workspace this test made, so the suite behaves differently on a machine with those
  * exported than on CI, and can read state the test never created. `HOME` and `USERPROFILE` are
  * not enough of an answer, because Book resolves its home from `BOOK_HOME` first. So the whole
- * prefix goes, and the two Book variables this file does choose are set here instead:
- * `BOOK_HOME` under the temporary root, and the API key placeholder.
+ * prefix goes except the provider settings above, and the two Book variables this file does choose
+ * are set here instead: `BOOK_HOME` under the temporary root, and the API key placeholder.
  */
 export function buildTuiChildEnv(
   inherited: NodeJS.ProcessEnv,
   testRoot: string,
   extraEnv: Record<string, string> = {},
 ): Record<string, string | undefined> {
+  const providerEnv: Record<string, string | undefined> = {};
   const withoutBookOverrides: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(inherited)) {
     if (!key.startsWith('BOOK_')) withoutBookOverrides[key] = value;
+    else if ((TUI_PROVIDER_ENV_VARS as readonly string[]).includes(key)) providerEnv[key] = value;
   }
 
   return {
@@ -91,6 +110,7 @@ export function buildTuiChildEnv(
     CONTINUOUS_INTEGRATION: 'false',
     HOME: testRoot,
     USERPROFILE: testRoot,
+    ...providerEnv,
     BOOK_HOME: join(testRoot, '.book'),
     BOOK_API_KEY: inherited.BOOK_API_KEY ?? 'sk-test-placeholder',
     ...extraEnv,
@@ -354,7 +374,9 @@ describe('buildTuiChildEnv', () => {
 
   // The developer's shell exports BOOK_HOME for their own Book; a session that inherits it boots
   // against their real home rather than the temporary workspace this file made, so the suite's
-  // result depends on the machine it ran on.
+  // result depends on the machine it ran on. The provider settings are the exception: a streaming
+  // test that dropped BOOK_BASE_URL would be pointed at the default provider, and the whole point
+  // of running it is to stream from the one the developer's key belongs to.
   it('points the child Book home at the temporary workspace, not at an inherited one', () => {
     const env = buildTuiChildEnv(
       {
@@ -362,18 +384,41 @@ describe('buildTuiChildEnv', () => {
         USERPROFILE: join(tmpdir(), 'developer-home'),
         PATH: '/usr/bin',
         BOOK_HOME: join(tmpdir(), 'elsewhere'),
-        BOOK_MODEL: 'inherited-model',
+        BOOK_WORKSPACE: join(tmpdir(), 'elsewhere'),
+        BOOK_TUI_RENDERER: 'safe',
+        BOOK_DEBUG: '1',
       },
       testRoot,
     );
 
     expect(env.BOOK_HOME).toBe(join(testRoot, '.book'));
-    expect(env.BOOK_MODEL).toBeUndefined();
+    expect(env.BOOK_WORKSPACE).toBeUndefined();
+    expect(env.BOOK_TUI_RENDERER).toBeUndefined();
+    expect(env.BOOK_DEBUG).toBeUndefined();
     expect(env.HOME).toBe(testRoot);
     expect(env.USERPROFILE).toBe(testRoot);
     // Everything else the machine had is still there; only Book's own prefix is dropped.
     expect(env.PATH).toBe('/usr/bin');
     expect(env.CI).toBe('false');
+  });
+
+  it('passes the provider settings through, so a streaming test reaches its own provider', () => {
+    const env = buildTuiChildEnv(
+      {
+        BOOK_API_KEY: 'sk-streaming-key',
+        BOOK_BASE_URL: 'http://127.0.0.1:8123/v1',
+        BOOK_PROVIDER: 'openai-compatible',
+        BOOK_MODEL: 'inherited-model',
+        BOOK_EFFORT: 'high',
+      },
+      testRoot,
+    );
+
+    expect(env.BOOK_API_KEY).toBe('sk-streaming-key');
+    expect(env.BOOK_BASE_URL).toBe('http://127.0.0.1:8123/v1');
+    expect(env.BOOK_PROVIDER).toBe('openai-compatible');
+    expect(env.BOOK_MODEL).toBe('inherited-model');
+    expect(env.BOOK_EFFORT).toBe('high');
   });
 
   it('keeps the API key placeholder and lets a test override win', () => {
@@ -389,7 +434,7 @@ describe('buildTuiChildEnv', () => {
       { BOOK_HOME: join(testRoot, 'other-book-home'), BOOK_TUI_RENDERER: 'safe' },
     );
     expect(withExtra.BOOK_HOME).toBe(join(testRoot, 'other-book-home'));
-    expect(withExtra.BOOK_MODEL).toBeUndefined();
+    expect(withExtra.BOOK_MODEL).toBe('inherited-model');
     expect(withExtra.BOOK_TUI_RENDERER).toBe('safe');
   });
 });

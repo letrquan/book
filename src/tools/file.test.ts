@@ -1293,6 +1293,33 @@ describe('grep', () => {
     expect(result.content).toContain('plain.txt:1: plain-marker');
   });
 
+  // The same timeout, in a file the search has already found something in. Those matches are what
+  // the model asked for and they are already read, so a pattern that runs away on one later batch
+  // makes the page partial rather than empty — and the page says which file it stopped at, because
+  // that is the file the model has to narrow the pattern on. One file, so the batches are ordered:
+  // the cheap matches are in the first batch, the run that never finishes in the second.
+  it('keeps the matches it found when a later batch runs out of budget (#349)', async () => {
+    // A batch is 2048 lines: the first is cheap and matches, the second cannot finish matching at
+    // all, so the search stops there with the first batch's matches already in hand.
+    const cheap = Array.from({ length: 2_048 }, (_, index) => (index < 50 ? 'a' : 'b'));
+    writeFileSync(join(dir, 'partial.txt'), [...cheap, `${'a'.repeat(64)}b`].join('\n'));
+
+    const result = await grep.execute(
+      { pattern: '(a+)+$', include: '*.txt' },
+      { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' } },
+    );
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('partial.txt:1: a');
+    expect(result.content).toContain('partial.txt:50: a');
+    // The file it stopped at, and that the search did not finish it.
+    expect(result.content).toContain('partial.txt');
+    expect(result.content).toMatch(/stopped/i);
+    expect(result.content).toMatch(/refine the pattern or narrow the search/);
+    expect(result.pagination?.truncated).toBe(true);
+    expect(result.structuredError).toBeUndefined();
+  }, 30_000);
+
   it('preserves count, files-only, context, multiline, and limit behavior', async () => {
     writeFileSync(join(dir, 'a.ts'), 'before\nconst first = 1;\nafter\nconst second = 2;');
     writeFileSync(join(dir, 'b.ts'), 'const third = 3;');
@@ -1447,6 +1474,48 @@ describe('grep', () => {
         expect(result.status).toBe('success');
         expect(result.content).toContain('later.txt:3: later-marker');
         expect(result.content).not.toContain('huge.txt');
+        // The drop is a result the search could not show, so the page says so rather than
+        // reporting a search that appears to have found everything.
+        expect(result.content).toContain('1 event skipped: line over 1 MiB');
+        expect(result.pagination?.truncated).toBe(true);
+      } finally {
+        rmSync(bin, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // The line a reader drops for being over the cap is still a line the search looked at and did not
+  // report, so a search whose only event was that line has not found nothing — it has reported
+  // nothing it could hold. "No matches found" is the answer to a different question.
+  it.skipIf(process.platform === 'win32')(
+    'reports a dropped ripgrep line instead of reporting no matches (#349)',
+    async () => {
+      writeFileSync(join(dir, 'huge.txt'), 'x');
+      const bin = mkdtempSync(join(tmpdir(), 'book-fake-rg-'));
+      try {
+        const script = [
+          `const huge = 'H' + 'x'.repeat(${4} * ${GREP_EVENT_MAX_CHARS});`,
+          'process.stdout.write(JSON.stringify({',
+          "  type: 'match',",
+          '  data: {',
+          "    path: { text: 'huge.txt' },",
+          '    lines: { text: huge },',
+          '    line_number: 1,',
+          '  },',
+          "}) + '\\n');",
+        ].join('\n');
+        writeFileSync(join(bin, 'rg'), `#!/usr/bin/env node\n${script}\n`);
+        chmodSync(join(bin, 'rg'), 0o755);
+
+        const result = await grep.execute(
+          { pattern: 'x', include: '*.txt' },
+          { ...ctx, env: { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` } },
+        );
+
+        expect(result.status).toBe('success');
+        expect(result.content).toContain('1 event skipped: line over 1 MiB');
+        expect(result.content).not.toContain('No matches found');
+        expect(result.pagination?.truncated).toBe(true);
       } finally {
         rmSync(bin, { recursive: true, force: true });
       }
@@ -1626,6 +1695,19 @@ describe('RipgrepLineReader', () => {
     const { lines, peak, reader } = readAll([oversized, '\n', '{"path":"later.txt"}\n'], 1_000);
 
     expect(lines).toEqual(['{"path":"later.txt"}']);
+    expect(reader.droppedLines).toBe(1);
+    expect(reader.isDiscarding).toBe(false);
+    expect(peak).toBeLessThanOrEqual(1_000);
+  });
+
+  // The cap can be crossed by a chunk that already holds the oversized line's own newline, and
+  // then that newline is the end of the line: discarding has to stop there. Leaving it running
+  // swallows the *next* line instead, which is the one event after the drop the model still needs.
+  it('ends the drop at the newline in the same chunk that crossed the cap', () => {
+    const chunk = `${'b'.repeat(200)}\n{"path":"one.txt"}\n{"path":"two.txt"}\n`;
+    const { lines, peak, reader } = readAll(['a'.repeat(900), chunk], 1_000);
+
+    expect(lines).toEqual(['{"path":"one.txt"}', '{"path":"two.txt"}']);
     expect(reader.droppedLines).toBe(1);
     expect(reader.isDiscarding).toBe(false);
     expect(peak).toBeLessThanOrEqual(1_000);

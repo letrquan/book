@@ -737,9 +737,16 @@ All notable changes to this project are documented in this file.
   reported, so one huge match line costs one match. The dropped line is not emitted truncated either
   — a JSON prefix does not parse, and the reader reads a parse failure as "this is not the ripgrep we
   asked for" and re-runs the whole search on the portable backend, which is the next entry's problem.
-  Covered end to end through a fake `rg` on `PATH` that prints one oversized event and then an
-  ordinary one (the second is reported at the line number it was given, which is what distinguishes
-  it from the portable fallback reporting both files), and against the reader itself for the bound.
+  The reader now ends the drop at the line's own newline when the chunk that crossed the cap already
+  carried it — previously the discarding state outlived that newline and swallowed the _next_ event,
+  which cost a second match on top of the one already dropped — and a dropped line is counted in the
+  page rather than only in the reader: the result carries `(N events skipped: line over 1 MiB)` in
+  every output mode and reports itself `truncated`, so a search whose only event was the oversized
+  line no longer answers `No matches found` — which is a statement about files the search never
+  finished asking. Covered end to end through a fake `rg` on `PATH` that prints one oversized event
+  and then an ordinary one (the second is reported at the line number it was given, which is what
+  distinguishes it from the portable fallback reporting both files), through a second fake `rg` whose
+  only event is the oversized one, and against the reader itself for the bound.
 - **A Grep whose pattern backtracks now gives up instead of holding the event loop** (#349). The
   portable backend — the one used where ripgrep is not installed, and behind
   `BOOK_GREP_BACKEND=typescript` — ran the model's own regex on the main thread. A pattern like
@@ -756,21 +763,33 @@ All notable changes to this project are documented in this file.
   of 1.5s, or the search's 10s (counted only inside the sandbox, so reading files and yielding cost
   the search nothing), fails with a new `regex_timeout` code and a message naming the pattern, the
   time it spent, and the way out: simplify the pattern, or narrow the search with `path`/`include`.
-  `invalid_regex` is untouched — the host still compiles the pattern before a file is read, so an
-  invalid one is reported as before and never reaches the sandbox.
+  That failure is now the _last_ resort rather than the first: matches already collected are results
+  the model asked for and they are already read, so a pattern that runs away on one later file or
+  batch stops the search and returns them, with a notice naming the file it stopped at and what was
+  not searched from it, and `truncated` set. Only a search that has found nothing at all when a
+  budget runs out still fails, because there is nothing to report instead. The reported time is the
+  matching time actually spent (or the budget the run that timed out was given), not the nominal
+  ceiling the search was allowed. `invalid_regex` is untouched — the host still compiles the pattern
+  before a file is read, so an invalid one is reported as before and never reaches the sandbox.
 - **The TUI integration suite no longer boots a session against the developer's own Book home**
   (#358). `startAndWait` spread `process.env` into the PTY child's environment and then set `HOME`
   and `USERPROFILE` to the temporary workspace, which is not enough: Book resolves its home from
   `BOOK_HOME` first, so a shell that exported `BOOK_HOME` for its own Book handed every session here
   a pointer at the developer's real Book home rather than the temporary workspace the test made. Every
-  other `BOOK_` override in the environment — `BOOK_MODEL`, a BYOK provider — reached the child the
-  same way. The environment is now built by `buildTuiChildEnv`, a pure function of the inherited
+  other `BOOK_` override in the environment — `BOOK_TUI_RENDERER`, a BYOK provider — reached the child
+  the same way. The environment is now built by `buildTuiChildEnv`, a pure function of the inherited
   environment, the temporary root, and one test's `extraEnv`: every inherited key beginning with
   `BOOK_` is dropped, `BOOK_HOME` is set to `<testRoot>/.book`, and `extraEnv` is applied last so a
-  test can still override anything. The one exception is deliberate and is the file's own:
-  `BOOK_API_KEY` is read from the inherited environment, because the streaming tests need a real key
-  when the machine has one and the placeholder stands in when it does not. Covered by a unit-style
-  test in the same file, against an environment carrying an inherited `BOOK_HOME` and `BOOK_MODEL`.
+  test can still override anything. The provider settings are the exception, and now the only one:
+  `BOOK_API_KEY`, `BOOK_BASE_URL`, `BOOK_PROVIDER`, `BOOK_MODEL` and `BOOK_EFFORT` pass through,
+  because they say which provider to stream from rather than where Book keeps its state — dropping
+  `BOOK_BASE_URL` pointed the API-key streaming tests at the default provider, so the tests meant to
+  stream from a developer's own endpoint streamed from somewhere else. `BOOK_HOME`, `BOOK_WORKSPACE`,
+  `BOOK_TUI_RENDERER` and every other `BOOK_` variable still go, and `BOOK_API_KEY` is still read from
+  the inherited environment, because the streaming tests need a real key when the machine has one and
+  the placeholder stands in when it does not. Covered by a
+  unit-style test in the same file, against an environment carrying an inherited `BOOK_HOME`,
+  `BOOK_WORKSPACE`, `BOOK_TUI_RENDERER`, `BOOK_DEBUG` and the five provider settings.
 - **A patch git exits on before reading no longer crashes the host** (#351). `git()` in
   `src/agents/git-isolation.ts` has two ways to reach git: `execFile`, or a `spawn` that writes a
   patch to stdin. The `spawn` path attached no `error` listener to `child.stdin`, so a write that
