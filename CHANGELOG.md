@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **High-severity dependency advisories cleared** (#361). `undici` moves to 8.11.2 and the
+  transitive `brace-expansion` to 5.0.12, so `npm audit --audit-level=high` is clean. The routine
+  minor and patch bumps from the dependabot groups ride along: `@modelcontextprotocol/sdk`
+  1.31.0, `ignore`, `marked`, `@types/node`, `@typescript-eslint/*` 8.70.1, `knip` and
+  `prettier`. Vitest 5 stays out.
+
 - **Book's own git work for managed agents runs with the checkout's hooks and background
   programs off** (#348). `src/agents/git-isolation.ts` ran every command Book needs for an agent
   with the checkout's own configuration and hooks, and a checkout's configuration may have come
@@ -790,6 +796,30 @@ All notable changes to this project are documented in this file.
   the placeholder stands in when it does not. Covered by a
   unit-style test in the same file, against an environment carrying an inherited `BOOK_HOME`,
   `BOOK_WORKSPACE`, `BOOK_TUI_RENDERER`, `BOOK_DEBUG` and the five provider settings.
+
+- **Paging back through history no longer claims that new output arrived below it** (#354).
+  Scrolling up to the hydrated start asks the transcript's history loader for an older page —
+  the wheel animation at row 0, a wheel report that lands there, `PageUp`, the `Ctrl+U` half
+  page, `Ctrl+Home` — and the rows that page mounts are **prepended**, above the view.
+  `measureTranscript` in `src/tui/components/TranscriptView.tsx` read every row of content
+  growth as output appended below, so the growth it measured next was the history the reader
+  had just asked for: browsing back through a long session put "browsing history · new output
+  below" in the hint while nothing had arrived below at all, and the marker cleared only when
+  the reader went back to the tail. Every loader call site now goes through one
+  `requestHistory` helper, which records when the page was asked for as a deadline — a second
+  for a page, three for the bounded history `Ctrl+Home` mounts — and `measureTranscript` reads
+  growth measured before that deadline as having arrived from above. The record is a window
+  rather than a single shot because a page settles over several measurements (estimated then
+  measured heights, or the whole bounded history) and a page that nets to no growth measures
+  none at all: a flag the first growth clears has the hint back for the rest of the page, and a
+  flag nothing clears swallows every append that follows. Returning to the tail still clears
+  the marker. The scroll behaviour is otherwise untouched: the page is still prepended and the
+  view still lands on the rows the reader was
+  looking at. Output that really does arrive below still raises the hint, which the tests
+  beside it hold with a loader that declines the page and with the clock pushed past the
+  window. **Accepted limit:** inside the window, output appended below is indistinguishable from
+  a prepended page and reads as history, so it raises no marker; the hint returns on the first
+  append after the window has passed.
 - **A patch git exits on before reading no longer crashes the host** (#351). `git()` in
   `src/agents/git-isolation.ts` has two ways to reach git: `execFile`, or a `spawn` that writes a
   patch to stdin. The `spawn` path attached no `error` listener to `child.stdin`, so a write that
