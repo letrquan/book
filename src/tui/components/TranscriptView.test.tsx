@@ -439,6 +439,155 @@ describe('TranscriptView', () => {
     expect(lines).not.toContain('K');
   });
 
+  it('keeps reading prepended growth as history across the whole window', () => {
+    // A page settles over more than one measurement (estimated then measured heights, or
+    // the bounded set an 'all' request mounts), so the record of the request has to cover a
+    // window rather than the first growth it happens to see.
+    const onLoad = vi.fn<TranscriptHistoryLoader>(() => true);
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const app = render(historyView(labels, onLoad));
+    const rows = (frame: string | undefined) =>
+      frameLines(frame).filter((line) => /^[A-Z]$/.test(line));
+
+    for (let page = 0; page < 3; page++) {
+      act(() => app.stdin.write('\x1b[5~'));
+    }
+    expect(rows(app.lastFrame())).toEqual(['A', 'B', 'C', 'D']);
+
+    act(() => app.stdin.write('\x15'));
+    expect(onLoad).toHaveBeenCalledWith('page');
+
+    // Two pages, each measured on its own: neither is the output the reader is away from.
+    app.rerender(historyView(['W', 'X', ...labels], onLoad));
+    expect(frameLines(app.lastFrame()).some((line) => line.includes('new output below'))).toBe(
+      false,
+    );
+
+    app.rerender(historyView(['U', 'V', 'W', 'X', ...labels], onLoad));
+    expect(frameLines(app.lastFrame()).some((line) => line.includes('new output below'))).toBe(
+      false,
+    );
+    expect(rows(app.lastFrame())).toEqual(['U', 'V', 'W', 'X']);
+  });
+
+  it('reads appended output as new output below once the window has passed', () => {
+    // Past the window the record no longer speaks for what grows, so real output below
+    // raises the hint again rather than being swallowed for the rest of the session.
+    const onLoad = vi.fn<TranscriptHistoryLoader>(() => true);
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const now = vi.spyOn(performance, 'now');
+    try {
+      const app = render(historyView(labels, onLoad));
+
+      for (let page = 0; page < 3; page++) {
+        act(() => app.stdin.write('\x1b[5~'));
+      }
+
+      act(() => app.stdin.write('\x15'));
+      expect(onLoad).toHaveBeenCalledWith('page');
+
+      // The page the loader accepted brought rows, which grew above the view.
+      app.rerender(historyView(['W', 'X', ...labels], onLoad));
+      expect(frameLines(app.lastFrame()).some((line) => line.includes('new output below'))).toBe(
+        false,
+      );
+
+      now.mockReturnValue(performance.now() + 5000);
+      app.rerender(historyView(['W', 'X', ...labels, 'K'], onLoad));
+      expect(frameLines(app.lastFrame()).some((line) => line.includes('new output below'))).toBe(
+        true,
+      );
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('reads appended output as new output below after a page that grew by nothing', () => {
+    // A page whose rows net to no growth at all measures nothing, so under a single-shot
+    // record the request stayed outstanding and swallowed the output that came after it.
+    const onLoad = vi.fn<TranscriptHistoryLoader>(() => true);
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const now = vi.spyOn(performance, 'now');
+    try {
+      const app = render(historyView(labels, onLoad));
+
+      for (let page = 0; page < 3; page++) {
+        act(() => app.stdin.write('\x1b[5~'));
+      }
+
+      act(() => app.stdin.write('\x15'));
+      expect(onLoad).toHaveBeenCalledWith('page');
+
+      // The loader took the page but the content measured no net growth.
+      app.rerender(historyView(labels, onLoad));
+
+      now.mockReturnValue(performance.now() + 5000);
+      app.rerender(historyView([...labels, 'K'], onLoad));
+      const lines = frameLines(app.lastFrame());
+      expect(lines.some((line) => line.includes('new output below'))).toBe(true);
+      expect(lines).toContain('B');
+      expect(lines).not.toContain('K');
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('takes the history window a PageUp at the hydrated start opens', () => {
+    const onLoad = vi.fn<TranscriptHistoryLoader>(() => true);
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const app = render(historyView(labels, onLoad));
+
+    for (let page = 0; page < 3; page++) {
+      act(() => app.stdin.write('\x1b[5~'));
+    }
+    onLoad.mockClear();
+
+    // At row 0 a PageUp asks the loader instead of scrolling.
+    act(() => app.stdin.write('\x1b[5~'));
+    expect(onLoad).toHaveBeenCalledWith('page');
+
+    app.rerender(historyView(['W', 'X', ...labels], onLoad));
+    expect(frameLines(app.lastFrame()).some((line) => line.includes('new output below'))).toBe(
+      false,
+    );
+  });
+
+  it('takes the history window a wheel report at the hydrated start opens', async () => {
+    const onLoad = vi.fn<TranscriptHistoryLoader>(() => true);
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const app = render(historyView(labels, onLoad));
+
+    for (let page = 0; page < 3; page++) {
+      act(() => app.stdin.write('\x1b[5~'));
+    }
+    onLoad.mockClear();
+
+    // A wheel report up at row 0 asks the loader, ahead of any animated scroll.
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    await flushFrame();
+    expect(onLoad).toHaveBeenCalledWith('page');
+
+    app.rerender(historyView(['W', 'X', ...labels], onLoad));
+    expect(frameLines(app.lastFrame()).some((line) => line.includes('new output below'))).toBe(
+      false,
+    );
+  });
+
+  it('takes the history window Ctrl+Home opens', () => {
+    const onLoad = vi.fn<TranscriptHistoryLoader>(() => true);
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const app = render(historyView(labels, onLoad));
+    onLoad.mockClear();
+
+    act(() => app.stdin.write('\x1b[1;5H'));
+    expect(onLoad).toHaveBeenCalledWith('all');
+
+    app.rerender(historyView(['W', 'X', ...labels], onLoad));
+    expect(frameLines(app.lastFrame()).some((line) => line.includes('new output below'))).toBe(
+      false,
+    );
+  });
+
   it('reconciles height changes in follow mode', () => {
     const labels = ['A', 'B', 'C', 'D', 'E', 'F'];
     const app = render(view(labels));
