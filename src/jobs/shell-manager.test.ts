@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { removeWhenReleased } from '../test/remove-when-released.js';
 import type { BackgroundShellStore } from '../types/runtime.js';
 import { persistentJobPaths } from './persistent-store.js';
 import { isProcessAlive } from './process-tree.js';
@@ -79,29 +80,6 @@ afterEach(async () => {
   managers = [];
   if (directory) await removeWhenReleased(directory);
 }, 60_000);
-
-/**
- * Remove a test directory once Windows lets go of it. The detached runner exits a moment after it
- * publishes the terminal record, and until it and the killed worker have been torn down, and any
- * scanner has closed their files, Windows refuses the removal with EBUSY or EPERM. Node 24's
- * native `rmSync` reports that as EPERM on the first attempt whatever `maxRetries` says, so the
- * retry lives here. It polls for the release rather than guessing how long teardown takes.
- */
-async function removeWhenReleased(path: string, timeoutMs = 20_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      rmSync(path, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code ?? '';
-      if (!['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY'].includes(code) || Date.now() >= deadline) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-}
 
 describe('ShellJobManager persistent jobs', () => {
   it('reattaches after manager disposal and cleans files after stop and dismiss', async () => {
