@@ -100,7 +100,7 @@
     "marked": "^18.0.9",
     "react": "^19.2.8",
     "turndown": "^7.2.4",
-    "undici": "^8.10.1",
+    "undici": "^8.11.2",
     "zod": "4.6.5"
   },
   "devDependencies": {
@@ -109,8 +109,8 @@
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/turndown": "^5.0.6",
-    "@typescript-eslint/eslint-plugin": "8.70.0",
-    "@typescript-eslint/parser": "8.70.0",
+    "@typescript-eslint/eslint-plugin": "8.70.1",
+    "@typescript-eslint/parser": "8.70.1",
     "@vitest/coverage-v8": "^4.1.9",
     "@xterm/headless": "^6.0.0",
     "eslint": "^10.8.1",
