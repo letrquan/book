@@ -95,6 +95,40 @@ async function waitForPidGone(pid: number, timeoutMs = 5_000): Promise<void> {
 }
 
 /**
+ * Wait until a finished persistent job's own processes are gone: its runner and its supervisor.
+ *
+ * `BashOutput` returns as soon as it can read the terminal record, and the runner publishes that
+ * record before it exits — it writes `status: exited` and only then calls `process.exit()` on a
+ * 10ms timer. The test can therefore end while the runner is still alive with the temp dir as its
+ * cwd, and the `afterEach` cleanup skips it because the shell's status is no longer `running`. The
+ * `rmSync` retries cover ~250ms; a stalled Windows runner exits later than that and the removal
+ * fails with EBUSY (#350). Waiting here closes that window by construction.
+ *
+ * Deliberately not folded into the shared `afterEach`: that would wait on (and kill) the recorded
+ * pid of every earlier shell, and a pid that exited long ago may already have been reused by an
+ * unrelated process on the user's machine, which must never be killed. Right after the job's own
+ * completion the pids are fresh.
+ *
+ * A survivor is a real leak, so it is killed and then reported rather than left behind.
+ */
+async function waitOutPersistentJob(store: BackgroundShellStore, shellId: string): Promise<void> {
+  const { runnerPid, pid } = store.shells.get(shellId) ?? {};
+  for (const survivor of [runnerPid, pid]) {
+    if (survivor === undefined) continue;
+    try {
+      await waitForPidGone(survivor, 10_000);
+    } catch (error) {
+      try {
+        process.kill(survivor);
+      } catch {
+        // Already gone; there is nothing left to end.
+      }
+      throw error;
+    }
+  }
+}
+
+/**
  * A context whose shell manager has already been disposed, so a foreground command that reaches
  * its timeout cannot be moved to the background and is killed exactly as it was before #302.
  *
@@ -990,6 +1024,9 @@ console.log('alive-still'); setInterval(() => {}, 1000);
     expect(result.content).toContain('persistent-done');
     expect(result.content).toMatch(/exit=0/);
     expect(Date.now() - began).toBeLessThan(15_000);
+    // The wait above returned on the terminal record, and the runner writes that record *before*
+    // it exits, so the job's processes can still be alive here with this temp dir as their cwd.
+    await waitOutPersistentJob(store, shellId!);
   }, 60_000);
 });
 

@@ -731,6 +731,20 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The persistent-job shell test now waits out the job's own processes** (#350). `BashOutput`
+  returns as soon as it can read a job's terminal record, and the runner publishes that record
+  before it exits, so the test could end while the runner was still alive with the test's temp
+  directory as its working directory — which the shared cleanup skips, since the shell is no longer
+  `running`, and whose `rmSync` retries cover only about 250ms, so a stalled Windows runner failed
+  the run with EBUSY. The test now waits for the runner and supervisor pids it recorded to be gone,
+  and a survivor is killed and then reported, because a survivor is a real leak.
+- **Delegation overhead is judged against a probe of the machine's own speed, taken on the same
+  cycle** (#367). The absolute ceiling failed on a Windows runner doing ordinary file work 20-60x
+  slower than usual for a few seconds while its timers still fired on time, which the stall guard
+  cannot see; each cycle is now bracketed by a probe that does the same kind of record write the
+  harness's store does, and every sample is judged against the larger of the absolute ceiling and
+  twenty times its own probe. A harness that grew an order of magnitude on a machine running at
+  normal speed still fails, and the judge is covered by deterministic tests with synthetic numbers.
 - **A Grep over a workspace with a very long line no longer holds the whole line in memory**
   (#349). ripgrep prints one JSON event per line, and the reader between its stdout and Book's own
   parsing accumulated into a string until it saw the newline that ends an event — with nothing
