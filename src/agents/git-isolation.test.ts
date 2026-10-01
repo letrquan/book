@@ -15,6 +15,7 @@ import { delimiter, dirname, join, relative } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentApplyResult, AgentRecord } from './types.js';
 import type { RunResult } from './git-signing.js';
+import { canonicalizePath } from '../tools/path-utils.js';
 import {
   applyVerifiedCandidate,
   commitAgentWork,
@@ -34,6 +35,32 @@ const roots: string[] = [];
  */
 function forwardSlashes(path: string): string {
   return path.replace(/\\/g, '/');
+}
+
+/**
+ * One spelling of a directory that git's output and `join` can be compared in: links followed, one
+ * separator, and on win32 one case.
+ *
+ * Two spellings of one directory are the normal case on Windows rather than an edge of it. `TEMP`
+ * there is an 8.3 short path (`C:\Users\RUNNER~1\…`) that `realpath` expands to the long form, and
+ * git writes paths with `/` — so `worktree list` naming `C:/Users/runneradmin/…/book-agent-git-x`
+ * and `join` naming `C:\Users\RUNNER~1\…\book-agent-git-x` were the same repository read as two
+ * different strings (#264 is the same collision, in the workspace resolver). Case joins it because
+ * a path there is case-insensitive; on every other platform the two are compared as written.
+ */
+function comparablePath(path: string): string {
+  const canonical = forwardSlashes(canonicalizePath(path));
+  return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+}
+
+/**
+ * The directory a `worktree list` line names, which is its own `<path> <commit> [<branch>]` format
+ * rather than anything a path parser could be trusted to split: a directory may contain spaces.
+ */
+function listedWorktreePath(line: string): string {
+  const match = /^(.*?)\s+[0-9a-f]{7,}\b/.exec(line);
+  if (!match) throw new Error(`not a worktree list line: ${line}`);
+  return match[1]!;
 }
 
 function git(cwd: string, ...args: string[]): string {
@@ -948,6 +975,12 @@ function sleepingGit(name = 'git'): { dir: string; pidFile: string } {
 /**
  * A `git` on `PATH` that fails without saying anything: a command that exits with a code and no
  * output is the only way to see the message this code composes rather than git's own.
+ *
+ * This fake does not survive win32, for the reason `sleepingGit` records: `CreateProcess` resolves
+ * a program on `PATH` by extension, so the bare name `git` finds the real `git.exe` instead of this
+ * script, and a call that has to fail succeeds. A `git.cmd` is not the way round it — Node will not
+ * launch one without a shell, and the runner spawns `git` directly — so both tests that need a
+ * silent failure are skipped there, the argv they read being platform independent.
  */
 function silentGit(exitCode: number): string {
   const dir = mkdtempSync(join(tmpdir(), 'book-silent-git-'));
@@ -1233,19 +1266,23 @@ describe('the internal git runner is bounded (#357)', () => {
     20_000,
   );
 
-  it('names a global option as well, and still reaches the subcommand past it', async () => {
-    // The same argv hardening can carry `-C <path>`, whose value is a path rather than a setting,
-    // and a value must never be mistaken for the command.
-    const previousPath = process.env.PATH;
-    process.env.PATH = `${silentGit(1)}${delimiter}${previousPath ?? ''}`;
-    try {
-      await expect(
-        gitForTest(process.cwd(), ['-C', '.', 'diff', '--cached', '--quiet']),
-      ).rejects.toThrow('git diff failed (1)');
-    } finally {
-      process.env.PATH = previousPath;
-    }
-  });
+  it.skipIf(process.platform === 'win32')(
+    'names a global option as well, and still reaches the subcommand past it',
+    async () => {
+      // The same argv hardening can carry `-C <path>`, whose value is a path rather than a setting,
+      // and a value must never be mistaken for the command.
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${silentGit(1)}${delimiter}${previousPath ?? ''}`;
+      try {
+        await expect(
+          gitForTest(process.cwd(), ['-C', '.', 'diff', '--cached', '--quiet']),
+        ).rejects.toThrow('git diff failed (1)');
+      } finally {
+        process.env.PATH = previousPath;
+      }
+    },
+    20_000,
+  );
 
   it.skipIf(process.platform === 'win32')(
     'signals a mutating git to stop before killing it, so it can release what it locked',
@@ -1619,10 +1656,12 @@ describe('ambient GIT_* variables in the internal git environment (#357)', () =>
     expect(existsSync(join(other, 'book-index'))).toBe(false);
     expect(readFileSync(join(other, 'staged.txt'), 'utf8')).toBe('other repository value\n');
     // `worktree list` names every worktree with its commit and branch, so the claim is about how
-    // many there are and which directory they are in: one, and `other` itself.
+    // many there are and which directory they are in: one, and `other` itself — compared as the
+    // same directory rather than the same string, because on Windows git spells that directory
+    // long and with `/` where `join` spelled it short and with `\`.
     const worktrees = git(other, 'worktree', 'list').split('\n').filter(Boolean);
     expect(worktrees).toHaveLength(1);
-    expect(worktrees[0]).toContain(join(other, ''));
+    expect(comparablePath(listedWorktreePath(worktrees[0]!))).toBe(comparablePath(other));
     // The only change in the other repository is the one this fixture made to its own file; nothing
     // of Book's is staged there, and there is no index Book wrote to sit alongside it.
     expect(git(other, 'status', '--short')).toBe('M staged.txt');
