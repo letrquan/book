@@ -41,6 +41,7 @@ import {
   TranscriptLayoutContext,
   TranscriptViewportContext,
   type TranscriptHistoryLoader,
+  type TranscriptHistoryRequest,
   type TranscriptViewportSnapshot,
   type TranscriptViewportStore,
 } from '../transcript-layout.js';
@@ -89,6 +90,16 @@ interface TranscriptViewProps {
   onNotify?: (message: string) => void;
   onRedrawViewport?: () => void;
 }
+
+/**
+ * How long growth still reads as rows mounted above the view, per request: a page lands in the
+ * next commits or two, while an 'all' request mounts a whole bounded history that estimates its
+ * height before it measures it, so it needs longer.
+ */
+const HISTORY_PREPEND_WINDOW_MS: Record<TranscriptHistoryRequest, number> = {
+  page: 1000,
+  all: 3000,
+};
 
 /** A half-page scroll asked for from outside, as the composer reports it. */
 export interface TranscriptScrollRequest {
@@ -213,6 +224,11 @@ export function TranscriptView({
   const [followBottom, setFollowBottom] = useState(true);
   const [hasNewOutput, setHasNewOutput] = useState(false);
   const historyLoaderRef = useRef<TranscriptHistoryLoader | null>(null);
+  // The deadline past which rows the loader promised are no longer treated as arriving: growth
+  // measured after it is output below again. A deadline rather than a flag, because a page
+  // settles over several measurements and a page that brings no net growth measures none at all,
+  // so a single shot either misses the later measurements or stands for the rest of the session.
+  const historyPrependUntilRef = useRef(0);
   const viewportListenersRef = useRef(new Set<() => void>());
   const viewportRevisionRef = useRef(0);
   const viewportBucketRef = useRef('');
@@ -292,6 +308,17 @@ export function TranscriptView({
     [publishViewport],
   );
 
+  /**
+   * Asks the history loader for older rows, recording the window in which they count as arriving.
+   * The rows it mounts go above the view, so the growth they bring is not new output below and
+   * the measurements that see it must not claim otherwise. Returns whether a page was loaded.
+   */
+  const requestHistory = useCallback((request: TranscriptHistoryRequest) => {
+    if (!historyLoaderRef.current?.(request)) return false;
+    historyPrependUntilRef.current = performance.now() + HISTORY_PREPEND_WINDOW_MS[request];
+    return true;
+  }, []);
+
   const applyScrollState = useCallback(
     (next: TranscriptScrollState) => {
       const previous = stateRef.current;
@@ -316,7 +343,10 @@ export function TranscriptView({
 
       setRenderedScrollTop((current) => (current === next.scrollTop ? current : next.scrollTop));
       setFollowBottom((current) => (current === next.followBottom ? current : next.followBottom));
-      if (next.followBottom) setHasNewOutput(false);
+      if (next.followBottom) {
+        // Following the tail: whatever was on its way above is moot, and the tail is output.
+        setHasNewOutput(false);
+      }
       publishViewport(next);
     },
     [publishViewport],
@@ -412,7 +442,7 @@ export function TranscriptView({
       rows < 0 &&
       next.scrollTop === 0 &&
       pendingWheelRowsRef.current < 0 &&
-      historyLoaderRef.current?.('page')
+      requestHistory('page')
     ) {
       pendingWheelRowsRef.current = 0;
       return;
@@ -420,7 +450,7 @@ export function TranscriptView({
     if (wheelEaseStep(pendingWheelRowsRef.current) !== 0) {
       wheelTimerRef.current = setTimeout(stepWheelScroll, WHEEL_FRAME_MS);
     }
-  }, [applyScrollState]);
+  }, [applyScrollState, requestHistory]);
 
   const scheduleWheelScroll = useCallback(
     (direction: -1 | 1) => {
@@ -450,7 +480,15 @@ export function TranscriptView({
     // are not new output below.
     const grownRows = contentRows - previousContentRowsRef.current - anchoredRowsRef.current;
     anchoredRowsRef.current = 0;
-    if (grownRows > 0 && !stateRef.current.followBottom && previousContentRowsRef.current > 0) {
+    if (grownRows > 0 && performance.now() < historyPrependUntilRef.current) {
+      // A page the loader took on request, still within its window: whatever grew here arrived
+      // above the view. The window is not consumed, so the measurements that settle the page are
+      // all covered; past it the growth is read as output below like any other.
+    } else if (
+      grownRows > 0 &&
+      !stateRef.current.followBottom &&
+      previousContentRowsRef.current > 0
+    ) {
       setHasNewOutput(true);
     }
     previousContentRowsRef.current = contentRows;
@@ -482,19 +520,14 @@ export function TranscriptView({
   const scrollByHalfPage = useCallback(
     (direction: 'up' | 'down') => {
       const metrics = metricsRef.current;
-      if (
-        direction === 'up' &&
-        stateRef.current.scrollTop === 0 &&
-        historyLoaderRef.current?.('page')
-      )
-        return;
+      if (direction === 'up' && stateRef.current.scrollTop === 0 && requestHistory('page')) return;
       cancelWheelScroll();
       const rows = getTranscriptHalfPageRows(metrics.viewportRows);
       applyScrollState(
         scrollTranscriptBy(stateRef.current, metrics, direction === 'up' ? -rows : rows),
       );
     },
-    [applyScrollState, cancelWheelScroll],
+    [applyScrollState, cancelWheelScroll, requestHistory],
   );
 
   const layoutDependency = layoutRevision === undefined ? children : layoutRevision;
@@ -596,11 +629,7 @@ export function TranscriptView({
         if (event.type === 'wheel') {
           if (dragRef.current || selectionRef.current) cancelDrag();
           const direction = event.button === 'wheel-up' ? -1 : 1;
-          if (
-            direction < 0 &&
-            stateRef.current.scrollTop === 0 &&
-            historyLoaderRef.current?.('page')
-          ) {
+          if (direction < 0 && stateRef.current.scrollTop === 0 && requestHistory('page')) {
             continue;
           }
           scheduleWheelScroll(direction);
@@ -672,6 +701,7 @@ export function TranscriptView({
     internal_eventEmitter,
     isActive,
     replaceSelection,
+    requestHistory,
     scheduleSelectionRepaint,
     scheduleWheelScroll,
   ]);
@@ -700,7 +730,7 @@ export function TranscriptView({
       let next: TranscriptScrollState | undefined;
 
       if (key.pageUp) {
-        if (stateRef.current.scrollTop === 0 && historyLoaderRef.current?.('page')) return;
+        if (stateRef.current.scrollTop === 0 && requestHistory('page')) return;
         next = scrollTranscriptBy(
           stateRef.current,
           metrics,
@@ -713,7 +743,7 @@ export function TranscriptView({
           getTranscriptPageRows(metrics.viewportRows),
         );
       } else if (key.ctrl && key.home) {
-        historyLoaderRef.current?.('all');
+        requestHistory('all');
         next = scrollTranscriptToStart();
       } else if (key.ctrl && key.end) {
         next = scrollTranscriptToEnd(metrics);
