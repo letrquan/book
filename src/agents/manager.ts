@@ -789,7 +789,13 @@ export class AgentManager {
     return Array.from(this.plans.values(), clone);
   }
 
-  private async snapshotForPlan(planId: string): Promise<AgentSnapshot> {
+  /**
+   * The plan's snapshot, taken once and shared by every agent in the plan.
+   *
+   * `signal` is the signal of the run that asked for it, so stopping an agent stops the git calls
+   * that snapshot makes instead of leaving them to run out their own timeout (#357).
+   */
+  private async snapshotForPlan(planId: string, signal?: AbortSignal): Promise<AgentSnapshot> {
     const existingId = this.planSnapshots.get(planId);
     if (existingId) {
       const existing = this.snapshots.get(existingId);
@@ -806,6 +812,7 @@ export class AgentManager {
       const snapshot = await (this.options.createSnapshot ?? createSyntheticSnapshot)(
         this.repoRoot,
         this.config.settings.agents.includeUntrackedInSnapshot,
+        signal,
       );
       if (this.store) {
         try {
@@ -1454,7 +1461,7 @@ export class AgentManager {
         snapshot = record.snapshotId
           ? this.snapshots.get(record.snapshotId)
           : record.planId
-            ? await this.snapshotForPlan(record.planId)
+            ? await this.snapshotForPlan(record.planId, controller.signal)
             : undefined;
         if (!snapshot) throw new Error('Snapshot is unavailable.');
         record.snapshotId = snapshot.id;
@@ -1503,6 +1510,7 @@ export class AgentManager {
           record.id,
           this.options.worktreeRoot,
           validationHead,
+          controller.signal,
         );
         record.worktree = worktree.path;
         record.branch = worktree.branch;

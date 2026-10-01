@@ -238,6 +238,12 @@ export class AgentStore {
   private enabled: boolean;
   private disposed = false;
   private heartbeatTimer?: NodeJS.Timeout;
+  /**
+   * The heartbeat write in flight, if any. See {@link refreshLease}: a tick that arrives while one
+   * is running is skipped, and a dispose that arrives while one is running removes the lease after
+   * it rather than before.
+   */
+  private leaseWrite?: Promise<void>;
   private persistenceState: 'healthy' | 'degraded_busy' | 'degraded_unavailable' = 'healthy';
   private readonly agents = new Map<string, AgentRecord>();
   private readonly agentOwners = new Map<string, StoreOwnerMetadata | undefined>();
@@ -297,7 +303,7 @@ export class AgentStore {
     if (this.enabled) {
       this.recoverTemps();
       this.load();
-      this.refreshLease();
+      this.takeLease();
       this.scheduleHeartbeat();
     }
   }
@@ -986,11 +992,12 @@ export class AgentStore {
         this.safeLog('shutdown flush failed', { target: targetTypeFor(target) });
       }
     }
-    try {
-      rmSync(this.leasePath, { force: true });
-    } catch {
-      // A stale lease is recoverable on the next startup.
-    }
+    // The lease goes last, and after a heartbeat write that is still running: that write's rename is
+    // the last thing that can put the file back, and a lease that outlives the process is one other
+    // instance reads as live until it goes stale (#357).
+    const inFlight = this.leaseWrite;
+    if (inFlight) void inFlight.then(() => this.removeLease());
+    else this.removeLease();
   }
 
   private refreshForeignSummaries(): void {
@@ -1021,14 +1028,80 @@ export class AgentStore {
     }
   }
 
+  /**
+   * Take the lease for this instance, before anything else reads it.
+   *
+   * This first lease is written synchronously where the heartbeats below are not, because it is the
+   * one a caller depends on the moment the constructor returns: a store that has just been built is
+   * asked whether its own instance is alive, and answered from this file. Deferring it to the thread
+   * pool leaves a window in which a brand new store has no lease at all, which is what a manager
+   * reading a just-created store sees when its first agent looks abandoned (#357).
+   *
+   * A failure is not fatal here either, for the reason it is not fatal on the heartbeat: what is
+   * written is this instance's own ownership record, and every other write carries the same metadata.
+   */
+  private takeLease(): void {
+    if (!this.enabled || this.disposed) return;
+    try {
+      const result = this.writer.write(this.leasePath, this.leaseDocument());
+      if (result.status !== 'ok') this.safeLog('lease write failed', { status: result.status });
+    } catch {
+      // A store without a lease is one other instances have to treat as dead; the next heartbeat
+      // writes one.
+    }
+  }
+
+  /**
+   * Refresh the lease this instance holds, on the thread pool rather than here.
+   *
+   * The heartbeat runs on a timer for as long as the process lives and nobody is waiting for it,
+   * but the write was synchronous: a lock file, an fsync, a temp file, a second fsync and a rename,
+   * every one of them a disk round trip, all of it on whichever thread scheduled the timer — for the
+   * TUI, the event loop the keystrokes and the model stream are on. On a busy disk that is hundreds
+   * of milliseconds every five seconds, and it lands on the user rather than on the heartbeat
+   * (#357). {@link takeLease} is the exception, and says why.
+   *
+   * Two properties come with moving it off the thread and are the reason this is not simply a
+   * fire-and-forget:
+   *
+   * - **A tick that arrives during a write is skipped, not queued.** A queued write is a write
+   *   whose content was already stale when it started, and on a disk slower than the heartbeat it
+   *   is a queue that grows: each tick adds an `fsync` the next tick would have made stale.
+   *   A skipped heartbeat costs nothing, because the lease is still fresh — {@link LEASE_FRESH_MS}
+   *   is three heartbeats, so one missed tick is not a stale lease.
+   * - **The lease is removed after any write in flight, never before.** Dispose deletes the lease
+   *   file so no other instance reads a live lease for a process that is gone; a rename landing
+   *   after that delete would recreate it. So the removal waits for the write to settle, which is
+   *   also why nothing is awaited synchronously here: `dispose()` is synchronous because its
+   *   callers are.
+   */
   private refreshLease(): void {
     if (!this.enabled || this.disposed) return;
-    const lease: InstanceLease = { ...this.ownerMetadata(), heartbeatAt: this.now() };
+    // A write still running owns the lease file's contents; a second one would only rewrite it.
+    if (this.leaseWrite) return;
+    const write = this.writer
+      .writeAsync(this.leasePath, this.leaseDocument())
+      .then((result) => {
+        if (result.status !== 'ok') this.safeLog('lease refresh failed', { status: result.status });
+      })
+      .catch(() => {
+        // Heartbeat failures are non-fatal; agent writes carry the same owner metadata.
+      })
+      .finally(() => {
+        if (this.leaseWrite === write) this.leaseWrite = undefined;
+      });
+    this.leaseWrite = write;
+  }
+
+  private leaseDocument(): InstanceLease {
+    return { ...this.ownerMetadata(), heartbeatAt: this.now() };
+  }
+
+  private removeLease(): void {
     try {
-      const result = this.writer.write(this.leasePath, lease);
-      if (result.status !== 'ok') this.safeLog('lease refresh failed', { status: result.status });
+      rmSync(this.leasePath, { force: true });
     } catch {
-      // Heartbeat failures are non-fatal; agent writes carry the same owner metadata.
+      // A stale lease is recoverable on the next startup.
     }
   }
 

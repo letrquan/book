@@ -121,6 +121,14 @@ describe('AgentManager lifecycle', () => {
     const runLoop = vi.fn();
     const removeSnapshot = vi.fn(async () => {});
     const writer = {
+      // The lease heartbeat is written off the caller's thread; the double stands in for the whole
+      // writer, so this is the half of it that path uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string) =>
         target.includes(`${join('records', '')}`)
           ? {
@@ -263,6 +271,14 @@ describe('AgentManager lifecycle', () => {
     config.settings.agents.persist = true;
     let recordWrites = 0;
     const writer = {
+      // The lease heartbeat is written off the caller's thread; the double stands in for the whole
+      // writer, so this is the half of it that path uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string) => {
         if (target.includes(`${join('records', '')}`) && ++recordWrites > 1) {
           return {

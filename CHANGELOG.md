@@ -725,6 +725,86 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Every git call Book makes for a managed agent is bounded, cancellable, and told the truth
+  about what failed** (#357, follow-ups to #348 and #351). Those two turned off the programs a
+  checkout could make Book run; eight things about the calls themselves were still wrong, in
+  `src/agents/git-isolation.ts`. **A git child that never exits wedged the run and its
+  `agents.maxConcurrent` slot.** `git()` had neither a timeout nor the agent controller's signal,
+  while `runGit` in `src/tools/git.ts` had both: a hung `filter.*.process`, a gpg pinentry during
+  the signed cherry-pick, or a blocked lazy fetch had no way to end, and `stop()` flipped the
+  record while the child lived on. Every call now carries a bounded timeout — 120 s, which the
+  cherry-pick that applies a candidate raises for itself, since killing that one costs the
+  operator a re-apply — and the controller's signal is threaded through the calls that have one,
+  so a stopped agent stops its git. Both paths kill the child outright and settle the promise on
+  their own terms rather than through `execFile`'s timeout, which waits for output that a grandchild
+  holding the pipe may never release. **A signal-killed child was read as exit 1**, and
+  `removeAgentWorktree` accepts 1 and 128 as "already gone", so a killed cleanup reported itself
+  done; a child with no exit code is now a failure whatever `allowExitCodes` names. And **the error
+  named `-c`** wherever it fell back to composing its own message — `args[0]` on an argv whose first
+  entries are the hardening's `-c key=value` pairs — so the manifest read said `git -c failed`; the
+  message now skips every `-c`/`-C` pair and its value and names the subcommand, and prefers that
+  over Node's, which embeds the whole argv. **A failed `worktree add` left its branch behind**,
+  because `worktree add -b` creates the branch before it declines the checkout, so every retry
+  failed with "already exists" and the agent could never be re-run; the branch is now deleted when
+  this call created it, and never when it existed first — a branch an operator had made, with their
+  own commit on it, is not Book's to delete. A path that is _not_ a worktree Book made is no longer
+  adopted as one, which is what lets git refuse it with a real error instead of Book reporting a
+  worktree that does not exist. **A cherry-pick that failed said it was rolled back even when the
+  rollback failed**, because `cherry-pick --abort`'s error was swallowed, and said `conflicted` for
+  failures that are not conflicts: unmerged paths are what makes a pick a conflict, while a signing
+  failure, a filter that would not run, or a read-only repository is the machinery failing. Both
+  answers are now separate: a pick whose abort failed says the repository may be left mid-cherry-pick
+  and how to finish or undo it, rather than claiming a rollback that did not happen. **Ambient
+  `GIT_*` variables redirected Book's writes** — a Book launched from a hook or a CI step carried
+  `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` or `GIT_OBJECT_DIRECTORY` and wrote snapshots, refs
+  and worktrees into another repository or index; they are now stripped from the internal git
+  environment, keeping `GIT_AUTHOR_*` and `GIT_COMMITTER_*` and any variable the call site sets
+  itself, which is how the snapshot's temporary index still works. **`removeAgentWorktree` ran from
+  inside the worktree it removes** when the workspace is no longer a repository, so the removal
+  failed on Windows, the failure was swallowed, and the directory leaked; the cleanup now runs from
+  the caller's repository, or from the repository the worktree's own `.git` pointer names — which is
+  outside it, and two levels up rather than the administrative directory `worktree remove` deletes
+  along with the checkout — falling back to the parent only for a directory that is no longer a
+  repository at all. `worktree remove` and `branch -D` now run together, so a worktree leaves no
+  branch either. And the two minor module edges: `gitForTest` moved behind
+  `src/agents/git-isolation-internal.ts`, which nothing under `src/` imports, and
+  `child.stdout`/`child.stderr` have the `error` listener a pipe closing under them can require.
+  **Unchanged, and documented where the decision lives:** `.gitattributes` clean/smudge and process
+  filters, merge drivers, and a partial clone's lazy fetch still run what the checkout names, because
+  git-lfs needs the filters and no `-c` can wildcard them off; that gap is described in the module
+  header and in `docs/guide/agents-and-review.md` rather than closed. `core.fsmonitor=true` is also
+  still refused, because `hardenedGitArgs` is shared with the read-only Git tools and the review
+  target, and the built-in daemon and untracked cache are what its other callers were tuned for.
+
+- **The managed-agent lease heartbeat no longer fsyncs on the TUI's event loop** (#346). The store
+  refreshed its instance lease every five seconds with the synchronous atomic write — lock file,
+  `fsyncSync`, temp file, `fsyncSync`, `renameSync` — on whichever thread scheduled the timer, which
+  for the TUI is the loop the keystrokes and the model stream are on. Usually about 3 ms; on a busy
+  disk, where an `fsync` can block for hundreds of milliseconds, the whole UI froze that long every
+  five seconds whatever the user was doing. `AtomicJsonWriter` gained an asynchronous path that
+  mirrors the synchronous protocol exactly — exclusive lock with owner metadata, unique temp file,
+  write, file sync, atomic rename, the same retry and deadline — and the heartbeat now uses it.
+  Three properties come with moving a write nobody waits for off the thread, and each is held:
+  **a tick that arrives while a write is running is skipped, not queued**, because a queued write is
+  one whose content was already stale and a slow disk turns the queue into a growing one; a skipped
+  heartbeat costs nothing, because the lease is fresh for three heartbeats. **The lease is removed
+  after any write in flight, never before**, so a rename cannot land after dispose deleted the file
+  and leave a live lease naming a process that is gone. And **no rejection escapes**: a failed
+  heartbeat is logged and dropped, as it always was. The lease a store takes in its constructor is
+  still written synchronously, because that is the one a caller depends on the moment the
+  constructor returns — a store asked whether its own instance is alive is answered from that file —
+  and every agent record, plan, snapshot and evidence write is untouched, since a caller is told when
+  those are durable. The heartbeat timer stays unref'd, as before.
+
+- **A fenced JSON example inside a JSON string no longer becomes the answer** (#299). The paired
+  fence scan added for memory extraction still took the first fence pair whose content parsed as an
+  object, and a document whose own string _value_ quotes a fenced object — a review agent showing the
+  shape it meant — matched that one: the extractor returned the example instead of the report, so a
+  clean review parsed as `{"note": …}`. Candidate fences are now only considered where a fenced
+  block actually stands on its own outside the JSON, chosen by balanced-object scanning rather than
+  by the first parse, with a balanced whole-text object as the fallback. A fenced example inside a
+  string, and a real fenced answer beside an unfenced example, both resolve to the answer.
+
 - **A patch git exits on before reading no longer crashes the host** (#351). `git()` in
   `src/agents/git-isolation.ts` has two ways to reach git: `execFile`, or a `spawn` that writes a
   patch to stdin. The `spawn` path attached no `error` listener to `child.stdin`, so a write that

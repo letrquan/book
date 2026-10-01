@@ -11,18 +11,19 @@ import {
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { dirname, join } from 'path';
+import { delimiter, dirname, join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentApplyResult, AgentRecord } from './types.js';
+import type { RunResult } from './git-signing.js';
 import {
   applyVerifiedCandidate,
   commitAgentWork,
   createAgentWorktree,
   createSyntheticSnapshot,
-  gitForTest,
   removeAgentWorktree,
   removeSnapshotRef,
 } from './git-isolation.js';
+import { cherryPickFailureResult, gitForTest } from './git-isolation-internal.js';
 
 const roots: string[] = [];
 
@@ -892,4 +893,451 @@ describe('a signing configuration that cannot be read whole (#348)', () => {
     // second a call here and eleven calls; the budget above is for that parse, not for a wait, and
     // every assertion above is about what the apply did.
   }, 120_000);
+});
+
+/**
+ * A `git` on `PATH` that never exits: a shell script that records its own pid and then sleeps for
+ * far longer than any test here will wait.
+ *
+ * The pid is what makes the kill observable. A timeout or an abort that rejects the promise while
+ * the child lives on has not bounded anything — it has only stopped waiting — and on a busy
+ * session that child is still holding a worktree, a lock, or a `.git/index.lock`.
+ *
+ * The shebang and `sleep` are what have to be portable rather than the executable bit: Git for
+ * Windows runs a `#!` script through its own sh, but `execvp` finds a program on `PATH` by
+ * extension there, which a file named `git` never gains, so the tests that use this are skipped
+ * on win32 rather than quietly passing.
+ */
+function sleepingGit(name = 'git'): { dir: string; pidFile: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'book-sleeping-git-'));
+  roots.push(dir);
+  const pidFile = join(dir, 'pid');
+  writeFileSync(
+    join(dir, name),
+    [
+      '#!/bin/sh',
+      `printf '%s' "$$" > ${forwardSlashes(pidFile)}`,
+      // `exec`, so the recorded pid is the sleeping process rather than a shell that has a child of
+      // its own. A kill aimed at the shell would leave `sleep` alive and holding the output pipes,
+      // which is a child nobody in this codebase ever waits on.
+      'exec sleep 120',
+      '',
+    ].join('\n'),
+  );
+  chmodSync(join(dir, name), 0o755);
+  return { dir, pidFile };
+}
+
+/**
+ * A `git` on `PATH` that fails without saying anything: a command that exits with a code and no
+ * output is the only way to see the message this code composes rather than git's own.
+ */
+function silentGit(exitCode: number): string {
+  const dir = mkdtempSync(join(tmpdir(), 'book-silent-git-'));
+  roots.push(dir);
+  writeFileSync(join(dir, 'git'), ['#!/bin/sh', `exit ${exitCode}`, ''].join('\n'));
+  chmodSync(join(dir, 'git'), 0o755);
+  return dir;
+}
+
+/** Whether a process is still there, which is a claim about the OS and not about a promise. */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means it exists and belongs to somebody else.
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Wait for a killed process to actually be gone, because a kill is a signal rather than a fact.
+ *
+ * The rejection and the kill are near-simultaneous, so asserting liveness the instant the promise
+ * rejects is asserting about the scheduler rather than about the code. A second is far longer than
+ * a killed process needs and far shorter than anything here is willing to wait for a hung one.
+ */
+async function waitForExit(pid: number, withinMs = 2_000): Promise<boolean> {
+  const deadline = Date.now() + withinMs;
+  while (processAlive(pid)) {
+    if (Date.now() > deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return true;
+}
+
+describe('the internal git runner is bounded (#357)', () => {
+  it.skipIf(process.platform === 'win32')(
+    'kills a git that never exits, on both paths, and says which subcommand',
+    async () => {
+      for (const input of [undefined, 'a patch git never reads\n']) {
+        const fake = sleepingGit();
+        const previousPath = process.env.PATH;
+        process.env.PATH = `${fake.dir}${delimiter}${previousPath ?? ''}`;
+        try {
+          const settled: { resolved?: RunResult; rejected?: Error } = await gitForTest(
+            fake.dir,
+            ['status'],
+            {
+              timeoutMs: 300,
+              ...(input === undefined ? {} : { input }),
+            },
+          ).then(
+            (result) => ({ resolved: result }),
+            (error: Error) => ({ rejected: error }),
+          );
+
+          expect(
+            settled.resolved,
+            'the call must reject, not resolve on a hung child',
+          ).toBeUndefined();
+          const error = settled.rejected!;
+          // The subcommand, not the flag in front of it: every argv here is the hardening's
+          // `-c` pairs first, and `args[0]` is `-c`, so an error naming `args[0]` says nothing
+          // about which command failed.
+          expect(error.message).toMatch(/git status/);
+          expect(error.message).toMatch(/timed out|timeout/i);
+          const pid = Number(readFileSync(fake.pidFile, 'utf8'));
+          expect(Number.isInteger(pid)).toBe(true);
+          expect(await waitForExit(pid), `the hung git (pid ${pid}) should have been killed`).toBe(
+            true,
+          );
+        } finally {
+          process.env.PATH = previousPath;
+        }
+      }
+    },
+    20_000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'stops a call when the signal it was given aborts',
+    async () => {
+      const fake = sleepingGit();
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${fake.dir}${delimiter}${previousPath ?? ''}`;
+      const controller = new AbortController();
+      try {
+        const pending = gitForTest(fake.dir, ['rev-parse', 'HEAD'], {
+          signal: controller.signal,
+          timeoutMs: 60_000,
+        });
+        const rejection = expect(pending).rejects.toThrow();
+        setTimeout(() => controller.abort(), 150);
+        await rejection;
+        // Liveness again, not the rejection alone: a signal that rejected the promise and left
+        // the child running has cancelled the wait rather than the work.
+        await new Promise((done) => setTimeout(done, 200));
+        const pid = Number(readFileSync(fake.pidFile, 'utf8'));
+        expect(await waitForExit(pid), `the aborted git (pid ${pid}) should have been killed`).toBe(
+          true,
+        );
+      } finally {
+        process.env.PATH = previousPath;
+      }
+    },
+    20_000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'reports a killed child as a failure even where exit 1 would be accepted',
+    async () => {
+      // `removeAgentWorktree` accepts exit 1 and 128, because that is how `worktree remove` and
+      // `branch -D` answer "already gone". A signalled child has no exit code at all, so reading
+      // it as `codeValue ?? 1` made a killed git indistinguishable from one that said so — and a
+      // signal-kill therefore read as a successful cleanup.
+      const fake = sleepingGit();
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${fake.dir}${delimiter}${previousPath ?? ''}`;
+      try {
+        await expect(
+          gitForTest(fake.dir, ['-c', 'core.quotepath=false', 'branch', '-D', 'book-agent/x/y'], {
+            timeoutMs: 300,
+            allowExitCodes: [1, 128],
+          }),
+        ).rejects.toThrow(/git branch/);
+      } finally {
+        process.env.PATH = previousPath;
+      }
+    },
+    20_000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'names the subcommand behind the -c overrides a failed call carries',
+    async () => {
+      // A silent failing `git`, because that is the only call whose message this code composes: a
+      // real git writes what went wrong to stderr, and Book prefers git's own words. Every argv here
+      // carries the hardening's `-c key=value` pairs first, so a message built from `args[0]` names
+      // `-c` — which is what the manifest read did, saying `git -c failed` and naming a flag rather
+      // than the command (#357).
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${silentGit(3)}${delimiter}${previousPath ?? ''}`;
+      try {
+        await expect(
+          gitForTest(process.cwd(), [
+            '-c',
+            'core.quotepath=false',
+            '-c',
+            'core.abbrev=12',
+            'rev-list',
+            '--objects',
+            'HEAD',
+          ]),
+        ).rejects.toThrow('git rev-list failed (3)');
+      } finally {
+        process.env.PATH = previousPath;
+      }
+    },
+    20_000,
+  );
+
+  it('names a global option as well, and still reaches the subcommand past it', async () => {
+    // The same argv hardening can carry `-C <path>`, whose value is a path rather than a setting,
+    // and a value must never be mistaken for the command.
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${silentGit(1)}${delimiter}${previousPath ?? ''}`;
+    try {
+      await expect(
+        gitForTest(process.cwd(), ['-C', '.', 'diff', '--cached', '--quiet']),
+      ).rejects.toThrow('git diff failed (1)');
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+});
+
+describe('a worktree add that fails after creating its branch (#357)', () => {
+  it('leaves no branch behind, so the retry succeeds', async () => {
+    const root = repository();
+    const snapshot = await createSyntheticSnapshot(root, true);
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-wt-retry-'));
+    roots.push(worktreeRoot);
+    const branch = `book-agent/${snapshot.repoHash}/retried-agent`;
+    // A directory with something already in it, which is what `worktree add` refuses: it creates the
+    // branch first and only then declines the checkout, and that ordering is what leaves the branch
+    // behind.
+    const path = join(worktreeRoot, snapshot.repoHash, 'retried-agent');
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'occupied.txt'), 'not mine\n');
+
+    await expect(createAgentWorktree(snapshot, 'retried-agent', worktreeRoot)).rejects.toThrow();
+    // Read the branch back from a real git, and expect the branch to be gone: a failure that
+    // leaves it is what makes every later attempt fail with "already exists".
+    expect(() => git(root, 'show-ref', '--verify', `refs/heads/${branch}`)).toThrow();
+    expect(git(root, 'worktree', 'list')).not.toContain('retried-agent');
+
+    rmSync(path, { recursive: true, force: true });
+    const worktree = await createAgentWorktree(snapshot, 'retried-agent', worktreeRoot);
+    expect(worktree.branch).toBe(branch);
+    expect(existsSync(worktree.path)).toBe(true);
+    // And the branch it created is really there, which is the other half: the fix must not delete
+    // the branch of a worktree add that succeeded.
+    expect(git(root, 'rev-parse', `refs/heads/${branch}`)).toBe(snapshot.commit);
+  });
+
+  it('never deletes a branch that existed before the add', async () => {
+    const root = repository();
+    const snapshot = await createSyntheticSnapshot(root, true);
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-wt-preexisting-'));
+    roots.push(worktreeRoot);
+    const branch = `book-agent/${snapshot.repoHash}/collides`;
+    // The operator's own branch, with a commit of their own on it, under the name Book would use.
+    git(root, 'branch', branch, 'HEAD');
+    writeFileSync(join(root, 'operator.txt'), 'the operator\n');
+    git(root, 'add', 'operator.txt');
+    git(root, 'commit', '-m', 'operator work');
+    git(root, 'branch', '-f', branch, 'HEAD');
+    const operatorCommit = git(root, 'rev-parse', branch);
+    const path = join(worktreeRoot, snapshot.repoHash, 'collides');
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'occupied.txt'), 'not mine\n');
+
+    await expect(createAgentWorktree(snapshot, 'collides', worktreeRoot)).rejects.toThrow();
+    // Book did not create this one, so it is not Book's to delete: `branch -D` would destroy a
+    // branch an operator had made, and the operator's own commit on it.
+    expect(git(root, 'rev-parse', `refs/heads/${branch}`)).toBe(operatorCommit);
+  });
+});
+
+describe('a cherry-pick that failed (#357)', () => {
+  it('reports an infrastructure failure as a failure, not as a conflict', async () => {
+    // The signer here is the operator's own global configuration, so the cherry-pick really does
+    // sign and really does fail — the one apply failure that reaches this path routinely. Nothing
+    // about the repository is wrong and no file conflicts; the pick dies creating its commit.
+    const sandbox = mkdtempSync(join(tmpdir(), 'book-apply-sign-fail-'));
+    roots.push(sandbox);
+    const root = repository(join(sandbox, 'repo'));
+    // Where HEAD has to be after a rolled-back pick: the pick never committed, so the rollback has
+    // to leave the commit it started from rather than move it.
+    const baseHead = git(root, 'rev-parse', 'HEAD');
+    const signer = markerProgram(sandbox, 'operator-signer');
+    writeGlobalConfig(
+      `[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = ${forwardSlashes(signer.path)}\n`,
+    );
+
+    const applied = await applyCleanCandidate(root, 'sign-failure-agent');
+
+    // The control that makes this a signing failure rather than some other one: the program ran.
+    expect(existsSync(signer.marker), 'the operator signer should have been started').toBe(true);
+    expect(applied.status).not.toBe('applied');
+    // A conflict is a claim about the working tree, and this one has none: git exited 128 with
+    // nothing unmerged, so calling it a conflict would send the operator looking for markers that
+    // are not there.
+    expect(applied.status).not.toBe('conflicted');
+    expect(applied.error).toContain('failed');
+    // The rollback did happen, so nothing is left mid-pick, and the message may say so.
+    expect(() => git(root, 'rev-parse', '-q', '--verify', 'CHERRY_PICK_HEAD')).toThrow();
+    expect(git(root, 'status', '--short')).toBe('');
+    expect(git(root, 'rev-parse', 'HEAD')).toBe(baseHead);
+  });
+
+  it('reads a real conflict as a conflict, and says the pick was rolled back', () => {
+    // Unmerged paths are what makes a failure a conflict, and only that: the pick stopped with
+    // files git could not merge and markers in them. Everything else that stops a cherry-pick is
+    // the machinery failing, not the content.
+    const conflicted = cherryPickFailureResult({
+      pickError: 'error: could not apply 1a2b3c4... agent value',
+      unmergedPaths: ['staged.txt'],
+    });
+    expect(conflicted.status).toBe('conflicted');
+    expect(conflicted.error).toContain('rolled back');
+
+    // A signing failure leaves the same CHERRY_PICK_HEAD behind and no unmerged paths, so the
+    // pick is over and nothing about the working tree is a conflict.
+    const signing = cherryPickFailureResult({
+      pickError: 'gpg failed to sign the data',
+      unmergedPaths: [],
+    });
+    expect(signing.status).not.toBe('conflicted');
+    expect(signing.error).toContain('rolled back');
+  });
+
+  it('says the repository may be mid-pick when the rollback itself fails', () => {
+    // The abort is a git call too, and it can fail: a repository that is no longer a repository,
+    // a lock it cannot take, a filter that fails on the way out. Reporting that as a rollback
+    // would leave an operator believing the working tree is clean when a pick is still in it, and
+    // the next `git commit` of theirs would become part of the agent's.
+    const failed = cherryPickFailureResult({
+      pickError: 'error: could not apply',
+      unmergedPaths: ['staged.txt'],
+      abortError: 'git cherry-pick --abort failed (128)',
+    });
+    expect(failed.error).not.toMatch(/rolled back/);
+    expect(failed.error).toMatch(/mid-cherry-pick/);
+    expect(failed.error).toContain('git cherry-pick --abort');
+    expect(failed.error).toContain('could not apply');
+    // The status still reflects the conflict, which is a fact about the content; only the
+    // rollback claim changed.
+    expect(failed.status).toBe('conflicted');
+  });
+});
+
+describe('ambient GIT_* variables in the internal git environment (#357)', () => {
+  it('neither a GIT_DIR nor a GIT_INDEX_FILE redirects a snapshot or a worktree', async () => {
+    const root = repository();
+    const other = repository();
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-env-wt-'));
+    roots.push(worktreeRoot);
+
+    // Another checkout entirely, named the way the environment names one: `GIT_DIR` is where git
+    // finds its repository, `GIT_INDEX_FILE` where it finds the index, and both outrank the
+    // directory Book starts it in. A shell that exported them, a hook, or a CI step is enough.
+    process.env.GIT_DIR = join(other, '.git');
+    process.env.GIT_INDEX_FILE = join(other, 'book-index');
+    writeFileSync(join(other, 'staged.txt'), 'other repository value\n');
+
+    const snapshot = await createSyntheticSnapshot(root, true);
+    const worktree = await createAgentWorktree(snapshot, 'env-agent', worktreeRoot);
+    expect(readFileSync(join(worktree.path, 'staged.txt'), 'utf8').trim()).toBe('base staged.txt');
+    writeFileSync(join(worktree.path, 'staged.txt'), 'agent value\n');
+    const candidate = await commitAgentWork(agentRecord('env-agent', worktree), snapshot);
+    expect(candidate).toBeDefined();
+
+    // Every assertion below runs with the ambient variables gone, because the test's own `git` is a
+    // plain child of this process and would otherwise read the same `GIT_DIR` the fixture set: a
+    // failure here would then be about the assertion's own environment rather than about Book's.
+    delete process.env.GIT_DIR;
+    delete process.env.GIT_INDEX_FILE;
+
+    expect(git(root, 'show', `${snapshot.commit}:staged.txt`)).toBe('base staged.txt');
+    // Nothing of Book's landed in the other repository: no index, no ref, no worktree.
+    expect(existsSync(join(other, 'book-index'))).toBe(false);
+    expect(readFileSync(join(other, 'staged.txt'), 'utf8')).toBe('other repository value\n');
+    // `worktree list` names every worktree with its commit and branch, so the claim is about how
+    // many there are and which directory they are in: one, and `other` itself.
+    const worktrees = git(other, 'worktree', 'list').split('\n').filter(Boolean);
+    expect(worktrees).toHaveLength(1);
+    expect(worktrees[0]).toContain(join(other, ''));
+    // The only change in the other repository is the one this fixture made to its own file; nothing
+    // of Book's is staged there, and there is no index Book wrote to sit alongside it.
+    expect(git(other, 'status', '--short')).toBe('M staged.txt');
+  });
+
+  it('still lets Book set GIT_INDEX_FILE for the calls that need a temporary one', async () => {
+    // The scrub above is about the ambient environment. A call site that names an index of its
+    // own — the snapshot's temporary index, the pre-check's — is Book's own decision and has to
+    // survive, or the snapshot would stage into the parent index.
+    const root = repository();
+    const before = readFileSync(join(root, '.git', 'index'));
+    const snapshot = await createSyntheticSnapshot(root, true);
+    expect(snapshot.tree).toBe(git(root, 'rev-parse', `${snapshot.baseHead}^{tree}`));
+    expect(readFileSync(join(root, '.git', 'index'))).toEqual(before);
+  });
+});
+
+describe('removing a worktree the workspace no longer holds (#357)', () => {
+  it('deletes the branch from outside the worktree, even when it is no longer a repository', async () => {
+    const root = repository();
+    const snapshot = await createSyntheticSnapshot(root, true);
+    // Nested inside the repository, so the worktree's parent is a directory git can resolve a
+    // repository from even after the worktree's own `.git` is gone.
+    const nested = join(root, 'nested');
+    const worktree = await createAgentWorktree(snapshot, 'orphaned-agent', nested);
+    expect(existsSync(worktree.path)).toBe(true);
+    const branch = `refs/heads/${worktree.branch}`;
+
+    // The worktree's own repository is destroyed: its pointer file and the administrative
+    // directory git keeps for it are both gone, which is what a worktree directory copied
+    // elsewhere, or restored from a partial backup, looks like.
+    rmSync(join(worktree.path, '.git'), { force: true });
+    rmSync(join(root, '.git', 'worktrees', 'orphaned-agent'), { recursive: true, force: true });
+    expect(existsSync(join(worktree.path, '.git'))).toBe(false);
+
+    // No `repoRoot` given, which is the call that used to run git inside the directory it was
+    // deleting: from there, git found no repository at all and the branch survived the cleanup
+    // that was supposed to remove it.
+    await removeAgentWorktree(agentRecord('orphaned-agent', worktree));
+
+    expect(() => git(root, 'show-ref', '--verify', branch)).toThrow();
+  });
+
+  it('names the repository a live worktree points at, rather than the worktree itself', async () => {
+    const root = repository();
+    const snapshot = await createSyntheticSnapshot(root, true);
+    const nested = join(root, 'nested');
+    const worktree = await createAgentWorktree(snapshot, 'pointed-agent', nested);
+    // The pointer a linked worktree keeps is how a cleanup with no `repoRoot` finds the
+    // repository it belongs to, and that directory is outside the one it is about to delete.
+    expect(readFileSync(join(worktree.path, '.git'), 'utf8')).toContain('gitdir:');
+
+    await removeAgentWorktree(agentRecord('pointed-agent', worktree));
+
+    expect(existsSync(worktree.path)).toBe(false);
+    expect(() => git(root, 'show-ref', '--verify', `refs/heads/${worktree.branch}`)).toThrow();
+  });
+
+  it('removes both the worktree and the branch when the workspace is still there', async () => {
+    const root = repository();
+    const snapshot = await createSyntheticSnapshot(root, true);
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-remove-wt-'));
+    roots.push(worktreeRoot);
+    const worktree = await createAgentWorktree(snapshot, 'removed-agent', worktreeRoot);
+
+    await removeAgentWorktree(agentRecord('removed-agent', worktree), root);
+
+    expect(existsSync(worktree.path)).toBe(false);
+    expect(() => git(root, 'show-ref', '--verify', `refs/heads/${worktree.branch}`)).toThrow();
+  });
 });

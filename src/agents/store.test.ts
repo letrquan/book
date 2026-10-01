@@ -7,6 +7,8 @@ import {
   rmSync,
   writeFileSync,
 } from 'fs';
+import { open as openAsync, rename as renameAsync } from 'fs/promises';
+import type { FileHandle } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -178,6 +180,14 @@ describe('AgentStore recovery', () => {
     let recordAttempts = 0;
     const persisted: AgentRecord[] = [];
     const writer = {
+      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
+      // writer, so this is the half of it the heartbeat uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string, value: unknown) => {
         if (!target.includes(`${join('records', '')}`)) {
           return { status: 'ok', target, attempts: 1, elapsedMs: 0 } as const;
@@ -223,6 +233,14 @@ describe('AgentStore recovery', () => {
     const staleTemp = join(root, 'repo', 'records', 'stale-record.tmp');
     const recordWrites: AgentRecord[] = [];
     const writer = {
+      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
+      // writer, so this is the half of it the heartbeat uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string, value: unknown) => {
         if (!target.includes(`${join('records', '')}`)) {
           return { status: 'ok', target, attempts: 1, elapsedMs: 0 } as const;
@@ -263,6 +281,14 @@ describe('AgentStore recovery', () => {
     const staleTemp = join(root, 'repo', 'records', 'equal-revision.tmp');
     const recordWrites: Array<{ value: AgentRecord; preparedTemp?: string }> = [];
     const writer = {
+      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
+      // writer, so this is the half of it the heartbeat uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string, value: unknown, preparedTemp?: string) => {
         if (!target.includes(`${join('records', '')}`)) {
           return { status: 'ok', target, attempts: 1, elapsedMs: 0 } as const;
@@ -304,6 +330,14 @@ describe('AgentStore recovery', () => {
     const staleTemp = join(root, 'repo', 'evidence', 'stale-evidence.tmp');
     const evidenceWrites: EvidenceItem[] = [];
     const writer = {
+      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
+      // writer, so this is the half of it the heartbeat uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string, value: unknown) => {
         if (!target.includes(`${join('evidence', '')}`)) {
           return { status: 'ok', target, attempts: 1, elapsedMs: 0 } as const;
@@ -449,6 +483,14 @@ describe('AgentStore recovery', () => {
     const tempPath = join(records, 'busy-recovery.json.999.123456.tmp');
     writeFileSync(tempPath, JSON.stringify(newer));
     const writer = {
+      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
+      // writer, so this is the half of it the heartbeat uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string, _value: unknown, preparedTemp?: string) =>
         target.includes(`${join('records', '')}`) && preparedTemp
           ? {
@@ -704,5 +746,204 @@ describe('AgentStore recovery of host-owned agents', () => {
     for (const recovered of reopened.recoverAbandonedAgents()) {
       expect(recovered.completionDeliveredSequence).toBe(recovered.completionSequence);
     }
+  });
+});
+/**
+ * The heartbeat is the one write nobody waits for: it runs on a timer for as long as the process
+ * lives, and what it writes is read by other Book instances rather than by this one. So it is
+ * written off the caller's thread, which is only a good trade if the properties below hold — a tick
+ * that is skipped rather than queued, a lease file with the contents it always had, and a dispose
+ * that leaves nothing behind (#357).
+ *
+ * The slow disk is injected through the writer's asynchronous filesystem rather than through a
+ * stubbed writer, so the writes these tests watch are ones the real atomic protocol made: a lock, a
+ * temp file, an fsync and a rename, with only the timing replaced. The rename is where the hold is,
+ * because it is the last step — the one that can put a file back after dispose deleted it.
+ */
+describe('AgentStore lease heartbeat', () => {
+  const instanceId = '44444444-4444-4444-8444-444444444444';
+  const instancesDirectory = (directory: string) => join(directory, 'repo', 'instances');
+  const leasePath = (directory: string) =>
+    join(instancesDirectory(directory), `${instanceId}.json`);
+  const contents = (directory: string) => readdirSync(instancesDirectory(directory));
+
+  /** Poll until a condition holds, so the assertions are about what happened, not how fast. */
+  async function waitFor(check: () => boolean, what: string): Promise<void> {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (check()) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error(`Timed out waiting for ${what}`);
+  }
+
+  /**
+   * A disk whose next heartbeat rename is held open, which is what a slow disk looks like from here.
+   *
+   * `renamed` records renames that have finished rather than ones that were attempted, so a count of
+   * zero means no write completed rather than that one was refused.
+   */
+  function slowDisk(): {
+    fsAsync: {
+      open: (path: string, flags: string, mode?: number) => Promise<FileHandle>;
+      rename: (from: string, to: string) => Promise<void>;
+    };
+    renamed: string[];
+    holdNextRename: () => { started: Promise<void>; release: () => void };
+  } {
+    const renamed: string[] = [];
+    let gate: Promise<void> | undefined;
+    let markStarted: (() => void) | undefined;
+    let releaseGate: (() => void) | undefined;
+    let held = false;
+    return {
+      renamed,
+      holdNextRename: () => {
+        held = true;
+        gate = new Promise<void>((resolve) => {
+          releaseGate = resolve;
+        });
+        return {
+          started: new Promise<void>((resolve) => {
+            markStarted = resolve;
+          }),
+          release: () => releaseGate?.(),
+        };
+      },
+      fsAsync: {
+        open: (path, flags, mode) => openAsync(path, flags, mode),
+        rename: async (from, to) => {
+          if (held) {
+            held = false;
+            markStarted?.();
+            await gate;
+          }
+          await renameAsync(from, to);
+          renamed.push(to);
+        },
+      },
+    };
+  }
+
+  function store(directory: string, disk: ReturnType<typeof slowDisk>): AgentStore {
+    return new AgentStore('repo', directory, true, {
+      instanceId,
+      writerOptions: { fsAsync: disk.fsAsync },
+      heartbeatMs: 5,
+      pid: 4321,
+      hostname: 'test-host',
+      now: () => 1_000,
+    });
+  }
+
+  it('skips a tick that arrives while a heartbeat write is still running', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const disk = slowDisk();
+    const held = disk.holdNextRename();
+    const agents = store(root, disk);
+
+    // The store took its lease in its constructor and that one is synchronous, so this is the first
+    // heartbeat, and it is still in flight when the ticks below arrive.
+    await held.started;
+    await new Promise((done) => setTimeout(done, 60));
+
+    // A dozen ticks came and went against a disk slower than the heartbeat, and none of them started
+    // a write: a queued heartbeat is a write whose content was already stale when it started, and a
+    // queue of them grows with the time the disk is slow.
+    expect(disk.renamed).toEqual([]);
+
+    held.release();
+    await waitFor(() => disk.renamed.length === 1, 'the held heartbeat to land');
+    agents.dispose();
+    await waitFor(() => !existsSync(leasePath(root)), 'the lease to be removed on dispose');
+  });
+
+  it('writes the lease another instance reads, through an fsync and an atomic rename', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const disk = slowDisk();
+    const agents = store(root, disk);
+
+    // A heartbeat, not the constructor's lease: what is being checked here is the asynchronous
+    // protocol, and the file it produced is one that went through the lock, the temp file and the
+    // rename rather than through the synchronous writer. The directory has to be back to just the
+    // lease as well, because the writer removes its lock after the rename this double reports.
+    await waitFor(
+      () => disk.renamed.length > 0 && contents(root).length === 1,
+      'the first heartbeat to land',
+    );
+
+    // The whole document, because every field of it is what another instance reads to decide this
+    // one is alive: without the pid and host there is nothing to fall back on, and without the
+    // heartbeat stamp there is no freshness to judge.
+    expect(JSON.parse(readFileSync(leasePath(root), 'utf8'))).toEqual({
+      schemaVersion: 1,
+      instanceId,
+      pid: 4321,
+      hostname: 'test-host',
+      processStartedAt: expect.any(Number),
+      heartbeatAt: 1_000,
+    });
+    // No temp file and no lock left: the rename is what makes the lease readable, and a leftover of
+    // either is something another instance's stale-lock sweep has to reason about.
+    expect(contents(root)).toEqual([`${instanceId}.json`]);
+
+    agents.dispose();
+    await waitFor(() => !existsSync(leasePath(root)), 'the lease to be removed on dispose');
+  });
+
+  it('disposes during a write without leaving the lease behind or throwing', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const disk = slowDisk();
+    const held = disk.holdNextRename();
+    const agents = store(root, disk);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      await held.started;
+      // Mid-heartbeat: the lock and the temp file are there and the rename has not happened. The
+      // lease is there too, from the constructor, which is exactly why the removal has to wait for
+      // that rename: removing it now would let the rename put it back, and the lease would outlive
+      // the process it names.
+      expect(contents(root)).toHaveLength(3);
+      expect(contents(root).some((name) => name.endsWith('.tmp'))).toBe(true);
+      expect(existsSync(leasePath(root))).toBe(true);
+
+      agents.dispose();
+      await new Promise((done) => setTimeout(done, 40));
+      // Nothing started after the dispose, so there is no later write to land behind it.
+      expect(disk.renamed).toEqual([]);
+
+      held.release();
+      await waitFor(() => contents(root).length === 0, 'the disposed lease to be gone');
+
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      held.release();
+    }
+  });
+
+  it('keeps agent records synchronous, because a caller is told when they are durable', async () => {
+    // The other half of the claim: only the heartbeat moved. `saveAgent` returning has always meant
+    // the record is on disk, and a caller reading the file straight after the call depends on it.
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const disk = slowDisk();
+    const agents = store(root, disk);
+    await waitFor(
+      () => disk.renamed.length > 0 && contents(root).length === 1,
+      'the first heartbeat to land',
+    );
+
+    agents.saveAgent(recordFixture('sync-agent'));
+    const recordPath = join(root, 'repo', 'records', 'sync-agent.json');
+    // Read with no await between the call and the read, which a write on the thread pool could not
+    // be.
+    expect(JSON.parse(readFileSync(recordPath, 'utf8'))).toMatchObject({
+      id: 'sync-agent',
+      status: 'queued',
+    });
+
+    agents.dispose();
+    await waitFor(() => !existsSync(leasePath(root)), 'the lease to be removed on dispose');
   });
 });
