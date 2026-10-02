@@ -1,4 +1,5 @@
 import {
+  addUsage,
   estimateUsageCost,
   hasKnownPricing,
   PRICING_VERSION,
@@ -135,18 +136,6 @@ export interface CarriedSpend {
    * record lands.
    */
   fromRootRunId?: string;
-}
-
-function addUsage(current: Usage | null, next: Usage): Usage {
-  return {
-    promptTokens: (current?.promptTokens ?? 0) + next.promptTokens,
-    completionTokens: (current?.completionTokens ?? 0) + next.completionTokens,
-    totalTokens: (current?.totalTokens ?? 0) + next.totalTokens,
-    contextTokens: next.contextTokens ?? current?.contextTokens,
-    cacheCreationInputTokens:
-      (current?.cacheCreationInputTokens ?? 0) + (next.cacheCreationInputTokens ?? 0),
-    cacheReadInputTokens: (current?.cacheReadInputTokens ?? 0) + (next.cacheReadInputTokens ?? 0),
-  };
 }
 
 /**

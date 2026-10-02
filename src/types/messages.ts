@@ -79,9 +79,15 @@ export interface UsageCommandDisplay {
   currentTurn: number;
   messageCount: number;
   turnDurationMs: number;
+  /**
+   * The session's spend: the lead plus every delegated agent. A `null` here means
+   * nothing has been spent yet, which is different from a zero total.
+   */
   usage: Usage | null;
   rate?: { inputPerMillion: number; outputPerMillion: number };
   estimatedCostUsd?: number;
+  /** Delegated agents inside `usage`, so the sheet can say so (#370). */
+  delegatedAgents?: number;
   /** Per-tool call/failure counters for this session, ordered by call count. */
   toolCallStats?: Array<{ tool: string; calls: number; failures: Record<string, number> }>;
 }

@@ -29,6 +29,7 @@ import type {
   PlanRecordData,
 } from '../../types/sessions.js';
 import { compactionGate, usageAtGate, usagePressureTokens } from '../../agent/compact.js';
+import { addUsage } from '../../pricing.js';
 import { maskAtGate } from '../../agent/tool-output-masking.js';
 import { resolveContextLimit } from '../../models.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
@@ -288,6 +289,24 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const [error, setError] = useState<string | null>(null);
   const [currentTurn, setCurrentTurn] = useState(0);
   const [usage, setUsage] = useState<Usage | null>(null);
+  /**
+   * Every response this session has spent, cumulatively — what `/cost` and
+   * `/usage` price. `usage` stays exactly as it is (per-request, cleared on a
+   * send and a compaction) because the context meter and `/context` read it;
+   * pricing a bill from it reported only the last turn's tokens (#370).
+   *
+   * Reset only where the session itself changes — a clear, a new conversation, a
+   * resume. A `/rewind` projects the same session back to an earlier turn and
+   * keeps it: the spend before the rewind was really spent.
+   */
+  const [sessionUsage, setSessionUsage] = useState<Usage | null>(null);
+  /**
+   * The bill counts from a resume in this process rather than from the session's
+   * first turn. The persisted carry is deliberately not seeded (it is
+   * root-inclusive of delegated spend, which is counted separately), so the
+   * reports say what the figure covers instead of implying it is everything.
+   */
+  const [sessionUsageSinceResume, setSessionUsageSinceResume] = useState(false);
   const [mode, setMode] = useState<PermissionMode>(() =>
     resolvePermissionMode(config.settings, session.permissionMode),
   );
@@ -514,7 +533,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       boundaries: CompactBoundary[] = [],
       targets: RewindTarget[] = [],
       plan?: PlanRecordData,
+      opts: { sinceResume?: boolean } = {},
     ) => {
+      // A rewind reaches here with the same id it already had: the conversation
+      // moved, the session did not, and its bill goes with it (#370).
+      const newSession = sessionIdRef.current !== nextId;
       sessionIdRef.current = nextId;
       sessionNameRef.current = nextName;
       messagesRef.current = transcript;
@@ -530,6 +553,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setError(null);
       setCurrentTurn(0);
       setUsage(null);
+      // A resume re-counts from the resume even when it lands on the id already
+      // open, so it is named the same way as a session change. Only a change of
+      // that kind rewrites the scope: a same-session rewind keeps the bill, so it
+      // must keep saying where the bill starts too (#370).
+      if (newSession || opts.sinceResume) {
+        setSessionUsage(null);
+        setSessionUsageSinceResume(opts.sinceResume === true);
+      }
       hostUsageRef.current = null;
       lastHostCompactAttemptRef.current = null;
       setTurnDurationMs(0);
@@ -670,6 +701,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             bootstrap.compactBoundaries,
             bootstrap.rewindTargets,
             bootstrap.plan,
+            { sinceResume: true },
           );
         },
       });
@@ -698,6 +730,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     },
     [],
   );
+
+  /**
+   * A compaction's own model calls — the summarizer, and the judge in the
+   * deferred flow — are real spend, and run accounting already charges them to
+   * the root run (#370). The session bill had no way to hear about them, so
+   * `/cost` named a figure below what the session had actually spent. It reaches
+   * the bill only: `usage` stays the context meter's per-request value.
+   */
+  const recordCompactionUsage = useCallback((u: Usage) => {
+    setSessionUsage((current) => addUsage(current, u));
+  }, []);
 
   // Unconditional append, shared by the immediate and the deferred path so a
   // replayed message is byte-identical to one that was never blocked.
@@ -838,6 +881,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               runtime: agentSession.getRuntime(),
               timelineStore,
               isCurrent: stillCurrent,
+              onUsage: (u: Usage) => {
+                if (stillCurrent()) recordCompactionUsage(u);
+              },
               onCommitted: projectCompactResult,
               options: {
                 trigger: 'auto',
@@ -1063,6 +1109,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             hostUsageRef.current = u;
             lastHostCompactAttemptRef.current = null;
             setUsage(u);
+            setSessionUsage((current) => addUsage(current, u));
           },
           getMode: () => modeRef.current,
           onModeChange: (newMode: PermissionMode) => {
@@ -1094,6 +1141,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               runtime: agentSession.getRuntime(),
               timelineStore,
               isCurrent: stillCurrent,
+              onUsage: (u: Usage) => {
+                if (stillCurrent()) recordCompactionUsage(u);
+              },
               onCommitted: projectCompactResult,
               options: {
                 ...hints,
@@ -1146,6 +1196,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               transcriptOrdinal: messagesRef.current.length,
               runContext: activeRunContext,
               runtime: agentSession.getRuntime(),
+              onUsage: (u: Usage) => {
+                if (stillCurrent()) recordCompactionUsage(u);
+              },
               options: {
                 ...hints,
                 trigger: 'auto',
@@ -1187,6 +1240,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               runtime: agentSession.getRuntime(),
               timelineStore,
               isCurrent: stillCurrent,
+              onUsage: (u: Usage) => {
+                if (stillCurrent()) recordCompactionUsage(u);
+              },
               onCommitted: projectCompactResult,
               options: { signal: hints?.signal },
             });
@@ -1571,6 +1627,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           runtime: agentSession.getRuntime(),
           timelineStore,
           isCurrent: stillCurrent,
+          onUsage: (u: Usage) => {
+            if (stillCurrent()) recordCompactionUsage(u);
+          },
           onCommitted: (result, boundary) => {
             projectCompactResult(result, boundary);
             setIsCompactCommitted(true);
@@ -1640,7 +1699,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         operation.release();
       }
     },
-    [agentSession, compactBoundaries, operations, projectCompactResult, timelineStore],
+    [
+      agentSession,
+      compactBoundaries,
+      operations,
+      projectCompactResult,
+      recordCompactionUsage,
+      timelineStore,
+    ],
   );
 
   const getRewindTargets = useCallback((): RewindTarget[] => {
@@ -1789,6 +1855,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setError(null);
     setCurrentTurn(0);
     setUsage(null);
+    setSessionUsage(null);
+    setSessionUsageSinceResume(false);
     hostUsageRef.current = null;
     lastHostCompactAttemptRef.current = null;
     resetAgentPlan();
@@ -2295,6 +2363,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     currentTurn,
     tokenCount: usage?.totalTokens ?? 0,
     usage,
+    sessionUsage,
+    sessionUsageSinceResume,
     mode,
     pendingPermission,
     pendingPlanApproval,

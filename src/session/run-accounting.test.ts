@@ -253,7 +253,7 @@ describe('the budget rail actually caps', () => {
 
     const snapshot = accounting.snapshotRoot('root-1');
     expect(snapshot.costUsd).toBe(0); // the root turn alone
-    expect(snapshot.inclusiveCostUsd).toBeCloseTo(3, 5); // $3/M prompt tokens
+    expect(snapshot.inclusiveCostUsd).toBeCloseTo(2, 5); // $2/M prompt tokens
     expect(snapshot.budgetStatus).toBe('exceeded');
     // The gate must agree with the snapshot.
     expect(accounting.checkBeforeModelCall('root-1', 'claude-sonnet-5')).toMatchObject({
@@ -357,7 +357,9 @@ describe('spend attribution across snapshot kinds', () => {
     responseId: 'r1',
     status: 'verified',
   } as unknown as ProviderResponseMetadata;
-  const oneDollar = { promptTokens: 333_334, completionTokens: 0, totalTokens: 333_334 };
+  // Exactly $1 of prompt tokens at Sonnet 5's $2/M, so the budget-edge tests
+  // below can assert against the $50.00 cap in round dollars (#370).
+  const oneDollar = { promptTokens: 500_000, completionTokens: 0, totalTokens: 500_000 };
 
   it('does not bill a child with the objective\u2019s restored spend', () => {
     // `snapshotRun` passed the whole ROOT to `makeSnapshot`, so every per-agent

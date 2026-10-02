@@ -814,6 +814,55 @@ true` is the one loosening-adjacent key a workspace layer may set, and the loade
 
 ### Fixed
 
+- **Correct Claude rates, date-only suffix matching, and session-total `/cost` and `/usage`**
+  (#370). **The price table was stale, missing, and matching versions as dates.** `src/pricing.ts`
+  rated Opus 5 and 4.8/4.7 at $15/$75 per million — three times the published figure — left
+  `claude-opus-4-6` and `claude-sonnet-4-6` with no row at all, and carried an explicit
+  "RE-VERIFY against published pricing" note above the Opus entry it had guessed. The Anthropic
+  block is now the published list, cached 2026-09-25 (input / output / cache read / cache write at
+  the 5-minute TTL, the only TTL Book requests), including the models that had no row
+  (`claude-mythos-5`, `claude-mythos-5-1`): because
+  `checkBeforeModelCall` fails closed on an unknown rate, a missing `claude-opus-4-6` did not degrade
+  a `/cost` figure, it refused _every call_ under a USD budget. **A trailing version digit was read
+  as a date stamp.** `DATED_MODEL_SUFFIX` matched any run of digits after a separator, so
+  `claude-opus-5-5` resolved to the `claude-opus-5` row and `claude-fable-5-1` to `claude-fable-5` —
+  two different models priced as one, off by more than an order of magnitude on each. It now
+  matches a real date only (`-20260115`, `-2026-01-15`, `-0806`, `-001`); a `-5`, `-1`, `-45` or
+  `-4-6` version suffix prices nothing, the same way `gpt-4o-mini` was already refused rather than
+  inheriting `gpt-4o`'s rate. **`/cost` and `/usage` reported only the last request.** Both priced
+  `context.usage`, the per-request figure the context meter keeps: every `onUsage` replaces it and
+  every send, compaction and `/clear` nulls it, so after turns of 1,100 and 2,200 tokens `/cost`
+  said 2,200. Both now price a session-cumulative usage accumulated in `onUsage`: it survives sends,
+  a `/rewind` and a compaction (whose summarizer spends, and is counted), and is reset by `/clear`,
+  `/new` and a resume, which also label the figure as counted from there. `usage` itself is
+  untouched, so the context meter and `/context` are unchanged. **An agent on the lead's own model
+  vanished from both**: its tokens merged into the lead's row, the breakdown had nothing left to
+  show, and the headline priced only the lead. Both now head with the sum over every row and name
+  how many delegated agents it includes; the TUI `/usage` sheet carries that same total and says
+  when its line about agents applies. The lead session is still priced at the active model after a
+  mid-session model switch.
+
+- **`/review`'s verdict now follows the surviving findings instead of the reviewer's self-report**
+  (#372). `src/review/orchestration.ts` passed a reviewer's own verdict straight through _after_
+  `filterLowConfidence` had dropped its findings, so the report could contradict itself in both
+  directions: a reviewer that said `blocking` about one finding at confidence 50 produced
+  `blocking` with zero findings, and a reviewer that said `clean` while reporting a critical finding
+  at confidence 95 produced `clean`. The deep path was right where it had candidates — it derived the
+  verdict from the verified findings — but its no-candidate branch required every lens to have _said_
+  `clean`, so four completed lenses where one said `blocking` about a finding that was then filtered
+  out landed on `inconclusive` with the text "Deep review complete: no confirmed findings." and no
+  coverage warning. All three sites now call one helper, `deriveReviewVerdict` in
+  `src/review/findings.ts`, which returns the verdict _and_ the rule that produced it: incomplete
+  coverage caps the result, a standing critical finding is `blocking`, any other standing finding is
+  `recommend`, findings the verifier could neither confirm nor reject leave it `inconclusive`, a
+  reviewer that reported its own review as `inconclusive` prevents a `clean`, and only
+  nothing-left-with-full-coverage is `clean`. A reviewer's own `blocking`/`recommend`/`clean` is never
+  used. Evidence outranks self-description, so that reviewer signal is deliberately the _last_ thing
+  consulted: a lens saying it could not conclude never downgrades a critical finding another lens
+  reported and the verifier confirmed — the masking regression the first version of this rule order
+  introduced. The reported reason also drives the explanatory line, so the text names the verifier
+  instead of guessing the cause from an `inconclusive` verdict that three different rules can produce.
+
 - **Every git call Book makes for a managed agent is bounded, cancellable, and told the truth
   about what failed** (#357, follow-ups to #348 and #351). Those two turned off the programs a
   checkout could make Book run; eight things about the calls themselves were still wrong, in
