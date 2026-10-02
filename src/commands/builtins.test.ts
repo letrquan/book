@@ -374,6 +374,74 @@ describe('built-in command contract', () => {
     }
   });
 
+  it('carries the delegated totals into the /usage sheet the TUI renders (#370)', () => {
+    // The sheet is built from `display`, not from `content`: the text included
+    // the agents while the panel they both accompany did not, so the number on
+    // screen was smaller than the report beside it.
+    const registry = createBuiltinCommandRegistry();
+    const effect = registry.execute('usage', '', {
+      ...context(),
+      runtimeConfig: defaultConfig({ model: 'claude-sonnet-5' }),
+      sessionUsage: { promptTokens: 1_000, completionTokens: 100, totalTokens: 1_100 },
+      delegatedUsage: [
+        {
+          label: 'explorer "map auth"',
+          model: 'claude-sonnet-5',
+          usage: { promptTokens: 500_000, completionTokens: 0, totalTokens: 500_000 },
+        },
+      ],
+    });
+    expect(effect).toEqual(
+      expect.objectContaining({
+        display: expect.objectContaining({
+          kind: 'usage',
+          usage: {
+            promptTokens: 501_000,
+            completionTokens: 100,
+            totalTokens: 501_100,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+          },
+          estimatedCostUsd: expect.closeTo(1.003, 6),
+          delegatedAgents: 1,
+        }),
+      }),
+    );
+  });
+
+  it('leaves the delegated count off a session that spawned nothing', () => {
+    const effect = createBuiltinCommandRegistry().execute('usage', '', {
+      ...context(),
+      runtimeConfig: defaultConfig({ model: 'claude-sonnet-5' }),
+      sessionUsage: { promptTokens: 1_000, completionTokens: 100, totalTokens: 1_100 },
+    });
+    expect(effect).toEqual(
+      expect.objectContaining({
+        display: expect.objectContaining({ kind: 'usage' }),
+      }),
+    );
+    expect(effect).not.toEqual(
+      expect.objectContaining({ display: expect.objectContaining({ delegatedAgents: 1 }) }),
+    );
+  });
+
+  it('says a bill that started at a resume counts from there (#370)', () => {
+    const registry = createBuiltinCommandRegistry();
+    for (const command of ['cost', 'usage']) {
+      const effect = registry.execute(command, '', {
+        ...context(),
+        runtimeConfig: defaultConfig({ model: 'claude-sonnet-5' }),
+        sessionUsage: { promptTokens: 1_000, completionTokens: 100, totalTokens: 1_100 },
+        sessionUsageSinceResume: true,
+      });
+      expect(effect, command).toEqual(
+        expect.objectContaining({
+          content: expect.stringContaining('since this session was resumed'),
+        }),
+      );
+    }
+  });
+
   it('normalizes settings command arguments before returning effects', () => {
     const registry = createBuiltinCommandRegistry();
     expect(registry.execute('model', 'openai/gpt-5', context())).toEqual({

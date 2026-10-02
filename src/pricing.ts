@@ -34,6 +34,9 @@ export const PRICING: Record<string, ModelPricing> = {
   // Anthropic — published price list, $ per million, cached 2026-09-25. `cacheCreation`
   // is the 5-minute TTL write, the only TTL Book requests; cache reads are each
   // model's own published rate. Re-verify against the live list before a release.
+  // `claude-opus-4-5` and `claude-sonnet-4-5` are deliberately absent: our source
+  // publishes no verified rate for either, and they price as unknown rather than
+  // guess until one exists.
   'claude-opus-5-5': { in: 4, out: 20, cacheRead: 0.2, cacheCreation: 5 },
   'claude-opus-5': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
   'claude-opus-4-8': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
@@ -44,6 +47,8 @@ export const PRICING: Record<string, ModelPricing> = {
   'claude-sonnet-4-6': { in: 3, out: 15, cacheRead: 0.3, cacheCreation: 3.75 },
   'claude-fable-5-1': { in: 10, out: 50, cacheRead: 0.25, cacheCreation: 12.5 },
   'claude-fable-5': { in: 10, out: 50, cacheRead: 1, cacheCreation: 12.5 },
+  'claude-mythos-5-1': { in: 10, out: 50, cacheRead: 0.25, cacheCreation: 12.5 },
+  'claude-mythos-5': { in: 10, out: 50, cacheRead: 1, cacheCreation: 12.5 },
   'claude-haiku-4-5-20251001': { in: 1, out: 5, cacheRead: 0.1, cacheCreation: 1.25 },
   // OpenAI — no cache rates. OpenAI-compatible providers report automatic cache
   // reads (`prompt_tokens_details.cached_tokens`); without a `cacheRead` rate they
@@ -60,12 +65,15 @@ export const PRICING: Record<string, ModelPricing> = {
  * keeps `gpt-5` from claiming `gpt-51`.
  */
 /**
- * A date stamp and nothing else: `-20260115`, `.20260115`, `@20260115` or
- * `-2026-01-15`. A version suffix such as `-5`, `-1` or `-4-6` is a different
- * model from its prefix, and matching one priced `claude-opus-5-5` as
- * `claude-opus-5` (#370).
+ * A date stamp and nothing else. Accepted forms, each of which is a stamp a
+ * provider actually appends: `-20260115`, `.20260115`, `@20260115`,
+ * `-2026-01-15`, `-0806` (MMDD) and `-001` (a 3-digit zero-led snapshot).
+ *
+ * A version suffix is not a date: `-5`, `-1` and `-45` are different models from
+ * their prefix, and matching one priced `claude-opus-5-5` as `claude-opus-5` and
+ * `claude-fable-5-1` as `claude-fable-5` (#370). Neither is `-4-6`, two versions.
  */
-const DATED_MODEL_SUFFIX = /^[-.@](?:\d{8}|\d{4}-\d{2}-\d{2})$/;
+const DATED_MODEL_SUFFIX = /^[-.@](?:\d{8}|\d{4}-\d{2}-\d{2}|\d{4}|0\d{2})$/;
 
 const PRICING_KEY_BOUNDARY = new Set(['-', '.', ':', '@', '/', '_']);
 
@@ -167,20 +175,25 @@ export function promptSizeTokens(usage: CostedUsage): number {
 }
 
 /**
- * Add one provider-reported usage to a session-cumulative total.
+ * Add one provider-reported usage to a running total.
  *
- * `context.usage` in the TUI is a per-request figure: every `onUsage` replaces it
- * and every send clears it, so pricing a session bill from it reports only the
- * final turn's tokens (#370). This is the running total `/cost` and `/usage`
- * price instead — never reset by a send or a compaction, only by the session
- * itself changing. Cache counts are summed when reported and counted as zero
- * when not, so the total is always fully additive.
+ * The one usage sum every caller shares: `session/run-accounting.ts` for a run's
+ * own accounting, `session/store.ts` for a session's persisted carry, and the
+ * TUI's session-cumulative usage that `/cost` and `/usage` price (#370). The TUI
+ * needs it because `context.usage` is per-request — every `onUsage` replaces it
+ * and every send clears it, so pricing a session bill from it reported only the
+ * final turn's tokens.
+ *
+ * Cache counts are summed when reported and counted as zero when not, so the
+ * total is always fully additive. `contextTokens` is not: it is the gauge the
+ * compaction gate reads, so the latest response's figure is the only true one.
  */
-export function accumulateSessionUsage(current: Usage | null, next: Usage): Usage {
+export function addUsage(current: Usage | null, next: Usage): Usage {
   return {
     promptTokens: (current?.promptTokens ?? 0) + next.promptTokens,
     completionTokens: (current?.completionTokens ?? 0) + next.completionTokens,
     totalTokens: (current?.totalTokens ?? 0) + next.totalTokens,
+    contextTokens: next.contextTokens ?? current?.contextTokens,
     cacheReadInputTokens: (current?.cacheReadInputTokens ?? 0) + (next.cacheReadInputTokens ?? 0),
     cacheCreationInputTokens:
       (current?.cacheCreationInputTokens ?? 0) + (next.cacheCreationInputTokens ?? 0),
@@ -402,25 +415,105 @@ function cacheTokenNote(usage: CostedUsage, separator = ', '): string {
   );
 }
 
+/** Where a bill starts counting, so a report can say so when it is not the session's start. */
+export interface BillScope {
+  /**
+   * Set when the bill counts from a resume in this process rather than from the
+   * session's first turn: the TUI does not seed it from the persisted carry,
+   * which is root-inclusive of delegated spend and would double-count the agents
+   * reported separately (#370).
+   */
+  sinceResume?: boolean;
+}
+
+/** The session's whole spend: the lead plus every delegation, priced per model. */
+export interface SessionTotals {
+  /** Lead and delegated usage added together, for a report's headline counts. */
+  usage: CostedUsage & { totalTokens: number };
+  /** Summed over every row; null when any row's model has no rate in the table. */
+  usd: number | null;
+  /** Every model the session ran on, in the order it first appears. */
+  models: string[];
+  /** How many delegated entries the totals include. */
+  delegatedAgents: number;
+}
+
+/**
+ * Everything a session bill is made of: the lead's own usage plus every
+ * delegated agent's, each priced at the model it actually ran on.
+ *
+ * The headline has to be the sum, not the lead's share (#370): an agent that ran
+ * on the lead's own model folds into the lead's row, so nothing else on the
+ * report mentioned it at all.
+ */
+export function sessionTotals(
+  leadModel: string,
+  leadUsage: (CostedUsage & { totalTokens: number }) | null,
+  delegated: readonly DelegatedUsage[] = [],
+): SessionTotals {
+  const rows = modelTotals(leadModel, leadUsage, delegated);
+  // Left as it was when there is nothing to add: a session that delegated nothing
+  // reports its own usage verbatim rather than a re-summed copy of it.
+  let usage: (CostedUsage & { totalTokens: number }) | null = leadUsage;
+  if (delegated.length > 0) {
+    usage = null;
+    if (leadUsage) usage = addUsage(usage, leadUsage);
+    for (const entry of delegated) usage = addUsage(usage, entry.usage);
+  }
+  const pricedRows = rows.map((row) => usdFor(row.model, row));
+  const pricedEveryRow = pricedRows.every((priced): priced is number => priced !== null);
+  return {
+    usage: usage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    // One row with no rate makes the whole sum unavailable: a partial total would
+    // read as the bill, and it is smaller than what the session really spent.
+    usd: pricedEveryRow ? pricedRows.reduce((sum, priced) => sum + priced, 0) : null,
+    models: rows.map((row) => row.model),
+    delegatedAgents: delegated.length,
+  };
+}
+
+/** `incl. 2 delegated agents` on a headline whose totals cover agents, else nothing. */
+function delegatedNote(totals: SessionTotals): string {
+  return totals.delegatedAgents > 0
+    ? `incl. ${totals.delegatedAgents} delegated agent${totals.delegatedAgents === 1 ? '' : 's'}`
+    : '';
+}
+
+/** The one phrase a bill started at a resume needs, else nothing. */
+function resumeNote(scope: BillScope): string {
+  return scope.sinceResume ? 'since this session was resumed' : '';
+}
+
+/** The headline notes, joined, or '' when the bill needs none. */
+function headlineNotes(totals: SessionTotals, scope: BillScope): string {
+  return [delegatedNote(totals), resumeNote(scope)].filter(Boolean).join(' · ');
+}
+
 export function costReport(
   model: string,
   usage: (CostedUsage & { totalTokens: number }) | null,
   delegated: readonly DelegatedUsage[] = [],
+  scope: BillScope = {},
 ): string {
-  if (!usage) {
+  if (!usage && delegated.length === 0) {
     return 'No token usage recorded for this session yet.\n\n(USD estimate available after the first model response.)';
   }
-  const priced = usageCostForModel(model, usage);
-  const usd = priced ? priced.costUsd.toFixed(4) : null;
+  const totals = sessionTotals(model, usage, delegated);
+  const bill = totals.usage;
   // One line: what it cost, what it used, on which model. It used to take
   // three labelled lines (Model, Tokens, Est. cost) to say the same thing.
-  const tokens = `${trafficTokens(usage).toLocaleString()} tokens (${usage.promptTokens.toLocaleString()} in${cacheTokenNote(usage)}, ${usage.completionTokens.toLocaleString()} out)`;
+  const tokens = `${trafficTokens(bill).toLocaleString()} tokens (${bill.promptTokens.toLocaleString()} in${cacheTokenNote(bill)}, ${bill.completionTokens.toLocaleString()} out)`;
+  const models = totals.models.join(', ');
   const summary =
-    usd !== null
-      ? `$${usd} estimated · ${tokens} · ${model}`
-      : `${tokens} · ${model} has no price, so no dollar estimate`;
+    totals.usd === null
+      ? `${tokens} · ${models} ${totals.models.length > 1 ? 'have' : 'has'} no price, so no dollar estimate`
+      : `$${totals.usd.toFixed(4)} estimated · ${tokens} · ${models}`;
+  const notes = headlineNotes(totals, scope);
   const breakdown = modelBreakdownLines(model, usage, delegated);
-  return [summary, ...(breakdown.length ? ['', ...breakdown] : [])].join('\n');
+  return [
+    notes ? `${summary} · ${notes}` : summary,
+    ...(breakdown.length ? ['', ...breakdown] : []),
+  ].join('\n');
 }
 
 /**
@@ -448,6 +541,7 @@ export function usageReport(
   session: { currentTurn: number; messageCount: number; turnDurationMs: number },
   toolCallStats?: Array<{ tool: string; calls: number; failures: Record<string, number> }>,
   delegated: readonly DelegatedUsage[] = [],
+  scope: BillScope = {},
 ): string {
   const lines: string[] = ['Session usage', ''];
   lines.push(`Model: ${model}`);
@@ -456,23 +550,36 @@ export function usageReport(
     lines.push(`Last turn duration: ${(session.turnDurationMs / 1000).toFixed(1)}s`);
   }
   lines.push('');
-  if (!usage) {
+  const totals = sessionTotals(model, usage, delegated);
+  if (!usage && totals.delegatedAgents === 0) {
     lines.push('Tokens: (no model response yet this session)');
     lines.push('');
     lines.push('Cost estimate appears after the first response.');
     return lines.join('\n');
   }
+  const bill = totals.usage;
   lines.push(
-    `Tokens: prompt ${usage.promptTokens.toLocaleString()}  •  completion ${usage.completionTokens.toLocaleString()}  •  total ${trafficTokens(usage).toLocaleString()}${cacheTokenNote(usage, '  •  ')}`,
+    `Tokens: prompt ${bill.promptTokens.toLocaleString()}  •  completion ${bill.completionTokens.toLocaleString()}  •  total ${trafficTokens(bill).toLocaleString()}${cacheTokenNote(bill, '  •  ')}`,
   );
-  const priced = usageCostForModel(model, usage);
-  if (priced) {
+  if (totals.usd === null) {
+    lines.push(unpricedLine(totals.models[0] ?? model));
+  } else if (totals.models.length > 1) {
+    // A per-model rate here would describe only the lead's slice of a figure that
+    // now spans every model the session ran on (#370).
     lines.push(
-      `Est. cost: $${priced.costUsd.toFixed(4)}  (local estimate — $${priced.rate.in}/M in, $${priced.rate.out}/M out)`,
+      `Est. cost: $${totals.usd.toFixed(4)}  (local estimate across ${totals.models.length} models)`,
     );
   } else {
-    lines.push(unpricedLine(model));
+    // One model priced the whole total, so its rate describes the whole figure.
+    const rate = resolveModelPricing(totals.models[0])?.rate;
+    lines.push(
+      rate
+        ? `Est. cost: $${totals.usd.toFixed(4)}  (local estimate — $${rate.in}/M in, $${rate.out}/M out)`
+        : unpricedLine(totals.models[0] ?? model),
+    );
   }
+  const notes = headlineNotes(totals, scope);
+  if (notes) lines.push(`(${notes})`);
   if (toolCallStats && toolCallStats.length > 0) {
     const totalCalls = toolCallStats.reduce((sum, entry) => sum + entry.calls, 0);
     const totalFailures = toolCallStats.reduce(
@@ -493,8 +600,15 @@ export function usageReport(
   // both reports rather than one counting an agent and the other not (#370).
   const breakdown = modelBreakdownLines(model, usage, delegated);
   if (breakdown.length) lines.push(...breakdown);
-  lines.push(
-    '(Delegated agents are included above. The session total is priced at the active model, so a mid-session model switch is not split out.)',
-  );
+  // Only true when agents are actually on the report: a session that delegated
+  // nothing says nothing about them (#370).
+  if (totals.delegatedAgents > 0) {
+    lines.push(
+      `(Delegated agents are included above, each priced at the model it ran on. The session's own turns are priced at the active model, so a mid-session model switch is not split out.)`,
+    );
+  }
+  if (scope.sinceResume) {
+    lines.push('(Counted since this session was resumed in this process.)');
+  }
   return lines.join('\n');
 }

@@ -26,8 +26,10 @@ import {
   costReport,
   failureTotal,
   resolveModelPricing,
+  sessionTotals,
   usageCostForModel,
   usageReport,
+  type BillScope,
   type DelegatedUsage,
 } from '../pricing.js';
 import { buildContextBreakdown, buildContextReport, sourceLabel } from '../context-report.js';
@@ -71,6 +73,12 @@ export interface BuiltinCommandContext {
    * host that only has the per-request value (#370).
    */
   sessionUsage?: Usage | null;
+  /**
+   * Set when the cumulative bill starts at a resume in this process rather than at
+   * the session's first turn, so both reports can say what the figure covers
+   * (#370).
+   */
+  sessionUsageSinceResume?: boolean;
   turnDurationMs: number;
   contextHistory: Message[];
   compactBoundaries: CompactBoundary[];
@@ -540,13 +548,22 @@ function billableUsage(context: BuiltinCommandContext): Usage | null {
   return context.sessionUsage ?? context.usage;
 }
 
+/** Where this bill starts counting, so a report can say when it is not the session's start. */
+function billScope(context: BuiltinCommandContext): BillScope {
+  return { sinceResume: context.sessionUsageSinceResume === true };
+}
+
 function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffect {
   const usage = billableUsage(context);
+  const delegated = context.delegatedUsage ?? [];
+  // The sheet is read as the session's spend, so it carries the same total the
+  // text beside it does: the lead plus every delegated agent (#370).
+  const totals = sessionTotals(context.runtimeConfig.model, usage, delegated);
   // The same rate resolution as /cost and the /usage text, so a dated or aliased model id
   // prices here too.
   const priced = usage ? usageCostForModel(context.runtimeConfig.model, usage) : undefined;
   const rate = priced?.rate ?? resolveModelPricing(context.runtimeConfig.model)?.rate;
-  const estimatedCostUsd = priced?.costUsd;
+  const estimatedCostUsd = totals.usd ?? undefined;
   const toolCallStats =
     context.toolCallStats && context.toolCallStats.size > 0
       ? [...context.toolCallStats.entries()]
@@ -570,7 +587,8 @@ function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffec
         turnDurationMs: context.turnDurationMs,
       },
       toolCallStats,
-      context.delegatedUsage ?? [],
+      delegated,
+      billScope(context),
     ),
     display: {
       kind: 'usage',
@@ -578,9 +596,10 @@ function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffec
       currentTurn: context.currentTurn,
       messageCount: context.messages.length,
       turnDurationMs: context.turnDurationMs,
-      usage,
+      usage: usage ? totals.usage : null,
       rate: rate ? { inputPerMillion: rate.in, outputPerMillion: rate.out } : undefined,
       estimatedCostUsd,
+      delegatedAgents: totals.delegatedAgents || undefined,
       toolCallStats,
     },
   };
@@ -823,6 +842,7 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
         context.runtimeConfig.model,
         billableUsage(context),
         context.delegatedUsage ?? [],
+        billScope(context),
       ),
     }),
   },

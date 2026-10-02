@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  accumulateSessionUsage,
+  addUsage,
   usageReport,
   costReport,
   estimateUsageCost,
@@ -35,6 +35,8 @@ const ANTHROPIC_LIST_PRICING: Record<
   'claude-sonnet-4-6': { in: 3, out: 15, cacheRead: 0.3, cacheCreation: 3.75 },
   'claude-fable-5-1': { in: 10, out: 50, cacheRead: 0.25, cacheCreation: 12.5 },
   'claude-fable-5': { in: 10, out: 50, cacheRead: 1, cacheCreation: 12.5 },
+  'claude-mythos-5-1': { in: 10, out: 50, cacheRead: 0.25, cacheCreation: 12.5 },
+  'claude-mythos-5': { in: 10, out: 50, cacheRead: 1, cacheCreation: 12.5 },
   'claude-haiku-4-5-20251001': { in: 1, out: 5, cacheRead: 0.1, cacheCreation: 1.25 },
 };
 
@@ -51,10 +53,23 @@ describe('published Claude rates (#370)', () => {
   it('leaves no current Claude model unpriced, so a USD budget does not refuse the run', () => {
     // `checkBeforeModelCall` refuses every call for a model with no rate, which
     // made a budgeted run stop outright on any model the table had not caught up
-    // with (#370).
-    for (const model of ['claude-opus-5-5', 'claude-opus-4-6', 'claude-sonnet-4-6']) {
+    // with (#370). Read the ids out of the table rather than restating them: a
+    // row added without a test here would fail the budget rail silently.
+    const claudeModels = [
+      ...Object.keys(PRICING).filter((model) => model.startsWith('claude-')),
+      'claude-mythos-5-1',
+      'claude-mythos-5',
+    ];
+    for (const model of claudeModels) {
       expect(hasKnownPricing(model), model).toBe(true);
     }
+  });
+
+  it('leaves the two models with no published rate here unpriced on purpose', () => {
+    // Named as intentionally absent above the table: our source has no verified
+    // rate for either, and a guessed one is an enforced wrong figure.
+    expect(hasKnownPricing('claude-opus-4-5')).toBe(false);
+    expect(hasKnownPricing('claude-sonnet-4-5')).toBe(false);
   });
 });
 
@@ -156,6 +171,28 @@ describe('model family resolution', () => {
     // to `claude-fable-5` — two different models, priced as one.
     expect(resolveModelPricing('claude-opus-5-5-20260301')?.key).toBe('claude-opus-5-5');
     expect(resolveModelPricing('claude-sonnet-5-2026-01-15')?.key).toBe('claude-sonnet-5');
+  });
+
+  it('still accepts the short snapshot stamps providers append (#370)', () => {
+    // Reading "date only" as "8 digits only" broke the stamps OpenAI ships: a
+    // 4-digit MMDD (`gpt-4o-0806`) and a 3-digit zero-led snapshot
+    // (`gpt-5-001`). Both are the same model as their prefix, and leaving them
+    // unpriced makes a USD budget refuse the call.
+    expect(resolveModelPricing('gpt-4o-0806')?.key).toBe('gpt-4o');
+    expect(resolveModelPricing('gpt-4o-0613')?.key).toBe('gpt-4o');
+    expect(resolveModelPricing('gpt-5-001')?.key).toBe('gpt-5');
+    expect(hasKnownPricing('gpt-4o-0806')).toBe(true);
+  });
+
+  it('still refuses a short version suffix (#370)', () => {
+    // The reason the matcher is date-only at all: 1 or 2 digits is a version, not
+    // a stamp, and `-4-6` is two of them.
+    expect(resolveModelPricing('gpt-4o-45')).toBeUndefined();
+    expect(resolveModelPricing('gpt-5-5')).toBeUndefined();
+    expect(resolveModelPricing('gpt-5-1')).toBeUndefined();
+    expect(resolveModelPricing('gpt-5-4-6')).toBeUndefined();
+    // An exact row is still its own row, not its prefix's.
+    expect(resolveModelPricing('claude-opus-5-5')?.key).toBe('claude-opus-5-5');
   });
 
   it('refuses to price a version-suffixed id from its own prefix (#370)', () => {
@@ -382,12 +419,12 @@ describe('session-cumulative usage', () => {
     // `/cost` used to price `context.usage`, which the TUI replaces on every
     // model response and nulls on every send: after turns of 1,100 and 2,200
     // tokens it reported 2,200 for the session (#370).
-    const first = accumulateSessionUsage(null, {
+    const first = addUsage(null, {
       promptTokens: 1000,
       completionTokens: 100,
       totalTokens: 1100,
     });
-    const second = accumulateSessionUsage(first, {
+    const second = addUsage(first, {
       promptTokens: 2000,
       completionTokens: 200,
       totalTokens: 2200,
@@ -402,14 +439,14 @@ describe('session-cumulative usage', () => {
   });
 
   it('sums cache counts when the provider reports them', () => {
-    const first = accumulateSessionUsage(null, {
+    const first = addUsage(null, {
       promptTokens: 10,
       completionTokens: 1,
       totalTokens: 11,
       cacheReadInputTokens: 100,
       cacheCreationInputTokens: 200,
     });
-    const second = accumulateSessionUsage(first, {
+    const second = addUsage(first, {
       promptTokens: 20,
       completionTokens: 2,
       totalTokens: 22,
@@ -417,6 +454,34 @@ describe('session-cumulative usage', () => {
     });
     expect(second.cacheReadInputTokens).toBe(400);
     expect(second.cacheCreationInputTokens).toBe(200);
+  });
+
+  it('keeps the latest contextTokens, which is a gauge rather than a total (#370)', () => {
+    // The one sum three callers share (`run-accounting.ts`, `store.ts`, the TUI
+    // bill) has to keep this: contextTokens is the pressure the compaction gate
+    // reads, so the latest response's figure is the only true one, and summing it
+    // would report a context window far larger than any request.
+    expect(
+      addUsage(
+        { promptTokens: 1, completionTokens: 0, totalTokens: 1, contextTokens: 90 },
+        {
+          promptTokens: 1,
+          completionTokens: 0,
+          totalTokens: 1,
+          contextTokens: 40,
+        },
+      ).contextTokens,
+    ).toBe(40);
+    expect(
+      addUsage(
+        { promptTokens: 1, completionTokens: 0, totalTokens: 1, contextTokens: 90 },
+        {
+          promptTokens: 1,
+          completionTokens: 0,
+          totalTokens: 1,
+        },
+      ).contextTokens,
+    ).toBe(90);
   });
 });
 
@@ -439,7 +504,10 @@ describe('usageReport counts delegated agents', () => {
     );
     expect(r).toContain('Per model');
     expect(r).toContain('claude-haiku-4-5-20251001 (1 delegated)');
-    expect(r).toContain('3,300');
+    // The headline is the session's whole spend now: the lead's 3,300 plus the
+    // agent's 110, which is also why the lead alone no longer appears there.
+    expect(r).toContain('total 3,410');
+    expect(r).toContain('prompt 3,000');
     expect(r).not.toContain('not yet wired');
   });
 });

@@ -493,6 +493,7 @@ function UsagePanelBody({
 }) {
   const theme = useTheme();
   const usage = data.usage;
+  const delegated = data.delegatedAgents ?? 0;
   const cacheRead = usage?.cacheReadInputTokens ?? 0;
   const cacheWrite = usage?.cacheCreationInputTokens ?? 0;
   const metrics: Metric[] = [
@@ -555,6 +556,11 @@ function UsagePanelBody({
                 : 'Pricing is not configured for this model.'}
             </Text>
           </Box>
+          {delegated ? (
+            <Text color={theme.subtle}>
+              {`incl. ${delegated} delegated agent${delegated === 1 ? '' : 's'}`}
+            </Text>
+          ) : null}
         </>
       ) : (
         <Box flexDirection="column">
@@ -596,7 +602,9 @@ function UsagePanelBody({
         </Box>
       ) : null}
       <Text color={theme.subtle} dimColor>
-        Cost is a local estimate for the active model, not a billing statement.
+        {delegated
+          ? 'Cost is a local estimate across every model this session ran on, not a billing statement.'
+          : 'Cost is a local estimate for the active model, not a billing statement.'}
       </Text>
     </Box>
   );

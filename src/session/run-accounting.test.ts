@@ -357,7 +357,9 @@ describe('spend attribution across snapshot kinds', () => {
     responseId: 'r1',
     status: 'verified',
   } as unknown as ProviderResponseMetadata;
-  const oneDollar = { promptTokens: 333_334, completionTokens: 0, totalTokens: 333_334 };
+  // Exactly $1 of prompt tokens at Sonnet 5's $2/M, so the budget-edge tests
+  // below can assert against the $50.00 cap in round dollars (#370).
+  const oneDollar = { promptTokens: 500_000, completionTokens: 0, totalTokens: 500_000 };
 
   it('does not bill a child with the objective\u2019s restored spend', () => {
     // `snapshotRun` passed the whole ROOT to `makeSnapshot`, so every per-agent
@@ -369,7 +371,7 @@ describe('spend attribution across snapshot kinds', () => {
     accounting.record(context('child-e', 'root-e'), oneDollar, meta);
 
     const child = accounting.snapshotRun('child-e');
-    expect(child?.inclusiveCostUsd).toBeCloseTo(2 / 3, 4);
+    expect(child?.inclusiveCostUsd).toBeCloseTo(1, 4);
     expect(child?.budgetStatus).toBe('within');
   });
 
@@ -384,7 +386,7 @@ describe('spend attribution across snapshot kinds', () => {
     accounting.record(context('root-f', 'root-f'), oneDollar, meta);
 
     const all = accounting.snapshotAll();
-    expect(all.inclusiveCostUsd).toBeCloseTo(49.5 + 2 / 3, 4);
+    expect(all.inclusiveCostUsd).toBeCloseTo(50.5, 4);
     expect(all.budgetStatus).toBe('exceeded');
   });
 

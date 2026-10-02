@@ -134,6 +134,38 @@ describe('CommandPanel', () => {
     expect(writesOutput).not.toContain('cache 0');
   });
 
+  it('says the totals include delegated agents when they do (#370)', () => {
+    // The sheet's numbers already counted the agents; without a line saying so,
+    // a session that spawned agents read as if it had only ever run this model.
+    const view = render(
+      withTheme(
+        <CommandPanel
+          display={{ ...usageDisplay, delegatedAgents: 2 }}
+          fallback="Session usage"
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain('incl. 2 delegated agents');
+    expect(output).toContain('across every model this session ran on');
+    expect(
+      stripAnsi(
+        render(
+          withTheme(
+            <CommandPanel
+              display={usageDisplay}
+              fallback="Session usage"
+              terminalWidth={80}
+              reducedMotion
+            />,
+          ),
+        ).lastFrame(),
+      ),
+    ).not.toContain('delegated');
+  });
+
   it('keeps the context panel inside a narrow terminal', () => {
     const view = render(
       withTheme(

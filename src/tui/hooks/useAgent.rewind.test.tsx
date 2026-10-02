@@ -65,6 +65,7 @@ vi.mock('../../agent/loop.js', () => ({
       callbacks: {
         onText: (content: string) => void;
         onTurnStart: (turn: number) => void;
+        onUsage?: (usage: unknown) => void;
         onCompact?: (history: unknown[], usage: unknown) => Promise<unknown>;
       },
     ) => {
@@ -83,6 +84,10 @@ vi.mock('../../agent/loop.js', () => ({
         });
         callbacks.onTurnStart(2);
         callbacks.onText('continued after compact');
+      } else {
+        callbacks.onTurnStart(1);
+        callbacks.onText('answer');
+        callbacks.onUsage?.({ promptTokens: 1_000, completionTokens: 200, totalTokens: 1_200 });
       }
       return history;
     },
@@ -468,9 +473,146 @@ describe('useAgent rewind integration', () => {
     expect(latest!.sessionId).toBe(sessionId);
     expect(latest!.messages).toEqual([]);
     expect(latest!.usage).toBeNull();
-    // The session bill resets with the conversation it belonged to, never mid-session.
-    expect(latest!.sessionUsage).toBeNull();
     expect(latest!.agentTodos).toEqual([]);
+  });
+
+  it('keeps the session bill across a rewind (#370)', async () => {
+    // A rewind projects the same session id back to an earlier turn, and the
+    // spend before it was really spent: wiping the bill there reported a session
+    // that had spent nothing after the turn it just restored into existence.
+    const { config, timeline, sessionId } = fixture();
+    timeline.append(sessionId, {
+      type: 'turn_checkpoint',
+      eventId: 'cp1',
+      timestamp: Date.now(),
+      data: {
+        version: 1,
+        checkpointId: 'cp1',
+        userEventId: 'u1',
+        prompt: 'first prompt',
+        checkpoint: { codeUnavailableReason: 'capture failed' },
+      } satisfies TurnCheckpointRecordData,
+    });
+    timeline.append(sessionId, {
+      type: 'user',
+      eventId: 'u1',
+      timestamp: Date.now(),
+      data: { id: 'u1', content: 'first prompt', kind: 'conversation' },
+    });
+    render(
+      <Harness
+        config={config}
+        session={{ ...bootstrap(timeline, sessionId), snapshotStore: snapshotStore() }}
+      />,
+    );
+    await tick();
+
+    await latest!.send('spend some tokens');
+    await tick();
+    expect(latest!.sessionUsage).toMatchObject({ promptTokens: 1_000, totalTokens: 1_200 });
+
+    const result = await latest!.rewind('cp1', 'conversation');
+    await tick();
+
+    expect(result).toMatchObject({ ok: true });
+    expect(latest!.usage).toBeNull();
+    expect(latest!.sessionUsage).toMatchObject({ promptTokens: 1_000, totalTokens: 1_200 });
+  });
+
+  it('keeps the resumed scope on a rewind inside the resumed session (#370)', async () => {
+    // The bill survives a rewind, so where it starts has to survive with it:
+    // dropping the label made `/cost` imply the figure covered the whole session
+    // when it only counted from the resume.
+    const { config, timeline, sessionId } = fixture();
+    // A resume of the session already open is a no-op, so the rewind needs a
+    // session that was resumed into.
+    const resumedId = timeline.create({ cwd: config.workspace });
+    timeline.append(resumedId, {
+      type: 'turn_checkpoint',
+      eventId: 'cp1',
+      timestamp: Date.now(),
+      data: {
+        version: 1,
+        checkpointId: 'cp1',
+        userEventId: 'u1',
+        prompt: 'first prompt',
+        checkpoint: { codeUnavailableReason: 'capture failed' },
+      } satisfies TurnCheckpointRecordData,
+    });
+    timeline.append(resumedId, {
+      type: 'user',
+      eventId: 'u1',
+      timestamp: Date.now(),
+      data: { id: 'u1', content: 'first prompt', kind: 'conversation' },
+    });
+    render(
+      <Harness
+        config={config}
+        session={{
+          ...bootstrap(timeline, sessionId),
+          store: timeline,
+          snapshotStore: snapshotStore(),
+        }}
+      />,
+    );
+    await tick();
+
+    await latest!.resumeConversation(resumedId);
+    await tick();
+    expect(latest!.sessionId).toBe(resumedId);
+    expect(latest!.sessionUsageSinceResume).toBe(true);
+
+    await latest!.send('spend some tokens');
+    await tick();
+    expect(latest!.sessionUsage).toMatchObject({ promptTokens: 1_000, totalTokens: 1_200 });
+
+    const result = await latest!.rewind('cp1', 'conversation');
+    await tick();
+
+    expect(result).toMatchObject({ ok: true });
+    expect(latest!.sessionId).toBe(resumedId);
+    expect(latest!.sessionUsage).toMatchObject({ promptTokens: 1_000, totalTokens: 1_200 });
+    expect(latest!.sessionUsageSinceResume).toBe(true);
+  });
+
+  it('starts the bill again when a new conversation replaces the session (#370)', async () => {
+    const { config, timeline, sessionId } = fixture();
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    await latest!.send('spend some tokens');
+    await tick();
+    expect(latest!.sessionUsage).toMatchObject({ promptTokens: 1_000 });
+
+    latest!.clear();
+    await tick();
+
+    expect(latest!.sessionUsage).toBeNull();
+    expect(latest!.sessionUsageSinceResume).toBe(false);
+  });
+
+  it('marks the bill as counting from a resume (#370)', async () => {
+    const { config, timeline, sessionId } = fixture();
+    // A resume of the session already open is a no-op, so this needs a second one.
+    const otherId = timeline.create({ cwd: config.workspace });
+    render(
+      <Harness config={config} session={{ ...bootstrap(timeline, sessionId), store: timeline }} />,
+    );
+    await tick();
+
+    await latest!.send('spend some tokens');
+    await tick();
+    expect(latest!.sessionUsageSinceResume).toBe(false);
+
+    await latest!.resumeConversation(otherId);
+    await tick();
+
+    // The persisted carry is deliberately not seeded (it is root-inclusive of
+    // delegated spend, which is counted separately), so the bill starts empty and
+    // says that is what it did.
+    expect(latest!.sessionId).toBe(otherId);
+    expect(latest!.sessionUsage).toBeNull();
+    expect(latest!.sessionUsageSinceResume).toBe(true);
   });
 
   it('rolls files back when appending the rewind record fails', async () => {

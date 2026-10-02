@@ -223,6 +223,15 @@ export interface AgentSessionCompactRequest {
   runtime?: SessionRuntime;
   timelineStore?: Pick<SessionStoreInterface, 'append'>;
   isCurrent?: () => boolean;
+  /**
+   * Provider usage from the compaction's own model calls (the summarizer and, in
+   * the deferred flow, the judge).
+   *
+   * Run accounting already charges these to the root run, but a host that keeps
+   * its own session bill never heard about them, so `/cost` named a figure below
+   * what the session had spent (#370).
+   */
+  onUsage?: (usage: Usage) => void;
   onCommitted?: (
     result: Extract<CompactResult, { status: 'compacted' }>,
     boundary: CompactBoundary,
@@ -251,6 +260,7 @@ export interface AgentSessionCommitCompactRequest {
   runtime?: SessionRuntime;
   timelineStore?: Pick<SessionStoreInterface, 'append'>;
   isCurrent?: () => boolean;
+  onUsage?: AgentSessionCompactRequest['onUsage'];
   onCommitted?: AgentSessionCompactRequest['onCommitted'];
 }
 
@@ -946,7 +956,7 @@ export class AgentSession {
     if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
     this.registerUsageTarget(request, runtime);
     const result = await this.compactRunner(request.config, request.history, {
-      ...this.accountedOptions(request.options, request.runContext, runtime),
+      ...this.accountedOptions(request.options, request.runContext, runtime, request.onUsage),
       sessionId: request.sessionId,
     });
     if (result.status !== 'compacted') return { result };
@@ -967,7 +977,7 @@ export class AgentSession {
     if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
     this.registerUsageTarget(request, runtime);
     const result = await this.compactRunner(request.config, request.history, {
-      ...this.accountedOptions(request.options, request.runContext, runtime),
+      ...this.accountedOptions(request.options, request.runContext, runtime, request.onUsage),
       sessionId: request.sessionId,
     });
     if (result.status !== 'compacted') return { status: result.status, result };
@@ -1015,6 +1025,7 @@ export class AgentSession {
       { ...request.options, trigger: prepared.trigger },
       request.runContext,
       runtime,
+      request.onUsage,
     );
     const judge = await this.judgeRunner(request.config, applied, delta, {
       signal: accounted.signal,
@@ -1047,11 +1058,15 @@ export class AgentSession {
     });
   }
 
-  /** The compactor's model calls charged to the run, the way `compact` has always charged them. */
+  /**
+   * The compactor's model calls charged to the run, the way `compact` has always charged
+   * them, and reported to the host's own session bill when it keeps one (#370).
+   */
   private accountedOptions(
     options: AgentSessionCompactRequest['options'],
     runContext: AgentRunContext | undefined,
     runtime: SessionRuntime,
+    onUsage?: AgentSessionCompactRequest['onUsage'],
   ): AgentSessionCompactRequest['options'] {
     return {
       ...options,
@@ -1062,12 +1077,16 @@ export class AgentSession {
             return runtime.runAccounting.checkBeforeModelCall(runContext.rootRunId, model);
           }
         : options.beforeModelCall,
-      onUsage: runContext
-        ? (usage, metadata) => {
-            runtime.runAccounting.record(runContext, usage, metadata);
-            options.onUsage?.(usage, metadata);
-          }
-        : options.onUsage,
+      // Left exactly as it was when there is nothing to chain: a compaction with
+      // no run context and no host callback hands the runner its own options back.
+      onUsage:
+        runContext || onUsage
+          ? (usage, metadata) => {
+              if (runContext) runtime.runAccounting.record(runContext, usage, metadata);
+              options.onUsage?.(usage, metadata);
+              onUsage?.(usage);
+            }
+          : options.onUsage,
       onUsageMissing: runContext
         ? (metadata) => {
             runtime.runAccounting.markUsageUnknown(runContext, metadata, 'compaction_usage');
