@@ -232,4 +232,24 @@ describe('AtomicJsonWriter', () => {
     expect(writer.write(target, { version: 'new' }).status).toBe('ok');
     expect(now).toBeGreaterThanOrEqual(15);
   });
+
+  it('releases the lock before an awaited asynchronous write resolves', async () => {
+    // The rename is what makes the target readable, and the lock it held is released after that
+    // rename rather than before it — which a caller that awaits the write must not be able to see
+    // between the two. A directory listing taken the moment the promise resolves is a listing of a
+    // writer that has finished with it: the lock gone and no temp file left, on every path the
+    // result can be produced by, not only the successful one sampled here.
+    const { target } = fixture();
+    const writer = new AtomicJsonWriter({
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 10,
+      hostname: 'test-host',
+    });
+
+    const result = await writer.writeAsync(target, { version: 'new' });
+
+    expect(result.status).toBe('ok');
+    expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ version: 'new' });
+    expect(readdirSync(directory)).toEqual(['record.json']);
+  });
 });

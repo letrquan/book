@@ -121,6 +121,14 @@ describe('AgentManager lifecycle', () => {
     const runLoop = vi.fn();
     const removeSnapshot = vi.fn(async () => {});
     const writer = {
+      // The lease heartbeat is written off the caller's thread; the double stands in for the whole
+      // writer, so this is the half of it that path uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string) =>
         target.includes(`${join('records', '')}`)
           ? {
@@ -263,6 +271,14 @@ describe('AgentManager lifecycle', () => {
     config.settings.agents.persist = true;
     let recordWrites = 0;
     const writer = {
+      // The lease heartbeat is written off the caller's thread; the double stands in for the whole
+      // writer, so this is the half of it that path uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string) => {
         if (target.includes(`${join('records', '')}`) && ++recordWrites > 1) {
           return {
@@ -2698,5 +2714,136 @@ describe("a managed child's refusal reaches the operator", () => {
     expect(late.some((e) => e.type === 'agent_notice')).toBe(false);
     expect(await manager.list()).toHaveLength(1);
     manager.dispose();
+  });
+});
+
+describe("a plan's shared snapshot (#357)", () => {
+  it("is not the first asker's to cancel, so stopping one agent leaves the others their snapshot", async () => {
+    // The snapshot belongs to the plan: every agent spawned into it awaits the same memoized
+    // promise. It used to be created with the `AbortSignal` of whichever run asked for it first,
+    // which handed that one agent a switch over the snapshot everybody else was waiting on — so
+    // stopping agent A cancelled the git calls agents B and C still needed, and those two failed on
+    // a cancellation nobody asked for.
+    //
+    // The seed below is what reaches the run-time path where a caller signal was threaded: a queued
+    // patcher from a previous process, which carries its plan but no snapshot of its own. It is
+    // re-driven on start, so it is a real run with a real abort controller, and stopping it is the
+    // act under test.
+    const root = tempRoot();
+    const bookHome = tempRoot();
+    vi.stubEnv('BOOK_HOME', bookHome);
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+    config.settings.agents.maxConcurrent = 3;
+    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
+    store.savePlan({
+      id: 'plan-1',
+      taskShape: 'three independent questions',
+      issueQuality: 'clear',
+      topology: 'parallel_research',
+      rationale: 'independent',
+      agentBudget: 3,
+      createdAt: 1,
+    });
+    store.saveAgent({
+      id: 'first-asker',
+      name: 'patcher',
+      role: 'patcher',
+      description: '',
+      prompt: 'the run that asked for the snapshot first',
+      purpose: 'the run that asked for the snapshot first',
+      planId: 'plan-1',
+      status: 'interrupted',
+      stopReason: 'process_exit',
+      resumable: true,
+      resumedFromStatus: 'running',
+      applicationStatus: 'not_applied',
+      referencedEvidenceIds: [],
+      transcript: [],
+      pendingMessages: [],
+      isolation: 'worktree',
+      runSequence: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    } as unknown as Parameters<AgentStore['saveAgent']>[0]);
+    store.dispose();
+
+    let releaseSnapshot: () => void = () => {};
+    let snapshotCalls = 0;
+    const started = new Promise<void>((resolve) => {
+      queueMicrotask(() => resolve());
+    });
+    const manager = new AgentManager(config, [], {
+      storeRoot: bookHome,
+      findGitRoot: async () => root,
+      // A signal-aware double, which is what makes this test able to fail: the real
+      // `createSyntheticSnapshot` threads the signal it is given into every git call it makes, so a
+      // stop cancels the work in flight. A double that dropped the signal would pass with the bug
+      // still in the code.
+      createSnapshot: async (_repoRoot, _includeUntracked, signal) => {
+        snapshotCalls += 1;
+        await new Promise<void>((resolve, reject) => {
+          if (signal?.aborted) {
+            reject(new Error('Snapshot cancelled.'));
+            return;
+          }
+          signal?.addEventListener('abort', () => reject(new Error('Snapshot cancelled.')), {
+            once: true,
+          });
+          releaseSnapshot = resolve;
+        });
+        return snapshot(root);
+      },
+      createWorktree: async (_snapshot, agentId) => ({
+        path: root,
+        branch: `branch-${agentId}`,
+      }),
+      commitWork: async () => undefined,
+      runLoop: async (_config, _registry, prompt, history) => {
+        await started;
+        return [
+          ...history,
+          {
+            id: `a-${prompt}`,
+            role: 'assistant',
+            content: `Finished ${prompt}`,
+            includeInContext: true,
+            timestamp: Date.now(),
+          },
+        ];
+      },
+    });
+    try {
+      await manager.list();
+      // Wait for the resumed run to be inside the snapshot, which is where it stops being a promise
+      // about the plan and starts being the one agent's own work.
+      for (let attempt = 0; attempt < 100 && snapshotCalls === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(snapshotCalls).toBe(1);
+
+      // Two more agents into the same plan, both waiting on that same pending snapshot.
+      const waiting = Promise.all(
+        ['one', 'two'].map((prompt) =>
+          manager.spawn({ agent: 'patcher', prompt, planId: 'plan-1' }),
+        ),
+      );
+      // The stop. Nothing about it may reach the snapshot; it is the first asker, not the owner.
+      await manager.stop('first-asker', 'requested');
+      releaseSnapshot();
+      const spawned = await waiting;
+
+      expect(snapshotCalls, 'the plan takes one snapshot, however many agents ask').toBe(1);
+      expect(spawned.map((record) => record.status)).toEqual(['queued', 'queued']);
+      const snapshotIds = new Set(spawned.map((record) => record.snapshotId));
+      expect(snapshotIds).toEqual(new Set(['snapshot']));
+      const finished = await Promise.all(spawned.map((record) => manager.wait(record.id, 2_000)));
+      expect(finished.map((record) => record.status)).toEqual(['completed', 'completed']);
+      // And the plan kept its snapshot: a stop cleared nothing that the next agent needs.
+      expect(await manager.get('first-asker')).toMatchObject({ status: 'stopped' });
+    } finally {
+      releaseSnapshot();
+      manager.dispose();
+    }
   });
 });

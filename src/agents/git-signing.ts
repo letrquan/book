@@ -48,6 +48,15 @@ export interface RunOptions {
   allowExitCodes?: number[];
   /** Kill the child and reject after this long. */
   timeoutMs?: number;
+  /**
+   * The caller's own cancellation, which kills the child with it.
+   *
+   * A timeout bounds a call that hangs by itself; this is for the caller that has stopped caring.
+   * An agent that is stopped still has its snapshot to take and its result to apply, and those are
+   * the longest git calls in the flow, so threading the run's signal is what makes a stop take
+   * effect now rather than at the next timeout (#357).
+   */
+  signal?: AbortSignal;
   /** Write this to the child's stdin instead of leaving stdin closed. */
   input?: string;
   /** Added to Book's own environment and to the hardening every call carries. */

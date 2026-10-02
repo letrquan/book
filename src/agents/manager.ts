@@ -638,6 +638,15 @@ export class AgentManager {
     this.emit(event);
   }
 
+  /**
+   * Turn a write's result into either "it is on disk" or the error an operator sees, and report the
+   * degradation while doing it.
+   *
+   * A `cancelled` result is the one this throws for rather than reports. Only a caller that asked a
+   * write not to land can get one, and the only such caller is the lease heartbeat, which does not
+   * come through here — so reaching it means a required write was withdrawn by something that was
+   * never going to read the outcome, and the honest answer is that the write did not happen.
+   */
   private requirePersisted(result: AgentStoreWriteResult, operation: string): void {
     if (result.status === 'ok') {
       if (this.persistenceState !== 'healthy' && this.store?.getPersistenceState() === 'healthy') {
@@ -665,6 +674,15 @@ export class AgentManager {
         retrying: false,
         timestamp: Date.now(),
       });
+    }
+    if (result.status === 'cancelled') {
+      throw new AgentManagerError(
+        `Agent state storage did not persist while trying to ${operation}.`,
+        'agent_store_unavailable',
+        false,
+        'Retry the operation; nothing was written.',
+        { attempts: result.attempts },
+      );
     }
     if (result.status === 'busy') {
       throw new AgentManagerError(
@@ -789,6 +807,21 @@ export class AgentManager {
     return Array.from(this.plans.values(), clone);
   }
 
+  /**
+   * The plan's snapshot, taken once and shared by every agent in the plan.
+   *
+   * It takes **no** caller signal, and that is the decision rather than a gap. The snapshot
+   * belongs to the plan, not to the run that happened to ask for it first: the promise below is
+   * memoized per plan, so every later agent in that plan awaits the very same one. Threading the
+   * first caller's `AbortSignal` through handed that one agent a switch over the snapshot the
+   * others were waiting on, so stopping agent A cancelled the git calls that agents B and C still
+   * needed, and those two then failed on a cancellation nobody asked for (#357).
+   *
+   * What still bounds the work is each git call's own timeout in `git-isolation.ts`, which is the
+   * floor for every snapshot here whatever asks for one, and a caller with no signal of its own
+   * gets the same guarantee a stopped agent does: a snapshot that never finishes fails rather than
+   * holding an `agents.maxConcurrent` slot open.
+   */
   private async snapshotForPlan(planId: string): Promise<AgentSnapshot> {
     const existingId = this.planSnapshots.get(planId);
     if (existingId) {
@@ -1503,6 +1536,7 @@ export class AgentManager {
           record.id,
           this.options.worktreeRoot,
           validationHead,
+          controller.signal,
         );
         record.worktree = worktree.path;
         record.branch = worktree.branch;

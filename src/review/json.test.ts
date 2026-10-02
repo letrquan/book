@@ -40,4 +40,45 @@ describe('extractJsonObject', () => {
     expect(extractJsonObject('{"a": ')).toBeUndefined();
     expect(extractJsonObject('```json\n{"a": ')).toBeUndefined();
   });
+
+  it('reads a bare object whose value holds a fenced block (#245)', () => {
+    // A memory whose body quotes a fenced code block, written bare: the whole
+    // text is the only candidate and it balances despite the fence inside the
+    // string. Extraction must not depend on the fence runs at all.
+    const body = 'release steps:\n```bash\nnpm test\n```\n';
+    const json = JSON.stringify({ title: 'Fence', body });
+    expect(extractJsonObject(json)).toBe(json);
+    expect(parseJsonObject(json)).toEqual({ title: 'Fence', body });
+  });
+
+  it('reads the object itself when its value quotes a fenced object (#245)', () => {
+    // The shape that actually broke. The two ``` runs are inside a string
+    // value, and pairing them yields a balanced object — the one the string
+    // quotes — which is not the answer. A fence inside a string value is
+    // content, so the object enclosing it is what gets read.
+    const json = JSON.stringify({
+      title: 'Fence',
+      body: 'the shape I mean is:\n```json\n{"pick":"patch"}\n```\n',
+    });
+    expect(extractJsonObject(json)).toBe(json);
+    expect(parseJsonObject(json)).toEqual({
+      title: 'Fence',
+      body: 'the shape I mean is:\n```json\n{"pick":"patch"}\n```\n',
+    });
+  });
+
+  it('reads the same object when it is wrapped in an outer fence (#245)', () => {
+    const json = JSON.stringify({
+      title: 'Fence',
+      body: 'the shape I mean is:\n```json\n{"pick":"patch"}\n```\n',
+    });
+    expect(extractJsonObject(`\`\`\`json\n${json}\n\`\`\``)).toBe(json);
+  });
+
+  it('still prefers the fenced object over an example ahead of it', () => {
+    // The example here is outside every fence, so the whole-text read stops
+    // before the answer and the fenced one still wins.
+    const reply = 'Like {"not": "this"}:\n```json\n{"a": 1}\n```';
+    expect(parseJsonObject(reply)).toEqual({ a: 1 });
+  });
 });

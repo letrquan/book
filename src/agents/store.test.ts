@@ -7,6 +7,8 @@ import {
   rmSync,
   writeFileSync,
 } from 'fs';
+import { open as openAsync, rename as renameAsync } from 'fs/promises';
+import type { FileHandle } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -178,6 +180,14 @@ describe('AgentStore recovery', () => {
     let recordAttempts = 0;
     const persisted: AgentRecord[] = [];
     const writer = {
+      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
+      // writer, so this is the half of it the heartbeat uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string, value: unknown) => {
         if (!target.includes(`${join('records', '')}`)) {
           return { status: 'ok', target, attempts: 1, elapsedMs: 0 } as const;
@@ -223,6 +233,14 @@ describe('AgentStore recovery', () => {
     const staleTemp = join(root, 'repo', 'records', 'stale-record.tmp');
     const recordWrites: AgentRecord[] = [];
     const writer = {
+      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
+      // writer, so this is the half of it the heartbeat uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string, value: unknown) => {
         if (!target.includes(`${join('records', '')}`)) {
           return { status: 'ok', target, attempts: 1, elapsedMs: 0 } as const;
@@ -263,6 +281,14 @@ describe('AgentStore recovery', () => {
     const staleTemp = join(root, 'repo', 'records', 'equal-revision.tmp');
     const recordWrites: Array<{ value: AgentRecord; preparedTemp?: string }> = [];
     const writer = {
+      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
+      // writer, so this is the half of it the heartbeat uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string, value: unknown, preparedTemp?: string) => {
         if (!target.includes(`${join('records', '')}`)) {
           return { status: 'ok', target, attempts: 1, elapsedMs: 0 } as const;
@@ -304,6 +330,14 @@ describe('AgentStore recovery', () => {
     const staleTemp = join(root, 'repo', 'evidence', 'stale-evidence.tmp');
     const evidenceWrites: EvidenceItem[] = [];
     const writer = {
+      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
+      // writer, so this is the half of it the heartbeat uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string, value: unknown) => {
         if (!target.includes(`${join('evidence', '')}`)) {
           return { status: 'ok', target, attempts: 1, elapsedMs: 0 } as const;
@@ -449,6 +483,14 @@ describe('AgentStore recovery', () => {
     const tempPath = join(records, 'busy-recovery.json.999.123456.tmp');
     writeFileSync(tempPath, JSON.stringify(newer));
     const writer = {
+      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
+      // writer, so this is the half of it the heartbeat uses.
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
       write: vi.fn((target: string, _value: unknown, preparedTemp?: string) =>
         target.includes(`${join('records', '')}`) && preparedTemp
           ? {
@@ -704,5 +746,368 @@ describe('AgentStore recovery of host-owned agents', () => {
     for (const recovered of reopened.recoverAbandonedAgents()) {
       expect(recovered.completionDeliveredSequence).toBe(recovered.completionSequence);
     }
+  });
+});
+/**
+ * The heartbeat is the one write nobody waits for: it runs on a timer for as long as the process
+ * lives, and what it writes is read by other Book instances rather than by this one. So it is
+ * written off the caller's thread, which is only a good trade if the properties below hold — a tick
+ * that is skipped rather than queued, a lease file with the contents it always had, and a dispose
+ * that leaves nothing behind (#357).
+ *
+ * The slow disk is injected through the writer's asynchronous filesystem rather than through a
+ * stubbed writer, so the writes these tests watch are ones the real atomic protocol made: a lock, a
+ * temp file, an fsync and a rename, with only the timing replaced. The rename is where the hold is,
+ * because it is the last step — the one that can put a file back after dispose deleted it.
+ *
+ * The tick is replaced too, and that is the other half of making a listing mean something. A
+ * heartbeat on real timers is still writing while the assertions read the directory, so a lock file
+ * appearing is not a leftover but the next write arriving; the clock below makes every tick
+ * something a test delivers, and therefore something that cannot arrive on its own.
+ */
+describe('AgentStore lease heartbeat', () => {
+  const instanceId = '44444444-4444-4444-8444-444444444444';
+  const instancesDirectory = (directory: string) => join(directory, 'repo', 'instances');
+  const leasePath = (directory: string) =>
+    join(instancesDirectory(directory), `${instanceId}.json`);
+  const lockPath = (directory: string) => `${leasePath(directory)}.lock`;
+  const contents = (directory: string) => readdirSync(instancesDirectory(directory));
+
+  /**
+   * How long a wait may last before it counts as a failure, and how often it samples.
+   *
+   * A heartbeat is a lock, a write, an fsync and a rename, all on the thread pool, and a Windows CI
+   * disk under coverage takes seconds for that rather than milliseconds. The budget is therefore
+   * generous, while the interval stays small, because the interval is what decides how soon a
+   * landed write is noticed and the budget is only what a failure waits before it is reported.
+   */
+  const WAIT_TIMEOUT_MS = 15_000;
+  const POLL_INTERVAL_MS = 5;
+
+  /** Poll until a condition holds, so the assertions are about what happened, not how fast. */
+  async function waitFor(check: () => boolean, what: string): Promise<void> {
+    const deadline = Date.now() + WAIT_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (check()) return;
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+    if (check()) return;
+    throw new Error(`Timed out waiting for ${what}`);
+  }
+
+  /**
+   * A disk whose next heartbeat rename is held open, which is what a slow disk looks like from here.
+   *
+   * `renamed` records renames that have finished rather than ones that were attempted, so a count of
+   * zero means no write completed rather than that one was refused.
+   */
+  function slowDisk(): {
+    fsAsync: {
+      open: (path: string, flags: string, mode?: number) => Promise<FileHandle>;
+      rename: (from: string, to: string) => Promise<void>;
+    };
+    renamed: string[];
+    holdNextRename: () => { started: Promise<void>; release: () => void };
+  } {
+    const renamed: string[] = [];
+    let gate: Promise<void> | undefined;
+    let markStarted: (() => void) | undefined;
+    let releaseGate: (() => void) | undefined;
+    let held = false;
+    return {
+      renamed,
+      holdNextRename: () => {
+        held = true;
+        gate = new Promise<void>((resolve) => {
+          releaseGate = resolve;
+        });
+        return {
+          started: new Promise<void>((resolve) => {
+            markStarted = resolve;
+          }),
+          release: () => releaseGate?.(),
+        };
+      },
+      fsAsync: {
+        open: (path, flags, mode) => openAsync(path, flags, mode),
+        rename: async (from, to) => {
+          if (held) {
+            held = false;
+            markStarted?.();
+            await gate;
+          }
+          await renameAsync(from, to);
+          renamed.push(to);
+        },
+      },
+    };
+  }
+
+  /**
+   * The clock the store schedules its heartbeat on, held by the test rather than run by it.
+   *
+   * The store arms exactly one heartbeat at a time and takes the clock through the options it
+   * already exposes for this, so a tick happens where a test puts it: never between a directory
+   * listing and the assertion about that listing, and exactly in the middle of a held write where a
+   * test below needs one. Nothing here waits for time to pass; only the disk doubles do.
+   */
+  function heartbeatClock() {
+    let nextId = 1;
+    const due = new Map<number, () => void>();
+    return {
+      /** How many ticks are armed; a `dispose()` that cancels the heartbeat brings this to 0. */
+      armed: () => due.size,
+      /**
+       * Deliver `count` consecutive ticks, as a disk faster than the heartbeat would. Each callback
+       * runs immediately; whatever a tick started keeps running, and whether its rename lands is the
+       * disk double's decision rather than this one's.
+       */
+      tick: (count = 1): void => {
+        for (let index = 0; index < count; index += 1) {
+          const callbacks = Array.from(due.values());
+          due.clear();
+          for (const callback of callbacks) callback();
+        }
+      },
+      options: {
+        setTimeout: ((callback: () => void) => {
+          const id = nextId++;
+          due.set(id, callback);
+          // The store unrefs every timer it arms; a stub has nothing to keep a process alive for.
+          return { id, unref: () => {} } as unknown as NodeJS.Timeout;
+        }) as unknown as typeof setTimeout,
+        clearTimeout: ((timer: NodeJS.Timeout) => {
+          due.delete((timer as unknown as { id: number }).id);
+        }) as unknown as typeof clearTimeout,
+      },
+    };
+  }
+
+  function store(
+    directory: string,
+    disk: ReturnType<typeof slowDisk>,
+    clock: ReturnType<typeof heartbeatClock>,
+  ): AgentStore {
+    return new AgentStore('repo', directory, true, {
+      instanceId,
+      writerOptions: { fsAsync: disk.fsAsync },
+      // The interval production uses; with the clock above, the interval is not what decides when a
+      // tick arrives, and no test below waits for one.
+      heartbeatMs: 5,
+      setTimeout: clock.options.setTimeout,
+      clearTimeout: clock.options.clearTimeout,
+      pid: 4321,
+      hostname: 'test-host',
+      now: () => 1_000,
+    });
+  }
+
+  /**
+   * A heartbeat that has landed and a writer that has finished with the directory.
+   *
+   * The rename is what makes the lease readable, and the lock it held is released after that rename
+   * rather than before it, so the two are visible at different moments: a listing sampled the
+   * instant the rename lands still holds the lock that is about to go away. Waiting for the lock to
+   * be gone is what lets the listing say something about the write being finished.
+   */
+  async function waitForHeartbeat(
+    directory: string,
+    disk: ReturnType<typeof slowDisk>,
+  ): Promise<void> {
+    await waitFor(() => disk.renamed.length > 0, 'the first heartbeat to land');
+    await waitFor(() => !existsSync(lockPath(directory)), 'the heartbeat lock to be released');
+  }
+
+  it('skips a tick that arrives while a heartbeat write is still running', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const disk = slowDisk();
+    const held = disk.holdNextRename();
+    const clock = heartbeatClock();
+    const agents = store(root, disk, clock);
+
+    // The store took its lease in its constructor and that one is synchronous, so this is the first
+    // heartbeat, and it is still in flight when the ticks below arrive.
+    clock.tick();
+    await held.started;
+    clock.tick(12);
+
+    // A dozen ticks came and went against a disk slower than the heartbeat, and none of them started
+    // a write: a queued heartbeat is a write whose content was already stale when it started, and a
+    // queue of them grows with the time the disk is slow. The ticks are delivered rather than waited
+    // for, so this is a dozen and not "however many fitted in sixty milliseconds".
+    expect(disk.renamed).toEqual([]);
+
+    held.release();
+    await waitFor(() => disk.renamed.length >= 1, 'the held heartbeat to land');
+    agents.dispose();
+    await waitFor(() => !existsSync(leasePath(root)), 'the lease to be removed on dispose');
+  });
+
+  it('writes the lease another instance reads, through an fsync and an atomic rename', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const disk = slowDisk();
+    const clock = heartbeatClock();
+    const agents = store(root, disk, clock);
+
+    // A heartbeat, not the constructor's lease: what is being checked here is the asynchronous
+    // protocol, and the file it produced is one that went through the lock, the temp file and the
+    // rename rather than through the synchronous writer. The wait covers the lock as well as the
+    // rename, because this double reports the rename and the writer releases the lock after it, so
+    // the directory has to be back to just the lease before the listing below means anything — and
+    // one tick is all that is delivered, so no second heartbeat can take that lock again afterwards.
+    clock.tick();
+    await waitForHeartbeat(root, disk);
+
+    // The whole document, because every field of it is what another instance reads to decide this
+    // one is alive: without the pid and host there is nothing to fall back on, and without the
+    // heartbeat stamp there is no freshness to judge.
+    expect(JSON.parse(readFileSync(leasePath(root), 'utf8'))).toEqual({
+      schemaVersion: 1,
+      instanceId,
+      pid: 4321,
+      hostname: 'test-host',
+      processStartedAt: expect.any(Number),
+      heartbeatAt: 1_000,
+    });
+    // No temp file and no lock left: the rename is what makes the lease readable, and a leftover of
+    // either is something another instance's stale-lock sweep has to reason about.
+    expect(contents(root)).toEqual([`${instanceId}.json`]);
+
+    agents.dispose();
+    await waitFor(() => !existsSync(leasePath(root)), 'the lease to be removed on dispose');
+  });
+
+  it('disposes during a write without leaving the lease behind or throwing', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const disk = slowDisk();
+    const held = disk.holdNextRename();
+    const clock = heartbeatClock();
+    const agents = store(root, disk, clock);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      clock.tick();
+      await held.started;
+      // Mid-heartbeat: the lock and the temp file are there and the rename has not happened, and
+      // the lease is there too from the constructor.
+      expect(contents(root)).toHaveLength(3);
+      expect(contents(root).some((name) => name.endsWith('.tmp'))).toBe(true);
+      expect(existsSync(leasePath(root))).toBe(true);
+
+      agents.dispose();
+      // Read with no await between the call and the read. A removal that waits for the write in
+      // flight is a removal that does not happen for a process that exits in between, and a lease
+      // left on disk is what another instance reads as a live owner until it goes stale — minutes
+      // for a Book that is never coming back. So `dispose()` unlinks the lease itself, and the
+      // held write is a re-creation risk, not part of the removal.
+      expect(existsSync(leasePath(root)), 'the lease should be gone when dispose() returns').toBe(
+        false,
+      );
+      // Nothing started after the dispose, so there is no later write to land behind it: the armed
+      // heartbeat went with the dispose, and a tick that arrives anyway finds a store that is
+      // disposed and writes nothing. That is why no time has to pass before the check — the
+      // heartbeat cannot begin a write in the window at all.
+      expect(clock.armed()).toBe(0);
+      expect(disk.renamed).toEqual([]);
+
+      held.release();
+      await waitFor(() => contents(root).length === 0, 'the disposed lease to be gone');
+
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      held.release();
+    }
+  });
+
+  it('removes a lease whose write had already passed the point of no return', async () => {
+    // The other end of the same window, and the reason the unlink is repeated when the write settles
+    // rather than only at the end of it. `canCommit` is asked immediately before the rename, so a
+    // write that is *inside* the rename has already passed that question — and the file that rename
+    // produces is the one `dispose()` had just deleted. The rename here is held before it moves a
+    // byte, so the ordering is the one that matters: the store unlinks, the write then lands, and
+    // the settled write has to take the file away again.
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const renamed: string[] = [];
+    let held = false;
+    let unblock = (): void => {};
+    const blocked = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    let reached = (): void => {};
+    const atRename = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const clock = heartbeatClock();
+    const agents = new AgentStore('repo', root, true, {
+      instanceId,
+      writerOptions: {
+        fsAsync: {
+          open: (path, flags, mode) => openAsync(path, flags, mode),
+          rename: async (from, to) => {
+            if (held) {
+              reached();
+              await blocked;
+            }
+            await renameAsync(from, to);
+            renamed.push(to);
+          },
+        },
+      },
+      heartbeatMs: 5,
+      setTimeout: clock.options.setTimeout,
+      clearTimeout: clock.options.clearTimeout,
+      pid: 4321,
+      hostname: 'test-host',
+      now: () => 1_000,
+    });
+    // The constructor's lease is written synchronously and never reaches this double, so the hold is
+    // armed afterwards and the single delivered tick catches the first heartbeat.
+    expect(existsSync(leasePath(root))).toBe(true);
+    held = true;
+    clock.tick();
+    await atRename;
+
+    agents.dispose();
+    expect(existsSync(leasePath(root)), 'the lease should be gone when dispose() returns').toBe(
+      false,
+    );
+
+    // The write `dispose()` could not stop. That it lands is the premise rather than the assertion:
+    // a test where the rename never happened would pass for the wrong reason.
+    unblock();
+    await waitFor(
+      () => renamed.includes(leasePath(root)),
+      'the held heartbeat to put the lease back',
+    );
+    await waitFor(
+      () => !existsSync(leasePath(root)),
+      'the lease the settled write left behind to be removed again',
+    );
+    expect(contents(root)).toEqual([]);
+  });
+
+  it('keeps agent records synchronous, because a caller is told when they are durable', async () => {
+    // The other half of the claim: only the heartbeat moved. `saveAgent` returning has always meant
+    // the record is on disk, and a caller reading the file straight after the call depends on it.
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const disk = slowDisk();
+    const clock = heartbeatClock();
+    const agents = store(root, disk, clock);
+    clock.tick();
+    await waitForHeartbeat(root, disk);
+
+    agents.saveAgent(recordFixture('sync-agent'));
+    const recordPath = join(root, 'repo', 'records', 'sync-agent.json');
+    // Read with no await between the call and the read, which a write on the thread pool could not
+    // be.
+    expect(JSON.parse(readFileSync(recordPath, 'utf8'))).toMatchObject({
+      id: 'sync-agent',
+      status: 'queued',
+    });
+
+    agents.dispose();
+    await waitFor(() => !existsSync(leasePath(root)), 'the lease to be removed on dispose');
   });
 });
