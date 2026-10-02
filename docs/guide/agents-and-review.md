@@ -82,6 +82,14 @@ report says so and the verdict is capped at `inconclusive` — a review never re
 incomplete coverage. Output that fails the JSON contract is preserved verbatim in the report instead
 of being discarded.
 
+The verdict is derived from what survived and what was actually covered, never from the verdict a
+reviewer claimed for itself: `blocking` means a standing critical finding, `recommend` means any
+other standing finding, `clean` means nothing is left and coverage was complete, and
+`inconclusive` means coverage was incomplete, a reviewer reported its own review as inconclusive, or
+only unverifiable findings are left. So a finding below the confidence threshold cannot leave a
+`blocking` verdict behind, and a reviewer that calls a change clean cannot mask a critical finding it
+reported itself.
+
 `--fix` applies only verified findings, one at a time, through the patcher → validator pipeline: a
 patcher produces a patch candidate as evidence, a separate validator must approve that exact
 evidence id (agents cannot approve their own work), and only then is it applied.

@@ -1,4 +1,9 @@
-import { dedupeFindings, filterLowConfidence, rankFindings } from './findings.js';
+import {
+  dedupeFindings,
+  deriveReviewVerdict,
+  filterLowConfidence,
+  rankFindings,
+} from './findings.js';
 import {
   isStructuredReviewReport,
   parseReviewReportDetailed,
@@ -222,13 +227,23 @@ export async function runSingleReview(
     rankFindings(filterLowConfidence(dedupeFindings(parsed.report.findings))),
   );
   const coverage = passCoverage('single', structured, parsed.droppedFindings, findings.length);
+  const verdict = deriveReviewVerdict({
+    findings,
+    coverage: { reviewers: [coverage] },
+    // A completed, structured pass whose own verdict is `inconclusive` is the
+    // one reviewer signal that is not already a coverage entry.
+    reviewerVerdicts: structured ? [parsed.report.verdict] : [],
+  });
   const report: ReviewReport = {
-    verdict: coverage.status === 'completed' ? parsed.report.verdict : 'inconclusive',
+    verdict,
     findings,
     coverage: { reviewers: [coverage] },
   };
   const text = [
     renderCoverageWarnings([coverage]),
+    coverage.status === 'completed' && verdict === 'inconclusive'
+      ? reviewerInconclusiveText('Review')
+      : '',
     renderReviewReport(report),
     coverage.status === 'completed' ? '' : renderRawOutput('reviewer', settled.result),
   ]
@@ -281,6 +296,19 @@ function renderCoverageWarnings(entries: readonly ReviewCoverageEntry[]): string
       return `- ${entry.id}: ${entry.status}${dropped}${entry.error ? ` — ${entry.error}` : ''}`;
     }),
   ].join('\n');
+}
+
+/**
+ * Why an otherwise clean-looking run is not a clean run.
+ *
+ * A reviewer that reported its own review as `inconclusive` completed its pass
+ * and satisfied the contract, so there is no coverage entry to warn about — but
+ * the pipeline must not answer for it with "no confirmed findings", which reads
+ * as a review that checked and found nothing. Only reached when every pass
+ * completed: with an incomplete pass the coverage warning above already says it.
+ */
+function reviewerInconclusiveText(prefix: string): string {
+  return `${prefix}: a reviewer reported its review as inconclusive.`;
 }
 
 export async function runDeepReview(
@@ -412,25 +440,28 @@ export async function runDeepReview(
         REVIEW_LENSES.findIndex((lens) => lens.id === left.id) -
         REVIEW_LENSES.findIndex((lens) => lens.id === right.id),
     );
-    const completeDiscovery = reviewerCoverage.every((entry) => entry.status === 'completed');
     const candidates = reindex(rankFindings(filterLowConfidence(dedupeFindings(rawFindings))));
     if (candidates.length === 0) {
+      // Nothing survived discovery, so there is nothing left to verify. The
+      // result still follows the coverage: one lens saying `blocking` about a
+      // finding the confidence filter dropped does not make the change blocking,
+      // and one lens saying `inconclusive` does not make it clean.
       const report: ReviewReport = {
-        verdict:
-          completeDiscovery && reviewerVerdicts.every((verdict) => verdict === 'clean')
-            ? 'clean'
-            : 'inconclusive',
+        verdict: deriveReviewVerdict({
+          findings: [],
+          coverage: { reviewers: reviewerCoverage },
+          reviewerVerdicts,
+        }),
         findings: [],
         coverage: { reviewers: reviewerCoverage },
       };
       const warning = renderCoverageWarnings(reviewerCoverage);
-      return {
-        target,
-        report,
-        text: [warning || 'Deep review complete: no confirmed findings.', ...rawOutputs].join(
-          '\n\n',
-        ),
-      };
+      const summary =
+        warning ||
+        (report.verdict === 'clean'
+          ? 'Deep review complete: no confirmed findings.'
+          : reviewerInconclusiveText('Deep review'));
+      return { target, report, text: [summary, ...rawOutputs].join('\n\n') };
     }
 
     if (options.signal?.aborted) return cancelledDeepResult(target);
@@ -464,20 +495,12 @@ export async function runDeepReview(
     }
     const verified = applyVerification(candidates, verdicts);
     const ranked = rankFindings(verified);
-    const completeCoverage = completeDiscovery && verifierCoverage.status === 'completed';
-    const verdict = !completeCoverage
-      ? 'inconclusive'
-      : ranked.some(
-            (finding) => finding.verification === 'confirmed' && finding.severity === 'critical',
-          )
-        ? 'blocking'
-        : ranked.some((finding) => finding.verification === 'confirmed')
-          ? 'recommend'
-          : ranked.length > 0
-            ? 'inconclusive'
-            : 'clean';
     const report: ReviewReport = {
-      verdict,
+      verdict: deriveReviewVerdict({
+        findings: ranked,
+        coverage: { reviewers: reviewerCoverage, verifier: verifierCoverage },
+        reviewerVerdicts,
+      }),
       findings: ranked,
       coverage: { reviewers: reviewerCoverage, verifier: verifierCoverage },
     };
@@ -485,7 +508,16 @@ export async function runDeepReview(
     return {
       target,
       report,
-      text: [warning, renderReviewReport(report), ...rawOutputs].filter(Boolean).join('\n\n'),
+      text: [
+        warning,
+        !warning && report.verdict === 'inconclusive'
+          ? reviewerInconclusiveText('Deep review')
+          : '',
+        renderReviewReport(report),
+        ...rawOutputs,
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
     };
   } catch (error) {
     await stopNonTerminal(runner, spawned);

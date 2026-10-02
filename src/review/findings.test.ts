@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
   dedupeFindings,
+  deriveReviewVerdict,
   filterLowConfidence,
   findingKey,
   locationKey,
   rankFindings,
   summariesDescribeSameFinding,
 } from './findings.js';
-import type { ReviewFinding } from './types.js';
+import type { ReviewCoverage, ReviewCoverageEntry, ReviewFinding } from './types.js';
+
+const completePass: ReviewCoverageEntry = { id: 'correctness', status: 'completed', findings: 0 };
+const completeCoverage: ReviewCoverage = { reviewers: [completePass] };
 
 function finding(
   overrides: Partial<ReviewFinding> & { file: string; category: ReviewFinding['category'] },
@@ -198,5 +202,131 @@ describe('filterLowConfidence', () => {
     const low = finding({ file: 'a.ts', category: 'correctness', confidence: 60 });
     const high = finding({ file: 'b.ts', category: 'correctness', confidence: 90 });
     expect(filterLowConfidence([low, high])).toEqual([high]);
+  });
+});
+
+describe('deriveReviewVerdict', () => {
+  function standing(overrides: Partial<ReviewFinding> = {}): ReviewFinding {
+    return finding({ file: 'a.ts', category: 'correctness', ...overrides });
+  }
+
+  it('is inconclusive when a required pass did not complete', () => {
+    expect(
+      deriveReviewVerdict({
+        findings: [],
+        coverage: { reviewers: [completePass, { id: 'security', status: 'partial', findings: 0 }] },
+      }),
+    ).toBe('inconclusive');
+  });
+
+  it('is inconclusive when the verifier did not complete', () => {
+    expect(
+      deriveReviewVerdict({
+        findings: [],
+        coverage: {
+          reviewers: [completePass],
+          verifier: { id: 'verification', status: 'unstructured', findings: 0 },
+        },
+      }),
+    ).toBe('inconclusive');
+  });
+
+  it('treats a reviewer that reported its own review as inconclusive as incomplete coverage', () => {
+    expect(
+      deriveReviewVerdict({
+        findings: [],
+        coverage: completeCoverage,
+        reviewerVerdicts: ['clean', 'inconclusive'],
+      }),
+    ).toBe('inconclusive');
+    // Its own findings are not what decides the verdict, and none are needed.
+    expect(
+      deriveReviewVerdict({
+        findings: [standing({ severity: 'critical' })],
+        coverage: completeCoverage,
+        reviewerVerdicts: ['inconclusive'],
+      }),
+    ).toBe('inconclusive');
+  });
+
+  it('is blocking when a standing critical finding survives', () => {
+    expect(
+      deriveReviewVerdict({
+        findings: [standing({ severity: 'major' }), standing({ severity: 'critical' })],
+        coverage: completeCoverage,
+      }),
+    ).toBe('blocking');
+  });
+
+  it('is recommend for any other standing finding', () => {
+    expect(
+      deriveReviewVerdict({
+        findings: [standing({ severity: 'nit' })],
+        coverage: completeCoverage,
+      }),
+    ).toBe('recommend');
+  });
+
+  it('ignores a reviewer verdict that disagrees with the findings that survived', () => {
+    const critical = standing({ severity: 'critical' });
+    expect(
+      deriveReviewVerdict({
+        findings: [critical],
+        coverage: completeCoverage,
+        reviewerVerdicts: ['clean'],
+      }),
+    ).toBe('blocking');
+    expect(
+      deriveReviewVerdict({
+        findings: [],
+        coverage: completeCoverage,
+        reviewerVerdicts: ['blocking'],
+      }),
+    ).toBe('clean');
+  });
+
+  it('is inconclusive when findings remain but the verifier stood none of them up', () => {
+    const coverage: ReviewCoverage = {
+      reviewers: [completePass],
+      verifier: { id: 'verification', status: 'completed', findings: 1 },
+    };
+    expect(
+      deriveReviewVerdict({
+        findings: [standing({ verification: 'rejected' })],
+        coverage,
+      }),
+    ).toBe('inconclusive');
+    expect(
+      deriveReviewVerdict({
+        findings: [standing({ verification: 'inconclusive' })],
+        coverage,
+      }),
+    ).toBe('inconclusive');
+  });
+
+  it('counts a confirmed finding as standing and a rejected one as not', () => {
+    const coverage: ReviewCoverage = {
+      reviewers: [completePass],
+      verifier: { id: 'verification', status: 'completed', findings: 2 },
+    };
+    expect(
+      deriveReviewVerdict({
+        findings: [standing({ verification: 'rejected', severity: 'critical' })],
+        coverage,
+      }),
+    ).toBe('inconclusive');
+    expect(
+      deriveReviewVerdict({
+        findings: [
+          standing({ verification: 'confirmed', severity: 'critical' }),
+          standing({ verification: 'rejected', severity: 'critical' }),
+        ],
+        coverage,
+      }),
+    ).toBe('blocking');
+  });
+
+  it('is clean only when nothing is left and coverage was complete', () => {
+    expect(deriveReviewVerdict({ findings: [], coverage: completeCoverage })).toBe('clean');
   });
 });

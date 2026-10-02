@@ -731,6 +731,23 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **`/review`'s verdict now follows the surviving findings instead of the reviewer's self-report**
+  (#372). `src/review/orchestration.ts` passed a reviewer's own verdict straight through _after_
+  `filterLowConfidence` had dropped its findings, so the report could contradict itself in both
+  directions: a reviewer that said `blocking` about one finding at confidence 50 produced
+  `blocking` with zero findings, and a reviewer that said `clean` while reporting a critical finding
+  at confidence 95 produced `clean`. The deep path was right where it had candidates — it derived the
+  verdict from the verified findings — but its no-candidate branch required every lens to have _said_
+  `clean`, so four completed lenses where one said `blocking` about a finding that was then filtered
+  out landed on `inconclusive` with the text "Deep review complete: no confirmed findings." and no
+  coverage warning. All three sites now call one helper, `deriveReviewVerdict` in
+  `src/review/findings.ts`: incomplete coverage (including a reviewer that reported its own review
+  as `inconclusive`) caps the result, a standing critical finding is `blocking`, any other standing
+  finding is `recommend`, findings the verifier could neither confirm nor falsify leave it
+  `inconclusive`, and only nothing-left-with-full-coverage is `clean`. A reviewer's own
+  `blocking`/`recommend`/`clean` is never used. When a reviewer reported its own review as
+  inconclusive, the text now says so instead of reading as a clean run.
+
 - **Every git call Book makes for a managed agent is bounded, cancellable, and told the truth
   about what failed** (#357, follow-ups to #348 and #351). Those two turned off the programs a
   checkout could make Book run; eight things about the calls themselves were still wrong, in

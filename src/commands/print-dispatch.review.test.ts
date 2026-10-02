@@ -156,7 +156,9 @@ describe('book -p /review', () => {
     expect(dispatch.kind).toBe('handled');
     if (dispatch.kind !== 'handled') throw new Error('unreachable');
     expect(dispatch.command).toBe('review');
-    expect(dispatch.output).toContain('Verdict: recommend');
+    // Derived from the surviving critical finding, not from the reviewer's own
+    // `recommend` in the fixture (#372).
+    expect(dispatch.output).toContain('Verdict: blocking');
     expect(dispatch.output).toContain('the exported constant changed meaning');
     expect(stub.agents).toEqual(['reviewer']);
   });
@@ -184,7 +186,7 @@ describe('book -p /review', () => {
     const data = reviewData(await resolvePrintCommand('/review', env(stub)));
 
     expect(Object.keys(data).sort()).toEqual(['coverage', 'findings', 'target', 'verdict']);
-    expect(data.verdict).toBe('recommend');
+    expect(data.verdict).toBe('blocking');
     expect(data.findings).toEqual([
       {
         id: 'finding-1',

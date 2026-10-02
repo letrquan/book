@@ -1,4 +1,11 @@
-import { DEFAULT_CONFIDENCE_THRESHOLD, type ReviewFinding, type ReviewSeverity } from './types.js';
+import {
+  DEFAULT_CONFIDENCE_THRESHOLD,
+  type ReviewCoverage,
+  type ReviewCoverageEntry,
+  type ReviewFinding,
+  type ReviewSeverity,
+  type ReviewVerdict,
+} from './types.js';
 
 const SEVERITY_WEIGHT: Record<ReviewSeverity, number> = {
   critical: 4,
@@ -195,4 +202,65 @@ export function filterLowConfidence(
   threshold: number = DEFAULT_CONFIDENCE_THRESHOLD,
 ): ReviewFinding[] {
   return findings.filter((finding) => finding.confidence >= threshold);
+}
+
+export interface ReviewVerdictInput {
+  /** Findings that survived dedup, the confidence filter, and verification. */
+  findings: readonly ReviewFinding[];
+  coverage: ReviewCoverage;
+  /**
+   * The verdict each reviewer reported for its own pass, for the passes that
+   * returned a structured report. Read only to notice a reviewer that told us it
+   * could not conclude — never to produce the result.
+   */
+  reviewerVerdicts?: readonly ReviewVerdict[];
+}
+
+/**
+ * A finding the report still asserts: nothing has falsified it.
+ *
+ * The one-pass path never runs a verifier, so nothing carries a verification
+ * state and every surviving finding stands. The deep path stands only what its
+ * verifier confirmed; `rejected` findings are already dropped, and an
+ * `inconclusive` one is neither evidence for the change nor grounds for calling
+ * it clean.
+ */
+function isStanding(finding: ReviewFinding): boolean {
+  return finding.verification === undefined || finding.verification === 'confirmed';
+}
+
+/**
+ * Derive the verdict from what survived and what was actually covered.
+ *
+ * Deliberately never the verdict a reviewer claimed for itself. A reviewer's own
+ * `blocking` describes what it saw, and its own `clean` describes what it still
+ * believes after a filter the user never saw dropped a critical finding at
+ * confidence 95 — so passing either through would report a conclusion the
+ * surviving findings do not support, in either direction.
+ *
+ * The order is a ladder from "we do not know" to "we checked":
+ *
+ * 1. Any required pass that did not complete caps the verdict at
+ *    `inconclusive`. A review that only partly ran has not cleared the change.
+ * 2. A reviewer that reported *its own* review as `inconclusive` counts as
+ *    incomplete coverage too. It said out loud that it could not conclude, and
+ *    that is knowledge the pipeline does not otherwise have. Its findings stay
+ *    in the report; only its verdict is discounted.
+ * 3. A standing critical finding is `blocking`; any other standing finding is
+ *    `recommend`.
+ * 4. Findings remain but none is standing, so the verifier neither confirmed
+ *    nor falsified them: `inconclusive`, because they are still on the table.
+ * 5. Otherwise `clean` — nothing survived, and the coverage was complete.
+ */
+export function deriveReviewVerdict(input: ReviewVerdictInput): ReviewVerdict {
+  const entries = [...input.coverage.reviewers, input.coverage.verifier].filter(
+    (entry): entry is ReviewCoverageEntry => entry !== undefined,
+  );
+  if (entries.some((entry) => entry.status !== 'completed')) return 'inconclusive';
+  if (input.reviewerVerdicts?.some((verdict) => verdict === 'inconclusive')) return 'inconclusive';
+
+  const standing = input.findings.filter(isStanding);
+  if (standing.some((finding) => finding.severity === 'critical')) return 'blocking';
+  if (standing.length > 0) return 'recommend';
+  return input.findings.length > 0 ? 'inconclusive' : 'clean';
 }
