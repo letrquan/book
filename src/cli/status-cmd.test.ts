@@ -84,8 +84,8 @@ describe('book status', () => {
 
     const status = buildSessionStatus(s.findById(id)!, s.load(id));
     expect(status.usage).toMatchObject({ promptTokens: 3_000, completionTokens: 200 });
-    // (3000*3 + 200*15) / 1e6
-    expect(status.costUsd).toBeCloseTo(0.012, 6);
+    // (3000*2 + 200*10) / 1e6
+    expect(status.costUsd).toBeCloseTo(0.008, 6);
   });
 
   it('says so rather than guessing when a model cannot be priced', () => {

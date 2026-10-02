@@ -872,6 +872,42 @@ describe('AgentSession', () => {
     expect(postCompactCalled).toBe(false);
   });
 
+  it('reports compaction usage to the host so its session bill sees the spend (#370)', () => {
+    // The summarizer and the judge are real model calls, and run accounting
+    // already charges them to the root run. The host's own session bill did not
+    // hear about them at all, so a `/cost` after a compaction named a figure
+    // smaller than what the session had actually spent.
+    const seen: unknown[] = [];
+    const session = new AgentSession({
+      compactRunner: async (_config, _history, options) => {
+        options.onUsage?.(
+          { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
+          {
+            provider: 'anthropic',
+            requestedModel: 'claude-sonnet-5',
+            responseModel: 'claude-sonnet-5',
+            responseId: 'compact-response',
+          },
+        );
+        return compactedResult();
+      },
+    });
+
+    return session
+      .compact({
+        config: defaultConfig(),
+        history: [],
+        sessionId: 'session-1',
+        transcriptOrdinal: 0,
+        options: { trigger: 'auto' },
+        timelineStore: { append: () => {} },
+        onUsage: (usage) => seen.push(usage),
+      })
+      .then(() => {
+        expect(seen).toEqual([{ promptTokens: 20, completionTokens: 5, totalTokens: 25 }]);
+      });
+  });
+
   it('attributes compaction usage to the active root run', async () => {
     const runtime = new SessionRuntime();
     const runContext = createAgentRunContext({

@@ -31,6 +31,7 @@ import type {
   TurnCheckpointRecordData,
 } from '../types/sessions.js';
 import type { ImageAttachment, Message, Usage } from '../types/messages.js';
+import { addUsage } from '../pricing.js';
 import { createDebugLogger } from '../debug-log.js';
 import { normalizeToolResult } from '../tools/result.js';
 import { deriveSessionName } from './name.js';
@@ -517,17 +518,7 @@ export class SessionStore {
       if (record.type === 'usage') {
         const entry = record.data as UsageRecordData;
         if (entry?.version === 1 && entry.usage) {
-          carriedUsage = {
-            promptTokens: (carriedUsage?.promptTokens ?? 0) + (entry.usage.promptTokens ?? 0),
-            completionTokens:
-              (carriedUsage?.completionTokens ?? 0) + (entry.usage.completionTokens ?? 0),
-            totalTokens: (carriedUsage?.totalTokens ?? 0) + (entry.usage.totalTokens ?? 0),
-            cacheCreationInputTokens:
-              (carriedUsage?.cacheCreationInputTokens ?? 0) +
-              (entry.usage.cacheCreationInputTokens ?? 0),
-            cacheReadInputTokens:
-              (carriedUsage?.cacheReadInputTokens ?? 0) + (entry.usage.cacheReadInputTokens ?? 0),
-          };
+          carriedUsage = addUsage(carriedUsage ?? null, entry.usage);
           const model = entry.responseModel ?? entry.requestedModel;
           if (model) carriedModels.add(model);
           // The root-wide set, which is what the carry is actually priced at: a

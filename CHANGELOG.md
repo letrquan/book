@@ -731,6 +731,34 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Correct Claude rates, date-only suffix matching, and session-total `/cost` and `/usage`**
+  (#370). **The price table was stale, missing, and matching versions as dates.** `src/pricing.ts`
+  rated Opus 5 and 4.8/4.7 at $15/$75 per million — three times the published figure — left
+  `claude-opus-4-6` and `claude-sonnet-4-6` with no row at all, and carried an explicit
+  "RE-VERIFY against published pricing" note above the Opus entry it had guessed. The Anthropic
+  block is now the published list, cached 2026-09-25 (input / output / cache read / cache write at
+  the 5-minute TTL, the only TTL Book requests), including the models that had no row
+  (`claude-mythos-5`, `claude-mythos-5-1`): because
+  `checkBeforeModelCall` fails closed on an unknown rate, a missing `claude-opus-4-6` did not degrade
+  a `/cost` figure, it refused _every call_ under a USD budget. **A trailing version digit was read
+  as a date stamp.** `DATED_MODEL_SUFFIX` matched any run of digits after a separator, so
+  `claude-opus-5-5` resolved to the `claude-opus-5` row and `claude-fable-5-1` to `claude-fable-5` —
+  two different models priced as one, off by more than an order of magnitude on each. It now
+  matches a real date only (`-20260115`, `-2026-01-15`, `-0806`, `-001`); a `-5`, `-1`, `-45` or
+  `-4-6` version suffix prices nothing, the same way `gpt-4o-mini` was already refused rather than
+  inheriting `gpt-4o`'s rate. **`/cost` and `/usage` reported only the last request.** Both priced
+  `context.usage`, the per-request figure the context meter keeps: every `onUsage` replaces it and
+  every send, compaction and `/clear` nulls it, so after turns of 1,100 and 2,200 tokens `/cost`
+  said 2,200. Both now price a session-cumulative usage accumulated in `onUsage`: it survives sends,
+  a `/rewind` and a compaction (whose summarizer spends, and is counted), and is reset by `/clear`,
+  `/new` and a resume, which also label the figure as counted from there. `usage` itself is
+  untouched, so the context meter and `/context` are unchanged. **An agent on the lead's own model
+  vanished from both**: its tokens merged into the lead's row, the breakdown had nothing left to
+  show, and the headline priced only the lead. Both now head with the sum over every row and name
+  how many delegated agents it includes; the TUI `/usage` sheet carries that same total and says
+  when its line about agents applies. The lead session is still priced at the active model after a
+  mid-session model switch.
+
 - **`/review`'s verdict now follows the surviving findings instead of the reviewer's self-report**
   (#372). `src/review/orchestration.ts` passed a reviewer's own verdict straight through _after_
   `filterLowConfidence` had dropped its findings, so the report could contradict itself in both

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  addUsage,
   usageReport,
   costReport,
   estimateUsageCost,
@@ -10,9 +11,67 @@ import {
   trafficTokens,
   usageCostUsd,
   PRICING,
+  type ModelPricing,
 } from './pricing.js';
 
 const NO_CACHE = { promptTokens: 1_000, completionTokens: 500, totalTokens: 1_500 };
+
+/**
+ * Anthropic's published price list, $ per million tokens, as of 2026-09-25. Held
+ * here as the expectation rather than read back out of `PRICING`, so a typo in the
+ * table fails this suite instead of quietly defining it (#370).
+ */
+const ANTHROPIC_LIST_PRICING: Record<
+  string,
+  Required<Pick<ModelPricing, 'in' | 'out' | 'cacheRead' | 'cacheCreation'>>
+> = {
+  'claude-opus-5-5': { in: 4, out: 20, cacheRead: 0.2, cacheCreation: 5 },
+  'claude-opus-5': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
+  'claude-opus-4-8': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
+  'claude-opus-4-7': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
+  'claude-opus-4-6': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
+  'claude-sonnet-5-5': { in: 2, out: 10, cacheRead: 0.2, cacheCreation: 2.5 },
+  'claude-sonnet-5': { in: 2, out: 10, cacheRead: 0.2, cacheCreation: 2.5 },
+  'claude-sonnet-4-6': { in: 3, out: 15, cacheRead: 0.3, cacheCreation: 3.75 },
+  'claude-fable-5-1': { in: 10, out: 50, cacheRead: 0.25, cacheCreation: 12.5 },
+  'claude-fable-5': { in: 10, out: 50, cacheRead: 1, cacheCreation: 12.5 },
+  'claude-mythos-5-1': { in: 10, out: 50, cacheRead: 0.25, cacheCreation: 12.5 },
+  'claude-mythos-5': { in: 10, out: 50, cacheRead: 1, cacheCreation: 12.5 },
+  'claude-haiku-4-5-20251001': { in: 1, out: 5, cacheRead: 0.1, cacheCreation: 1.25 },
+};
+
+describe('published Claude rates (#370)', () => {
+  for (const [model, expected] of Object.entries(ANTHROPIC_LIST_PRICING)) {
+    it(`prices ${model} at its published rate`, () => {
+      const resolved = resolveModelPricing(model);
+      expect(resolved?.key).toBe(model);
+      expect(resolved?.rate).toMatchObject(expected);
+      expect(hasKnownPricing(model)).toBe(true);
+    });
+  }
+
+  it('leaves no current Claude model unpriced, so a USD budget does not refuse the run', () => {
+    // `checkBeforeModelCall` refuses every call for a model with no rate, which
+    // made a budgeted run stop outright on any model the table had not caught up
+    // with (#370). Read the ids out of the table rather than restating them: a
+    // row added without a test here would fail the budget rail silently.
+    const claudeModels = [
+      ...Object.keys(PRICING).filter((model) => model.startsWith('claude-')),
+      'claude-mythos-5-1',
+      'claude-mythos-5',
+    ];
+    for (const model of claudeModels) {
+      expect(hasKnownPricing(model), model).toBe(true);
+    }
+  });
+
+  it('leaves the two models with no published rate here unpriced on purpose', () => {
+    // Named as intentionally absent above the table: our source has no verified
+    // rate for either, and a guessed one is an enforced wrong figure.
+    expect(hasKnownPricing('claude-opus-4-5')).toBe(false);
+    expect(hasKnownPricing('claude-sonnet-4-5')).toBe(false);
+  });
+});
 
 describe('estimateUsageCost with cache tokens', () => {
   it('prices a cached Anthropic turn instead of refusing it', () => {
@@ -26,8 +85,8 @@ describe('estimateUsageCost with cache tokens', () => {
       cacheCreationInputTokens: 8_000,
     });
     expect(quote.status).toBe('known');
-    // (1000*3 + 500*15 + 40000*0.3 + 8000*3.75) / 1e6
-    expect(quote.costUsd).toBeCloseTo(0.0525, 6);
+    // (1000*2 + 500*10 + 40000*0.2 + 8000*2.5) / 1e6
+    expect(quote.costUsd).toBeCloseTo(0.035, 6);
   });
 
   it('prices every Claude entry when cache tokens are reported', () => {
@@ -106,6 +165,45 @@ describe('model family resolution', () => {
     expect(resolveModelPricing('gpt')).toBeUndefined();
   });
 
+  it('matches a version suffix only when it is a real date stamp (#370)', () => {
+    // The suffix matcher read any trailing digit run as a date, so
+    // `claude-opus-5-5` resolved to the `claude-opus-5` row and `claude-fable-5-1`
+    // to `claude-fable-5` — two different models, priced as one.
+    expect(resolveModelPricing('claude-opus-5-5-20260301')?.key).toBe('claude-opus-5-5');
+    expect(resolveModelPricing('claude-sonnet-5-2026-01-15')?.key).toBe('claude-sonnet-5');
+  });
+
+  it('still accepts the short snapshot stamps providers append (#370)', () => {
+    // Reading "date only" as "8 digits only" broke the stamps OpenAI ships: a
+    // 4-digit MMDD (`gpt-4o-0806`) and a 3-digit zero-led snapshot
+    // (`gpt-5-001`). Both are the same model as their prefix, and leaving them
+    // unpriced makes a USD budget refuse the call.
+    expect(resolveModelPricing('gpt-4o-0806')?.key).toBe('gpt-4o');
+    expect(resolveModelPricing('gpt-4o-0613')?.key).toBe('gpt-4o');
+    expect(resolveModelPricing('gpt-5-001')?.key).toBe('gpt-5');
+    expect(hasKnownPricing('gpt-4o-0806')).toBe(true);
+  });
+
+  it('still refuses a short version suffix (#370)', () => {
+    // The reason the matcher is date-only at all: 1 or 2 digits is a version, not
+    // a stamp, and `-4-6` is two of them.
+    expect(resolveModelPricing('gpt-4o-45')).toBeUndefined();
+    expect(resolveModelPricing('gpt-5-5')).toBeUndefined();
+    expect(resolveModelPricing('gpt-5-1')).toBeUndefined();
+    expect(resolveModelPricing('gpt-5-4-6')).toBeUndefined();
+    // An exact row is still its own row, not its prefix's.
+    expect(resolveModelPricing('claude-opus-5-5')?.key).toBe('claude-opus-5-5');
+  });
+
+  it('refuses to price a version-suffixed id from its own prefix (#370)', () => {
+    // Same failure the `gpt-4o-mini` rule exists for, on the Claude side: an
+    // unknown model priced from a cheaper prefix is an enforced wrong figure, and
+    // the budget rail acts on it.
+    expect(resolveModelPricing('claude-opus-5-9')).toBeUndefined();
+    expect(resolveModelPricing('claude-fable-5-7')).toBeUndefined();
+    expect(hasKnownPricing('claude-opus-5-9')).toBe(false);
+  });
+
   it('still reports genuinely unknown models as unknown', () => {
     expect(estimateUsageCost('made-up-model', NO_CACHE)).toMatchObject({
       status: 'unknown',
@@ -153,8 +251,8 @@ describe('usageReport', () => {
     expect(r).toContain('Last turn duration: 4.2s');
     expect(r).toContain('10,000');
     expect(r).toContain('2,000');
-    // rate in * 3 /M, out * 15 /M → (10000*3 + 2000*15)/1e6 = 0.06
-    expect(r).toContain('$0.0600');
+    // rate in * 2 /M, out * 10 /M → (10000*2 + 2000*10)/1e6 = 0.04
+    expect(r).toContain('$0.0400');
   });
 
   it('labels unknown models honestly instead of guessing', () => {
@@ -193,8 +291,8 @@ describe('usageReport', () => {
       { currentTurn: 1, messageCount: 2, turnDurationMs: 0 },
     );
     expect(r).toContain('•  9,000 cached');
-    // (1000*3 + 500*15 + 9000*0.3) / 1e6 = 0.0132
-    expect(r).toContain('$0.0132');
+    // (1000*2 + 500*10 + 9000*0.2) / 1e6 = 0.0088
+    expect(r).toContain('$0.0088');
   });
 });
 
@@ -212,7 +310,7 @@ describe('costReport (unchanged)', () => {
     });
     expect(r).toContain('(1,000 in, 9,000 cached, 500 out)');
     expect(r).toContain('10,500 tokens (1,000 in, 9,000 cached, 500 out)');
-    expect(r).toContain('$0.0132 estimated');
+    expect(r).toContain('$0.0088 estimated');
   });
 
   it('prices cached tokens in the per-model breakdown', () => {
@@ -228,7 +326,7 @@ describe('costReport (unchanged)', () => {
       ],
     );
     expect(lines.join('\n')).toContain(
-      'claude-sonnet-5 (session) - prompt 1,000, completion 500, cache read 9,000 - $0.0132',
+      'claude-sonnet-5 (session) - prompt 1,000, completion 500, cache read 9,000 - $0.0088',
     );
   });
 
@@ -313,5 +411,103 @@ describe('prefix pricing must not price a sibling model', () => {
     expect(resolveModelPricing('claude-sonnet-5-2026-01-15')).toMatchObject({
       key: 'claude-sonnet-5',
     });
+  });
+});
+
+describe('session-cumulative usage', () => {
+  it('sums every response into one session total', () => {
+    // `/cost` used to price `context.usage`, which the TUI replaces on every
+    // model response and nulls on every send: after turns of 1,100 and 2,200
+    // tokens it reported 2,200 for the session (#370).
+    const first = addUsage(null, {
+      promptTokens: 1000,
+      completionTokens: 100,
+      totalTokens: 1100,
+    });
+    const second = addUsage(first, {
+      promptTokens: 2000,
+      completionTokens: 200,
+      totalTokens: 2200,
+    });
+    expect(second).toEqual({
+      promptTokens: 3000,
+      completionTokens: 300,
+      totalTokens: 3300,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    });
+  });
+
+  it('sums cache counts when the provider reports them', () => {
+    const first = addUsage(null, {
+      promptTokens: 10,
+      completionTokens: 1,
+      totalTokens: 11,
+      cacheReadInputTokens: 100,
+      cacheCreationInputTokens: 200,
+    });
+    const second = addUsage(first, {
+      promptTokens: 20,
+      completionTokens: 2,
+      totalTokens: 22,
+      cacheReadInputTokens: 300,
+    });
+    expect(second.cacheReadInputTokens).toBe(400);
+    expect(second.cacheCreationInputTokens).toBe(200);
+  });
+
+  it('keeps the latest contextTokens, which is a gauge rather than a total (#370)', () => {
+    // The one sum three callers share (`run-accounting.ts`, `store.ts`, the TUI
+    // bill) has to keep this: contextTokens is the pressure the compaction gate
+    // reads, so the latest response's figure is the only true one, and summing it
+    // would report a context window far larger than any request.
+    expect(
+      addUsage(
+        { promptTokens: 1, completionTokens: 0, totalTokens: 1, contextTokens: 90 },
+        {
+          promptTokens: 1,
+          completionTokens: 0,
+          totalTokens: 1,
+          contextTokens: 40,
+        },
+      ).contextTokens,
+    ).toBe(40);
+    expect(
+      addUsage(
+        { promptTokens: 1, completionTokens: 0, totalTokens: 1, contextTokens: 90 },
+        {
+          promptTokens: 1,
+          completionTokens: 0,
+          totalTokens: 1,
+        },
+      ).contextTokens,
+    ).toBe(90);
+  });
+});
+
+describe('usageReport counts delegated agents', () => {
+  it('breaks the session down by the model each agent ran on', () => {
+    // /usage priced the lead's per-request usage and dropped `delegatedUsage`
+    // entirely, so a session that spawned agents under-reported itself (#370).
+    const r = usageReport(
+      'claude-sonnet-5',
+      { promptTokens: 3000, completionTokens: 300, totalTokens: 3300 },
+      { currentTurn: 2, messageCount: 4, turnDurationMs: 0 },
+      undefined,
+      [
+        {
+          label: 'explorer "map auth"',
+          model: 'claude-haiku-4-5-20251001',
+          usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+        },
+      ],
+    );
+    expect(r).toContain('Per model');
+    expect(r).toContain('claude-haiku-4-5-20251001 (1 delegated)');
+    // The headline is the session's whole spend now: the lead's 3,300 plus the
+    // agent's 110, which is also why the lead alone no longer appears there.
+    expect(r).toContain('total 3,410');
+    expect(r).toContain('prompt 3,000');
+    expect(r).not.toContain('not yet wired');
   });
 });
