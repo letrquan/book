@@ -259,6 +259,11 @@ Work aimed at running an objective unattended for days rather than hours. All of
   distrusting a Git-tracked local layer needs provenance
   the synchronous resolver cannot currently obtain. Provider blocks, project instructions, and a
   checked-in `settings.local.json` must still be reviewed before opening an untrusted workspace.
+  The `sandbox.*` keys are the one exception (issue 373): both workspace layers may only
+  **tighten** them, so a clone that force-adds `.book/settings.local.json` can no longer switch off
+  a sandbox the user enabled, exclude every command with `excludedCommands: ["*"]`, widen
+  `filesystem.allowWrite`, or empty the user's `denyRead`/`denyWrite`/`deniedDomains` lists. What
+  remains open of the local layer is everything that rule does not cover.
 - No interactive surface records these decisions yet, and the interactive host does not report
   them either. The MCP gate has a TUI prompt; the allow-rule, hook, and command gates do not, so
   in the primary mode a withheld hook simply never fires and a withheld command is refused until
@@ -293,6 +298,88 @@ Work aimed at running an objective unattended for days rather than hours. All of
   model-chosen command can trip by itself — a matching command runs on the host, and the only
   control over that is refusing unsandboxed execution wholesale, not an independent per-command
   approval.
+- The workspace control files are read-only inside the namespace (issue 373). A workspace git dir
+  is discovered through a `.git` file, a `commondir` file, `.git/worktrees/*` and nested
+  `.git/modules/*` — including a multi-segment submodule path, whose git dir is at
+  `.git/modules/libs/deep` under the container directory `libs` — and for each one its `hooks/`,
+  `config`, `config.worktree`, `commondir` and `gitdir` are bound read-only, as is that work tree's
+  own `.git` pointer file (so a submodule's `sub/.git` cannot be repointed at a repository the
+  command built), and a `core.hooksPath` naming a path inside the workspace. Every `hooksPath` value
+  in a `[core]` section is protected rather than the first, comments are stripped the way git
+  strips them, and `[include]` / `[includeIf]` files are followed relative to the including file's
+  directory, with a followed file inside the workspace bound read-only and parsed in turn. Outside
+  the workspace nothing is touched, and `hooks/` or `config.worktree` that does not exist is masked
+  rather than mounted. `.book/` is bound read-only when it exists and masked with an empty read-only
+  tmpfs when it does not, and `.book/settings.local.json` inside it is masked with a read-only
+  `/dev/null` so the command cannot read the secrets in it either; a `.bookrc.json` that exists is
+  bound read-only (an absent one cannot be masked, since there is no file to mask). Only the
+  **workspace's own top-level git dir** is pinned with a read-write self-bind rather than made
+  read-only, so sandboxed `git commit`, `checkout` and `fetch` still work while the directory cannot
+  be renamed away (`EBUSY`), and `git worktree remove` is not blocked on the directories git is
+  deleting; every other discovered admin dir is protected file by file. Before this, the read-write
+  workspace bind let a sandboxed command write `.book/settings.local.json`, install a `.git/hooks/*`
+  script, or repoint `core.hooksPath` / `core.fsmonitor` — files the _host_ acts on after the command
+  exits, which made each a way out of the sandbox rather than a scratch file. Control files are read
+  through a bounded, regular-file-only path (`lstat` then `open`, so a FIFO or a device cannot block
+  the mount build), a git config with a cap raised to 1 MiB and **refused** when it is larger (a
+  truncated read is a `hooksPath` past the cut), a `hidden-file` mask is emitted only for a regular
+  file and re-emitted after every deferred `allowWrite` opt-in, and a **symlinked** control path is
+  refused outright — naming the path and saying the sandbox cannot protect one — since binding the
+  target read-only leaves the link itself in the writable workspace, where `rm .book && mkdir .book`
+  replaced it. Containment is decided on canonical paths.
+- The `sandbox.*` write guard is scoped to the two workspace layers. `blockedConfigWritePath` takes
+  the scope it is writing to, and the sandbox value check runs only for `project` and `local`; the
+  user-global layer takes every value, so `book config set sandbox.enabled false` — the default
+  scope, and the documented way to turn a sandbox off — is written instead of being refused with
+  advice to edit the file it was writing to. `shell` is unchanged in every scope. The `/config`
+  precheck passes the parsed value and the resolved scope, so `/config sandbox={"enabled":true}` is
+  accepted where a path-only judgment refused it.
+- The "a workspace file turned the sandbox on" report — in `book doctor` and in the print/SDK
+  notices — is driven by `workspaceLayerThatEnabledSandbox`, which answers whether a workspace layer
+  actually flipped `sandbox.enabled` from not-true to true, by walking the layers in resolution order
+  through the same `sanitizeLayer` the merge applies. A checked-in `enabled: true` that repeats a
+  trusted layer's decision is no longer reported as a decision the repository made. The notices read
+  **both** workspace layers and name the file each ignored key came from, which they previously did
+  not for the local layer even though the loader strips it exactly as it does the project one.
+- **The git gap that remains.** Inside a plain repository a sandboxed command can still _create_ a
+  pointer file the host's git then reads — `.git/commondir` naming a directory the command built, for
+  instance, which redirects the host to a repository the sandbox chose and therefore runs code on the
+  host. Nothing is read-only about the git dir, so a file that does not exist yet can be added, and
+  the host acts on it after the command exits. Closing this means binding the whole git directory
+  read-only inside the sandbox, which would also make sandboxed `git commit`, `git checkout` and
+  `git fetch` fail. Whether to pay that cost is an open owner decision, tracked on issue 373.
+- Two smaller costs are worth naming: a nested repository that is not a submodule stays writable
+  (nothing outside the discovered git dirs is touched), and a workspace with no `.git` can still have
+  one created by a sandboxed command (`git init` succeeds), since nothing prevents the directory from
+  appearing after the mounts were built. An `[includeIf]` condition whose target does not exist when
+  the mounts are built is likewise not followed, so a file the sandbox creates later can carry a
+  `core.hooksPath` the namespace never saw. Masking an absent `.book/` creates an **empty `.book/`
+  directory on the host** as a side effect of the mount.
+- Both workspace settings layers may only tighten `sandbox.*` (issue 373). `enabled`,
+  `failIfUnavailable`, `allowUnsandboxedCommands` and `autoAllowBashIfSandboxed` are honoured only
+  in the tightening direction, `excludedCommands`, `filesystem.allowWrite` and
+  `network.allowedDomains` are ignored outright, and `filesystem.denyWrite`, `filesystem.denyRead`
+  and `network.deniedDomains` accumulate across layers instead of replacing. Before this a checked-in
+  `.book/settings.json` could switch off the sandbox the user had enabled in `~/.book/settings.json`
+  and its arrays replaced the user's. `enabled: true` is the one loosening-adjacent key a workspace
+  layer may set, and the loader pairs it with `autoAllowBashIfSandboxed: false` so a repository
+  cannot pre-approve the commands that follow its own sandbox; a later _trusted_ layer still replaces
+  a deny list, which is the one way to narrow a list that turned out too broad. The refusal is
+  value-aware rather than path-based, so `book config set sandbox.enabled true --local` and
+  `denyRead` are written while the loosening values are refused with the file they belong in;
+  `book doctor` names every key it dropped, with the resolved file path and a truncated value, and
+  print/SDK runs report the same keys, since a silently ignored setting is not mistaken for one that
+  does nothing.
+- Inside the sandbox, a git command that could not update `.git/config` gets one appended line
+  explaining the read-only bind (`git checkout -b`, `git push -u`, `git remote add`, `git
+branch --set-upstream-to`, `git config`), for `Bash` and `Check` alike: git's own message names no
+  cause, so without it the model retries the command or rewrites it around the config instead of
+  running it where the config is writable.
+- `Check` runs under the same decision as `Bash` (issue 373): `decideSandboxExecution` in
+  `src/sandbox.ts` wraps a check command when the sandbox is on, refuses it when
+  `allowUnsandboxedCommands` is false and it would run outside, and marks a sandboxed run
+  `[sandboxed]`. It previously called `exec` with no sandbox and no such check, so "the sandbox is
+  on and unsandboxed commands are refused" was a promise `Check` did not keep.
 - Configuration for a removed feature is reported, never fatal. `src/settings-removed.ts` knows
   which keys the subscription-auth, adaptive-harness and Zero-Mem removals left behind; validation
   discards a removed block silently, so `book doctor` lists what is still on the machine and what

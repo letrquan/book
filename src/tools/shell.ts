@@ -7,16 +7,10 @@ import type {
 } from '../types/runtime.js';
 import { resolveShell, shellExecution } from '../shell-selection.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
-import {
-  createSandbox,
-  matchesExcludedCommand,
-  unsandboxedRefusalMessage,
-  type SandboxSkipReason,
-} from '../sandbox.js';
+import { decideSandboxExecution, withGitConfigReadOnlyNotice } from '../sandbox.js';
 import { buildChildEnv } from '../child-env.js';
 import { isTerminalShellStatus, ShellJobManager } from '../jobs/shell-manager.js';
 import { terminateForegroundProcess } from '../jobs/process-tree.js';
-import { resolveWorkspacePath } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
 import {
   MAX_SAFE_TIMEOUT_MS,
@@ -177,37 +171,15 @@ function buildEffectiveCommand(
   // to `shell: true`.
   const shellExec = shellExecution(sessionShell(ctx), command);
   if (shellExec) plain.exec = shellExec;
-  const failed = (error: string): EffectiveCommand => ({ ...plain, error });
 
-  // Every path that ends with the command running outside a bubblewrap
-  // namespace funnels through here, so `allowUnsandboxedCommands: false` cannot
-  // be enforced on some escapes and quietly missed on others.
-  const unsandboxed = (reason: SandboxSkipReason): EffectiveCommand =>
-    ctx.sandbox && !ctx.sandbox.allowUnsandboxedCommands
-      ? failed(unsandboxedRefusalMessage(reason))
-      : plain;
-
-  if (!ctx.sandbox?.enabled) return unsandboxed('disabled');
-  if (matchesExcludedCommand(command, ctx.sandbox.excludedCommands)) return unsandboxed('excluded');
-
-  // The sandbox binds the workspace, not this workdir. A workdir outside it
-  // would leave the command with no working directory inside the namespace,
-  // and silently running it against the workspace root instead would execute
-  // somewhere the caller did not ask for.
-  if (!resolveWorkspacePath(ctx.workspaceRoot, workdir)) {
-    return failed(
-      `workdir is outside the sandboxed workspace: ${workdir}. Add it to sandbox.filesystem.allowWrite, or run without the sandbox.`,
-    );
+  // `Check` runs the same decision, so a check cannot slip past a policy that
+  // refuses unsandboxed commands (#373).
+  const decision = decideSandboxExecution(ctx, command, workdir);
+  if (decision.error) return { ...plain, error: decision.error };
+  if (decision.sandboxed) {
+    return { command, workdir, effectiveCommand: command, exec: decision.exec, sandboxed: true };
   }
-  // createSandbox emits one-time diagnostics, so reuse the session's instance
-  // rather than rebuilding it per command.
-  const sandbox = ctx.runtime ? ctx.runtime.sandbox(ctx.sandbox) : createSandbox(ctx.sandbox);
-  const exec = sandbox?.wrap(command, ctx.workspaceRoot);
-  if (exec) return { command, workdir, effectiveCommand: command, exec, sandboxed: true };
-  if (ctx.sandbox.failIfUnavailable) {
-    return failed('Sandbox unavailable and failIfUnavailable is set');
-  }
-  return unsandboxed('unavailable');
+  return plain;
 }
 
 async function bash(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
@@ -487,7 +459,23 @@ async function bashForeground(
       void finish(
         code === 0
           ? ok((built.sandboxed ? '[sandboxed] ' : '') + (stdout || '(no output)'))
-          : fail(stderr || `Exit code: ${code}`, stdout),
+          : // The read-only `.git/config` is what stops a command repointing
+            // `core.hooksPath` (#373), and git reports the consequence in words
+            // that name no cause. Appended here, once, so the model learns the
+            // command has to run outside the sandbox instead of retrying it.
+            // Matched against both streams: a command that redirects stderr
+            // into stdout still gets the note, and the command is passed so a
+            // `git config --global` — which writes `~/.gitconfig`, a different
+            // file — is not told about `.git/config` at all.
+            fail(
+              withGitConfigReadOnlyNotice(
+                stderr || `Exit code: ${code}`,
+                `${stdout}\n${stderr}`,
+                built.sandboxed,
+                built.command,
+              ),
+              stdout,
+            ),
       );
     };
     const onError = (error: Error) => {
@@ -636,7 +624,21 @@ async function bashOutput(args: Record<string, unknown>, ctx: ToolContext): Prom
         : `Still running with no new output. Call BashOutput with wait_ms (up to ${ceiling}ms) to wait for it to finish instead of polling again.`,
     );
   }
-  return ok(lines.join('\n'), result);
+  // The same note the foreground appends, for the same reason: a long build, a
+  // `git checkout -b` behind a `&&`, or anything else the model backgrounded is
+  // exactly where the read-only `.git/config` error used to arrive unexplained.
+  // Without it the model reads "could not write config file" from a background
+  // shell, retries it, and never learns the command needs the outside. Both
+  // streams are the one buffer here, and the record carries the command that ran.
+  return ok(
+    withGitConfigReadOnlyNotice(
+      lines.join('\n'),
+      result.output,
+      result.shell.sandboxed === true,
+      result.shell.effectiveCommand,
+    ),
+    result,
+  );
 }
 
 async function killShell(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {

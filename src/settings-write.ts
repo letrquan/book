@@ -250,14 +250,30 @@ function shadowingScopes(
   return shadowing;
 }
 
-/** The refusal for a key no configuration surface may write, or undefined. */
-export function guardSettingWrite(key: string): string | undefined {
+/**
+ * The refusal for a key no configuration surface may write to `scope`, or
+ * undefined.
+ *
+ * `value` is part of the question for the sandbox keys, and a caller that has
+ * none is refused only the keys that are never allowed. `scope` is part of it for
+ * a different reason: the sandbox and `shell` filters are about what a file
+ * inside the working tree may carry, so the user-global layer — the file
+ * `book config set` targets by default, and the one the refusal names — takes
+ * every value a workspace layer may not.
+ */
+export function guardSettingWrite(
+  key: string,
+  value: unknown,
+  scope: SettingsScope,
+): string | undefined {
   const parts = key.split('.').filter(Boolean);
   if (parts.length === 0) {
     return 'Invalid key. Use dot-separated path: e.g. permissions.deny';
   }
 
-  const blocked = blockedConfigWritePath(key);
+  // Value-aware for the sandbox: `enabled: true` is the one loosening-adjacent
+  // value a workspace layer may set, so a path-only refusal would block it (#373).
+  const blocked = blockedConfigWritePath(key, value, scope);
   if (blocked) return blocked;
 
   const topKey = parts[0];
@@ -302,7 +318,7 @@ export function guardSettingWrite(key: string): string | undefined {
  * lands in.
  */
 export function applySettingWrite(options: SettingWriteOptions): SettingWriteResult {
-  const refusal = guardSettingWrite(options.key);
+  const refusal = guardSettingWrite(options.key, options.value, options.scope);
   if (refusal) return { ok: false, error: refusal };
 
   // Checked before the write, not after: a value that bricks the merge would

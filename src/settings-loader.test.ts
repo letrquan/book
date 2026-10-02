@@ -8,10 +8,18 @@ import {
   loadSettingsFile,
   applySettingsEnvOverrides,
   startupAnimationEnvNote,
+  ignoredWorkspaceSandboxKeys,
+  formatIgnoredWorkspaceSandboxKey,
+  workspaceLayerThatEnabledSandbox,
 } from './settings-loader.js';
 import { hookFingerprint } from './hook-approvals.js';
 import { updateWorkspaceTrust } from './workspace-trust.js';
-import { DEFAULT_SETTINGS, HOOK_EVENTS, type ResolvedSettings } from './settings.js';
+import {
+  DEFAULT_SETTINGS,
+  HOOK_EVENTS,
+  type BookSettings,
+  type ResolvedSettings,
+} from './settings.js';
 
 let dir: string;
 let userDir: string;
@@ -124,23 +132,61 @@ describe('mergeSettings', () => {
     expect(result.permissions.deny).toEqual(['Read(./.env)', 'Bash(curl *)']);
   });
 
-  it('nested objects merge recursively while explicitly supplied arrays replace', () => {
+  /**
+   * Nested objects merge recursively, and an explicitly supplied array still
+   * replaces — except for the sandbox deny lists, which accumulate across
+   * *workspace* layers (#373). A workspace layer could otherwise replace the
+   * user's `denyRead`/`denyWrite` with `[]` and the merged result would report
+   * the user's paths as protected while nothing protected them.
+   *
+   * Accumulation is a property of the incoming layer, not of the path: the
+   * user's own file replaces the list, so a deny list that turned out to be too
+   * broad can be narrowed again. `mergeSettings` is therefore told which layer
+   * it is merging rather than assuming.
+   */
+  it('nested objects merge recursively; deny lists accumulate while other arrays replace', () => {
     const base = structuredClone(DEFAULT_SETTINGS);
     base.sandbox.filesystem.denyWrite = ['/etc'];
-    const result = mergeSettings(base, {
-      sandbox: {
-        enabled: true,
-        failIfUnavailable: false,
-        autoAllowBashIfSandboxed: true,
-        excludedCommands: [],
-        allowUnsandboxedCommands: true,
-        filesystem: { allowWrite: ['/tmp'], denyWrite: [], denyRead: [] },
-        network: { allowedDomains: [], deniedDomains: [] },
+    base.sandbox.excludedCommands = ['docker *'];
+    const result = mergeSettings(
+      base,
+      {
+        sandbox: {
+          enabled: true,
+          failIfUnavailable: false,
+          autoAllowBashIfSandboxed: true,
+          excludedCommands: [],
+          allowUnsandboxedCommands: true,
+          filesystem: { allowWrite: ['/tmp'], denyWrite: ['/var'], denyRead: ['~/.ssh'] },
+          network: { allowedDomains: [], deniedDomains: [] },
+        },
       },
-    });
+      'repository',
+    );
     expect(result.sandbox.enabled).toBe(true);
-    expect(result.sandbox.filesystem.denyWrite).toEqual([]);
+    expect(result.sandbox.filesystem.denyWrite).toEqual(['/etc', '/var']);
     expect(result.sandbox.filesystem.allowWrite).toEqual(['/tmp']);
+    expect(result.sandbox.excludedCommands).toEqual([]);
+  });
+
+  it('replaces the deny lists for a trusted layer, so the user can narrow their own', () => {
+    const base = structuredClone(DEFAULT_SETTINGS);
+    base.sandbox.filesystem.denyWrite = ['/etc', '/var'];
+    base.sandbox.network.deniedDomains = ['evil.example'];
+
+    const result = mergeSettings(
+      base,
+      {
+        sandbox: {
+          filesystem: { denyWrite: ['/home'] },
+          network: { deniedDomains: [] },
+        },
+      } as unknown as Partial<ResolvedSettings>,
+      'trusted',
+    );
+
+    expect(result.sandbox.filesystem.denyWrite).toEqual(['/home']);
+    expect(result.sandbox.network.deniedDomains).toEqual([]);
   });
 
   it('undefined values do not override', () => {
@@ -608,6 +654,417 @@ describe('a workspace layer cannot supply the shell', () => {
 
     writeUser({ shell: 'powershell' });
     expect(load().shell).toBe('powershell');
+  });
+});
+
+/**
+ * A workspace layer may only tighten `sandbox.*` (#373).
+ *
+ * Before this, a checked-in `.book/settings.json` — or a `settings.local.json`
+ * a repository force-added to the clone — could switch off the sandbox the user
+ * turned on in `~/.book/settings.json`, and its arrays replaced the user's
+ * rather than adding to them. A clone therefore disarmed the boundary for every
+ * command it was asked to run.
+ */
+describe('workspace layers may only tighten the sandbox', () => {
+  function writeLayer(name: 'settings.json' | 'settings.local.json', settings: unknown): void {
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(join(dir, '.book', name), JSON.stringify(settings));
+  }
+  function writeUser(settings: unknown): void {
+    mkdirSync(join(userDir, '.book'), { recursive: true });
+    writeFileSync(join(userDir, '.book', 'settings.json'), JSON.stringify(settings));
+  }
+  const load = (overridePath?: string) =>
+    resolveSettings(dir, overridePath, {
+      home: userDir,
+      trustStorePath: join(userDir, 'trust.json'),
+    });
+
+  /** The sandbox the user turned on, and the layer that used to switch it back off. */
+  const USER_SANDBOX = {
+    sandbox: {
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+      filesystem: { denyRead: ['~/.ssh'] },
+    },
+  };
+  const LOOSENING_SANDBOX = {
+    sandbox: {
+      enabled: false,
+      allowUnsandboxedCommands: true,
+      excludedCommands: ['*'],
+      filesystem: { denyRead: [] },
+    },
+  };
+
+  it.each(['settings.json', 'settings.local.json'] as const)(
+    'a workspace layer cannot switch off or exclude past the sandbox the user enabled (%s)',
+    (name) => {
+      writeUser(USER_SANDBOX);
+      writeLayer(name, LOOSENING_SANDBOX);
+
+      const { sandbox } = load();
+
+      expect(sandbox.enabled).toBe(true);
+      expect(sandbox.failIfUnavailable).toBe(true);
+      expect(sandbox.allowUnsandboxedCommands).toBe(false);
+      expect(sandbox.excludedCommands).toEqual([]);
+      // `filesystem.denyRead: []` used to replace the user's `~/.ssh` entry.
+      expect(sandbox.filesystem.denyRead).toEqual(['~/.ssh']);
+    },
+  );
+
+  it('lets a workspace layer turn the sandbox on, add deny entries, and refuse unsandboxed commands', () => {
+    writeUser({
+      sandbox: {
+        filesystem: { denyRead: ['~/.ssh'], denyWrite: ['/etc'] },
+        network: { deniedDomains: ['evil.example'] },
+      },
+    });
+    writeLayer('settings.json', {
+      sandbox: {
+        enabled: true,
+        allowUnsandboxedCommands: false,
+        filesystem: {
+          denyRead: ['~/.ssh', './secrets'],
+          denyWrite: ['./generated'],
+        },
+        network: { deniedDomains: ['tracker.example'] },
+      },
+    });
+
+    const { sandbox } = load();
+
+    expect(sandbox.enabled).toBe(true);
+    expect(sandbox.allowUnsandboxedCommands).toBe(false);
+    // Additive, not replacing, and free of the exact duplicate the layer repeated.
+    expect(sandbox.filesystem.denyRead).toEqual(['~/.ssh', './secrets']);
+    expect(sandbox.filesystem.denyWrite).toEqual(['/etc', './generated']);
+    expect(sandbox.network.deniedDomains).toEqual(['evil.example', 'tracker.example']);
+    // Turning the sandbox on is allowed; pairing it with the switch that stops
+    // asking before every command is not.
+    expect(sandbox.autoAllowBashIfSandboxed).toBe(false);
+  });
+
+  /**
+   * `enabled: true` on its own narrows nothing a user chose — it applies to
+   * sessions that had it off. Paired with `autoAllowBashIfSandboxed`, though, it
+   * is an approval bypass: every Bash call that is *genuinely* sandboxed would be
+   * pre-approved, so a checked-in `settings.json` could turn a workspace where
+   * the user reads every command into one where nobody is asked at all.
+   */
+  it('forces auto-allow off when a workspace layer is what turns the sandbox on', () => {
+    writeUser({});
+    writeLayer('settings.json', { sandbox: { enabled: true } });
+
+    const { sandbox } = load();
+
+    expect(sandbox.enabled).toBe(true);
+    expect(sandbox.autoAllowBashIfSandboxed).toBe(false);
+  });
+
+  it('leaves auto-allow alone when the sandbox was already on', () => {
+    // The user already decided both; a workspace layer adding deny entries is
+    // not turning anything on and must not silently switch a decision off.
+    writeUser({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true } });
+    writeLayer('settings.json', { sandbox: { filesystem: { denyRead: ['./secrets'] } } });
+
+    const { sandbox } = load();
+
+    expect(sandbox.enabled).toBe(true);
+    expect(sandbox.autoAllowBashIfSandboxed).toBe(true);
+  });
+
+  it('lets a trusted layer turn auto-allow back on after a workspace layer turned the sandbox on', () => {
+    // The force is a floor, not a veto: the user can always state the decision
+    // themselves, in a file the workspace does not control.
+    writeUser({});
+    writeLayer('settings.json', { sandbox: { enabled: true } });
+    const overridePath = join(userDir, 'override.json');
+    writeFileSync(overridePath, JSON.stringify({ sandbox: { autoAllowBashIfSandboxed: true } }));
+
+    const { sandbox } = load(overridePath);
+
+    expect(sandbox.enabled).toBe(true);
+    expect(sandbox.autoAllowBashIfSandboxed).toBe(true);
+  });
+
+  it.each(['settings.json', 'settings.local.json'] as const)(
+    'does not let a workspace layer empty a deny list a trusted layer set (%s)',
+    (name) => {
+      writeUser({
+        sandbox: {
+          filesystem: { denyRead: ['~/.ssh'], denyWrite: ['/etc'] },
+          network: { deniedDomains: ['evil.example'] },
+        },
+      });
+      writeLayer(name, {
+        sandbox: {
+          filesystem: { denyRead: [], denyWrite: [] },
+          network: { deniedDomains: [] },
+        },
+      });
+
+      const { sandbox } = load();
+
+      expect(sandbox.filesystem.denyRead).toEqual(['~/.ssh']);
+      expect(sandbox.filesystem.denyWrite).toEqual(['/etc']);
+      expect(sandbox.network.deniedDomains).toEqual(['evil.example']);
+    },
+  );
+
+  it('lets a trusted layer replace the deny list it set before', () => {
+    // The reason accumulation is a workspace-layer rule and not a path rule: the
+    // user's own file has to be able to narrow a list that turned out too broad.
+    writeUser({
+      sandbox: {
+        filesystem: { denyRead: ['~/.ssh'], denyWrite: ['/etc'] },
+        network: { deniedDomains: ['evil.example'] },
+      },
+    });
+    const overridePath = join(userDir, 'override.json');
+    writeFileSync(
+      overridePath,
+      JSON.stringify({
+        sandbox: {
+          filesystem: { denyRead: ['/home/book/.ssh'] },
+          network: { deniedDomains: [] },
+        },
+      }),
+    );
+
+    const { sandbox } = load(overridePath);
+
+    expect(sandbox.filesystem.denyRead).toEqual(['/home/book/.ssh']);
+    expect(sandbox.network.deniedDomains).toEqual([]);
+    // A list the layer says nothing about is untouched.
+    expect(sandbox.filesystem.denyWrite).toEqual(['/etc']);
+  });
+
+  it('ignores every loosening key a workspace layer supplies', () => {
+    writeUser({
+      sandbox: {
+        enabled: true,
+        failIfUnavailable: true,
+        autoAllowBashIfSandboxed: false,
+        allowUnsandboxedCommands: false,
+        excludedCommands: ['git status'],
+      },
+    });
+    writeLayer('settings.json', {
+      sandbox: {
+        enabled: false,
+        failIfUnavailable: false,
+        autoAllowBashIfSandboxed: true,
+        allowUnsandboxedCommands: true,
+        excludedCommands: ['*'],
+        filesystem: { allowWrite: ['/'] },
+        network: { allowedDomains: ['*'] },
+      },
+    });
+
+    const { sandbox } = load();
+
+    expect(sandbox.enabled).toBe(true);
+    expect(sandbox.failIfUnavailable).toBe(true);
+    expect(sandbox.autoAllowBashIfSandboxed).toBe(false);
+    expect(sandbox.allowUnsandboxedCommands).toBe(false);
+    expect(sandbox.excludedCommands).toEqual(['git status']);
+    expect(sandbox.filesystem.allowWrite).toEqual([]);
+    expect(sandbox.network.allowedDomains).toEqual([]);
+  });
+
+  it('lets a trusted --settings layer still loosen everything', () => {
+    writeUser(USER_SANDBOX);
+    const overridePath = join(userDir, 'override.json');
+    writeFileSync(
+      overridePath,
+      JSON.stringify({
+        sandbox: {
+          enabled: false,
+          failIfUnavailable: false,
+          autoAllowBashIfSandboxed: true,
+          allowUnsandboxedCommands: true,
+          excludedCommands: ['docker *'],
+          filesystem: { allowWrite: ['/tmp'], denyRead: [] },
+          network: { allowedDomains: ['github.com'] },
+        },
+      }),
+    );
+
+    const { sandbox } = load(overridePath);
+
+    expect(sandbox.enabled).toBe(false);
+    expect(sandbox.failIfUnavailable).toBe(false);
+    expect(sandbox.autoAllowBashIfSandboxed).toBe(true);
+    expect(sandbox.allowUnsandboxedCommands).toBe(true);
+    expect(sandbox.excludedCommands).toEqual(['docker *']);
+    expect(sandbox.filesystem.allowWrite).toEqual(['/tmp']);
+    expect(sandbox.network.allowedDomains).toEqual(['github.com']);
+  });
+
+  it('reports the ignored keys and their values for `book doctor`', () => {
+    const ignored = ignoredWorkspaceSandboxKeys({
+      sandbox: {
+        enabled: true,
+        failIfUnavailable: true,
+        autoAllowBashIfSandboxed: false,
+        allowUnsandboxedCommands: false,
+        excludedCommands: ['*'],
+        filesystem: { allowWrite: ['/'], denyRead: ['~/.ssh'], denyWrite: ['/etc'] },
+        network: { allowedDomains: ['*'], deniedDomains: ['evil.example'] },
+      },
+    });
+
+    // The three tightening values and both deny lists are honoured, so they are
+    // not reported; the keys a workspace layer may not supply all are.
+    expect(ignored).toEqual([
+      { key: 'sandbox.excludedCommands', value: ['*'] },
+      { key: 'sandbox.filesystem.allowWrite', value: ['/'] },
+      { key: 'sandbox.network.allowedDomains', value: ['*'] },
+    ]);
+    expect(formatIgnoredWorkspaceSandboxKey(ignored[0])).toBe('sandbox.excludedCommands=["*"]');
+    expect(formatIgnoredWorkspaceSandboxKey({ key: 'sandbox.enabled', value: false })).toBe(
+      'sandbox.enabled=false',
+    );
+  });
+
+  it('reports every loosening value, including the ones the defaults carry', () => {
+    // A layer written as a copy of the defaults is ignored key by key, and each
+    // of those keys is reported: an `excludedCommands: []` from a workspace
+    // layer used to *replace* the user's list, so "ignored" is news to the
+    // reader rather than a no-op.
+    const ignored = ignoredWorkspaceSandboxKeys({ sandbox: { ...DEFAULT_SETTINGS.sandbox } });
+    expect(ignored.map((entry) => entry.key)).toEqual([
+      'sandbox.enabled',
+      'sandbox.failIfUnavailable',
+      'sandbox.allowUnsandboxedCommands',
+      'sandbox.autoAllowBashIfSandboxed',
+      'sandbox.excludedCommands',
+      'sandbox.filesystem.allowWrite',
+      'sandbox.network.allowedDomains',
+    ]);
+  });
+
+  it('reports nothing for a layer that only tightens', () => {
+    // Declared with the schema's required keys omitted rather than empty: an
+    // explicit `[]` replaced the user's list before, so it is reported, and a
+    // layer that genuinely tightens says nothing about the key at all.
+    expect(
+      ignoredWorkspaceSandboxKeys({
+        sandbox: {
+          enabled: true,
+          failIfUnavailable: true,
+          autoAllowBashIfSandboxed: false,
+          allowUnsandboxedCommands: false,
+          filesystem: { denyRead: ['~/.ssh'], denyWrite: ['/etc'] },
+          network: { deniedDomains: ['evil.example'] },
+        },
+      }),
+    ).toEqual([]);
+    expect(ignoredWorkspaceSandboxKeys({})).toEqual([]);
+  });
+
+  it('reports an explicitly empty array as ignored, because it used to replace', () => {
+    // Not a no-op: before the fix, a project layer's `[]` is what the merge
+    // saw, so the user's list was gone. Silence would read as "it did nothing".
+    expect(
+      ignoredWorkspaceSandboxKeys({
+        sandbox: { excludedCommands: [], filesystem: { allowWrite: [] } },
+      }),
+    ).toEqual([
+      { key: 'sandbox.excludedCommands', value: [] },
+      { key: 'sandbox.filesystem.allowWrite', value: [] },
+    ]);
+  });
+});
+
+/**
+ * Which workspace layer, if any, is what flipped `sandbox.enabled` on. Two
+ * reporters ask it — `book doctor` and the print/SDK notices — and both were
+ * answering "this layer says `enabled: true`", which is a different question: a
+ * repository repeating a decision the user already made costs nothing, and a
+ * notice printed on every session is a notice the reader learns to skip.
+ */
+describe('workspaceLayerThatEnabledSandbox', () => {
+  const projectPath = 'settings.json';
+  const localPath = 'settings.local.json';
+
+  function layers(entries: Array<[string, 'trusted' | 'repository' | 'local', unknown]>) {
+    return entries.map(([path, trust, document]) => ({
+      path,
+      trust,
+      document: document as Partial<BookSettings> | null,
+    }));
+  }
+
+  it('names the workspace layer that flipped the sandbox on', () => {
+    expect(
+      workspaceLayerThatEnabledSandbox(
+        layers([
+          ['~/.book/settings.json', 'trusted', {}],
+          [projectPath, 'repository', { sandbox: { enabled: true } }],
+        ]),
+      ),
+    ).toBe(projectPath);
+    // The local layer is filtered the same way and can be the one that does it.
+    expect(
+      workspaceLayerThatEnabledSandbox(
+        layers([
+          ['~/.book/settings.json', 'trusted', {}],
+          [localPath, 'local', { sandbox: { enabled: true } }],
+        ]),
+      ),
+    ).toBe(localPath);
+  });
+
+  it('names nothing when a trusted layer already had it on', () => {
+    // The user turned the sandbox on and read every command, so a checked-in
+    // layer repeating `enabled: true` changes nothing and is not charged with
+    // switching auto-allow off.
+    expect(
+      workspaceLayerThatEnabledSandbox(
+        layers([
+          ['~/.book/settings.json', 'trusted', { sandbox: { enabled: true } }],
+          [projectPath, 'repository', { sandbox: { enabled: true } }],
+          [localPath, 'local', { sandbox: { enabled: true } }],
+        ]),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('names the first layer to flip it, and no layer after that', () => {
+    expect(
+      workspaceLayerThatEnabledSandbox(
+        layers([
+          ['~/.book/settings.json', 'trusted', {}],
+          [projectPath, 'repository', { sandbox: { enabled: true } }],
+          [localPath, 'local', { sandbox: { enabled: true } }],
+        ]),
+      ),
+    ).toBe(projectPath);
+  });
+
+  it('names nothing when no layer declares it', () => {
+    expect(
+      workspaceLayerThatEnabledSandbox(
+        layers([
+          ['~/.book/settings.json', 'trusted', null],
+          [projectPath, 'repository', { sandbox: { filesystem: { denyRead: ['./s'] } } }],
+          [localPath, 'local', null],
+        ]),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('names nothing for a trusted layer, whose flip is the user deciding', () => {
+    expect(
+      workspaceLayerThatEnabledSandbox(
+        layers([['~/.book/settings.json', 'trusted', { sandbox: { enabled: true } }]]),
+      ),
+    ).toBeUndefined();
   });
 });
 

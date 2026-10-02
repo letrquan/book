@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { execFileSync } from 'child_process';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { checkTools } from './check.js';
 import { defaultConfig } from '../test/fixtures.js';
+import { DEFAULT_SETTINGS } from '../settings.js';
+import { sandboxBackendAvailable } from '../sandbox.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { ToolContext, ToolResult } from '../types/tools.js';
 
@@ -65,6 +71,172 @@ describe('Check', () => {
     const result = await run(contextWith({ ok: 'node -e ""' }), 'nope');
     expect(result.status).not.toBe('success');
     expect(result.structuredError?.message).toContain('Unknown check');
+  });
+});
+
+/**
+ * A check command is a project-supplied command with the project's own
+ * workspace root as its cwd, so it is exactly what the sandbox is for. It used
+ * to run through `exec` with no sandbox and no `allowUnsandboxedCommands`
+ * check, which made "the sandbox is on and unsandboxed commands are refused"
+ * a promise `Check` quietly did not keep (#373).
+ */
+describe('Check and the sandbox', () => {
+  const SANDBOX_ENABLED = {
+    ...DEFAULT_SETTINGS.sandbox,
+    enabled: true,
+    allowUnsandboxedCommands: false,
+  };
+
+  it('runs a sandboxed check through the wrapper the session provides', async () => {
+    const ctx = contextWith({ wrapped: 'echo hello' });
+    ctx.sandbox = SANDBOX_ENABLED;
+    const calls: Array<{ file: string; args: string[] }> = [];
+    ctx.runtime = {
+      sandbox: () => ({
+        wrap: (command: string) => {
+          calls.push({ file: 'fake-wrapper', args: [command] });
+          // Node stands in for the wrapper binary: what matters is that the
+          // wrapped argv was spawned, not that `echo` ran inside bubblewrap.
+          return { file: process.execPath, args: ['-e', 'console.log("wrapped ok")'] };
+        },
+        describe: () => 'fake wrapper',
+      }),
+    } as unknown as ToolContext['runtime'];
+
+    const result = await run(ctx, 'wrapped');
+
+    expect(result.status).toBe('success');
+    // Marked the way a sandboxed Bash command is marked, so a transcript says
+    // which of the two things ran.
+    expect(result.content).toContain('[sandboxed]');
+    expect(result.content).toContain('wrapped ok');
+    expect(calls).toEqual([{ file: 'fake-wrapper', args: ['echo hello'] }]);
+  });
+
+  it('refuses the check when it would run unsandboxed and unsandboxed commands are refused', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-check-refused-'));
+    const sideEffect = join(dir, 'must-not-appear.txt');
+    try {
+      const ctx = contextWith({
+        escaping: `node -e "require('fs').writeFileSync(${JSON.stringify(sideEffect)}, 'x')"`,
+      });
+      ctx.workspaceRoot = dir;
+      ctx.sandbox = SANDBOX_ENABLED;
+      // A session runtime with no usable backend is exactly what
+      // `failIfUnavailable: false` tolerates on a machine without bubblewrap.
+      ctx.runtime = { sandbox: () => null } as unknown as ToolContext['runtime'];
+
+      const result = await run(ctx, 'escaping');
+
+      expect(result.status).not.toBe('success');
+      expect(result.structuredError?.message).toContain('unsandboxed');
+      expect(result.structuredError?.message).toContain('allowUnsandboxedCommands');
+      // Refused means the command never ran.
+      expect(existsSync(sideEffect)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails when the backend is missing and failIfUnavailable is set', async () => {
+    const ctx = contextWith({ ok: 'node -e ""' });
+    ctx.sandbox = { ...SANDBOX_ENABLED, failIfUnavailable: true };
+    ctx.runtime = { sandbox: () => null } as unknown as ToolContext['runtime'];
+
+    const result = await run(ctx, 'ok');
+
+    expect(result.status).not.toBe('success');
+    expect(result.structuredError?.message).toContain('failIfUnavailable');
+  });
+
+  it('runs an excluded check unsandboxed when unsandboxed commands are allowed', async () => {
+    const ctx = contextWith({ excluded: 'echo ran' });
+    ctx.sandbox = {
+      ...SANDBOX_ENABLED,
+      allowUnsandboxedCommands: true,
+      excludedCommands: ['echo ran'],
+    };
+
+    const result = await run(ctx, 'excluded');
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('ran');
+    expect(result.content).not.toContain('[sandboxed]');
+  });
+
+  it('leaves an unsandboxed check running as it always has when the sandbox is off', async () => {
+    const ctx = contextWith({ plain: 'echo plain' });
+    ctx.sandbox = { ...DEFAULT_SETTINGS.sandbox, enabled: false };
+
+    const result = await run(ctx, 'plain');
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('plain');
+    expect(result.content).not.toContain('[sandboxed]');
+  });
+
+  it.skipIf(!sandboxBackendAvailable())(
+    'cannot write a workspace control file from a sandboxed check',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'book-check-sandbox-'));
+      try {
+        // A shell redirection, not `node`: the namespace binds `/bin` but not
+        // wherever this machine's node happens to live, and what is under test
+        // is the read-only mount.
+        const ctx = contextWith({ escaping: `printf pwned > .book/x` });
+        ctx.workspaceRoot = dir;
+        ctx.sandbox = SANDBOX_ENABLED;
+
+        const result = await run(ctx, 'escaping');
+
+        expect(result.status).not.toBe('success');
+        expect(`${result.structuredError?.message ?? ''}`.toLowerCase()).toMatch(
+          /read-only file system/,
+        );
+        expect(existsSync(join(dir, '.book', 'x'))).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(!sandboxBackendAvailable())(
+    'explains the read-only config when a sandboxed check cannot write it',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'book-check-git-config-'));
+      try {
+        execFileSync('git', ['init', '--quiet'], { cwd: dir });
+        // A configured check is a project-supplied command, and `git remote add`
+        // is one a repository's own checks reach for. Read-only inside the
+        // namespace, it fails in words that name no cause.
+        const ctx = contextWith({ remote: 'git remote add origin https://example.test/repo.git' });
+        ctx.workspaceRoot = dir;
+        ctx.sandbox = SANDBOX_ENABLED;
+
+        const result = await run(ctx, 'remote');
+
+        expect(result.status).not.toBe('success');
+        expect(result.structuredError?.message).toContain('.git/config is read-only inside');
+        expect(result.structuredError?.message).not.toMatch(
+          /could not write config file[^\n]*\n[^\n]*\n[^\n]*read-only/,
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('leaves a check failure that was not about the config alone', async () => {
+    const ctx = contextWith({ boom: `node -e "console.error('suite failed'); process.exit(1)"` });
+    ctx.sandbox = { ...DEFAULT_SETTINGS.sandbox, enabled: true, allowUnsandboxedCommands: true };
+
+    const result = await run(ctx, 'boom');
+
+    expect(result.status).not.toBe('success');
+    expect(`${result.structuredError?.message ?? ''}`).not.toContain(
+      'read-only inside the sandbox',
+    );
   });
 });
 

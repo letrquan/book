@@ -34,6 +34,19 @@ function writeSettings(
   );
 }
 
+/**
+ * The same document in the user-global layer, which the loader trusts.
+ *
+ * `writeSettings` writes the workspace layer, where a `sandbox.enabled: true`
+ * also costs the session its auto-allow (#373) — so a test about how doctor
+ * *reports* the auto-allow state has to state that state where it can be on.
+ */
+function writeUserSettings(settings: Record<string, unknown>): void {
+  // BOOK_HOME is the settings root itself, so the user layer is `$BOOK_HOME/settings.json`.
+  mkdirSync(bookHome, { recursive: true });
+  writeFileSync(join(bookHome, 'settings.json'), JSON.stringify(settings));
+}
+
 async function doctorOutput(
   target = workspace,
   options: { noSettings?: boolean } = {},
@@ -109,15 +122,67 @@ describe('runDoctorCommand sandbox policy', () => {
   });
 
   it('reports auto-allow as on when the sandbox is active and nothing is adjudicated', async () => {
-    writeSettings({ enabled: true });
+    writeUserSettings({ sandbox: { enabled: true } });
 
     expect(await doctorOutput()).toMatch(/Auto-allow Bash: on for/);
+  });
+
+  /**
+   * The floor a workspace layer cannot cross: it may turn the sandbox on, and
+   * that costs the session the switch that stops asking before each command —
+   * otherwise a checked-in `settings.json` would pre-approve every sandboxed
+   * Bash call in a workspace the user had left un-sandboxed (#373).
+   */
+  it('reports auto-allow as off when a workspace file is what turned the sandbox on', async () => {
+    writeSettings({ enabled: true });
+
+    const output = await doctorOutput();
+
+    expect(output).toMatch(/Auto-allow Bash: off/);
+    expect(output).toContain('sandbox.autoAllowBashIfSandboxed=false');
+    expect(output).toContain('a workspace file turned the sandbox on');
+  });
+
+  /**
+   * The line says a workspace file *turned the sandbox on*, so it is only true
+   * for the layer that did. Once a trusted layer has enabled it, a checked-in
+   * `enabled: true` repeats a decision the user already made and costs them
+   * nothing — and printing the accusation on every `book doctor` run is how a
+   * reader learns to skip the lines that do matter.
+   */
+  it('does not blame a workspace layer for repeating an already-enabled sandbox', async () => {
+    writeUserSettings({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true } });
+    writeSettings({ enabled: true });
+
+    const output = await doctorOutput();
+
+    expect(output).toMatch(/Auto-allow Bash: on for/);
+    expect(output).not.toContain('a workspace file turned the sandbox on');
+  });
+
+  it('names the layer that flipped it on, not a later one that repeated the key', async () => {
+    writeSettings({ enabled: true });
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({ sandbox: { enabled: true } }),
+    );
+
+    const output = await doctorOutput();
+    const accused = output
+      .split('\n')
+      .filter((line) => line.includes('a workspace file turned the sandbox on'));
+
+    expect(accused).toEqual([
+      `  From ${join(workspace, '.book', 'settings.json')}: sandbox.enabled=true — a workspace file turned the sandbox on, so sandbox.autoAllowBashIfSandboxed=false with it; set autoAllowBashIfSandboxed in ~/.book/settings.json to have it back.`,
+    ]);
   });
 
   // Doctor must not claim a policy stronger than the enforced one: a deny/ask
   // list keeps the default ask, so the auto-allow never fires while one exists.
   it('reports auto-allow as inert when deny/ask rules are configured', async () => {
-    writeSettings({ enabled: true }, { deny: ['Bash(rm *)'] });
+    writeUserSettings({ sandbox: { enabled: true } });
+    writeSettings({}, { deny: ['Bash(rm *)'] });
 
     const output = await doctorOutput();
 
@@ -125,12 +190,103 @@ describe('runDoctorCommand sandbox policy', () => {
     expect(output).toContain('permissions.deny/ask');
   });
 
-  it('reports how many commands are excluded from the sandbox', async () => {
-    writeSettings({ enabled: true, excludedCommands: ['docker *', 'kubectl *'] });
+  /**
+   * The excluded list is sandbox-loosening, so it is read from a trusted layer
+   * only (#373). Counting it here from the workspace layer would report a
+   * policy that is not the one in force.
+   */
+  it('reports how many commands the trusted layer excludes from the sandbox', async () => {
+    mkdirSync(bookHome, { recursive: true });
+    writeFileSync(
+      join(bookHome, 'settings.json'),
+      JSON.stringify({ sandbox: { enabled: true, excludedCommands: ['docker *', 'kubectl *'] } }),
+    );
 
     const output = await doctorOutput();
 
     expect(output).toContain('Excluded commands: 2');
+  });
+});
+
+/**
+ * A `sandbox.*` key a workspace layer supplied only to loosen the policy is
+ * dropped by the loader (#373). Dropped silently it is indistinguishable from a
+ * setting that does nothing, so doctor names the file, the key, its value, and
+ * where such a key belongs instead.
+ */
+describe('runDoctorCommand ignored workspace sandbox keys', () => {
+  it('names every ignored sandbox key with the file it came from', async () => {
+    writeSettings({ enabled: false, excludedCommands: ['*'] });
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({ sandbox: { filesystem: { allowWrite: ['/'] } } }),
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).toContain(
+      `Ignored from ${join(workspace, '.book', 'settings.json')}: sandbox.enabled=false — workspace settings may only tighten the sandbox`,
+    );
+    expect(output).toContain('sandbox.excludedCommands=["*"]');
+    expect(output).toContain(
+      `Ignored from ${join(workspace, '.book', 'settings.local.json')}: sandbox.filesystem.allowWrite=["/"]`,
+    );
+    expect(output).toContain('set it in ~/.book/settings.json or pass --settings');
+    // A key that is honoured is not reported as ignored.
+    expect(output).not.toMatch(/Ignored from \S+ sandbox\.filesystem\.denyRead/);
+  });
+
+  /**
+   * The label a cwd-relative path gives is the path the user typed, not the file
+   * that was read: doctor resolves the workspace, and a report about a file the
+   * user cannot find is worse than no report. An absolute path is also what a
+   * `--settings` or `BOOK_HOME` layer outside the workspace needs.
+   */
+  it('names the resolved path, not a label relative to the workspace', async () => {
+    writeSettings({ enabled: false });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain(join(workspace, '.book', 'settings.json'));
+    expect(output).not.toContain('Ignored from .book/settings.json:');
+    expect(output).not.toContain('Ignored from Project:');
+  });
+
+  it('truncates a long value instead of printing a screenful of it', async () => {
+    // `excludedCommands` and `allowWrite` are globs and directories; a
+    // repository can put a hundred kilobytes of either in one array, and a
+    // diagnostic that scrolls the rest of the report off the screen is useless
+    // for the report's own purpose.
+    writeSettings({
+      excludedCommands: Array.from({ length: 400 }, (_, i) => `pattern-number-${i}`),
+    });
+
+    const output = await doctorOutput();
+    const line = output.split('\n').find((entry) => entry.includes('sandbox.excludedCommands'));
+    expect(line).toBeDefined();
+    expect(line).toContain('truncated');
+    // The head is what identifies the value, so it survives; the tail is what
+    // pushed the rest of the report off the screen, so it does not.
+    expect(line).toContain('pattern-number-0');
+    expect(line).not.toContain('pattern-number-399');
+    expect(line!.length).toBeLessThan(600);
+  });
+
+  it('says nothing when the workspace layers only tighten or declare nothing', async () => {
+    writeSettings({ enabled: true, filesystem: { denyRead: ['./secrets'] } });
+
+    const output = await doctorOutput();
+
+    expect(output).not.toContain('Ignored from');
+    expect(output).toContain('Enabled: true');
+  });
+
+  it('reads no layer under --no-settings', async () => {
+    writeSettings({ enabled: false });
+
+    const output = await doctorOutput(workspace, { noSettings: true });
+
+    expect(output).not.toContain('Ignored from');
   });
 });
 

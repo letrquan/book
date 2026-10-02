@@ -3,9 +3,41 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import type { ReadOnlyRoot, ToolResult } from '../types/tools.js';
 import { toolFailure } from './result.js';
 
-function isOutside(root: string, candidate: string): boolean {
-  const rel = relative(root, candidate);
-  return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+/**
+ * The path semantics a containment comparison needs.
+ *
+ * Injectable so a caller whose paths are spelled by another `path` module — the
+ * sandbox builder resolves a *test* workspace through `path.win32` or
+ * `path.posix` and must judge containment in the same spelling — compares in the
+ * same terms it resolved in. `sep` is part of the contract because `..` is only
+ * a parent step in the separator of the module that produced the relative path.
+ */
+export interface PathComparison {
+  relative(from: string, to: string): string;
+  isAbsolute(path: string): boolean;
+  sep: string;
+}
+
+const REAL_PATH_COMPARISON: PathComparison = { relative, isAbsolute, sep };
+
+/**
+ * Whether `candidate` is `root` or lies outside it — the one containment test
+ * the rest of the codebase makes.
+ *
+ * Note what it does *not* accept: a relative path that merely starts with `..`,
+ * such as `..meta`. That is a name in the root's own directory, and treating it
+ * as a parent step reads a directory called `..meta` as being outside the tree
+ * it is in. `relative` can only produce a real parent step as `..` on its own or
+ * as `../…` with the separator of the module that produced it, and the third
+ * clause covers a relative path answering to two different drives.
+ */
+export function isOutside(
+  root: string,
+  candidate: string,
+  path: PathComparison = REAL_PATH_COMPARISON,
+): boolean {
+  const rel = path.relative(root, candidate);
+  return rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
 }
 
 function nearestExistingPath(inputPath: string): string | null {

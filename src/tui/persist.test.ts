@@ -58,6 +58,67 @@ describe('persistSettingLocal', () => {
     expect(existsSync(join(dir, '.book', 'settings.local.json'))).toBe(false);
   });
 
+  /**
+   * The loader decides a sandbox key by its *value*, so a writer that refuses by
+   * path alone refuses the harmless half of the surface: `enabled: true` is the
+   * one value a workspace layer may set, and the deny lists are the whole point of
+   * letting it set them.
+   */
+  it.each([
+    ['sandbox.enabled', false],
+    ['sandbox.failIfUnavailable', false],
+    ['sandbox.allowUnsandboxedCommands', true],
+    ['sandbox.autoAllowBashIfSandboxed', true],
+    ['sandbox.excludedCommands', ['*']],
+    ['sandbox.filesystem.allowWrite', ['/']],
+    ['sandbox.network.allowedDomains', ['*']],
+  ])('refuses the ignored sandbox value %s = %j', (key, value) => {
+    const result = persistSettingLocal(dir, key, value);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('ignored');
+    expect(result.error).toContain('~/.book/settings.json');
+    expect(existsSync(join(dir, '.book', 'settings.local.json'))).toBe(false);
+  });
+
+  it.each([
+    ['sandbox.enabled', true],
+    ['sandbox.failIfUnavailable', true],
+    ['sandbox.allowUnsandboxedCommands', false],
+    ['sandbox.autoAllowBashIfSandboxed', false],
+    ['sandbox.filesystem.denyRead', ['~/.ssh']],
+    ['sandbox.filesystem.denyWrite', ['/etc']],
+    ['sandbox.network.deniedDomains', ['evil.example']],
+  ])('writes the tightening sandbox value %s = %j', (key, value) => {
+    expect(persistSettingLocal(dir, key, value).ok).toBe(true);
+    expect(readSettingsLocal(dir)).toMatchObject({ sandbox: expect.anything() });
+  });
+
+  it('refuses a whole sandbox object that carries an ignored key, and names it', () => {
+    // `book config set sandbox '{…}'` is the same decision as the nested write,
+    // so it is judged the same way rather than passing the path check.
+    const result = persistSettingLocal(dir, 'sandbox', {
+      enabled: true,
+      filesystem: { denyRead: ['~/.ssh'], allowWrite: ['/'] },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('sandbox.filesystem.allowWrite');
+    expect(existsSync(join(dir, '.book', 'settings.local.json'))).toBe(false);
+  });
+
+  it('judges a whole sandbox.filesystem object by the keys it declares', () => {
+    // Writing the section replaces `allowWrite` wholesale, so declaring it is
+    // the decision the loader drops — even as `[]`, which is why the loader
+    // reports an explicitly empty array rather than treating it as a no-op.
+    const declared = persistSettingLocal(dir, 'sandbox.filesystem', { allowWrite: [] });
+    expect(declared.ok).toBe(false);
+    expect(declared.error).toContain('sandbox.filesystem.allowWrite');
+
+    // Only deny entries, on the other hand, is a section that can narrow.
+    expect(persistSettingLocal(dir, 'sandbox.filesystem', { denyRead: ['~/.ssh'] }).ok).toBe(true);
+  });
+
   it('writes nested provider registry keys', () => {
     persistSettingLocal(dir, 'provider.openrouter.type', 'openai');
     persistSettingLocal(dir, 'provider.openrouter.baseURL', 'https://openrouter.ai/api/v1');

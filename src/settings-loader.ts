@@ -21,11 +21,27 @@ import { parseEnvBoolean } from './env-boolean.js';
 const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
 
 /**
+ * The sandbox deny lists: paths a command may not write and paths it may not
+ * read, plus the domains it may not reach.
+ *
+ * One list for all three, because they are one rule applied to three keys — and
+ * because the rule is no longer "these keys concatenate" but "these keys
+ * concatenate *for a workspace layer*", which both the concatenating set and the
+ * deduping one are derived from. A second hand-written copy is how
+ * `Notification` went missing from the hooks list in the first place (#295).
+ */
+const SANDBOX_DENY_LIST_PATHS = [
+  'sandbox.filesystem.denyWrite',
+  'sandbox.filesystem.denyRead',
+  'sandbox.network.deniedDomains',
+] as const;
+
+/**
  * Deep-merge two settings objects. For arrays, concatenate (used for
  * permission rules and additionalDirectories). For objects, merge recursively.
  * For scalars, the override wins.
  */
-const CONCATENATED_ARRAY_PATHS = new Set([
+const CONCATENATED_ARRAY_PATHS = new Set<string>([
   'permissions.allow',
   'permissions.ask',
   'permissions.deny',
@@ -33,11 +49,25 @@ const CONCATENATED_ARRAY_PATHS = new Set([
   // it went stale the moment `Notification` was added, and a later layer's
   // notification hooks then replaced the user layer's instead of appending (#295).
   ...HOOK_EVENTS.map((event) => `hooks.${event}`),
+  // A later layer adds to the deny lists rather than replacing them, so a
+  // workspace layer shipping `denyRead: []` cannot erase the user's entries
+  // (#373) — and a later *trusted* layer still can, which is the one way to
+  // narrow a list that turned out to be too broad.
+  ...SANDBOX_DENY_LIST_PATHS,
 ]);
+
+/**
+ * The same three paths as a set, for the two questions a merge asks about one of
+ * them: whether the layer's entries add to or replace the earlier ones, and
+ * whether repeating a path across layers stores it once.
+ */
+const SANDBOX_DENY_LIST_PATH_SET: ReadonlySet<string> = new Set(SANDBOX_DENY_LIST_PATHS);
 
 function mergeObject(
   base: Record<string, unknown>,
   override: Record<string, unknown>,
+  /** Whether a deny list from this layer adds to the earlier one or replaces it. */
+  accumulateDenyLists: boolean,
   prefix = '',
 ): Record<string, unknown> {
   const result = structuredClone(base);
@@ -57,8 +87,12 @@ function mergeObject(
           normalize(String(entry)),
         );
         result[key] = [...new Set(combined)];
-      } else if (CONCATENATED_ARRAY_PATHS.has(path)) {
-        result[key] = [...(Array.isArray(existing) ? existing : []), ...value];
+      } else if (
+        CONCATENATED_ARRAY_PATHS.has(path) &&
+        (accumulateDenyLists || !SANDBOX_DENY_LIST_PATH_SET.has(path))
+      ) {
+        const combined = [...(Array.isArray(existing) ? existing : []), ...value];
+        result[key] = SANDBOX_DENY_LIST_PATH_SET.has(path) ? [...new Set(combined)] : combined;
       } else {
         result[key] = structuredClone(value);
       }
@@ -72,6 +106,7 @@ function mergeObject(
       result[key] = mergeObject(
         existing as Record<string, unknown>,
         value as Record<string, unknown>,
+        accumulateDenyLists,
         path,
       );
     } else {
@@ -135,6 +170,140 @@ function stripPaths(
   }
 }
 
+/** One `sandbox.*` key a workspace layer supplied that the loader will not honour. */
+export interface IgnoredWorkspaceSandboxKey {
+  /** Dotted path of the key, e.g. `sandbox.filesystem.allowWrite`. */
+  key: string;
+  /** The value the layer wrote, so a report can quote what the file actually said. */
+  value: unknown;
+}
+
+/**
+ * `sandbox.*` keys a workspace layer supplies that only loosen, and therefore
+ * never survive to the merge. The second element is the one value the layer may
+ * set — the tightening direction — or `null` when any value is dropped.
+ *
+ * The sandbox is the boundary between a command and the host, so a file inside
+ * the workspace must not be able to widen it: a checked-in `settings.json`
+ * could switch off the sandbox the user enabled, exclude every command
+ * (`excludedCommands: ["*"]`), or open a writable root (`allowWrite: ["/"]`)
+ * — and because those arrays *replaced* the earlier layer's, even the user's own
+ * `denyRead` list could be emptied. Turning the sandbox on, adding deny entries
+ * and refusing unsandboxed commands stay available to a workspace layer; they
+ * only ever narrow it (#373).
+ */
+const WORKSPACE_SANDBOX_ONLY_TIGHTENING: ReadonlyArray<readonly [readonly string[], unknown]> = [
+  [['sandbox', 'enabled'], true],
+  [['sandbox', 'failIfUnavailable'], true],
+  [['sandbox', 'allowUnsandboxedCommands'], false],
+  [['sandbox', 'autoAllowBashIfSandboxed'], false],
+  [['sandbox', 'excludedCommands'], null],
+  [['sandbox', 'filesystem', 'allowWrite'], null],
+  [['sandbox', 'network', 'allowedDomains'], null],
+];
+
+/**
+ * The value at a path in a settings document, or `undefined` when a step is
+ * missing or is not a plain object.
+ *
+ * One walker rather than two near-copies: `readContainer` used to be this with an
+ * extra condition at the end, and a loop that differs only in its last line is
+ * how two helpers drift apart and a delete lands on the wrong object.
+ */
+function readPath(settings: Record<string, unknown>, path: readonly string[]): unknown {
+  let value: unknown = settings;
+  for (const key of path) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+    value = (value as Record<string, unknown>)[key];
+    if (value === undefined) return undefined;
+  }
+  return value;
+}
+
+function deletePath(settings: Record<string, unknown>, path: readonly string[]): void {
+  const parent = path.slice(0, -1);
+  const key = path[path.length - 1];
+  const container = parent.length === 0 ? settings : readObjectPath(settings, parent);
+  if (container) delete container[key];
+}
+
+/** `readPath` for a path that has to end at an object, which `deletePath` needs. */
+function readObjectPath(
+  settings: Record<string, unknown>,
+  path: readonly string[],
+): Record<string, unknown> | undefined {
+  const value = readPath(settings, path);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * A workspace layer as the file wrote it: parsed, but not required to be
+ * complete. The sandbox rule is about what a document *says*, so the reader
+ * takes a partial view — a layer that omits `excludedCommands` entirely is
+ * describing itself, not supplying an empty list. Every key is optional here,
+ * including the nested ones, which is the whole point of the type.
+ */
+export interface WorkspaceLayerSandboxView {
+  sandbox?: Omit<Partial<BookSettings['sandbox']>, 'filesystem' | 'network'> & {
+    filesystem?: Partial<BookSettings['sandbox']['filesystem']>;
+    network?: Partial<BookSettings['sandbox']['network']>;
+  };
+}
+
+/**
+ * The `sandbox.*` keys `settings` declares that a workspace layer may not
+ * supply, with the values it wrote. Pure: `sanitizeLayer` deletes exactly the
+ * keys this reports, and `book doctor` prints the same list, so the enforced
+ * rule and the reported one cannot drift apart.
+ */
+export function ignoredWorkspaceSandboxKeys(
+  settings: WorkspaceLayerSandboxView,
+): IgnoredWorkspaceSandboxKey[] {
+  const record = settings as Record<string, unknown>;
+  const ignored: IgnoredWorkspaceSandboxKey[] = [];
+  for (const [path, tighteningValue] of WORKSPACE_SANDBOX_ONLY_TIGHTENING) {
+    const value = readPath(record, path);
+    if (value === undefined) continue;
+    if (tighteningValue !== null && value === tighteningValue) continue;
+    ignored.push({ key: path.join('.'), value });
+  }
+  return ignored;
+}
+
+/**
+ * How much of an ignored value a report prints.
+ *
+ * `excludedCommands` and `allowWrite` are globs and directory lists, so a
+ * repository can put as much text in one as it likes, and every host that
+ * reports an ignored key would then print a screenful of it — pushing the part
+ * of the diagnostic that says where the value belongs off the screen. The head
+ * is kept because it identifies the value; the length is what follows it.
+ */
+const IGNORED_VALUE_PREVIEW_CHARS = 200;
+
+/** One ignored key as a report line reads it: `sandbox.enabled=false`. */
+export function formatIgnoredWorkspaceSandboxKey(entry: IgnoredWorkspaceSandboxKey): string {
+  const json = JSON.stringify(entry.value) ?? String(entry.value);
+  if (json.length <= IGNORED_VALUE_PREVIEW_CHARS) return `${entry.key}=${json}`;
+  return `${entry.key}=${json.slice(0, IGNORED_VALUE_PREVIEW_CHARS)}… (truncated, ${
+    json.length - IGNORED_VALUE_PREVIEW_CHARS
+  } more characters)`;
+}
+
+/**
+ * Drop every loosening `sandbox.*` key from a workspace layer. Deleting rather
+ * than overwriting is what makes the key harmless: the merge keeps whatever the
+ * earlier, more trusted layer said.
+ */
+function applyIgnoredWorkspaceSandboxKeys(settings: Partial<BookSettings>): void {
+  const record = settings as Record<string, unknown>;
+  for (const entry of ignoredWorkspaceSandboxKeys(settings)) {
+    deletePath(record, entry.key.split('.'));
+  }
+}
+
 function sanitizeLayer(
   settings: Partial<BookSettings>,
   trust: SettingsLayerTrust,
@@ -147,10 +316,20 @@ function sanitizeLayer(
   // could point it at a binary it ships would run that binary on the first
   // command, so the key is honoured from trusted layers only.
   delete sanitized.shell;
+  // Nor may a workspace file widen the sandbox it is supposed to be confined by.
+  applyIgnoredWorkspaceSandboxKeys(sanitized);
   stripPaths(sanitized, WORKSPACE_FORBIDDEN_PATHS);
   return sanitized;
 }
 
+/**
+ * Merge one layer over the resolved settings.
+ *
+ * The layer's trust decides two things that are not visible in the layer itself:
+ * whether a deny list adds to or replaces the earlier one, and whether turning
+ * the sandbox on costs the session its auto-allow. Both are stated here, next to
+ * the sanitizing that already reads `trust`, rather than left to each caller.
+ */
 function mergeLayer(
   resolved: ResolvedSettings,
   layer: Partial<BookSettings>,
@@ -164,16 +343,93 @@ function mergeLayer(
   ) {
     candidate.disableBypassPermissionsMode = true;
   }
-  return mergeSettings(resolved, candidate);
+  if (trust !== 'trusted' && sandboxTurnedOnByWorkspaceLayer(resolved, candidate)) {
+    // Written through the partial view the sanitizer uses: `BookSettings`
+    // declares every sandbox key as present, and this layer supplies one.
+    const tightened: WorkspaceLayerSandboxView = {
+      sandbox: { ...candidate.sandbox, autoAllowBashIfSandboxed: false },
+    };
+    (candidate as WorkspaceLayerSandboxView).sandbox = tightened.sandbox;
+  }
+  return mergeSettings(resolved, candidate, trust);
 }
 
+/**
+ * Whether this workspace layer is what turns the sandbox on.
+ *
+ * `enabled: true` is the one `sandbox` key a workspace layer may set, because it
+ * only ever applies to sessions that had it off. On its own it narrows nothing a
+ * user chose; with `autoAllowBashIfSandboxed` it stops the session from asking
+ * before each command, so a checked-in `settings.json` would turn a workspace
+ * where the user reads every command into one where nobody is asked at all.
+ * Setting it here makes the pair equivalent to the auto-allow alone, which the
+ * loader already drops.
+ */
+function sandboxTurnedOnByWorkspaceLayer(
+  resolved: ResolvedSettings,
+  candidate: Partial<BookSettings>,
+): boolean {
+  return candidate.sandbox?.enabled === true && resolved.sandbox?.enabled !== true;
+}
+
+/** One layer as a caller of {@link workspaceLayerThatEnabledSandbox} has it. */
+export interface SettingsLayerForSandboxActivation {
+  path: string;
+  trust: SettingsLayerTrust;
+  /** Null when the file is absent, which is not a layer that declared anything. */
+  document: Partial<BookSettings> | null;
+}
+
+/**
+ * The workspace layer that flipped `sandbox.enabled` from not-true to true, or
+ * undefined when none did: the file whose `enabled: true` cost the session its
+ * `autoAllowBashIfSandboxed`.
+ *
+ * Two hosts have to say so — `book doctor`, which lists what each layer changed,
+ * and the print/SDK notices, which have no other channel — and both were asking
+ * the raw layers "does this one say `enabled: true`". That is a different
+ * question: once a trusted layer has enabled the sandbox, a repository repeating
+ * the key changes nothing and was still reported, every session, as a decision it
+ * did not make.
+ *
+ * The layers go in resolution order *including* the trusted ones, because the
+ * trusted baseline is exactly what decides whether a workspace layer is the
+ * flipper. The walk is this function's own and reads only `sandbox.enabled`, and
+ * it asks the same question through the same {@link sanitizeLayer} the merge
+ * applies, so it cannot disagree with
+ * {@link sandboxTurnedOnByWorkspaceLayer} about which layer that is.
+ */
+export function workspaceLayerThatEnabledSandbox(
+  layers: readonly SettingsLayerForSandboxActivation[],
+): string | undefined {
+  let enabled = DEFAULT_SETTINGS.sandbox.enabled;
+  for (const layer of layers) {
+    if (!layer.document) continue;
+    const candidate = sanitizeLayer(layer.document, layer.trust);
+    if (layer.trust !== 'trusted' && candidate.sandbox?.enabled === true && enabled !== true) {
+      return layer.path;
+    }
+    if (candidate.sandbox?.enabled !== undefined) enabled = candidate.sandbox.enabled;
+  }
+  return undefined;
+}
+
+/**
+ * Merge a settings layer over resolved settings.
+ *
+ * @param trust - what the layer is (`trusted` by default: the user-global file
+ *   or a `--settings` path). Only a workspace layer accumulates the sandbox deny
+ *   lists; every other array behaviour is the same for all layers.
+ */
 export function mergeSettings(
   base: ResolvedSettings,
   override: Partial<BookSettings>,
+  trust: SettingsLayerTrust = 'trusted',
 ): ResolvedSettings {
   return mergeObject(
     base as unknown as Record<string, unknown>,
     override as Record<string, unknown>,
+    trust !== 'trusted',
   ) as unknown as ResolvedSettings;
 }
 

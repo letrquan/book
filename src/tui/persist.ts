@@ -23,7 +23,7 @@ import {
 } from '../settings-repository.js';
 import { resolveBookHome } from '../book-home.js';
 import type { SkillActivation, SkillExecution } from '../settings.js';
-import { blockedWorkspaceSettingPath } from '../settings-scope.js';
+import { blockedWorkspaceSettingWrite } from '../settings-scope.js';
 
 const LOCAL_DIR = '.book';
 const LOCAL_FILE = 'settings.local.json';
@@ -97,8 +97,11 @@ export function persistSettingsLocal(
   workspace: string,
   values: Record<string, unknown>,
 ): { ok: boolean; error?: string } {
-  for (const key of Object.keys(values)) {
-    const blocked = blockedWorkspaceSettingPath(key);
+  for (const [key, value] of Object.entries(values)) {
+    // The value decides for the sandbox, so it is passed rather than the path
+    // alone: refusing `sandbox.enabled` outright would block the one value a
+    // workspace layer may set (#373).
+    const blocked = blockedWorkspaceSettingWrite(key, value);
     if (blocked) return { ok: false, error: blocked };
   }
   return persistSettingsAt(localSettingsPath(workspace), values);

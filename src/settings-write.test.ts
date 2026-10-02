@@ -54,16 +54,93 @@ describe('guard order', () => {
    * conclude they had misspelled it.
    */
   it('refuses the shell setting as a trust boundary, not an unknown key', () => {
-    const refusal = guardSettingWrite('shell');
+    const refusal = guardSettingWrite('shell', 'bash', 'local');
     expect(refusal).toContain('BOOK_SHELL');
     expect(refusal).not.toContain('Unknown top-level key');
   });
 
   it('reaches a trust-owned key from above and below its own path', () => {
-    expect(guardSettingWrite('permissions.projectAllowRules')).toContain('book trust rule');
-    expect(guardSettingWrite('hooks.projectEntries.abc')).toContain('book trust hook');
+    expect(guardSettingWrite('permissions.projectAllowRules', undefined, 'local')).toContain(
+      'book trust rule',
+    );
+    expect(guardSettingWrite('hooks.projectEntries.abc', undefined, 'local')).toContain(
+      'book trust hook',
+    );
     // Replacing the whole section is the same write with the same silent outcome.
-    expect(guardSettingWrite('commands')).toContain('book trust command');
+    expect(guardSettingWrite('commands', undefined, 'local')).toContain('book trust command');
+  });
+
+  /**
+   * The sandbox keys are judged by value, so the guard takes one: `enabled: true`
+   * is the single value a workspace layer may set, and refusing the path would
+   * take away the one sandbox decision a repository is allowed to make (#373).
+   */
+  it('judges a sandbox key by its value, not its path', () => {
+    expect(guardSettingWrite('sandbox.enabled', false, 'local')).toContain('ignored');
+    expect(guardSettingWrite('sandbox.enabled', true, 'local')).toBeUndefined();
+    expect(guardSettingWrite('sandbox.filesystem.denyRead', ['~/.ssh'], 'local')).toBeUndefined();
+    expect(guardSettingWrite('sandbox.filesystem.allowWrite', ['/'], 'local')).toContain('ignored');
+    // A whole-object write is judged the same way, key by key.
+    expect(
+      guardSettingWrite('sandbox', { enabled: true, excludedCommands: ['*'] }, 'local'),
+    ).toContain('sandbox.excludedCommands');
+    expect(guardSettingWrite('sandbox', { enabled: true }, 'local')).toBeUndefined();
+  });
+
+  it('refuses the never-allowed sandbox keys even with no value in hand', () => {
+    // `book config unset` and the live-branch check call the guard on a path
+    // alone. Refusing by path there would be wrong for `sandbox.enabled`, and
+    // wrong in the other direction for the keys no value can make acceptable.
+    expect(guardSettingWrite('sandbox.excludedCommands', undefined, 'local')).toContain('ignored');
+    expect(guardSettingWrite('sandbox.filesystem.allowWrite', undefined, 'local')).toContain(
+      'ignored',
+    );
+    expect(guardSettingWrite('sandbox.network.allowedDomains', undefined, 'local')).toContain(
+      'ignored',
+    );
+    expect(guardSettingWrite('sandbox.enabled', undefined, 'local')).toBeUndefined();
+    expect(guardSettingWrite('sandbox.filesystem.denyWrite', undefined, 'local')).toBeUndefined();
+  });
+
+  /**
+   * The filter is about what a *file inside the working tree* may carry, and the
+   * user-global file is not one. `book config set sandbox.enabled false` writes
+   * `<BOOK_HOME>/settings.json` and is the documented way to turn the sandbox
+   * off, so the guard refused it with advice to edit the very file it was
+   * writing to — the one action a user takes to fix a sandbox it cannot use.
+   */
+  it('accepts every sandbox value in the user scope, which is not a workspace file', () => {
+    for (const [key, value] of [
+      ['sandbox.enabled', false],
+      ['sandbox.failIfUnavailable', true],
+      ['sandbox.allowUnsandboxedCommands', true],
+      ['sandbox.excludedCommands', ['*']],
+      ['sandbox.filesystem.allowWrite', ['/']],
+      ['sandbox', { enabled: true, excludedCommands: ['*'] }],
+    ] as const) {
+      expect(guardSettingWrite(key, value, 'user'), key).toBeUndefined();
+      // ...and with no value in hand, since `unset` writes one scope too.
+      expect(guardSettingWrite(key, undefined, 'user'), key).toBeUndefined();
+    }
+  });
+
+  it('writes the trusted sandbox value the user scope refused to take', () => {
+    const result = write('sandbox.enabled', false, 'user');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    const written = JSON.parse(readFileSync(result.path, 'utf8')) as Record<string, unknown>;
+    expect(written.sandbox).toEqual({ enabled: false });
+  });
+
+  it('refuses an ignored sandbox value in the project scope too, writing nothing', () => {
+    const result = write('sandbox.allowUnsandboxedCommands', true, 'project');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected the write to be refused');
+    expect(result.error).toContain('ignored');
+    // Refused before the file was created, so there is nothing to leave behind.
+    expect(existsSync(join(workspace, '.book', 'settings.json'))).toBe(false);
   });
 
   /**
@@ -73,12 +150,14 @@ describe('guard order', () => {
    * `book trust dir` at all — the exact decision the gate exists to withhold.
    */
   it('refuses projectDirectories in every scope, exactly like its four siblings', () => {
-    const refusal = guardSettingWrite('projectDirectories');
+    const refusal = guardSettingWrite('projectDirectories', undefined, 'user');
 
     expect(refusal).toContain('book trust dir');
     expect(refusal).toContain('decision about repository-declared configuration');
     // The same write, spelled as a leaf of the map: a deeper path reaches the key.
-    expect(guardSettingWrite('projectDirectories./shared')).toContain('book trust dir');
+    expect(guardSettingWrite('projectDirectories./shared', undefined, 'user')).toContain(
+      'book trust dir',
+    );
 
     for (const scope of ['user', 'project', 'local'] as const) {
       const result = write('projectDirectories', { '/opt/shared': 'approved' }, scope);
@@ -91,13 +170,13 @@ describe('guard order', () => {
   });
 
   it('rejects an unknown top-level key before anything is written', () => {
-    expect(guardSettingWrite('maxTruns')).toContain('Unknown top-level key');
+    expect(guardSettingWrite('maxTruns', 12, 'user')).toContain('Unknown top-level key');
     expect(write('maxTruns', 12).ok).toBe(false);
     expect(existsSync(join(bookHome, 'settings.json'))).toBe(false);
   });
 
   it('accepts a key the schema declares', () => {
-    expect(guardSettingWrite('maxTurns')).toBeUndefined();
+    expect(guardSettingWrite('maxTurns', 12, 'user')).toBeUndefined();
   });
 });
 
