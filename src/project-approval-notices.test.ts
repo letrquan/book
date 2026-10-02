@@ -82,6 +82,53 @@ describe('collectWithheldProjectNotices', () => {
 });
 
 /**
+ * A withheld sandbox key has no other symptom either, and a worse one: the run is
+ * simply *less* protected than the repository says, so nothing fails and the
+ * session looks ordinary. Print and SDK runs cannot ask about it, so they report
+ * what they ignored and where the value has to go instead.
+ */
+describe('an ignored sandbox key in a workspace layer is reported', () => {
+  it('names each ignored key with the value the file wrote', () => {
+    writeProject({
+      sandbox: {
+        enabled: false,
+        excludedCommands: ['*'],
+        filesystem: { allowWrite: ['/'], denyRead: ['~/.ssh'] },
+      },
+    });
+
+    const reported = notices(resolved()).join('\n');
+
+    expect(reported).toContain('sandbox.enabled=false');
+    expect(reported).toContain('sandbox.excludedCommands=["*"]');
+    expect(reported).toContain('sandbox.filesystem.allowWrite=["/"]');
+    // The honoured half of the same section is not reported: a deny entry is the
+    // one thing a repository may add, and reporting it would train the reader to
+    // ignore the notice.
+    expect(reported).not.toContain('denyRead');
+    expect(reported).toContain('~/.book/settings.json');
+  });
+
+  it('says nothing for a sandbox section that only tightens', () => {
+    writeProject({
+      sandbox: {
+        enabled: true,
+        filesystem: { denyRead: ['./secrets'] },
+        network: { deniedDomains: ['tracker.example'] },
+      },
+    });
+
+    expect(notices(resolved())).toEqual([]);
+  });
+
+  it('says nothing under --no-settings, like every other withheld declaration', () => {
+    writeProject({ sandbox: { enabled: false } });
+
+    expect(notices(structuredClone(DEFAULT_SETTINGS) as ResolvedSettings, false)).toEqual([]);
+  });
+});
+
+/**
  * #300. A withheld `additionalDirectories` entry is the only gated declaration with no other
  * symptom: the run simply cannot see the directory, so the model reports the file as missing
  * rather than as un-approved. The notice is what turns that into something the operator can fix,

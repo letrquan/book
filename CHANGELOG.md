@@ -18,25 +18,49 @@ All notable changes to this project are documented in this file.
   layers now, `enabled`, `failIfUnavailable`, `allowUnsandboxedCommands` and
   `autoAllowBashIfSandboxed` are honoured only in the tightening direction, `excludedCommands`,
   `filesystem.allowWrite` and `network.allowedDomains` are ignored outright, and the three deny
-  lists accumulate across layers like `permissions.deny` instead of replacing. The user-global
-  layer and `--settings` are unchanged. `book doctor` names every key it dropped, with the file and
-  the value, since an ignored key that says nothing reads like a key that does nothing.
+  lists accumulate across layers like `permissions.deny` instead of replacing — a _trusted_ layer
+  still replaces them, which is the one way to narrow a list that turned out too broad. `enabled:
+true` is the one loosening-adjacent key a workspace layer may set, and the loader pairs it with
+  `autoAllowBashIfSandboxed: false`, so a checked-in file cannot enable the sandbox and stop the
+  asking in one edit. The user-global layer and `--settings` are unchanged. `book config set` and
+  `/config` refuse an ignored value before it lands, judging the **value** rather than the key, so
+  `sandbox.enabled true` and a `denyRead` entry are still writable to a workspace layer.
   **The workspace control files are read-only inside the sandbox.** The read-write workspace bind
   let a sandboxed command write `.book/settings.local.json`, install a `.git/hooks/*` script the
   next `git commit` runs, or repoint `core.hooksPath` and `core.fsmonitor` in `.git/config` —
   files the _host_ acts on after the command exits, which makes each a way out of the sandbox
   rather than a scratch file. `.book/` is now bound read-only, or masked with an empty read-only
-  directory when it is absent, as are a git dir's `hooks/`, `config` and `config.worktree`. The
-  git dir is found by following a `.git` file and a `commondir` file, so worktrees and submodules
-  are covered; a git dir outside the workspace is left alone. Two costs are named rather than
-  hidden: masking an absent `.book/` creates an **empty `.book/` directory on your disk** as a
-  side effect of a sandboxed command, and a workspace with no `.git` can still have one created by
-  a sandboxed command. `Check` runs under the same decision as `Bash`, from one shared helper in
+  directory when it is absent, as is a git dir's `hooks/`, `config`, `config.worktree`, `commondir`
+  and `gitdir`, a `.git` pointer file, and a `core.hooksPath` pointing inside the workspace.
+  `.book/settings.local.json` is masked with a read-only `/dev/null`, so the credential it can hold
+  is unreadable inside the sandbox and not merely unwritable, and a `.bookrc.json` that exists is
+  bound read-only. Git dirs are found by following a `.git` file, a `commondir` file,
+  `.git/worktrees/*` and nested `.git/modules/*`, so worktrees and submodules are covered; a git dir
+  outside the workspace is left alone. The git dir itself is pinned with a read-write self-bind
+  rather than made read-only, so sandboxed `git commit`, `git checkout` and `git fetch` keep working
+  while the directory cannot be renamed away (`EBUSY`). A git command that then cannot write
+  `.git/config` (`git checkout -b`, `git push -u`, `git remote add`, `git branch --set-upstream-to`,
+  `git config`) gets one appended line naming the read-only bind, from `Bash` and `Check` alike:
+  git's message names no cause, so without it the model retries the command or rewrites it around
+  the config. Control files are read through a bounded, regular-file-only path (4 KiB, `lstat` then
+  `open`, so a FIFO or a device cannot block the mount build), a symlinked control path is resolved
+  once with an outside target skipped, and containment is decided on canonical paths.
+  `book doctor` names every key a workspace layer asked for and did not get, with the resolved file
+  path and a truncated value, and a print or SDK run reports the same keys, since an ignored key
+  that says nothing reads like a key that does nothing. Costs and gaps, named rather than hidden:
+  masking an absent `.book/` creates an **empty `.book/` directory on your disk** as a side effect of
+  a sandboxed command; a nested repository that is not a submodule stays writable; a workspace with
+  no `.git` can still have one created by a sandboxed command; and **inside a plain repository a
+  sandboxed command can still create a new pointer file** such as `.git/commondir`, which redirects
+  the host's git to a repository the command built and therefore runs code on the host — closing
+  that needs the whole git directory read-only inside the sandbox, which is exactly what would make
+  sandboxed `git commit`, `git checkout` and `git fetch` fail (an open decision on issue 373).
+  `Check` runs under the same decision as `Bash`, from one shared helper in
   `src/sandbox.ts` — wrapped when the sandbox is on, refused when `allowUnsandboxedCommands` is
   false and it would run outside, and marked `[sandboxed]` when wrapped. It previously called
   `exec` with no sandbox and no such check, so "the sandbox is on and unsandboxed commands are
   refused" was a promise `Check` did not keep; its timeout-versus-failure distinction is unchanged,
-  and `Bash`'s messages and behaviour are untouched.
+  and `Bash`'s messages and behaviour are otherwise untouched.
 
 ### Security
 

@@ -250,14 +250,21 @@ function shadowingScopes(
   return shadowing;
 }
 
-/** The refusal for a key no configuration surface may write, or undefined. */
-export function guardSettingWrite(key: string): string | undefined {
+/**
+ * The refusal for a key no configuration surface may write, or undefined.
+ *
+ * `value` is part of the question for the sandbox keys, and a caller that has
+ * none is refused only the keys that are never allowed.
+ */
+export function guardSettingWrite(key: string, value?: unknown): string | undefined {
   const parts = key.split('.').filter(Boolean);
   if (parts.length === 0) {
     return 'Invalid key. Use dot-separated path: e.g. permissions.deny';
   }
 
-  const blocked = blockedConfigWritePath(key);
+  // Value-aware for the sandbox: `enabled: true` is the one loosening-adjacent
+  // value a workspace layer may set, so a path-only refusal would block it (#373).
+  const blocked = blockedConfigWritePath(key, value);
   if (blocked) return blocked;
 
   const topKey = parts[0];
@@ -302,7 +309,7 @@ export function guardSettingWrite(key: string): string | undefined {
  * lands in.
  */
 export function applySettingWrite(options: SettingWriteOptions): SettingWriteResult {
-  const refusal = guardSettingWrite(options.key);
+  const refusal = guardSettingWrite(options.key, options.value);
   if (refusal) return { ok: false, error: refusal };
 
   // Checked before the write, not after: a value that bricks the merge would

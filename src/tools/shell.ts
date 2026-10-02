@@ -7,7 +7,7 @@ import type {
 } from '../types/runtime.js';
 import { resolveShell, shellExecution } from '../shell-selection.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
-import { decideSandboxExecution } from '../sandbox.js';
+import { decideSandboxExecution, withGitConfigReadOnlyNotice } from '../sandbox.js';
 import { buildChildEnv } from '../child-env.js';
 import { isTerminalShellStatus, ShellJobManager } from '../jobs/shell-manager.js';
 import { terminateForegroundProcess } from '../jobs/process-tree.js';
@@ -459,7 +459,14 @@ async function bashForeground(
       void finish(
         code === 0
           ? ok((built.sandboxed ? '[sandboxed] ' : '') + (stdout || '(no output)'))
-          : fail(stderr || `Exit code: ${code}`, stdout),
+          : // The read-only `.git/config` is what stops a command repointing
+            // `core.hooksPath` (#373), and git reports the consequence in words
+            // that name no cause. Appended here, once, so the model learns the
+            // command has to run outside the sandbox instead of retrying it.
+            fail(
+              withGitConfigReadOnlyNotice(stderr || `Exit code: ${code}`, stderr, built.sandboxed),
+              stdout,
+            ),
       );
     };
     const onError = (error: Error) => {

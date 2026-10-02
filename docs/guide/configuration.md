@@ -145,11 +145,23 @@ the sandbox:
 | `network.deniedDomains`            | adds entries                    | —         |
 
 The deny lists **accumulate** across layers like `permissions.deny`, so a project can add to your
-`denyRead` without erasing it. Set anything in the ignored column in `~/.book/settings.json`, or pass
-it with `--settings`. `book doctor` lists every key it dropped, with the file and the value:
+`denyRead` without erasing it — a _trusted_ layer still replaces them, which is the one way to
+narrow a list that turned out to be too broad. Set anything in the ignored column in
+`~/.book/settings.json`, or pass it with `--settings`.
+
+`enabled: true` is the one loosening-adjacent key a workspace layer may set, and it costs the
+session its auto-allow: the loader pairs it with `autoAllowBashIfSandboxed: false`, because a
+repository that could switch the sandbox on and stop the asking in one checked-in file would be
+using the sandbox to authorize itself.
+
+`book config set` and `/config` refuse a workspace write of an ignored value before it lands, and
+they judge the **value**, not the key — so `book config set sandbox.enabled true --local` and a
+`denyRead` entry are written while the ignored column is refused with the file it belongs in. `book
+doctor` lists every key a workspace layer asked for and did not get, with the resolved path and a
+truncated value, and a print or SDK run reports the same keys on stderr:
 
 ```
-Ignored from .book/settings.json: sandbox.enabled=false — workspace settings may only tighten the sandbox; set it in ~/.book/settings.json or pass --settings
+Ignored from /home/you/project/.book/settings.json: sandbox.enabled=false — workspace settings may only tighten the sandbox; set it in ~/.book/settings.json or pass --settings
 ```
 
 ### What is read-only inside the sandbox
@@ -160,11 +172,30 @@ a command exits:
 - `.book/` — read-only. When the directory does not exist, Book masks it with an empty read-only
   directory so a command cannot create it either. **That masking creates an empty `.book/`
   directory on your disk as a side effect** of running a sandboxed command in such a workspace.
-- a git directory's `hooks/`, `config` and `config.worktree` — read-only, following a `.git` file
-  and a `commondir` file so a worktree or submodule is covered too. A git directory outside the
-  workspace is left alone. A workspace with no `.git` can still have one created by a sandboxed
-  command (`git init` succeeds); its hooks only become protected once Book sees the directory. An
-  absent `config` is left unmasked, since bubblewrap cannot mount a tmpfs over a file path.
+- `.book/settings.local.json` — masked with a read-only `/dev/null`, so the provider credential it
+  can hold is not merely unwritable inside the sandbox but unreadable.
+- `.bookrc.json` — read-only when it exists. An absent file is left alone, since bubblewrap cannot
+  mount a tmpfs over a file path.
+- a git directory's `hooks/`, `config`, `config.worktree`, `commondir` and `gitdir`, and a `.git`
+  pointer file — read-only, and masked when absent. The directory is found by following a `.git`
+  file, a `commondir` file, `.git/worktrees/*` and nested `.git/modules/*`, so a linked worktree or
+  a submodule is covered as well as a plain repository, and a `core.hooksPath` naming a path inside
+  the workspace is protected the same way. A git directory outside the workspace is left alone.
+- The git directory itself is **not** read-only, because a sandboxed `git commit`, `git checkout` or
+  `git fetch` has to keep working. It is pinned with a read-write self-bind instead, so renaming or
+  replacing it fails with `EBUSY` rather than redirecting the host's git. A `sandbox.filesystem.allowWrite`
+  entry at or below a protected path is applied after the protection — an explicit opt-in — while a
+  broader one stays ahead of it and cannot reopen the path.
+
+**What this does not cover.** Inside a plain repository a sandboxed command can still _create_ a
+pointer file the host's git reads next, such as `.git/commondir` naming a directory the command
+built, which redirects the host to a repository the sandbox chose and therefore runs code on the
+host. Closing that requires the whole git directory read-only inside the sandbox, which would also
+make sandboxed `git commit`, `git checkout` and `git fetch` fail; that trade-off is still open
+(issue 373). A nested repository that is not a
+submodule also stays writable, and a workspace with no `.git` can still have one created by a
+sandboxed command (`git init` succeeds); its hooks only become protected once Book sees the
+directory.
 
 `Check` runs under the same decision as `Bash`: a check is a project-supplied command, so it is
 sandboxed too, refused when unsandboxed commands are refused, and marked `[sandboxed]` in its

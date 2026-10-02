@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { buildChildEnv } from '../child-env.js';
-import { decideSandboxExecution } from '../sandbox.js';
+import { decideSandboxExecution, withGitConfigReadOnlyNotice } from '../sandbox.js';
 import { toolFailure, toolSuccess } from '../tools/result.js';
 import { resolveToolTimeoutMs } from '../tools/timeouts.js';
 
@@ -112,7 +112,18 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
           resolve(timedOut(command, timeoutMs, stdout || stderr || ''));
           return;
         }
-        resolve(fail(stderr || stdout || error.message));
+        // A project check is run inside the same namespace a `Bash` command is,
+        // so a `git` command among them hits the same read-only `.git/config`
+        // (#373) and says so in words that name no cause. Appended here, once.
+        resolve(
+          fail(
+            withGitConfigReadOnlyNotice(
+              stderr || stdout || error.message,
+              stderr || stdout,
+              decision.sandboxed,
+            ),
+          ),
+        );
         return;
       }
       // Marked the way a sandboxed `Bash` command is marked, so a transcript

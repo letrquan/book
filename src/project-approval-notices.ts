@@ -13,7 +13,12 @@ import { join } from 'path';
 import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
 import { collectDeclaredHooks, partitionProjectHooks } from './hook-approvals.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
-import { loadSettingsFile } from './settings-loader.js';
+import {
+  formatIgnoredWorkspaceSandboxKey,
+  ignoredWorkspaceSandboxKeys,
+  loadSettingsFile,
+} from './settings-loader.js';
+import { TRUSTED_SETTINGS_LOCATION } from './settings-scope.js';
 import type { ResolvedSettings } from './settings.js';
 
 export interface WithheldProjectDeclarations {
@@ -75,6 +80,23 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
     notices.push(
       `⚠  Ignoring project-declared additionalDirectories entry "${directory.declared}"` +
         ` (really ${directory.realPath}): it requires approval. Run \`book doctor\` to see how to grant it.`,
+    );
+  }
+
+  // A withheld sandbox key is the quietest of the three families, and the most
+  // misleading without a word: the session is simply *less* protected than the
+  // repository says, so nothing fails and the run looks ordinary. Reported with
+  // the values the file wrote — a key named alone does not tell the reader
+  // whether the repository was asking for the sandbox or for its absence — and
+  // with the file the value has to go in, since the layer it came from is not
+  // where Book reads it from.
+  const ignoredSandboxKeys = ignoredWorkspaceSandboxKeys(projectSettings ?? {});
+  if (ignoredSandboxKeys.length > 0) {
+    const listed = ignoredSandboxKeys.map(formatIgnoredWorkspaceSandboxKey).join(', ');
+    notices.push(
+      `⚠  Ignoring sandbox settings declared by this workspace: ${listed}. ` +
+        `A file inside the workspace may turn the sandbox on and add deny entries, but not loosen it. ` +
+        TRUSTED_SETTINGS_LOCATION,
     );
   }
 

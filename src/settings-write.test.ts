@@ -67,6 +67,44 @@ describe('guard order', () => {
   });
 
   /**
+   * The sandbox keys are judged by value, so the guard takes one: `enabled: true`
+   * is the single value a workspace layer may set, and refusing the path would
+   * take away the one sandbox decision a repository is allowed to make (#373).
+   */
+  it('judges a sandbox key by its value, not its path', () => {
+    expect(guardSettingWrite('sandbox.enabled', false)).toContain('ignored');
+    expect(guardSettingWrite('sandbox.enabled', true)).toBeUndefined();
+    expect(guardSettingWrite('sandbox.filesystem.denyRead', ['~/.ssh'])).toBeUndefined();
+    expect(guardSettingWrite('sandbox.filesystem.allowWrite', ['/'])).toContain('ignored');
+    // A whole-object write is judged the same way, key by key.
+    expect(guardSettingWrite('sandbox', { enabled: true, excludedCommands: ['*'] })).toContain(
+      'sandbox.excludedCommands',
+    );
+    expect(guardSettingWrite('sandbox', { enabled: true })).toBeUndefined();
+  });
+
+  it('refuses the never-allowed sandbox keys even with no value in hand', () => {
+    // `book config unset` and the live-branch check call the guard on a path
+    // alone. Refusing by path there would be wrong for `sandbox.enabled`, and
+    // wrong in the other direction for the keys no value can make acceptable.
+    expect(guardSettingWrite('sandbox.excludedCommands')).toContain('ignored');
+    expect(guardSettingWrite('sandbox.filesystem.allowWrite')).toContain('ignored');
+    expect(guardSettingWrite('sandbox.network.allowedDomains')).toContain('ignored');
+    expect(guardSettingWrite('sandbox.enabled')).toBeUndefined();
+    expect(guardSettingWrite('sandbox.filesystem.denyWrite')).toBeUndefined();
+  });
+
+  it('refuses an ignored sandbox value in the project scope too, writing nothing', () => {
+    const result = write('sandbox.allowUnsandboxedCommands', true, 'project');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected the write to be refused');
+    expect(result.error).toContain('ignored');
+    // Refused before the file was created, so there is nothing to leave behind.
+    expect(existsSync(join(workspace, '.book', 'settings.json'))).toBe(false);
+  });
+
+  /**
    * #300. `projectDirectories` is the fifth trust-owned key, and the guard list predated it, so
    * `book config set projectDirectories …` was accepted. The user scope is the default and the
    * user layer is trusted, so the written value released a project's declared directory with no

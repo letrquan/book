@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { execFileSync } from 'child_process';
 import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -199,6 +200,44 @@ describe('Check and the sandbox', () => {
       }
     },
   );
+
+  it.skipIf(!sandboxBackendAvailable())(
+    'explains the read-only config when a sandboxed check cannot write it',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'book-check-git-config-'));
+      try {
+        execFileSync('git', ['init', '--quiet'], { cwd: dir });
+        // A configured check is a project-supplied command, and `git remote add`
+        // is one a repository's own checks reach for. Read-only inside the
+        // namespace, it fails in words that name no cause.
+        const ctx = contextWith({ remote: 'git remote add origin https://example.test/repo.git' });
+        ctx.workspaceRoot = dir;
+        ctx.sandbox = SANDBOX_ENABLED;
+
+        const result = await run(ctx, 'remote');
+
+        expect(result.status).not.toBe('success');
+        expect(result.structuredError?.message).toContain('.git/config is read-only inside');
+        expect(result.structuredError?.message).not.toMatch(
+          /could not write config file[^\n]*\n[^\n]*\n[^\n]*read-only/,
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('leaves a check failure that was not about the config alone', async () => {
+    const ctx = contextWith({ boom: `node -e "console.error('suite failed'); process.exit(1)"` });
+    ctx.sandbox = { ...DEFAULT_SETTINGS.sandbox, enabled: true, allowUnsandboxedCommands: true };
+
+    const result = await run(ctx, 'boom');
+
+    expect(result.status).not.toBe('success');
+    expect(`${result.structuredError?.message ?? ''}`).not.toContain(
+      'read-only inside the sandbox',
+    );
+  });
 });
 
 /**

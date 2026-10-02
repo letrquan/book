@@ -685,25 +685,47 @@ The writable workspace bind deliberately stops at the control files your machine
 | Path                                    | How it is protected                 |
 | --------------------------------------- | ----------------------------------- |
 | `<workspace>/.book/`                    | read-only bind, or a read-only mask |
+| `<workspace>/.book/settings.local.json` | read-only mask over `/dev/null`     |
+| `<workspace>/.bookrc.json`              | read-only bind when the file exists |
 | a git dir's `hooks/`                    | read-only bind, or a read-only mask |
 | a git dir's `config`, `config.worktree` | read-only bind when the file exists |
+| a git dir's `commondir`, `gitdir`       | read-only bind when the file exists |
+| a `.git` pointer file                   | read-only bind                      |
+| a `core.hooksPath` inside the workspace | as `hooks/` above                   |
 
 Without this, a sandboxed command could write `.book/settings.local.json` (resolved on the host from
 the next session — it can disable the sandbox or add `Bash(*)`), drop a `.git/hooks/*` script the
 next `git commit` runs, or repoint `core.hooksPath` / `core.fsmonitor` in `.git/config`.
 
-Three consequences worth knowing:
+A git dir is found by following a `.git` **file** (`gitdir: …`), a `commondir` file,
+`.git/worktrees/*`, and nested `.git/modules/*`, so linked worktrees and submodules are covered as
+well as a plain repository. The directory itself is **not** made read-only — sandboxed `git commit`,
+`git checkout` and `git fetch` have to keep working — so it is pinned with a read-write self-bind
+instead: renaming or replacing it fails with `EBUSY` rather than redirecting the host's git, while
+the files inside it are protected one by one. A git command that then cannot write `.git/config`
+(`git checkout -b`, `git push -u`, `git remote add`, `git branch --set-upstream-to`, `git config`)
+gets one appended line saying so, because git's own message names no cause and the obvious-looking
+response is to run the command again.
 
+Four consequences worth knowing:
+
+- **New pointer files are still writable.** Nothing about the git dir is read-only, so a sandboxed
+  command can create a file that does not exist yet — `.git/commondir` naming a directory it built,
+  for instance — and the host's git will read it on the next command, running code in a repository the
+  sandbox chose. Closing this needs the whole git directory read-only inside the sandbox, which is
+  what would make sandboxed `git commit`, `git checkout` and `git fetch` fail. Whether to pay that
+  cost is an open decision on issue 373.
+- A nested repository that is **not** a submodule stays writable: nothing outside the discovered git
+  dirs is touched, because a plain directory named `foo/.git` is not something Book can tell from a
+  repository the workspace is not working in.
 - Masking an **absent** `.book/` or `hooks/` creates the empty directory **on your disk** as a side
   effect of running a sandboxed command. Git creates `hooks/` with samples in every new repository,
   so in practice this bites a workspace that has no `.book/` yet.
-- A git dir is found by following a `.git` file and a `commondir` file, so worktrees and submodules
-  are covered — but only when the directory is **inside** the workspace. A workspace with no `.git`
-  can still have one created by a sandboxed command (`git init` succeeds); its hooks become
-  read-only once Book sees the directory on the next command.
-- An **absent** `config` or `config.worktree` cannot be masked, because bubblewrap rejects a tmpfs
-  mounted over a file path and aborts the whole invocation. `git init` writes `.git/config`, so
-  this is a corner of a repository that has no repository-local config at all.
+- An **absent file** is skipped rather than masked: bubblewrap rejects a tmpfs over a file path and
+  aborts the whole invocation, and there is nothing to protect where there is no file. An absent
+  **directory** is masked, because a command that creates one inside the namespace would otherwise
+  put it in the host. `.book/settings.local.json` is the one file masked rather than bound
+  read-only — with `/dev/null`, which hides the credentials in it as well as blocking the write.
 
 The permission layer already asked before any file tool touched `.book/`, but a permission prompt is
 one approval the user can be talked into — and a shell command is not a file tool, so the sandbox
@@ -713,9 +735,16 @@ now makes it a failure rather than a question.
 
 `.book/settings.json` is repository input, and so is a `settings.local.json` a clone was
 force-fed. Neither can switch the sandbox off, exclude commands, or widen a writable mount; both
-can turn it on, refuse unsandboxed commands, and add deny entries. `book doctor` lists every key it
-ignored, with the file and the value. The full table is in
-[Configuration → The sandbox](configuration.md#a-workspace-layer-may-only-tighten-sandbox).
+can turn it on, refuse unsandboxed commands, and add deny entries — and turning it on from a
+workspace file also turns `autoAllowBashIfSandboxed` off, because a repository that could enable the
+sandbox and pre-approve the commands in one file would not be contained by it.
+
+`book config set` and `/config` refuse a workspace write before it happens, and they judge the
+**value** rather than the key: `book config set sandbox.enabled true --local` is written, so is a
+`denyRead` entry, while `sandbox.enabled false` and `filesystem.allowWrite` are refused with the file
+the value belongs in. `book doctor` lists every key a layer asked for and did not get, with the
+resolved path and a truncated value, and a print or SDK run reports the same keys on stderr. The full
+table is in [Configuration → The sandbox](configuration.md#a-workspace-layer-may-only-tighten-sandbox).
 
 ### `Check` runs in the sandbox too
 

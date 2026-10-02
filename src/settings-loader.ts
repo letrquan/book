@@ -21,11 +21,27 @@ import { parseEnvBoolean } from './env-boolean.js';
 const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
 
 /**
+ * The sandbox deny lists: paths a command may not write and paths it may not
+ * read, plus the domains it may not reach.
+ *
+ * One list for all three, because they are one rule applied to three keys — and
+ * because the rule is no longer "these keys concatenate" but "these keys
+ * concatenate *for a workspace layer*", which both the concatenating set and the
+ * deduping one are derived from. A second hand-written copy is how
+ * `Notification` went missing from the hooks list in the first place (#295).
+ */
+const SANDBOX_DENY_LIST_PATHS = [
+  'sandbox.filesystem.denyWrite',
+  'sandbox.filesystem.denyRead',
+  'sandbox.network.deniedDomains',
+] as const;
+
+/**
  * Deep-merge two settings objects. For arrays, concatenate (used for
  * permission rules and additionalDirectories). For objects, merge recursively.
  * For scalars, the override wins.
  */
-const CONCATENATED_ARRAY_PATHS = new Set([
+const CONCATENATED_ARRAY_PATHS = new Set<string>([
   'permissions.allow',
   'permissions.ask',
   'permissions.deny',
@@ -33,27 +49,25 @@ const CONCATENATED_ARRAY_PATHS = new Set([
   // it went stale the moment `Notification` was added, and a later layer's
   // notification hooks then replaced the user layer's instead of appending (#295).
   ...HOOK_EVENTS.map((event) => `hooks.${event}`),
-  // The sandbox deny lists are denials, so a later layer can only add to them.
-  // Replacing them meant a workspace layer shipping `denyRead: []` erased the
-  // user's entries (#373).
-  'sandbox.filesystem.denyWrite',
-  'sandbox.filesystem.denyRead',
-  'sandbox.network.deniedDomains',
+  // A later layer adds to the deny lists rather than replacing them, so a
+  // workspace layer shipping `denyRead: []` cannot erase the user's entries
+  // (#373) — and a later *trusted* layer still can, which is the one way to
+  // narrow a list that turned out to be too broad.
+  ...SANDBOX_DENY_LIST_PATHS,
 ]);
 
 /**
- * The concatenated paths whose entries are a set rather than a list, so the
- * same path repeated across layers is stored once.
+ * The same three paths as a set, for the two questions a merge asks about one of
+ * them: whether the layer's entries add to or replace the earlier ones, and
+ * whether repeating a path across layers stores it once.
  */
-const DEDUPED_CONCATENATED_ARRAY_PATHS = new Set([
-  'sandbox.filesystem.denyWrite',
-  'sandbox.filesystem.denyRead',
-  'sandbox.network.deniedDomains',
-]);
+const SANDBOX_DENY_LIST_PATH_SET: ReadonlySet<string> = new Set(SANDBOX_DENY_LIST_PATHS);
 
 function mergeObject(
   base: Record<string, unknown>,
   override: Record<string, unknown>,
+  /** Whether a deny list from this layer adds to the earlier one or replaces it. */
+  accumulateDenyLists: boolean,
   prefix = '',
 ): Record<string, unknown> {
   const result = structuredClone(base);
@@ -73,11 +87,12 @@ function mergeObject(
           normalize(String(entry)),
         );
         result[key] = [...new Set(combined)];
-      } else if (CONCATENATED_ARRAY_PATHS.has(path)) {
+      } else if (
+        CONCATENATED_ARRAY_PATHS.has(path) &&
+        (accumulateDenyLists || !SANDBOX_DENY_LIST_PATH_SET.has(path))
+      ) {
         const combined = [...(Array.isArray(existing) ? existing : []), ...value];
-        result[key] = DEDUPED_CONCATENATED_ARRAY_PATHS.has(path)
-          ? [...new Set(combined)]
-          : combined;
+        result[key] = SANDBOX_DENY_LIST_PATH_SET.has(path) ? [...new Set(combined)] : combined;
       } else {
         result[key] = structuredClone(value);
       }
@@ -91,6 +106,7 @@ function mergeObject(
       result[key] = mergeObject(
         existing as Record<string, unknown>,
         value as Record<string, unknown>,
+        accumulateDenyLists,
         path,
       );
     } else {
@@ -186,6 +202,14 @@ const WORKSPACE_SANDBOX_ONLY_TIGHTENING: ReadonlyArray<readonly [readonly string
   [['sandbox', 'network', 'allowedDomains'], null],
 ];
 
+/**
+ * The value at a path in a settings document, or `undefined` when a step is
+ * missing or is not a plain object.
+ *
+ * One walker rather than two near-copies: `readContainer` used to be this with an
+ * extra condition at the end, and a loop that differs only in its last line is
+ * how two helpers drift apart and a delete lands on the wrong object.
+ */
 function readPath(settings: Record<string, unknown>, path: readonly string[]): unknown {
   let value: unknown = settings;
   for (const key of path) {
@@ -199,18 +223,19 @@ function readPath(settings: Record<string, unknown>, path: readonly string[]): u
 function deletePath(settings: Record<string, unknown>, path: readonly string[]): void {
   const parent = path.slice(0, -1);
   const key = path[path.length - 1];
-  const container = parent.length === 0 ? settings : readContainer(settings, parent);
-  if (typeof container === 'object' && container !== null)
-    delete (container as Record<string, unknown>)[key];
+  const container = parent.length === 0 ? settings : readObjectPath(settings, parent);
+  if (container) delete container[key];
 }
 
-function readContainer(settings: Record<string, unknown>, path: readonly string[]): unknown {
-  let value: unknown = settings;
-  for (const key of path) {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
-    value = (value as Record<string, unknown>)[key];
-  }
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined;
+/** `readPath` for a path that has to end at an object, which `deletePath` needs. */
+function readObjectPath(
+  settings: Record<string, unknown>,
+  path: readonly string[],
+): Record<string, unknown> | undefined {
+  const value = readPath(settings, path);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 /**
@@ -247,9 +272,24 @@ export function ignoredWorkspaceSandboxKeys(
   return ignored;
 }
 
+/**
+ * How much of an ignored value a report prints.
+ *
+ * `excludedCommands` and `allowWrite` are globs and directory lists, so a
+ * repository can put as much text in one as it likes, and every host that
+ * reports an ignored key would then print a screenful of it — pushing the part
+ * of the diagnostic that says where the value belongs off the screen. The head
+ * is kept because it identifies the value; the length is what follows it.
+ */
+const IGNORED_VALUE_PREVIEW_CHARS = 200;
+
 /** One ignored key as a report line reads it: `sandbox.enabled=false`. */
 export function formatIgnoredWorkspaceSandboxKey(entry: IgnoredWorkspaceSandboxKey): string {
-  return `${entry.key}=${JSON.stringify(entry.value)}`;
+  const json = JSON.stringify(entry.value) ?? String(entry.value);
+  if (json.length <= IGNORED_VALUE_PREVIEW_CHARS) return `${entry.key}=${json}`;
+  return `${entry.key}=${json.slice(0, IGNORED_VALUE_PREVIEW_CHARS)}… (truncated, ${
+    json.length - IGNORED_VALUE_PREVIEW_CHARS
+  } more characters)`;
 }
 
 /**
@@ -282,6 +322,14 @@ function sanitizeLayer(
   return sanitized;
 }
 
+/**
+ * Merge one layer over the resolved settings.
+ *
+ * The layer's trust decides two things that are not visible in the layer itself:
+ * whether a deny list adds to or replaces the earlier one, and whether turning
+ * the sandbox on costs the session its auto-allow. Both are stated here, next to
+ * the sanitizing that already reads `trust`, rather than left to each caller.
+ */
 function mergeLayer(
   resolved: ResolvedSettings,
   layer: Partial<BookSettings>,
@@ -295,16 +343,51 @@ function mergeLayer(
   ) {
     candidate.disableBypassPermissionsMode = true;
   }
-  return mergeSettings(resolved, candidate);
+  if (trust !== 'trusted' && sandboxTurnedOnByWorkspaceLayer(resolved, candidate)) {
+    // Written through the partial view the sanitizer uses: `BookSettings`
+    // declares every sandbox key as present, and this layer supplies one.
+    const tightened: WorkspaceLayerSandboxView = {
+      sandbox: { ...candidate.sandbox, autoAllowBashIfSandboxed: false },
+    };
+    (candidate as WorkspaceLayerSandboxView).sandbox = tightened.sandbox;
+  }
+  return mergeSettings(resolved, candidate, trust);
 }
 
+/**
+ * Whether this workspace layer is what turns the sandbox on.
+ *
+ * `enabled: true` is the one `sandbox` key a workspace layer may set, because it
+ * only ever applies to sessions that had it off. On its own it narrows nothing a
+ * user chose; with `autoAllowBashIfSandboxed` it stops the session from asking
+ * before each command, so a checked-in `settings.json` would turn a workspace
+ * where the user reads every command into one where nobody is asked at all.
+ * Setting it here makes the pair equivalent to the auto-allow alone, which the
+ * loader already drops.
+ */
+function sandboxTurnedOnByWorkspaceLayer(
+  resolved: ResolvedSettings,
+  candidate: Partial<BookSettings>,
+): boolean {
+  return candidate.sandbox?.enabled === true && resolved.sandbox?.enabled !== true;
+}
+
+/**
+ * Merge a settings layer over resolved settings.
+ *
+ * @param trust - what the layer is (`trusted` by default: the user-global file
+ *   or a `--settings` path). Only a workspace layer accumulates the sandbox deny
+ *   lists; every other array behaviour is the same for all layers.
+ */
 export function mergeSettings(
   base: ResolvedSettings,
   override: Partial<BookSettings>,
+  trust: SettingsLayerTrust = 'trusted',
 ): ResolvedSettings {
   return mergeObject(
     base as unknown as Record<string, unknown>,
     override as Record<string, unknown>,
+    trust !== 'trusted',
   ) as unknown as ResolvedSettings;
 }
 

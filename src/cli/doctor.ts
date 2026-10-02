@@ -434,16 +434,35 @@ export async function runDoctorCommand(
   // indistinguishable from a setting that does nothing. The list is computed
   // from the raw layer files by the same function the loader applies, so what
   // is reported here is exactly what was dropped.
+  //
+  // The layers come from `settingsLayers`, which is the one place that knows how
+  // the paths are resolved — this section used to rebuild the two workspace ones
+  // by hand, and printed the workspace-relative name rather than the file it
+  // read, so a report about a file the user could not find was the whole output.
   if (!options.noSettings) {
     const { formatIgnoredWorkspaceSandboxKey, ignoredWorkspaceSandboxKeys, loadSettingsFile } =
       await import('../settings-loader.js');
-    for (const [label, path] of [
-      ['.book/settings.json', join(config.workspace, '.book', 'settings.json')],
-      ['.book/settings.local.json', join(config.workspace, '.book', 'settings.local.json')],
-    ] as const) {
-      for (const entry of ignoredWorkspaceSandboxKeys(loadSettingsFile(path) ?? {})) {
+    for (const [label, path] of await settingsLayers(config.workspace)) {
+      // The user-global layer is where these values are read from, so a key it
+      // writes is never ignored and there is nothing to report for it.
+      if (label === 'User') continue;
+      const layer = loadSettingsFile(path);
+      for (const entry of ignoredWorkspaceSandboxKeys(layer ?? {})) {
         console.log(
-          `  Ignored from ${label}: ${formatIgnoredWorkspaceSandboxKey(entry)} — workspace settings may only tighten the sandbox; set it in ~/.book/settings.json or pass --settings`,
+          `  Ignored from ${path}: ${formatIgnoredWorkspaceSandboxKey(entry)} — workspace settings may only tighten the sandbox; set it in ~/.book/settings.json or pass --settings`,
+        );
+      }
+      // The one *honoured* sandbox key that still changes something else.
+      // `enabled` is the only key a workspace layer may set, and the loader pairs
+      // it with `autoAllowBashIfSandboxed: false` so the repository cannot
+      // pre-approve the commands that follow its own sandbox. That is a policy
+      // change with no symptom of its own, which is what the block above exists
+      // to make visible.
+      if (layer?.sandbox?.enabled === true) {
+        console.log(
+          `  From ${path}: sandbox.enabled=true — a workspace file turned the sandbox on, so ` +
+            `sandbox.autoAllowBashIfSandboxed=false with it; set autoAllowBashIfSandboxed in ` +
+            `~/.book/settings.json to have it back.`,
         );
       }
     }
