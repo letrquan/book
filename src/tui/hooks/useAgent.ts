@@ -29,6 +29,7 @@ import type {
   PlanRecordData,
 } from '../../types/sessions.js';
 import { compactionGate, usageAtGate, usagePressureTokens } from '../../agent/compact.js';
+import { accumulateSessionUsage } from '../../pricing.js';
 import { maskAtGate } from '../../agent/tool-output-masking.js';
 import { resolveContextLimit } from '../../models.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
@@ -288,6 +289,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const [error, setError] = useState<string | null>(null);
   const [currentTurn, setCurrentTurn] = useState(0);
   const [usage, setUsage] = useState<Usage | null>(null);
+  /**
+   * Every response this session has spent, cumulatively — what `/cost` and
+   * `/usage` price. `usage` stays exactly as it is (per-request, cleared on a
+   * send and a compaction) because the context meter and `/context` read it;
+   * pricing a bill from it reported only the last turn's tokens (#370). Reset
+   * only where the session itself changes: a clear, a new conversation, a
+   * resume.
+   */
+  const [sessionUsage, setSessionUsage] = useState<Usage | null>(null);
   const [mode, setMode] = useState<PermissionMode>(() =>
     resolvePermissionMode(config.settings, session.permissionMode),
   );
@@ -530,6 +540,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setError(null);
       setCurrentTurn(0);
       setUsage(null);
+      setSessionUsage(null);
       hostUsageRef.current = null;
       lastHostCompactAttemptRef.current = null;
       setTurnDurationMs(0);
@@ -1063,6 +1074,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             hostUsageRef.current = u;
             lastHostCompactAttemptRef.current = null;
             setUsage(u);
+            setSessionUsage((current) => accumulateSessionUsage(current, u));
           },
           getMode: () => modeRef.current,
           onModeChange: (newMode: PermissionMode) => {
@@ -1789,6 +1801,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setError(null);
     setCurrentTurn(0);
     setUsage(null);
+    setSessionUsage(null);
     hostUsageRef.current = null;
     lastHostCompactAttemptRef.current = null;
     resetAgentPlan();
@@ -2295,6 +2308,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     currentTurn,
     tokenCount: usage?.totalTokens ?? 0,
     usage,
+    sessionUsage,
     mode,
     pendingPermission,
     pendingPlanApproval,

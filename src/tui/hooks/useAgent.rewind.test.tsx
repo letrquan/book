@@ -468,6 +468,8 @@ describe('useAgent rewind integration', () => {
     expect(latest!.sessionId).toBe(sessionId);
     expect(latest!.messages).toEqual([]);
     expect(latest!.usage).toBeNull();
+    // The session bill resets with the conversation it belonged to, never mid-session.
+    expect(latest!.sessionUsage).toBeNull();
     expect(latest!.agentTodos).toEqual([]);
   });
 

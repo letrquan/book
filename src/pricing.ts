@@ -31,18 +31,20 @@ export interface ModelPricing {
  * every Anthropic request, so list real cache rates for Anthropic models.
  */
 export const PRICING: Record<string, ModelPricing> = {
-  // Anthropic
-  'claude-sonnet-5': { in: 3, out: 15, cacheRead: 0.3, cacheCreation: 3.75 },
-  // Opus 5 was reachable but unpriced: `provider/anthropic.ts` already lists it as
-  // an adaptive-thinking model, so Book sent it thinking parameters while
-  // `hasKnownPricing` returned false — which makes `checkBeforeModelCall` refuse
-  // every call whenever a USD budget is set. Rated at the Opus family figure;
-  // RE-VERIFY against published pricing before a release.
-  'claude-opus-5': { in: 15, out: 75, cacheRead: 1.5, cacheCreation: 18.75 },
-  'claude-opus-4-8': { in: 15, out: 75, cacheRead: 1.5, cacheCreation: 18.75 },
-  'claude-opus-4-7': { in: 15, out: 75, cacheRead: 1.5, cacheCreation: 18.75 },
+  // Anthropic — published price list, $ per million, cached 2026-09-25. `cacheCreation`
+  // is the 5-minute TTL write, the only TTL Book requests; cache reads are each
+  // model's own published rate. Re-verify against the live list before a release.
+  'claude-opus-5-5': { in: 4, out: 20, cacheRead: 0.2, cacheCreation: 5 },
+  'claude-opus-5': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
+  'claude-opus-4-8': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
+  'claude-opus-4-7': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
+  'claude-opus-4-6': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
+  'claude-sonnet-5-5': { in: 2, out: 10, cacheRead: 0.2, cacheCreation: 2.5 },
+  'claude-sonnet-5': { in: 2, out: 10, cacheRead: 0.2, cacheCreation: 2.5 },
+  'claude-sonnet-4-6': { in: 3, out: 15, cacheRead: 0.3, cacheCreation: 3.75 },
+  'claude-fable-5-1': { in: 10, out: 50, cacheRead: 0.25, cacheCreation: 12.5 },
+  'claude-fable-5': { in: 10, out: 50, cacheRead: 1, cacheCreation: 12.5 },
   'claude-haiku-4-5-20251001': { in: 1, out: 5, cacheRead: 0.1, cacheCreation: 1.25 },
-  'claude-fable-5': { in: 3, out: 15, cacheRead: 0.3, cacheCreation: 3.75 },
   // OpenAI — no cache rates. OpenAI-compatible providers report automatic cache
   // reads (`prompt_tokens_details.cached_tokens`); without a `cacheRead` rate they
   // price at `in`, an upper bound. Add a verified rate rather than a guessed one.
@@ -57,8 +59,13 @@ export const PRICING: Record<string, ModelPricing> = {
  * Characters that may follow a table key inside a longer model id. Requiring one
  * keeps `gpt-5` from claiming `gpt-51`.
  */
-/** `-20260115`, `-2026-01-15`, `.20260115` — a version stamp, not a variant name. */
-const DATED_MODEL_SUFFIX = /^[-.@]\d[\d-]*$/;
+/**
+ * A date stamp and nothing else: `-20260115`, `.20260115`, `@20260115` or
+ * `-2026-01-15`. A version suffix such as `-5`, `-1` or `-4-6` is a different
+ * model from its prefix, and matching one priced `claude-opus-5-5` as
+ * `claude-opus-5` (#370).
+ */
+const DATED_MODEL_SUFFIX = /^[-.@](?:\d{8}|\d{4}-\d{2}-\d{2})$/;
 
 const PRICING_KEY_BOUNDARY = new Set(['-', '.', ':', '@', '/', '_']);
 
@@ -157,6 +164,27 @@ export function promptSizeTokens(usage: CostedUsage): number {
   return (
     usage.promptTokens + (usage.cacheReadInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0)
   );
+}
+
+/**
+ * Add one provider-reported usage to a session-cumulative total.
+ *
+ * `context.usage` in the TUI is a per-request figure: every `onUsage` replaces it
+ * and every send clears it, so pricing a session bill from it reports only the
+ * final turn's tokens (#370). This is the running total `/cost` and `/usage`
+ * price instead — never reset by a send or a compaction, only by the session
+ * itself changing. Cache counts are summed when reported and counted as zero
+ * when not, so the total is always fully additive.
+ */
+export function accumulateSessionUsage(current: Usage | null, next: Usage): Usage {
+  return {
+    promptTokens: (current?.promptTokens ?? 0) + next.promptTokens,
+    completionTokens: (current?.completionTokens ?? 0) + next.completionTokens,
+    totalTokens: (current?.totalTokens ?? 0) + next.totalTokens,
+    cacheReadInputTokens: (current?.cacheReadInputTokens ?? 0) + (next.cacheReadInputTokens ?? 0),
+    cacheCreationInputTokens:
+      (current?.cacheCreationInputTokens ?? 0) + (next.cacheCreationInputTokens ?? 0),
+  };
 }
 
 /**
@@ -398,8 +426,9 @@ export function costReport(
 /**
  * /usage (/stats) report — like costReport but oriented toward session activity:
  * turns, last-turn duration, cumulative input/output split, and the running USD
- * estimate. Alias /stats maps to the same report. Unknown models label clearly
- * rather than guess a rate (same honesty rule as costReport).
+ * estimate, plus the same per-model breakdown `/cost` prints. Alias /stats maps
+ * to the same report. Unknown models label clearly rather than guess a rate (same
+ * honesty rule as costReport).
  */
 /** Render a failure-code count map as "code ×N, code ×M" (shared by all /usage surfaces). */
 export function formatFailureCounts(failures: Record<string, number>): string {
@@ -418,6 +447,7 @@ export function usageReport(
   usage: (CostedUsage & { totalTokens: number }) | null,
   session: { currentTurn: number; messageCount: number; turnDurationMs: number },
   toolCallStats?: Array<{ tool: string; calls: number; failures: Record<string, number> }>,
+  delegated: readonly DelegatedUsage[] = [],
 ): string {
   const lines: string[] = ['Session usage', ''];
   lines.push(`Model: ${model}`);
@@ -459,8 +489,12 @@ export function usageReport(
     }
   }
   lines.push('');
+  // The same helper /cost uses, so a session that delegated reads identically in
+  // both reports rather than one counting an agent and the other not (#370).
+  const breakdown = modelBreakdownLines(model, usage, delegated);
+  if (breakdown.length) lines.push(...breakdown);
   lines.push(
-    '(Per-model breakdown across a multi-model session is not yet wired — tracks the active model only.)',
+    '(Delegated agents are included above. The session total is priced at the active model, so a mid-session model switch is not split out.)',
   );
   return lines.join('\n');
 }

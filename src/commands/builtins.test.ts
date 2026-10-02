@@ -304,11 +304,74 @@ describe('built-in command contract', () => {
       expect.objectContaining({
         display: expect.objectContaining({
           kind: 'usage',
-          rate: { inputPerMillion: 3, outputPerMillion: 15 },
-          estimatedCostUsd: expect.closeTo(0.0132, 6),
+          rate: { inputPerMillion: 2, outputPerMillion: 10 },
+          estimatedCostUsd: expect.closeTo(0.0088, 6),
         }),
       }),
     );
+  });
+
+  it('prices /cost and /usage from the session total, not the last request (#370)', () => {
+    // `usage` is the per-request figure the context meter keeps: the TUI replaces
+    // it on every model response and nulls it on every send. Reporting a session
+    // bill from it showed only the final turn's tokens.
+    const registry = createBuiltinCommandRegistry();
+    const commandContext: BuiltinCommandContext = {
+      ...context(),
+      runtimeConfig: defaultConfig({ model: 'gpt-4o' }),
+      usage: { promptTokens: 2_000, completionTokens: 200, totalTokens: 2_200 },
+      sessionUsage: { promptTokens: 3_000, completionTokens: 300, totalTokens: 3_300 },
+    };
+    const cost = registry.execute('cost', '', commandContext);
+    expect(cost).toEqual(
+      expect.objectContaining({
+        type: 'local-message',
+        content: expect.stringContaining('3,300 tokens (3,000 in, 300 out)'),
+      }),
+    );
+    expect(cost).not.toEqual(
+      expect.objectContaining({
+        content: expect.stringContaining('2,200 tokens (2,000 in, 200 out)'),
+      }),
+    );
+    const usage = registry.execute('usage', '', commandContext);
+    expect(usage).toEqual(
+      expect.objectContaining({
+        type: 'local-message',
+        content: expect.stringContaining('total 3,300'),
+        display: expect.objectContaining({
+          kind: 'usage',
+          usage: { promptTokens: 3_000, completionTokens: 300, totalTokens: 3_300 },
+        }),
+      }),
+    );
+  });
+
+  it('counts a delegated agent in /usage as well as /cost (#370)', () => {
+    // /usage priced the lead's usage and dropped `delegatedUsage`, so a session
+    // that delegated reported less than it had actually spent.
+    const registry = createBuiltinCommandRegistry();
+    const commandContext: BuiltinCommandContext = {
+      ...context(),
+      runtimeConfig: defaultConfig({ model: 'claude-sonnet-5' }),
+      usage: { promptTokens: 1_000, completionTokens: 100, totalTokens: 1_100 },
+      delegatedUsage: [
+        {
+          label: 'explorer "map auth"',
+          model: 'claude-haiku-4-5-20251001',
+          usage: { promptTokens: 500, completionTokens: 50, totalTokens: 550 },
+        },
+      ],
+    };
+    for (const command of ['cost', 'usage']) {
+      const effect = registry.execute(command, '', commandContext);
+      expect(effect, command).toEqual(
+        expect.objectContaining({
+          type: 'local-message',
+          content: expect.stringContaining('claude-haiku-4-5-20251001 (1 delegated)'),
+        }),
+      );
+    }
   });
 
   it('normalizes settings command arguments before returning effects', () => {

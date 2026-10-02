@@ -62,6 +62,15 @@ export interface BuiltinCommandContext {
   runtimeConfig: AgentConfig;
   mode: string;
   usage: Usage | null;
+  /**
+   * Every response this session has spent, cumulatively.
+   *
+   * `usage` is the per-request figure the context meter reads, so it is replaced
+   * on every model response and cleared on every send and compaction. A bill is
+   * not that: /cost and /usage price this instead, falling back to `usage` for a
+   * host that only has the per-request value (#370).
+   */
+  sessionUsage?: Usage | null;
   turnDurationMs: number;
   contextHistory: Message[];
   compactBoundaries: CompactBoundary[];
@@ -523,12 +532,19 @@ function agentCommandEffect(
   return { type: 'managed-agent', operation: 'get', agentId: actionOrId };
 }
 
+/**
+ * The usage a session bill is priced from: the cumulative total where the host
+ * keeps one, the last response otherwise (#370).
+ */
+function billableUsage(context: BuiltinCommandContext): Usage | null {
+  return context.sessionUsage ?? context.usage;
+}
+
 function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffect {
+  const usage = billableUsage(context);
   // The same rate resolution as /cost and the /usage text, so a dated or aliased model id
   // prices here too.
-  const priced = context.usage
-    ? usageCostForModel(context.runtimeConfig.model, context.usage)
-    : undefined;
+  const priced = usage ? usageCostForModel(context.runtimeConfig.model, usage) : undefined;
   const rate = priced?.rate ?? resolveModelPricing(context.runtimeConfig.model)?.rate;
   const estimatedCostUsd = priced?.costUsd;
   const toolCallStats =
@@ -547,13 +563,14 @@ function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffec
     type: 'local-message',
     content: usageReport(
       context.runtimeConfig.model,
-      context.usage,
+      usage,
       {
         currentTurn: context.currentTurn,
         messageCount: context.messages.length,
         turnDurationMs: context.turnDurationMs,
       },
       toolCallStats,
+      context.delegatedUsage ?? [],
     ),
     display: {
       kind: 'usage',
@@ -561,7 +578,7 @@ function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffec
       currentTurn: context.currentTurn,
       messageCount: context.messages.length,
       turnDurationMs: context.turnDurationMs,
-      usage: context.usage,
+      usage,
       rate: rate ? { inputPerMillion: rate.in, outputPerMillion: rate.out } : undefined,
       estimatedCostUsd,
       toolCallStats,
@@ -802,7 +819,11 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     description: 'Show token usage and cost',
     execute: (_invocation, context) => ({
       type: 'local-message',
-      content: costReport(context.runtimeConfig.model, context.usage, context.delegatedUsage ?? []),
+      content: costReport(
+        context.runtimeConfig.model,
+        billableUsage(context),
+        context.delegatedUsage ?? [],
+      ),
     }),
   },
   {

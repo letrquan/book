@@ -53,6 +53,15 @@ controls (`/agents`, `/agent`), config (`/model`, `/providers`,
 groups, with its visible aliases, followed by your custom commands. `/release-notes` lists the
 installed version's changes from the CHANGELOG that ships with Book, one line each.
 
+`/cost` and `/usage` (alias `/stats`) bill the whole session, not the last request: every response
+is accumulated from the first turn of the current session, and the total survives a send and a
+compaction. It is reset by `/clear`, `/new` and a resume, which start a different session. Both
+count the managed agents this session spawned, attributing each to the model it actually ran on —
+`/cost` appends the per-model breakdown once one exists, and `/usage` prints the same alongside the
+turn, duration and tool-call counters. The USD figure is a local estimate from the price table; the
+lead session's tokens are priced at the currently active model, so a mid-session `/model` switch is
+not split out.
+
 Commands say only what the screen does not already show. Switching the model or the effort writes
 nothing into the transcript, since the status line names the model and its effort. Other settings,
 `/reload-skills`, provider changes and MCP connections confirm with a note above the composer that

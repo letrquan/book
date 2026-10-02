@@ -731,6 +731,30 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Correct Claude rates, date-only suffix matching, and session-total `/cost` and `/usage`**
+  (#370). **The price table was stale, missing, and matching versions as dates.** `src/pricing.ts`
+  rated Opus 5 and 4.8/4.7 at $15/$75 per million — three times the published figure — left
+  `claude-opus-4-6` and `claude-sonnet-4-6` with no row at all, and carried an explicit
+  "RE-VERIFY against published pricing" note above the Opus entry it had guessed. The Anthropic
+  block is now the published list, cached 2026-09-25 (input / output / cache read / cache write at
+  the 5-minute TTL, the only TTL Book requests), including the models that had no row: because
+  `checkBeforeModelCall` fails closed on an unknown rate, a missing `claude-opus-4-6` did not degrade
+  a `/cost` figure, it refused _every call_ under a USD budget. **A trailing version digit was read
+  as a date stamp.** `DATED_MODEL_SUFFIX` matched any run of digits after a separator, so
+  `claude-opus-5-5` resolved to the `claude-opus-5` row and `claude-fable-5-1` to `claude-fable-5` —
+  two different models priced as one, off by more than an order of magnitude on each. It now
+  matches a real date only (`-20260115`, `.20260115`, `@20260115`, `-2026-01-15`); a `-5`, `-1` or
+  `-4-6` version suffix prices nothing, the same way `gpt-4o-mini` was already refused rather than
+  inheriting `gpt-4o`'s rate. **`/cost` and `/usage` reported only the last request.** Both priced
+  `context.usage`, the per-request figure the context meter keeps: every `onUsage` replaces it and
+  every send, compaction and `/clear` nulls it, so after turns of 1,100 and 2,200 tokens `/cost`
+  said 2,200. The TUI now keeps a separate session-cumulative usage, accumulated in `onUsage`,
+  surviving sends and compactions and reset only when the session itself changes, and both reports
+  price that; `usage` itself is untouched, so the context meter and `/context` are unchanged. And
+  **`/usage` ignored delegated agents** that `/cost` already counted — it now runs the same
+  breakdown, so a session that spawned agents reports its whole spend in both. The lead session is
+  still priced at the active model after a mid-session model switch.
+
 - **Every git call Book makes for a managed agent is bounded, cancellable, and told the truth
   about what failed** (#357, follow-ups to #348 and #351). Those two turned off the programs a
   checkout could make Book run; eight things about the calls themselves were still wrong, in

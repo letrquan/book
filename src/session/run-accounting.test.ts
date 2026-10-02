@@ -253,7 +253,7 @@ describe('the budget rail actually caps', () => {
 
     const snapshot = accounting.snapshotRoot('root-1');
     expect(snapshot.costUsd).toBe(0); // the root turn alone
-    expect(snapshot.inclusiveCostUsd).toBeCloseTo(3, 5); // $3/M prompt tokens
+    expect(snapshot.inclusiveCostUsd).toBeCloseTo(2, 5); // $2/M prompt tokens
     expect(snapshot.budgetStatus).toBe('exceeded');
     // The gate must agree with the snapshot.
     expect(accounting.checkBeforeModelCall('root-1', 'claude-sonnet-5')).toMatchObject({
@@ -369,7 +369,7 @@ describe('spend attribution across snapshot kinds', () => {
     accounting.record(context('child-e', 'root-e'), oneDollar, meta);
 
     const child = accounting.snapshotRun('child-e');
-    expect(child?.inclusiveCostUsd).toBeCloseTo(1, 4);
+    expect(child?.inclusiveCostUsd).toBeCloseTo(2 / 3, 4);
     expect(child?.budgetStatus).toBe('within');
   });
 
@@ -384,7 +384,7 @@ describe('spend attribution across snapshot kinds', () => {
     accounting.record(context('root-f', 'root-f'), oneDollar, meta);
 
     const all = accounting.snapshotAll();
-    expect(all.inclusiveCostUsd).toBeCloseTo(50.5, 4);
+    expect(all.inclusiveCostUsd).toBeCloseTo(49.5 + 2 / 3, 4);
     expect(all.budgetStatus).toBe('exceeded');
   });
 
