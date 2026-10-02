@@ -33,6 +33,22 @@ const CONCATENATED_ARRAY_PATHS = new Set([
   // it went stale the moment `Notification` was added, and a later layer's
   // notification hooks then replaced the user layer's instead of appending (#295).
   ...HOOK_EVENTS.map((event) => `hooks.${event}`),
+  // The sandbox deny lists are denials, so a later layer can only add to them.
+  // Replacing them meant a workspace layer shipping `denyRead: []` erased the
+  // user's entries (#373).
+  'sandbox.filesystem.denyWrite',
+  'sandbox.filesystem.denyRead',
+  'sandbox.network.deniedDomains',
+]);
+
+/**
+ * The concatenated paths whose entries are a set rather than a list, so the
+ * same path repeated across layers is stored once.
+ */
+const DEDUPED_CONCATENATED_ARRAY_PATHS = new Set([
+  'sandbox.filesystem.denyWrite',
+  'sandbox.filesystem.denyRead',
+  'sandbox.network.deniedDomains',
 ]);
 
 function mergeObject(
@@ -58,7 +74,10 @@ function mergeObject(
         );
         result[key] = [...new Set(combined)];
       } else if (CONCATENATED_ARRAY_PATHS.has(path)) {
-        result[key] = [...(Array.isArray(existing) ? existing : []), ...value];
+        const combined = [...(Array.isArray(existing) ? existing : []), ...value];
+        result[key] = DEDUPED_CONCATENATED_ARRAY_PATHS.has(path)
+          ? [...new Set(combined)]
+          : combined;
       } else {
         result[key] = structuredClone(value);
       }
@@ -135,6 +154,116 @@ function stripPaths(
   }
 }
 
+/** One `sandbox.*` key a workspace layer supplied that the loader will not honour. */
+export interface IgnoredWorkspaceSandboxKey {
+  /** Dotted path of the key, e.g. `sandbox.filesystem.allowWrite`. */
+  key: string;
+  /** The value the layer wrote, so a report can quote what the file actually said. */
+  value: unknown;
+}
+
+/**
+ * `sandbox.*` keys a workspace layer supplies that only loosen, and therefore
+ * never survive to the merge. The second element is the one value the layer may
+ * set — the tightening direction — or `null` when any value is dropped.
+ *
+ * The sandbox is the boundary between a command and the host, so a file inside
+ * the workspace must not be able to widen it: a checked-in `settings.json`
+ * could switch off the sandbox the user enabled, exclude every command
+ * (`excludedCommands: ["*"]`), or open a writable root (`allowWrite: ["/"]`)
+ * — and because those arrays *replaced* the earlier layer's, even the user's own
+ * `denyRead` list could be emptied. Turning the sandbox on, adding deny entries
+ * and refusing unsandboxed commands stay available to a workspace layer; they
+ * only ever narrow it (#373).
+ */
+const WORKSPACE_SANDBOX_ONLY_TIGHTENING: ReadonlyArray<readonly [readonly string[], unknown]> = [
+  [['sandbox', 'enabled'], true],
+  [['sandbox', 'failIfUnavailable'], true],
+  [['sandbox', 'allowUnsandboxedCommands'], false],
+  [['sandbox', 'autoAllowBashIfSandboxed'], false],
+  [['sandbox', 'excludedCommands'], null],
+  [['sandbox', 'filesystem', 'allowWrite'], null],
+  [['sandbox', 'network', 'allowedDomains'], null],
+];
+
+function readPath(settings: Record<string, unknown>, path: readonly string[]): unknown {
+  let value: unknown = settings;
+  for (const key of path) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+    value = (value as Record<string, unknown>)[key];
+    if (value === undefined) return undefined;
+  }
+  return value;
+}
+
+function deletePath(settings: Record<string, unknown>, path: readonly string[]): void {
+  const parent = path.slice(0, -1);
+  const key = path[path.length - 1];
+  const container = parent.length === 0 ? settings : readContainer(settings, parent);
+  if (typeof container === 'object' && container !== null)
+    delete (container as Record<string, unknown>)[key];
+}
+
+function readContainer(settings: Record<string, unknown>, path: readonly string[]): unknown {
+  let value: unknown = settings;
+  for (const key of path) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+    value = (value as Record<string, unknown>)[key];
+  }
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined;
+}
+
+/**
+ * A workspace layer as the file wrote it: parsed, but not required to be
+ * complete. The sandbox rule is about what a document *says*, so the reader
+ * takes a partial view — a layer that omits `excludedCommands` entirely is
+ * describing itself, not supplying an empty list. Every key is optional here,
+ * including the nested ones, which is the whole point of the type.
+ */
+export interface WorkspaceLayerSandboxView {
+  sandbox?: Omit<Partial<BookSettings['sandbox']>, 'filesystem' | 'network'> & {
+    filesystem?: Partial<BookSettings['sandbox']['filesystem']>;
+    network?: Partial<BookSettings['sandbox']['network']>;
+  };
+}
+
+/**
+ * The `sandbox.*` keys `settings` declares that a workspace layer may not
+ * supply, with the values it wrote. Pure: `sanitizeLayer` deletes exactly the
+ * keys this reports, and `book doctor` prints the same list, so the enforced
+ * rule and the reported one cannot drift apart.
+ */
+export function ignoredWorkspaceSandboxKeys(
+  settings: WorkspaceLayerSandboxView,
+): IgnoredWorkspaceSandboxKey[] {
+  const record = settings as Record<string, unknown>;
+  const ignored: IgnoredWorkspaceSandboxKey[] = [];
+  for (const [path, tighteningValue] of WORKSPACE_SANDBOX_ONLY_TIGHTENING) {
+    const value = readPath(record, path);
+    if (value === undefined) continue;
+    if (tighteningValue !== null && value === tighteningValue) continue;
+    ignored.push({ key: path.join('.'), value });
+  }
+  return ignored;
+}
+
+/** One ignored key as a report line reads it: `sandbox.enabled=false`. */
+export function formatIgnoredWorkspaceSandboxKey(entry: IgnoredWorkspaceSandboxKey): string {
+  return `${entry.key}=${JSON.stringify(entry.value)}`;
+}
+
+/**
+ * Drop every loosening `sandbox.*` key from a workspace layer. Deleting rather
+ * than overwriting is what makes the key harmless: the merge keeps whatever the
+ * earlier, more trusted layer said.
+ */
+function applyIgnoredWorkspaceSandboxKeys(settings: Partial<BookSettings>): void {
+  const record = settings as Record<string, unknown>;
+  for (const entry of ignoredWorkspaceSandboxKeys(settings)) {
+    deletePath(record, entry.key.split('.'));
+  }
+}
+
 function sanitizeLayer(
   settings: Partial<BookSettings>,
   trust: SettingsLayerTrust,
@@ -147,6 +276,8 @@ function sanitizeLayer(
   // could point it at a binary it ships would run that binary on the first
   // command, so the key is honoured from trusted layers only.
   delete sanitized.shell;
+  // Nor may a workspace file widen the sandbox it is supposed to be confined by.
+  applyIgnoredWorkspaceSandboxKeys(sanitized);
   stripPaths(sanitized, WORKSPACE_FORBIDDEN_PATHS);
   return sanitized;
 }

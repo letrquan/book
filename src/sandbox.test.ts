@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join, posix, resolve, win32 } from 'path';
 import {
   buildSandboxExecution,
   createSandbox,
   matchesExcludedCommand,
+  sandboxBackendAvailable,
   sandboxCoverage,
   sandboxPolicySummary,
   unbindablePaths,
@@ -20,6 +22,9 @@ function sandboxSettings(
   return { ...structuredClone(DEFAULT_SETTINGS.sandbox), enabled: true, ...overrides };
 }
 
+/** The system directories `buildSandboxExecution` binds read-only, named literally. */
+const SYSTEM_MOUNTS = ['/usr', '/lib', '/lib64', '/bin', '/sbin', '/etc', '/opt'];
+
 /**
  * A fully injected host on which every path "exists": the generated argv
  * depends only on the code under test, never on which system directories the
@@ -32,6 +37,7 @@ function allExistingHost(flavour: typeof posix | typeof win32): SandboxHost {
     path: flavour,
     exists: () => true,
     isDirectory: () => true,
+    readFile: () => null,
     homedir: () => (flavour === win32 ? 'C:\\Users\\book' : '/home/book'),
   };
 }
@@ -76,12 +82,19 @@ describe('buildSandboxExecution', () => {
         sandboxSettings(),
         allExistingHost(flavour),
       );
-      const roIndex = exec.args.lastIndexOf('--ro-bind');
+      // The system mounts are the ones named literally, and they must precede
+      // the writable workspace bind or a workspace under /usr would be
+      // shadowed. The workspace control files are the deliberate exception and
+      // come after; they are asserted in their own suite below.
+      const systemSources = new Set(SYSTEM_MOUNTS.map((dir) => flavour.resolve(dir)));
+      const systemBind = exec.args.findIndex(
+        (arg, index) => arg === '--ro-bind' && systemSources.has(exec.args[index + 1]),
+      );
       const bindIndex = exec.args.lastIndexOf('--bind');
       // Both mounts must actually be present before their order means anything:
       // -1 > -1 would vacuously "order" two lookups that found nothing.
-      expect(roIndex).toBeGreaterThan(-1);
-      expect(bindIndex).toBeGreaterThan(roIndex);
+      expect(systemBind).toBeGreaterThan(-1);
+      expect(bindIndex).toBeGreaterThan(systemBind);
       expect(exec.args[bindIndex + 1]).toBe(flavour.resolve(workspace));
     },
   );
@@ -212,6 +225,254 @@ describe('buildSandboxExecution', () => {
     // other mount and returns the whole host filesystem, read-write.
     const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', '/work', sandboxSettings());
     expect(exec.args.filter((arg) => arg === '/')).toHaveLength(0);
+  });
+});
+
+/**
+ * The workspace bind is read-write, which made every workspace control file
+ * writable from inside the sandbox: a sandboxed command could write
+ * `.book/settings.local.json` (honoured on the host from the next session — it
+ * can disable the sandbox or add `Bash(*)`), drop a `.git/hooks/*` script, or
+ * point `core.hooksPath` / `core.fsmonitor` in `.git/config`, all of which the
+ * *host* runs afterwards. The file tools already refuse `.book/settings.local.json`
+ * (permissions.ts); the sandbox did not (#373).
+ */
+describe('buildSandboxExecution workspace control files', () => {
+  const WORKSPACE = '/work';
+
+  /**
+   * A host whose filesystem is a declared set of paths, so each case is about
+   * the mount the code emits rather than about a temp directory on this machine.
+   */
+  function hostWith(paths: Record<string, 'dir' | 'file'>, files: Record<string, string> = {}) {
+    const flavour = posix;
+    const real = new Set(Object.keys(paths));
+    return {
+      path: flavour,
+      exists: (path: string) => real.has(path),
+      isDirectory: (path: string) => paths[path] === 'dir',
+      homedir: () => '/home/book',
+      readFile: (path: string) => files[path] ?? null,
+    } satisfies SandboxHost;
+  }
+
+  function mountsFor(args: string[], target: string): { flag: string; index: number } {
+    const index = args.indexOf(target);
+    return { flag: index === -1 ? '' : args[index - 1], index };
+  }
+
+  it('mounts an existing .book read-only after the workspace and any allowWrite bind', () => {
+    const host = hostWith({
+      '/work': 'dir',
+      '/work/.book': 'dir',
+      '/work/extra': 'dir',
+      '/work/.git': 'dir',
+      '/work/.git/hooks': 'dir',
+      '/work/.git/config': 'file',
+    });
+    const settings = sandboxSettings();
+    settings.filesystem.allowWrite = ['/work/extra'];
+
+    const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', WORKSPACE, settings, host);
+
+    const book = mountsFor(exec.args, '/work/.book');
+    expect(exec.args.slice(book.index - 1, book.index + 2)).toEqual([
+      '--ro-bind',
+      '/work/.book',
+      '/work/.book',
+    ]);
+    // After the workspace bind, or the workspace would shadow it.
+    expect(exec.args.lastIndexOf('--bind', book.index)).toBeLessThan(book.index);
+    // After `allowWrite`, or an extra writable root would reopen it.
+    expect(exec.args.indexOf('/work/extra')).toBeLessThan(book.index);
+    // Before the configured deny policy, which stays free to be stricter.
+    expect(book.index).toBeLessThan(exec.args.indexOf('--share-net'));
+  });
+
+  it('mounts an absent .book as an empty read-only directory so it cannot be created', () => {
+    const host = hostWith({ '/work': 'dir' });
+
+    const exec = buildSandboxExecution(
+      '/usr/bin/bwrap',
+      'true',
+      WORKSPACE,
+      sandboxSettings(),
+      host,
+    );
+
+    const bookIndex = exec.args.indexOf('/work/.book');
+    expect(exec.args.slice(bookIndex - 1, bookIndex + 3)).toEqual([
+      '--tmpfs',
+      '/work/.book',
+      '--remount-ro',
+      '/work/.book',
+    ]);
+  });
+
+  it('mounts a git directory hooks and config read-only', () => {
+    const host = hostWith({
+      '/work': 'dir',
+      '/work/.book': 'dir',
+      '/work/.git': 'dir',
+      '/work/.git/hooks': 'dir',
+      '/work/.git/config': 'file',
+    });
+
+    const exec = buildSandboxExecution(
+      '/usr/bin/bwrap',
+      'true',
+      WORKSPACE,
+      sandboxSettings(),
+      host,
+    );
+
+    expect(mountsFor(exec.args, '/work/.git/hooks').flag).toBe('--ro-bind');
+    expect(mountsFor(exec.args, '/work/.git/config').flag).toBe('--ro-bind');
+    // An absent config is not mounted: there is nothing to protect, and bwrap
+    // aborts the whole invocation on a missing bind source.
+    expect(exec.args).not.toContain('/work/.git/config.worktree');
+  });
+
+  it('masks an absent hooks directory so one cannot be created', () => {
+    const host = hostWith({ '/work': 'dir', '/work/.book': 'dir', '/work/.git': 'dir' });
+
+    const exec = buildSandboxExecution(
+      '/usr/bin/bwrap',
+      'true',
+      WORKSPACE,
+      sandboxSettings(),
+      host,
+    );
+
+    const hooksIndex = exec.args.indexOf('/work/.git/hooks');
+    expect(exec.args.slice(hooksIndex - 1, hooksIndex + 2)).toEqual([
+      '--tmpfs',
+      '/work/.git/hooks',
+      '--remount-ro',
+    ]);
+  });
+
+  it('follows a .git file to the git dir inside the workspace, and its commondir', () => {
+    const host = hostWith(
+      {
+        '/work': 'dir',
+        '/work/.book': 'dir',
+        '/work/.git': 'file',
+        '/work/.git-data': 'dir',
+        '/work/.git-data/hooks': 'dir',
+        '/work/.git-data/config.worktree': 'file',
+        '/work/.git-shared': 'dir',
+        '/work/.git-shared/hooks': 'dir',
+        '/work/.git-shared/config': 'file',
+      },
+      {
+        '/work/.git': 'gitdir: .git-data\n',
+        // commondir is relative to the git dir, not to the workspace.
+        '/work/.git-data/commondir': '../.git-shared\n',
+      },
+    );
+
+    const exec = buildSandboxExecution(
+      '/usr/bin/bwrap',
+      'true',
+      WORKSPACE,
+      sandboxSettings(),
+      host,
+    );
+
+    for (const target of [
+      '/work/.git-data/hooks',
+      '/work/.git-data/config.worktree',
+      '/work/.git-shared/hooks',
+      '/work/.git-shared/config',
+    ]) {
+      expect(mountsFor(exec.args, target).flag).toBe('--ro-bind');
+    }
+  });
+
+  it('does not touch a git dir that lies outside the workspace', () => {
+    // Nothing binds it writable, so there is nothing to protect — and mounting
+    // it would hand a worktree's hooks to a command that has no other business
+    // seeing the parent repository.
+    const host = hostWith(
+      {
+        '/work': 'dir',
+        '/work/.book': 'dir',
+        '/work/.git': 'file',
+        '/elsewhere/repo.git': 'dir',
+        '/elsewhere/repo.git/hooks': 'dir',
+        '/elsewhere/repo.git/config': 'file',
+      },
+      { '/work/.git': 'gitdir: /elsewhere/repo.git\n' },
+    );
+
+    const exec = buildSandboxExecution(
+      '/usr/bin/bwrap',
+      'true',
+      WORKSPACE,
+      sandboxSettings(),
+      host,
+    );
+
+    expect(exec.args.join(' ')).not.toContain('/elsewhere/repo.git');
+    // The .git *file* itself is still writable, but there is no mount for a
+    // file: a command could rewrite it to point somewhere else, which is a
+    // known boundary rather than an oversight.
+    expect(mountsFor(exec.args, '/work/.git').index).toBe(-1);
+  });
+
+  it('resolves a relative gitdir against the workspace, as git does', () => {
+    const host = hostWith(
+      {
+        '/work': 'dir',
+        '/work/.book': 'dir',
+        '/work/.git': 'file',
+        '/work/nested/gitdir': 'dir',
+        '/work/nested/gitdir/hooks': 'dir',
+      },
+      { '/work/.git': 'gitdir: nested/gitdir' },
+    );
+
+    const exec = buildSandboxExecution(
+      '/usr/bin/bwrap',
+      'true',
+      WORKSPACE,
+      sandboxSettings(),
+      host,
+    );
+
+    expect(mountsFor(exec.args, '/work/nested/gitdir/hooks').flag).toBe('--ro-bind');
+  });
+
+  it('mounts no git metadata when the workspace is not a repository', () => {
+    const host = hostWith({ '/work': 'dir', '/work/.book': 'dir' });
+
+    const exec = buildSandboxExecution(
+      '/usr/bin/bwrap',
+      'true',
+      WORKSPACE,
+      sandboxSettings(),
+      host,
+    );
+
+    expect(exec.args.join(' ')).not.toContain('.git');
+  });
+
+  it('ignores a .git file it cannot parse', () => {
+    const host = hostWith(
+      { '/work': 'dir', '/work/.book': 'dir', '/work/.git': 'file' },
+      { '/work/.git': 'not a gitdir line\n' },
+    );
+
+    const exec = buildSandboxExecution(
+      '/usr/bin/bwrap',
+      'true',
+      WORKSPACE,
+      sandboxSettings(),
+      host,
+    );
+
+    expect(exec.args.join(' ')).not.toContain('.git/');
   });
 });
 
@@ -372,6 +633,113 @@ describe('Bash tool integration with sandbox', () => {
     }
   });
 });
+
+/**
+ * The argv is only a claim; this is the claim under a real bubblewrap. Every
+ * path here is one the host acts on *after* the sandboxed command exits, which
+ * is what makes a write to it an escape rather than a nuisance.
+ */
+describe.skipIf(!sandboxBackendAvailable())(
+  'workspace control files are read-only in a real sandbox',
+  () => {
+    /**
+     * A throwaway git repository with the control files already present, since
+     * "a hook the host would run" needs a hook to exist.
+     */
+    function freshRepo(options: { book?: boolean } = {}): string {
+      const repo = mkdtempSync(join(tmpdir(), 'book-sandbox-ro-'));
+      execFileSync('git', ['init', '--quiet'], { cwd: repo });
+      mkdirSync(join(repo, '.git', 'hooks'), { recursive: true });
+      writeFileSync(join(repo, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nexit 0\n');
+      writeFileSync(join(repo, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n');
+      if (options.book) {
+        mkdirSync(join(repo, '.book'), { recursive: true });
+        writeFileSync(join(repo, '.book', 'settings.json'), '{}\n');
+      }
+      return repo;
+    }
+
+    async function sandboxedBash(
+      command: string,
+      workspace: string,
+    ): Promise<{ status: string; content: string }> {
+      const { createDefaultRegistry } = await import('./tools/registry.js');
+      const result = await createDefaultRegistry().execute(
+        { id: 'c1', name: 'Bash', arguments: { command } },
+        {
+          workspaceRoot: workspace,
+          env: {},
+          sandbox: sandboxSettings({ allowUnsandboxedCommands: false }),
+        },
+      );
+      return {
+        status: result.status,
+        content: `${result.content}\n${result.structuredError?.message ?? ''}`,
+      };
+    }
+
+    it('still writes an ordinary workspace file', async () => {
+      const repo = freshRepo();
+      try {
+        const result = await sandboxedBash(`printf 'ok' > notes.txt`, repo);
+
+        expect(result.status).toBe('success');
+        expect(readFileSync(join(repo, 'notes.txt'), 'utf8')).toBe('ok');
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses to write .book/settings.local.json where .book exists', async () => {
+      const repo = freshRepo({ book: true });
+      try {
+        const result = await sandboxedBash(`printf 'pwned' > .book/settings.local.json`, repo);
+
+        expect(result.status).not.toBe('success');
+        expect(result.content.toLowerCase()).toMatch(/read-only file system/);
+        expect(existsSync(join(repo, '.book', 'settings.local.json'))).toBe(false);
+        expect(readFileSync(join(repo, '.book', 'settings.json'), 'utf8')).toBe('{}\n');
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses to create .book where none exists', async () => {
+      const repo = freshRepo();
+      try {
+        const result = await sandboxedBash(`printf 'pwned' > .book/settings.local.json`, repo);
+
+        expect(result.status).not.toBe('success');
+        expect(result.content.toLowerCase()).toMatch(/read-only file system/);
+        expect(existsSync(join(repo, '.book', 'settings.local.json'))).toBe(false);
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses to write git hooks and .git/config, leaving them unchanged', async () => {
+      const repo = freshRepo();
+      try {
+        for (const target of ['.git/hooks/pre-commit', '.git/config']) {
+          const result = await sandboxedBash(`printf 'pwned' > ${target}`, repo);
+
+          expect(result.status, target).not.toBe('success');
+          expect(result.content.toLowerCase(), target).toMatch(/read-only file system/);
+        }
+        // The host still holds what it held: the next `git commit` on the host
+        // runs the original hook and reads the original config.
+        expect(readFileSync(join(repo, '.git', 'hooks', 'pre-commit'), 'utf8')).toBe(
+          '#!/bin/sh\nexit 0\n',
+        );
+        expect(readFileSync(join(repo, '.git', 'config'), 'utf8')).toBe(
+          '[core]\n\trepositoryformatversion = 0\n',
+        );
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    });
+  },
+);
 
 describe('matchesExcludedCommand', () => {
   it('matches a glob pattern against the whole command', () => {

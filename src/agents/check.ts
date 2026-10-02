@@ -1,8 +1,9 @@
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { buildChildEnv } from '../child-env.js';
+import { decideSandboxExecution } from '../sandbox.js';
 import { toolFailure, toolSuccess } from '../tools/result.js';
 import { resolveToolTimeoutMs } from '../tools/timeouts.js';
 
@@ -85,31 +86,52 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
 
   const timeoutMs = checkTimeoutMs(ctx);
 
+  // A check is a project-supplied command run in the project workspace, so it
+  // takes the same sandbox decision `Bash` does — decided before anything is
+  // spawned, so a refusal means the command never ran at all (#373).
+  const decision = decideSandboxExecution(ctx, command, ctx.workspaceRoot);
+  if (decision.error) return fail(decision.error);
+
+  const options = {
+    cwd: ctx.workspaceRoot,
+    env: buildChildEnv(process.env, ctx.env),
+    timeout: timeoutMs,
+    maxBuffer: 10 * 1024 * 1024,
+  };
+
   return new Promise((resolve) => {
-    exec(
-      command,
-      {
-        cwd: ctx.workspaceRoot,
-        env: buildChildEnv(process.env, ctx.env),
-        timeout: timeoutMs,
-        maxBuffer: 10 * 1024 * 1024,
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          // `exec` signals a timeout by killing the child; a genuine non-zero exit
-          // carries a code and no signal.
-          const killed = (error as { killed?: boolean }).killed === true;
-          const signal = (error as { signal?: string | null }).signal;
-          if (killed && signal) {
-            resolve(timedOut(command, timeoutMs, stdout || stderr || ''));
-            return;
-          }
-          resolve(fail(stderr || stdout || error.message));
+    const settle = (
+      error: (Error & { killed?: boolean; signal?: string | null }) | null,
+      stdout: string,
+      stderr: string,
+    ): void => {
+      if (error) {
+        // `exec` signals a timeout by killing the child; a genuine non-zero exit
+        // carries a code and no signal.
+        if (error.killed === true && error.signal) {
+          resolve(timedOut(command, timeoutMs, stdout || stderr || ''));
           return;
         }
-        resolve(toolSuccess(stdout || stderr || '(no output)'));
-      },
-    );
+        resolve(fail(stderr || stdout || error.message));
+        return;
+      }
+      // Marked the way a sandboxed `Bash` command is marked, so a transcript
+      // says which of the two things ran.
+      resolve(
+        toolSuccess(
+          (decision.sandboxed ? '[sandboxed] ' : '') + (stdout || stderr || '(no output)'),
+        ),
+      );
+    };
+    // The sandboxed path is argv, never a command string: joining it and
+    // spawning with `shell: true` would let the outer shell parse it, which is
+    // the escape the wrapper form exists to prevent.
+    const wrapped = decision.exec;
+    if (decision.sandboxed && wrapped) {
+      execFile(wrapped.file, wrapped.args, options, settle);
+      return;
+    }
+    exec(command, options, settle);
   });
 }
 

@@ -429,6 +429,25 @@ export async function runDoctorCommand(
   console.log('  Excluded commands: ' + settings.sandbox.excludedCommands.length);
   console.log('  Unsandboxed commands: ' + policy.unsandboxedCommands);
   console.log('  Auto-allow Bash: ' + policy.autoAllowBash);
+  // The loader drops every `sandbox.*` key a workspace layer supplied in order
+  // to *loosen* the policy (#373), and a silently dropped key is
+  // indistinguishable from a setting that does nothing. The list is computed
+  // from the raw layer files by the same function the loader applies, so what
+  // is reported here is exactly what was dropped.
+  if (!options.noSettings) {
+    const { formatIgnoredWorkspaceSandboxKey, ignoredWorkspaceSandboxKeys, loadSettingsFile } =
+      await import('../settings-loader.js');
+    for (const [label, path] of [
+      ['.book/settings.json', join(config.workspace, '.book', 'settings.json')],
+      ['.book/settings.local.json', join(config.workspace, '.book', 'settings.local.json')],
+    ] as const) {
+      for (const entry of ignoredWorkspaceSandboxKeys(loadSettingsFile(path) ?? {})) {
+        console.log(
+          `  Ignored from ${label}: ${formatIgnoredWorkspaceSandboxKey(entry)} — workspace settings may only tighten the sandbox; set it in ~/.book/settings.json or pass --settings`,
+        );
+      }
+    }
+  }
   console.log();
 
   // Shell: the program every Bash command is handed to, and why it was chosen.

@@ -6,6 +6,40 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **A repository could turn off the sandbox it was cloned into, rewrite the control files the host
+  acts on after a command exits, and run a check outside the sandbox** (#373). Three escapes, one
+  fix each.
+  **Workspace settings layers may only tighten `sandbox.*`.** A checked-in `.book/settings.json` —
+  and a `.book/settings.local.json` a clone was force-fed, which `.gitignore` does not prevent —
+  could set `enabled: false`, set `allowUnsandboxedCommands: true`, exclude every command with
+  `excludedCommands: ["*"]`, widen `filesystem.allowWrite`, and replace the user's `denyRead`,
+  `denyWrite` and `deniedDomains` with empty arrays: the whole policy the user enabled in
+  `~/.book/settings.json`, overwritten by the thing it was meant to contain. From both workspace
+  layers now, `enabled`, `failIfUnavailable`, `allowUnsandboxedCommands` and
+  `autoAllowBashIfSandboxed` are honoured only in the tightening direction, `excludedCommands`,
+  `filesystem.allowWrite` and `network.allowedDomains` are ignored outright, and the three deny
+  lists accumulate across layers like `permissions.deny` instead of replacing. The user-global
+  layer and `--settings` are unchanged. `book doctor` names every key it dropped, with the file and
+  the value, since an ignored key that says nothing reads like a key that does nothing.
+  **The workspace control files are read-only inside the sandbox.** The read-write workspace bind
+  let a sandboxed command write `.book/settings.local.json`, install a `.git/hooks/*` script the
+  next `git commit` runs, or repoint `core.hooksPath` and `core.fsmonitor` in `.git/config` —
+  files the _host_ acts on after the command exits, which makes each a way out of the sandbox
+  rather than a scratch file. `.book/` is now bound read-only, or masked with an empty read-only
+  directory when it is absent, as are a git dir's `hooks/`, `config` and `config.worktree`. The
+  git dir is found by following a `.git` file and a `commondir` file, so worktrees and submodules
+  are covered; a git dir outside the workspace is left alone. Two costs are named rather than
+  hidden: masking an absent `.book/` creates an **empty `.book/` directory on your disk** as a
+  side effect of a sandboxed command, and a workspace with no `.git` can still have one created by
+  a sandboxed command. `Check` runs under the same decision as `Bash`, from one shared helper in
+  `src/sandbox.ts` — wrapped when the sandbox is on, refused when `allowUnsandboxedCommands` is
+  false and it would run outside, and marked `[sandboxed]` when wrapped. It previously called
+  `exec` with no sandbox and no such check, so "the sandbox is on and unsandboxed commands are
+  refused" was a promise `Check` did not keep; its timeout-versus-failure distinction is unchanged,
+  and `Bash`'s messages and behaviour are untouched.
+
+### Security
+
 - **High-severity dependency advisories cleared** (#361). `undici` moves to 8.11.2 and the
   transitive `brace-expansion` to 5.0.12, so `npm audit --audit-level=high` is clean. The routine
   minor and patch bumps from the dependabot groups ride along: `@modelcontextprotocol/sdk`

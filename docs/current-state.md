@@ -259,6 +259,11 @@ Work aimed at running an objective unattended for days rather than hours. All of
   distrusting a Git-tracked local layer needs provenance
   the synchronous resolver cannot currently obtain. Provider blocks, project instructions, and a
   checked-in `settings.local.json` must still be reviewed before opening an untrusted workspace.
+  The `sandbox.*` keys are the one exception (issue 373): both workspace layers may only
+  **tighten** them, so a clone that force-adds `.book/settings.local.json` can no longer switch off
+  a sandbox the user enabled, exclude every command with `excludedCommands: ["*"]`, widen
+  `filesystem.allowWrite`, or empty the user's `denyRead`/`denyWrite`/`deniedDomains` lists. What
+  remains open of the local layer is everything that rule does not cover.
 - No interactive surface records these decisions yet, and the interactive host does not report
   them either. The MCP gate has a TUI prompt; the allow-rule, hook, and command gates do not, so
   in the primary mode a withheld hook simply never fires and a withheld command is refused until
@@ -293,6 +298,30 @@ Work aimed at running an objective unattended for days rather than hours. All of
   model-chosen command can trip by itself — a matching command runs on the host, and the only
   control over that is refusing unsandboxed execution wholesale, not an independent per-command
   approval.
+- The workspace control files are read-only inside the namespace (issue 373). `.book/` is bound
+  read-only when it exists and masked with an empty read-only tmpfs when it does not, as are a git
+  dir's `hooks/` and its `config` and `config.worktree` (resolved through a `.git` file and a
+  `commondir` file, so a worktree or submodule is covered too, as long as the git dir is inside the
+  workspace). Before this, the read-write workspace bind let a sandboxed command write
+  `.book/settings.local.json`, install a `.git/hooks/*` script, or repoint `core.hooksPath` /
+  `core.fsmonitor` — files the _host_ acts on after the command exits, which made each a way out
+  of the sandbox rather than a scratch file. Two costs are worth naming: masking an absent `.book/`
+  creates an **empty `.book/` directory on the host** as a side effect of the mount, and a
+  workspace with no `.git` can still have one created by a sandboxed command (`git init` succeeds),
+  since nothing prevents the directory from appearing after the mounts were built.
+- Both workspace settings layers may only tighten `sandbox.*` (issue 373). `enabled`,
+  `failIfUnavailable`, `allowUnsandboxedCommands` and `autoAllowBashIfSandboxed` are honoured only
+  in the tightening direction, `excludedCommands`, `filesystem.allowWrite` and
+  `network.allowedDomains` are ignored outright, and `filesystem.denyWrite`, `filesystem.denyRead`
+  and `network.deniedDomains` accumulate across layers instead of replacing. Before this a checked-in
+  `.book/settings.json` could switch off the sandbox the user had enabled in `~/.book/settings.json`
+  and its arrays replaced the user's. `book doctor` names every key it dropped, with the file and
+  the value, so a silently ignored setting is not mistaken for one that does nothing.
+- `Check` runs under the same decision as `Bash` (issue 373): `decideSandboxExecution` in
+  `src/sandbox.ts` wraps a check command when the sandbox is on, refuses it when
+  `allowUnsandboxedCommands` is false and it would run outside, and marks a sandboxed run
+  `[sandboxed]`. It previously called `exec` with no sandbox and no such check, so "the sandbox is
+  on and unsandboxed commands are refused" was a promise `Check` did not keep.
 - Configuration for a removed feature is reported, never fatal. `src/settings-removed.ts` knows
   which keys the subscription-auth, adaptive-harness and Zero-Mem removals left behind; validation
   discards a removed block silently, so `book doctor` lists what is still on the machine and what

@@ -7,16 +7,10 @@ import type {
 } from '../types/runtime.js';
 import { resolveShell, shellExecution } from '../shell-selection.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
-import {
-  createSandbox,
-  matchesExcludedCommand,
-  unsandboxedRefusalMessage,
-  type SandboxSkipReason,
-} from '../sandbox.js';
+import { decideSandboxExecution } from '../sandbox.js';
 import { buildChildEnv } from '../child-env.js';
 import { isTerminalShellStatus, ShellJobManager } from '../jobs/shell-manager.js';
 import { terminateForegroundProcess } from '../jobs/process-tree.js';
-import { resolveWorkspacePath } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
 import {
   MAX_SAFE_TIMEOUT_MS,
@@ -177,37 +171,15 @@ function buildEffectiveCommand(
   // to `shell: true`.
   const shellExec = shellExecution(sessionShell(ctx), command);
   if (shellExec) plain.exec = shellExec;
-  const failed = (error: string): EffectiveCommand => ({ ...plain, error });
 
-  // Every path that ends with the command running outside a bubblewrap
-  // namespace funnels through here, so `allowUnsandboxedCommands: false` cannot
-  // be enforced on some escapes and quietly missed on others.
-  const unsandboxed = (reason: SandboxSkipReason): EffectiveCommand =>
-    ctx.sandbox && !ctx.sandbox.allowUnsandboxedCommands
-      ? failed(unsandboxedRefusalMessage(reason))
-      : plain;
-
-  if (!ctx.sandbox?.enabled) return unsandboxed('disabled');
-  if (matchesExcludedCommand(command, ctx.sandbox.excludedCommands)) return unsandboxed('excluded');
-
-  // The sandbox binds the workspace, not this workdir. A workdir outside it
-  // would leave the command with no working directory inside the namespace,
-  // and silently running it against the workspace root instead would execute
-  // somewhere the caller did not ask for.
-  if (!resolveWorkspacePath(ctx.workspaceRoot, workdir)) {
-    return failed(
-      `workdir is outside the sandboxed workspace: ${workdir}. Add it to sandbox.filesystem.allowWrite, or run without the sandbox.`,
-    );
+  // `Check` runs the same decision, so a check cannot slip past a policy that
+  // refuses unsandboxed commands (#373).
+  const decision = decideSandboxExecution(ctx, command, workdir);
+  if (decision.error) return { ...plain, error: decision.error };
+  if (decision.sandboxed) {
+    return { command, workdir, effectiveCommand: command, exec: decision.exec, sandboxed: true };
   }
-  // createSandbox emits one-time diagnostics, so reuse the session's instance
-  // rather than rebuilding it per command.
-  const sandbox = ctx.runtime ? ctx.runtime.sandbox(ctx.sandbox) : createSandbox(ctx.sandbox);
-  const exec = sandbox?.wrap(command, ctx.workspaceRoot);
-  if (exec) return { command, workdir, effectiveCommand: command, exec, sandboxed: true };
-  if (ctx.sandbox.failIfUnavailable) {
-    return failed('Sandbox unavailable and failIfUnavailable is set');
-  }
-  return unsandboxed('unavailable');
+  return plain;
 }
 
 async function bash(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {

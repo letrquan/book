@@ -11,6 +11,9 @@ Settings are loaded in priority order (later wins):
 3. `.book/settings.local.json` (local, should be gitignored)
 4. `--settings <path>` CLI flag
 
+One family is not "later wins". `sandbox.*` is a boundary between a command and your machine, so
+a **workspace layer may only tighten it** — see [The sandbox](#the-sandbox).
+
 ### Scopes
 
 `book config set` and the TUI's `/config <key>=<value>` write the **user-global** layer
@@ -99,6 +102,73 @@ usage reports neither count, though, and adds about 2,000 tokens to `prompt_toke
 request. So Book shows every input token as uncached on those routes, and its dollar estimate runs
 about three times the real cost. The real counts are on 9router's own usage dashboard. The `cmc/`
 and `ag/` routes report no caching at all, and `prompt_cache_key` changes nothing on them.
+
+## The sandbox
+
+`sandbox.enabled` turns on the bubblewrap namespace `Bash` and `Check` commands run in. It
+defaults to `false`, so nothing is sandboxed until you opt in. The rest of the family decides what
+that namespace looks like and what happens to a command that cannot get one:
+
+| key                        | default | meaning                                                                            |
+| -------------------------- | ------- | ---------------------------------------------------------------------------------- |
+| `failIfUnavailable`        | `false` | fail the command when no backend exists, instead of running it                     |
+| `allowUnsandboxedCommands` | `true`  | allow a command to run outside the sandbox when it cannot be wrapped               |
+| `autoAllowBashIfSandboxed` | `true`  | skip the default permission ask for a genuinely sandboxed `Bash`                   |
+| `excludedCommands`         | `[]`    | command patterns that run outside the sandbox on purpose                           |
+| `filesystem.allowWrite`    | `[]`    | extra paths bound read-write inside the namespace                                  |
+| `filesystem.denyWrite`     | `[]`    | paths bound read-only                                                              |
+| `filesystem.denyRead`      | `[]`    | paths masked entirely (directories) or unreadable (files)                          |
+| `network.allowedDomains`   | `[]`    | not enforceable in bubblewrap; declaring any domain policy disables network access |
+| `network.deniedDomains`    | `[]`    | not enforceable in bubblewrap; declaring any domain policy disables network access |
+
+`allowUnsandboxedCommands: false` is the setting that refuses a command outright — it names the
+setting and the reason rather than running the command anyway. Because `enabled` defaults to
+`false`, that setting alone refuses everything until you turn sandboxing on too.
+
+### A workspace layer may only tighten `sandbox.*`
+
+A checked-in `.book/settings.json` is input from the repository, and so is a
+`.book/settings.local.json` a clone was force-fed — `.gitignore` does not keep one out of a fresh
+clone. So from **both** workspace layers these keys are honoured only in the direction that narrows
+the sandbox:
+
+| key                                | honoured from a workspace layer | ignored   |
+| ---------------------------------- | ------------------------------- | --------- |
+| `enabled`                          | `true`                          | `false`   |
+| `failIfUnavailable`                | `true`                          | `false`   |
+| `allowUnsandboxedCommands`         | `false`                         | `true`    |
+| `autoAllowBashIfSandboxed`         | `false`                         | `true`    |
+| `excludedCommands`                 | —                               | any value |
+| `filesystem.allowWrite`            | —                               | any value |
+| `network.allowedDomains`           | —                               | any value |
+| `filesystem.denyWrite`, `denyRead` | adds entries                    | —         |
+| `network.deniedDomains`            | adds entries                    | —         |
+
+The deny lists **accumulate** across layers like `permissions.deny`, so a project can add to your
+`denyRead` without erasing it. Set anything in the ignored column in `~/.book/settings.json`, or pass
+it with `--settings`. `book doctor` lists every key it dropped, with the file and the value:
+
+```
+Ignored from .book/settings.json: sandbox.enabled=false — workspace settings may only tighten the sandbox; set it in ~/.book/settings.json or pass --settings
+```
+
+### What is read-only inside the sandbox
+
+The workspace is bound read-write, with exceptions for the files your machine itself acts on after
+a command exits:
+
+- `.book/` — read-only. When the directory does not exist, Book masks it with an empty read-only
+  directory so a command cannot create it either. **That masking creates an empty `.book/`
+  directory on your disk as a side effect** of running a sandboxed command in such a workspace.
+- a git directory's `hooks/`, `config` and `config.worktree` — read-only, following a `.git` file
+  and a `commondir` file so a worktree or submodule is covered too. A git directory outside the
+  workspace is left alone. A workspace with no `.git` can still have one created by a sandboxed
+  command (`git init` succeeds); its hooks only become protected once Book sees the directory. An
+  absent `config` is left unmasked, since bubblewrap cannot mount a tmpfs over a file path.
+
+`Check` runs under the same decision as `Bash`: a check is a project-supplied command, so it is
+sandboxed too, refused when unsandboxed commands are refused, and marked `[sandboxed]` in its
+output.
 
 ## Example `.book/settings.json`
 

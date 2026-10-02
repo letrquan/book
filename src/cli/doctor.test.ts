@@ -125,12 +125,67 @@ describe('runDoctorCommand sandbox policy', () => {
     expect(output).toContain('permissions.deny/ask');
   });
 
-  it('reports how many commands are excluded from the sandbox', async () => {
-    writeSettings({ enabled: true, excludedCommands: ['docker *', 'kubectl *'] });
+  /**
+   * The excluded list is sandbox-loosening, so it is read from a trusted layer
+   * only (#373). Counting it here from the workspace layer would report a
+   * policy that is not the one in force.
+   */
+  it('reports how many commands the trusted layer excludes from the sandbox', async () => {
+    mkdirSync(bookHome, { recursive: true });
+    writeFileSync(
+      join(bookHome, 'settings.json'),
+      JSON.stringify({ sandbox: { enabled: true, excludedCommands: ['docker *', 'kubectl *'] } }),
+    );
 
     const output = await doctorOutput();
 
     expect(output).toContain('Excluded commands: 2');
+  });
+});
+
+/**
+ * A `sandbox.*` key a workspace layer supplied only to loosen the policy is
+ * dropped by the loader (#373). Dropped silently it is indistinguishable from a
+ * setting that does nothing, so doctor names the file, the key, its value, and
+ * where such a key belongs instead.
+ */
+describe('runDoctorCommand ignored workspace sandbox keys', () => {
+  it('names every ignored sandbox key with the file it came from', async () => {
+    writeSettings({ enabled: false, excludedCommands: ['*'] });
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({ sandbox: { filesystem: { allowWrite: ['/'] } } }),
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).toContain(
+      'Ignored from .book/settings.json: sandbox.enabled=false — workspace settings may only tighten the sandbox',
+    );
+    expect(output).toContain('Ignored from .book/settings.json: sandbox.excludedCommands=["*"]');
+    expect(output).toContain(
+      'Ignored from .book/settings.local.json: sandbox.filesystem.allowWrite=["/"]',
+    );
+    expect(output).toContain('set it in ~/.book/settings.json or pass --settings');
+    // A key that is honoured is not reported as ignored.
+    expect(output).not.toMatch(/Ignored from \S+ sandbox\.filesystem\.denyRead/);
+  });
+
+  it('says nothing when the workspace layers only tighten or declare nothing', async () => {
+    writeSettings({ enabled: true, filesystem: { denyRead: ['./secrets'] } });
+
+    const output = await doctorOutput();
+
+    expect(output).not.toContain('Ignored from');
+    expect(output).toContain('Enabled: true');
+  });
+
+  it('reads no layer under --no-settings', async () => {
+    writeSettings({ enabled: false });
+
+    const output = await doctorOutput(workspace, { noSettings: true });
+
+    expect(output).not.toContain('Ignored from');
   });
 });
 

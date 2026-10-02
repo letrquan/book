@@ -1,7 +1,8 @@
-import { accessSync, constants, existsSync, statSync } from 'fs';
-import { delimiter, join, resolve } from 'path';
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'fs';
+import { delimiter, isAbsolute, join, relative, resolve } from 'path';
 import { homedir, platform } from 'os';
 import type { ResolvedSettings } from './settings.js';
+import { resolveWorkspacePath } from './tools/path-utils.js';
 import type { CommandExecution } from './types/runtime.js';
 import { globToRegex } from './tools/glob-regex.js';
 
@@ -184,7 +185,8 @@ export function sandboxPolicySummary(
 
 /**
  * The host facts the argv builder depends on: which paths exist, whether they
- * are directories, and the path semantics used to resolve configured entries.
+ * are directories, what a small file says, and the path semantics used to
+ * resolve configured entries.
  *
  * Injectable so the generated argv can be pinned by tests on any platform.
  * The unit suite runs on Windows CI, where probing the real filesystem finds
@@ -194,16 +196,30 @@ export function sandboxPolicySummary(
  */
 export interface SandboxHost {
   /** Path semantics for configured entries; tests inject path.win32/path.posix. */
-  path: { resolve(...segments: string[]): string; join(...segments: string[]): string };
+  path: {
+    resolve(...segments: string[]): string;
+    join(...segments: string[]): string;
+    relative(from: string, to: string): string;
+    isAbsolute(path: string): boolean;
+  };
   exists(path: string): boolean;
   isDirectory(path: string): boolean;
+  /** File contents, or null when the file is missing or unreadable. */
+  readFile(path: string): string | null;
   homedir(): string;
 }
 
 const realSandboxHost: SandboxHost = {
-  path: { resolve, join },
+  path: { resolve, join, relative, isAbsolute },
   exists: existsSync,
   isDirectory: (path) => statSync(path).isDirectory(),
+  readFile: (path) => {
+    try {
+      return readFileSync(path, 'utf-8');
+    } catch {
+      return null;
+    }
+  },
   homedir,
 };
 
@@ -251,6 +267,123 @@ export function hasDomainPolicy(settings: ResolvedSettings['sandbox']): boolean 
 }
 
 /**
+ * True when `gitDir` resolves to the workspace root or something below it.
+ *
+ * A git dir outside the root is not bound writable — it is not bound at all —
+ * so there is nothing to protect there, and mounting it would hand the command
+ * a view of a repository the user never opened.
+ */
+function insideWorkspace(gitDir: string, workspaceRoot: string, host: SandboxHost): boolean {
+  const relativePath = host.path.relative(
+    host.path.resolve(workspaceRoot),
+    host.path.resolve(gitDir),
+  );
+  return (
+    relativePath === '' || (!relativePath.startsWith('..') && !host.path.isAbsolute(relativePath))
+  );
+}
+
+/**
+ * The git directories a workspace's `.git` names, in the order they apply.
+ *
+ * `.git` is usually the directory itself, but a worktree or submodule carries a
+ * one-line `.git` file (`gitdir: <path>`; relative to the workspace when it is
+ * not absolute), and that directory can itself name a `commondir` — the shared
+ * part of the repository, where `hooks/` and `config` actually live for a
+ * linked worktree.
+ *
+ * Only directories inside the workspace are returned; see `insideWorkspace`.
+ */
+function workspaceGitDirs(workspaceRoot: string, host: SandboxHost): string[] {
+  const dotGit = host.path.join(workspaceRoot, '.git');
+  if (!host.exists(dotGit)) return [];
+  const dirs: string[] = [];
+  const add = (candidate: string): void => {
+    const resolved = host.path.resolve(candidate);
+    if (dirs.includes(resolved) || !host.exists(resolved)) return;
+    if (!insideWorkspace(resolved, workspaceRoot, host)) return;
+    dirs.push(resolved);
+  };
+  if (host.isDirectory(dotGit)) {
+    add(dotGit);
+  } else {
+    const target = /^gitdir:\s*(.+)$/m.exec(host.readFile(dotGit) ?? '')?.[1]?.trim();
+    if (!target) return [];
+    add(host.path.isAbsolute(target) ? target : host.path.join(workspaceRoot, target));
+  }
+  // A linked worktree's own dir holds only `config.worktree` and `HEAD`; the
+  // hooks and the shared config live in the common dir it names.
+  for (const dir of [...dirs]) {
+    const common = host.readFile(host.path.join(dir, 'commondir'))?.trim();
+    if (common) add(host.path.isAbsolute(common) ? common : host.path.join(dir, common));
+  }
+  return dirs;
+}
+
+/**
+ * One workspace path the namespace must expose read-only.
+ *
+ * A `present` path is bound read-only. An absent one is masked with an empty
+ * read-only tmpfs, which both hides any contents the host grows there later and
+ * makes creating it fail — the only way to protect something that does not
+ * exist yet.
+ */
+interface ReadOnlyMount {
+  path: string;
+  present: boolean;
+}
+
+/**
+ * The workspace control files a sandboxed command must not be able to rewrite.
+ *
+ * Each one is read by the *host* after the command exits, which is what makes a
+ * write to it an escape rather than a scratch file: `.book/settings.local.json`
+ * is resolved on the host from the next session (it can switch the sandbox off
+ * or add `Bash(*)`), a `.git/hooks/*` script runs on the next host `git commit`,
+ * and `core.hooksPath` / `core.fsmonitor` in `.git/config` redirect both. The
+ * permission layer asks before a file tool touches `.book/`, but a prompt is one
+ * approval the model can ask for — and a shell command is not a file tool (#373).
+ */
+export function readOnlyWorkspacePaths(
+  workspaceRoot: string,
+  host: SandboxHost = realSandboxHost,
+): ReadOnlyMount[] {
+  const mounts: ReadOnlyMount[] = [];
+  const add = (path: string): void => {
+    if (mounts.some((mount) => mount.path === path)) return;
+    mounts.push({ path, present: host.exists(path) });
+  };
+  // The settings directory, which holds both workspace layers plus the trust
+  // store writes and `migrations.json`.
+  add(host.path.join(workspaceRoot, '.book'));
+  for (const gitDir of workspaceGitDirs(workspaceRoot, host)) {
+    add(host.path.join(gitDir, 'hooks'));
+    // Existing files only, unlike `hooks/` above: `--tmpfs` over a file path
+    // aborts the whole invocation with "Not a directory", so an absent config
+    // cannot be masked at all. `git init` writes `.git/config`, so the corner
+    // this leaves open is a repository with no repository-local config.
+    for (const name of ['config', 'config.worktree']) {
+      const path = host.path.join(gitDir, name);
+      if (host.exists(path)) add(path);
+    }
+  }
+  return mounts;
+}
+
+function mountReadOnly(args: string[], mount: ReadOnlyMount, host: SandboxHost): void {
+  const target = host.path.resolve(mount.path);
+  if (mount.present) {
+    args.push('--ro-bind', target, target);
+    return;
+  }
+  // `--tmpfs` creates the mount point, and bwrap does that *through* the
+  // workspace bind: a sandboxed command in a workspace with no `.book/` leaves
+  // an empty `.book/` directory on the host as a side effect. It is recorded in
+  // docs/guide/configuration.md; the alternative would be a writable hole.
+  args.push('--tmpfs', target, '--remount-ro', target);
+}
+
+/**
  * Build the bubblewrap argument vector for one command.
  *
  * Mount order is significant: bwrap applies operations in sequence and a later
@@ -258,6 +391,11 @@ export function hasDomainPolicy(settings: ResolvedSettings['sandbox']): boolean 
  * therefore comes *after* the system read-only binds and the /tmp tmpfs (a
  * workspace under /usr/local or /tmp would otherwise be silently shadowed), and
  * explicit filesystem policy comes after the workspace so it can override it.
+ *
+ * The workspace control files are the exception to "policy comes after the
+ * workspace": their read-only mounts come after the workspace bind *and* after
+ * the `allowWrite` binds, so an extra writable root cannot reopen them, and
+ * before `denyWrite`/`denyRead`, which stay free to be stricter still.
  *
  * Exported for testing: it does not require bwrap to be installed, and with an
  * injected `host` its output is fully determined by its arguments.
@@ -298,6 +436,11 @@ export function buildSandboxExecution(
 
   // Declared filesystem policy overrides the defaults above.
   for (const path of settings.filesystem.allowWrite) bindIfPresent(args, '--bind', path, host);
+  // Control files the host acts on after this command exits come last among the
+  // writable-covering mounts: after the workspace bind, so the workspace does
+  // not shadow them, and after `allowWrite`, so an extra writable root cannot
+  // reopen them.
+  for (const mount of readOnlyWorkspacePaths(workspaceRoot, host)) mountReadOnly(args, mount, host);
   for (const path of settings.filesystem.denyWrite) bindIfPresent(args, '--ro-bind', path, host);
   // bwrap cannot unmount a subpath, so a denied path is masked instead. The
   // mask has to match the kind: --tmpfs needs to mkdir its target, so pointing
@@ -323,6 +466,89 @@ export function buildSandboxExecution(
   args.push('--', '/bin/bash', '-c', command);
 
   return { file: bwrapPath, args };
+}
+
+/**
+ * The context facts the sandbox decision reads. Structural rather than
+ * `ToolContext` so this stays free of the tool layer: `Bash` and the `Check`
+ * tool both pass one, and neither type is imported here.
+ */
+export interface SandboxDecisionContext {
+  sandbox?: ResolvedSettings['sandbox'];
+  workspaceRoot: string;
+  /** The session's sandbox, built once per distinct settings object. */
+  runtime?: { sandbox(settings: ResolvedSettings['sandbox']): Sandbox | null };
+}
+
+/**
+ * How one command is to be run, or why it may not run at all.
+ *
+ * `exec` is set only on the sandboxed outcome, and is what the caller spawns
+ * instead of the command. `reason` is set when a sandbox was asked for and
+ * skipped, which is what `allowUnsandboxedCommands` governs; it is absent when
+ * no sandbox was configured at all. `error` means do not run anything.
+ */
+export interface SandboxDecision {
+  sandboxed: boolean;
+  exec?: CommandExecution;
+  reason?: SandboxSkipReason;
+  error?: string;
+}
+
+/**
+ * Decide how `command` is to be run, and refuse it when it must not run at all.
+ *
+ * One function, because the order of these checks is the policy:
+ *
+ * 1. no sandbox configured, or the command is excluded → run unsandboxed,
+ *    unless `allowUnsandboxedCommands` is false, which refuses it;
+ * 2. a workdir outside the workspace → refused, since the sandbox binds the
+ *    workspace and the command would run somewhere the caller did not ask for;
+ * 3. otherwise wrap it, and report the wrapped argv.
+ *
+ * A path that ends with the command running outside a bubblewrap namespace all
+ * funnels through here, so `allowUnsandboxedCommands: false` cannot be enforced
+ * on one escape and quietly missed on another. `Bash` and the `Check` tool both
+ * call this, so a check cannot run unsandboxed in a session that refuses
+ * unsandboxed commands (#373).
+ *
+ * The refusal and failure messages are the ones `Bash` has always returned; they
+ * are part of the tool contract, not an implementation detail.
+ */
+export function decideSandboxExecution(
+  ctx: SandboxDecisionContext,
+  command: string,
+  workdir: string,
+): SandboxDecision {
+  // Every path that ends with the command running outside a bubblewrap
+  // namespace funnels through here.
+  const unsandboxed = (reason: SandboxSkipReason): SandboxDecision =>
+    ctx.sandbox && !ctx.sandbox.allowUnsandboxedCommands
+      ? { sandboxed: false, reason, error: unsandboxedRefusalMessage(reason) }
+      : { sandboxed: false, reason };
+
+  if (!ctx.sandbox?.enabled) return unsandboxed('disabled');
+  if (matchesExcludedCommand(command, ctx.sandbox.excludedCommands)) return unsandboxed('excluded');
+
+  // The sandbox binds the workspace, not this workdir. A workdir outside it
+  // would leave the command with no working directory inside the namespace,
+  // and silently running it against the workspace root instead would execute
+  // somewhere the caller did not ask for.
+  if (!resolveWorkspacePath(ctx.workspaceRoot, workdir)) {
+    return {
+      sandboxed: false,
+      error: `workdir is outside the sandboxed workspace: ${workdir}. Add it to sandbox.filesystem.allowWrite, or run without the sandbox.`,
+    };
+  }
+  // createSandbox emits one-time diagnostics, so reuse the session's instance
+  // rather than rebuilding it per command.
+  const sandbox = ctx.runtime ? ctx.runtime.sandbox(ctx.sandbox) : createSandbox(ctx.sandbox);
+  const exec = sandbox?.wrap(command, ctx.workspaceRoot);
+  if (exec) return { sandboxed: true, exec };
+  if (ctx.sandbox.failIfUnavailable) {
+    return { sandboxed: false, error: 'Sandbox unavailable and failIfUnavailable is set' };
+  }
+  return unsandboxed('unavailable');
 }
 
 /**
