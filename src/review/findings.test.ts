@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
   dedupeFindings,
+  deriveReviewVerdict,
   filterLowConfidence,
   findingKey,
   locationKey,
   rankFindings,
   summariesDescribeSameFinding,
 } from './findings.js';
-import type { ReviewFinding } from './types.js';
+import type { ReviewCoverage, ReviewCoverageEntry, ReviewFinding } from './types.js';
+
+const completePass: ReviewCoverageEntry = { id: 'correctness', status: 'completed', findings: 0 };
+const completeCoverage: ReviewCoverage = { reviewers: [completePass] };
 
 function finding(
   overrides: Partial<ReviewFinding> & { file: string; category: ReviewFinding['category'] },
@@ -198,5 +202,172 @@ describe('filterLowConfidence', () => {
     const low = finding({ file: 'a.ts', category: 'correctness', confidence: 60 });
     const high = finding({ file: 'b.ts', category: 'correctness', confidence: 90 });
     expect(filterLowConfidence([low, high])).toEqual([high]);
+  });
+});
+
+describe('deriveReviewVerdict', () => {
+  const verifiedCoverage: ReviewCoverage = {
+    reviewers: [completePass],
+    verifier: { id: 'verification', status: 'completed', findings: 1 },
+  };
+
+  function standing(overrides: Partial<ReviewFinding> = {}): ReviewFinding {
+    return finding({ file: 'a.ts', category: 'correctness', ...overrides });
+  }
+
+  describe('rule 1 — incomplete coverage', () => {
+    it('caps the verdict when a reviewer did not complete', () => {
+      expect(
+        deriveReviewVerdict({
+          findings: [],
+          coverage: {
+            reviewers: [completePass, { id: 'security', status: 'partial', findings: 0 }],
+          },
+        }),
+      ).toEqual({ verdict: 'inconclusive', reason: 'incomplete-coverage' });
+    });
+
+    it('caps the verdict when the verifier did not complete', () => {
+      expect(
+        deriveReviewVerdict({
+          findings: [],
+          coverage: {
+            reviewers: [completePass],
+            verifier: { id: 'verification', status: 'unstructured', findings: 0 },
+          },
+        }),
+      ).toEqual({ verdict: 'inconclusive', reason: 'incomplete-coverage' });
+    });
+
+    it('outranks a standing finding, which is evidence, not coverage', () => {
+      expect(
+        deriveReviewVerdict({
+          findings: [standing({ severity: 'critical' })],
+          coverage: { reviewers: [{ id: 'security', status: 'failed', findings: 0 }] },
+        }),
+      ).toEqual({ verdict: 'inconclusive', reason: 'incomplete-coverage' });
+    });
+  });
+
+  describe('rule 2 — standing findings', () => {
+    it('is blocking on a standing critical finding', () => {
+      expect(
+        deriveReviewVerdict({
+          findings: [standing({ severity: 'major' }), standing({ severity: 'critical' })],
+          coverage: completeCoverage,
+        }),
+      ).toEqual({ verdict: 'blocking', reason: 'standing-findings' });
+    });
+
+    it('is recommend for any other standing finding', () => {
+      expect(
+        deriveReviewVerdict({
+          findings: [standing({ severity: 'nit' })],
+          coverage: completeCoverage,
+        }),
+      ).toEqual({ verdict: 'recommend', reason: 'standing-findings' });
+    });
+
+    it('counts a verifier-confirmed finding as standing and a rejected one as not', () => {
+      expect(
+        deriveReviewVerdict({
+          findings: [
+            standing({ verification: 'confirmed', severity: 'critical' }),
+            standing({ verification: 'rejected', severity: 'critical' }),
+          ],
+          coverage: verifiedCoverage,
+        }),
+      ).toEqual({ verdict: 'blocking', reason: 'standing-findings' });
+      expect(
+        deriveReviewVerdict({
+          findings: [standing({ verification: 'rejected', severity: 'critical' })],
+          coverage: verifiedCoverage,
+        }),
+      ).toEqual({ verdict: 'inconclusive', reason: 'unverified-findings' });
+    });
+
+    it('never lets a reviewer that could not conclude downgrade a standing finding', () => {
+      // The regression from #372: rule 2 used to run before the findings, so one
+      // hesitant lens could mask a critical finding another lens had confirmed.
+      expect(
+        deriveReviewVerdict({
+          findings: [standing({ verification: 'confirmed', severity: 'critical' })],
+          coverage: verifiedCoverage,
+          reviewerVerdicts: ['clean', 'inconclusive'],
+        }),
+      ).toEqual({ verdict: 'blocking', reason: 'standing-findings' });
+      expect(
+        deriveReviewVerdict({
+          findings: [standing({ severity: 'critical' })],
+          coverage: completeCoverage,
+          reviewerVerdicts: ['inconclusive'],
+        }),
+      ).toEqual({ verdict: 'blocking', reason: 'standing-findings' });
+    });
+
+    it('ignores a reviewer verdict that overstates what the findings support', () => {
+      expect(
+        deriveReviewVerdict({
+          findings: [],
+          coverage: completeCoverage,
+          reviewerVerdicts: ['blocking'],
+        }),
+      ).toEqual({ verdict: 'clean', reason: 'clean' });
+      expect(
+        deriveReviewVerdict({
+          findings: [standing({ severity: 'major' })],
+          coverage: completeCoverage,
+          reviewerVerdicts: ['clean'],
+        }),
+      ).toEqual({ verdict: 'recommend', reason: 'standing-findings' });
+    });
+  });
+
+  describe('rule 3 — findings nothing stood up', () => {
+    it('is inconclusive when findings remain that the verifier neither confirmed nor falsified', () => {
+      expect(
+        deriveReviewVerdict({
+          findings: [standing({ verification: 'inconclusive' })],
+          coverage: verifiedCoverage,
+        }),
+      ).toEqual({ verdict: 'inconclusive', reason: 'unverified-findings' });
+      expect(
+        deriveReviewVerdict({
+          findings: [standing({ verification: 'rejected' })],
+          coverage: verifiedCoverage,
+        }),
+      ).toEqual({ verdict: 'inconclusive', reason: 'unverified-findings' });
+    });
+
+    it('outranks a reviewer verdict, because a finding is still on the table either way', () => {
+      expect(
+        deriveReviewVerdict({
+          findings: [standing({ verification: 'inconclusive' })],
+          coverage: verifiedCoverage,
+          reviewerVerdicts: ['inconclusive'],
+        }),
+      ).toEqual({ verdict: 'inconclusive', reason: 'unverified-findings' });
+    });
+  });
+
+  describe('rule 4 — a reviewer could not conclude', () => {
+    it('stops a clean when a reviewer reported its own review as inconclusive', () => {
+      expect(
+        deriveReviewVerdict({
+          findings: [],
+          coverage: completeCoverage,
+          reviewerVerdicts: ['clean', 'inconclusive'],
+        }),
+      ).toEqual({ verdict: 'inconclusive', reason: 'reviewer-inconclusive' });
+    });
+  });
+
+  describe('rule 5 — clean', () => {
+    it('needs nothing left and coverage complete', () => {
+      expect(deriveReviewVerdict({ findings: [], coverage: completeCoverage })).toEqual({
+        verdict: 'clean',
+        reason: 'clean',
+      });
+    });
   });
 });
