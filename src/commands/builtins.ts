@@ -373,8 +373,13 @@ function configCommandEffect(
   }
 
   // Ahead of the live branch as well as the write, so a refused key cannot be
-  // reached through whichever of the two paths happens not to check it.
-  const refusal = guardSettingWrite(key);
+  // reached through whichever of the two paths happens not to check it. The
+  // parsed value and the layer it is aimed at both go in: without the value the
+  // guard judged the path alone and refused `sandbox={"enabled":true}` for the
+  // one value a workspace layer may set, and without the scope it applied a
+  // workspace filter to a write aimed at the user-global layer, which is the
+  // default here.
+  const refusal = guardSettingWrite(key, value, scope ?? 'user');
   if (refusal) return { type: 'local-message', content: `✕ ${refusal}`, isError: true };
 
   // Naming the layer a setting already uses is the same request as naming none;

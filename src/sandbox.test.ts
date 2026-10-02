@@ -14,7 +14,12 @@ import { basename, join, posix, resolve, win32 } from 'path';
 import {
   buildSandboxExecution,
   createSandbox,
+  decideSandboxExecution,
+  describeControlPathRefusal,
   matchesExcludedCommand,
+  protectedWorkspacePaths,
+  readCoreHooksPaths,
+  readGitConfigIncludes,
   realSandboxHost,
   sandboxBackendAvailable,
   sandboxCoverage,
@@ -53,6 +58,7 @@ function allExistingHost(flavour: typeof posix | typeof win32): SandboxHost {
     entryKind: () => 'directory',
     linkTarget: () => null,
     realpath: (at: string) => at,
+    fileSize: () => 0,
     homedir: () => (flavour === win32 ? 'C:\\Users\\book' : '/home/book'),
   };
 }
@@ -294,6 +300,9 @@ describe('buildSandboxExecution workspace control files', () => {
       entryKind: kind,
       linkTarget: (path: string) => links[path] ?? null,
       realpath: (path: string) => (real.has(path) ? path : null),
+      // The declared content stands in for the file on disk, so a config past
+      // the read cap is declared at its real size.
+      fileSize: (path: string) => (files[path] ?? '').length || null,
     } satisfies SandboxHost;
   }
 
@@ -650,6 +659,140 @@ describe('buildSandboxExecution workspace control files', () => {
       }
     });
 
+    /**
+     * A submodule's work tree carries its own one-line `.git` file, and only the
+     * workspace *root* one used to be read-only. Rewriting `sub/.git` to
+     * `gitdir: ../evil` therefore passed unnoticed, and the host's next
+     * `git -C sub commit` ran a hook in a repository the command had built.
+     */
+    it('protects the .git pointer file of every work tree inside the workspace', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+          '/work/.git/modules/sub': 'dir',
+          '/work/.git/modules/sub/hooks': 'dir',
+          '/work/.git/modules/sub/config': 'file',
+          '/work/sub': 'dir',
+          '/work/sub/.git': 'file',
+          '/work/.git/worktrees/wt': 'dir',
+          '/work/.git/worktrees/wt/gitdir': 'file',
+          '/work/wt/.git': 'file',
+        },
+        {
+          '/work/sub/.git': 'gitdir: ../.git/modules/sub\n',
+          '/work/.git/worktrees/wt/gitdir': '/work/wt/.git\n',
+        },
+      );
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        sandboxSettings(),
+        host,
+      );
+
+      for (const target of ['/work/sub/.git', '/work/wt/.git']) {
+        expect(mountsFor(exec.args, target).flag, target).toBe('--ro-bind');
+      }
+    });
+
+    /**
+     * `git submodule add url libs/deep` puts the git dir at
+     * `.git/modules/libs/deep`, where `libs` holds nothing but `modules/`. The
+     * walk treated `libs` as the git dir and never reached `deep`, so neither
+     * its config nor its hooks were protected.
+     */
+    it('reaches a git dir under a multi-segment modules container', () => {
+      const host = hostWith({
+        '/work': 'dir',
+        '/work/.book': 'dir',
+        '/work/.git': 'dir',
+        '/work/.git/hooks': 'dir',
+        // A container: `git submodule add url libs/deep` puts the git dir at
+        // `modules/libs/deep`, and `modules/libs` has no HEAD and no config.
+        '/work/.git/modules/libs': 'dir',
+        '/work/.git/modules/libs/deep': 'dir',
+        '/work/.git/modules/libs/deep/hooks': 'dir',
+        '/work/.git/modules/libs/deep/config': 'file',
+        '/work/libs': 'dir',
+        '/work/libs/deep': 'dir',
+        '/work/libs/deep/.git': 'file',
+      });
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        sandboxSettings(),
+        host,
+      );
+
+      for (const target of [
+        '/work/.git/modules/libs/deep/hooks',
+        '/work/.git/modules/libs/deep/config',
+        '/work/libs/deep/.git',
+      ]) {
+        expect(mountsFor(exec.args, target).flag, target).toBe('--ro-bind');
+      }
+    });
+
+    /**
+     * Every discovered git dir used to be pinned with a writable self-bind, and
+     * `git worktree remove` then failed with EBUSY halfway through, leaving the
+     * worktree removed and its admin directory behind.
+     */
+    it('pins only the workspace top-level .git directory', () => {
+      const host = hostWith({
+        '/work': 'dir',
+        '/work/.book': 'dir',
+        '/work/.git': 'dir',
+        '/work/.git/hooks': 'dir',
+        '/work/.git/config': 'file',
+        '/work/.git/modules/sub': 'dir',
+        '/work/.git/modules/sub/config': 'file',
+        '/work/.git/worktrees/wt': 'dir',
+      });
+
+      expect(protectedWorkspacePaths(WORKSPACE, host).pinnedDirectories).toEqual(['/work/.git']);
+    });
+
+    /**
+     * A git dir a `gitdir:` pointer names is resolved against the work tree the
+     * pointer sits in, which for a submodule is not the workspace root: `sub/.git`
+     * says `gitdir: ../.git/modules/sub`, and joining that onto the workspace
+     * root names a directory outside it.
+     */
+    it('follows a work tree .git pointer to the git dir it names', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/modules/sub': 'dir',
+          '/work/.git/modules/sub/config': 'file',
+          '/work/sub': 'dir',
+          '/work/sub/.git': 'file',
+        },
+        { '/work/sub/.git': 'gitdir: ../.git/modules/sub\n' },
+      );
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        sandboxSettings(),
+        host,
+      );
+
+      expect(mountsFor(exec.args, '/work/.git/modules/sub/config').flag).toBe('--ro-bind');
+    });
+
     it('protects the hooks directory core.hooksPath names inside the workspace', () => {
       // husky v9 does exactly this: `core.hooksPath = .husky/_`. The git dir's
       // own `hooks/` is read-only, but the directory git would actually run
@@ -818,84 +961,209 @@ describe('buildSandboxExecution workspace control files', () => {
   });
 
   /**
+   * `core.hooksPath` is the one setting that moves the hook directory out of the
+   * git dir, and it is read from a file the sandboxed command's own workspace
+   * holds. Git's rules for finding it — which `[core]` counts, how a value ends,
+   * and that an `[include]`d file is part of the same config — are what the
+   * parser has to follow, or it protects a directory git never runs from.
+   */
+  describe('core.hooksPath and the config files git includes', () => {
+    const withConfig = (config: string, extra: Record<string, 'dir' | 'file'> = {}) =>
+      hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+          ...extra,
+        },
+        { '/work/.git/config': config },
+      );
+
+    const mounts = (host: SandboxHost): string[] => {
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        sandboxSettings(),
+        host,
+      );
+      return exec.args;
+    };
+
+    /** Git takes the last value, so every one of them has to be protected. */
+    it('protects every hooksPath a config declares, not only the first', () => {
+      const args = mounts(
+        withConfig('[core]\n\thooksPath = .one\n\thooksPath = .two\n', {
+          '/work/.one': 'dir',
+          '/work/.two': 'dir',
+        }),
+      );
+
+      expect(mountsFor(args, '/work/.one').flag).toBe('--ro-bind');
+      expect(mountsFor(args, '/work/.two').flag).toBe('--ro-bind');
+    });
+
+    it('ends a value at an unquoted ; or # comment, as git does', () => {
+      const args = mounts(
+        withConfig(
+          '[core]\n\thooksPath = .husky ; keep this out of the path\n\thooksPath = "#.quoted"\n',
+          { '/work/.husky': 'dir' },
+        ),
+      );
+
+      expect(mountsFor(args, '/work/.husky').flag).toBe('--ro-bind');
+      // The comment is not part of the path, and a `#` inside quotes is.
+      expect(args.join(' ')).not.toContain('keep this out');
+      expect(args).toContain('/work/#.quoted');
+    });
+
+    it('counts [core] case-insensitively and ignores a [core "x"] subsection', () => {
+      expect(
+        readCoreHooksPaths('[CORE]\n\thooksPath = .real\n[core "x"]\n\thooksPath = .decoy\n'),
+      ).toEqual(['.real']);
+    });
+
+    it('reads the include and includeIf path values a config declares', () => {
+      expect(
+        readGitConfigIncludes(
+          '[include]\n\tpath = shared/hooks\n[includeIf "gitdir:~/work/"]\n\tpath = work/hooks\n' +
+            '[includeIf "onbranch:main"]\n\tpathfile = other/hooks\n',
+        ),
+      ).toEqual(['shared/hooks', 'work/hooks']);
+    });
+
+    it('protects an included config inside the workspace and the hooks it names', () => {
+      const args = mounts(
+        hostWith(
+          {
+            '/work': 'dir',
+            '/work/.book': 'dir',
+            '/work/.git': 'dir',
+            '/work/.git/hooks': 'dir',
+            '/work/.git/config': 'file',
+            '/work/.git/conf.d': 'dir',
+            '/work/.git/conf.d/hooks': 'file',
+            '/work/.husky': 'dir',
+          },
+          {
+            // Relative to the including file's own directory, which is the git dir.
+            '/work/.git/config': '[include]\n\tpath = conf.d/hooks\n',
+            '/work/.git/conf.d/hooks': '[core]\n\thooksPath = .husky\n',
+          },
+        ),
+      );
+
+      expect(mountsFor(args, '/work/.git/conf.d/hooks').flag).toBe('--ro-bind');
+      expect(mountsFor(args, '/work/.husky').flag).toBe('--ro-bind');
+    });
+
+    it('stops following includes that name each other', () => {
+      const args = mounts(
+        hostWith(
+          {
+            '/work': 'dir',
+            '/work/.book': 'dir',
+            '/work/.git': 'dir',
+            '/work/.git/hooks': 'dir',
+            '/work/.git/config': 'file',
+            '/work/conf/a': 'file',
+            '/work/conf/b': 'file',
+          },
+          {
+            '/work/.git/config': '[include]\n\tpath = ../conf/a\n',
+            '/work/conf/a': '[include]\n\tpath = b\n',
+            '/work/conf/b': '[include]\n\tpath = a\n',
+          },
+        ),
+      );
+
+      expect(mountsFor(args, '/work/conf/a').flag).toBe('--ro-bind');
+      expect(mountsFor(args, '/work/conf/b').flag).toBe('--ro-bind');
+    });
+
+    /** A truncated `hooksPath` is one that reads as "no hooks directory". */
+    it('refuses the run rather than guess when a config is past the read cap', () => {
+      const host = withConfig(`[core]\n${'# pad\n'.repeat(300_000)}\thooksPath = .husky\n`, {
+        '/work/.husky': 'dir',
+      });
+
+      const { refusals, mounts: emitted } = protectedWorkspacePaths(WORKSPACE, host);
+
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]).toMatchObject({ path: '/work/.git/config' });
+      expect(describeControlPathRefusal(refusals[0]!)).toContain('/work/.git/config');
+      // Nothing protected from the half a config it could not read.
+      expect(mountsFor(mounts(host), '/work/.husky').index).toBe(-1);
+      expect(emitted.some((mount) => mount.path === '/work/.husky')).toBe(false);
+    });
+  });
+
+  /**
    * `.book` is a file a repository can ship as a symlink, and bubblewrap aborts
    * the whole invocation on either shape — `--tmpfs` cannot mkdir through a
    * dangling link, and a link to a directory is "Can't bind mount". A clone could
    * therefore break every sandboxed command in the workspace.
    */
   describe('control paths that are symlinks', () => {
-    it('protects the target of a symlinked control directory', () => {
-      const host = hostWith(
-        { '/work': 'dir', '/work/.book': 'symlink', '/work/.book-real': 'dir' },
-        {},
-        { '/work/.book': '.book-real' },
+    const symlinked = (path: string, target: string, extra: Record<string, 'dir' | 'file'> = {}) =>
+      hostWith({ '/work': 'dir', [path]: 'symlink', ...extra }, {}, { [path]: target });
+
+    const refusalsFor = (host: SandboxHost) => protectedWorkspacePaths(WORKSPACE, host).refusals;
+
+    /**
+     * Protecting the link's target is not enough, because the link itself sits in
+     * the writable workspace: `rm .book && mkdir .book && …` replaces it, and the
+     * target protection then guards a file nothing reads. There is no mount bwrap
+     * can make that pins the link, so the run is refused instead.
+     */
+    it('refuses a symlinked control directory, naming the path', () => {
+      const refusals = refusalsFor(
+        symlinked('/work/.book', '.book-real', { '/work/.book-real': 'dir' }),
       );
 
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]).toMatchObject({ path: '/work/.book' });
+      expect(describeControlPathRefusal(refusals[0]!)).toMatch(
+        /\/work\/\.book is a symlink[\s\S]*cannot protect a symlinked control path/,
+      );
+      // And nothing is mounted for it: a mount would abort bwrap, and the run is
+      // refused before any argv exists.
       const exec = buildSandboxExecution(
         '/usr/bin/bwrap',
         'true',
         WORKSPACE,
         sandboxSettings(),
-        host,
+        symlinked('/work/.book', '.book-real', { '/work/.book-real': 'dir' }),
       );
-
-      // The host reads the settings through the link, so the link's target is
-      // the path that has to be read-only.
-      expect(mountsFor(exec.args, '/work/.book-real').flag).toBe('--ro-bind');
+      expect(exec.args).not.toContain('/work/.book');
+      expect(exec.args.join(' ')).not.toContain('.book-real');
     });
 
-    it('masks a dangling link target inside the workspace instead of aborting bwrap', () => {
-      const host = hostWith(
-        { '/work': 'dir', '/work/.book': 'symlink' },
-        {},
-        {
-          '/work/.book': '.book-real',
-        },
+    it.each(['/work/.git', '/work/.bookrc.json'])('refuses a symlinked %s', (path) => {
+      const kind = path.endsWith('.json') ? 'file' : 'dir';
+      const refusals = refusalsFor(
+        symlinked(path, `elsewhere${kind}`, { [`elsewhere${kind}`]: kind }),
       );
 
-      const exec = buildSandboxExecution(
-        '/usr/bin/bwrap',
-        'true',
-        WORKSPACE,
-        sandboxSettings(),
-        host,
-      );
-
-      // `--tmpfs` on the link path would be "Can't bind mount"; on the target it
-      // is a mask, and creating the target inside the namespace fails.
-      expect(exec.args.join(' ')).not.toContain('--tmpfs /work/.book ');
-      const masked = mountsFor(exec.args, '/work/.book-real');
-      expect(masked.flag).toBe('--tmpfs');
-      expect(exec.args.slice(masked.index - 1, masked.index + 2)).toEqual([
-        '--tmpfs',
-        '/work/.book-real',
-        '--remount-ro',
-      ]);
+      expect(refusals[0]).toMatchObject({ path });
     });
 
-    it('skips a symlinked control path whose target is outside the workspace', () => {
-      // Nothing binds that directory writable, so there is nothing to protect,
-      // and a mount for it would be a path the namespace has no other business
-      // knowing about.
+    it('refuses a symlinked hooks directory', () => {
       const host = hostWith(
-        { '/work': 'dir', '/work/.book': 'symlink' },
-        {},
         {
-          '/work/.book': '/home/book/shared',
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'symlink',
+          '/work/hooks-real': 'dir',
         },
+        {},
+        { '/work/.git/hooks': '../hooks-real' },
       );
 
-      const exec = buildSandboxExecution(
-        '/usr/bin/bwrap',
-        'true',
-        WORKSPACE,
-        sandboxSettings(),
-        host,
-      );
-
-      expect(exec.args.join(' ')).not.toContain('/home/book/shared');
-      // The workspace bind is untouched, so the command still runs.
-      expect(exec.args).toContain('--share-net');
+      expect(refusalsFor(host)[0]).toMatchObject({ path: '/work/.git/hooks' });
     });
 
     it('skips a control path that is neither a file nor a directory', () => {
@@ -920,6 +1188,9 @@ describe('buildSandboxExecution workspace control files', () => {
       expect(exec.args.join(' ')).not.toContain('/work/.book');
       // The rest of the protections are still there.
       expect(mountsFor(exec.args, '/work/.git/hooks').flag).toBe('--ro-bind');
+      // ...and a shape bwrap cannot mount is not a refusal: nothing is being
+      // protected that the host would otherwise read.
+      expect(refusalsFor(host)).toEqual([]);
     });
   });
 
@@ -987,6 +1258,34 @@ describe('buildSandboxExecution workspace control files', () => {
       expect(exec.args).not.toContain('/work/.bookrc.json');
       expect(exec.args).not.toContain('/work/.book/settings.local.json');
     });
+
+    /**
+     * `--ro-bind /dev/null <dir>` is "Is a directory", and bwrap aborts the whole
+     * invocation on it — so one repository that ships `.book/settings.local.json`
+     * as a directory breaks *every* sandboxed command in the workspace, not just
+     * its own.
+     */
+    it('masks only a regular file, never a directory', () => {
+      const host = hostWith({
+        '/work': 'dir',
+        '/work/.book': 'dir',
+        '/work/.book/settings.local.json': 'dir',
+      });
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        sandboxSettings(),
+        host,
+      );
+
+      expect(exec.args).not.toContain('/work/.book/settings.local.json');
+      expect(exec.args.join(' ')).not.toContain('/dev/null');
+      // The read-only `.book` bind is still there, so the namespace is still
+      // buildable and the command still runs.
+      expect(mountsFor(exec.args, '/work/.book').flag).toBe('--ro-bind');
+    });
   });
 
   /**
@@ -1042,6 +1341,74 @@ describe('buildSandboxExecution workspace control files', () => {
         mountsFor(exec.args, '/work').index,
       );
     });
+
+    /**
+     * The opt-in binds come *after* the protected mounts, so an entry naming
+     * `.book` put the whole directory back in reach — and with it the provider key
+     * `settings.local.json` holds, which the mask exists to keep unreadable. The
+     * mask is re-emitted after the opt-ins so the last mount of that path is
+     * `/dev/null` again.
+     */
+    it('keeps the credential masked when an entry opens .book itself', () => {
+      const withCredential = () =>
+        hostWith({
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.book/settings.local.json': 'file',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+        });
+      const settings = sandboxSettings();
+      settings.filesystem.allowWrite = ['/work/.book'];
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        settings,
+        withCredential(),
+      );
+
+      // The user's opt-in is honoured for the directory...
+      expect(lastMountFor(exec.args, '/work/.book').flag).toBe('--bind');
+      // ...and the credential is still the last thing mounted over the file: the
+      // last appearance of that path in the argv is a bind of `/dev/null` onto it.
+      const at = exec.args.lastIndexOf('/work/.book/settings.local.json');
+      expect(exec.args.slice(at - 2, at + 1)).toEqual([
+        '--ro-bind',
+        '/dev/null',
+        '/work/.book/settings.local.json',
+      ]);
+    });
+
+    /**
+     * The pin is a writable self-bind, so an `allowWrite` entry under the git dir
+     * emitted before it is shadowed and silently does nothing.
+     */
+    it('applies an entry under the pinned git dir after the pin', () => {
+      const settings = sandboxSettings();
+      settings.filesystem.allowWrite = ['/work/.git/objects'];
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        settings,
+        hostWith({
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+          '/work/.git/objects': 'dir',
+        }),
+      );
+
+      const pin = mountsFor(exec.args, '/work/.git');
+      expect(pin.flag).toBe('--bind');
+      expect(mountsFor(exec.args, '/work/.git/objects').index).toBeGreaterThan(pin.index);
+    });
   });
 });
 
@@ -1051,6 +1418,62 @@ describe('unbindablePaths', () => {
     settings.filesystem.denyRead = ['/definitely/not/real', '~/also-not-real-xyz'];
     settings.filesystem.allowWrite = [tmpdir()];
     expect(unbindablePaths(settings)).toEqual(['/definitely/not/real', '~/also-not-real-xyz']);
+  });
+});
+
+/**
+ * A shape the namespace cannot be built around is a decision, not an abort: the
+ * refusal has to reach the model as words it can act on, before anything runs.
+ * The sandbox is injected so the refusal is exercised on any host, bwrap or not.
+ */
+describe('decideSandboxExecution refuses a workspace it cannot protect', () => {
+  const sandboxStub = { wrap: () => null, describe: () => 'stub' };
+
+  it('refuses a symlinked control path, naming it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-sbx-refuse-'));
+    try {
+      mkdirSync(join(dir, '.book-real'));
+      symlinkSync('.book-real', join(dir, '.book'));
+
+      const decision = decideSandboxExecution(
+        {
+          workspaceRoot: dir,
+          sandbox: sandboxSettings(),
+          runtime: { sandbox: () => sandboxStub },
+        },
+        'echo hi',
+        dir,
+      );
+
+      expect(decision.sandboxed).toBe(false);
+      expect(decision.exec).toBeUndefined();
+      expect(decision.error).toContain(join(dir, '.book'));
+      expect(decision.error).toMatch(/cannot protect a symlinked control path/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs a workspace with no control path the namespace cannot build', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-sbx-ok-'));
+    try {
+      const decision = decideSandboxExecution(
+        {
+          workspaceRoot: dir,
+          sandbox: sandboxSettings(),
+          runtime: {
+            sandbox: () => ({ wrap: () => ({ file: '/bwrap', args: [] }), describe: () => '' }),
+          },
+        },
+        'echo hi',
+        dir,
+      );
+
+      expect(decision.error).toBeUndefined();
+      expect(decision.sandboxed).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1339,10 +1762,10 @@ describe.skipIf(!sandboxBackendAvailable())(
       }
 
       /** A repository with a submodule, whose git dir is `.git/modules/<name>`. */
-      function repoWithSubmodule(): { main: string; source: string; sub: string } {
+      function repoWithSubmodule(path = 'sub'): { main: string; source: string; sub: string } {
         const main = freshRepo();
         const source = mkdtempSync(join(tmpdir(), 'book-sandbox-sub-src-'));
-        const sub = 'sub';
+        const sub = path;
         execFileSync('git', ['init', '--quiet'], { cwd: source });
         writeFileSync(join(source, 'a.txt'), 'a\n');
         execFileSync('git', ['add', 'a.txt'], { cwd: source });
@@ -1360,6 +1783,7 @@ describe.skipIf(!sandboxBackendAvailable())(
           ],
           { cwd: source },
         );
+        mkdirSync(join(main, path.split('/').slice(0, -1).join('/')), { recursive: true });
         execFileSync(
           'git',
           [
@@ -1379,6 +1803,79 @@ describe.skipIf(!sandboxBackendAvailable())(
         );
         return { main, source, sub };
       }
+
+      /**
+       * The submodule half of the escape, reproduced against this host: only the
+       * workspace *root* `.git` was read-only, so a sandboxed command repointed
+       * `sub/.git` at a repository it had built and the host's next
+       * `git -C sub commit` ran the hook planted there.
+       */
+      it('refuses to repoint a submodule .git file at a repository the command built', async () => {
+        const { main, source, sub } = repoWithSubmodule();
+        try {
+          const pointer = join(main, sub, '.git');
+          const before = readFileSync(pointer, 'utf8');
+
+          const result = await sandboxedBash(
+            `git init --quiet evil && printf '#!/bin/sh\\ntouch pwned\\n' > evil/hooks/pre-commit && ` +
+              `chmod +x evil/hooks/pre-commit && printf 'gitdir: ../evil\\n' > ${sub}/.git`,
+            main,
+          );
+
+          expect(result.status).not.toBe('success');
+          // The scratch repo is fine — the workspace is writable. The pointer the
+          // host reads is what matters.
+          expect(readFileSync(pointer, 'utf8')).toBe(before);
+          // And the host's own git still runs this submodule's own hook, not one
+          // the command wrote.
+          execFileSync(
+            'git',
+            [
+              '-c',
+              'user.email=book@example.invalid',
+              '-c',
+              'user.name=book',
+              'commit',
+              '--quiet',
+              '--allow-empty',
+              '-m',
+              'host commit',
+            ],
+            { cwd: join(main, sub) },
+          );
+          expect(existsSync(join(main, sub, 'pwned'))).toBe(false);
+          expect(existsSync(join(main, 'pwned'))).toBe(false);
+        } finally {
+          rmSync(main, { recursive: true, force: true });
+          rmSync(source, { recursive: true, force: true });
+        }
+      });
+
+      it('refuses to write a multi-segment submodule git dir hooks or config', async () => {
+        // `git submodule add url libs/deep` puts the git dir at
+        // `.git/modules/libs/deep`, where `libs` is only a container directory.
+        const { main, source, sub } = repoWithSubmodule('libs/deep');
+        try {
+          const config = join(main, '.git', 'modules', 'libs', 'deep', 'config');
+          const configBefore = readFileSync(config, 'utf8');
+
+          for (const target of [
+            `.git/modules/libs/deep/hooks/pre-commit`,
+            `.git/modules/libs/deep/config`,
+          ]) {
+            const result = await sandboxedBash(`printf 'pwned' > ${target}`, main);
+
+            expect(result.status, target).not.toBe('success');
+            expect(result.content.toLowerCase(), target).toMatch(/read-only file system/);
+          }
+
+          expect(readFileSync(config, 'utf8')).toBe(configBefore);
+          expect(readFileSync(join(main, sub, '.git'), 'utf8')).toContain('.git/modules/libs/deep');
+        } finally {
+          rmSync(main, { recursive: true, force: true });
+          rmSync(source, { recursive: true, force: true });
+        }
+      });
 
       it('refuses to repoint a worktree .git file at a repository the command built', async () => {
         const { main, worktree, pointer } = repoWithWorktree();
@@ -1563,6 +2060,97 @@ describe.skipIf(!sandboxBackendAvailable())(
           rmSync(repo, { recursive: true, force: true });
         }
       });
+
+      it('explains the read-only config in background output too', async () => {
+        // A long command is backgrounded, and so is the `git remote add` at the
+        // end of one — which is how the read-only `.git/config` error reached
+        // the model with nothing to explain it, and the model retried it.
+        const repo = freshRepo();
+        const { createDefaultRegistry } = await import('./tools/registry.js');
+        const base = sandboxSettings({ allowUnsandboxedCommands: false });
+        const ctx = {
+          workspaceRoot: repo,
+          env: {},
+          sandbox: base,
+        };
+        try {
+          const registry = createDefaultRegistry();
+          const started = await registry.execute(
+            {
+              id: 'bg',
+              name: 'Bash',
+              arguments: {
+                command: `git remote add origin https://example.test/repo.git`,
+                run_in_background: true,
+              },
+            },
+            ctx,
+          );
+          const shellId = /shell_\d+/.exec(started.content)?.[0];
+          expect(shellId).toBeDefined();
+
+          let content = '';
+          for (let attempt = 0; attempt < 100; attempt += 1) {
+            const read = await registry.execute(
+              { id: 'bg-out', name: 'BashOutput', arguments: { shell_id: shellId } },
+              ctx,
+            );
+            content = `${read.content}`;
+            if (/could not (?:write|lock) config file/.test(content)) break;
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+
+          expect(content).toMatch(/could not write config file|could not lock config file/);
+          expect(content).toContain('.git/config is read-only inside the sandbox');
+          // Said once, however many polls the model took to see the failure.
+          expect(content.match(/read-only inside the sandbox/g)).toHaveLength(1);
+          expect(readFileSync(join(repo, '.git', 'config'), 'utf8')).not.toContain('example.test');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('says nothing in background output for git config --global', async () => {
+        // `~/.gitconfig` is a different file, and the namespace only binds it
+        // read-only if the user listed it in `denyWrite`. Pointing the note at
+        // `.git/config` for it sends the model after the wrong file.
+        const repo = freshRepo();
+        const { createDefaultRegistry } = await import('./tools/registry.js');
+        const base = sandboxSettings({ allowUnsandboxedCommands: false });
+        const ctx = { workspaceRoot: repo, env: {}, sandbox: base };
+        try {
+          const registry = createDefaultRegistry();
+          const started = await registry.execute(
+            {
+              id: 'bg-global',
+              name: 'Bash',
+              arguments: {
+                command: `git config --global --add safe.directory '*' 2>&1; echo done`,
+                run_in_background: true,
+              },
+            },
+            ctx,
+          );
+          const shellId = /shell_\d+/.exec(started.content)?.[0];
+          let content = '';
+          for (let attempt = 0; attempt < 100; attempt += 1) {
+            const read = await registry.execute(
+              { id: 'bg-global-out', name: 'BashOutput', arguments: { shell_id: shellId } },
+              ctx,
+            );
+            content = read.content;
+            if (content.includes('done')) break;
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+
+          // Non-vacuous: the sandboxed `git config --global` really did fail on
+          // the read-only `~/.gitconfig`, and only the *note* is withheld.
+          expect(content).toMatch(/could not write config file|could not lock config file/);
+          expect(content).not.toContain('read-only inside the sandbox');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
     });
 
     describe('control files a workspace can ship in another shape', () => {
@@ -1609,14 +2197,95 @@ describe.skipIf(!sandboxBackendAvailable())(
         for (const target of ['.book-real', 'nowhere']) {
           const repo = freshRepo();
           try {
+            mkdirSync(join(repo, '.book-real'));
             symlinkSync(target, join(repo, '.book'));
             const result = await sandboxedBash(`printf 'ok' > notes.txt`, repo);
 
-            expect(result.status, target).toBe('success');
-            expect(readFileSync(join(repo, 'notes.txt'), 'utf8')).toBe('ok');
+            expect(result.status, target).not.toBe('success');
+            expect(result.content, target).toContain(join(repo, '.book'));
+            expect(result.content, target).toMatch(/cannot protect a symlinked control path/);
+            // Refused before anything ran: the command is not a partial write.
+            expect(existsSync(join(repo, 'notes.txt'))).toBe(false);
           } finally {
             rmSync(repo, { recursive: true, force: true });
           }
+        }
+      });
+
+      /**
+       * Protecting the link's target is not protection: the link itself sits in
+       * the writable workspace, so `rm .book && mkdir .book && …` replaces it.
+       * Reproduced here — the file the host then reads is one the command wrote.
+       */
+      it('refuses the run rather than protect a symlinked control path', async () => {
+        const repo = freshRepo();
+        try {
+          mkdirSync(join(repo, '.book-real'));
+          writeFileSync(join(repo, '.book-real', 'settings.json'), '{}\n');
+          symlinkSync('.book-real', join(repo, '.book'));
+
+          const result = await sandboxedBash(
+            `rm .book && mkdir .book && printf 'pwned' > .book/settings.json`,
+            repo,
+          );
+
+          expect(result.status).not.toBe('success');
+          expect(result.content).toContain(join(repo, '.book'));
+          expect(result.content).toMatch(/cannot protect a symlinked control path/);
+          expect(readFileSync(join(repo, '.book-real', 'settings.json'), 'utf8')).toBe('{}\n');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      /**
+       * `core.hooksPath` set in a file the repo config `[include]`s is still the
+       * hooks directory git runs from — `git rev-parse --git-path hooks` reports
+       * it — and neither the included file nor the directory it named was
+       * protected.
+       */
+      it('refuses to write the hooks directory an included config names', async () => {
+        const repo = freshRepo();
+        try {
+          mkdirSync(join(repo, '.git', 'conf.d'), { recursive: true });
+          mkdirSync(join(repo, '.husky'), { recursive: true });
+          writeFileSync(join(repo, '.husky', 'pre-commit'), '#!/bin/sh\nexit 0\n');
+          // Include paths are relative to the including file, which is the git dir.
+          writeFileSync(
+            join(repo, '.git', 'config'),
+            '[core]\n\trepositoryformatversion = 0\n[include]\n\tpath = conf.d/hooks\n',
+          );
+          writeFileSync(join(repo, '.git', 'conf.d', 'hooks'), '[core]\n\thooksPath = .husky\n');
+
+          const result = await sandboxedBash(`printf 'pwned' > .husky/pre-commit`, repo);
+
+          expect(result.status).not.toBe('success');
+          expect(result.content.toLowerCase()).toMatch(/read-only file system/);
+          expect(readFileSync(join(repo, '.husky', 'pre-commit'), 'utf8')).toBe(
+            '#!/bin/sh\nexit 0\n',
+          );
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      /** A config past the read cap is a config whose `hooksPath` is unknown. */
+      it('refuses the run when a git config is past the read cap', async () => {
+        const repo = freshRepo();
+        try {
+          writeFileSync(
+            join(repo, '.git', 'config'),
+            `[core]\n${'# pad\n'.repeat(300_000)}\thooksPath = .husky\n`,
+          );
+
+          const result = await sandboxedBash(`printf 'ok' > notes.txt`, repo);
+
+          expect(result.status).not.toBe('success');
+          expect(result.content).toContain(join(repo, '.git', 'config'));
+          expect(result.content).toMatch(/1 MiB/);
+          expect(existsSync(join(repo, 'notes.txt'))).toBe(false);
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
         }
       });
 
@@ -1672,6 +2341,30 @@ describe.skipIf(!sandboxBackendAvailable())(
 
           expect(result.status).not.toBe('success');
           expect(readFileSync(join(repo, '.book', 'settings.json'), 'utf8')).toBe('{}\n');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      /**
+       * The opt-in binds are emitted after the protected mounts, so an entry
+       * naming `.book` put the directory — and the credential `settings.local.json`
+       * holds — back in reach. A trusted `.book/settings.json` is the one thing a
+       * user writes, so this is the entry a real user adds.
+       */
+      it('keeps the credential masked when an entry opens .book itself', async () => {
+        const repo = freshRepo({ book: true });
+        const local = join(repo, '.book', 'settings.local.json');
+        writeFileSync(local, JSON.stringify({ provider: { apiKey: 'sk-secret' } }));
+        try {
+          const result = await sandboxedBash(`cat .book/settings.local.json || true`, repo, {
+            filesystem: { allowWrite: [join(repo, '.book')] },
+          });
+
+          expect(result.status).toBe('success');
+          expect(result.content).not.toContain('sk-secret');
+          // The host still holds it: this is a mask inside the namespace.
+          expect(readFileSync(local, 'utf8')).toContain('sk-secret');
         } finally {
           rmSync(repo, { recursive: true, force: true });
         }
@@ -1779,6 +2472,37 @@ describe('realSandboxHost', () => {
     expect(realSandboxHost.readFile(pointer)).toBe('../.git-shared\n');
   });
 
+  /**
+   * The 4 KiB cap is right for a one-line pointer and wrong for a repository
+   * config: a `hooksPath` declared past it was missed, and the hooks directory it
+   * named stayed writable. The cap is per call so both sizes stay honest.
+   */
+  it('reads a git config up to the larger cap, and no further', () => {
+    const config = join(dir, 'config');
+    writeFileSync(config, 'x'.repeat(1024 * 1024));
+
+    expect(realSandboxHost.readFile(config, 1024 * 1024)).toHaveLength(1024 * 1024);
+    // The small cap still applies when a caller asks for it, so a pointer file
+    // cannot be made to block on by being padded.
+    expect(realSandboxHost.readFile(config)).toHaveLength(4096);
+  });
+
+  it('reports the size of a regular file and nothing else', () => {
+    const file = join(dir, 'config');
+    writeFileSync(file, 'x'.repeat(1234));
+    const sub = join(dir, 'sub');
+    mkdirSync(sub);
+    const link = join(dir, 'link');
+    symlinkSync(file, link);
+
+    expect(realSandboxHost.fileSize(file)).toBe(1234);
+    // A size is only meaningful for a file, and the kind is what decides: a
+    // directory, a link and an absent path are all "no size to compare".
+    expect(realSandboxHost.fileSize(sub)).toBeNull();
+    expect(realSandboxHost.fileSize(link)).toBeNull();
+    expect(realSandboxHost.fileSize(join(dir, 'absent'))).toBeNull();
+  });
+
   it.skipIf(process.platform === 'win32')('never blocks on a FIFO and never reads a device', () => {
     // Both would hang here, which is the point: they return instead. `mkfifo`
     // is coreutils, so the fixture is made the way a workspace would make it.
@@ -1859,14 +2583,39 @@ describe('withGitConfigReadOnlyNotice', () => {
     expect(text).toContain('check failed (exit 1)');
     expect(text).toContain('.git/config is read-only inside the sandbox');
   });
+
+  it('says nothing for git config --global, which writes a different file', () => {
+    // `~/.gitconfig` is not the repository config the bind covers: it is read-only
+    // in the namespace only if the user listed it in `denyWrite`, so pointing the
+    // note at `.git/config` would send the model after the wrong file.
+    expect(
+      withGitConfigReadOnlyNotice(
+        CONFIG_ERROR,
+        CONFIG_ERROR,
+        true,
+        'git config --global user.name x',
+      ),
+    ).toBe(CONFIG_ERROR);
+    expect(
+      withGitConfigReadOnlyNotice(
+        CONFIG_ERROR,
+        CONFIG_ERROR,
+        true,
+        'cd sub && git config --system core.x 1',
+      ),
+    ).toBe(CONFIG_ERROR);
+    // The repository config is still explained when that is what was written.
+    expect(
+      withGitConfigReadOnlyNotice(CONFIG_ERROR, CONFIG_ERROR, true, 'git config user.name x'),
+    ).toContain('.git/config is read-only inside the sandbox');
+  });
 });
 
 describe('unsandboxedRefusalMessage', () => {
   it.each([
     ['disabled' as const, 'sandbox.enabled is false'],
     ['excluded' as const, 'sandbox.excludedCommands'],
-    ['unavailable' as const, 'bubblewrap'],
-  ])('names the setting and the reason for %s', (reason, expectedReason) => {
+  ])('names the setting, the reason and the way out for %s', (reason, expectedReason) => {
     const message = unsandboxedRefusalMessage(reason);
     expect(message).toContain('sandbox.allowUnsandboxedCommands');
     expect(message).toContain(expectedReason);
@@ -1877,6 +2626,20 @@ describe('unsandboxedRefusalMessage', () => {
     // "fix" a refusal stays refused (#373).
     expect(message).toContain('~/.book/settings.json');
     expect(message).toContain('--settings');
+  });
+
+  /**
+   * A missing backend is fixed by installing bubblewrap. Naming a settings file
+   * for it sent the user looking for `bwrap` in `~/.book/settings.json`, which is
+   * not a key in the file.
+   */
+  it('tells an unavailable backend to install bubblewrap, not to edit settings', () => {
+    const message = unsandboxedRefusalMessage('unavailable');
+
+    expect(message).toContain('bubblewrap');
+    expect(message).toMatch(/Install bubblewrap/);
+    expect(message).not.toContain('~/.book/settings.json');
+    expect(message).not.toContain('--settings');
   });
 });
 

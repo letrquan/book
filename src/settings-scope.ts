@@ -161,7 +161,6 @@ export function blockedWorkspaceSettingWrite(path: string, value?: unknown): str
   if (value === undefined) return alwaysRefusedWorkspaceSandboxPath(path);
   return blockedWorkspaceSandboxSetting(path, value);
 }
-
 /**
  * The sandbox keys a workspace layer may not supply at any value, for a caller
  * that has to judge a path with no value in hand.
@@ -190,8 +189,8 @@ function alwaysRefusedWorkspaceSandboxPath(path: string): string | undefined {
 }
 
 /**
- * The guidance for a path no `<key>=<value>` configuration surface may write,
- * in any scope, or undefined if it may.
+ * The guidance for a path no `<key>=<value>` configuration surface may write, in
+ * the scope it is being written to, or undefined if it may.
  *
  * Distinct from {@link blockedWorkspaceSettingPath} only in wording. Both refuse
  * the same two families, but the workspace messages explain that a *workspace
@@ -201,7 +200,20 @@ function alwaysRefusedWorkspaceSandboxPath(path: string): string | undefined {
  * produced the same refusal a second time. The gate is that no ordinary
  * configuration command writes these, so the refusal has to name every scope,
  * including the one file the value is actually read from.
+ *
+ * `scope` is what keeps that from being the last word. Both families are filters
+ * on a *file inside the working tree* — the loader strips them from a workspace
+ * layer and from nothing else — so the user-global layer accepts every one of
+ * them. Filtering it there refused `book config set sandbox.enabled false`, the
+ * documented way to turn a sandbox off, with advice to edit the very file the
+ * command was writing to.
  */
-export function blockedConfigWritePath(path: string, value?: unknown): string | undefined {
-  return blockedWorkspaceSettingWrite(path, value);
+export function blockedConfigWritePath(
+  path: string,
+  value: unknown,
+  scope: SettingsScope,
+): string | undefined {
+  const forbidden = blockedWorkspaceSettingPath(path);
+  if (forbidden) return forbidden;
+  return isWorkspaceScope(scope) ? blockedWorkspaceSettingWrite(path, value) : undefined;
 }

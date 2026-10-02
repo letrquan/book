@@ -463,8 +463,17 @@ async function bashForeground(
             // `core.hooksPath` (#373), and git reports the consequence in words
             // that name no cause. Appended here, once, so the model learns the
             // command has to run outside the sandbox instead of retrying it.
+            // Matched against both streams: a command that redirects stderr
+            // into stdout still gets the note, and the command is passed so a
+            // `git config --global` — which writes `~/.gitconfig`, a different
+            // file — is not told about `.git/config` at all.
             fail(
-              withGitConfigReadOnlyNotice(stderr || `Exit code: ${code}`, stderr, built.sandboxed),
+              withGitConfigReadOnlyNotice(
+                stderr || `Exit code: ${code}`,
+                `${stdout}\n${stderr}`,
+                built.sandboxed,
+                built.command,
+              ),
               stdout,
             ),
       );
@@ -615,7 +624,21 @@ async function bashOutput(args: Record<string, unknown>, ctx: ToolContext): Prom
         : `Still running with no new output. Call BashOutput with wait_ms (up to ${ceiling}ms) to wait for it to finish instead of polling again.`,
     );
   }
-  return ok(lines.join('\n'), result);
+  // The same note the foreground appends, for the same reason: a long build, a
+  // `git checkout -b` behind a `&&`, or anything else the model backgrounded is
+  // exactly where the read-only `.git/config` error used to arrive unexplained.
+  // Without it the model reads "could not write config file" from a background
+  // shell, retries it, and never learns the command needs the outside. Both
+  // streams are the one buffer here, and the record carries the command that ran.
+  return ok(
+    withGitConfigReadOnlyNotice(
+      lines.join('\n'),
+      result.output,
+      result.shell.sandboxed === true,
+      result.shell.effectiveCommand,
+    ),
+    result,
+  );
 }
 
 async function killShell(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {

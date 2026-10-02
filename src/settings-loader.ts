@@ -372,6 +372,48 @@ function sandboxTurnedOnByWorkspaceLayer(
   return candidate.sandbox?.enabled === true && resolved.sandbox?.enabled !== true;
 }
 
+/** One layer as a caller of {@link workspaceLayerThatEnabledSandbox} has it. */
+export interface SettingsLayerForSandboxActivation {
+  path: string;
+  trust: SettingsLayerTrust;
+  /** Null when the file is absent, which is not a layer that declared anything. */
+  document: Partial<BookSettings> | null;
+}
+
+/**
+ * The workspace layer that flipped `sandbox.enabled` from not-true to true, or
+ * undefined when none did: the file whose `enabled: true` cost the session its
+ * `autoAllowBashIfSandboxed`.
+ *
+ * Two hosts have to say so — `book doctor`, which lists what each layer changed,
+ * and the print/SDK notices, which have no other channel — and both were asking
+ * the raw layers "does this one say `enabled: true`". That is a different
+ * question: once a trusted layer has enabled the sandbox, a repository repeating
+ * the key changes nothing and was still reported, every session, as a decision it
+ * did not make.
+ *
+ * The layers go in resolution order *including* the trusted ones, because the
+ * trusted baseline is exactly what decides whether a workspace layer is the
+ * flipper. The walk is this function's own and reads only `sandbox.enabled`, and
+ * it asks the same question through the same {@link sanitizeLayer} the merge
+ * applies, so it cannot disagree with
+ * {@link sandboxTurnedOnByWorkspaceLayer} about which layer that is.
+ */
+export function workspaceLayerThatEnabledSandbox(
+  layers: readonly SettingsLayerForSandboxActivation[],
+): string | undefined {
+  let enabled = DEFAULT_SETTINGS.sandbox.enabled;
+  for (const layer of layers) {
+    if (!layer.document) continue;
+    const candidate = sanitizeLayer(layer.document, layer.trust);
+    if (layer.trust !== 'trusted' && candidate.sandbox?.enabled === true && enabled !== true) {
+      return layer.path;
+    }
+    if (candidate.sandbox?.enabled !== undefined) enabled = candidate.sandbox.enabled;
+  }
+  return undefined;
+}
+
 /**
  * Merge a settings layer over resolved settings.
  *

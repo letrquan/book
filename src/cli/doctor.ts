@@ -12,6 +12,19 @@ import type { AgentConfig } from '../types/runtime.js';
 const SHELL_SAFE_BARE = /^[A-Za-z0-9_@%+=:,./\\-]+$/;
 
 /**
+ * How much a settings layer named by `settingsLayers` is trusted, in the terms
+ * `workspaceLayerThatEnabledSandbox` uses. The label is what `settingsLayers`
+ * prints; an unrecognised one falls back to `local`, the least-trusted
+ * workspace position there is, so a renamed label cannot quietly promote a file
+ * to the trusted baseline the activation question is measured against.
+ */
+const WORKSPACE_LAYER_TRUST: Record<string, 'trusted' | 'repository' | 'local'> = {
+  User: 'trusted',
+  Project: 'repository',
+  Local: 'local',
+};
+
+/**
  * Render one argument for a command the user will paste into their own shell.
  *
  * It has to survive both a POSIX shell and `cmd.exe`, where single quotes are
@@ -440,14 +453,33 @@ export async function runDoctorCommand(
   // by hand, and printed the workspace-relative name rather than the file it
   // read, so a report about a file the user could not find was the whole output.
   if (!options.noSettings) {
-    const { formatIgnoredWorkspaceSandboxKey, ignoredWorkspaceSandboxKeys, loadSettingsFile } =
-      await import('../settings-loader.js');
-    for (const [label, path] of await settingsLayers(config.workspace)) {
+    const {
+      formatIgnoredWorkspaceSandboxKey,
+      ignoredWorkspaceSandboxKeys,
+      loadSettingsFile,
+      workspaceLayerThatEnabledSandbox,
+    } = await import('../settings-loader.js');
+    const layers = (await settingsLayers(config.workspace)).map(([label, path]) => ({
+      label,
+      path,
+      document: loadSettingsFile(path),
+    }));
+    // The user-global layer is read here even though nothing about it is
+    // reported: it is the baseline for what a workspace layer turned *on*, and
+    // a repository repeating `enabled: true` after the user already set it
+    // changed nothing, which is not a decision to attribute to that repository.
+    const activation = workspaceLayerThatEnabledSandbox(
+      layers.map((layer) => ({
+        path: layer.path,
+        trust: WORKSPACE_LAYER_TRUST[layer.label] ?? 'local',
+        document: layer.document,
+      })),
+    );
+    for (const { label, path, document } of layers) {
       // The user-global layer is where these values are read from, so a key it
       // writes is never ignored and there is nothing to report for it.
       if (label === 'User') continue;
-      const layer = loadSettingsFile(path);
-      for (const entry of ignoredWorkspaceSandboxKeys(layer ?? {})) {
+      for (const entry of ignoredWorkspaceSandboxKeys(document ?? {})) {
         console.log(
           `  Ignored from ${path}: ${formatIgnoredWorkspaceSandboxKey(entry)} — workspace settings may only tighten the sandbox; set it in ~/.book/settings.json or pass --settings`,
         );
@@ -457,8 +489,9 @@ export async function runDoctorCommand(
       // it with `autoAllowBashIfSandboxed: false` so the repository cannot
       // pre-approve the commands that follow its own sandbox. That is a policy
       // change with no symptom of its own, which is what the block above exists
-      // to make visible.
-      if (layer?.sandbox?.enabled === true) {
+      // to make visible — reported for the layer that actually flipped the key
+      // on, and only for that one.
+      if (path === activation) {
         console.log(
           `  From ${path}: sandbox.enabled=true — a workspace file turned the sandbox on, so ` +
             `sandbox.autoAllowBashIfSandboxed=false with it; set autoAllowBashIfSandboxed in ` +

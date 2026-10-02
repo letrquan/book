@@ -153,16 +153,26 @@ const SANDBOX_SETTINGS_LOCATION = 'in ~/.book/settings.json, or with a --setting
  * The refusal shown when `sandbox.allowUnsandboxedCommands` is false and a
  * command would otherwise have run outside the sandbox. It names the setting
  * that caused the refusal, the specific reason the command could not be
- * sandboxed, and where such a setting takes effect — because "permission denied"
- * with none of that is unactionable, and the one place a user reaches for first
- * is a file the loader will not read it from.
+ * sandboxed, and what to do about it.
+ *
+ * The settings location is attached to the *alternative* rather than to every
+ * reason, because it is only part of that alternative: `allowUnsandboxedCommands`
+ * and `excludedCommands` are loader-ignored in a workspace file, so "set it
+ * there" is the instruction for them. A missing `bwrap` is fixed by installing
+ * bubblewrap, and telling a user to edit `~/.book/settings.json` about it sends
+ * them to look for a package name that is not in the file.
  */
 export function unsandboxedRefusalMessage(reason: SandboxSkipReason): string {
+  const remedy =
+    reason === 'unavailable'
+      ? 'Install bubblewrap (bwrap) to enable sandboxing.'
+      : `${SKIP_REASON_REMEDY[reason]} ${SANDBOX_SETTINGS_LOCATION}, or set ` +
+        'sandbox.allowUnsandboxedCommands to true there to allow this command to run unsandboxed.';
   return [
     'Refused to run this command outside the sandbox:',
     `${SKIP_REASON_DETAIL[reason]}.`,
     'sandbox.allowUnsandboxedCommands is false, so unsandboxed commands are not permitted.',
-    `${SKIP_REASON_REMEDY[reason]} ${SANDBOX_SETTINGS_LOCATION}, or set sandbox.allowUnsandboxedCommands to true there to allow this command to run unsandboxed.`,
+    remedy,
   ].join(' ');
 }
 
@@ -228,8 +238,16 @@ export interface SandboxHost {
   };
   exists(path: string): boolean;
   isDirectory(path: string): boolean;
-  /** File contents, or null when the file is missing or unreadable. */
-  readFile(path: string): string | null;
+  /**
+   * File contents, or null when the file is missing or unreadable. The read is
+   * capped at `maxBytes` — a workspace-controlled file must not be able to make
+   * the host read without bound — and the cap is per call because the files
+   * differ by orders of magnitude: a `gitdir:` pointer is one line, a repository
+   * config is a page or more and a `hooksPath` can sit anywhere in it.
+   */
+  readFile(path: string, maxBytes?: number): string | null;
+  /** The size of a regular file in bytes, or null for anything else. */
+  fileSize(path: string): number | null;
   /** Entry names of a directory; empty when it is absent, unreadable, or not one. */
   readDir(path: string): string[];
   /** What a path is *without* following a final symlink, or null when nothing is there. */
@@ -246,11 +264,29 @@ export type SandboxEntryKind = 'file' | 'directory' | 'symlink' | 'other';
 
 /**
  * The most bytes read out of a workspace-controlled control file. These files
- * carry one line — a `gitdir:` pointer, a `commondir`, a `[core]` stanza — and
- * a workspace that can make the host read anything at all can make it read
- * gigabytes, so the read is bounded rather than the file trusted to be small.
+ * carry one line — a `gitdir:` pointer, a `commondir` — and a workspace that can
+ * make the host read anything at all can make it read gigabytes, so the read is
+ * bounded rather than the file trusted to be small.
  */
 const MAX_CONTROL_FILE_BYTES = 4096;
+
+/**
+ * The cap for a repository config, which is the exception: it is a document, not
+ * a pointer, and a busy one is a few hundred kilobytes of remotes before the
+ * `[core]` stanza that says where the hooks live. At 4 KiB a `hooksPath` declared
+ * late in a real config was simply not seen, and the directory it named stayed
+ * writable. A config past *this* cap is refused instead of truncated — a
+ * half-read config reads as one with no `hooksPath`, which is the unsafe answer.
+ */
+const MAX_GIT_CONFIG_BYTES = 1024 * 1024;
+
+/**
+ * How deep the two workspace-controlled walks below go: `modules/<a>/<b>/…` for a
+ * submodule path with segments, and `include` chains. Both are bounded by the
+ * filesystem rather than by anything the walk can check, and both are
+ * cycle-guarded by the sets they record what they have already visited.
+ */
+const MAX_WALK_DEPTH = 8;
 
 function entryKind(path: string): SandboxEntryKind | null {
   try {
@@ -284,7 +320,7 @@ export const realSandboxHost: SandboxHost = {
       return false;
     }
   },
-  readFile: (path) => {
+  readFile: (path, maxBytes = MAX_CONTROL_FILE_BYTES) => {
     // `lstat` first, and only a regular file. An unguarded readFileSync blocks
     // for ever on a FIFO (a workspace that plants one at `.git` would hang
     // every later sandboxed command) and never ends on a character device such
@@ -293,8 +329,8 @@ export const realSandboxHost: SandboxHost = {
     let fd: number | undefined;
     try {
       fd = openSync(path, 'r');
-      const buffer = Buffer.alloc(MAX_CONTROL_FILE_BYTES);
-      const bytes = readSync(fd, buffer, 0, MAX_CONTROL_FILE_BYTES, 0);
+      const buffer = Buffer.alloc(maxBytes);
+      const bytes = readSync(fd, buffer, 0, maxBytes, 0);
       return buffer.subarray(0, bytes).toString('utf-8');
     } catch {
       return null;
@@ -306,6 +342,16 @@ export const realSandboxHost: SandboxHost = {
           // Nothing to do: the read result stands either way.
         }
       }
+    }
+  },
+  fileSize: (path) => {
+    // A size is only meaningful for a regular file. A directory, a link and a
+    // path that is not there are all "no size to compare against the cap".
+    if (entryKind(path) !== 'file') return null;
+    try {
+      return statSync(path).size;
+    } catch {
+      return null;
     }
   },
   readDir: (path) => {
@@ -476,48 +522,147 @@ function workspaceGitDirs(workspaceRoot: string, host: SandboxHost): GitDirRef[]
       const workTreeGitdir = host.readFile(host.path.join(linked, 'gitdir'))?.trim();
       add(linked, workTreeGitdir ? host.path.dirname(workTreeGitdir) : root);
     }
-    for (const module of host.readDir(host.path.join(dir, 'modules'))) {
-      const moduleDir = host.path.join(dir, 'modules', module);
-      // git names a module directory after the submodule's path in the work
-      // tree, so the work tree root it serves is the workspace plus that path.
-      add(
-        moduleDir,
-        host.path.join(root, host.path.relative(host.path.join(dir, 'modules'), moduleDir)),
-      );
-    }
+    // `<gitdir>/modules/<path>` holds the git dir of the submodule at `<path>`,
+    // and `<path>` is the submodule's own path in the work tree — which can have
+    // segments, so `git submodule add url libs/deep` puts the git dir at
+    // `modules/libs/deep` and `modules/libs` holds no `HEAD` and no `config`. It
+    // is a container, and its own entries are the candidates. `HEAD` or `config`
+    // is what tells the two apart, and the walk is depth-bounded because the tree
+    // is workspace-controlled.
+    const addModules = (modulesRoot: string, prefix: string, depth: number): void => {
+      for (const name of host.readDir(modulesRoot)) {
+        const moduleDir = host.path.join(modulesRoot, name);
+        const workTreePath = prefix ? `${prefix}/${name}` : name;
+        const isGitDir = ['HEAD', 'config'].some((file) =>
+          host.exists(host.path.join(moduleDir, file)),
+        );
+        if (isGitDir) add(moduleDir, host.path.join(root, workTreePath));
+        else if (depth < MAX_WALK_DEPTH) addModules(moduleDir, workTreePath, depth + 1);
+      }
+    };
+    addModules(host.path.join(dir, 'modules'), '', 0);
+  }
+  // Every work tree the walk found carries its own `.git` pointer file, and the
+  // pointer is what the host reads to decide *which* git dir those control files
+  // are: `sub/.git` says `gitdir: ../.git/modules/sub`, which resolves against
+  // the work tree holding it and not against the workspace root.
+  for (const { workTree } of [...found]) {
+    if (!insideWorkspace(workTree, root, host)) continue;
+    const pointer = host.path.join(workTree, '.git');
+    if (host.isDirectory(pointer)) continue;
+    const target = /^gitdir:\s*(.+)$/m.exec(host.readFile(pointer) ?? '')?.[1]?.trim();
+    if (!target) continue;
+    add(host.path.isAbsolute(target) ? target : host.path.join(workTree, target), workTree);
   }
   return found;
 }
 
 /**
- * `core.hooksPath` as a git config file states it, or undefined.
+ * The part of a git config line after the `=`, as git reads it.
+ *
+ * Two rules the raw text does not show: a `;` or `#` outside quotes ends the
+ * value (so `hooksPath = .husky ; note` is `.husky`, and the directory named by
+ * a path that kept the comment never exists), and a quoted value carries
+ * backslash escapes. Without the first, the protection lands at a path the
+ * repository chose and never fires; the second is rare in a path and cheap.
+ */
+function parseConfigValue(raw: string): string {
+  const text = raw.trim();
+  if (!text.startsWith('"')) {
+    let quoted = false;
+    for (let index = 0; index < text.length; index += 1) {
+      const character = text[index];
+      if (character === '"') quoted = !quoted;
+      else if (!quoted && (character === ';' || character === '#'))
+        return text.slice(0, index).trim();
+    }
+    return text;
+  }
+  let value = '';
+  for (let index = 1; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === '"') break;
+    if (character !== '\\') {
+      value += character;
+      continue;
+    }
+    const escaped = text[index + 1];
+    index += 1;
+    value +=
+      escaped === 'n' ? '\n' : escaped === 't' ? '\t' : escaped === 'b' ? '\b' : (escaped ?? '');
+  }
+  return value;
+}
+
+/**
+ * The section a `[header]` line names, or undefined when the line carries a
+ * subsection. `[core "x"]` is not `[core]`, and counting it as one protects a
+ * directory git never reads hooks from.
+ */
+function configSectionName(line: string): string | undefined {
+  const header = /^\[\s*([A-Za-z0-9.-]+)(\s[^\]]*)?\]$/.exec(line.trim());
+  if (!header || header[2]) return undefined;
+  return header[1].toLowerCase();
+}
+
+/**
+ * Every `core.hooksPath` a git config file states, or none.
  *
  * A deliberately small `[core]` parser rather than a git-config dependency: the
  * key is the one setting that moves `hooks/` out of the git dir, and it is read
- * from a file a workspace can rewrite. Subsection names are excluded, because
- * `[core "x"]` is not `[core]`, and a quoted value is unquoted, because a
- * `hooksPath` git would never use is not worth protecting.
+ * from a file a workspace can rewrite. Git takes the *last* value for a key, so
+ * a parser that stops at the first is protecting a directory git ignores; every
+ * value is returned instead, which also makes the answer independent of which
+ * one git would have chosen — the safer of the two mistakes to make.
  */
-export function readCoreHooksPath(configText: string): string | undefined {
+export function readCoreHooksPaths(configText: string): string[] {
+  const found: string[] = [];
   let inCore = false;
   for (const line of configText.split('\n')) {
     const trimmed = line.trim();
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-      const section = trimmed.slice(1, -1).trim().toLowerCase();
-      inCore = section === 'core' || section.startsWith('core ');
+    if (trimmed.startsWith('[')) {
+      inCore = configSectionName(trimmed) === 'core';
       continue;
     }
     if (!inCore) continue;
     const separator = trimmed.indexOf('=');
     if (separator === -1) continue;
     if (trimmed.slice(0, separator).trim().toLowerCase() !== 'hookspath') continue;
-    const value = trimmed
-      .slice(separator + 1)
-      .trim()
-      .replace(/^"(.*)"$/, '$1');
-    return value || undefined;
+    const value = parseConfigValue(trimmed.slice(separator + 1));
+    if (value && !found.includes(value)) found.push(value);
   }
-  return undefined;
+  return found;
+}
+
+/**
+ * The files a git config pulls in, from `[include]` and `[includeIf "…"]`.
+ *
+ * An included file is part of the same config as far as git is concerned: a
+ * `core.hooksPath` set in one is the directory git runs hooks from, and one
+ * left writable inside the workspace is a control file the host reads on its next
+ * commit. An `includeIf` condition is not evaluated here — only a file that
+ * exists can be included, and a file the sandbox creates later is the case this
+ * cannot reach.
+ */
+export function readGitConfigIncludes(configText: string): string[] {
+  const found: string[] = [];
+  let include = false;
+  for (const line of configText.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('[')) {
+      // An `includeIf` header carries the condition as its subsection, so the
+      // section name is matched on the text up to it rather than exactly.
+      include = configSectionName(trimmed) === 'include' || /^\[includeif\b/i.test(trimmed);
+      continue;
+    }
+    if (!include) continue;
+    const separator = trimmed.indexOf('=');
+    if (separator === -1) continue;
+    if (trimmed.slice(0, separator).trim().toLowerCase() !== 'path') continue;
+    const value = parseConfigValue(trimmed.slice(separator + 1));
+    if (value) found.push(value);
+  }
+  return found;
 }
 
 /**
@@ -554,9 +699,56 @@ export interface ProtectedWorkspacePaths {
    * be renamed away and replaced, and rename(2) on a path that is not a mount
    * point succeeds. `--bind <dir> <dir>` pins it, which is what makes
    * `mv .git .git.old` fail with EBUSY instead of redirecting the host's git.
+   *
+   * Only the workspace's own top-level `.git` is pinned. Pinning every git dir
+   * the walk found — a linked worktree's and a submodule's admin directory —
+   * pinned those too, and a sandboxed `git worktree remove` then failed with
+   * EBUSY halfway through, leaving the worktree gone and its admin directory
+   * behind. Their control files are read-only on their own, which is what this
+   * relies on instead.
    */
   pinnedDirectories: string[];
   mounts: ProtectedMount[];
+  /**
+   * Control paths this namespace cannot protect at all. A refusal rather than a
+   * mount: bwrap aborts the whole invocation on the shapes that could be
+   * mistaken for one, and guessing would leave a control file writable while
+   * reporting a sandbox.
+   */
+  refusals: ControlPathRefusal[];
+}
+
+/**
+ * Why a workspace cannot be sandboxed, and which path says so.
+ *
+ * Both are shapes a repository controls and no mount can cover. The run is
+ * refused with the path named, because the fix — replace the link, trim the
+ * config — is a change to the workspace, not to a Book setting.
+ */
+export type ControlPathRefusalReason = 'symlinked-control-path' | 'oversized-git-config';
+
+export interface ControlPathRefusal {
+  path: string;
+  reason: ControlPathRefusalReason;
+}
+
+/** A refusal in the words the model is told, which name the path to change. */
+export function describeControlPathRefusal(refusal: ControlPathRefusal): string {
+  if (refusal.reason === 'oversized-git-config') {
+    return (
+      `Refused to run this command in the sandbox: ${refusal.path} is larger than the ` +
+      `${MAX_GIT_CONFIG_BYTES / 1024 / 1024} MiB read limit for a git config file, so the ` +
+      'core.hooksPath it may declare cannot be found and the hooks directory it names cannot ' +
+      'be made read-only. Trim the config, or run this command without the sandbox.'
+    );
+  }
+  return (
+    `Refused to run this command in the sandbox: ${refusal.path} is a symlink, and the ` +
+    'sandbox cannot protect a symlinked control path. The link itself sits in the writable ' +
+    'workspace, so a command could remove it, put a directory or file in its place, and write ' +
+    'the settings, hooks or repository config the host then reads through it. Replace the ' +
+    'symlink with the file or directory it names, or run this command without the sandbox.'
+  );
 }
 
 /**
@@ -581,51 +773,51 @@ export function protectedWorkspacePaths(
   host: SandboxHost = realSandboxHost,
 ): ProtectedWorkspacePaths {
   const root = host.path.resolve(workspaceRoot);
-  const result: ProtectedWorkspacePaths = { pinnedDirectories: [], mounts: [] };
+  const result: ProtectedWorkspacePaths = { pinnedDirectories: [], mounts: [], refusals: [] };
   const seen = new Set<string>();
 
   /**
-   * The path a control file is really read through, following a symlink once.
+   * The mount one control path needs, or null when it needs none.
    *
-   * `.book` and `.bookrc.json` are files a repository can ship as symlinks, and
-   * bubblewrap aborts the whole invocation on either shape: `--tmpfs` cannot
-   * mkdir through a dangling link, and a link to a directory is "Can't bind
-   * mount". A clone could therefore break *every* sandboxed command in the
-   * workspace. So a symlinked control path is resolved — relative to its own
-   * directory, then canonicalised — and it is the target that gets protected,
-   * because that is the path the host reads through the link. A target outside
-   * the workspace is not bound writable and so is nothing to protect; one
-   * inside it that does not exist yet is masked as a directory, which is the
-   * shape the host would be reading. Anything that is neither a regular file
-   * nor a directory — a FIFO, a socket, a device — is skipped.
+   * A symlink is refused rather than resolved. Protecting the link's *target* is
+   * not protection, because the link itself sits in the writable workspace:
+   * `rm .book && mkdir .book && …` replaces it, and the target protection then
+   * guards a file nothing reads any more. There is no mount that pins a symlink,
+   * and a mount shaped for one aborts the whole bwrap invocation, so a repository
+   * shipping one is a workspace Book declines to sandbox.
+   *
+   * A path that is neither a regular file nor a directory — a FIFO, a socket, a
+   * device — is skipped instead: nothing reads it as a control file, and there is
+   * no mount bwrap can make over it.
    */
   const target = (path: string, kind: ProtectedMountKind): ProtectedMount | null => {
     const resolved = host.path.resolve(path);
     if (seen.has(resolved)) return null;
-    const describe = (at: string, present: boolean): ProtectedMount => {
-      seen.add(at);
-      return { path: at, kind, present };
+    const describe = (present: boolean): ProtectedMount => {
+      seen.add(resolved);
+      return { path: resolved, kind, present };
     };
     const first = host.entryKind(resolved);
+    if (first === 'symlink') {
+      if (!result.refusals.some((entry) => entry.path === resolved)) {
+        result.refusals.push({ path: resolved, reason: 'symlinked-control-path' });
+      }
+      return null;
+    }
     if (first === null) {
       // Absent: only a directory has a mask, and only a directory needs one —
       // an absent file has nothing to protect and nothing to create that git or
       // the settings resolver would read as one.
-      return kind === 'directory' ? describe(resolved, false) : null;
+      return kind === 'directory' ? describe(false) : null;
     }
-    if (first === 'directory' || first === 'file') return describe(resolved, true);
-    if (first !== 'symlink') return null;
-    const link = host.linkTarget(resolved);
-    if (link === null) return null;
-    const linked = canonicalPath(
-      host.path.isAbsolute(link) ? link : host.path.join(host.path.dirname(resolved), link),
-      host,
-    );
-    if (!insideWorkspace(linked, root, host)) return null;
-    const second = host.entryKind(linked);
-    if (second === null) return kind === 'directory' ? describe(linked, false) : null;
-    if (second !== 'directory' && second !== 'file') return null;
-    return describe(linked, true);
+    if (first === 'directory') {
+      // A mask is `--ro-bind /dev/null <dir>`, which bwrap rejects as "Is a
+      // directory" — and one aborts the whole invocation, so a repository that
+      // ships `.book/settings.local.json` as a directory would otherwise break
+      // every sandboxed command in the workspace, not only its own.
+      return kind === 'hidden-file' ? null : describe(true);
+    }
+    return first === 'file' ? describe(true) : null;
   };
 
   const addDirectory = (path: string): void => {
@@ -653,7 +845,10 @@ export function protectedWorkspacePaths(
   addFile(host.path.join(root, '.bookrc.json'));
 
   const dotGit = host.path.join(root, '.git');
-  if (host.isDirectory(dotGit)) {
+  // Only a real directory inside the workspace is pinned: a symlinked one is
+  // refused above, and a pin for anything else is a mount over a path the
+  // namespace cannot build one for.
+  if (host.entryKind(dotGit) === 'directory') {
     // The git dir is bound onto itself, writable, so it is a mount point: the
     // read-only children below can then be swapped for a fresh writable
     // directory only by renaming this one away, which EBUSY refuses.
@@ -664,23 +859,56 @@ export function protectedWorkspacePaths(
     addFile(dotGit);
   }
 
+  // Config files already read, so an `include` chain that names one of them ends
+  // at the file rather than descending for ever.
+  const configsRead = new Set<string>();
+  const readConfig = (file: string, workTree: string, depth: number): void => {
+    const at = host.path.resolve(file);
+    if (configsRead.has(at)) return;
+    configsRead.add(at);
+    const size = host.fileSize(at);
+    if (size !== null && size > MAX_GIT_CONFIG_BYTES) {
+      // Truncating a config reads as one with no `hooksPath` in it, which is the
+      // answer that leaves the hooks directory writable. Refusing says so instead.
+      result.refusals.push({ path: at, reason: 'oversized-git-config' });
+      return;
+    }
+    const text = host.readFile(at, MAX_GIT_CONFIG_BYTES);
+    if (text === null) return;
+    addFile(at);
+    for (const hooksPath of readCoreHooksPaths(text)) {
+      const directory = host.path.isAbsolute(hooksPath)
+        ? hooksPath
+        : host.path.join(workTree, hooksPath);
+      if (insideWorkspace(directory, root, host)) addDirectory(directory);
+    }
+    if (depth >= MAX_WALK_DEPTH) return;
+    for (const included of readGitConfigIncludes(text)) {
+      const target = included.startsWith('~/')
+        ? host.path.join(host.homedir(), included.slice(2))
+        : host.path.join(host.path.dirname(at), included);
+      readConfig(target, workTree, depth + 1);
+    }
+  };
+
   for (const gitDir of workspaceGitDirs(root, host)) {
-    if (!result.pinnedDirectories.includes(gitDir.dir)) result.pinnedDirectories.push(gitDir.dir);
     addDirectory(host.path.join(gitDir.dir, 'hooks'));
     for (const name of ['config', 'config.worktree', 'commondir', 'gitdir']) {
       addFile(host.path.join(gitDir.dir, name));
     }
+    // The work tree's own `.git`: a directory is the git dir itself, already
+    // pinned, and a file is the pointer the host reads to find the git dir. It is
+    // read-only for the same reason as the one at the workspace root — rewriting
+    // it to `gitdir: ../evil` moves every control path above onto a repository
+    // the command built.
+    const workTreePointer = host.path.join(gitDir.workTree, '.git');
+    if (host.entryKind(workTreePointer) === 'file') addFile(workTreePointer);
     // `core.hooksPath` moves the hook directory out of the git dir entirely —
     // husky v9 points it at `.husky/_` — so a config this namespace leaves
-    // writable is a hooks directory it never looked at.
+    // writable is a hooks directory it never looked at. An `[include]`d file is
+    // part of that config, and is followed to the same depth.
     for (const name of ['config', 'config.worktree']) {
-      const text = host.readFile(host.path.join(gitDir.dir, name));
-      const hooksPath = text === null ? undefined : readCoreHooksPath(text);
-      if (!hooksPath) continue;
-      const directory = host.path.isAbsolute(hooksPath)
-        ? hooksPath
-        : host.path.join(gitDir.workTree, hooksPath);
-      if (insideWorkspace(directory, root, host)) addDirectory(directory);
+      readConfig(host.path.join(gitDir.dir, name), gitDir.workTree, 0);
     }
   }
 
@@ -781,21 +1009,34 @@ export function buildSandboxExecution(
       (mount) => !isOutside(canonicalPath(mount.path, host), canonical, host.path),
     );
   };
-  for (const path of settings.filesystem.allowWrite) {
-    if (isProtectedArea(path)) continue;
-    bindIfPresent(args, '--bind', path, host);
-  }
 
   // Control files the host acts on after this command exits come after the
   // workspace bind, so the workspace does not shadow them.
+  //
+  // The pins come before the opt-in binds as well: a pin is a writable self-bind
+  // of the git dir, so an `allowWrite` entry *under* it emitted earlier is
+  // shadowed by it and silently does nothing — the entry the user wrote, dropped
+  // without a word.
   for (const dir of protectedPaths.pinnedDirectories) {
     args.push('--bind', host.path.resolve(dir), host.path.resolve(dir));
+  }
+  for (const path of settings.filesystem.allowWrite) {
+    if (isProtectedArea(path)) continue;
+    bindIfPresent(args, '--bind', path, host);
   }
   for (const mount of protectedPaths.mounts) mountProtected(args, mount, host);
   // ...and only now the opt-ins for the protected areas themselves.
   for (const path of settings.filesystem.allowWrite) {
     if (!isProtectedArea(path)) continue;
     bindIfPresent(args, '--bind', path, host);
+  }
+  // A mask hides a file's *contents*, and an opt-in bind for the directory that
+  // holds it undoes that: `allowWrite: ["<workspace>/.book"]` puts the whole
+  // directory back in reach, provider credential included. The masks are
+  // therefore emitted again after every opt-in, so the last mount of a masked
+  // path is `/dev/null` whichever entry named its parent.
+  for (const mount of protectedPaths.mounts) {
+    if (mount.kind === 'hidden-file') mountProtected(args, mount, host);
   }
 
   for (const path of settings.filesystem.denyWrite) bindIfPresent(args, '--ro-bind', path, host);
@@ -861,7 +1102,10 @@ export interface SandboxDecision {
  *    unless `allowUnsandboxedCommands` is false, which refuses it;
  * 2. a workdir outside the workspace → refused, since the sandbox binds the
  *    workspace and the command would run somewhere the caller did not ask for;
- * 3. otherwise wrap it, and report the wrapped argv.
+ * 3. a control path the namespace cannot protect → refused, since every mount
+ *    that could stand in for one either aborts bwrap or leaves the control file
+ *    writable;
+ * 4. otherwise wrap it, and report the wrapped argv.
  *
  * A path that ends with the command running outside a bubblewrap namespace all
  * funnels through here, so `allowUnsandboxedCommands: false` cannot be enforced
@@ -911,6 +1155,14 @@ export function decideSandboxExecution(
   } catch (error) {
     return { sandboxed: false, error: error instanceof Error ? error.message : String(error) };
   }
+  // A control path the namespace cannot protect is refused, not worked around,
+  // and only once a sandbox is actually in hand: with none, the command runs
+  // unsandboxed under the policy the settings author chose, which is not this
+  // decision to tighten.
+  if (sandbox) {
+    const refusal = protectedWorkspacePaths(ctx.workspaceRoot).refusals[0];
+    if (refusal) return { sandboxed: false, error: describeControlPathRefusal(refusal) };
+  }
   const exec = sandbox?.wrap(command, ctx.workspaceRoot);
   if (exec) return { sandboxed: true, exec };
   if (ctx.sandbox.failIfUnavailable) {
@@ -930,21 +1182,33 @@ export function decideSandboxExecution(
  * says nothing about the read-only bind, so the model retries the same command
  * or rewrites the command to avoid the config instead of running it outside.
  *
- * Returned as a line the caller appends to the output that carried the error,
- * and only for a sandboxed command: unsandboxed git has no read-only config, and
- * an unrelated file that happens to be called `config` is not this.
+ * Returned as a line the caller appends to the output that carried the error, and
+ * only for a sandboxed command: unsandboxed git has no read-only config, and an
+ * unrelated file that happens to be called `config` is not this.
+ *
+ * `command` is what rules out `git config --global`. That writes `~/.gitconfig`,
+ * which the namespace binds read-only only if the user listed it in
+ * `denyWrite` — a different remedy, and pointing this note at `.git/config` for
+ * it would send the model after the wrong file.
  */
 export function withGitConfigReadOnlyNotice(
   text: string,
   output: string,
   sandboxed: boolean,
+  command = '',
 ): string {
   if (!sandboxed || !/could not (?:write|lock) config file/.test(output)) return text;
+  if (writesAGlobalConfig(command)) return text;
   return (
     `${text}\n` +
     'Note: .git/config is read-only inside the sandbox, so git cannot update repository ' +
     'configuration there. Run this command outside the sandbox.'
   );
+}
+
+/** Whether a `git config` invocation targets the user's or the system's config. */
+function writesAGlobalConfig(command: string): boolean {
+  return /^\s*(?:\S+\s+)*git\s+config\b[^|;&]*\s--(?:global|system)\b/.test(command);
 }
 
 /**

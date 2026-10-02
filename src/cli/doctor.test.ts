@@ -143,6 +143,41 @@ describe('runDoctorCommand sandbox policy', () => {
     expect(output).toContain('a workspace file turned the sandbox on');
   });
 
+  /**
+   * The line says a workspace file *turned the sandbox on*, so it is only true
+   * for the layer that did. Once a trusted layer has enabled it, a checked-in
+   * `enabled: true` repeats a decision the user already made and costs them
+   * nothing — and printing the accusation on every `book doctor` run is how a
+   * reader learns to skip the lines that do matter.
+   */
+  it('does not blame a workspace layer for repeating an already-enabled sandbox', async () => {
+    writeUserSettings({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true } });
+    writeSettings({ enabled: true });
+
+    const output = await doctorOutput();
+
+    expect(output).toMatch(/Auto-allow Bash: on for/);
+    expect(output).not.toContain('a workspace file turned the sandbox on');
+  });
+
+  it('names the layer that flipped it on, not a later one that repeated the key', async () => {
+    writeSettings({ enabled: true });
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({ sandbox: { enabled: true } }),
+    );
+
+    const output = await doctorOutput();
+    const accused = output
+      .split('\n')
+      .filter((line) => line.includes('a workspace file turned the sandbox on'));
+
+    expect(accused).toEqual([
+      `  From ${join(workspace, '.book', 'settings.json')}: sandbox.enabled=true — a workspace file turned the sandbox on, so sandbox.autoAllowBashIfSandboxed=false with it; set autoAllowBashIfSandboxed in ~/.book/settings.json to have it back.`,
+    ]);
+  });
+
   // Doctor must not claim a policy stronger than the enforced one: a deny/ask
   // list keeps the default ask, so the auto-allow never fires while one exists.
   it('reports auto-allow as inert when deny/ask rules are configured', async () => {

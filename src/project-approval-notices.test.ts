@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -14,9 +14,13 @@ let home: string;
 beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'book-notices-ws-'));
   home = mkdtempSync(join(tmpdir(), 'book-notices-home-'));
+  // The notices resolve the user-global layer themselves, through `BOOK_HOME`, so
+  // without this the suite would read the developer's real settings.
+  vi.stubEnv('BOOK_HOME', home);
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(workspace, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
 });
@@ -26,8 +30,31 @@ function writeProject(settings: unknown): void {
   writeFileSync(join(workspace, '.book', 'settings.json'), JSON.stringify(settings));
 }
 
+/**
+ * The two workspace layers, and the user-global one. `BOOK_HOME` is pointed at a
+ * temp directory so the suite neither reads nor writes the developer's real
+ * settings, and so the activation question is asked of a baseline the test owns.
+ */
+function writeLocal(settings: unknown): void {
+  mkdirSync(join(workspace, '.book'), { recursive: true });
+  writeFileSync(join(workspace, '.book', 'settings.local.json'), JSON.stringify(settings));
+}
+
+/** `BOOK_HOME` is the directory itself, so the user layer is the file in it. */
+function writeUser(settings: unknown): void {
+  writeFileSync(userPath(), JSON.stringify(settings));
+}
+
 const trustPath = () => join(home, '.book', 'trust.json');
-const resolved = () => resolveSettings(workspace, undefined, { home });
+// The same file the notices resolve themselves, so both halves of the suite see
+// one user layer rather than a resolved one and a read one.
+const userPath = () => join(home, 'settings.json');
+const resolved = () =>
+  resolveSettings(workspace, undefined, {
+    userSettingsPath: userPath(),
+    home,
+    trustStorePath: trustPath(),
+  });
 const notices = (settings: ResolvedSettings, settingsEnabled = true) =>
   collectWithheldProjectNotices({ workspace, settings, settingsEnabled });
 
@@ -112,7 +139,6 @@ describe('an ignored sandbox key in a workspace layer is reported', () => {
   it('says nothing for a sandbox section that only tightens', () => {
     writeProject({
       sandbox: {
-        enabled: true,
         filesystem: { denyRead: ['./secrets'] },
         network: { deniedDomains: ['tracker.example'] },
       },
@@ -125,6 +151,74 @@ describe('an ignored sandbox key in a workspace layer is reported', () => {
     writeProject({ sandbox: { enabled: false } });
 
     expect(notices(structuredClone(DEFAULT_SETTINGS) as ResolvedSettings, false)).toEqual([]);
+  });
+
+  /**
+   * The local layer is filtered exactly as the project one is — `.gitignore` does
+   * not stop a force-added `settings.local.json` from reaching a clone — and it
+   * was not read here at all, so a file asking to widen the sandbox was being
+   * stripped in silence.
+   */
+  it('names an ignored key from the local layer, with the file it came from', () => {
+    writeLocal({ sandbox: { excludedCommands: ['*'] } });
+
+    const reported = notices(resolved()).join('\n');
+
+    expect(reported).toContain(join(workspace, '.book', 'settings.local.json'));
+    expect(reported).toContain('sandbox.excludedCommands=["*"]');
+  });
+
+  it('names the file, so the reader knows which of the two to edit', () => {
+    writeProject({ sandbox: { enabled: false } });
+    writeLocal({ sandbox: { filesystem: { allowWrite: ['/'] } } });
+
+    const reported = notices(resolved()).join('\n');
+
+    expect(reported).toContain(`declared by ${join(workspace, '.book', 'settings.json')}`);
+    expect(reported).toContain(`declared by ${join(workspace, '.book', 'settings.local.json')}`);
+  });
+});
+
+/**
+ * `sandbox.enabled` is the one key a workspace layer may set, and the loader
+ * pairs it with `autoAllowBashIfSandboxed: false` (#373). Nothing fails, nothing
+ * is refused, and the user simply stops being asked before each command — so it
+ * is reported, and only for the layer that actually flipped the key on.
+ */
+describe('a workspace layer that turned the sandbox on is reported', () => {
+  it('names the layer whose enabled: true cost the session its auto-allow', () => {
+    writeProject({ sandbox: { enabled: true } });
+
+    const reported = notices(resolved()).join('\n');
+
+    expect(reported).toContain(join(workspace, '.book', 'settings.json'));
+    expect(reported).toContain('sandbox.enabled=true');
+    expect(reported).toContain('sandbox.autoAllowBashIfSandboxed');
+  });
+
+  it('names the local layer when that is the one that turned it on', () => {
+    writeLocal({ sandbox: { enabled: true } });
+
+    const reported = notices(resolved()).join('\n');
+
+    expect(reported).toContain(join(workspace, '.book', 'settings.local.json'));
+  });
+
+  it('says nothing when a trusted layer had already turned the sandbox on', () => {
+    // The user enabled it and kept auto-allow on; a checked-in layer repeating
+    // the key changed nothing, and reporting it every run is how a notice gets
+    // ignored.
+    writeUser({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true } });
+    writeProject({ sandbox: { enabled: true } });
+    writeLocal({ sandbox: { enabled: true } });
+
+    expect(notices(resolved())).toEqual([]);
+  });
+
+  it('says nothing when no layer declares it', () => {
+    writeProject({ permissions: { deny: ['Bash(rm *)'] } });
+
+    expect(notices(resolved())).toEqual([]);
   });
 });
 
