@@ -48,6 +48,13 @@ function verdictText(): string {
   });
 }
 
+/** A verifier that reached no conclusion on the single candidate it was given. */
+function unverifiedVerdictText(): string {
+  return JSON.stringify({
+    verdicts: [{ findingId: 'finding-1', state: 'inconclusive', reason: 'could not trace it' }],
+  });
+}
+
 function makeRunner(
   reviewerResults: string[],
   verifierResult: string,
@@ -300,6 +307,20 @@ describe('runSingleReview — the verdict follows the surviving findings', () =>
     expect(result.report.verdict).toBe('inconclusive');
     expect(result.text).toContain('a reviewer reported its review as inconclusive');
   });
+
+  it('does not let that same inconclusive self-report mask a critical finding', async () => {
+    // The regression from #372: a reviewer that cannot conclude said so, and
+    // reported the critical anyway. Its uncertainty about its *review* is not
+    // evidence against the finding it handed back.
+    const result = await runSingleReview(
+      singleRunner(reportJson('inconclusive', { severity: 'critical', confidence: 95 })),
+      single,
+      workspace,
+    );
+    expect(result.report.verdict).toBe('blocking');
+    expect(result.report.findings).toHaveLength(1);
+    expect(result.text).not.toContain('a reviewer reported its review as inconclusive');
+  });
 });
 
 describe('runDeepReview', () => {
@@ -446,6 +467,43 @@ describe('runDeepReview — the verdict follows the surviving findings', () => {
     expect(result.report.verdict).toBe('inconclusive');
     expect(result.text).toContain('a reviewer reported its review as inconclusive');
     expect(result.text).not.toContain('no confirmed findings');
+  });
+});
+
+describe('runDeepReview — a verifier verdict outranks a reviewer self-report', () => {
+  it('names the verifier when it could neither confirm nor reject the finding', async () => {
+    const runner = makeRunner(
+      [
+        reportJson('recommend', { severity: 'major', confidence: 90 }),
+        cleanReport,
+        cleanReport,
+        cleanReport,
+      ],
+      unverifiedVerdictText(),
+    );
+    const result = await runDeepReview(runner, scope(), workspace);
+    expect(result.report.findings).toHaveLength(1);
+    expect(result.report.findings[0]).toMatchObject({ verification: 'inconclusive' });
+    expect(result.report.verdict).toBe('inconclusive');
+    expect(result.text).toContain('could neither confirm nor reject');
+    expect(result.text).not.toContain('a reviewer reported');
+  });
+
+  it('does not let one lens being inconclusive mask a confirmed critical from another', async () => {
+    const runner = makeRunner(
+      [
+        reportJson('blocking', { severity: 'critical', confidence: 95 }),
+        JSON.stringify({ verdict: 'inconclusive', findings: [] }),
+        cleanReport,
+        cleanReport,
+      ],
+      JSON.stringify({
+        verdicts: [{ findingId: 'finding-1', state: 'confirmed', reason: 'real' }],
+      }),
+    );
+    const result = await runDeepReview(runner, scope(), workspace);
+    expect(result.report.verdict).toBe('blocking');
+    expect(result.report.findings[0]).toMatchObject({ verification: 'confirmed' });
   });
 });
 

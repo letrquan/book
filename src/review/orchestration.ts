@@ -3,6 +3,7 @@ import {
   deriveReviewVerdict,
   filterLowConfidence,
   rankFindings,
+  type ReviewVerdictReason,
 } from './findings.js';
 import {
   isStructuredReviewReport,
@@ -18,7 +19,13 @@ import {
   parseVerificationVerdicts,
 } from './verify-findings.js';
 import { onAbort } from '../async.js';
-import type { ReviewCoverageEntry, ReviewFinding, ReviewReport, ReviewScope } from './types.js';
+import type {
+  ReviewCoverage,
+  ReviewCoverageEntry,
+  ReviewFinding,
+  ReviewReport,
+  ReviewScope,
+} from './types.js';
 
 /** Fan-out review orchestration with explicit operational coverage. */
 
@@ -227,9 +234,12 @@ export async function runSingleReview(
     rankFindings(filterLowConfidence(dedupeFindings(parsed.report.findings))),
   );
   const coverage = passCoverage('single', structured, parsed.droppedFindings, findings.length);
-  const verdict = deriveReviewVerdict({
+  const reviewerEntries = [coverage];
+  // One object, so the verdict and the report can never disagree about it.
+  const reportCoverage: ReviewCoverage = { reviewers: reviewerEntries };
+  const { verdict, reason } = deriveReviewVerdict({
     findings,
-    coverage: { reviewers: [coverage] },
+    coverage: reportCoverage,
     // A completed, structured pass whose own verdict is `inconclusive` is the
     // one reviewer signal that is not already a coverage entry.
     reviewerVerdicts: structured ? [parsed.report.verdict] : [],
@@ -237,13 +247,11 @@ export async function runSingleReview(
   const report: ReviewReport = {
     verdict,
     findings,
-    coverage: { reviewers: [coverage] },
+    coverage: reportCoverage,
   };
   const text = [
-    renderCoverageWarnings([coverage]),
-    coverage.status === 'completed' && verdict === 'inconclusive'
-      ? reviewerInconclusiveText('Review')
-      : '',
+    renderCoverageWarnings(reviewerEntries),
+    renderVerdictReason('Review', reason),
     renderReviewReport(report),
     coverage.status === 'completed' ? '' : renderRawOutput('reviewer', settled.result),
   ]
@@ -299,16 +307,24 @@ function renderCoverageWarnings(entries: readonly ReviewCoverageEntry[]): string
 }
 
 /**
- * Why an otherwise clean-looking run is not a clean run.
+ * The one sentence that explains a verdict the report body does not carry.
  *
- * A reviewer that reported its own review as `inconclusive` completed its pass
- * and satisfied the contract, so there is no coverage entry to warn about — but
- * the pipeline must not answer for it with "no confirmed findings", which reads
- * as a review that checked and found nothing. Only reached when every pass
- * completed: with an incomplete pass the coverage warning above already says it.
+ * Driven by `reason` rather than inferred from `verdict === 'inconclusive'`,
+ * which three different inconclusive verdicts share and none of which is
+ * interchangeable: an incomplete run already has the coverage warning above it,
+ * and a report with findings on it shows those findings. Only a rule the report
+ * cannot show for itself gets a line here.
  */
-function reviewerInconclusiveText(prefix: string): string {
-  return `${prefix}: a reviewer reported its review as inconclusive.`;
+function renderVerdictReason(prefix: string, reason: ReviewVerdictReason): string {
+  const explanation: Record<ReviewVerdictReason, string> = {
+    'incomplete-coverage': '',
+    'standing-findings': '',
+    'unverified-findings': 'the verifier could neither confirm nor reject the remaining findings.',
+    'reviewer-inconclusive': 'a reviewer reported its review as inconclusive.',
+    clean: '',
+  };
+  const text = explanation[reason];
+  return text ? `${prefix}: ${text}` : '';
 }
 
 export async function runDeepReview(
@@ -446,21 +462,23 @@ export async function runDeepReview(
       // result still follows the coverage: one lens saying `blocking` about a
       // finding the confidence filter dropped does not make the change blocking,
       // and one lens saying `inconclusive` does not make it clean.
-      const report: ReviewReport = {
-        verdict: deriveReviewVerdict({
-          findings: [],
-          coverage: { reviewers: reviewerCoverage },
-          reviewerVerdicts,
-        }),
+      const reportCoverage: ReviewCoverage = { reviewers: reviewerCoverage };
+      const { verdict, reason } = deriveReviewVerdict({
         findings: [],
-        coverage: { reviewers: reviewerCoverage },
+        coverage: reportCoverage,
+        reviewerVerdicts,
+      });
+      const report: ReviewReport = {
+        verdict,
+        findings: [],
+        coverage: reportCoverage,
       };
       const warning = renderCoverageWarnings(reviewerCoverage);
       const summary =
         warning ||
-        (report.verdict === 'clean'
+        (reason === 'clean'
           ? 'Deep review complete: no confirmed findings.'
-          : reviewerInconclusiveText('Deep review'));
+          : renderVerdictReason('Deep review', reason));
       return { target, report, text: [summary, ...rawOutputs].join('\n\n') };
     }
 
@@ -495,14 +513,19 @@ export async function runDeepReview(
     }
     const verified = applyVerification(candidates, verdicts);
     const ranked = rankFindings(verified);
-    const report: ReviewReport = {
-      verdict: deriveReviewVerdict({
-        findings: ranked,
-        coverage: { reviewers: reviewerCoverage, verifier: verifierCoverage },
-        reviewerVerdicts,
-      }),
+    const reportCoverage: ReviewCoverage = {
+      reviewers: reviewerCoverage,
+      verifier: verifierCoverage,
+    };
+    const { verdict, reason } = deriveReviewVerdict({
       findings: ranked,
-      coverage: { reviewers: reviewerCoverage, verifier: verifierCoverage },
+      coverage: reportCoverage,
+      reviewerVerdicts,
+    });
+    const report: ReviewReport = {
+      verdict,
+      findings: ranked,
+      coverage: reportCoverage,
     };
     const warning = renderCoverageWarnings([...reviewerCoverage, verifierCoverage]);
     return {
@@ -510,9 +533,7 @@ export async function runDeepReview(
       report,
       text: [
         warning,
-        !warning && report.verdict === 'inconclusive'
-          ? reviewerInconclusiveText('Deep review')
-          : '',
+        renderVerdictReason('Deep review', reason),
         renderReviewReport(report),
         ...rawOutputs,
       ]

@@ -229,6 +229,24 @@ function isStanding(finding: ReviewFinding): boolean {
   return finding.verification === undefined || finding.verification === 'confirmed';
 }
 
+/** Which rule decided the verdict. One value per rule, in the order they run. */
+export type ReviewVerdictReason =
+  /** A required pass did not complete, so the change has not been fully reviewed. */
+  | 'incomplete-coverage'
+  /** A finding nothing falsified: critical is `blocking`, anything else `recommend`. */
+  | 'standing-findings'
+  /** Findings remain that the verifier could neither confirm nor reject. */
+  | 'unverified-findings'
+  /** A reviewer reported its own review as inconclusive, so nothing cleared the change. */
+  | 'reviewer-inconclusive'
+  /** Nothing survived and the coverage was complete. */
+  | 'clean';
+
+export interface DerivedReviewVerdict {
+  verdict: ReviewVerdict;
+  reason: ReviewVerdictReason;
+}
+
 /**
  * Derive the verdict from what survived and what was actually covered.
  *
@@ -238,29 +256,42 @@ function isStanding(finding: ReviewFinding): boolean {
  * confidence 95 — so passing either through would report a conclusion the
  * surviving findings do not support, in either direction.
  *
- * The order is a ladder from "we do not know" to "we checked":
+ * Evidence outranks self-description, which is what the order encodes:
  *
  * 1. Any required pass that did not complete caps the verdict at
- *    `inconclusive`. A review that only partly ran has not cleared the change.
- * 2. A reviewer that reported *its own* review as `inconclusive` counts as
- *    incomplete coverage too. It said out loud that it could not conclude, and
- *    that is knowledge the pipeline does not otherwise have. Its findings stay
- *    in the report; only its verdict is discounted.
- * 3. A standing critical finding is `blocking`; any other standing finding is
- *    `recommend`.
- * 4. Findings remain but none is standing, so the verifier neither confirmed
+ *    `inconclusive`. A review that only partly ran has not cleared the change,
+ *    and a finding inside an incomplete run is not yet a safe merge signal.
+ * 2. A standing critical finding is `blocking`; any other standing finding is
+ *    `recommend`. A reviewer saying it could not conclude does not reach this
+ *    far: it said its *review* was inconclusive and handed back the finding
+ *    anyway, and discounting that finding would let one hesitant lens hide what
+ *    another lens confirmed.
+ * 3. Findings remain but none is standing, so the verifier neither confirmed
  *    nor falsified them: `inconclusive`, because they are still on the table.
+ * 4. A reviewer that reported its own review as `inconclusive` stops a `clean`.
+ *    This is the one place that verdict is read at all — it can only remove a
+ *    `clean`, because the user asked a question nobody was able to answer.
  * 5. Otherwise `clean` — nothing survived, and the coverage was complete.
  */
-export function deriveReviewVerdict(input: ReviewVerdictInput): ReviewVerdict {
+export function deriveReviewVerdict(input: ReviewVerdictInput): DerivedReviewVerdict {
   const entries = [...input.coverage.reviewers, input.coverage.verifier].filter(
     (entry): entry is ReviewCoverageEntry => entry !== undefined,
   );
-  if (entries.some((entry) => entry.status !== 'completed')) return 'inconclusive';
-  if (input.reviewerVerdicts?.some((verdict) => verdict === 'inconclusive')) return 'inconclusive';
+  if (entries.some((entry) => entry.status !== 'completed')) {
+    return { verdict: 'inconclusive', reason: 'incomplete-coverage' };
+  }
 
   const standing = input.findings.filter(isStanding);
-  if (standing.some((finding) => finding.severity === 'critical')) return 'blocking';
-  if (standing.length > 0) return 'recommend';
-  return input.findings.length > 0 ? 'inconclusive' : 'clean';
+  if (standing.some((finding) => finding.severity === 'critical')) {
+    return { verdict: 'blocking', reason: 'standing-findings' };
+  }
+  if (standing.length > 0) return { verdict: 'recommend', reason: 'standing-findings' };
+  if (input.findings.length > 0) {
+    return { verdict: 'inconclusive', reason: 'unverified-findings' };
+  }
+
+  if (input.reviewerVerdicts?.some((verdict) => verdict === 'inconclusive')) {
+    return { verdict: 'inconclusive', reason: 'reviewer-inconclusive' };
+  }
+  return { verdict: 'clean', reason: 'clean' };
 }

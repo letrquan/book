@@ -84,11 +84,13 @@ of being discarded.
 
 The verdict is derived from what survived and what was actually covered, never from the verdict a
 reviewer claimed for itself: `blocking` means a standing critical finding, `recommend` means any
-other standing finding, `clean` means nothing is left and coverage was complete, and
-`inconclusive` means coverage was incomplete, a reviewer reported its own review as inconclusive, or
-only unverifiable findings are left. So a finding below the confidence threshold cannot leave a
-`blocking` verdict behind, and a reviewer that calls a change clean cannot mask a critical finding it
-reported itself.
+other standing finding, and `clean` means nothing is left with full coverage. `inconclusive` means
+one of three things, and the report says which: coverage was incomplete, only findings the verifier
+could neither confirm nor reject are left, or a reviewer reported its own review as inconclusive. A
+reviewer's own `inconclusive` only prevents `clean`; it never downgrades a standing finding, because
+a reviewer that reports a critical finding and says it could not conclude its _review_ has still
+told you about that finding. Two things follow. A finding below the confidence threshold cannot leave
+a `blocking` verdict behind, and a reviewer cannot mask a critical finding it reported itself.
 
 `--fix` applies only verified findings, one at a time, through the patcher → validator pipeline: a
 patcher produces a patch candidate as evidence, a separate validator must approve that exact

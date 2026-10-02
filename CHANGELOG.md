@@ -741,12 +741,16 @@ All notable changes to this project are documented in this file.
   `clean`, so four completed lenses where one said `blocking` about a finding that was then filtered
   out landed on `inconclusive` with the text "Deep review complete: no confirmed findings." and no
   coverage warning. All three sites now call one helper, `deriveReviewVerdict` in
-  `src/review/findings.ts`: incomplete coverage (including a reviewer that reported its own review
-  as `inconclusive`) caps the result, a standing critical finding is `blocking`, any other standing
-  finding is `recommend`, findings the verifier could neither confirm nor falsify leave it
-  `inconclusive`, and only nothing-left-with-full-coverage is `clean`. A reviewer's own
-  `blocking`/`recommend`/`clean` is never used. When a reviewer reported its own review as
-  inconclusive, the text now says so instead of reading as a clean run.
+  `src/review/findings.ts`, which returns the verdict _and_ the rule that produced it: incomplete
+  coverage caps the result, a standing critical finding is `blocking`, any other standing finding is
+  `recommend`, findings the verifier could neither confirm nor reject leave it `inconclusive`, a
+  reviewer that reported its own review as `inconclusive` prevents a `clean`, and only
+  nothing-left-with-full-coverage is `clean`. A reviewer's own `blocking`/`recommend`/`clean` is never
+  used. Evidence outranks self-description, so that reviewer signal is deliberately the _last_ thing
+  consulted: a lens saying it could not conclude never downgrades a critical finding another lens
+  reported and the verifier confirmed — the masking regression the first version of this rule order
+  introduced. The reported reason also drives the explanatory line, so the text names the verifier
+  instead of guessing the cause from an `inconclusive` verdict that three different rules can produce.
 
 - **Every git call Book makes for a managed agent is bounded, cancellable, and told the truth
   about what failed** (#357, follow-ups to #348 and #351). Those two turned off the programs a
