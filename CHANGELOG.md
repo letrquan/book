@@ -731,71 +731,72 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
-about what failed** (#357, follow-ups to #348 and #351). Those two turned off the programs a
-checkout could make Book run; eight things about the calls themselves were still wrong, in
-`src/agents/git-isolation.ts`. **A git child that never exits wedged the run and its
-`agents.maxConcurrent` slot.** `git()` had neither a timeout nor the agent controller's signal,
-while `runGit` in `src/tools/git.ts` had both: a hung `filter.*.process`, a gpg pinentry during
-the signed cherry-pick, or a blocked lazy fetch had no way to end, and `stop()` flipped the
-record while the child lived on. Every call now carries a bounded timeout — 120 s, which the
-cherry-pick that applies a candidate raises for itself, since killing that one costs the
-operator a re-apply — and the controller's signal is threaded through the calls that have one,
-so a stopped agent stops its git. Both paths stop the child on their own terms rather than through
-`execFile`'s timeout, which waits for output that a grandchild holding the pipe may never release,
-and both send SIGTERM before SIGKILL rather than killing outright, so a mutating git gets to
-release the `index.lock` it took — SIGKILL left that lock on the operator's repository and the
-next call in it failed on a lock no process was holding. Either way the promise settles without
-waiting for a `close` that may never arrive. **A signal-killed child was read as exit 1**, and
-`removeAgentWorktree` accepts 1 and 128 as "already gone", so a killed cleanup reported itself
-done; a child with no exit code is now a failure whatever `allowExitCodes` names. And **the error
-named `-c`** wherever it fell back to composing its own message — `args[0]` on an argv whose first
-entries are the hardening's `-c key=value` pairs — so the manifest read said `git -c failed`; the
-message now skips every `-c`/`-C` pair and its value and names the subcommand, and prefers that
-over Node's, which embeds the whole argv. **A failed `worktree add` left its branch behind**,
-because `worktree add -b` creates the branch before it declines the checkout, so every retry
-failed with "already exists" and the agent could never be re-run; the branch is now deleted when
-this call created it, and never when it existed first — a branch an operator had made, with their
-own commit on it, is not Book's to delete. A path that is _not_ a worktree Book made is no longer
-adopted as one, which is what lets git refuse it with a real error instead of Book reporting a
-worktree that does not exist. **A cherry-pick that failed said it was rolled back even when the
-rollback failed**, because `cherry-pick --abort`'s error was swallowed, and said `conflicted` for
-failures that are not conflicts: unmerged paths are what makes a pick a conflict, while a signing
-failure, a filter that would not run, or a read-only repository is the machinery failing. Both
-answers are now separate: a pick whose abort failed says the repository may be left mid-cherry-pick
-and how to finish or undo it, rather than claiming a rollback that did not happen. **Ambient
-`GIT_*` variables redirected Book's writes** — a Book launched from a hook or a CI step carried
-`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` or `GIT_OBJECT_DIRECTORY` and wrote snapshots, refs
-and worktrees into another repository or index; they are now stripped from the internal git
-environment: only the variables that choose which repository or index is operated on are removed,
-while everything that configures git — `GIT_ASKPASS`, `GIT_SSH_COMMAND`, `GIT_SSL_*`,
-`GIT_EXEC_PATH`, `GIT_CONFIG_*`, `GIT_CEILING_DIRECTORIES` — is the operator's and is kept, as is
-`GIT_AUTHOR_*` and `GIT_COMMITTER_*` and any variable the call site sets itself, which is how the
-snapshot's temporary index still works. **`removeAgentWorktree` ran from
-inside the worktree it removes** when the workspace is no longer a repository, so the removal
-failed on Windows, the failure was swallowed, and the directory leaked; the cleanup now runs from
-the caller's repository, or from the repository the worktree's own `.git` pointer names — which is
-outside it, and two levels up rather than the administrative directory `worktree remove` deletes
-along with the checkout — falling back to the parent only for a directory that is no longer a
-repository at all. `worktree remove` and `branch -D` now run together, so a worktree leaves no
-branch either. And the two minor module edges: `gitForTest` moved behind
-`src/agents/git-isolation-internal.ts`, which nothing under `src/` imports, and
-`child.stdout`/`child.stderr` have the `error` listener a pipe closing under them can require.
-**And five more, in the same place.** A plan's snapshot is no longer created with the
-`AbortSignal` of whichever agent asked for it first, so stopping one agent in a plan no longer
-cancels the shared snapshot the others were waiting on. A timed-out or cancelled call refuses
-before it spawns, rather than starting a git that outlives the abort meant to stop it. A worktree
-is adopted only when the repository behind its pointer resolves and its admin index is there, and
-a killed or failed `worktree add` leaves no worktree, administrative record or Book-created branch
-behind, so the retry starts clean. A relative `gitdir` in a worktree's `.git` file, which git 2.48
-writes, is resolved against the directory holding that file. And a cherry-pick whose
-`cherry-pick --abort` itself failed is reported as `conflicted` even with no unmerged paths left,
-because a repository still mid-cherry-pick is not a state to retry into.
-**Unchanged, and documented where the decision lives:** `.gitattributes` clean/smudge and process
-filters, merge drivers, and a partial clone's lazy fetch still run what the checkout names, because
-git-lfs needs the filters and no `-c` can wildcard them off; that gap is described in the module
-header and in `docs/guide/agents-and-review.md` rather than closed. `core.fsmonitor=true` is also
-still refused, because `hardenedGitArgs` is shared with the read-only Git tools and the review
-target, and the built-in daemon and untracked cache are what its other callers were tuned for.
+- **Every git call Book makes for a managed agent is bounded, cancellable, and told the truth
+  about what failed** (#357, follow-ups to #348 and #351). Those two turned off the programs a
+  checkout could make Book run; eight things about the calls themselves were still wrong, in
+  `src/agents/git-isolation.ts`. **A git child that never exits wedged the run and its
+  `agents.maxConcurrent` slot.** `git()` had neither a timeout nor the agent controller's signal,
+  while `runGit` in `src/tools/git.ts` had both: a hung `filter.*.process`, a gpg pinentry during
+  the signed cherry-pick, or a blocked lazy fetch had no way to end, and `stop()` flipped the
+  record while the child lived on. Every call now carries a bounded timeout — 120 s, which the
+  cherry-pick that applies a candidate raises for itself, since killing that one costs the
+  operator a re-apply — and the controller's signal is threaded through the calls that have one,
+  so a stopped agent stops its git. Both paths stop the child on their own terms rather than through
+  `execFile`'s timeout, which waits for output that a grandchild holding the pipe may never release,
+  and both send SIGTERM before SIGKILL rather than killing outright, so a mutating git gets to
+  release the `index.lock` it took — SIGKILL left that lock on the operator's repository and the
+  next call in it failed on a lock no process was holding. Either way the promise settles without
+  waiting for a `close` that may never arrive. **A signal-killed child was read as exit 1**, and
+  `removeAgentWorktree` accepts 1 and 128 as "already gone", so a killed cleanup reported itself
+  done; a child with no exit code is now a failure whatever `allowExitCodes` names. And **the error
+  named `-c`** wherever it fell back to composing its own message — `args[0]` on an argv whose first
+  entries are the hardening's `-c key=value` pairs — so the manifest read said `git -c failed`; the
+  message now skips every `-c`/`-C` pair and its value and names the subcommand, and prefers that
+  over Node's, which embeds the whole argv. **A failed `worktree add` left its branch behind**,
+  because `worktree add -b` creates the branch before it declines the checkout, so every retry
+  failed with "already exists" and the agent could never be re-run; the branch is now deleted when
+  this call created it, and never when it existed first — a branch an operator had made, with their
+  own commit on it, is not Book's to delete. A path that is _not_ a worktree Book made is no longer
+  adopted as one, which is what lets git refuse it with a real error instead of Book reporting a
+  worktree that does not exist. **A cherry-pick that failed said it was rolled back even when the
+  rollback failed**, because `cherry-pick --abort`'s error was swallowed, and said `conflicted` for
+  failures that are not conflicts: unmerged paths are what makes a pick a conflict, while a signing
+  failure, a filter that would not run, or a read-only repository is the machinery failing. Both
+  answers are now separate: a pick whose abort failed says the repository may be left mid-cherry-pick
+  and how to finish or undo it, rather than claiming a rollback that did not happen. **Ambient
+  `GIT_*` variables redirected Book's writes** — a Book launched from a hook or a CI step carried
+  `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` or `GIT_OBJECT_DIRECTORY` and wrote snapshots, refs
+  and worktrees into another repository or index; they are now stripped from the internal git
+  environment: only the variables that choose which repository or index is operated on are removed,
+  while everything that configures git — `GIT_ASKPASS`, `GIT_SSH_COMMAND`, `GIT_SSL_*`,
+  `GIT_EXEC_PATH`, `GIT_CONFIG_*`, `GIT_CEILING_DIRECTORIES` — is the operator's and is kept, as is
+  `GIT_AUTHOR_*` and `GIT_COMMITTER_*` and any variable the call site sets itself, which is how the
+  snapshot's temporary index still works. **`removeAgentWorktree` ran from
+  inside the worktree it removes** when the workspace is no longer a repository, so the removal
+  failed on Windows, the failure was swallowed, and the directory leaked; the cleanup now runs from
+  the caller's repository, or from the repository the worktree's own `.git` pointer names — which is
+  outside it, and two levels up rather than the administrative directory `worktree remove` deletes
+  along with the checkout — falling back to the parent only for a directory that is no longer a
+  repository at all. `worktree remove` and `branch -D` now run together, so a worktree leaves no
+  branch either. And the two minor module edges: `gitForTest` moved behind
+  `src/agents/git-isolation-internal.ts`, which nothing under `src/` imports, and
+  `child.stdout`/`child.stderr` have the `error` listener a pipe closing under them can require.
+  **And five more, in the same place.** A plan's snapshot is no longer created with the
+  `AbortSignal` of whichever agent asked for it first, so stopping one agent in a plan no longer
+  cancels the shared snapshot the others were waiting on. A timed-out or cancelled call refuses
+  before it spawns, rather than starting a git that outlives the abort meant to stop it. A worktree
+  is adopted only when the repository behind its pointer resolves and its admin index is there, and
+  a killed or failed `worktree add` leaves no worktree, administrative record or Book-created branch
+  behind, so the retry starts clean. A relative `gitdir` in a worktree's `.git` file, which git 2.48
+  writes, is resolved against the directory holding that file. And a cherry-pick whose
+  `cherry-pick --abort` itself failed is reported as `conflicted` even with no unmerged paths left,
+  because a repository still mid-cherry-pick is not a state to retry into.
+  **Unchanged, and documented where the decision lives:** `.gitattributes` clean/smudge and process
+  filters, merge drivers, and a partial clone's lazy fetch still run what the checkout names, because
+  git-lfs needs the filters and no `-c` can wildcard them off; that gap is described in the module
+  header and in `docs/guide/agents-and-review.md` rather than closed. `core.fsmonitor=true` is also
+  still refused, because `hardenedGitArgs` is shared with the read-only Git tools and the review
+  target, and the built-in daemon and untracked cache are what its other callers were tuned for.
 
 - **The managed-agent lease heartbeat no longer fsyncs on the TUI's event loop** (#346). The store
   refreshed its instance lease every five seconds with the synchronous atomic write — lock file,
@@ -826,7 +827,24 @@ target, and the built-in daemon and untracked cache are what its other callers w
   block actually stands on its own outside the JSON, chosen by balanced-object scanning rather than
   by the first parse, with a balanced whole-text object as the fallback. A fenced example inside a
   string, and a real fenced answer beside an unfenced example, both resolve to the answer.
-
+- **The persistent-job shell test now waits out the job's own runner, and the Windows cleanup is
+  shared** (#350). `BashOutput` returns as soon as it can read a job's terminal record, and the
+  runner publishes that record before it exits, so the test could end while the runner was still
+  alive with the test's temp directory as its working directory, and Windows then refused to remove
+  that directory with EBUSY. The test now waits for the runner pid it recorded to be gone, and
+  reports a runner that outlives the wait rather than killing it, because a pid can already have
+  been reused by an unrelated process. The removal itself is `removeWhenReleased`, now a shared
+  test helper: it polls until Windows lets go, which `rmSync` does not do on Node 24 whatever
+  `maxRetries` says.
+- **Delegation overhead is judged against a probe of the machine's own speed, taken on the same
+  cycle** (#367). The absolute ceiling failed on a Windows runner doing ordinary file work 20-60x
+  slower than usual for a few seconds while its timers still fired on time, which the stall guard
+  cannot see; each cycle is now bracketed by a probe that does the same kind of record write the
+  harness's store does, and every sample is judged against the larger of the absolute ceiling and
+  five times its own probe. Five sits above the healthy cost on this box (best samples 1.7-3.0x
+  their own probe, whether quiet or loaded) while still leaving the absolute ceiling the binding
+  one on a quiet machine, so a regression there is still caught as sharply as before, and the judge
+  is covered by deterministic tests with synthetic numbers.
 - **A Grep over a workspace with a very long line no longer holds the whole line in memory**
   (#349). ripgrep prints one JSON event per line, and the reader between its stdout and Book's own
   parsing accumulated into a string until it saw the newline that ends an event — with nothing
@@ -892,6 +910,28 @@ target, and the built-in daemon and untracked cache are what its other callers w
   the placeholder stands in when it does not. Covered by a
   unit-style test in the same file, against an environment carrying an inherited `BOOK_HOME`,
   `BOOK_WORKSPACE`, `BOOK_TUI_RENDERER`, `BOOK_DEBUG` and the five provider settings.
+
+- **Scrolling a long session no longer stalls on Ink's own frame** (#353). The first scroll
+  through a heavy session stalled 40-250 ms at a time, and the profile of a real 4 MB session on
+  Windows puts that time in Ink, not in Book's components: Ink's private `Output.get` was 29% of
+  the stall, `renderNodeToOutput` 19%, Yoga layout 14% and the React render 14%, while DiffBlock
+  and the Markdown renderer were 2.5% between them. The cause was that Ink builds a fresh
+  `Output`, with fresh caches, for every frame: every frame re-tokenized every visible line and
+  turned every row's cells back into a string, even for the rows that were the same text the
+  frame before, one row higher. `Output.prototype.get` is now replaced in `src/cli/` by
+  `ink-output-cache.ts`, which walks the operations exactly the way Ink's own `get` does,
+  collects the fragments each output row is made of, and takes that row's string from a cache
+  keyed by the row's width and its fragments, length-prefixed so no line's content can collide
+  two rows. A row's string is still built by Ink's own `get` on a scratch `Output` holding only
+  that row's fragments, and the width and styled-character caches are shared across frames, so
+  the frames are byte-identical to what Ink drew rather than merely close. Set
+  `BOOK_INK_OUTPUT_CACHE=off` to leave Ink's `get` in place. **Measured** on the shipped code, on a
+  quiet box, on a real 4 MB session at 120x40 on Windows, over 40 wheel-up reports at 30/s, 7
+  interleaved runs each: stalls over 40 ms fell from 1.4 to 0.4 per run, their summed time from
+  73 ms to 18 ms, and the worst stall per run from 54 ms to 35 ms (median) and from 62 ms to 43 ms
+  (worst). Under load — a game running — the figures are the prototype's: 9.0 to 4.4 stalls per run
+  and 509 ms to 221 ms. Frames were byte-identical to Ink's own `get` throughout: 0 mismatches over
+  315 real frames of the built CLI.
 
 - **Paging back through history no longer claims that new output arrived below it** (#354).
   Scrolling up to the hydrated start asks the transcript's history loader for an older page —
