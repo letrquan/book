@@ -2190,7 +2190,7 @@ describe.skipIf(!sandboxBackendAvailable())(
         }
       });
 
-      it('still runs a command when .book is a symlink a repository shipped', async () => {
+      it('refuses cleanly, with no bwrap abort, when .book is a symlink a repository shipped', async () => {
         // `--tmpfs` on a link cannot mkdir, and a link to a directory is "Can't
         // bind mount": either shape aborted the whole bwrap invocation, so a
         // clone could break every sandboxed command in the workspace.
@@ -2289,7 +2289,7 @@ describe.skipIf(!sandboxBackendAvailable())(
         }
       });
 
-      it('protects a symlinked .book through its target', async () => {
+      it('leaves the target of a symlinked .book unchanged, because the run is refused', async () => {
         const repo = freshRepo();
         try {
           mkdirSync(join(repo, '.book-real'));
