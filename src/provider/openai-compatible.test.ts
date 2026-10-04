@@ -731,6 +731,21 @@ describe('stall ceiling chosen per stream', () => {
       { afterMs: 200, chunk: sse({ content: ' and the rest' }) },
       { afterMs: 210, chunk: 'data: [DONE]\n\n' },
     ]);
+  const reasoningThenContentThenPause = () =>
+    timedStream([
+      { afterMs: 0, chunk: sse({ reasoning_content: 'weighing the options' }) },
+      { afterMs: 10, chunk: sse({ content: 'answer' }) },
+      { afterMs: 210, chunk: 'data: [DONE]\n\n' },
+    ]);
+  const reasoningThenToolCallThenPause = () =>
+    timedStream([
+      { afterMs: 0, chunk: sse({ reasoning_content: 'weighing the options' }) },
+      {
+        afterMs: 10,
+        chunk: sse({ tool_calls: [{ index: 0, id: 'call_1', function: { name: 'Read' } }] }),
+      },
+      { afterMs: 210, chunk: 'data: [DONE]\n\n' },
+    ]);
 
   async function read(cfg: Parameters<typeof chatCompletionStream>[0], stream: ReadableStream) {
     let sent: Record<string, unknown> = {};
@@ -784,6 +799,39 @@ describe('stall ceiling chosen per stream', () => {
       errorCode: 'stream_stall',
     });
     // The reported ceiling is the one in force when the stall fired.
+    expect(ceilings).toEqual([50]);
+  });
+
+  it('drops back to the chat ceiling once the stream starts answering (#379)', async () => {
+    // The promotion buys the thinking phase only. Holding it for the rest of the
+    // stream gave a hang in the answer phase — a dead socket mid-sentence, the
+    // commonest fault there is — up to fifteen minutes to be noticed instead of
+    // twenty seconds, and the answer phase is not thinking.
+    const cfg = defaultConfig({ retry: { ...defaultConfig().retry, ...chatCeiling } });
+    const { events, ceilings } = await read(cfg, reasoningThenContentThenPause());
+
+    expect(events).toContainEqual({ type: 'reasoning', reasoning: 'weighing the options' });
+    expect(events).toContainEqual({ type: 'text', content: 'answer' });
+    expect(events).toContainEqual({
+      type: 'error',
+      error: 'Stream stalled: no data received for 50ms',
+      errorCode: 'stream_stall',
+    });
+    expect(ceilings).toEqual([50]);
+  });
+
+  it('drops back to the chat ceiling once the stream starts calling tools (#379)', async () => {
+    // A tool call is the answer phase too, and it is where a stall is most
+    // expensive: the turn is waiting on a function call that is not coming.
+    const cfg = defaultConfig({ retry: { ...defaultConfig().retry, ...chatCeiling } });
+    const { events, ceilings } = await read(cfg, reasoningThenToolCallThenPause());
+
+    expect(events).toContainEqual({ type: 'reasoning', reasoning: 'weighing the options' });
+    // No tool_call event: the stall lands before `[DONE]`, which is where the
+    // assembled call would have been emitted. What matters is the ceiling.
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'error', errorCode: 'stream_stall' }),
+    );
     expect(ceilings).toEqual([50]);
   });
 });

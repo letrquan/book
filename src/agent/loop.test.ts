@@ -1781,9 +1781,9 @@ describe('runAgentLoop streaming render callbacks', () => {
   );
 
   describe('empty completion retries', () => {
-    // The empty-completion re-issue draws on the same allowance a stalled or
-    // dropped stream does, so a test that models a retry has to say so: the
-    // fixture's `streamReissueAttempts: 0` means "re-issue nothing".
+    // A genuinely empty completion draws on `retry.streamReissueAttempts`, so a
+    // test that models a retry has to say so; a dropped stream draws on the
+    // run-level transport budget instead and keeps one re-issue here.
     //
     // `baseDelayMs` is milliseconds rather than the shipped second, so the
     // backoff between attempts costs the suite nothing.
@@ -1863,7 +1863,12 @@ describe('runAgentLoop streaming render callbacks', () => {
       expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'protocol_error' });
     });
 
-    it('re-issues nothing when the allowance is zero', async () => {
+    it('retries once when the allowance is zero', async () => {
+      // The floor is one. An empty completion has always been re-issued once per
+      // turn, and `streamReissueAttempts: 0` describes the transport budget, so
+      // taking it at its word here would end the run on the first empty — the
+      // behaviour every release before this one had, and not one anybody set out
+      // to change.
       let calls = 0;
       const errors: string[] = [];
       const outcomes: AgentTerminalOutcome[] = [];
@@ -1880,11 +1885,73 @@ describe('runAgentLoop streaming render callbacks', () => {
         { provider: emptyProvider(() => ++calls, Number.POSITIVE_INFINITY), isNewSession: false },
       );
 
-      expect(calls).toBe(1);
+      expect(calls).toBe(2);
       expect(errors).toEqual([
-        'The provider returned an empty response after 0 retries. Please retry the request.',
+        'The provider returned an empty response after 1 retry. Please retry the request.',
       ]);
       expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'protocol_error' });
+    });
+
+    it('reports each retry to the host the way a transport re-issue is reported', async () => {
+      // The TUI shows the retry label from `onRetry` and clears it when the
+      // retried stream speaks. A re-issue that does not call it shows no label
+      // and leaves a stale one behind, which is what a dropped stream looked like.
+      const retries: Array<[string, number, number, number, string | undefined]> = [];
+      let calls = 0;
+
+      await runAgentLoop(
+        defaultConfig({ maxTurns: 1, retry: { ...retrying(2), baseDelayMs: 1, maxDelayMs: 4 } }),
+        createRegistry(),
+        'hello',
+        [],
+        noopCallbacks({
+          onRetry: (phase, attempt, max, delayMs, reason) =>
+            retries.push([phase, attempt, max, delayMs, reason]),
+        }),
+        'default',
+        { provider: emptyProvider(() => ++calls, Number.POSITIVE_INFINITY), isNewSession: false },
+      );
+
+      // Same delay a transport re-issue would have waited: base doubling per
+      // attempt, capped, so 1 * 2 then 1 * 4.
+      expect(retries).toEqual([
+        ['reissue', 1, 2, 2, 'protocol_error'],
+        ['reissue', 2, 2, 4, 'protocol_error'],
+      ]);
+    });
+
+    it('spends the run-level transport budget on a dropped empty stream, not the empty one', async () => {
+      // A stream cut before a single word is a transport fault, and the
+      // transport budget is what bounds a route that keeps cutting. Letting it
+      // also draw on the per-turn empty budget would send one bad socket
+      // streamReissueAttempts + 1 times instead of that + 1.
+      let calls = 0;
+      const outcomes: AgentTerminalOutcome[] = [];
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          calls++;
+          yield {
+            type: 'error',
+            error: 'Provider stream ended before its terminal event.',
+            errorCode: 'transport_interrupted',
+          };
+        },
+      };
+
+      await runAgentLoop(
+        defaultConfig({ maxTurns: 1, retry: retrying(3) }),
+        createRegistry(),
+        'hello',
+        [],
+        noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      // One empty re-issue here, then the three transport re-issues.
+      expect(calls).toBe(5);
+      expect(outcomes[0]).toMatchObject({ status: 'interrupted' });
     });
 
     it('backs off between re-issues, growing from the base delay', async () => {
@@ -1898,7 +1965,7 @@ describe('runAgentLoop streaming render callbacks', () => {
       let calls = 0;
 
       await runAgentLoop(
-        defaultConfig({ maxTurns: 1, retry: { ...retrying(3), baseDelayMs: 2, maxDelayMs: 6 } }),
+        defaultConfig({ maxTurns: 1, retry: { ...retrying(3), baseDelayMs: 1, maxDelayMs: 4 } }),
         createRegistry(),
         'hello',
         [],
@@ -1907,8 +1974,9 @@ describe('runAgentLoop streaming render callbacks', () => {
         { provider: emptyProvider(() => ++calls, Number.POSITIVE_INFINITY), isNewSession: false },
       );
 
-      // baseDelayMs 2, doubling per spent attempt (2, 4), then capped at 6.
-      expect(waits).toEqual([2, 4, 6]);
+      // The transport formula: baseDelayMs doubling per spent attempt, capped at
+      // maxDelayMs. baseDelayMs 1 → 2, 4, then capped at 4.
+      expect(waits).toEqual([2, 4, 4]);
       expect(calls).toBe(4);
     });
   });

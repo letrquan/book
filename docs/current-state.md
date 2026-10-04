@@ -424,12 +424,14 @@ branch --set-upstream-to`, `git config`), for `Bash` and `Check` alike: git's ow
   turn that is nothing but an unclosed reasoning block — the tag opens the content, is never
   closed, and no answer text stands beside it — gets the same same-turn retries an empty turn
   gets, because there is no answer there to protect; if the retries come back the same shape the
-  text is kept as the answer rather than discarded. A reasoning-only/empty response draws on
-  `retry.streamReissueAttempts` (default 3), with the same exponential backoff between attempts as a
-  transport re-issue, and already-emitted attempt text is marked `attempt_discarded` rather than
-  persisted as the replacement turn. Print mode's exit code does not change with the terminal
-  outcome (see "Exit codes" in [docs/guide/cli.md](guide/cli.md#print-mode)): a failed outcome
-  still exits 0.
+  text is kept as the answer rather than discarded. A reasoning-only/empty response is counted per
+  turn on its own and draws on `retry.streamReissueAttempts` (default 3, at least once), with the
+  same exponential backoff between attempts and the same `onRetry` notice a transport re-issue
+  gives; a stream cut before it said anything is a transport fault instead and keeps its single
+  re-issue plus the run-level transport budget. Already-emitted attempt text is marked
+  `attempt_discarded` rather than persisted as the replacement turn. Print mode's exit code does not
+  change with the terminal outcome (see "Exit codes" in
+  [docs/guide/cli.md](guide/cli.md#print-mode)): a failed outcome still exits 0.
 - Print/headless and SDK hosts run only the built-ins marked non-interactive — `/init`,
   `/security-review`, and `/review` — plus any `.book/commands/*.md` file. Every other built-in
   (session controls, pickers, panels, `/config`, `/export`, `/memory`) is refused before its own
