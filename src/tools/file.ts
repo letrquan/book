@@ -2,9 +2,14 @@ import { open, readFile as readTextFile, stat } from 'fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import vm from 'node:vm';
 import { basename, extname, join, resolve as resolvePath } from 'node:path';
-import fg from 'fast-glob';
+import { glob } from 'tinyglobby';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
-import { fastGlobPattern } from './glob-regex.js';
+import {
+  globIgnorePatternsWithinLimit,
+  globWalkPattern,
+  globPatternWithinLimit,
+  MAX_GLOB_PATTERN_LENGTH,
+} from './glob-regex.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { buildChildEnv } from '../child-env.js';
 import { markdownContentStart } from '../frontmatter.js';
@@ -160,7 +165,7 @@ function grepRoots(ctx: ToolContext): PathRoots {
 /**
  * Which root of {@link grepRoots} a resolved file came from, so a caller can be told to search
  * there. The resolved path answers it directly — the root that served it is the one it was
- * resolved against — so no root is compared with a path from ripgrep or fast-glob here.
+ * resolved against — so no root is compared with a path from ripgrep or a glob walk here.
  */
 function grepRootFor(roots: PathRoots, resolved: ResolvedReadablePath): string {
   return resolved.inWorkspace ? roots.workspaceRoot : resolved.root;
@@ -1623,8 +1628,8 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
 /**
  * The one `cwd` a Glob walks, and why there is only one.
  *
- * fast-glob resolves a *relative* pattern against its `cwd` and an *absolute* one against the file
- * system, so the two cases need different handling and neither benefits from a loop:
+ * tinyglobby resolves a *relative* pattern against its `cwd` and an *absolute* one against the
+ * file system, so the two cases need different handling and neither benefits from a loop:
  *
  * - A relative pattern searches the **workspace only**. It is anchored there the way `Read`
  *   anchors a relative path and the way `Grep` anchors a relative scope, so all three agree about
@@ -1639,19 +1644,42 @@ function globSearchDir(ctx: ToolContext): string[] {
   return [ctx.workspaceRoot];
 }
 
+/** A pattern the matcher cannot be handed, refused before it can take the process down. */
+function patternTooLongResult(pattern: string): ToolResult {
+  return toolFailure(
+    `Pattern is too long: a glob pattern may be at most ${MAX_GLOB_PATTERN_LENGTH} characters (this one is ${pattern.length})`,
+    { code: 'invalid_pattern' },
+  );
+}
+
 async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const pattern = args.pattern as string;
+  if (!globPatternWithinLimit(pattern)) return patternTooLongResult(pattern);
   const roots = grepRoots(ctx);
   const files: string[] = [];
   for (const cwd of globSearchDir(ctx)) {
-    // Converted for fast-glob, which reads `\` as an escape and so walks nothing at all for a
+    // Converted for the walk, which reads `\` as an escape and so walks nothing at all for a
     // Windows pattern (`C:\ws\**\*.ts`): an absolute Glob came back empty. Which root holds the
     // base is then decided by the filter below, against the roots in canonical form.
-    const found = await fg(fastGlobPattern(pattern), {
-      cwd,
-      dot: true,
-      ignore: ctx.gitignorePatterns ?? [],
-    });
+    //
+    // `expandDirectories: false` keeps a pattern that names a directory meaning that directory:
+    // `src` and `**/dist` answer with the directory itself, not with everything inside it.
+    let found: string[];
+    try {
+      found = await glob(globWalkPattern(pattern), {
+        cwd,
+        dot: true,
+        ignore: globIgnorePatternsWithinLimit(ctx.gitignorePatterns ?? []),
+        expandDirectories: false,
+      });
+    } catch (error) {
+      return toolFailure(
+        `Failed to match the pattern: ${error instanceof Error ? error.message : String(error)}`,
+        { code: 'invalid_pattern' },
+      );
+    }
+    // A pattern that names its own root comes back spelled relative to `cwd`, which resolves back
+    // to the same absolute path either way.
     files.push(...found.map((file) => resolvePath(cwd, file)));
   }
 
@@ -1905,13 +1933,28 @@ async function grepSearchPortable(
   // Glob from the scope's own root so root-anchored .gitignore patterns keep matching there too
   // (#300): a scope inside an honored directory is not in the workspace tree at all, so globbing
   // from the workspace would find nothing. Then limit the results to the requested scope.
-  const globbed = scope.isFile
-    ? [scope.relativePath]
-    : await fg(includePattern, {
+  let globbed: string[];
+  if (scope.isFile) {
+    globbed = [scope.relativePath];
+  } else {
+    if (!globPatternWithinLimit(includePattern)) return patternTooLongResult(includePattern);
+    try {
+      globbed = await glob(includePattern, {
         cwd: scope.root,
         dot: true,
-        ignore: [...GREP_DEFAULT_IGNORES, ...(ctx.gitignorePatterns ?? [])],
+        ignore: globIgnorePatternsWithinLimit([
+          ...GREP_DEFAULT_IGNORES,
+          ...(ctx.gitignorePatterns ?? []),
+        ]),
+        expandDirectories: false,
       });
+    } catch (error) {
+      return toolFailure(
+        `Failed to match the include pattern: ${error instanceof Error ? error.message : String(error)}`,
+        { code: 'invalid_pattern' },
+      );
+    }
+  }
   const files =
     scope.relativePath && !scope.isFile
       ? globbed.filter(

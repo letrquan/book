@@ -9,7 +9,7 @@ import type {
 } from './types/tools.js';
 import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
-import { globToRegex, fastGlobBases } from './tools/glob-regex.js';
+import { globToRegex, globWalkBases } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
 import {
   canonicalizePath,
@@ -683,15 +683,15 @@ function pathRuleSpellings(
 }
 
 /**
- * Where a Glob reaches: `outside` when fast-glob would start walking anywhere outside the roots the
- * tools serve (`../**`, `.{.,x}/*`, an absolute path elsewhere), `servable` otherwise. It asks
- * fast-glob for the directories it would walk rather than guessing from the pattern: `{..,src}/*`
- * walks the workspace and never climbs, while `.{.,x}/*` walks its parent. A pattern fast-glob
- * cannot read at all is `outside`: the walk it would do is unknown, so nothing it finds can be
- * claimed to be inside.
+ * Where a Glob reaches: `outside` when the walk would start anywhere outside the roots the tools
+ * serve (`../**`, `.{.,x}/*`, an absolute path elsewhere), `servable` otherwise. It asks the
+ * matcher for the directories the walk would start in rather than guessing from the pattern:
+ * `{a,b}/*` walks the workspace and never climbs, while `.{.,x}/*` walks its parent. A pattern the
+ * matcher cannot read at all is `outside`: the walk it would do is unknown, so nothing it finds
+ * can be claimed to be inside.
  */
 function globTarget(pattern: string, paths: ResolvedPathScope): 'servable' | 'outside' {
-  const bases = fastGlobBases(pattern);
+  const bases = globWalkBases(pattern);
   if (bases.length === 0) return 'outside';
   // Every base, including the ones that resolved nowhere: a pattern with an unresolvable base
   // walks outside the roots, and dropping that base before the test would make `every` vacuously
@@ -702,14 +702,14 @@ function globTarget(pattern: string, paths: ResolvedPathScope): 'servable' | 'ou
 /**
  * The directories a Glob would walk, canonicalized.
  *
- * fast-glob answers this better than a pattern could be parsed for: `{..,src}/*` walks the
+ * The matcher answers this better than a pattern could be parsed for: `{a,b}/*` walks the
  * workspace and never climbs, while `.{.,x}/*` walks its parent, and only the library knows which
  * before the walk happens. The bases are read from the same converted pattern the walk uses, so
  * the two name the same directory even on Windows, where an unconverted pattern reports `.` for
  * every base and would make an absolute pattern look like it walked the workspace.
  */
 function globBases(pattern: string, paths: ResolvedPathScope): string[] {
-  return fastGlobBases(pattern)
+  return globWalkBases(pattern)
     .map((base) => paths.detail(base, false))
     .filter((detail): detail is Extract<typeof detail, { path: unknown }> => 'path' in detail)
     .map((detail) => detail.path.canonicalPath);

@@ -1,7 +1,9 @@
+import { stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'path';
-import fg from 'fast-glob';
+import { glob } from 'tinyglobby';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { loadGitignore } from '../tools/gitignore.js';
+import { globIgnorePatternsWithinLimit } from '../tools/glob-regex.js';
 
 export interface ActiveFileMention {
   start: number;
@@ -76,6 +78,15 @@ export function replaceActiveFileMention(
   return input.slice(0, mention.start) + mentionText + input.slice(mention.end);
 }
 
+/** A file's size in bytes, or 0 when it cannot be read: a mention list is a hint, not a gate. */
+async function fileSizeBytes(filePath: string): Promise<number> {
+  try {
+    return (await stat(filePath)).size;
+  } catch {
+    return 0;
+  }
+}
+
 export async function getFileMentionCandidates(
   workspace: string,
   query: string,
@@ -84,18 +95,18 @@ export async function getFileMentionCandidates(
 ): Promise<FileMentionCandidate[]> {
   const normalizedQuery = normalizeMentionPath(query).toLowerCase();
   const gitignore = loadGitignore(workspace).patterns;
-  const ignore = [...DEFAULT_IGNORE, ...gitignore];
+  const ignore = globIgnorePatternsWithinLimit([...DEFAULT_IGNORE, ...gitignore]);
 
-  let entries: fg.Entry[];
+  let entries: string[];
   try {
-    entries = await fg('**/*', {
+    entries = await glob('**/*', {
       cwd: workspace,
       dot: true,
       onlyFiles: false,
-      unique: true,
       ignore,
-      objectMode: true,
-      stats: true,
+      // A pattern naming a directory returns that directory, not everything inside it — which is
+      // the whole point of walking for mentions.
+      expandDirectories: false,
     });
   } catch {
     return [];
@@ -104,8 +115,13 @@ export async function getFileMentionCandidates(
 
   const scored: Array<FileMentionCandidate & { score: number }> = [];
   for (let index = 0; index < entries.length; index++) {
+    // A directory is the one entry the walk spells with a trailing `/`, and it is the only thing
+    // telling a directory from a file. The slash is stripped for the match below — a query of
+    // `src` should find `src/` — and put back on the candidate, which is the path the input
+    // spells the mention with.
     const entry = entries[index];
-    const display = normalizeMentionPath(entry.path);
+    const isDirectory = entry.endsWith('/');
+    const display = normalizeMentionPath(isDirectory ? entry.slice(0, -1) : entry);
     const lower = display.toLowerCase();
     const base = lower.split('/').pop() ?? lower;
 
@@ -117,11 +133,10 @@ export async function getFileMentionCandidates(
     else if (lower.includes(normalizedQuery)) score = 4;
 
     if (score !== null) {
-      const kind = entry.dirent.isDirectory() ? 'directory' : 'file';
       scored.push({
-        path: kind === 'directory' ? `${display}/` : display,
-        kind,
-        desc: kind === 'directory' ? 'directory' : `${entry.stats?.size ?? 0} bytes`,
+        path: isDirectory ? `${display}/` : display,
+        kind: isDirectory ? 'directory' : 'file',
+        desc: '',
         score,
       });
     }
@@ -136,5 +151,17 @@ export async function getFileMentionCandidates(
   });
 
   throwIfAborted(signal);
-  return scored.slice(0, limit).map(({ score: _score, ...item }) => item);
+  // Sized after the cut, so a wide walk does not pay for a stat per entry it will not list.
+  const candidates: FileMentionCandidate[] = [];
+  for (const { path, kind } of scored.slice(0, limit)) {
+    candidates.push({
+      path,
+      kind,
+      desc:
+        kind === 'directory'
+          ? 'directory'
+          : `${await fileSizeBytes(resolve(workspace, path))} bytes`,
+    });
+  }
+  return candidates;
 }

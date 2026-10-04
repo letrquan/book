@@ -741,7 +741,7 @@ describe('workspace reads need no prompt (#264)', () => {
     ).toEqual({ decision: 'allow', source: 'workspace' });
   });
 
-  it('judges a Glob by where fast-glob would start walking', () => {
+  it('judges a Glob by where the walk would start', () => {
     const { workspace, outside } = setup();
     const s = settings();
     const posix = (path: string) => path.replace(/\\/g, '/');
@@ -750,9 +750,14 @@ describe('workspace reads need no prompt (#264)', () => {
     expect(glob(`${posix(outside)}/*.txt`)).toBe('refuse');
     expect(glob('.{.,x}/*')).toBe('refuse');
     expect(glob('src/{a,{b,../..}}/*')).toBe('refuse');
-    // These never leave the workspace: fast-glob walks from inside it.
+    // A parent named in the leading enumeration is refused the same way a literal one is.
+    // micromatch declined to expand a group whose first alternative was `..`, so fast-glob
+    // reported the base as the workspace and allowed this one; picomatch expands it, so the
+    // pattern can now be spelled to start outside, which is the case `{,..}/*` was always
+    // refused for.
+    expect(glob('{..,src}/*')).toBe('refuse');
+    // These never leave the workspace: the walk starts inside it.
     expect(glob('src/{a,{b,..}}/*')).toBe('allow');
-    expect(glob('{..,src}/*')).toBe('allow');
     expect(glob('**/*.{ts,tsx}')).toBe('allow');
     expect(glob('logs/{1..3}.txt')).toBe('allow');
     expect(glob('{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}.txt')).toBe('allow');

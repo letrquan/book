@@ -74,6 +74,44 @@ describe('file mention helpers', () => {
     expect(candidates.map((c) => c.path)).not.toContain('dist/app.js');
   });
 
+  it('reports a directory with the slash the walk spells it with', async () => {
+    // A directory walk entry arrives with a trailing `/`, which is the only thing telling a
+    // directory from a file, and that spelling is the one that reaches the input: `@src/`.
+    const ws = workspace();
+    mkdirSync(join(ws, 'src'));
+    writeFileSync(join(ws, 'src', 'app.ts'), 'app');
+
+    const candidates = await getFileMentionCandidates(ws, 'src');
+
+    expect(candidates.find((c) => c.kind === 'directory')).toEqual({
+      path: 'src/',
+      kind: 'directory',
+      desc: 'directory',
+    });
+  });
+
+  it('drops a .gitignore line too long for the matcher and keeps the rest', async () => {
+    // Every entry of the walk's `ignore` list is compiled by the same matcher as the pattern, and
+    // these entries come from the repository's own `.gitignore`. Ten thousand nested brace groups
+    // compile into a regular expression V8 cannot build — a fatal error, below the reach of any
+    // catch — so the line is dropped on its length and the ordinary line beside it still applies.
+    const ws = workspace();
+    mkdirSync(join(ws, 'src'));
+    mkdirSync(join(ws, 'build'));
+    writeFileSync(
+      join(ws, '.gitignore'),
+      ['{a,'.repeat(10_000) + '}'.repeat(10_000), 'build', ''].join('\n'),
+    );
+    writeFileSync(join(ws, 'src', 'app.ts'), 'app');
+    writeFileSync(join(ws, 'build', 'app.js'), 'ignored');
+
+    const candidates = await getFileMentionCandidates(ws, 'app');
+
+    // `build` and not `dist`, which the default ignore list covers whatever the file says.
+    expect(candidates.map((c) => c.path)).toContain('src/app.ts');
+    expect(candidates.map((c) => c.path)).not.toContain('build/app.js');
+  }, 60_000);
+
   it('returns metadata asynchronously and honors cancellation', async () => {
     const ws = workspace();
     mkdirSync(join(ws, 'src'));

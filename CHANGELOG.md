@@ -87,6 +87,21 @@ true` is the one loosening-adjacent key a workspace layer may set, and the loade
   refused" was a promise `Check` did not keep; its timeout-versus-failure distinction is unchanged,
   and `Bash`'s messages and behaviour are otherwise untouched.
 
+- **A Glob pattern could take the process down** (GHSA-vfj7-8cjw-p6xm). `fast-glob` is replaced by
+  `tinyglobby`, which drops `micromatch` and with it `braces` — the package the advisory names, and
+  the whole reason it was there. Neither remains in the dependency tree. A pattern is now read by
+  `picomatch` directly, with a length limit (10 000 characters, the one `micromatch` enforced) before
+  the matcher sees it: deeply nested brace groups compile into a regular expression that overflows
+  V8's regexp stack, and the process aborts below the reach of any `catch`, so a pattern long enough
+  to do it is refused with a tool error instead. A walk compiles the entries of its `ignore` option —
+  the repository's own `.gitignore` — through the same matcher, so those are held to the same limit:
+  an entry over it is dropped before the walk rather than obeyed, and the rest of the file still
+  applies. Where the walk starts is still asked of the matcher rather than guessed from the pattern,
+  so `../**`, `.{.,x}/*` and an absolute pattern elsewhere are refused exactly as before; a brace
+  group naming `..` among its alternatives (`{..,src}/*`) is now refused as well, the same verdict
+  `{,..}/*` already got. The lockfile also picks up the current `hono`, `qs`, `fast-uri` and
+  `ip-address`, which close four moderate advisories.
+
 ### Security
 
 - **High-severity dependency advisories cleared** (#361). `undici` moves to 8.11.2 and the

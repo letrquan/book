@@ -1121,6 +1121,40 @@ describe('glob', () => {
       rmSync(outsidePath, { force: true });
     }
   });
+
+  it('answers a pathologically nested brace pattern instead of taking the process down', async () => {
+    // 10 000 nested brace groups expand into a regular expression whose compilation overflows
+    // V8's regexp stack — the process aborts, which no catch can intercept. The pattern is
+    // therefore refused on its length before the matcher ever sees it, the way the previous
+    // matcher refused it, so the call answers instead of taking the process down.
+    const pattern = '{a,'.repeat(10_000) + '}'.repeat(10_000);
+
+    const r = await glob.execute({ pattern }, ctx);
+
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.code).toBe('invalid_pattern');
+    expect(r.structuredError?.message).toContain('10000');
+  }, 60_000);
+
+  it('drops a gitignore pattern too long for the matcher and keeps the rest', async () => {
+    // The walk compiles every entry of its `ignore` list through the same matcher as the pattern,
+    // and the Glob tool's list is the repository's own `.gitignore`. One line of 10 000 nested
+    // brace groups is a fatal regexp error, below the reach of any catch, so the entry is
+    // dropped on its length — and the ordinary line beside it still prunes what it names.
+    mkdirSync(join(dir, 'src'));
+    mkdirSync(join(dir, 'dist'));
+    writeFileSync(join(dir, 'src', 'app.ts'), 'app');
+    writeFileSync(join(dir, 'dist', 'app.js'), 'ignored');
+
+    const r = await glob.execute(
+      { pattern: '**/*' },
+      { ...ctx, gitignorePatterns: ['{a,'.repeat(10_000) + '}'.repeat(10_000), 'dist'] },
+    );
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('src/app.ts');
+    expect(r.content).not.toContain('dist/app.js');
+  }, 60_000);
 });
 
 describe('grep', () => {
@@ -3556,7 +3590,7 @@ describe('additionalRoots', () => {
 
   it('walks an absolute Glob pattern once, not once per root', async () => {
     // A relative pattern was run against every root in turn, and an absolute one was run against
-    // every root too — where it resolves to the same files each time, because fast-glob ignores
+    // every root too — where it resolves to the same files each time, because a glob walk ignores
     // `cwd` for an absolute pattern. The work was repeated per honored root, and a root that
     // happened to hold a copy of the pattern's subtree was walked as well.
     const r = await glob.execute({ pattern: join(extra, '**', '*.txt') }, ctx);
@@ -3725,7 +3759,7 @@ describe('a workspace root reached through a link', () => {
  * (`C:\Users\runneradmin\AppData\Local\Temp`) and the DOS 8.3 form (`C:\Users\RUNNER~1\AppData`),
  * plus a drive letter in either case and separators either way. GitHub's Windows runners put
  * `os.tmpdir()` in the short form, so every workspace root in this file is spelled short while
- * `realpath`, fast-glob and ripgrep all answer in the long form.
+ * `realpath`, a glob walk and ripgrep all answer in the long form.
  *
  * A root compared as given against a path in that form reads as outside the workspace, and every
  * guard that keys on the root then cannot name its own file: the `.book/settings.local.json`
