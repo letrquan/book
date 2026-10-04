@@ -82,14 +82,36 @@ Anthropic path it is adaptive thinking, which is on by default for Opus and Sonn
 On an OpenAI-compatible endpoint it is a request that sends `reasoning_effort`, or a model whose
 `provider.<id>.models.<model>.effort` entry declares an effort range — an endpoint that buffers a
 whole thinking block sends nothing at all until it is done, so the declaration is the only signal
-available before the silence starts. A model with `effort: false` stays on the chat ceiling, and so
-does a model with no catalog entry, since an unknown model is more likely a chat model than a
-reasoning one.
+available before the silence starts.
+
+On that path the ceiling is also chosen per stream, not just per request, and it follows the
+stream's phase. A reasoning model behind a router often has no catalog entry, so Book sends it no
+`reasoning_effort` and the chat ceiling is armed at request time; the first `reasoning_content`
+delta is then the evidence the request could not carry, and it raises the ceiling to
+`retry.thinkingStallTimeoutMs` while the model thinks. The first answer or tool-call delta ends
+the thinking phase and the ceiling goes back to where the stream started, because a hang in the
+answer is a dead socket and is worth noticing in twenty seconds rather than fifteen minutes;
+reasoning that resumes mid-answer raises it again. A stream that never reasons keeps
+`retry.streamStallTimeoutMs` throughout. Only the pause before the first reasoning delta is judged
+by the chat ceiling, and any model that buffers its whole thinking block before emitting anything
+is not covered by this — give it an `effort` entry so the ceiling is right from the first byte.
 
 `retry.streamReissueAttempts` re-sends a turn after a transport fault — a stalled stream, a dropped
 socket — onto the history already committed. Set it to 0 to end the run on any stream error, as
 earlier versions did. `retry.outputCapContinuations` is a separate allowance for continuing after the
 provider's output limit, so a large generated file cannot drain the budget a real socket drop needs.
+
+An empty completion — one that ends the stream with no text and no tool call, and a reply that is
+nothing but an unclosed reasoning block — is a separate fault with its own count, and the run-level
+transport budget above does not cover it: the turn is re-asked up to `retry.streamReissueAttempts`
+times per turn (at least once, whatever that is set to), with the same exponential backoff a
+transport re-issue waits (`retry.baseDelayMs`, doubling, capped by `retry.maxDelayMs`) and the same
+retry notice, because an immediate re-issue against a provider that just answered with nothing buys
+nothing. Once the retries are spent the run ends on `protocol_error`, naming how many it actually
+made. A reply that is only an unclosed reasoning block is kept as the answer instead of discarded,
+since it is all the user would otherwise have. A stream that was cut before it said anything is not
+an empty completion: it is a transport fault, and it keeps the single re-issue and the run-level
+budget, so a route that keeps dropping is still bounded.
 
 A retryable status is classified by the error it quotes, not by the status alone. A router that
 wraps an upstream 4xx as a 503 with a cooldown
