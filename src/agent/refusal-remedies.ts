@@ -17,6 +17,7 @@ export type LocalRefusalKind =
   | 'permission'
   | 'outside'
   | 'excluded'
+  | 'pattern'
   | 'hook'
   | 'inactive'
   | 'capability'
@@ -44,6 +45,16 @@ export const OUTSIDE_WORKSPACE_REFUSAL_CODE = 'path_outside_workspace';
  */
 export const EXCLUDED_PATH_REFUSAL_CODE = 'path_excluded';
 
+/**
+ * The code a glob shape the matcher cannot read is refused with — a pattern too long, or one that
+ * nests groups deeper than the matcher can compile into a regular expression.
+ *
+ * A kind of its own, and it is not the outside one: nothing about the directory is wrong with it.
+ * The pattern is what the model wrote, and the reason the walk could not happen is the shape of the
+ * pattern, so naming a directory to add would be a dead end and the refusal says so.
+ */
+export const PATTERN_UNREADABLE_REFUSAL_CODE = 'pattern_unreadable';
+
 /** Whether a tool result is a refusal: the call was blocked, not run. */
 export function isRefusal(
   result: Pick<ToolResult, 'status' | 'structuredError'> | undefined,
@@ -67,6 +78,8 @@ export function refusalKind(
       return 'outside';
     case EXCLUDED_PATH_REFUSAL_CODE:
       return 'excluded';
+    case PATTERN_UNREADABLE_REFUSAL_CODE:
+      return 'pattern';
     case 'hook_blocked':
       return 'hook';
     case 'tool_not_active':
@@ -98,6 +111,8 @@ export const REFUSAL_REMEDIES: Readonly<Record<LocalRefusalKind, string>> = {
     'the path is outside the workspace and every directory in additionalDirectories, and no permission rule or mode lets Read, Glob or Grep serve it; add its directory to additionalDirectories (a project-declared one also needs `book trust dir <path>`), or start Book in a directory that contains it',
   excluded:
     "the path is under a subpath the file tools exclude (Book's memory inbox), which no permission rule, no directory in additionalDirectories and no permission mode reaches; work from what is outside that subpath",
+  pattern:
+    'the pattern is shaped in a way the matcher cannot read — too long, or nesting groups deeper than it compiles into a regular expression — and no directory, permission rule or mode makes that walk happen; the model has to write a simpler pattern',
   hook: 'a PreToolUse hook refused the calls, which no permission rule or mode lifts; change or remove that hook',
   inactive:
     "the calls named tools, or arguments, that this turn's tool surface does not allow, which no permission rule or mode changes; a deferred tool has to be activated with ToolSearch first, and the run's allowed tools (--allowedTools, or a skill's or command's allowed-tools) must cover the tool and its arguments",
@@ -141,6 +156,9 @@ function readTargetOf(toolName: string, args: Record<string, unknown>): string {
   return foldControlCharacters(text).trim();
 }
 
+/** How much of a target a refusal names before it is elided: a path is read at a glance. */
+const MAX_NAMED_REFUSAL_TARGET = 200;
+
 export interface OutsideWorkspaceRefusalOptions {
   toolCallId?: string;
   /** The honored roots, named in the message so the model can see what it could have used. */
@@ -181,6 +199,45 @@ export function outsideWorkspaceRefusal(
     // loop would retry the same path until the `all_tools_blocked` brake stopped it.
     content: message,
     details: { tool: toolName, target, honoredRoots: [...roots] },
+  });
+}
+
+/**
+ * The blocked result for a glob whose pattern the matcher cannot read — one shaped so that it will
+ * not compile.
+ *
+ * Not a permission question, and not the outside refusal: the walk never starts, so there is no
+ * directory that could be served or added, and the model is not being told it asked for the wrong
+ * place. The message carries the matcher's own reason, which is what the model has to act on — a
+ * pattern that is too long, or that nests groups deeper than the matcher can compile — and says
+ * plainly that nothing else would have helped.
+ */
+export function invalidPatternRefusal(
+  toolName: string,
+  call: { arguments: Record<string, unknown> },
+  reason: string,
+  options: Pick<OutsideWorkspaceRefusalOptions, 'toolCallId'> = {},
+): ToolResult {
+  // The pattern that reaches here is, by definition, one the model could not get right — a few
+  // thousand characters of `!(` is a sentence no model reads. The reason names the shape and the
+  // limit, so the head of the pattern is enough to identify it.
+  const full = readTargetOf(toolName, call.arguments);
+  const target =
+    full.length > MAX_NAMED_REFUSAL_TARGET ? `${full.slice(0, MAX_NAMED_REFUSAL_TARGET)}…` : full;
+  // The reason is the matcher's own words, on a line of their own: it names the limit and the count
+  // the pattern hit it by, which is the only part of the refusal the model can act on.
+  const message =
+    `Refused: ${toolName} cannot walk ${target}. The matcher cannot read the pattern: ` +
+    `${reason}. No permission rule, no directory in additionalDirectories and no permission mode ` +
+    'changes that — nothing about the directory is wrong with it — so the pattern has to be ' +
+    'written differently: fewer nested groups, a shorter pattern, or a directory to search from ' +
+    'rather than a pattern that reaches into it.';
+  return toolFailure('SKIPPED: ' + message, {
+    toolCallId: options.toolCallId,
+    code: PATTERN_UNREADABLE_REFUSAL_CODE,
+    status: 'blocked',
+    content: message,
+    details: { tool: toolName, target, reason },
   });
 }
 

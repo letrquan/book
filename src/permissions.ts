@@ -9,7 +9,7 @@ import type {
 } from './types/tools.js';
 import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
-import { globToRegex, fastGlobBases } from './tools/glob-regex.js';
+import { globToRegex, globWalkPlan } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
 import {
   canonicalizePath,
@@ -51,6 +51,19 @@ export interface PermissionVerdict {
    * this path under it is not, so naming a directory to add would be a dead end.
    */
   excludedPath?: boolean;
+  /**
+   * Set instead, on a Glob whose pattern the matcher cannot read at all (too long, or nested groups
+   * deeper than the matcher compiles). Not a place: the walk would not have started, so there is no
+   * directory to serve or to add, and the refusal carries the matcher's own reason.
+   */
+  unreadablePattern?: string;
+}
+
+/** Whether a read target is a pattern the matcher cannot read, with the reason it gave. */
+function isUnreadablePattern(
+  target: ReadToolTarget | undefined,
+): target is { target: 'invalid'; reason: string } {
+  return typeof target === 'object' && target !== null && target.target === 'invalid';
 }
 
 /** The workspace a call's path arguments are judged against (#264). */
@@ -683,50 +696,61 @@ function pathRuleSpellings(
 }
 
 /**
- * Where a Glob reaches: `outside` when fast-glob would start walking anywhere outside the roots the
- * tools serve (`../**`, `.{.,x}/*`, an absolute path elsewhere), `servable` otherwise. It asks
- * fast-glob for the directories it would walk rather than guessing from the pattern: `{..,src}/*`
- * walks the workspace and never climbs, while `.{.,x}/*` walks its parent. A pattern fast-glob
- * cannot read at all is `outside`: the walk it would do is unknown, so nothing it finds can be
- * claimed to be inside.
+ * Where a Glob reaches: `invalid` with the matcher's reason when the pattern is one it cannot read,
+ * `outside` when the walk would answer from anywhere outside the roots the tools serve (`../**`, an
+ * absolute path elsewhere), `guarded` when one of those directories holds a home directory, and
+ * `servable` otherwise.
+ *
+ * It asks the walk itself rather than guessing from the pattern, because a pattern can spell a climb
+ * in a way only normalization reveals — a globstar segment followed by two parent hops answers from
+ * the parent, though it reads as a glob and a hop.
+ *
+ * Every directory the walk can answer from is judged, not one: a group in the first segment is a
+ * segment that has to be matched, so `{link,src}/**` answers from wherever the alternative names
+ * and the walk returns from all of them. The worst answer wins, so a pattern naming both a directory
+ * in the workspace and one holding `~/.ssh` asks instead of being allowed — the same answer a
+ * `Grep` of a scope holding a home directory gives (PR #334 finding 4).
+ *
+ * A pattern the matcher cannot read at all is its own verdict rather than `outside`. Nothing about
+ * the directory is wrong with it: the walk would not have happened, so there is no directory to add
+ * and no permission that would have let it, and the caller is told the matcher's own reason.
  */
-function globTarget(pattern: string, paths: ResolvedPathScope): 'servable' | 'outside' {
-  const bases = fastGlobBases(pattern);
-  if (bases.length === 0) return 'outside';
-  // Every base, including the ones that resolved nowhere: a pattern with an unresolvable base
-  // walks outside the roots, and dropping that base before the test would make `every` vacuously
-  // true and read as servable.
-  return bases.every((base) => 'path' in paths.detail(base, false)) ? 'servable' : 'outside';
+function globTarget(pattern: string, paths: ResolvedPathScope): ReadToolTargetResult {
+  const { refusal, scopes } = globWalkPlan(pattern, paths.scope.root);
+  if (refusal) return { target: 'invalid', reason: refusal };
+  if (scopes === null) return 'outside';
+  let guarded = false;
+  for (const scope of scopes) {
+    const detail = paths.detail(scope, false);
+    if (!('path' in detail)) return 'outside';
+    // The scope is a directory, not a file: guarded the same way a Grep scope is (#334 finding 4).
+    if (paths.scopeReachesHome(detail.path.canonicalPath)) guarded = true;
+  }
+  return guarded ? 'guarded' : 'servable';
 }
 
-/**
- * The directories a Glob would walk, canonicalized.
- *
- * fast-glob answers this better than a pattern could be parsed for: `{..,src}/*` walks the
- * workspace and never climbs, while `.{.,x}/*` walks its parent, and only the library knows which
- * before the walk happens. The bases are read from the same converted pattern the walk uses, so
- * the two name the same directory even on Windows, where an unconverted pattern reports `.` for
- * every base and would make an absolute pattern look like it walked the workspace.
- */
-function globBases(pattern: string, paths: ResolvedPathScope): string[] {
-  return fastGlobBases(pattern)
-    .map((base) => paths.detail(base, false))
-    .filter((detail): detail is Extract<typeof detail, { path: unknown }> => 'path' in detail)
-    .map((detail) => detail.path.canonicalPath);
-}
+/** What a Read, Glob or Grep call reaches; see {@link readToolTarget}. */
+type ReadToolTarget =
+  'servable' | 'outside' | 'guarded' | 'hidden' | 'none' | { target: 'invalid'; reason: string };
+
+/** {@link ReadToolTarget} with the matcher's reason carried beside an unreadable pattern. */
+type ReadToolTargetResult =
+  'servable' | 'outside' | 'guarded' | { target: 'invalid'; reason: string };
 
 /**
  * What a Read, Glob or Grep call reaches, judged the way the tool judges it: `servable` (the tool
  * can serve it), `outside` (no root contains it, so no approval could make the tool open it),
  * `guarded` (Book's own local settings, or a root that holds a home directory, which keep asking),
  * `hidden` (a root that excludes this subpath, the memory inbox, which also keeps asking), or
- * `none` (no target to judge; the tool rejects the call itself).
+ * `none` (no target to judge; the tool rejects the call itself). A Glob whose pattern the matcher
+ * cannot read is `{ target: 'invalid', reason }`, which is refused with that reason rather than as
+ * an unreachable path.
  */
 function readToolTarget(
   toolName: string,
   args: Record<string, unknown>,
   paths: ResolvedPathScope,
-): 'servable' | 'outside' | 'guarded' | 'hidden' | 'none' {
+): ReadToolTarget {
   if (toolName === 'Read') {
     const raw = pathArgument(toolName, args);
     if (!raw) return 'none';
@@ -737,12 +761,13 @@ function readToolTarget(
   if (toolName === 'Glob') {
     const pattern = typeof args.pattern === 'string' ? args.pattern.trim() : '';
     if (!pattern) return 'none';
-    const target = globTarget(pattern, paths);
-    // A Glob is a subtree walk, so its bases are scopes, not files: guarded the same way a Grep
-    // scope is (PR #334 finding 4).
-    if (target === 'servable' && globBases(pattern, paths).some(paths.scopeReachesHome))
-      return 'guarded';
-    return target;
+    // A Glob is judged by every directory its walk answers from, asked of the walk itself rather
+    // than guessed from the pattern: `{..,src}/*` and `.{.,x}/*` both answer from the workspace and
+    // return nothing outside it, while a globstar or an extglob followed by two parent hops —
+    // `*/../../**`, `**/../../**`, `src/*/../../../*.ts` — normalizes to a leading `../` and
+    // answers from a parent of it. As is a scope no root serves, which is the same answer a Read of
+    // an unreachable path gives.
+    return globTarget(pattern, paths);
   }
   // Grep: no path, or `.`, searches the workspace. Grep never reads Book's memory directory.
   const raw = typeof args.path === 'string' ? args.path.trim() : '';
@@ -924,6 +949,8 @@ export function evaluatePermissionDetail(
     WORKSPACE_READ_TOOLS.has(tool)
       ? readToolTarget(tool, args, paths)
       : undefined;
+  const unreadablePattern =
+    readTarget !== undefined && isUnreadablePattern(readTarget) ? readTarget.reason : undefined;
   const outside = readTarget === 'outside' ? { outsideWorkspace: true as const } : {};
 
   // Deny rules first, then ask, then allow — every one outranking what follows.
@@ -976,6 +1003,14 @@ export function evaluatePermissionDetail(
 
   if (ALWAYS_ALLOWED_TOOLS.has(tool)) {
     return { decision: 'allow', source: 'default' };
+  }
+
+  // A pattern the matcher cannot read: the walk would never have started, so the call is refused
+  // with the matcher's own reason rather than as an unreachable path — no directory can be added to
+  // fix a pattern, and the `additionalDirectories` remedy would send the model somewhere else for
+  // nothing. An `ask` rule returned above, so a user who named the pattern still gets asked.
+  if (unreadablePattern !== undefined) {
+    return { decision: 'refuse', source: 'default', unreadablePattern };
   }
 
   // A target no root contains: the tool refuses it however it is approved, so the call is
