@@ -172,6 +172,39 @@ describe('runAgentLoop workspace reads (#264)', () => {
     }
   });
 
+  it('refuses a pattern the matcher cannot read as a pattern, and never asks', async () => {
+    // The refusal used to be the outside-workspace one, so the model was sent after a directory:
+    // "add its directory to additionalDirectories" for a pattern that is not about a directory at
+    // all, with nothing the user could say that would make the walk happen.
+    const prompt = vi.fn(async () => 'allow' as const);
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2 }),
+      createDefaultRegistry(),
+      'find them',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'default',
+      {
+        provider: toolsThenText([
+          {
+            id: 'g1',
+            name: 'Glob',
+            arguments: { pattern: '!('.repeat(2500) + ')'.repeat(2500) },
+          },
+        ]),
+        isNewSession: false,
+      },
+    );
+    const result = byId(results, 'g1');
+    expect(prompt).not.toHaveBeenCalled();
+    expect(result?.status).toBe('blocked');
+    expect(result?.structuredError?.code).toBe('pattern_unreadable');
+    // The message reaches the model with the reason it can act on, and names no directory to add.
+    expect(result?.content).toContain('The matcher cannot read the pattern');
+    expect(result?.content).not.toMatch(/^Add /m);
+  });
+
   it("keeps asking in a workspace that holds Book's own home", async () => {
     process.env.BOOK_HOME = join(workspace, '.book-home');
     mkdirSync(process.env.BOOK_HOME);

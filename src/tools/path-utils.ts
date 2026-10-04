@@ -59,7 +59,7 @@ export function resolveWorkspacePath(
   // Containment is decided on the canonical pair — both sides after following links, and in one
   // separator — because one directory has more than one spelling. A root the user typed in 8.3
   // short form (`C:\Users\RUNNER~1\…`) is a different string from the long form `realpath`,
-  // fast-glob and ripgrep report, and reading "outside" between the two spellings of the *same*
+  // a glob walk and ripgrep report, and reading "outside" between the two spellings of the *same*
   // directory is what let a `.book/settings.local.json` inside the workspace look like a file
   // somewhere else (#264). The canonical path is the one a read opens and a write lands on, so it
   // is the one that decides, and a link pointing out of a root still resolves outside it.
@@ -276,9 +276,9 @@ export function canonicalizePath(inputPath: string): string {
  *
  * The comparison every "is this path inside that root" test outside a resolution makes: which
  * root served a resolved file, whether a Glob label belongs to the workspace, which root a
- * guarded read was served by. The path arrives canonical — from `realpath`, fast-glob or ripgrep,
- * or from {@link resolveWorkspacePath} — so the root has to be put in that form before the two
- * are compared. An as-given root and a canonical path are two spellings of one directory at
+ * guarded read was served by. The path arrives canonical — from `realpath`, a glob walk or
+ * ripgrep, or from {@link resolveWorkspacePath} — so the root has to be put in that form before
+ * the two are compared. An as-given root and a canonical path are two spellings of one directory at
  * best, and two unrelated ones when the root was typed in 8.3 short form.
  */
 export function isUnderRoot(canonicalPath: string, root: string): boolean {

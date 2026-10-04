@@ -741,22 +741,181 @@ describe('workspace reads need no prompt (#264)', () => {
     ).toEqual({ decision: 'allow', source: 'workspace' });
   });
 
-  it('judges a Glob by where fast-glob would start walking', () => {
+  it('judges a Glob by the directory its walk answers from', () => {
     const { workspace, outside } = setup();
     const s = settings();
     const posix = (path: string) => path.replace(/\\/g, '/');
     const glob = (pattern: string) => evaluatePermission('Glob', { pattern }, s, scope(workspace));
     expect(glob(`${posix(workspace)}/src/*.ts`)).toBe('allow');
     expect(glob(`${posix(outside)}/*.txt`)).toBe('refuse');
-    expect(glob('.{.,x}/*')).toBe('refuse');
-    expect(glob('src/{a,{b,../..}}/*')).toBe('refuse');
-    // These never leave the workspace: fast-glob walks from inside it.
-    expect(glob('src/{a,{b,..}}/*')).toBe('allow');
+    // A hop the pattern only spells through normalization. `posix.normalize` is lexical, so the
+    // hop eats the segment in front of it — a globstar, an extglob, a brace — and the walk answers
+    // from the parent of the workspace, where it returns `../parent.ts`. These were allowed while
+    // the judgment enumerated the literal segment in front of them; the `globWalkScope` tests in
+    // tools/glob-regex.test.ts walk all three out of the workspace.
+    expect(glob('*/../../**')).toBe('refuse');
+    expect(glob('**/../../**')).toBe('refuse');
+    expect(glob('src/*/../../../*.ts')).toBe('refuse');
+    // A `..` inside a brace group is not a hop: the group is one segment the matcher resolves, so
+    // the walk answers from the directory in front of it and returns nothing outside — which is
+    // what the same tests walk, for each of the three below. `.{.,x}/*` was refused before because
+    // `fast-glob` reported a parent for it; the walk it describes does not happen.
+    expect(glob('src/{a,{b,../..}}/*')).toBe('allow');
+    expect(glob('.{.,x}/*')).toBe('allow');
     expect(glob('{..,src}/*')).toBe('allow');
+    // A leading run of dots is not a run of hops. A whole-prefix regex counted `....` as 1⅔ hops
+    // and built an array of a fractional length, which is a RangeError thrown out of the
+    // permission judgment — so one `Glob('..../*')` ended the agent run, before any walk and with
+    // nothing to catch it. Segment by segment it is a name, and the judgment answers.
+    expect(glob('..../*')).toBe('allow');
+    expect(glob('..../x')).toBe('allow');
+    expect(() =>
+      evaluatePermissionDetail('Glob', { pattern: '..../*' }, s, scope(workspace)),
+    ).not.toThrow();
+    // `..foo` *is* read as one hop toward a name: the walk climbs a step and answers from the
+    // parent, which is outside the workspace, so it is refused as a climb and not left to the
+    // filter that would drop its results afterwards.
+    expect(glob('..foo/*')).toBe('refuse');
+    expect(glob('..c/b/*.ts')).toBe('refuse');
+    // These never leave the workspace: the walk answers from inside it.
+    expect(glob('src/{a,{b,..}}/*')).toBe('allow');
     expect(glob('**/*.{ts,tsx}')).toBe('allow');
     expect(glob('logs/{1..3}.txt')).toBe('allow');
     expect(glob('{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}.txt')).toBe('allow');
     expect(glob('~$*.docx')).toBe('allow');
+    // A pattern the matcher cannot read at all is refused on the matcher's reason, not as a place
+    // (see the test below): nested groups are refused on their shape, not only on their length —
+    // 2500 of them are 7500 characters and abort the process once matched.
+    expect(glob('!('.repeat(2500) + ')'.repeat(2500))).toBe('refuse');
+    expect(glob('{a,'.repeat(10_000) + '}'.repeat(10_000))).toBe('refuse');
+  });
+
+  /**
+   * A pattern the matcher cannot read is not a target no root contains. It was refused with
+   * `outsideWorkspace`, which is a place verdict, and the remedy it maps to — "add its directory to
+   * additionalDirectories" — sent the model after a directory that has nothing to do with the
+   * problem. Nothing about a directory can make a walk the matcher refuses to compile happen.
+   */
+  it('judges a workspace whose path holds a glob character as that workspace', () => {
+    // The walk makes an absolute pattern relative against an *escaped* `cwd`, and the judgment did
+    // the same — so in a workspace checked out under `project (2)` or `repo[x]` every absolute
+    // pattern computed a spurious climb and was refused as outside the workspace, with a remedy
+    // (`additionalDirectories`) that could never help. Both layers now read the directory as it is.
+    const base = tempDir('book-perm-metachar-');
+    const s = settings();
+    // `project*` is not a legal directory name on Windows, so the star is judged there through the
+    // Windows paths `glob-regex.test.ts` asks the same judgment about, not through a directory that
+    // cannot be created.
+    for (const name of [
+      'project (2)',
+      'repo[x]',
+      ...(process.platform === 'win32' ? [] : ['project*']),
+    ]) {
+      const workspace = join(base, name);
+      mkdirSync(join(workspace, 'src'), { recursive: true });
+      writeFileSync(join(workspace, 'src', 'a.ts'), 'a\n');
+      const inWorkspace = scope(workspace);
+      for (const pattern of [
+        join(workspace, 'src', '*.ts').replace(/\\/g, '/'),
+        join(workspace, '**', '*.ts').replace(/\\/g, '/'),
+        'src/*.ts',
+      ]) {
+        expect(
+          evaluatePermissionDetail('Glob', { pattern }, s, inWorkspace),
+          `${name} ${pattern}`,
+        ).toEqual({ decision: 'allow', source: 'workspace' });
+      }
+      // And a real climb out of it is still a climb, metacharacters or not.
+      expect(
+        evaluatePermissionDetail(
+          'Glob',
+          { pattern: join(base, name, '..', '..', '*.ts').replace(/\\/g, '/') },
+          s,
+          inWorkspace,
+        ),
+        name,
+      ).toMatchObject({ decision: 'refuse', outsideWorkspace: true });
+    }
+  });
+
+  it('refuses a pattern the matcher cannot read as a pattern, not as an unreachable place', () => {
+    const { workspace } = setup();
+    const s = settings();
+    const pattern = '!('.repeat(2500) + ')'.repeat(2500);
+
+    const verdict = evaluatePermissionDetail('Glob', { pattern }, s, scope(workspace));
+
+    expect(verdict).toMatchObject({ decision: 'refuse', source: 'default' });
+    expect(verdict.outsideWorkspace).toBeUndefined();
+    expect(verdict.unreadablePattern).toContain('32');
+    // A rule the user wrote still gets asked, exactly as an outside target does — a user who named
+    // the pattern is answering for themselves.
+    const rule = 'Glob(**)';
+    expect(
+      evaluatePermissionDetail('Glob', { pattern }, settings({ ask: [rule] }), scope(workspace)),
+    ).toMatchObject({ decision: 'ask', source: 'ask', matchedRule: rule });
+  });
+
+  /**
+   * A brace group in the first segment is one segment the matcher has to resolve, so the walk answers
+   * from whichever alternative matched and returns from all of them. The judgment used the one
+   * directory in front of the group, which is how `{link,src}/**` — `link` a directory outside the
+   * workspace — was allowed while the walk returned a file from it.
+   */
+  it('judges every directory a group in the first segment names', () => {
+    const { workspace, outside } = setup();
+    mkdirSync(join(workspace, 'src'), { recursive: true });
+    writeFileSync(join(workspace, 'src', 'a.ts'), 'a\n');
+    writeFileSync(join(outside, 'secret.ts'), 'secret\n');
+    symlinkSync(outside, join(workspace, 'link'), 'junction');
+    const s = settings();
+    const glob = (pattern: string) => evaluatePermission('Glob', { pattern }, s, scope(workspace));
+
+    // Named on its own, the link is followed out of the workspace and refused.
+    expect(glob('link/**')).toBe('refuse');
+    // Behind a group, it was answered from `src` alone and allowed while the walk returned the
+    // file under `link`. Both directories are judged, and the worse answer wins.
+    expect(glob('{link,src}/**')).toBe('refuse');
+    // The group that names only directories inside the workspace is still ordinary.
+    expect(glob('{src,src}/**')).toBe('allow');
+    expect(glob('src/{a,b}/*.ts')).toBe('allow');
+  });
+
+  it('guards a Glob whose group names a directory that holds a home', () => {
+    // PR #334 finding 4, through a group. A group names directories *below* the directory the walk
+    // stands in, so the alternative that reaches a home is a directory of the workspace's own that is
+    // one — Book's own guard does not care which argument named it.
+    const workspace = tempDir('book-dir-group-ws-');
+    const home = join(workspace, 'home');
+    mkdirSync(join(home, '.ssh'), { recursive: true });
+    mkdirSync(join(workspace, 'src'), { recursive: true });
+    writeFileSync(join(home, '.ssh', 'id_rsa'), 'PRIVATE sk-test\n');
+    writeFileSync(join(workspace, 'src', 'a.ts'), 'sk-test\n');
+    const guards = { homeGuards: [realpathSync.native(home)] };
+    const s = settings();
+
+    // Judged on the `src` alternative alone, the group was allowed and the walk listed the home.
+    expect(
+      evaluatePermissionDetail('Glob', { pattern: '{src,home}/**' }, s, scope(workspace, guards)),
+    ).toEqual({ decision: 'ask', source: 'default' });
+    // Every directory under a root that holds a home is guarded, so a group of directories in that
+    // workspace is guarded however many alternatives it names.
+    expect(
+      evaluatePermissionDetail('Glob', { pattern: '{src,src}/**' }, s, scope(workspace, guards)),
+    ).toEqual({ decision: 'ask', source: 'default' });
+
+    // A workspace whose root holds no home is the ordinary unprompted read, group or not.
+    const plain = tempDir('book-dir-group-plain-');
+    mkdirSync(join(plain, 'src'), { recursive: true });
+    writeFileSync(join(plain, 'src', 'a.ts'), 'a\n');
+    expect(
+      evaluatePermissionDetail(
+        'Glob',
+        { pattern: '{src,src}/**' },
+        s,
+        scope(plain, { homeGuards: [realpathSync.native(home)] }),
+      ),
+    ).toEqual({ decision: 'allow', source: 'workspace' });
   });
 
   it('refuses an outside target even where reads keep asking, and still honours an ask rule', () => {
@@ -1526,6 +1685,51 @@ describe('an honored additional directory reads like the workspace (#300)', () =
         scope(proj, guards, [home]),
       ),
     ).toEqual({ decision: 'allow', source: 'workspace' });
+  });
+
+  /**
+   * Finding 2. The Glob guard read the directory the walk *crawled from*, which for a pattern that
+   * names a directory and then a globstar is the directory in front of it — so `link/**` answered
+   * from the workspace, was allowed, and returned `link/.ssh/id_rsa` from a home inside an approved
+   * root. `link/*` asked, which is the tell: the two patterns differ only in the trailing globstar.
+   */
+  it('guards a Glob whose walk answers through a link to a home inside an approved root', () => {
+    const container = tempDir('book-dir-link-container-');
+    const home = join(container, 'home');
+    const proj = join(container, 'proj');
+    mkdirSync(join(home, '.ssh'), { recursive: true });
+    mkdirSync(join(proj, 'src'), { recursive: true });
+    writeFileSync(join(home, '.ssh', 'id_rsa'), 'PRIVATE sk-test\n');
+    writeFileSync(join(proj, 'src', 'a.ts'), 'sk-test\n');
+    symlinkSync(home, join(proj, 'link'), 'junction');
+    const guards = { homeGuards: [realpathSync.native(home)] };
+    const s = settings();
+    // The home is inside an approved root, so its files are readable — as a *file*. A directory that
+    // holds one is still guarded.
+    const withLink = scope(proj, guards, [container]);
+
+    expect(evaluatePermissionDetail('Glob', { pattern: 'link/**' }, s, withLink)).toEqual({
+      decision: 'ask',
+      source: 'default',
+    });
+    // And the same through a group, which names the same directory with one pattern.
+    expect(evaluatePermissionDetail('Glob', { pattern: '{link,src}/**' }, s, withLink)).toEqual({
+      decision: 'ask',
+      source: 'default',
+    });
+    // A link into an ordinary approved directory is that directory's answer, still unprompted.
+    const other = tempDir('book-dir-link-other-');
+    mkdirSync(join(other, 'src'), { recursive: true });
+    writeFileSync(join(other, 'src', 'a.ts'), 'sk-test\n');
+    symlinkSync(other, join(proj, 'elsewhere'), 'junction');
+    expect(
+      evaluatePermissionDetail(
+        'Glob',
+        { pattern: 'elsewhere/**' },
+        s,
+        scope(proj, guards, [other]),
+      ),
+    ).toMatchObject({ decision: 'allow' });
   });
 
   /**

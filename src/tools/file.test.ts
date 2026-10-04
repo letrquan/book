@@ -9,6 +9,74 @@ vi.mock('../async.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../async.js')>();
   return { ...actual, yieldToEventLoop: vi.fn(actual.yieldToEventLoop) };
 });
+
+/**
+ * Records the options every walk is asked for, and walks exactly as the library would. A walk
+ * handed no signal only notices a cancellation once it has listed everything it was going to,
+ * which no result of the call can show: the call answers the same either way.
+ */
+const walks = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>> }));
+vi.mock('tinyglobby', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('tinyglobby')>();
+  return {
+    ...actual,
+    glob: (patterns: string | string[], options?: Record<string, unknown>) => {
+      walks.calls.push({ patterns, ...options });
+      return actual.glob(patterns, options);
+    },
+  };
+});
+
+/**
+ * Directories a walk is told it cannot read, which is how the three tests below ask what Glob and
+ * Grep do with one. `chmod 000` is the real way to get such a directory and it reaches only part of
+ * the world: Windows does not remove read access with a mode bit, and a root reads `000` as it reads
+ * `755`. The failure is therefore injected where it is actually observed — the `readdir` a walk
+ * records through (`walk-fs.ts`) — so the recorder, the note it feeds and the walk around the
+ * directory are all the real thing on every platform, and no test has to be skipped for either.
+ */
+const unreadable = vi.hoisted(() => new Set<string>());
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const { resolve } = await import('node:path');
+  const readdirPassthrough = actual.readdir as unknown as (
+    path: unknown,
+    options: unknown,
+    callback: (error: NodeJS.ErrnoException | null, entries?: unknown) => void,
+  ) => void;
+  return {
+    ...actual,
+    default: actual,
+    readdir: ((path: unknown, maybeOptions: unknown, maybeCallback?: unknown) => {
+      // `readdir(path, callback)` is the same call with the options left out, and both forms have to
+      // keep working for everything else in the graph; only the named directory answers differently.
+      const callback = typeof maybeCallback === 'function' ? maybeCallback : undefined;
+      const options = typeof maybeOptions === 'function' ? undefined : maybeOptions;
+      if (!callback) {
+        return new Promise<unknown>((done, failed) =>
+          readdirPassthrough(path, options, (error, entries) =>
+            error ? failed(error) : done(entries),
+          ),
+        );
+      }
+      const withError = callback as (
+        error: NodeJS.ErrnoException | null,
+        entries?: unknown,
+      ) => void;
+      const spelled = String(path);
+      // A walk spells a directory with a trailing separator, so the two are compared resolved.
+      if ([...unreadable].some((directory) => resolve(spelled) === resolve(directory))) {
+        withError(
+          Object.assign(new Error(`EACCES: permission denied, scandir '${spelled}'`), {
+            code: 'EACCES',
+          }),
+        );
+        return;
+      }
+      return readdirPassthrough(path, options, withError);
+    }) as typeof actual.readdir,
+  };
+});
 import { buildRipgrepArgs, fileTools, GREP_EVENT_MAX_CHARS, RipgrepLineReader } from './file.js';
 import { createRegistry } from './registry.js';
 import { boundToolResultOutput, TOOL_RESULT_MAX_BYTES } from './result.js';
@@ -34,12 +102,18 @@ import { shortPathName, withLowercaseDriveLetter } from '../test/short-path.js';
 let dir: string;
 const ctx: ToolContext = { workspaceRoot: '', env: {} };
 
+/** The directory the walks of one test are told they cannot read (see the `node:fs` mock above). */
+const makeUnreadable = (directory: string) => unreadable.add(directory);
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'book-file-'));
   ctx.workspaceRoot = dir;
   ctx.fileObservationLedger = new Map();
 });
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => {
+  unreadable.clear();
+  rmSync(dir, { recursive: true, force: true });
+});
 
 const read = fileTools.find((t) => t.name === 'Read')!;
 const write = fileTools.find((t) => t.name === 'Write')!;
@@ -1121,6 +1195,214 @@ describe('glob', () => {
       rmSync(outsidePath, { force: true });
     }
   });
+
+  it('answers a pathologically nested brace pattern instead of taking the process down', async () => {
+    // 10 000 nested brace groups expand into a regular expression whose compilation overflows
+    // V8's regexp stack — the process aborts, which no catch can intercept. The pattern is
+    // therefore refused on its length before the matcher ever sees it, the way the previous
+    // matcher refused it, so the call answers instead of taking the process down.
+    const pattern = '{a,'.repeat(10_000) + '}'.repeat(10_000);
+
+    const r = await glob.execute({ pattern }, ctx);
+
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.code).toBe('invalid_pattern');
+    expect(r.structuredError?.message).toContain('10000');
+  }, 60_000);
+
+  it('refuses a pattern nested deeply enough to crash the matcher, below the length limit', async () => {
+    // Length alone does not catch this one: 2500 extglob groups are 7500 characters, well inside
+    // the limit, and picomatch compiles them into a regular expression V8 refuses to build
+    // (`RegExpCompiler Allocation failed`) the first time a path is matched against it — a fatal
+    // error no `catch` intercepts, so the call has to answer before the walk starts.
+    const pattern = '!('.repeat(2500) + ')'.repeat(2500);
+
+    const r = await glob.execute({ pattern }, ctx);
+
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.code).toBe('invalid_pattern');
+    expect(r.structuredError?.message).toContain('32');
+  }, 60_000);
+
+  it('drops a gitignore pattern too long for the matcher and keeps the rest', async () => {
+    // The walk compiles every entry of its `ignore` list through the same matcher as the pattern,
+    // and the Glob tool's list is the repository's own `.gitignore`. One line of 10 000 nested
+    // brace groups is a fatal regexp error, below the reach of any catch, so the entry is
+    // dropped on its length — and the ordinary line beside it still prunes what it names.
+    mkdirSync(join(dir, 'src'));
+    mkdirSync(join(dir, 'dist'));
+    writeFileSync(join(dir, 'src', 'app.ts'), 'app');
+    writeFileSync(join(dir, 'dist', 'app.js'), 'ignored');
+
+    const r = await glob.execute(
+      { pattern: '**/*' },
+      { ...ctx, gitignorePatterns: ['{a,'.repeat(10_000) + '}'.repeat(10_000), 'dist'] },
+    );
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('src/app.ts');
+    expect(r.content).not.toContain('dist/app.js');
+  }, 60_000);
+
+  it('drops a gitignore line nested too deeply for the matcher and keeps the rest', async () => {
+    // The same fatal matcher error, reached through the `ignore` list this time, and below the
+    // length limit. `.gitignore` is repository-controlled input, so the entry goes and the
+    // ordinary line beside it still applies.
+    mkdirSync(join(dir, 'src'));
+    mkdirSync(join(dir, 'dist'));
+    writeFileSync(join(dir, 'src', 'app.ts'), 'app');
+    writeFileSync(join(dir, 'dist', 'app.js'), 'ignored');
+
+    const r = await glob.execute(
+      { pattern: '**/*' },
+      { ...ctx, gitignorePatterns: ['!('.repeat(2500) + ')'.repeat(2500), 'dist'] },
+    );
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('src/app.ts');
+    expect(r.content).not.toContain('dist/app.js');
+  }, 60_000);
+
+  it('keeps a root-anchored gitignore line pruning the directory it names', async () => {
+    // Git reads `/build` as the repository root's `build`, but the walk reads a leading `/` as the
+    // filesystem root: handed over as written it moves the search to `/` — every directory from
+    // there down is listed to reach one the pattern can never match — and prunes nothing, so the
+    // file comes back. The line is respelled where the walk reads it.
+    mkdirSync(join(dir, 'build'));
+    mkdirSync(join(dir, 'src'));
+    writeFileSync(join(dir, 'build', 'out.js'), 'built');
+    writeFileSync(join(dir, 'src', 'app.ts'), 'app');
+
+    const r = await glob.execute({ pattern: '**/*' }, { ...ctx, gitignorePatterns: ['/build'] });
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('src/app.ts');
+    expect(r.content).not.toContain('build/out.js');
+  });
+
+  it('walks a workspace whose directory name holds a glob character', async () => {
+    // The walk makes an absolute pattern relative against an *escaped* `cwd` (`project (2)` becomes
+    // `project \(2\)`), so it never matched the directory the walk was reading: an absolute Glob
+    // answered empty. The walk is now handed the part of the pattern below the workspace instead,
+    // relative to the `cwd` it is already in, which it reads as the name it is.
+    const outer = mkdtempSync(join(tmpdir(), 'book-file-metachar-'));
+    const ws = join(outer, 'project (2)');
+    mkdirSync(join(ws, 'src'), { recursive: true });
+    writeFileSync(join(ws, 'src', 'a.ts'), 'a');
+    try {
+      const inWorkspace = { ...ctx, workspaceRoot: ws };
+      const relative = await glob.execute({ pattern: 'src/*.ts' }, inWorkspace);
+      expect(relative.status).toBe('success');
+      expect(relative.content).toContain('src/a.ts');
+
+      // And the absolute spelling of that same walk answers, which is what the walk side is for:
+      // the judgment refuses or serves it, and the walk has to be able to answer it.
+      const absolute = await glob.execute({ pattern: join(ws, 'src', '*.ts') }, inWorkspace);
+      expect(absolute.status).toBe('success');
+      expect(absolute.content).toContain('src/a.ts');
+      // The same file, asked for by the same absolute path, and answered relative to the workspace
+      // it was found in — which is the answer the walk could not give before.
+      expect((absolute.data as { files?: string[] }).files).toEqual(['src/a.ts']);
+    } finally {
+      rmSync(outer, { recursive: true, force: true });
+    }
+  });
+
+  it('walks a workspace whose directory name holds a bracket or a star', async () => {
+    // The same escape, through the other characters that take one: `[work]` and `work*` are read
+    // by the walk as patterns until they are escaped, and the relative walk needs no escape. `*` is
+    // not a legal character in a Windows file name, so the star is walked where a directory can hold
+    // one; the spelling itself is judged on Windows in `glob-regex.test.ts`.
+    for (const name of process.platform === 'win32' ? ['work[1]'] : ['work[1]', 'work*1']) {
+      const outer = mkdtempSync(join(tmpdir(), 'book-file-metachar-'));
+      const ws = join(outer, name);
+      mkdirSync(join(ws, 'src'), { recursive: true });
+      writeFileSync(join(ws, 'src', 'a.ts'), 'a');
+      try {
+        const inWorkspace = { ...ctx, workspaceRoot: ws };
+        const absolute = await glob.execute({ pattern: join(ws, 'src', '*.ts') }, inWorkspace);
+        expect(absolute.status, name).toBe('success');
+        expect((absolute.data as { files?: string[] }).files, name).toEqual(['src/a.ts']);
+      } finally {
+        rmSync(outer, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('says which directories it could not read instead of answering as if it read them all', async () => {
+    // tinyglobby hands fdir `suppressErrors`, which it offers no way to change, and fdir answers
+    // `null` for a directory it could not list: the walk returns the files it did read and no word
+    // that there are more, which reads as "this is everything". fast-glob surfaced the error; this
+    // names the directories instead.
+    const closed = join(dir, 'locked');
+    mkdirSync(join(closed, 'deep'), { recursive: true });
+    writeFileSync(join(closed, 'deep', 'secret.ts'), 'secret');
+    writeFileSync(join(dir, 'open.ts'), 'open');
+    makeUnreadable(closed);
+    try {
+      const r = await glob.execute({ pattern: '**/*.ts' }, ctx);
+      expect(r.status).toBe('success');
+      expect(r.content).toContain('open.ts');
+      expect(r.content).not.toContain('secret.ts');
+      // The directory is named as the caller would write it, with the code that failed, and the
+      // answer says what it is.
+      expect(r.content).toContain('partial');
+      expect(r.content).toMatch(/locked.*\(EACCES\)/);
+    } finally {
+      unreadable.delete(closed);
+    }
+  }, 60_000);
+
+  it('says nothing about a walk that read everything it was asked for', async () => {
+    writeFileSync(join(dir, 'a.ts'), 'a');
+    const r = await glob.execute({ pattern: '**/*.ts' }, ctx);
+    expect(r.status).toBe('success');
+    expect(r.content).toBe('a.ts');
+  });
+
+  it('names an unreadable directory even when the walk found nothing at all', async () => {
+    // "No files found" claims the workspace has none. When the walk could not read a directory, the
+    // claim is the one thing it is not entitled to make, so the note is there with or without
+    // results.
+    mkdirSync(join(dir, 'locked'));
+    writeFileSync(join(dir, 'locked', 'secret.ts'), 'secret');
+    makeUnreadable(join(dir, 'locked'));
+    try {
+      const r = await glob.execute({ pattern: '**/*.secret' }, ctx);
+      expect(r.status).toBe('success');
+      expect(r.content).toContain('No files found');
+      expect(r.content).toContain('partial');
+      expect(r.content).toMatch(/locked.*\(EACCES\)/);
+    } finally {
+      unreadable.delete(join(dir, 'locked'));
+    }
+  }, 60_000);
+
+  it('hands the walk the signal it is to stop on', async () => {
+    // A walk handed no signal notices a cancellation only once it has listed everything, and then
+    // answers the same thing it would have: the difference is invisible in the result, so it is
+    // asked for here.
+    writeFileSync(join(dir, 'a.ts'), 'a');
+    const controller = new AbortController();
+    walks.calls.length = 0;
+
+    await glob.execute({ pattern: '**/*' }, { ...ctx, signal: controller.signal });
+
+    expect(walks.calls).toHaveLength(1);
+    expect(walks.calls[0].signal).toBe(controller.signal);
+  });
+
+  it('does not answer a cancelled walk with what it had already found', async () => {
+    // The signal reaches the agent loop as a thrown error, not as a result: a walk that stopped
+    // early must not be reported as the answer to a question nobody finished asking.
+    writeFileSync(join(dir, 'a.ts'), 'a');
+    const controller = new AbortController();
+    controller.abort(new Error('glob cancelled'));
+
+    await expect(
+      glob.execute({ pattern: '**/*' }, { ...ctx, signal: controller.signal }),
+    ).rejects.toThrow('glob cancelled');
+  });
 });
 
 describe('grep', () => {
@@ -1542,6 +1824,81 @@ describe('grep', () => {
 
     expect(result.content).toContain('sub/visible.ts');
     expect(result.content).not.toContain('secret.ts');
+  });
+
+  it('keeps a root-anchored gitignore line pruning what it names (portable)', async () => {
+    // The same respelling the Glob walk gets, on the walk a scoped Grep uses to expand its
+    // include: handed over as written, `/sub/secret.ts` names a filesystem path the walk cannot
+    // reach from the scope, so it prunes nothing.
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    writeFileSync(join(dir, 'sub', 'secret.ts'), 'const hidden = 1;');
+    writeFileSync(join(dir, 'sub', 'visible.ts'), 'const hidden = 2;');
+
+    const result = await grep.execute(
+      { pattern: 'hidden', include: '**/*.ts', path: 'sub' },
+      {
+        ...ctx,
+        env: { BOOK_GREP_BACKEND: 'typescript' },
+        gitignorePatterns: ['/sub/secret.ts'],
+      },
+    );
+
+    expect(result.content).toContain('sub/visible.ts');
+    expect(result.content).not.toContain('secret.ts');
+  });
+
+  it('says which directories its include walk could not read (portable)', async () => {
+    // The same walk a Glob makes, with the same silence: a directory the walk could not list takes
+    // its files out of the answer, and "0 matches" for a file it never opened is a claim it cannot
+    // make. Named here, whether or not anything matched.
+    const closed = join(dir, 'locked');
+    mkdirSync(closed, { recursive: true });
+    writeFileSync(join(closed, 'hidden.ts'), 'const secret = 1;');
+    writeFileSync(join(dir, 'open.ts'), 'const secret = 2;');
+    makeUnreadable(closed);
+    const portable = { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' } };
+    try {
+      const found = await grep.execute({ pattern: 'secret', include: '**/*.ts' }, portable);
+      expect(found.status).toBe('success');
+      expect(found.content).toContain('open.ts');
+      expect(found.content).not.toContain('hidden.ts');
+      expect(found.content).toContain('partial');
+      expect(found.content).toMatch(/locked.*\(EACCES\)/);
+
+      // And with nothing to report: "No matches found" alone would be the one untrue sentence.
+      const none = await grep.execute(
+        { pattern: 'nothing-matches-this', include: '**/*.ts' },
+        portable,
+      );
+      expect(none.content).toContain('No matches found');
+      expect(none.content).toContain('partial');
+    } finally {
+      unreadable.delete(closed);
+    }
+  }, 60_000);
+
+  it('says nothing about an include walk that read everything it was asked for (portable)', async () => {
+    writeFileSync(join(dir, 'a.ts'), 'const x = 1;');
+    const result = await grep.execute(
+      { pattern: 'const', include: '**/*.ts' },
+      { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' } },
+    );
+    expect(result.status).toBe('success');
+    expect(result.content).toBe('a.ts:1: const x = 1;');
+  });
+
+  it('hands its include walk the signal it is to stop on (portable)', async () => {
+    writeFileSync(join(dir, 'a.ts'), 'const x = 1;');
+    const controller = new AbortController();
+    walks.calls.length = 0;
+
+    await grep.execute(
+      { pattern: 'const', include: '**/*.ts' },
+      { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' }, signal: controller.signal },
+    );
+
+    expect(walks.calls.length).toBeGreaterThan(0);
+    expect(walks.calls.every((call) => call.signal === controller.signal)).toBe(true);
   });
 
   it('applies C as symmetric context on both backends', async () => {
@@ -3556,7 +3913,7 @@ describe('additionalRoots', () => {
 
   it('walks an absolute Glob pattern once, not once per root', async () => {
     // A relative pattern was run against every root in turn, and an absolute one was run against
-    // every root too — where it resolves to the same files each time, because fast-glob ignores
+    // every root too — where it resolves to the same files each time, because a glob walk ignores
     // `cwd` for an absolute pattern. The work was repeated per honored root, and a root that
     // happened to hold a copy of the pattern's subtree was walked as well.
     const r = await glob.execute({ pattern: join(extra, '**', '*.txt') }, ctx);
@@ -3725,7 +4082,7 @@ describe('a workspace root reached through a link', () => {
  * (`C:\Users\runneradmin\AppData\Local\Temp`) and the DOS 8.3 form (`C:\Users\RUNNER~1\AppData`),
  * plus a drive letter in either case and separators either way. GitHub's Windows runners put
  * `os.tmpdir()` in the short form, so every workspace root in this file is spelled short while
- * `realpath`, fast-glob and ripgrep all answer in the long form.
+ * `realpath`, a glob walk and ripgrep all answer in the long form.
  *
  * A root compared as given against a path in that form reads as outside the workspace, and every
  * guard that keys on the root then cannot name its own file: the `.book/settings.local.json`

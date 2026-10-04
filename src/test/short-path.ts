@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
  * Windows lets one directory be written two ways: the long form (`C:\Users\runneradmin\AppData`)
  * and the DOS 8.3 form (`C:\Users\RUNNER~1\AppData`). The two are the same directory and two
  * different strings, and a process that compares a root the user typed against a path `realpath`,
- * fast-glob or ripgrep reported reads "outside" between them. GitHub's Windows runners put
+ * a glob walk or ripgrep reported reads "outside" between them. GitHub's Windows runners put
  * `os.tmpdir()` in the short form, so a test workspace root is spelled short while every tool
  * answers in long form; these tests use this to reproduce that on any machine.
  *

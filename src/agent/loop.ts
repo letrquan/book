@@ -58,7 +58,11 @@ import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { realWorkspaceRoot } from '../tools/path-utils.js';
 import { homeGuards, resolveAdditionalRoots, rootHoldsHome } from '../additional-roots.js';
-import { excludedPathRefusal, outsideWorkspaceRefusal } from './refusal-remedies.js';
+import {
+  excludedPathRefusal,
+  invalidPatternRefusal,
+  outsideWorkspaceRefusal,
+} from './refusal-remedies.js';
 import {
   isToolDefinitionAllowed,
   parseCapabilityRules,
@@ -2642,14 +2646,19 @@ export async function runAgentLoop(
             skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'permission_denied');
           }
           log.debug('refused a read the tool cannot serve', { tool: canonName });
-          // Two refusals, two messages: an unservable path is fixed by adding its directory, an
-          // excluded one is not, and naming a directory for it would be a dead end.
+          // Three refusals, three messages: an unservable path is fixed by adding its directory, an
+          // excluded one is not, and a pattern the matcher cannot read is fixed by writing another
+          // pattern — naming a directory for either of the last two would be a dead end.
           const refusal = verdict.excludedPath
             ? excludedPathRefusal(canonName, call, { toolCallId: call.id })
-            : outsideWorkspaceRefusal(canonName, call, {
-                toolCallId: call.id,
-                additionalRoots,
-              });
+            : verdict.unreadablePattern !== undefined
+              ? invalidPatternRefusal(canonName, call, verdict.unreadablePattern, {
+                  toolCallId: call.id,
+                })
+              : outsideWorkspaceRefusal(canonName, call, {
+                  toolCallId: call.id,
+                  additionalRoots,
+                });
           noteChildRefusal(canonName, refusal.content);
           toolResults[callIndex] = refusal;
           return undefined;

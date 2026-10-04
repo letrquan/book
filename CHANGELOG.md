@@ -87,6 +87,90 @@ true` is the one loosening-adjacent key a workspace layer may set, and the loade
   refused" was a promise `Check` did not keep; its timeout-versus-failure distinction is unchanged,
   and `Bash`'s messages and behaviour are otherwise untouched.
 
+- **A Glob pattern could take the process down** (GHSA-vfj7-8cjw-p6xm). `fast-glob` is replaced by
+  `tinyglobby`, which drops `micromatch` and with it `braces` — the package the advisory names, and
+  the whole reason it was there. Neither remains in the dependency tree. A pattern is now read by
+  `picomatch` directly, and refused on its **shape** as well as its length before the matcher sees
+  it: the length limit `micromatch` enforced (10 000 characters) is kept, and two patterns well
+  inside it are added. `'!('×2500 + ')'×2500` — 7500 characters — compiles in 201 ms and then
+  aborts Node with `FATAL ERROR: RegExpCompiler Allocation failed` the first time a path is matched
+  against it, and `'+('×3300 + ')'×3300` — 9900 characters — takes picomatch's own parse 145 s.
+  Both are below the reach of any `catch`. What they have in common is nesting, and nesting costs
+  cubic time: 32 deep compiles in 5 ms, 256 in 74 ms, 2000 in 38 s. So a pattern may nest groups 32
+  deep and open 256 of them; nothing real comes near either, and the two bounds answer with a tool
+  error instead of aborting. The refusal is asked of the **exact string `picomatch` compiles** — the
+  one the walk is handed, separators converted on Windows — so it cannot be evaded by spelling a
+  brace group with backslashes. A pattern refused for its shape is no longer reported as a path
+  outside the workspace: nothing about a directory could make that walk happen, so the answer is its
+  own refusal — `pattern_unreadable`, naming the matcher's reason and no directory to add. A walk
+  compiles the entries of its `ignore` option — the repository's own
+  `.gitignore` — through the same matcher, so those are refused the same way: an entry picomatch
+  cannot compile is **dropped before the walk** rather than obeyed, and the rest of the file still
+  applies. Four more entries go for the same reason — the walk reads them as something other than
+  what git means, so obeying them would change what the walk does: one that **climbs** (`../x`,
+  `/../x`, `a/../..`), which moves the crawl root out of the workspace and still ignores nothing;
+  one that **starts `!(`**, which picomatch compiles as an extglob matching everything _except_ what
+  the line names; `/.` or `//.`, which name the walk's own root and would blank out every result;
+  and a **directory-only** line (`build/`), respelled to `build/**/*` so it keeps ignoring what is
+  inside the directory without also ignoring a **file** named `build`, which git keeps. Each dropped
+  entry is named — the entry itself and why it went — through `BOOK_DEBUG=1`, once per walk, so a
+  `.gitignore` the walk cannot obey is visible rather than silent.
+  **Where a walk answers from is now asked of the walk**, modelled on what `tinyglobby` really does
+  rather than on how the pattern reads:
+  `posix.normalize` collapses a glob segment against the `..` after it, so `*/../../**`,
+  `**/../../**` and `src/*/../../../*.ts` are walked as `../**` from the parent of the workspace and
+  **are refused** as they should be — a permission bypass the migration opened by reading a dynamic
+  segment as a literal base. A brace group is read as the match it is, because a group is resolved
+  at match time and cannot move the walk: `{..,src}/*`, `src/{a,{b,../..}}/*` and `.{.,x}/*` all
+  answer from inside the workspace and return nothing outside it, so the first two are allowed as
+  before and the third is **allowed where `fast-glob`'s answer had it refused**; an absolute pattern
+  naming an honored `additionalDirectories` root still reaches it. The hops are counted **segment by
+  segment**, as `tinyglobby` counts them: a whole-prefix regex read `....` as 1⅔ hops and built an
+  array of a fractional length, which is a `RangeError` thrown out of the permission judgment, so a
+  single `Glob('..../*')` — a legal directory name — ended the agent run before any walk. `..foo` and
+  `..c` are one hop toward a name, not two hops, and are judged as the walk reads them. Where the
+  walk _searches from_ can be an ancestor of where it answers — a pattern that climbs lists the
+  directories between on its way — but only what the pattern matches comes back, and **every**
+  directory a walk can return a result from is judged, not the one in front of it: the directory a
+  pattern names before a trailing `**`, and each alternative of a group in the first segment. That is
+  what stops `link/**` (a link out of the workspace, and with a home inside an approved root a silent
+  listing of `~/.ssh` files while `link/*` correctly asked) and `{link,src}/**` from being judged as
+  the workspace. A workspace whose path holds a glob character — `project (2)`, `repo[x]` — is read as
+  itself on both sides now: `tinyglobby` makes an absolute pattern relative against an _escaped_ `cwd`,
+  so every absolute pattern in such a workspace used to refuse as outside the workspace and walk to
+  nothing, with both layers agreeing on the wrong answer. The walk is handed the part of the
+  pattern below the directory it already stands in, which is the same walk without the comparison.
+  Every path is read with the module of the platform being judged rather than of the host, so the
+  Windows reading of a Windows path is the same on any platform and the judgment is never the host's:
+  on Windows an absolute pattern was compared with the POSIX rules, which read `C:\ws\src\*.ts` and
+  `/ws/src/*.ts` as relative segment lists and answered the _relative_ scope `../../../tmp/ws/src` — a
+  directory the permission layer then resolves against the workspace and refuses as a place the
+  pattern never named. A rooted pattern is read as the root of the drive the walk is on, and every
+  scope is answered absolute in the platform's own reading, spelled the way a walk spells it.
+  **A root-anchored `.gitignore` line is respelled where the walk reads it**:
+  git means `/build` relative to the repository root, while the walk reads a leading `/` as the
+  filesystem root and normalizes `/build` into `../../../build` — which moves the crawl to `/`, lists
+  every directory from there down to the workspace, and still prunes nothing. It becomes `build`
+  plus `build/**` (`loadGitignore` itself is unchanged), and the walk stays where it was. **Every walk
+  is now handed the abort signal** — Glob, Grep's include
+  walk and the file-mention walk — because `fdir` checks it between directories and otherwise lists
+  the rest of the repository before the call notices the cancellation. **A file mention can name a
+  symlinked directory**: the walk is entered through one but does not report the link itself, so
+  `@linkdir` had nothing to offer and the ancestors of every reported entry are spelled out where
+  the walk left them out. The mention list is also sized in one batch rather than one `stat` at a
+  time, and checked for cancellation after, so a list of fifty costs one round trip instead of fifty.
+  **A walk that could not read everything is no longer reported as one that read it all.** fdir is
+  handed `suppressErrors` by `tinyglobby`, which offers no way to change it, so an unreadable
+  directory (`EACCES`) was walked around in silence: `Glob **/*` answered the readable files as if
+  that were the whole workspace, and a `Grep` reported `0 matches` for files it never opened.
+  `fast-glob` surfaced the error. The walk is now handed an `fs` adapter that records what it could
+  not read, and Glob and the Grep include walk **name the directories they could not read** —
+  with the code that failed — whether or not anything matched, so `No matches found` is never the
+  answer for a walk that never got to read. A file-mention walk stays silent about them: it is a hint
+  at what can be typed, not an account of what is in the workspace.
+  The lockfile also picks up the current `hono`, `qs`, `fast-uri` and `ip-address`, which close four
+  moderate advisories.
+
 ### Security
 
 - **High-severity dependency advisories cleared** (#361). `undici` moves to 8.11.2 and the
