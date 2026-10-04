@@ -9,6 +9,7 @@ import type { SlashCommand } from '../types/commands.js';
 import type { FileObservation, ToolContext } from '../types/tools.js';
 import { createHash } from 'crypto';
 import { collectStaleCheckpointFiles, renderSessionState } from './session-state.js';
+import { reasoningReplayKeeps } from './reasoning-replay.js';
 import { normalizeObservedPath, supersedesObservation } from '../tools/file-provenance.js';
 import { normalizePromptPath } from './prompt-determinism.js';
 import {
@@ -653,17 +654,6 @@ async function ensureSessionState(
   });
 }
 
-/**
- * How many of the newest assistant steps of the turn in progress go back to the
- * model with their reasoning attached: the step being continued and the one
- * before it. A turn's older steps lose their reasoning exactly like an earlier
- * turn's do, so a long single-turn run — print mode's shape, where the whole
- * task is one user turn — stops re-sending its entire chain of thought on every
- * request. Replayed reasoning was a median 26% of input tokens on Terminal-Bench
- * 2.0 (#378).
- */
-export const TURN_REASONING_REPLAY_WINDOW = 2;
-
 export async function buildMessages(
   config: AgentConfig,
   history: Message[],
@@ -694,37 +684,23 @@ export async function buildMessages(
   });
 
   // Reasoning goes back to the model only for the newest steps of the turn in progress: the
-  // assistant steps after the newest message the user wrote, and only the last
-  // TURN_REASONING_REPLAY_WINDOW of them — the step being continued and the one before it. Every
-  // older step of the same turn loses its reasoning exactly as a closed turn's does, so a
-  // single-turn run does not re-send its whole chain of thought on every request (#378). A
-  // host-written user message (`derivedContent`: the `[continuation]` resume, the completion gate,
-  // the `[work-state]` refresh) does not start a turn, so a run keeps its chain of thought across
-  // them. A turn a later user message closed is sent as its answer and tool calls, the way the
-  // Anthropic API drops earlier turns' thinking, except a reply that was only reasoning, which
-  // would otherwise reach the model empty. `replayAllReasoning` still replays every turn.
+  // assistant steps after the newest message the user wrote, and only the steps `reasoningReplayKeeps`
+  // keeps — between `TURN_REASONING_REPLAY_WINDOW` and a full `TURN_REASONING_REPLAY_STRIDE` of
+  // them, the cut moving a stride at a time so the request this one extends keeps the prefix the
+  // provider cached (a window that slid one step per request rewrote an already-sent message on
+  // every request, #378). Every older step of the same turn loses its reasoning exactly as a closed
+  // turn's does, so a single-turn run does not re-send its whole chain of thought. A host-written
+  // user message (`derivedContent`: the `[continuation]` resume, the completion gate, the
+  // `[work-state]` refresh) does not start a turn, so a run keeps its chain of thought across them.
+  // A turn a later user message closed is sent as its answer and tool calls, the way the Anthropic
+  // API drops earlier turns' thinking, except a reply that was only reasoning, which would
+  // otherwise reach the model empty. `replayAllReasoning` still replays every turn.
   // `providerMetadata` is untouched: the Anthropic path replays its signed thinking blocks from
   // there, independently of `reasoningContent`. Measured with `npm run eval:prompt -- --suite
   // replay` (#248 item 6), bounded by #378.
-  let turnStart = -1;
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const candidate = history[index];
-    if (candidate.includeInContext && candidate.role === 'user' && !candidate.derivedContent) {
-      turnStart = index;
-      break;
-    }
-  }
-  // The history indices inside that window, counted over the messages this request actually
-  // serializes: a display-only step is not one the model can be continuing.
-  const replayWindow = new Set<number>();
-  for (
-    let index = history.length - 1;
-    index > turnStart && replayWindow.size < TURN_REASONING_REPLAY_WINDOW;
-    index -= 1
-  ) {
-    const candidate = history[index];
-    if (candidate.includeInContext && candidate.role === 'assistant') replayWindow.add(index);
-  }
+  const keepsReasoning = reasoningReplayKeeps(history, {
+    replayAllReasoning: config.replayAllReasoning,
+  });
 
   for (const [index, msg] of history.entries()) {
     if (!msg.includeInContext) continue;
@@ -762,9 +738,7 @@ export async function buildMessages(
         content:
           msg.content && msg.content.length > 0 ? msg.content : msg.toolCalls?.length ? null : '',
         reasoningContent:
-          config.replayAllReasoning ||
-          replayWindow.has(index) ||
-          (!msg.content && !msg.toolCalls?.length)
+          keepsReasoning(index) || (!msg.content && !msg.toolCalls?.length)
             ? msg.reasoningContent
             : undefined,
         providerMetadata: msg.providerMetadata,

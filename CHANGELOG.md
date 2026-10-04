@@ -300,22 +300,37 @@ true` is the one loosening-adjacent key a workspace layer may set, and the loade
   one user turn, so a turn's steps accumulate and each new request carried the reasoning of all of
   them, and a `Write` of a new file sent that file's entire content back a second time as an
   all-plus diff. Both were bytes the model cannot use:
-  - **Reasoning replay inside the turn in progress is now a bounded window.** Only the newest
-    `TURN_REASONING_REPLAY_WINDOW` (2) assistant steps of the turn go back with their reasoning
-    attached — the step being continued and the one before it — and every older step of that same
-    turn loses it exactly as a closed turn's does. `replayAllReasoning` still replays every turn, a
-    reply that was only reasoning still keeps its reasoning, a host-written user message
-    (`[continuation]`, the completion gate, `[work-state]`) still does not end a turn, and
-    `providerMetadata` is passed through untouched, so Anthropic's signed thinking blocks still
-    travel as the provider requires. It is a named, exported constant rather than a literal in the
-    condition, so a re-tuned window is one edit and one test.
-  - **`Write` of a file that did not exist returns the model a one-line confirmation** — the path,
-    the line count and the byte count — through `maskedPlaceholder`, the one field
-    `toolResultModelContent` reads and `normalizeToolResult` preserves across a resume. The unified
-    diff stays the result's `content`, which is what the transcript, the session record and the SDK
-    render, so nothing a user sees changed; overwriting an observed file is exactly as before, the
-    removed lines in its diff being the part the model cannot re-derive. The tool description says
-    which of the two a call returns.
+  - **Reasoning replay inside the turn in progress is now a bounded, stepped window.** Between 2 and
+    5 of the turn's newest assistant steps go back with their reasoning attached — the step being
+    continued, the one before it, and room to grow — and the cut that drops the rest moves 4 steps at
+    a time (`TURN_REASONING_REPLAY_WINDOW` and `TURN_REASONING_REPLAY_STRIDE`, both exported from
+    `agent/reasoning-replay.ts`, the one place the rule lives): a window that slid one step per
+    request rewrote a message the previous request had already sent with it, which invalidates the
+    prompt-cache prefix on every request, so the cut is stepped and the prefix holds between moves.
+    Every older step of that same turn loses its reasoning exactly as a closed turn's does. This
+    bounds the reasoning Book replays as text — the OpenAI-compatible routes, and reasoning carried
+    across providers. Anthropic's signed thinking blocks are replayed from the provider's own
+    `providerMetadata`, independently of this, and are unchanged, as are `replayAllReasoning` (still
+    replays every turn), a reply that was only reasoning (still keeps it), and a host-written user
+    message (`[continuation]`, the completion gate, `[work-state]`, which still does not end a
+    turn).
+  - **`Write` of a file that did not exist, and an `ApplyPatch` patch that only creates files, return
+    the model a one-line confirmation** — the path, the line count and the byte count, one line per
+    file — through `maskedPlaceholder`, the one field `toolResultModelContent` reads and
+    `normalizeToolResult` preserves across a resume. GPT/Codex-family models are steered to
+    `ApplyPatch`, so an add-only patch is nothing but added lines and gets the same confirmation
+    rather than echoing every created file back in full. The unified diff stays the result's
+    `content`, which is what the transcript, the session record and the SDK render, so nothing a user
+    sees changed; a patch that also updates or deletes a file, and overwriting an observed file, are
+    exactly as before, the removed lines in their diffs being the part the model cannot re-derive.
+    The `Write` tool description says which of the two a call returns.
+  - **A tool output rewritten after the fact reaches the model.** `replaceToolResult` drops a
+    result's placeholder when a caller supplies new content, so a `PostToolUse` hook's
+    `modifiedOutput` is what the model reads instead of the one-line confirmation standing in for
+    the text the hook replaced; a replacement that changes only status or presentation keeps it.
+  - **The token estimates count only the reasoning that is sent.** `estimateHistoryTokens` (which
+    compaction and the loop's own estimates read) and `/context` ask the same `reasoningReplayKeeps`
+    the request builder does, so a long single turn is no longer reported as fuller than it is.
 - **Compaction v3: masked tool outputs, a Markdown handoff, a tail cut by message**
   (`plans/compaction-v3-plan.md`). Replayed on the owner's real sessions, 20 of 38 compactions
   since 2026-09-17 had come back degraded -- every one because the strict JSON checkpoint failed

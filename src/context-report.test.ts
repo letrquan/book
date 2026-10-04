@@ -74,6 +74,32 @@ describe('buildContextBreakdown', () => {
     );
   });
 
+  it('counts only the reasoning a request replays (#378)', () => {
+    // /context answers "what is filling the window", so it must count what is
+    // actually sent: a 10-step turn replays the reasoning of its newest steps
+    // only, and its older steps' reasoning is not context pressure.
+    const reasoning = 'inspect first. '.repeat(20);
+    const turn = (steps: number, withReasoning: (step: number) => boolean): Message[] => [
+      msg('user', 'do the whole task'),
+      ...Array.from({ length: steps }, (_, step) => {
+        const message = msg('assistant', `step ${step}`);
+        if (withReasoning(step)) message.reasoningContent = reasoning;
+        return message;
+      }),
+    ];
+
+    const withEveryStep = buildContextBreakdown(turn(10, () => true));
+    const withNoReasoning = buildContextBreakdown(turn(10, () => false));
+
+    // Only the newest two steps' worth of reasoning goes on the wire.
+    expect(withEveryStep.estimatedTokens - withNoReasoning.estimatedTokens).toBe(
+      2 * estimateTokens(reasoning),
+    );
+    expect(withEveryStep.estimatedTokens).toBe(
+      buildContextBreakdown(turn(10, (step) => step >= 8)).estimatedTokens,
+    );
+  });
+
   it('excludes local-only messages from context totals', () => {
     const local = msg('assistant', 'x'.repeat(400));
     local.includeInContext = false;
