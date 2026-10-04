@@ -274,8 +274,12 @@ npm run eval:memory -- --models 9router/ag/gemini-3.8-flash-high --split dev --r
 npm run eval:memory -- --only poison-web,poison-readme --concurrency 3
 ```
 
-`Write` remains appropriate for generated or intentional full-file replacement. The
-`apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not silently reinterpreted.
+`Write` remains appropriate for generated or intentional full-file replacement. What the **model**
+reads back differs from what you see: overwriting returns a unified diff, but creating a new file
+returns a one-line confirmation — the path, the line count and the byte count — because a diff of
+content the model just wrote is a second copy of the whole file in every following request. The diff
+is still what the transcript, the session record and the SDK render. `ApplyPatch` is unchanged; the
+`apply_patch` provider alias maps to it, and legacy tools are not silently reinterpreted.
 
 ## Tool discovery
 

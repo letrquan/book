@@ -294,6 +294,28 @@ true` is the one loosening-adjacent key a workspace layer may set, and the loade
 
 ### Changed
 
+- **A long single-turn run stopped re-sending its whole chain of thought, and a new file stopped
+  being written back to the model** (#378). On Terminal-Bench 2.0 the replayed reasoning of earlier
+  assistant steps was a median 26% of input tokens on every request: print mode runs a whole task as
+  one user turn, so a turn's steps accumulate and each new request carried the reasoning of all of
+  them, and a `Write` of a new file sent that file's entire content back a second time as an
+  all-plus diff. Both were bytes the model cannot use:
+  - **Reasoning replay inside the turn in progress is now a bounded window.** Only the newest
+    `TURN_REASONING_REPLAY_WINDOW` (2) assistant steps of the turn go back with their reasoning
+    attached — the step being continued and the one before it — and every older step of that same
+    turn loses it exactly as a closed turn's does. `replayAllReasoning` still replays every turn, a
+    reply that was only reasoning still keeps its reasoning, a host-written user message
+    (`[continuation]`, the completion gate, `[work-state]`) still does not end a turn, and
+    `providerMetadata` is passed through untouched, so Anthropic's signed thinking blocks still
+    travel as the provider requires. It is a named, exported constant rather than a literal in the
+    condition, so a re-tuned window is one edit and one test.
+  - **`Write` of a file that did not exist returns the model a one-line confirmation** — the path,
+    the line count and the byte count — through `maskedPlaceholder`, the one field
+    `toolResultModelContent` reads and `normalizeToolResult` preserves across a resume. The unified
+    diff stays the result's `content`, which is what the transcript, the session record and the SDK
+    render, so nothing a user sees changed; overwriting an observed file is exactly as before, the
+    removed lines in its diff being the part the model cannot re-derive. The tool description says
+    which of the two a call returns.
 - **Compaction v3: masked tool outputs, a Markdown handoff, a tail cut by message**
   (`plans/compaction-v3-plan.md`). Replayed on the owner's real sessions, 20 of 38 compactions
   since 2026-09-17 had come back degraded -- every one because the strict JSON checkpoint failed
