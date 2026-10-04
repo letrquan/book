@@ -172,11 +172,15 @@ export const retrySettingsSchema = z.object({
   watchdog: z.boolean().default(false),
   /**
    * How many times a turn may be re-sent after a transport fault that left the
-   * work intact — a stalled stream, a dropped socket.
+   * work intact — a stalled stream, a dropped socket — and how many times an
+   * empty completion may be re-asked. The two are counted separately per turn;
+   * this only says how many of each a turn gets.
    *
    * `maxAttempts` covers connection setup only; once a 200 response is streaming
    * it is out of scope, so without this a single 20-second provider silence ended
-   * the run. Set to 0 to restore that behavior exactly.
+   * the run. Set to 0 to restore that behavior exactly for transport faults. An
+   * empty completion still gets one retry, the floor every earlier version spent,
+   * so a run does not end on the first blank answer.
    */
   streamReissueAttempts: z.number().int().min(0).max(10).default(3),
   /**

@@ -1008,7 +1008,17 @@ export async function runAgentLoop(
     const runStartedAt = clock.monotonicNowMs();
     /** Guards the periodic work-state message against a same-turn re-issue. */
     let lastWorkStateTurn = -1;
-    let emptyResponseRetryTurn: number | null = null;
+    /** The turn these empty-completion retries were spent on, and how many of them. */
+    let emptyResponseRetryTurn = -1;
+    let emptyResponseRetries = 0;
+    /**
+     * How long to wait before re-sending a turn for the Nth time, shared by both
+     * re-issue paths so an empty completion waits exactly what a dropped socket
+     * would. Doubling per attempt from `baseDelayMs` is the shape of a provider
+     * that is coming back rather than one that answered instantly with nothing.
+     */
+    const reissueBackoffMs = (attempt: number) =>
+      Math.min(config.retry.maxDelayMs, config.retry.baseDelayMs * 2 ** attempt);
     let contentFilterRetryTurn = -1;
     let upstreamErrorRetryTurn = -1;
     let forcedCompactTurn: number | null = null;
@@ -1673,7 +1683,7 @@ export async function runAgentLoop(
         }
       }
 
-      // A turn that produced neither an answer nor a tool call is worth exactly
+      // A turn that produced neither an answer nor a tool call is worth at least
       // one retry. Two provider behaviours land here and both are transient:
       //
       //   - A clean stream whose only content was a reasoning block. Routers
@@ -1687,15 +1697,15 @@ export async function runAgentLoop(
       // Every other `streamError` is either terminal (a refusal, an output cap)
       // or has its own recovery below (context overflow), so it is left alone.
       //
-      // A third shape gets the same single retry: a turn that is nothing but a
-      // reasoning block the provider never closed. `stripReasoningTags` keeps
-      // an unclosed block as answer text on purpose — a finished answer may open
+      // A third shape is re-issued too: a turn that is nothing but a reasoning
+      // block the provider never closed. `stripReasoningTags` keeps an
+      // unclosed block as answer text on purpose — a finished answer may open
       // with an unfenced `<thinking>` — so that reading alone never fired here,
       // and a run whose last turn was leaked chain-of-thought ending mid-sentence
       // reported success with the leak as its answer; in print mode nothing
       // downstream can tell the two apart. When the block starts the content
       // and consumes all of it there is no answer beside it to protect, so one
-      // more request is worth spending. If the retry comes back the same shape
+      // more request is worth spending. If the retries come back the same shape
       // the text is kept as the answer, as before, never discarded.
       const unclosedReasoningOnly =
         toolCalls.length === 0 && isUnclosedReasoningOnly(assistantContent);
@@ -1707,14 +1717,39 @@ export async function runAgentLoop(
         !signal?.aborted &&
         (!streamError || streamErrorCode === 'transport_interrupted')
       ) {
+        // A fresh turn starts with the whole allowance; a re-issue of the same
+        // turn spends into it.
         if (emptyResponseRetryTurn !== turn) {
           emptyResponseRetryTurn = turn;
+          emptyResponseRetries = 0;
+        }
+        // A stream cut before it said anything is a transport fault, and the
+        // run-level `streamReissues` budget below is what bounds a route that
+        // keeps cutting. So it keeps the single re-issue this block has always
+        // given it: the empty-completion budget is for a provider that answers
+        // with nothing, not a second budget for one that disconnects.
+        //
+        // A completion that carried no error is a fault rather than a verdict,
+        // so it draws on the configured budget — one retry was not one: a router
+        // that returns three empties in a row is recoverable, and ending the run
+        // on the second threw away a turn a fourth request would have answered.
+        // The floor is the retry every earlier version spent, so a
+        // `streamReissueAttempts` of 0 — which describes the transport budget —
+        // does not silently disable it.
+        const emptyRetryBudget =
+          streamErrorCode === 'transport_interrupted'
+            ? 1
+            : Math.max(1, config.retry.streamReissueAttempts ?? 1);
+        if (emptyResponseRetries < emptyRetryBudget) {
+          const attempt = ++emptyResponseRetries;
           log.warn(
             unclosedReasoningOnly
-              ? 'provider returned only an unclosed reasoning block; retrying once'
-              : 'provider returned an empty completion; retrying once',
+              ? 'provider returned only an unclosed reasoning block; re-issuing'
+              : 'provider returned an empty completion; re-issuing',
             {
               turn,
+              attempt,
+              allowed: emptyRetryBudget,
               reasoningLen: reasoningContent.length,
               contentLen: assistantContent.length,
               streamDone,
@@ -1726,30 +1761,39 @@ export async function runAgentLoop(
           // them so the retry's answer does not queue up behind an abandoned
           // reasoning block that no history will ever record.
           callbacks.onAttemptDiscarded?.();
+          // The host shows a retry label from this and clears it when the
+          // re-sent stream speaks, so a re-issue that skipped it left the run
+          // silent. Same delay a transport re-issue waits.
+          const delayMs = reissueBackoffMs(attempt);
+          callbacks.onRetry?.('reissue', attempt, emptyRetryBudget, delayMs, 'protocol_error');
+          retryLabelShown = true;
+          await delay(delayMs, signal);
+          if (signal?.aborted) break;
           retrySameTurn = true;
           continue;
         }
         if (unclosedReasoningOnly) {
-          log.warn('unclosed reasoning block kept as the answer after one retry', {
-            turn,
-            contentLen: assistantContent.length,
-          });
+          log.warn(
+            `unclosed reasoning block kept as the answer after ${emptyResponseRetries} ${emptyResponseRetries === 1 ? 'retry' : 'retries'}`,
+            { turn, contentLen: assistantContent.length },
+          );
         } else if (!streamError) {
           // Keep a transport diagnosis rather than overwriting it with a generic
           // one; `transport_interrupted` tells the user something different.
-          streamError =
-            'The provider returned an empty response after one retry. Please retry the request.';
+          // The count is the real one: a run that gave up after a single re-issue
+          // should not claim three.
+          streamError = `The provider returned an empty response after ${emptyResponseRetries} ${emptyResponseRetries === 1 ? 'retry' : 'retries'}. Please retry the request.`;
           streamErrorCode = 'protocol_error';
         }
       }
 
       // Gemini's safety filter fires on ordinary code-shaped prose now and then, and
       // a `content_filter` stop on a turn that called no tool is a lost turn, not a
-      // refusal the run should end on. It gets the same single re-issue as an empty
-      // completion; only when it repeats on the retry does the run end. The repeat
-      // ends it with the `content_filter` code, which `terminalRecovery` maps to
-      // `none`: a stream-level re-issue would send the same prompt a third time,
-      // behind a host-written `[continuation]` the session would keep.
+      // refusal the run should end on. It gets a re-issue of its own, exactly once
+      // and on no budget: only when it repeats on the retry does the run end. The
+      // repeat ends it with the `content_filter` code, which `terminalRecovery`
+      // maps to `none`: a stream-level re-issue would send the same prompt a
+      // third time, behind a host-written `[continuation]` the session would keep.
       const filteredNarration =
         finishReason === 'content_filter' && toolCalls.length === 0 && !signal?.aborted;
       if (filteredNarration) {
@@ -2145,10 +2189,7 @@ export async function runAgentLoop(
           // Back off before re-sending a transport fault: an immediate retry against
           // a provider that just went quiet usually buys another stall. An output cap
           // is not a fault, so it continues immediately.
-          const reissueDelayMs =
-            recovery === 'continue'
-              ? 0
-              : Math.min(config.retry.maxDelayMs, config.retry.baseDelayMs * 2 ** streamReissues);
+          const reissueDelayMs = recovery === 'continue' ? 0 : reissueBackoffMs(streamReissues);
           callbacks.onRetry?.(
             recovery === 'continue' ? 'continue' : 'reissue',
             spent + 1,

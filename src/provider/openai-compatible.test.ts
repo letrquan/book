@@ -675,6 +675,167 @@ describe('stall tolerance while reasoning', () => {
   });
 });
 
+describe('stall ceiling chosen per stream', () => {
+  // A stream that writes each chunk on its own timer, so the fixture can hold a
+  // silence open for a chosen interval.
+  //
+  // A stall ceiling is a cancel, so the fixture is usually abandoned while its
+  // timers still run. `cancel` clears them and sets `stopped`, and every write
+  // checks it: `enqueue` on a closed or cancelled controller throws
+  // `ERR_INVALID_STATE` inside the timer callback, where no test can catch it,
+  // and vitest counts it as an unhandled error (issue 315).
+  function timedStream(steps: Array<{ afterMs: number; chunk: string }>): ReadableStream {
+    const enc = new TextEncoder();
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+    let stopped = false;
+    return new ReadableStream({
+      start(c) {
+        for (const step of steps) {
+          timers.push(
+            setTimeout(() => {
+              if (!stopped) c.enqueue(enc.encode(step.chunk));
+            }, step.afterMs),
+          );
+        }
+        timers.push(
+          setTimeout(
+            () => {
+              if (!stopped) c.close();
+            },
+            (steps.at(-1)?.afterMs ?? 0) + 10,
+          ),
+        );
+      },
+      cancel() {
+        stopped = true;
+        for (const timer of timers) clearTimeout(timer);
+      },
+    });
+  }
+
+  function sse(delta: Record<string, unknown>): string {
+    return `data: {"choices":[{"delta":${JSON.stringify(delta)}}]}\n\n`;
+  }
+
+  /** Two hundred milliseconds is three chat ceilings and a rounding error of thinking. */
+  const chatCeiling = { streamStallTimeoutMs: 50, thinkingStallTimeoutMs: 2000 };
+  const reasoningThenPause = () =>
+    timedStream([
+      { afterMs: 0, chunk: sse({ reasoning_content: 'weighing the options' }) },
+      { afterMs: 200, chunk: sse({ content: 'answer' }) },
+      { afterMs: 210, chunk: 'data: [DONE]\n\n' },
+    ]);
+  const contentThenPause = () =>
+    timedStream([
+      { afterMs: 0, chunk: sse({ content: 'partial' }) },
+      { afterMs: 200, chunk: sse({ content: ' and the rest' }) },
+      { afterMs: 210, chunk: 'data: [DONE]\n\n' },
+    ]);
+  const reasoningThenContentThenPause = () =>
+    timedStream([
+      { afterMs: 0, chunk: sse({ reasoning_content: 'weighing the options' }) },
+      { afterMs: 10, chunk: sse({ content: 'answer' }) },
+      { afterMs: 210, chunk: 'data: [DONE]\n\n' },
+    ]);
+  const reasoningThenToolCallThenPause = () =>
+    timedStream([
+      { afterMs: 0, chunk: sse({ reasoning_content: 'weighing the options' }) },
+      {
+        afterMs: 10,
+        chunk: sse({ tool_calls: [{ index: 0, id: 'call_1', function: { name: 'Read' } }] }),
+      },
+      { afterMs: 210, chunk: 'data: [DONE]\n\n' },
+    ]);
+
+  async function read(cfg: Parameters<typeof chatCompletionStream>[0], stream: ReadableStream) {
+    let sent: Record<string, unknown> = {};
+    const ceilings: number[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return new Response(stream, { status: 200 });
+      }),
+    );
+    const events = [];
+    for await (const event of chatCompletionStream(cfg, [{ role: 'user', content: 'hi' }], [], {
+      onStreamStall: (countdownMs) => ceilings.push(countdownMs),
+    })) {
+      events.push(event);
+    }
+    return { events, sent, ceilings };
+  }
+
+  it('keeps a reasoning stream alive through a pause past the chat ceiling (#379)', async () => {
+    // A router that serves an uncatalogued reasoning model sends no
+    // `reasoning_effort`, and no catalog entry is consulted, so `reasoningEnabled`
+    // is false and the whole request sat on the 20s chat ceiling: the first
+    // thinking pause longer than that cancelled a healthy stream and re-asked the
+    // turn. The delta that arrives before the pause is the evidence the request
+    // could not carry.
+    const cfg = defaultConfig({ retry: { ...defaultConfig().retry, ...chatCeiling } });
+    const { events, sent, ceilings } = await read(cfg, reasoningThenPause());
+
+    expect(sent).not.toHaveProperty('reasoning_effort');
+    expect(cfg.effort).toBeUndefined();
+    expect(cfg.modelInfo).toBeUndefined();
+    expect(events).toContainEqual({ type: 'reasoning', reasoning: 'weighing the options' });
+    expect(events).toContainEqual({ type: 'text', content: 'answer' });
+    expect(ceilings).toEqual([]);
+    expect(events).not.toContainEqual(
+      expect.objectContaining({ type: 'error', errorCode: 'stream_stall' }),
+    );
+  });
+
+  it('still ends a stream that never reasons after the chat ceiling', async () => {
+    // The promotion is evidence-driven, not a blanket raise: a stream with no
+    // reasoning in it is a chat request and the chat ceiling still bounds it.
+    const cfg = defaultConfig({ retry: { ...defaultConfig().retry, ...chatCeiling } });
+    const { events, ceilings } = await read(cfg, contentThenPause());
+
+    expect(events).toContainEqual({
+      type: 'error',
+      error: 'Stream stalled: no data received for 50ms',
+      errorCode: 'stream_stall',
+    });
+    // The reported ceiling is the one in force when the stall fired.
+    expect(ceilings).toEqual([50]);
+  });
+
+  it('drops back to the chat ceiling once the stream starts answering (#379)', async () => {
+    // The promotion buys the thinking phase only. Holding it for the rest of the
+    // stream gave a hang in the answer phase — a dead socket mid-sentence, the
+    // commonest fault there is — up to fifteen minutes to be noticed instead of
+    // twenty seconds, and the answer phase is not thinking.
+    const cfg = defaultConfig({ retry: { ...defaultConfig().retry, ...chatCeiling } });
+    const { events, ceilings } = await read(cfg, reasoningThenContentThenPause());
+
+    expect(events).toContainEqual({ type: 'reasoning', reasoning: 'weighing the options' });
+    expect(events).toContainEqual({ type: 'text', content: 'answer' });
+    expect(events).toContainEqual({
+      type: 'error',
+      error: 'Stream stalled: no data received for 50ms',
+      errorCode: 'stream_stall',
+    });
+    expect(ceilings).toEqual([50]);
+  });
+
+  it('drops back to the chat ceiling once the stream starts calling tools (#379)', async () => {
+    // A tool call is the answer phase too, and it is where a stall is most
+    // expensive: the turn is waiting on a function call that is not coming.
+    const cfg = defaultConfig({ retry: { ...defaultConfig().retry, ...chatCeiling } });
+    const { events, ceilings } = await read(cfg, reasoningThenToolCallThenPause());
+
+    expect(events).toContainEqual({ type: 'reasoning', reasoning: 'weighing the options' });
+    // No tool_call event: the stall lands before `[DONE]`, which is where the
+    // assembled call would have been emitted. What matters is the ceiling.
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'error', errorCode: 'stream_stall' }),
+    );
+    expect(ceilings).toEqual([50]);
+  });
+});
+
 describe('chatCompletionStream retry — edge cases', () => {
   it('stops retrying when user aborts via signal', async () => {
     let calls = 0;
