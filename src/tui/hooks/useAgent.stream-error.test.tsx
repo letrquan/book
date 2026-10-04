@@ -127,7 +127,7 @@ describe('a run that ends badly', () => {
     // Both rendering the same sentence reads as two separate failures.
     scripted.outcome = createTerminalOutcome('failed', 'protocol_error', {
       partialOutput: false,
-      message: 'The provider returned an empty response after one retry.',
+      message: 'The provider returned an empty response after 3 retries.',
     });
     const { config, session } = fixture();
     render(<Harness config={config} session={session} />);
@@ -143,7 +143,7 @@ describe('a run that ends badly', () => {
   it('survives a reload, so a resumed session still shows why it stopped', async () => {
     scripted.outcome = createTerminalOutcome('failed', 'protocol_error', {
       partialOutput: false,
-      message: 'The provider returned an empty response after one retry.',
+      message: 'The provider returned an empty response after 3 retries.',
     });
     const { config, session, timeline, sessionId } = fixture();
     render(<Harness config={config} session={session} />);
@@ -209,7 +209,7 @@ describe('a run that ends badly', () => {
   it('does not replay a previous turn failure onto the next turn', async () => {
     scripted.outcome = createTerminalOutcome('failed', 'protocol_error', {
       partialOutput: false,
-      message: 'The provider returned an empty response after one retry.',
+      message: 'The provider returned an empty response after 3 retries.',
     });
     const { config, session } = fixture();
     render(<Harness config={config} session={session} />);

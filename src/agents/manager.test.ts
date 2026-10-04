@@ -1018,7 +1018,7 @@ describe('AgentManager lifecycle', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = false;
     const failure =
-      'The provider returned an empty response after one retry. Please retry the request.';
+      'The provider returned an empty response after 3 retries. Please retry the request.';
     const manager = new AgentManager(config, [], {
       storeRoot: tempRoot(),
       worktreeRoot: tempRoot(),
@@ -1070,7 +1070,7 @@ describe('AgentManager lifecycle', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = false;
     const failure =
-      'The provider returned an empty response after one retry. Please retry the request.';
+      'The provider returned an empty response after 3 retries. Please retry the request.';
     let runs = 0;
     const manager = new AgentManager(config, [], {
       storeRoot: tempRoot(),
