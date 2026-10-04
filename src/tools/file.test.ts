@@ -26,6 +26,57 @@ vi.mock('tinyglobby', async (importOriginal) => {
     },
   };
 });
+
+/**
+ * Directories a walk is told it cannot read, which is how the three tests below ask what Glob and
+ * Grep do with one. `chmod 000` is the real way to get such a directory and it reaches only part of
+ * the world: Windows does not remove read access with a mode bit, and a root reads `000` as it reads
+ * `755`. The failure is therefore injected where it is actually observed — the `readdir` a walk
+ * records through (`walk-fs.ts`) — so the recorder, the note it feeds and the walk around the
+ * directory are all the real thing on every platform, and no test has to be skipped for either.
+ */
+const unreadable = vi.hoisted(() => new Set<string>());
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const { resolve } = await import('node:path');
+  const readdirPassthrough = actual.readdir as unknown as (
+    path: unknown,
+    options: unknown,
+    callback: (error: NodeJS.ErrnoException | null, entries?: unknown) => void,
+  ) => void;
+  return {
+    ...actual,
+    default: actual,
+    readdir: ((path: unknown, maybeOptions: unknown, maybeCallback?: unknown) => {
+      // `readdir(path, callback)` is the same call with the options left out, and both forms have to
+      // keep working for everything else in the graph; only the named directory answers differently.
+      const callback = typeof maybeCallback === 'function' ? maybeCallback : undefined;
+      const options = typeof maybeOptions === 'function' ? undefined : maybeOptions;
+      if (!callback) {
+        return new Promise<unknown>((done, failed) =>
+          readdirPassthrough(path, options, (error, entries) =>
+            error ? failed(error) : done(entries),
+          ),
+        );
+      }
+      const withError = callback as (
+        error: NodeJS.ErrnoException | null,
+        entries?: unknown,
+      ) => void;
+      const spelled = String(path);
+      // A walk spells a directory with a trailing separator, so the two are compared resolved.
+      if ([...unreadable].some((directory) => resolve(spelled) === resolve(directory))) {
+        withError(
+          Object.assign(new Error(`EACCES: permission denied, scandir '${spelled}'`), {
+            code: 'EACCES',
+          }),
+        );
+        return;
+      }
+      return readdirPassthrough(path, options, withError);
+    }) as typeof actual.readdir,
+  };
+});
 import { buildRipgrepArgs, fileTools, GREP_EVENT_MAX_CHARS, RipgrepLineReader } from './file.js';
 import { createRegistry } from './registry.js';
 import { boundToolResultOutput, TOOL_RESULT_MAX_BYTES } from './result.js';
@@ -51,12 +102,18 @@ import { shortPathName, withLowercaseDriveLetter } from '../test/short-path.js';
 let dir: string;
 const ctx: ToolContext = { workspaceRoot: '', env: {} };
 
+/** The directory the walks of one test are told they cannot read (see the `node:fs` mock above). */
+const makeUnreadable = (directory: string) => unreadable.add(directory);
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'book-file-'));
   ctx.workspaceRoot = dir;
   ctx.fileObservationLedger = new Map();
 });
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => {
+  unreadable.clear();
+  rmSync(dir, { recursive: true, force: true });
+});
 
 const read = fileTools.find((t) => t.name === 'Read')!;
 const write = fileTools.find((t) => t.name === 'Write')!;
@@ -1253,8 +1310,10 @@ describe('glob', () => {
 
   it('walks a workspace whose directory name holds a bracket or a star', async () => {
     // The same escape, through the other characters that take one: `[work]` and `work*` are read
-    // by the walk as patterns until they are escaped, and the relative walk needs no escape.
-    for (const name of ['work[1]', 'work*1']) {
+    // by the walk as patterns until they are escaped, and the relative walk needs no escape. `*` is
+    // not a legal character in a Windows file name, so the star is walked where a directory can hold
+    // one; the spelling itself is judged on Windows in `glob-regex.test.ts`.
+    for (const name of process.platform === 'win32' ? ['work[1]'] : ['work[1]', 'work*1']) {
       const outer = mkdtempSync(join(tmpdir(), 'book-file-metachar-'));
       const ws = join(outer, name);
       mkdirSync(join(ws, 'src'), { recursive: true });
@@ -1279,11 +1338,9 @@ describe('glob', () => {
     mkdirSync(join(closed, 'deep'), { recursive: true });
     writeFileSync(join(closed, 'deep', 'secret.ts'), 'secret');
     writeFileSync(join(dir, 'open.ts'), 'open');
-    chmodSync(closed, 0o000);
+    makeUnreadable(closed);
     try {
       const r = await glob.execute({ pattern: '**/*.ts' }, ctx);
-      // Root reads what mode 000 forbids, so there is nothing for this walk to be partial about.
-      if (process.getuid?.() === 0) return;
       expect(r.status).toBe('success');
       expect(r.content).toContain('open.ts');
       expect(r.content).not.toContain('secret.ts');
@@ -1292,7 +1349,7 @@ describe('glob', () => {
       expect(r.content).toContain('partial');
       expect(r.content).toMatch(/locked.*\(EACCES\)/);
     } finally {
-      chmodSync(closed, 0o755);
+      unreadable.delete(closed);
     }
   }, 60_000);
 
@@ -1309,16 +1366,15 @@ describe('glob', () => {
     // results.
     mkdirSync(join(dir, 'locked'));
     writeFileSync(join(dir, 'locked', 'secret.ts'), 'secret');
-    chmodSync(join(dir, 'locked'), 0o000);
+    makeUnreadable(join(dir, 'locked'));
     try {
       const r = await glob.execute({ pattern: '**/*.secret' }, ctx);
-      if (process.getuid?.() === 0) return;
       expect(r.status).toBe('success');
       expect(r.content).toContain('No files found');
       expect(r.content).toContain('partial');
       expect(r.content).toMatch(/locked.*\(EACCES\)/);
     } finally {
-      chmodSync(join(dir, 'locked'), 0o755);
+      unreadable.delete(join(dir, 'locked'));
     }
   }, 60_000);
 
@@ -1799,11 +1855,10 @@ describe('grep', () => {
     mkdirSync(closed, { recursive: true });
     writeFileSync(join(closed, 'hidden.ts'), 'const secret = 1;');
     writeFileSync(join(dir, 'open.ts'), 'const secret = 2;');
-    chmodSync(closed, 0o000);
+    makeUnreadable(closed);
     const portable = { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' } };
     try {
       const found = await grep.execute({ pattern: 'secret', include: '**/*.ts' }, portable);
-      if (process.getuid?.() === 0) return;
       expect(found.status).toBe('success');
       expect(found.content).toContain('open.ts');
       expect(found.content).not.toContain('hidden.ts');
@@ -1818,7 +1873,7 @@ describe('grep', () => {
       expect(none.content).toContain('No matches found');
       expect(none.content).toContain('partial');
     } finally {
-      chmodSync(closed, 0o755);
+      unreadable.delete(closed);
     }
   }, 60_000);
 

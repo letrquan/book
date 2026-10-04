@@ -1,6 +1,7 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import type { FileSystemAdapter } from 'tinyglobby';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -27,15 +28,47 @@ vi.mock('fs/promises', async (importOriginal) => {
   };
 });
 
-/** Records what each walk is asked for, and walks exactly as the library would. */
-const walks = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>> }));
+/**
+ * Records what each walk is asked for, and walks exactly as the library would — except for the
+ * directories a test says the walk cannot read, which is handed over as an `fs` adapter rather than
+ * made with `chmod 000`. A mode bit reaches neither Windows (where it removes no read access) nor a
+ * root, and the failure a walk swallows is a `readdir` failure, so that is what is simulated here.
+ */
+const walks = vi.hoisted(() => ({
+  calls: [] as Array<Record<string, unknown>>,
+  locked: [] as string[],
+}));
 vi.mock('tinyglobby', async (importOriginal) => {
   const actual = await importOriginal<typeof import('tinyglobby')>();
+  const { readdir } = await import('fs');
+  const { resolve } = await import('path');
   return {
     ...actual,
     glob: (patterns: string | string[], options?: Record<string, unknown>) => {
       walks.calls.push({ patterns, ...options });
-      return actual.glob(patterns, options);
+      if (walks.locked.length === 0) return actual.glob(patterns, options);
+      const readdirPassthrough = readdir as unknown as (
+        path: unknown,
+        options: unknown,
+        callback: (error: NodeJS.ErrnoException | null, entries?: unknown) => void,
+      ) => void;
+      const readdirWithFailure = ((
+        path: unknown,
+        readdirOptions: unknown,
+        callback: (error: NodeJS.ErrnoException | null, entries?: unknown) => void,
+      ): void => {
+        // A walk spells a directory with a trailing separator, so the two are compared resolved.
+        if (walks.locked.some((locked) => resolve(String(path)) === resolve(locked))) {
+          callback(
+            Object.assign(new Error(`EACCES: permission denied, scandir '${String(path)}'`), {
+              code: 'EACCES',
+            }),
+          );
+          return;
+        }
+        readdirPassthrough(path, readdirOptions, callback);
+      }) as FileSystemAdapter['readdir'];
+      return actual.glob(patterns, { ...options, fs: { readdir: readdirWithFailure } });
     },
   };
 });
@@ -104,17 +137,17 @@ describe('file mention helpers', () => {
     // hint at what can be typed, and a path it cannot offer costs a keystroke that finds nothing.
     // Pinned here so the silence is a decision on the record rather than an omission.
     const ws = workspace();
-    mkdirSync(join(ws, 'locked'));
-    writeFileSync(join(ws, 'locked', 'secret.ts'), 'secret');
+    const locked = join(ws, 'locked');
+    mkdirSync(locked);
+    writeFileSync(join(locked, 'secret.ts'), 'secret');
     writeFileSync(join(ws, 'open.ts'), 'open');
-    chmodSync(join(ws, 'locked'), 0o000);
+    walks.locked.push(locked);
     try {
       const candidates = await getFileMentionCandidates(ws, '');
-      if (process.getuid?.() === 0) return;
       expect(candidates.map((candidate) => candidate.path)).toContain('open.ts');
       expect(candidates.map((candidate) => candidate.path)).not.toContain('locked/secret.ts');
     } finally {
-      chmodSync(join(ws, 'locked'), 0o755);
+      walks.locked.length = 0;
     }
   });
 

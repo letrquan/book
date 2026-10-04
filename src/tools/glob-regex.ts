@@ -1,4 +1,4 @@
-import { isAbsolute, posix, resolve } from 'node:path';
+import { posix, win32 } from 'node:path';
 import picomatch from 'picomatch';
 import { convertPathToPattern } from 'tinyglobby';
 import { createDebugLogger } from '../debug-log.js';
@@ -250,8 +250,47 @@ export function globWalkPlan(
   return {
     pattern: walked,
     refusal,
-    scopes: refusal ? null : confinedDirectoriesOfPattern(walked, cwd),
+    scopes: refusal ? null : confinedDirectoriesOfPattern(walked, cwd, platform),
   };
+}
+
+/**
+ * The path module the platform being judged for reads its paths with.
+ *
+ * `win32` reads `D:\ws\src`, `D:/ws/src` and `/ws/src` (the root of the current drive) as absolute
+ * paths of one filesystem; `posix` reads all three as relative segment lists. That is not a
+ * spelling difference: a Windows pattern judged with the POSIX module came back as the *relative*
+ * scope `../../../tmp/ws/src`, which the permission layer resolves against the workspace and so
+ * judges as a place the pattern never named.
+ */
+type PathModule = Pick<
+  typeof posix,
+  'isAbsolute' | 'join' | 'normalize' | 'parse' | 'relative' | 'resolve'
+>;
+
+/** {@link PathModule} for the platform a caller passed, not the one this process runs on. */
+function pathsOf(platform: NodeJS.Platform): PathModule {
+  return platform === 'win32' ? win32 : posix;
+}
+
+/** A path as a walk spells it: resolved by the platform, and in the one separator a pattern uses. */
+function walkPath(value: string): string {
+  return value.replaceAll('\\', '/');
+}
+
+/**
+ * An absolute pattern as the walk reads it from `walkCwd`: the platform's relative spelling, which
+ * is the one the walk is handed and the one every scope is judged against.
+ *
+ * The pattern is resolved against the *root* of the walk directory first, which is what fills in
+ * the drive of a Windows pattern that names none: `/ws/src/*.ts` is the root of the current drive,
+ * so it is `C:\ws\src\*.ts` under a workspace on `C:`. Skipping that step, `win32.relative` reads
+ * the two as two filesystems and hands the target back untouched — and a rooted pattern would then
+ * be judged as `ws/src` *inside* the workspace instead of at the root of the drive.
+ */
+function relativePatternOf(platformPaths: PathModule, walkCwd: string, body: string): string {
+  const absolute = platformPaths.resolve(platformPaths.parse(walkCwd).root || '/', body);
+  return walkPath(platformPaths.relative(walkCwd, absolute));
 }
 
 /**
@@ -279,12 +318,14 @@ export function globWalkPattern(
   cwd: string,
   platform: NodeJS.Platform = process.platform,
 ): string {
+  const platformPaths = pathsOf(platform);
   const spelled = posixPattern(pattern, platform);
   const body = spelled.endsWith('/') ? spelled.slice(0, -1) : spelled;
-  const relative = isAbsolute(body.replace(ESCAPING_BACKSLASHES, ''))
-    ? posix.relative(walkCwdOf(cwd), body)
+  const relative = platformPaths.isAbsolute(body.replace(ESCAPING_BACKSLASHES, ''))
+    ? relativePatternOf(platformPaths, walkCwdOf(cwd, platformPaths), body)
     : '';
   if (relative) return relative;
+  // The base is built from the pattern's own parts, which are `/`-separated on every platform.
   const base = staticBaseOfPattern(body);
   // A base that is not a prefix of the pattern cannot be spliced onto one: `**/*` starts where it
   // stands, and there is nothing in the pattern for a base to replace.
@@ -304,9 +345,9 @@ function posixPattern(pattern: string, platform: NodeJS.Platform): string {
   return platform === 'win32' ? pattern.replaceAll('\\', '/') : pattern;
 }
 
-/** The `cwd` as the walk reads it: resolved, and in one separator. */
-function walkCwdOf(cwd: string): string {
-  return resolve(cwd).replaceAll('\\', '/');
+/** The `cwd` as the walk reads it: resolved by the platform, and in one separator. */
+function walkCwdOf(cwd: string, platformPaths: PathModule): string {
+  return walkPath(platformPaths.resolve(cwd));
 }
 
 /** The leading `..` run of a normalized pattern, however many are in it. */
@@ -321,12 +362,16 @@ function ensureNonDriveRelativePath(path: string): string {
 }
 
 /**
- * A scope as a path: joined and normalized, so a caller is handed `/ws/..c/b` rather than the
- * `/ws/c/../..c/b` it was built from. Normalizing cannot lose a hop — `posix.join` steps a `..` only
- * when a whole segment is one, which leaves `..c` (a name the walk matches) where it was.
+ * A scope as a path: joined and normalized by the platform, so a caller is handed `/ws/..c/b` rather
+ * than the `/ws/c/../..c/b` it was built from. Normalizing cannot lose a hop — a `join` steps a `..`
+ * only when a whole segment is one, which leaves `..c` (a name the walk matches) where it was. The
+ * result is absolute wherever the walk directory is, which is what a caller resolving a scope
+ * against its own roots needs: a relative one would be re-anchored to somewhere the walk never was.
  */
-function scopePath(cwd: string, ...segments: readonly string[]): string {
-  return ensureNonDriveRelativePath(posix.normalize(posix.join(cwd, ...segments)));
+function scopePath(platformPaths: PathModule, cwd: string, ...segments: readonly string[]): string {
+  return ensureNonDriveRelativePath(
+    walkPath(platformPaths.normalize(platformPaths.join(cwd, ...segments))),
+  );
 }
 
 /**
@@ -384,11 +429,13 @@ function staticBaseOfPattern(pattern: string): string {
 }
 
 /** Whether a directory is inside another, or is it. */
-function holds(root: string, path: string): boolean {
-  const relativePath = posix.relative(root, path);
+function holds(platformPaths: PathModule, root: string, path: string): boolean {
+  const relativePath = walkPath(platformPaths.relative(root, path));
   return (
     relativePath === '' ||
-    (!relativePath.startsWith('../') && relativePath !== '..' && !isAbsolute(relativePath))
+    (!relativePath.startsWith('../') &&
+      relativePath !== '..' &&
+      !platformPaths.isAbsolute(relativePath))
   );
 }
 
@@ -402,12 +449,14 @@ function holds(root: string, path: string): boolean {
  *
  * - The pattern is normalized first, which is a purely *lexical* collapse of `.` and `..`. It is
  *   what makes a globstar followed by two parent hops a climb even though the first segment is a
- *   glob: `posix.normalize` drops the `*` and the `..` beside it, and the walk runs as a leading
+ *   glob: `normalize` drops the `*` and the `..` beside it, and the walk runs as a leading
  *   `../`. A brace group is not touched — the segment `..}}` is not `..` — so a `..` spelled inside
  *   one keeps the walk inside the directory in front of it.
  * - An absolute pattern is made relative to the `cwd` first, so one naming a directory elsewhere
  *   arrives as a leading `..` run, and an absolute path the `cwd` itself ends in arrives without
- *   one: `<workspace>/src/*.ts` walks `src`, not the workspace.
+ *   one: `<workspace>/src/*.ts` walks `src`, not the workspace. Both readings are the platform's
+ *   ({@link pathsOf}), so `C:\ws\src\*.ts` is made relative to `C:\ws` on any platform the caller
+ *   asks this for.
  * - That run is a climb, and it cancels only against the tail of the `cwd`: `../ws/src/*.ts` from
  *   `/a/ws` is the same directory as `src/*.ts`, and both walk `/a/ws/src`.
  * - What is left of the climb that did not cancel, plus the named run of the pattern's remaining
@@ -423,12 +472,17 @@ function holds(root: string, path: string): boolean {
  * spelling a `..` hop, `{..,src}/*` — is dropped, because no entry can have it: the walk formats
  * every entry as a `cwd`-relative path of a file *inside* the tree it searched.
  */
-function confinedDirectoriesOfPattern(pattern: string, cwd: string): string[] {
-  const walkCwd = walkCwdOf(cwd);
+function confinedDirectoriesOfPattern(
+  pattern: string,
+  cwd: string,
+  platform: NodeJS.Platform,
+): string[] {
+  const platformPaths = pathsOf(platform);
+  const walkCwd = walkCwdOf(cwd, platformPaths);
   const body = pattern.endsWith('/') ? pattern.slice(0, -1) : pattern;
-  const normalized = isAbsolute(body.replace(ESCAPING_BACKSLASHES, ''))
-    ? posix.relative(walkCwd, body)
-    : posix.normalize(body);
+  const normalized = platformPaths.isAbsolute(body.replace(ESCAPING_BACKSLASHES, ''))
+    ? relativePatternOf(platformPaths, walkCwd, body)
+    : walkPath(platformPaths.normalize(body));
 
   const parts = splitPatternParts(normalized);
   const parentDirectory = PARENT_DIRECTORY.exec(normalized)?.[0];
@@ -461,15 +515,19 @@ function confinedDirectoriesOfPattern(pattern: string, cwd: string): string[] {
   // caller wrote it, which is where a walk starts once it has cancelled its way back in.
   // The climb as the walk spells it *after* it has cancelled: the hops that cancelled against the
   // tail of the `cwd` are gone from it, which is why `../ws/src/*.ts` does not climb at all.
-  const potentialRoot = scopePath(walkCwd, parentDirectory?.slice(cancelled * 3) ?? '');
+  const potentialRoot = scopePath(
+    platformPaths,
+    walkCwd,
+    parentDirectory?.slice(cancelled * 3) ?? '',
+  );
   const climbedOutOfCwd = potentialRoot[0] !== '.' && walkCwd.length > potentialRoot.length;
   const searchesFrom = climbedOutOfCwd
     ? potentialRoot
-    : scopePath(walkCwd, ...leadingPartsOfParts(parts, true));
+    : scopePath(platformPaths, walkCwd, ...leadingPartsOfParts(parts, true));
 
   if (!parentDirectory) {
     // No climb: the directory the walk searches from is the directory it answers from.
-    return confinedRunsWithin(searchesFrom, leadingRunsOfParts(parts), walkCwd);
+    return confinedRunsWithin(platformPaths, searchesFrom, leadingRunsOfParts(parts), walkCwd);
   }
   if (cancelled > 0) {
     // The walk rewrites the pattern as it cancels a hop against the tail of the `cwd`, so what it
@@ -490,6 +548,7 @@ function confinedDirectoriesOfPattern(pattern: string, cwd: string): string[] {
   }
   const hops = new Array<string>(walkedClimb).fill('..');
   return confinedRunsWithin(
+    platformPaths,
     searchesFrom,
     leadingRunsOfParts(parts.slice(climb)).map((run) => [...hops, ...run]),
     walkCwd,
@@ -567,10 +626,17 @@ function alternativesOfGroup(part: string): string[] | null {
 }
 
 /** The runs as directories, keeping the ones the walk's own root holds, or that root when none is. */
-function confinedRunsWithin(root: string, runs: readonly string[][], walkCwd: string): string[] {
+function confinedRunsWithin(
+  platformPaths: PathModule,
+  root: string,
+  runs: readonly string[][],
+  walkCwd: string,
+): string[] {
   const held = [
     ...new Set(
-      runs.map((run) => scopePath(walkCwd, ...run)).filter((directory) => holds(root, directory)),
+      runs
+        .map((run) => scopePath(platformPaths, walkCwd, ...run))
+        .filter((directory) => holds(platformPaths, root, directory)),
     ),
   ];
   return held.length ? held : [root];
@@ -583,8 +649,13 @@ function confinedRunsWithin(root: string, runs: readonly string[][], walkCwd: st
  * The walk's own answer to that question (see {@link confinedDirectoriesOfPattern}), so a caller
  * judging what a Glob reaches is judging the directory the walk really uses rather than how the
  * pattern reads. Every entry it returns is inside one of these, which is what a permission judgment
- * needs: it judges each, and the worst one decides. They are absolute, so a caller can resolve them
+ * needs: it judges each, and the worst one decides. They are absolute — in the platform's own
+ * reading of an absolute path, spelled the way a walk spells it — so a caller can resolve them
  * against the roots it serves rather than re-anchoring a `..` to a root the pattern never named.
+ *
+ * `platform` is the platform whose paths are being judged, which is not necessarily the one this
+ * process runs on: it is what decides how an absolute pattern is recognized and a relative one
+ * resolved (`pathsOf`), so the Windows reading of a Windows path is measurable on any host.
  *
  * Where the walk *searches* from is one of them or an ancestor of them, so a pattern that climbs
  * makes tinyglobby start from the directory the climb lands on and list that directory's subtree on

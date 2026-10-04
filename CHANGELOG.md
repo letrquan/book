@@ -140,6 +140,13 @@ true` is the one loosening-adjacent key a workspace layer may set, and the loade
   so every absolute pattern in such a workspace used to refuse as outside the workspace and walk to
   nothing, with both layers agreeing on the wrong answer. The walk is handed the part of the
   pattern below the directory it already stands in, which is the same walk without the comparison.
+  Every path is read with the module of the platform being judged rather than of the host, so the
+  Windows reading of a Windows path is the same on any platform and the judgment is never the host's:
+  on Windows an absolute pattern was compared with the POSIX rules, which read `C:\ws\src\*.ts` and
+  `/ws/src/*.ts` as relative segment lists and answered the _relative_ scope `../../../tmp/ws/src` — a
+  directory the permission layer then resolves against the workspace and refuses as a place the
+  pattern never named. A rooted pattern is read as the root of the drive the walk is on, and every
+  scope is answered absolute in the platform's own reading, spelled the way a walk spells it.
   **A root-anchored `.gitignore` line is respelled where the walk reads it**:
   git means `/build` relative to the repository root, while the walk reads a leading `/` as the
   filesystem root and normalizes `/build` into `../../../build` — which moves the crawl to `/`, lists

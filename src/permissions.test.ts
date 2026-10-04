@@ -803,7 +803,14 @@ describe('workspace reads need no prompt (#264)', () => {
     // (`additionalDirectories`) that could never help. Both layers now read the directory as it is.
     const base = tempDir('book-perm-metachar-');
     const s = settings();
-    for (const name of ['project (2)', 'repo[x]', 'project*']) {
+    // `project*` is not a legal directory name on Windows, so the star is judged there through the
+    // Windows paths `glob-regex.test.ts` asks the same judgment about, not through a directory that
+    // cannot be created.
+    for (const name of [
+      'project (2)',
+      'repo[x]',
+      ...(process.platform === 'win32' ? [] : ['project*']),
+    ]) {
       const workspace = join(base, name);
       mkdirSync(join(workspace, 'src'), { recursive: true });
       writeFileSync(join(workspace, 'src', 'a.ts'), 'a\n');

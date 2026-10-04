@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readdir, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, posix, relative, resolve } from 'node:path';
+import { dirname, join, posix, relative, resolve, win32 } from 'node:path';
 import { glob } from 'tinyglobby';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -20,6 +20,9 @@ const WS = '/tmp/ws';
 
 /** A directory as the walk spells it: resolved, and in one separator. */
 const walkDir = (path: string): string => resolve(path).replaceAll('\\', '/');
+
+/** An absolute pattern as this platform's walk directory spells it, so a test builds its own. */
+const patternOf = (...segments: readonly string[]): string => posix.join(walkDir(WS), ...segments);
 
 const scopeOf = (pattern: string, cwd = WS): string | null =>
   globWalkScopes(pattern, cwd)?.[0] ?? null;
@@ -100,7 +103,9 @@ describe('globWalkScopes', () => {
     expect(scopeOf('*')).toBe(root);
     expect(scopeOf('**/*.ts')).toBe(root);
     expect(scopeOf('src/**/*.ts')).toBe(posix.join(root, 'src'));
-    expect(scopeOf('/tmp/ws/src/*.ts')).toBe(posix.join(root, 'src'));
+    // Spelled as the walk directory spells itself: `/tmp/ws` on POSIX is `D:/tmp/ws` under a Windows
+    // runner, and a hard-coded POSIX root would be a different directory there.
+    expect(scopeOf(patternOf('src', '*.ts'))).toBe(posix.join(root, 'src'));
     expect(scopeOf('a/b/c/*.ts')).toBe(posix.join(root, 'a/b/c'));
     // A trailing globstar reads from one level above what it can match, because the segment in front
     // of it can hold anything, but it *answers* from one level down: `src/**` reads the workspace to
@@ -119,10 +124,10 @@ describe('globWalkScopes', () => {
     const parent = posix.dirname(root);
     expect(scopeOf('../**/*')).toBe(parent);
     expect(scopeOf('../*.ts')).toBe(parent);
-    expect(scopeOf('../../**')).toBe(posix.dirname(parent));
+    expect(scopeOf('../../**')).toBe(walkDir(resolve(WS, '..', '..')));
     expect(scopeOf('foo/../bar/*.ts')).toBe(posix.join(root, 'bar'));
-    expect(scopeOf('/tmp/other/*.ts')).toBe(posix.join(parent, 'other'));
-    expect(scopeOf('/tmp/ws/parent.ts')).toBe(root);
+    expect(scopeOf(patternOf('..', 'other', '*.ts'))).toBe(posix.join(parent, 'other'));
+    expect(scopeOf(patternOf('parent.ts'))).toBe(root);
     // A climb that lands on a named directory answers from that directory, which is what lets an
     // honored additional directory be reached: the walk reads the directories between on its way.
     expect(scopeOf('../other/*.ts')).toBe(posix.join(parent, 'other'));
@@ -171,7 +176,7 @@ describe('globWalkScopes', () => {
     for (const pattern of ['*/../../**', '**/../../**', 'src/*/../../../*.ts']) {
       const { found, visited } = await walk(pattern, ws);
       expect(escapes(found, ws), pattern).not.toEqual([]);
-      expect(walkDir(scopeOf(pattern, ws)!), pattern).toBe(resolve(visited[0]));
+      expect(walkDir(scopeOf(pattern, ws)!), pattern).toBe(walkDir(visited[0]));
     }
   });
 
@@ -232,8 +237,8 @@ describe('globWalkScopes', () => {
       const scope = walkDir(scopeOf(pattern, ws)!);
       expect(escapes(found, ws), pattern).toEqual([]);
       expect(escapes([scope], ws), pattern).toEqual([]);
-      expect(scope, pattern).toBe(resolve(visited[0]));
-      expect(visited).not.toContain(resolve(ws, '..'));
+      expect(scope, pattern).toBe(walkDir(visited[0]));
+      expect(visited.map(walkDir)).not.toContain(walkDir(resolve(ws, '..')));
     }
   });
 
@@ -244,13 +249,16 @@ describe('globWalkScopes', () => {
     // segment of a pattern evaded the judgment: it answered `link/**` from the workspace and the
     // walk returned `link/secret.ts`.
     const { ws } = workspace();
-    expect(globWalkScopes('link/**', ws)).toEqual([join(ws, 'link')]);
-    expect(globWalkScopes('link/*', ws)).toEqual([join(ws, 'link')]);
-    expect(globWalkScopes('{link,src}/**', ws)).toEqual([join(ws, 'link'), join(ws, 'src')]);
+    expect(globWalkScopes('link/**', ws)).toEqual([walkDir(join(ws, 'link'))]);
+    expect(globWalkScopes('link/*', ws)).toEqual([walkDir(join(ws, 'link'))]);
+    expect(globWalkScopes('{link,src}/**', ws)).toEqual([
+      walkDir(join(ws, 'link')),
+      walkDir(join(ws, 'src')),
+    ]);
     // The directory is spelled the way the pattern spells it; following the link is the permission
     // layer's job (`paths.detail` canonicalizes), which is where `link` is found to be outside the
     // workspace and the walk is refused. One scope of several was how it evaded the judgment.
-    expect(globWalkScopes('link/../*.ts', ws)).toEqual([ws]);
+    expect(globWalkScopes('link/../*.ts', ws)).toEqual([walkDir(ws)]);
   });
 
   it('answers every group alternative a walk can answer from, not the one in front of it', async () => {
@@ -278,7 +286,7 @@ describe('globWalkScopes', () => {
     // becomes `**`), and a matcher that has lost its named run matches anything under the directory
     // the walk reads — so that directory is the only thing that holds every entry.
     const ws = join(walkDir(WS), 'b', 'c');
-    expect(globWalkScopes('../..c/b/c/**', ws)).toEqual([join(walkDir(WS), 'b', '..c', 'b')]);
+    expect(globWalkScopes('../..c/b/c/**', ws)).toEqual([posix.join(walkDir(WS), 'b', '..c', 'b')]);
     expect(globWalkScopes('../..c/b/c/**', ws)?.[0]).not.toContain('/../');
   });
 
@@ -292,19 +300,19 @@ describe('globWalkScopes', () => {
     // answers nothing, and the judgment says where it read rather than refusing a climb that is not
     // one. `..foo` *is* read as a hop — the walk climbs one step toward it and then matches the name —
     // so it answers from the parent, outside the workspace.
-    expect(globWalkScopes('..../*', ws)).toEqual([join(ws, '....')]);
-    expect(globWalkScopes('..../x', ws)).toEqual([join(ws, '....')]);
-    expect(globWalkScopes('..foo/*', ws)).toEqual([join(dirname(ws), '..foo')]);
-    expect(globWalkScopes('..c/b/*.ts', ws)).toEqual([join(dirname(ws), '..c', 'b')]);
+    expect(globWalkScopes('..../*', ws)).toEqual([walkDir(join(ws, '....'))]);
+    expect(globWalkScopes('..../x', ws)).toEqual([walkDir(join(ws, '....'))]);
+    expect(globWalkScopes('..foo/*', ws)).toEqual([walkDir(join(dirname(ws), '..foo'))]);
+    expect(globWalkScopes('..c/b/*.ts', ws)).toEqual([walkDir(join(dirname(ws), '..c', 'b'))]);
     // A hop that really is a hop is still a hop.
-    expect(globWalkScopes('../*.ts', ws)).toEqual([dirname(ws)]);
+    expect(globWalkScopes('../*.ts', ws)).toEqual([walkDir(dirname(ws))]);
     // A hop plus a name is not one thing to count. The walk's own count of the run is two for
     // `../..c/b/c/**` — `..` is a hop and `..c` is a name, and the two are counted apart — so the
     // answer is `..c/b/c` measured from two levels up. Both of the old answers were wrong: the
     // fractional count made the judgment throw, and the `..c` read as a hop answered from the
     // directory the pattern spells rather than the one the walk reads.
     expect(globWalkScopes('../..c/b/c/**', ws)).toEqual([
-      join(dirname(dirname(ws)), '..c', 'b', 'c'),
+      walkDir(join(dirname(dirname(ws)), '..c', 'b', 'c')),
     ]);
     // The walk of it reads from there and answers nothing (nothing under the workspace spells `..c`),
     // and the scope is normalized, so a caller is not handed a `..` to resolve.
@@ -323,7 +331,9 @@ describe('globWalkScopes', () => {
     writeFileSync(join(ws, 'src', 'a.ts'), 'a');
     for (const pattern of ['src/*.ts', `**/*.ts`, `${walkDir(ws)}/**/*.ts`]) {
       expect(globWalkScopes(pattern, ws), pattern).toEqual(
-        pattern.endsWith('*.ts') && pattern.startsWith('src') ? [join(ws, 'src')] : [ws],
+        pattern.endsWith('*.ts') && pattern.startsWith('src')
+          ? [walkDir(join(ws, 'src'))]
+          : [walkDir(ws)],
       );
     }
     // And the walk is handed the part below the workspace, which is what makes it answer at all.
@@ -336,6 +346,76 @@ describe('globWalkScopes', () => {
       scopeOf('{a,'.repeat(MAX_GLOB_GROUP_DEPTH + 1) + '}'.repeat(MAX_GLOB_GROUP_DEPTH + 1)),
     ).toBe(null);
     expect(scopeOf('a'.repeat(MAX_GLOB_PATTERN_LENGTH + 1))).toBe(null);
+  });
+});
+
+/**
+ * The Windows reading of a walk, judged on any platform: `platform` is the platform whose paths are
+ * read, so the drive, the separator, and the root a climb lands on are measured here rather than only
+ * on a Windows runner — where, besides, `C:\Users\me\ws` cannot be created to be walked.
+ */
+describe('globWalkScopes for Windows', () => {
+  const WIN_WS = 'C:\\Users\\me\\ws';
+  /** A scope as `path.win32` reads it back: one separator, and it is the one a walk spells with. */
+  const winSpelled = (path: string): string => path.replaceAll('\\', '/');
+
+  it('answers with scopes a Windows path module reads back as themselves', () => {
+    for (const pattern of [
+      'src\\*.ts',
+      'src/*.ts',
+      `${WIN_WS}\\src\\*.ts`,
+      'C:/Users/me/ws/src/*.ts',
+      `${WIN_WS}\\**\\*.ts`,
+      'src\\**\\*.ts',
+      '*',
+      '**/*.ts',
+      '..\\outside\\*.ts',
+      'C:\\Users\\me\\outside\\*.ts',
+      '..\\..\\**',
+      'C:\\..\\..\\**',
+      '/ws/src/*.ts',
+    ]) {
+      const scopes = globWalkScopes(pattern, WIN_WS, 'win32');
+      expect(scopes, pattern).not.toBeNull();
+      for (const scope of scopes!) {
+        // Absolute in the platform's own reading — a relative scope resolved against the workspace
+        // points somewhere the walk never was — and spelled so `path.win32.resolve` hands it back
+        // unchanged, which is what the permission layer does with every scope it is given.
+        expect(win32.isAbsolute(scope), `${pattern} -> ${scope}`).toBe(true);
+        expect(winSpelled(win32.resolve(scope)), `${pattern} -> ${scope}`).toBe(scope);
+      }
+    }
+  });
+
+  it('names the same directory whichever way the pattern is spelled', () => {
+    for (const pattern of [
+      'src\\*.ts',
+      'src/*.ts',
+      `${WIN_WS}\\src\\*.ts`,
+      'C:/Users/me/ws/src/*.ts',
+    ]) {
+      expect(globWalkScopes(pattern, WIN_WS, 'win32'), pattern).toEqual(['C:/Users/me/ws/src']);
+    }
+  });
+
+  it('reads a climb against the drive it lands on', () => {
+    // A sibling outside the workspace, a climb back into it, and a climb that reaches the root of
+    // the drive: all three are absolute paths of one filesystem, whatever separator wrote them.
+    expect(globWalkScopes('..\\outside\\*.ts', WIN_WS, 'win32')).toEqual(['C:/Users/me/outside']);
+    expect(globWalkScopes('..\\ws\\src\\*.ts', WIN_WS, 'win32')).toEqual(['C:/Users/me/ws/src']);
+    expect(globWalkScopes('..\\..\\**', WIN_WS, 'win32')).toEqual(['C:/Users']);
+    expect(globWalkScopes('C:\\..\\..\\**', WIN_WS, 'win32')).toEqual(['C:/']);
+    // A rooted pattern is the root of the drive, not a path inside the workspace.
+    expect(globWalkScopes('/ws/src/*.ts', WIN_WS, 'win32')).toEqual(['C:/ws/src']);
+  });
+
+  it('hands the walk the part below the workspace, however the pattern is spelled', () => {
+    expect(globWalkPattern('src\\*.ts', WIN_WS, 'win32')).toBe('src/*.ts');
+    expect(globWalkPattern(`${WIN_WS}\\src\\*.ts`, WIN_WS, 'win32')).toBe('src/*.ts');
+    expect(globWalkPattern('C:/Users/me/ws/src/*.ts', WIN_WS, 'win32')).toBe('src/*.ts');
+    expect(globWalkPattern('..\\other\\*.ts', WIN_WS, 'win32')).toBe('../other/*.ts');
+    // And a POSIX spelling keeps its escapes, because `\` is an escape to picomatch off Windows.
+    expect(globWalkPattern('src/\\*.ts', WIN_WS, 'linux')).toBe('src/\\*.ts');
   });
 });
 
@@ -499,7 +579,6 @@ describe('globWalkIgnore in a walk', () => {
     expect(walkDir(relative.visited[0])).toBe(walkDir(base));
     expect(relative.found).toContain('keep/b.ts');
     const anchored = await walk('**/*', ws, ['/../outside']);
-    expect(anchored.visited[0]).toBe('/');
     expect(anchored.found).toContain('keep/b.ts');
     // Dropped, the walk starts in the workspace and answers the same entries.
     const { found, visited } = await walk(
@@ -513,18 +592,39 @@ describe('globWalkIgnore in a walk', () => {
     expect(visited).not.toContain(base);
   });
 
-  it('does not turn a root-relative `.` entry into a pattern that matches nothing', async () => {
+  it.skipIf(process.platform === 'win32')(
+    'reads a root-anchored climb out of the walk from the filesystem root',
+    async () => {
+      // The crawl root of the entry above, measured where `/` names the filesystem root: on Windows
+      // the same entry is normalized against the drive, and the walk that answers it is not the one
+      // this finding is about. What it ignores nothing like is asserted above, on both platforms.
+      const { ws } = ignoreWorkspace();
+      const anchored = await walk('**/*', ws, ['/../outside']);
+      expect(anchored.visited[0]).toBe('/');
+    },
+  );
+
+  it('does not turn a root-relative `.` entry into a pattern that matches nothing', () => {
     // `/.`, `/./` and `//.` normalized to `[".", "./**"]`, and a walk ignoring `./**` returns nothing
     // at all: every entry is under `.`, so everything matched and was dropped. Git's `/` means the
     // repository root itself, which a walk rooted there cannot ignore.
-    const { ws } = ignoreWorkspace();
     for (const entry of ['/', '/.', '/./', '//.']) {
       expect(globWalkIgnore([entry]), entry).toEqual([]);
     }
-    const { found } = await walk('**/*', ws, ['/.']);
-    expect(found).toContain('keep/b.ts');
-    expect(found.length).toBeGreaterThan(1);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps the answer of a walk handed a root-relative `.` entry as written',
+    async () => {
+      // Measured on POSIX, where `/` is the filesystem root. There the entry still matches nothing,
+      // so the walk answers the whole workspace — which is the reason it is respelled rather than
+      // handed over (Windows answers a rooted `.` as a drive path, and no tool hands it one).
+      const { ws } = ignoreWorkspace();
+      const { found } = await walk('**/*', ws, ['/.']);
+      expect(found).toContain('keep/b.ts');
+      expect(found.length).toBeGreaterThan(1);
+    },
+  );
 
   it('drops an extglob `!(` rather than letting it filter results as one', async () => {
     // picomatch reads `!(build)` as "any entry that is not `build`", so an ignore entry that git
@@ -599,9 +699,11 @@ describe('the dropped-entry report', () => {
 
 describe('globWalkPattern', () => {
   it('leaves a POSIX pattern as written', () => {
-    // A brace expansion, an extglob and an escape are the caller's syntax and must survive.
+    // A brace expansion, an extglob and an escape are the caller's syntax and must survive. The
+    // platform is named rather than taken from the host, so the POSIX reading is measured on Windows
+    // too — where `src/\*.ts` is `src//*.ts` and the escape is a separator.
     for (const pattern of ['src/*.ts', 'src/{a,b}/*.ts', 'src/(a|b)/*.ts', 'src/\\*.ts']) {
-      expect(globWalkPattern(pattern, WS)).toBe(pattern);
+      expect(globWalkPattern(pattern, WS, 'linux'), pattern).toBe(pattern);
     }
   });
 
@@ -609,9 +711,10 @@ describe('globWalkPattern', () => {
     expect(globWalkPattern('src/{a,b}/*.ts', WS)).toBe('src/{a,b}/*.ts');
     // An absolute pattern inside the workspace is handed over relative to it, which is also how a
     // workspace under a directory holding a glob character is walked at all (`escapePath` on the
-    // `cwd` is what made the absolute spelling match nothing).
-    expect(globWalkPattern('/tmp/ws/src/*.ts', WS)).toBe('src/*.ts');
-    expect(globWalkPattern('/tmp/other/*.ts', WS)).toBe('../other/*.ts');
+    // `cwd` is what made the absolute spelling match nothing). It is spelled as the walk directory
+    // spells itself, which on a Windows runner is a drive root rather than `/tmp`.
+    expect(globWalkPattern(patternOf('src', '*.ts'), WS)).toBe('src/*.ts');
+    expect(globWalkPattern(patternOf('..', 'other', '*.ts'), WS)).toBe('../other/*.ts');
   });
 
   it('hands the walk a pattern it can read, or the reason it cannot be handed one', () => {
@@ -621,7 +724,7 @@ describe('globWalkPattern', () => {
     const plan = globWalkPlan('src/**/*.ts', WS);
     expect(plan.pattern).toBe('src/**/*.ts');
     expect(plan.refusal).toBeNull();
-    expect(plan.scopes).toEqual(['/tmp/ws/src']);
+    expect(plan.scopes).toEqual([posix.join(walkDir(WS), 'src')]);
     // The refusal is asked of the walked spelling, and it is what the tools report.
     expect(globWalkPlan('a'.repeat(MAX_GLOB_PATTERN_LENGTH + 1), WS).refusal).toBe(
       globPatternRefusal('a'.repeat(MAX_GLOB_PATTERN_LENGTH + 1)),
@@ -641,7 +744,7 @@ describe('globWalkPattern', () => {
     const winBraces = globWalkPlan('x\\{a,b\\}/*.ts', WS, 'win32');
     expect(winBraces.refusal).toBe(globPatternRefusal('x/{a,b/}/*.ts'));
     expect(globWalkScopes('x\\{a,b\\}/*.ts', WS, 'win32')).toEqual(
-      globWalkScopes('x/{a,b/}/*.ts', WS),
+      globWalkScopes('x/{a,b/}/*.ts', WS, 'win32'),
     );
   });
 });
