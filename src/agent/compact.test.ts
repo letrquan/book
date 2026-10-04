@@ -15,12 +15,13 @@ import {
   applyCompactResult,
   judgeCompaction,
   clipHistoryToolResults,
+  estimateHistoryTokens,
 } from './compact.js';
 import { DEFAULT_CONTEXT_WINDOW, resolveContextLimit } from '../models.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message, Usage } from '../types/messages.js';
 import type { FileObservation, ToolResult } from '../types/tools.js';
-import { toolResult } from '../test/fixtures.js';
+import { assistantMsg, toolCall, toolResult, userMsg } from '../test/fixtures.js';
 import { compactTestConfig } from '../test/compact-fixture.js';
 
 vi.mock('../provider/index.js', () => ({
@@ -161,6 +162,43 @@ describe('resolveContextLimit', () => {
 
   it('defaults unknown model context windows to 272K', () => {
     expect(DEFAULT_CONTEXT_WINDOW).toBe(272_000);
+  });
+});
+
+describe('estimateHistoryTokens', () => {
+  // A print-mode run is one user turn, so a single turn can hold hundreds of
+  // steps; the request carries the reasoning of the newest steps only (#378).
+  const reasoning = 'r'.repeat(400);
+  const singleTurn = (steps: number): Message[] => [
+    userMsg('do the whole task'),
+    ...Array.from({ length: steps }, (_, index) => ({
+      ...assistantMsg(
+        '',
+        [toolCall(`c${index}`, 'Read', { filePath: `f${index}.ts` })],
+        [toolResult(`c${index}`, 'x')],
+      ),
+      id: `a${index}`,
+      reasoningContent: reasoning,
+    })),
+  ];
+
+  it('counts only the reasoning the request replays', () => {
+    const history = singleTurn(10);
+
+    const bounded = estimateHistoryTokens(history);
+    const everything = estimateHistoryTokens(history, { replayAllReasoning: true });
+
+    // 10 steps at 100 tokens of reasoning each; the newest 2 steps go on the
+    // wire, so 8 steps' worth is not this run's context pressure.
+    expect(everything - bounded).toBe(8 * (reasoning.length / 4));
+    expect(bounded).toBeLessThan(everything);
+  });
+
+  it('counts a closed turn no reasoning at all', () => {
+    const closed = [...singleTurn(4), userMsg('next task')];
+    const stripped = closed.map((message) => ({ ...message, reasoningContent: undefined }));
+
+    expect(estimateHistoryTokens(closed)).toBe(estimateHistoryTokens(stripped));
   });
 });
 

@@ -360,6 +360,10 @@ export function replaceToolResult(
     ...result,
     status,
     content,
+    // New content replaces what the model read: a placeholder standing in for
+    // the previous text would hide the rewrite (a PostToolUse hook's
+    // `modifiedOutput`, the plan-approval note) behind the line the tool wrote.
+    ...(patch.content !== undefined ? { maskedPlaceholder: undefined } : {}),
     structuredError: patch.error ?? (status === 'success' ? undefined : result.structuredError),
     presentation:
       result.presentation || patch.presentation

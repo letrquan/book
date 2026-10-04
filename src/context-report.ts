@@ -8,6 +8,7 @@
  */
 import type { CompactBoundary } from './types/sessions.js';
 import type { ContextWindowSource, Message } from './types/messages.js';
+import { reasoningReplayKeeps } from './agent/reasoning-replay.js';
 
 /** Rough token estimate for an arbitrary string. ~4 chars/token for English/code. */
 export function estimateTokens(text: string): number {
@@ -38,12 +39,16 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
   let toolResults = 0;
   let carriedMsgs = 0;
   let carriedTokens = 0;
+  // Only the reasoning the request replays is in the window (#378), so the
+  // breakdown counts the same thing `buildMessages` sends — a long single turn
+  // is not reported as fuller than it is.
+  const keepsReasoning = reasoningReplayKeeps(messages);
 
-  for (const m of messages) {
+  for (const [index, m] of messages.entries()) {
     if (!m.includeInContext) continue;
     const msgTokens =
       estimateTokens(m.contextContent ?? m.content) +
-      estimateTokens(m.reasoningContent ?? '') +
+      (keepsReasoning(index) ? estimateTokens(m.reasoningContent ?? '') : 0) +
       estimateTokens(m.sessionState ?? '') +
       6;
     if (m.role === 'user') {

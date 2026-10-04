@@ -24,8 +24,9 @@
  * model (`--record`), its file observations rebound to each trial's sandbox the
  * way a resumed session seeds its ledger, then probed under three arms:
  * `replay-all` (every turn's reasoning, Book before #248 item 6, through
- * `AgentConfig.replayAllReasoning`), `turn-in-progress` (Book's default: only
- * the turn the user's newest message opened) and `none` (no reasoning at all).
+ * `AgentConfig.replayAllReasoning`), `turn-in-progress` (Book's default: the newest
+ * `TURN_REASONING_REPLAY_WINDOW` steps of the turn the user's newest message
+ * opened, #378) and `none` (no reasoning at all).
  * Metrics: request tokens, answers that write reasoning tags into their text,
  * recall probes graded by required terms, and one agentic follow-up graded by
  * the sandbox's tests plus a hidden check.

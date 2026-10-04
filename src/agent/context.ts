@@ -9,6 +9,7 @@ import type { SlashCommand } from '../types/commands.js';
 import type { FileObservation, ToolContext } from '../types/tools.js';
 import { createHash } from 'crypto';
 import { collectStaleCheckpointFiles, renderSessionState } from './session-state.js';
+import { reasoningReplayKeeps } from './reasoning-replay.js';
 import { normalizeObservedPath, supersedesObservation } from '../tools/file-provenance.js';
 import { normalizePromptPath } from './prompt-determinism.js';
 import {
@@ -682,21 +683,24 @@ export async function buildMessages(
     content: await buildSystemPromptZones(config, commands, systemOverrides, cache),
   });
 
-  // Reasoning goes back to the model only for the turn in progress: the assistant steps after
-  // the newest message the user wrote. A host-written user message (`derivedContent`: the
-  // `[continuation]` resume, the completion gate, the `[work-state]` refresh) does not start a
-  // turn, so a run keeps its chain of thought across them. A turn a later user message closed is
-  // sent as its answer and tool calls, the way the Anthropic API drops earlier turns' thinking,
-  // except a reply that was only reasoning, which would otherwise reach the model empty.
-  // Measured with `npm run eval:prompt -- --suite replay` (#248 item 6).
-  let turnStart = -1;
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const candidate = history[index];
-    if (candidate.includeInContext && candidate.role === 'user' && !candidate.derivedContent) {
-      turnStart = index;
-      break;
-    }
-  }
+  // Reasoning goes back to the model only for the newest steps of the turn in progress: the
+  // assistant steps after the newest message the user wrote, and only the steps `reasoningReplayKeeps`
+  // keeps — between `TURN_REASONING_REPLAY_WINDOW` and a full `TURN_REASONING_REPLAY_STRIDE` of
+  // them, the cut moving a stride at a time so the request this one extends keeps the prefix the
+  // provider cached (a window that slid one step per request rewrote an already-sent message on
+  // every request, #378). Every older step of the same turn loses its reasoning exactly as a closed
+  // turn's does, so a single-turn run does not re-send its whole chain of thought. A host-written
+  // user message (`derivedContent`: the `[continuation]` resume, the completion gate, the
+  // `[work-state]` refresh) does not start a turn, so a run keeps its chain of thought across them.
+  // A turn a later user message closed is sent as its answer and tool calls, the way the Anthropic
+  // API drops earlier turns' thinking, except a reply that was only reasoning, which would
+  // otherwise reach the model empty. `replayAllReasoning` still replays every turn.
+  // `providerMetadata` is untouched: the Anthropic path replays its signed thinking blocks from
+  // there, independently of `reasoningContent`. Measured with `npm run eval:prompt -- --suite
+  // replay` (#248 item 6), bounded by #378.
+  const keepsReasoning = reasoningReplayKeeps(history, {
+    replayAllReasoning: config.replayAllReasoning,
+  });
 
   for (const [index, msg] of history.entries()) {
     if (!msg.includeInContext) continue;
@@ -734,7 +738,7 @@ export async function buildMessages(
         content:
           msg.content && msg.content.length > 0 ? msg.content : msg.toolCalls?.length ? null : '',
         reasoningContent:
-          config.replayAllReasoning || index > turnStart || (!msg.content && !msg.toolCalls?.length)
+          keepsReasoning(index) || (!msg.content && !msg.toolCalls?.length)
             ? msg.reasoningContent
             : undefined,
         providerMetadata: msg.providerMetadata,

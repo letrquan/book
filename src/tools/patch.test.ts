@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ToolContext } from '../types/tools.js';
 import { patchTools, parsePatch } from './patch.js';
+import { toolResultModelContent } from './result.js';
 
 const roots: string[] = [];
 
@@ -448,5 +449,72 @@ describe('ApplyPatch hunk matching', () => {
     );
     expect(result.structuredError).toBeUndefined();
     expect(await readFile(file, 'utf8')).toBe('new\n');
+  });
+
+  it('sends the model one line per created file when every mutation is a create (#378)', async () => {
+    // GPT/Codex-family models are steered to ApplyPatch, so an Add File echoed
+    // back as an all-plus diff is a second copy of every byte the model just
+    // wrote (#378). The diffs stay on the result for the TUI and the record.
+    const { root, context } = await fixture();
+    const result = await execute(
+      {
+        patch: [
+          '*** Begin Patch',
+          '*** Add File: a.ts',
+          '+one',
+          '+two',
+          '+three',
+          '*** Add File: b.ts',
+          '+x',
+          '+y',
+          '+z',
+          '*** End Patch',
+        ].join('\n'),
+      },
+      context,
+    );
+
+    expect(result.status).toBe('success');
+    expect(result.maskedPlaceholder).toBe(
+      'Created a.ts (3 lines, 14 bytes); created b.ts (3 lines, 6 bytes).',
+    );
+    const modelContent = toolResultModelContent(result);
+    expect(modelContent).toBe(result.maskedPlaceholder);
+    expect(modelContent).not.toContain('+one');
+    expect(modelContent).not.toContain('+x');
+    // The transcript's own input is unchanged: a diff the TUI can render.
+    expect(result.content).toContain('+one');
+    expect(await readFile(join(root, 'a.ts'), 'utf8')).toBe('one\ntwo\nthree\n');
+  });
+
+  it('sends the model the diffs when a patch also updates or deletes a file (#378)', async () => {
+    const { root, context } = await fixture();
+    await writeFile(join(root, 'existing.txt'), 'old\n');
+    const mixed = await execute(
+      {
+        patch:
+          '*** Begin Patch\n*** Add File: added.txt\n+fresh\n*** Update File: existing.txt\n@@\n-old\n+new\n*** End Patch',
+      },
+      context,
+    );
+
+    expect(mixed.status).toBe('success');
+    expect(mixed.maskedPlaceholder).toBeUndefined();
+    expect(toolResultModelContent(mixed)).toBe(mixed.content);
+
+    await execute(
+      { patch: '*** Begin Patch\n*** Delete File: existing.txt\n*** End Patch' },
+      context,
+    );
+    const withDelete = await execute(
+      {
+        patch:
+          '*** Begin Patch\n*** Add File: another.txt\n+fresh\n*** Delete File: added.txt\n*** End Patch',
+      },
+      context,
+    );
+
+    expect(withDelete.status).toBe('success');
+    expect(withDelete.maskedPlaceholder).toBeUndefined();
   });
 });
