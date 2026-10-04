@@ -3,7 +3,7 @@ import { join } from 'path';
 
 /**
  * Load .gitignore patterns from the workspace root and return
- * the raw glob patterns (for fast-glob's `ignore` option).
+ * the raw glob patterns (for a glob walk's `ignore` option).
  *
  * If no .gitignore exists or loading fails, returns an empty pattern set.
  */

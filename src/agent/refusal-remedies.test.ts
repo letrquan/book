@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   OUTSIDE_WORKSPACE_REFUSAL_CODE,
+  PATTERN_UNREADABLE_REFUSAL_CODE,
   REFUSAL_KIND_ORDER,
   REFUSAL_REMEDIES,
+  invalidPatternRefusal,
   isRefusal,
   outsideWorkspaceRefusal,
   refusalKind,
@@ -16,6 +18,72 @@ import type { ToolResult } from '../types/tools.js';
 function blocked(code: string): ToolResult {
   return toolFailure(`refused: ${code}`, { code, status: 'blocked' });
 }
+
+/**
+ * A Glob pattern the matcher cannot read. It was refused as an unreachable path, which sent the model
+ * after a directory: `additionalDirectories` for a pattern that is not about a directory at all. The
+ * refusal is its own kind, carrying the matcher's reason, and naming no directory.
+ */
+describe('the unreadable-pattern refusal', () => {
+  const refusal = (reason = 'the pattern nests 33 groups deep, more than 32'): string =>
+    invalidPatternRefusal(
+      'Glob',
+      { arguments: { pattern: '!('.repeat(2500) + ')'.repeat(2500) } },
+      reason,
+    ).content ?? '';
+
+  it('is classified as a pattern from its code alone, never as outside', () => {
+    const result = invalidPatternRefusal('Glob', { arguments: { pattern: 'x' } }, 'too long');
+
+    expect(refusalKind(result)).toBe('pattern');
+    expect(refusalKind(result)).not.toBe('outside');
+    expect(result.structuredError?.code).toBe(PATTERN_UNREADABLE_REFUSAL_CODE);
+  });
+
+  it('reaches the model in `content`, carrying the reason it can act on', () => {
+    // The loop would otherwise retry the same pattern until the `all_tools_blocked` brake fired.
+    const message = refusal();
+
+    expect(message).toContain('The matcher cannot read the pattern');
+    expect(message).toContain('33');
+    expect(message).toContain('32');
+    // And not 7 500 characters of it: the reason names the shape, which is what the model acts on.
+    expect(message.length).toBeLessThan(700);
+  });
+
+  it('names no directory, because none of them would make the walk happen', () => {
+    const message = refusal();
+
+    expect(message).toContain('No permission rule, no directory in additionalDirectories');
+    // Nor the two remedies this kind does not get: a rule and a directory are the fixes for the
+    // refusals around it, and offering them here would send the model after neither.
+    expect(message).toContain('nothing about the directory is wrong');
+    expect(message).not.toMatch(/add (its|the) directory/i);
+    expect(REFUSAL_REMEDIES.pattern).not.toContain('--permission-mode auto');
+    expect(REFUSAL_REMEDIES.pattern).toContain('simpler pattern');
+  });
+
+  it('blocks rather than denying, and carries the call id when there is one', () => {
+    const result = invalidPatternRefusal('Glob', { arguments: { pattern: 'x' } }, 'too long', {
+      toolCallId: 'p3',
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.structuredError?.code).not.toBe('permission_denied');
+    expect(result.toolCallId).toBe('p3');
+    expect(result.structuredError?.details).toMatchObject({ tool: 'Glob' });
+  });
+
+  it('folds control characters out of the pattern it names', () => {
+    const message = invalidPatternRefusal(
+      'Glob',
+      { arguments: { pattern: `src/${String.fromCharCode(0x1b)}[2J*.ts` } },
+      'too long',
+    ).content;
+
+    expect(message).not.toContain(String.fromCharCode(0x1b));
+  });
+});
 
 describe('refusalKind', () => {
   it('names the gate that refused the call, not just that it was refused', () => {
