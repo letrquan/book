@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -96,6 +96,26 @@ describe('file mention helpers', () => {
     const ws = workspace();
     expect(resolveWorkspaceMentionPath(ws, '../outside')).toBeNull();
     expect(resolveWorkspaceMentionPath(ws, './src/app.ts')?.relativePath).toBe('src/app.ts');
+  });
+
+  it('stays silent about a directory the walk could not read', async () => {
+    // Glob and Grep name the directories they could not read, because a file missing from their
+    // answer is a file the caller asked about and did not get. A mention list is neither: it is a
+    // hint at what can be typed, and a path it cannot offer costs a keystroke that finds nothing.
+    // Pinned here so the silence is a decision on the record rather than an omission.
+    const ws = workspace();
+    mkdirSync(join(ws, 'locked'));
+    writeFileSync(join(ws, 'locked', 'secret.ts'), 'secret');
+    writeFileSync(join(ws, 'open.ts'), 'open');
+    chmodSync(join(ws, 'locked'), 0o000);
+    try {
+      const candidates = await getFileMentionCandidates(ws, '');
+      if (process.getuid?.() === 0) return;
+      expect(candidates.map((candidate) => candidate.path)).toContain('open.ts');
+      expect(candidates.map((candidate) => candidate.path)).not.toContain('locked/secret.ts');
+    } finally {
+      chmodSync(join(ws, 'locked'), 0o755);
+    }
   });
 
   it('returns gitignore-aware file candidates', async () => {

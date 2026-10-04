@@ -1223,6 +1223,105 @@ describe('glob', () => {
     expect(r.content).not.toContain('build/out.js');
   });
 
+  it('walks a workspace whose directory name holds a glob character', async () => {
+    // The walk makes an absolute pattern relative against an *escaped* `cwd` (`project (2)` becomes
+    // `project \(2\)`), so it never matched the directory the walk was reading: an absolute Glob
+    // answered empty. The walk is now handed the part of the pattern below the workspace instead,
+    // relative to the `cwd` it is already in, which it reads as the name it is.
+    const outer = mkdtempSync(join(tmpdir(), 'book-file-metachar-'));
+    const ws = join(outer, 'project (2)');
+    mkdirSync(join(ws, 'src'), { recursive: true });
+    writeFileSync(join(ws, 'src', 'a.ts'), 'a');
+    try {
+      const inWorkspace = { ...ctx, workspaceRoot: ws };
+      const relative = await glob.execute({ pattern: 'src/*.ts' }, inWorkspace);
+      expect(relative.status).toBe('success');
+      expect(relative.content).toContain('src/a.ts');
+
+      // And the absolute spelling of that same walk answers, which is what the walk side is for:
+      // the judgment refuses or serves it, and the walk has to be able to answer it.
+      const absolute = await glob.execute({ pattern: join(ws, 'src', '*.ts') }, inWorkspace);
+      expect(absolute.status).toBe('success');
+      expect(absolute.content).toContain('src/a.ts');
+      // The same file, asked for by the same absolute path, and answered relative to the workspace
+      // it was found in — which is the answer the walk could not give before.
+      expect((absolute.data as { files?: string[] }).files).toEqual(['src/a.ts']);
+    } finally {
+      rmSync(outer, { recursive: true, force: true });
+    }
+  });
+
+  it('walks a workspace whose directory name holds a bracket or a star', async () => {
+    // The same escape, through the other characters that take one: `[work]` and `work*` are read
+    // by the walk as patterns until they are escaped, and the relative walk needs no escape.
+    for (const name of ['work[1]', 'work*1']) {
+      const outer = mkdtempSync(join(tmpdir(), 'book-file-metachar-'));
+      const ws = join(outer, name);
+      mkdirSync(join(ws, 'src'), { recursive: true });
+      writeFileSync(join(ws, 'src', 'a.ts'), 'a');
+      try {
+        const inWorkspace = { ...ctx, workspaceRoot: ws };
+        const absolute = await glob.execute({ pattern: join(ws, 'src', '*.ts') }, inWorkspace);
+        expect(absolute.status, name).toBe('success');
+        expect((absolute.data as { files?: string[] }).files, name).toEqual(['src/a.ts']);
+      } finally {
+        rmSync(outer, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('says which directories it could not read instead of answering as if it read them all', async () => {
+    // tinyglobby hands fdir `suppressErrors`, which it offers no way to change, and fdir answers
+    // `null` for a directory it could not list: the walk returns the files it did read and no word
+    // that there are more, which reads as "this is everything". fast-glob surfaced the error; this
+    // names the directories instead.
+    const closed = join(dir, 'locked');
+    mkdirSync(join(closed, 'deep'), { recursive: true });
+    writeFileSync(join(closed, 'deep', 'secret.ts'), 'secret');
+    writeFileSync(join(dir, 'open.ts'), 'open');
+    chmodSync(closed, 0o000);
+    try {
+      const r = await glob.execute({ pattern: '**/*.ts' }, ctx);
+      // Root reads what mode 000 forbids, so there is nothing for this walk to be partial about.
+      if (process.getuid?.() === 0) return;
+      expect(r.status).toBe('success');
+      expect(r.content).toContain('open.ts');
+      expect(r.content).not.toContain('secret.ts');
+      // The directory is named as the caller would write it, with the code that failed, and the
+      // answer says what it is.
+      expect(r.content).toContain('partial');
+      expect(r.content).toMatch(/locked.*\(EACCES\)/);
+    } finally {
+      chmodSync(closed, 0o755);
+    }
+  }, 60_000);
+
+  it('says nothing about a walk that read everything it was asked for', async () => {
+    writeFileSync(join(dir, 'a.ts'), 'a');
+    const r = await glob.execute({ pattern: '**/*.ts' }, ctx);
+    expect(r.status).toBe('success');
+    expect(r.content).toBe('a.ts');
+  });
+
+  it('names an unreadable directory even when the walk found nothing at all', async () => {
+    // "No files found" claims the workspace has none. When the walk could not read a directory, the
+    // claim is the one thing it is not entitled to make, so the note is there with or without
+    // results.
+    mkdirSync(join(dir, 'locked'));
+    writeFileSync(join(dir, 'locked', 'secret.ts'), 'secret');
+    chmodSync(join(dir, 'locked'), 0o000);
+    try {
+      const r = await glob.execute({ pattern: '**/*.secret' }, ctx);
+      if (process.getuid?.() === 0) return;
+      expect(r.status).toBe('success');
+      expect(r.content).toContain('No files found');
+      expect(r.content).toContain('partial');
+      expect(r.content).toMatch(/locked.*\(EACCES\)/);
+    } finally {
+      chmodSync(join(dir, 'locked'), 0o755);
+    }
+  }, 60_000);
+
   it('hands the walk the signal it is to stop on', async () => {
     // A walk handed no signal notices a cancellation only once it has listed everything, and then
     // answers the same thing it would have: the difference is invisible in the result, so it is
@@ -1690,6 +1789,47 @@ describe('grep', () => {
 
     expect(result.content).toContain('sub/visible.ts');
     expect(result.content).not.toContain('secret.ts');
+  });
+
+  it('says which directories its include walk could not read (portable)', async () => {
+    // The same walk a Glob makes, with the same silence: a directory the walk could not list takes
+    // its files out of the answer, and "0 matches" for a file it never opened is a claim it cannot
+    // make. Named here, whether or not anything matched.
+    const closed = join(dir, 'locked');
+    mkdirSync(closed, { recursive: true });
+    writeFileSync(join(closed, 'hidden.ts'), 'const secret = 1;');
+    writeFileSync(join(dir, 'open.ts'), 'const secret = 2;');
+    chmodSync(closed, 0o000);
+    const portable = { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' } };
+    try {
+      const found = await grep.execute({ pattern: 'secret', include: '**/*.ts' }, portable);
+      if (process.getuid?.() === 0) return;
+      expect(found.status).toBe('success');
+      expect(found.content).toContain('open.ts');
+      expect(found.content).not.toContain('hidden.ts');
+      expect(found.content).toContain('partial');
+      expect(found.content).toMatch(/locked.*\(EACCES\)/);
+
+      // And with nothing to report: "No matches found" alone would be the one untrue sentence.
+      const none = await grep.execute(
+        { pattern: 'nothing-matches-this', include: '**/*.ts' },
+        portable,
+      );
+      expect(none.content).toContain('No matches found');
+      expect(none.content).toContain('partial');
+    } finally {
+      chmodSync(closed, 0o755);
+    }
+  }, 60_000);
+
+  it('says nothing about an include walk that read everything it was asked for (portable)', async () => {
+    writeFileSync(join(dir, 'a.ts'), 'const x = 1;');
+    const result = await grep.execute(
+      { pattern: 'const', include: '**/*.ts' },
+      { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' } },
+    );
+    expect(result.status).toBe('success');
+    expect(result.content).toBe('a.ts:1: const x = 1;');
   });
 
   it('hands its include walk the signal it is to stop on (portable)', async () => {

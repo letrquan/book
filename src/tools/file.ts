@@ -4,7 +4,8 @@ import vm from 'node:vm';
 import { basename, extname, join, resolve as resolvePath } from 'node:path';
 import { glob } from 'tinyglobby';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
-import { globPatternRefusal, globWalkIgnore, globWalkPattern } from './glob-regex.js';
+import { globWalkIgnore, globWalkPlan } from './glob-regex.js';
+import { recordingWalkFs, walkPartialNote, type WalkFailure } from './walk-fs.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { buildChildEnv } from '../child-env.js';
 import { markdownContentStart } from '../frontmatter.js';
@@ -1641,29 +1642,40 @@ function globSearchDir(ctx: ToolContext): string[] {
 
 async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const pattern = args.pattern as string;
-  // Refused before the matcher sees it: a pattern nested deeply enough compiles into a regular
-  // expression V8 cannot build, which aborts the process rather than throwing.
-  const refusal = globPatternRefusal(pattern);
-  if (refusal) return toolFailure(refusal, { code: 'invalid_pattern' });
   const roots = grepRoots(ctx);
   const files: string[] = [];
+  const unreadable: WalkFailure[] = [];
   for (const cwd of globSearchDir(ctx)) {
-    // Converted for the walk, which reads `\` as an escape and so walks nothing at all for a
-    // Windows pattern (`C:\ws\**\*.ts`): an absolute Glob came back empty. Which root holds the
-    // base is then decided by the filter below, against the roots in canonical form.
+    // What the walk is handed, and whether it can be handed anything: a pattern nested deeply
+    // enough compiles into a regular expression V8 cannot build, which aborts the process rather
+    // than throwing. The refusal is asked of the pattern the walk would read, so the words name the
+    // shape the matcher would have been handed.
+    const walk = globWalkPlan(pattern, cwd);
+    if (walk.refusal) return toolFailure(walk.refusal, { code: 'invalid_pattern' });
+    //
+    // The walk reads `\` as an escape and so walks nothing at all for a Windows pattern
+    // (`C:\ws\**\*.ts`), and it makes an absolute pattern relative against an *escaped* `cwd`, so a
+    // workspace under a directory holding a glob character came back empty for any absolute pattern
+    // (`globWalkPattern` hands it the part below the workspace instead). Which root holds the base is
+    // decided by the filter below, against the roots in canonical form.
     //
     // `expandDirectories: false` is what stops a pattern that names a directory from being
     // expanded into its contents: `src` and `**/dist` are not walked as `src/**`. This tool asks
     // for files only, so neither answers with the directory either — the mention walk, which asks
     // for directories too, is the one that gets it.
+    //
+    // The `fs` adapter records what the walk could not read, which tinyglobby otherwise swallows: an
+    // unreadable directory is reported below rather than passed off as the whole workspace.
+    const recorder = recordingWalkFs();
     let found: string[];
     try {
-      found = await glob(globWalkPattern(pattern), {
+      found = await glob(walk.pattern, {
         cwd,
         dot: true,
         ignore: globWalkIgnore(ctx.gitignorePatterns ?? []),
         expandDirectories: false,
         signal: ctx.signal,
+        fs: recorder.fs,
       });
     } catch (error) {
       return toolFailure(
@@ -1671,6 +1683,7 @@ async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
         { code: 'invalid_pattern' },
       );
     }
+    unreadable.push(...recorder.failures);
     // A pattern that names its own root comes back spelled relative to `cwd`, which resolves back
     // to the same absolute path either way.
     files.push(...found.map((file) => resolvePath(cwd, file)));
@@ -1696,12 +1709,18 @@ async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
     if (index > 0 && index % PATH_YIELD_INTERVAL === 0) await yieldToEventLoop(ctx.signal);
   }
 
+  // Said whether or not anything was found: an unreadable directory is why a list can be short, and
+  // "no files found" on its own would claim the workspace has none.
+  const partial = walkPartialNote(ctx.workspaceRoot, unreadable);
+
   if (output.length === 0) {
-    return toolSuccess('No files found', { data: { files: [] } });
+    return toolSuccess(['No files found', partial].filter(Boolean).join('\n'), {
+      data: { files: [] },
+    });
   }
 
   const suffix = truncated ? `\n... (truncated at ${GLOB_OUTPUT_LIMIT} files; refine pattern)` : '';
-  return toolSuccess(output.join('\n') + suffix, {
+  return toolSuccess([output.join('\n') + suffix, partial].filter(Boolean).join('\n'), {
     data: { files: output },
     pagination: { truncated, omittedItems: truncated ? files.length - output.length : 0 },
   });
@@ -1770,6 +1789,9 @@ const GREP_REGEX_TOTAL_BUDGET_MS = 10_000;
  * earn, so the search stops here instead, up to this much early.
  */
 const GREP_REGEX_MIN_BUDGET_MS = 250;
+
+/** What a search that found nothing says, kept apart from any note about how it searched. */
+const NO_MATCHES = 'No matches found';
 
 /**
  * The matching half of the portable backend, run where a `timeout` can interrupt it.
@@ -1927,18 +1949,24 @@ async function grepSearchPortable(
   // (#300): a scope inside an honored directory is not in the workspace tree at all, so globbing
   // from the workspace would find nothing. Then limit the results to the requested scope.
   let globbed: string[];
+  const unreadable: WalkFailure[] = [];
   if (scope.isFile) {
     globbed = [scope.relativePath];
   } else {
-    const refusal = globPatternRefusal(includePattern);
-    if (refusal) return toolFailure(refusal, { code: 'invalid_pattern' });
+    // The same plan as a Glob's walk, on the include pattern and this scope's root, so a pattern
+    // shaped too hard to compile is refused with the reason it has and a Windows or absolute include
+    // reads the way the walk reads it.
+    const walk = globWalkPlan(includePattern, scope.root);
+    if (walk.refusal) return toolFailure(walk.refusal, { code: 'invalid_pattern' });
+    const recorder = recordingWalkFs();
     try {
-      globbed = await glob(includePattern, {
+      globbed = await glob(walk.pattern, {
         cwd: scope.root,
         dot: true,
         ignore: globWalkIgnore([...GREP_DEFAULT_IGNORES, ...(ctx.gitignorePatterns ?? [])]),
         expandDirectories: false,
         signal: ctx.signal,
+        fs: recorder.fs,
       });
     } catch (error) {
       return toolFailure(
@@ -1946,6 +1974,7 @@ async function grepSearchPortable(
         { code: 'invalid_pattern' },
       );
     }
+    unreadable.push(...recorder.failures);
   }
   const files =
     scope.relativePath && !scope.isFile
@@ -2138,28 +2167,32 @@ async function grepSearchPortable(
     ]),
   );
 
-  const partialNotice = budgetStop ? regexPartialNotice(budgetStop) : '';
+  // Said whether or not anything was found: an unreadable directory is why a search can be short,
+  // and "no matches found" on its own would claim the scope has none.
+  const partialNotice = [
+    budgetStop ? regexPartialNotice(budgetStop) : '',
+    walkPartialNote(scope.root, unreadable),
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   if (outputMode === 'count') {
     const lines = Array.from(matchesByFile.entries()).map(
       ([file, result]) => `${file}:${result.matches.length}`,
     );
     const data: GrepCounts = { mode: outputMode, totalMatches, matches: serializedMatches };
-    return toolSuccess(
-      [lines.join('\n'), partialNotice].filter(Boolean).join('\n') || 'No matches found',
-      {
-        data,
-        pagination: { truncated: budgetStop !== undefined },
-        presentation: grepPresentation(data),
-      },
-    );
+    return toolSuccess([lines.join('\n') || NO_MATCHES, partialNotice].filter(Boolean).join('\n'), {
+      data,
+      pagination: { truncated: budgetStop !== undefined },
+      presentation: grepPresentation(data),
+    });
   }
 
   if (outputMode === 'files_with_matches') {
     const matchedFiles = Array.from(matchesByFile.keys());
     const data: GrepCounts = { mode: outputMode, files: matchedFiles };
     return toolSuccess(
-      [matchedFiles.join('\n'), partialNotice].filter(Boolean).join('\n') || 'No matches found',
+      [matchedFiles.join('\n') || NO_MATCHES, partialNotice].filter(Boolean).join('\n'),
       {
         data,
         pagination: { truncated: budgetStop !== undefined },
@@ -2203,8 +2236,7 @@ async function grepSearchPortable(
     : '';
   const data: GrepCounts = { mode: outputMode, totalMatches, matches: serializedMatches };
   return toolSuccess(
-    [output.join('\n'), truncationNotice, partialNotice].filter(Boolean).join('\n') ||
-      'No matches found',
+    [output.join('\n') || NO_MATCHES, truncationNotice, partialNotice].filter(Boolean).join('\n'),
     {
       data,
       pagination: {

@@ -138,6 +138,11 @@ export async function getFileMentionCandidates(
       }),
     );
   } catch {
+    // Silent, and that is deliberate: a mention list is a hint at what can be typed, not an account
+    // of what is in the workspace. Glob and Grep report the directories they could not read (see
+    // `walkPartialNote`) because a file missing from their answer is a file the caller asked about
+    // and did not get; a mention the walk could not offer costs nothing but a keystroke that finds
+    // nothing, and there is nowhere to put the note — the menu is a list of paths.
     return [];
   }
   throwIfAborted(signal);
