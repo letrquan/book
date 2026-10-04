@@ -4,12 +4,7 @@ import vm from 'node:vm';
 import { basename, extname, join, resolve as resolvePath } from 'node:path';
 import { glob } from 'tinyglobby';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
-import {
-  globIgnorePatternsWithinLimit,
-  globWalkPattern,
-  globPatternWithinLimit,
-  MAX_GLOB_PATTERN_LENGTH,
-} from './glob-regex.js';
+import { globPatternRefusal, globWalkIgnore, globWalkPattern } from './glob-regex.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { buildChildEnv } from '../child-env.js';
 import { markdownContentStart } from '../frontmatter.js';
@@ -1644,17 +1639,12 @@ function globSearchDir(ctx: ToolContext): string[] {
   return [ctx.workspaceRoot];
 }
 
-/** A pattern the matcher cannot be handed, refused before it can take the process down. */
-function patternTooLongResult(pattern: string): ToolResult {
-  return toolFailure(
-    `Pattern is too long: a glob pattern may be at most ${MAX_GLOB_PATTERN_LENGTH} characters (this one is ${pattern.length})`,
-    { code: 'invalid_pattern' },
-  );
-}
-
 async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const pattern = args.pattern as string;
-  if (!globPatternWithinLimit(pattern)) return patternTooLongResult(pattern);
+  // Refused before the matcher sees it: a pattern nested deeply enough compiles into a regular
+  // expression V8 cannot build, which aborts the process rather than throwing.
+  const refusal = globPatternRefusal(pattern);
+  if (refusal) return toolFailure(refusal, { code: 'invalid_pattern' });
   const roots = grepRoots(ctx);
   const files: string[] = [];
   for (const cwd of globSearchDir(ctx)) {
@@ -1662,15 +1652,18 @@ async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
     // Windows pattern (`C:\ws\**\*.ts`): an absolute Glob came back empty. Which root holds the
     // base is then decided by the filter below, against the roots in canonical form.
     //
-    // `expandDirectories: false` keeps a pattern that names a directory meaning that directory:
-    // `src` and `**/dist` answer with the directory itself, not with everything inside it.
+    // `expandDirectories: false` is what stops a pattern that names a directory from being
+    // expanded into its contents: `src` and `**/dist` are not walked as `src/**`. This tool asks
+    // for files only, so neither answers with the directory either — the mention walk, which asks
+    // for directories too, is the one that gets it.
     let found: string[];
     try {
       found = await glob(globWalkPattern(pattern), {
         cwd,
         dot: true,
-        ignore: globIgnorePatternsWithinLimit(ctx.gitignorePatterns ?? []),
+        ignore: globWalkIgnore(ctx.gitignorePatterns ?? []),
         expandDirectories: false,
+        signal: ctx.signal,
       });
     } catch (error) {
       return toolFailure(
@@ -1937,16 +1930,15 @@ async function grepSearchPortable(
   if (scope.isFile) {
     globbed = [scope.relativePath];
   } else {
-    if (!globPatternWithinLimit(includePattern)) return patternTooLongResult(includePattern);
+    const refusal = globPatternRefusal(includePattern);
+    if (refusal) return toolFailure(refusal, { code: 'invalid_pattern' });
     try {
       globbed = await glob(includePattern, {
         cwd: scope.root,
         dot: true,
-        ignore: globIgnorePatternsWithinLimit([
-          ...GREP_DEFAULT_IGNORES,
-          ...(ctx.gitignorePatterns ?? []),
-        ]),
+        ignore: globWalkIgnore([...GREP_DEFAULT_IGNORES, ...(ctx.gitignorePatterns ?? [])]),
         expandDirectories: false,
+        signal: ctx.signal,
       });
     } catch (error) {
       return toolFailure(

@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve } from 'path';
 import { glob } from 'tinyglobby';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { loadGitignore } from '../tools/gitignore.js';
-import { globIgnorePatternsWithinLimit } from '../tools/glob-regex.js';
+import { globWalkIgnore } from '../tools/glob-regex.js';
 
 export interface ActiveFileMention {
   start: number;
@@ -87,6 +87,32 @@ async function fileSizeBytes(filePath: string): Promise<number> {
   }
 }
 
+/**
+ * The walk's directories that it did not report, as directory entries.
+ *
+ * A symlinked directory is walked through, but the link itself is not an entry: the walk answers
+ * `linkdir/out.ts` and never `linkdir/`, so `@linkdir` had nothing to offer and the directory a
+ * mention is most often about disappeared. Every ancestor directory of an entry is therefore
+ * spelled out here when the walk left it out, which is the only way one can be — a real directory is
+ * entered, and entered directories are reported.
+ */
+function withMissingAncestors(entries: string[]): string[] {
+  const reported = new Set(entries.filter((entry) => entry.endsWith('/')));
+  const missing: string[] = [];
+  for (const entry of entries) {
+    const path = entry.endsWith('/') ? entry.slice(0, -1) : entry;
+    for (let cut = path.lastIndexOf('/'); cut > 0; cut = path.lastIndexOf('/', cut - 1)) {
+      const ancestor = path.slice(0, cut + 1);
+      // A reported directory was entered, so its own ancestors were reported with it: the walk
+      // up stops at the first one there is.
+      if (reported.has(ancestor)) break;
+      reported.add(ancestor);
+      missing.push(ancestor);
+    }
+  }
+  return missing.length > 0 ? [...entries, ...missing] : entries;
+}
+
 export async function getFileMentionCandidates(
   workspace: string,
   query: string,
@@ -95,19 +121,22 @@ export async function getFileMentionCandidates(
 ): Promise<FileMentionCandidate[]> {
   const normalizedQuery = normalizeMentionPath(query).toLowerCase();
   const gitignore = loadGitignore(workspace).patterns;
-  const ignore = globIgnorePatternsWithinLimit([...DEFAULT_IGNORE, ...gitignore]);
+  const ignore = globWalkIgnore([...DEFAULT_IGNORE, ...gitignore]);
 
   let entries: string[];
   try {
-    entries = await glob('**/*', {
-      cwd: workspace,
-      dot: true,
-      onlyFiles: false,
-      ignore,
-      // A pattern naming a directory returns that directory, not everything inside it — which is
-      // the whole point of walking for mentions.
-      expandDirectories: false,
-    });
+    entries = withMissingAncestors(
+      await glob('**/*', {
+        cwd: workspace,
+        dot: true,
+        onlyFiles: false,
+        ignore,
+        // A pattern naming a directory returns that directory, not everything inside it — which is
+        // the whole point of walking for mentions.
+        expandDirectories: false,
+        signal,
+      }),
+    );
   } catch {
     return [];
   }
@@ -151,17 +180,18 @@ export async function getFileMentionCandidates(
   });
 
   throwIfAborted(signal);
-  // Sized after the cut, so a wide walk does not pay for a stat per entry it will not list.
-  const candidates: FileMentionCandidate[] = [];
-  for (const { path, kind } of scored.slice(0, limit)) {
-    candidates.push({
-      path,
-      kind,
-      desc:
-        kind === 'directory'
-          ? 'directory'
-          : `${await fileSizeBytes(resolve(workspace, path))} bytes`,
-    });
-  }
-  return candidates;
+  // Sized after the cut, so a wide walk does not pay for a stat per entry it will not list — and
+  // in one batch rather than one at a time, so a list of fifty costs one round trip, not fifty.
+  const listed = scored.slice(0, limit);
+  const sizes = await Promise.all(
+    listed.map((candidate) =>
+      candidate.kind === 'directory' ? 0 : fileSizeBytes(resolve(workspace, candidate.path)),
+    ),
+  );
+  throwIfAborted(signal);
+  return listed.map(({ score: _score, path, kind }, index) => ({
+    path,
+    kind,
+    desc: kind === 'directory' ? 'directory' : `${sizes[index]} bytes`,
+  }));
 }

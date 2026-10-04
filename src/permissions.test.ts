@@ -741,27 +741,39 @@ describe('workspace reads need no prompt (#264)', () => {
     ).toEqual({ decision: 'allow', source: 'workspace' });
   });
 
-  it('judges a Glob by where the walk would start', () => {
+  it('judges a Glob by the directory its walk answers from', () => {
     const { workspace, outside } = setup();
     const s = settings();
     const posix = (path: string) => path.replace(/\\/g, '/');
     const glob = (pattern: string) => evaluatePermission('Glob', { pattern }, s, scope(workspace));
     expect(glob(`${posix(workspace)}/src/*.ts`)).toBe('allow');
     expect(glob(`${posix(outside)}/*.txt`)).toBe('refuse');
-    expect(glob('.{.,x}/*')).toBe('refuse');
-    expect(glob('src/{a,{b,../..}}/*')).toBe('refuse');
-    // A parent named in the leading enumeration is refused the same way a literal one is.
-    // micromatch declined to expand a group whose first alternative was `..`, so fast-glob
-    // reported the base as the workspace and allowed this one; picomatch expands it, so the
-    // pattern can now be spelled to start outside, which is the case `{,..}/*` was always
-    // refused for.
-    expect(glob('{..,src}/*')).toBe('refuse');
-    // These never leave the workspace: the walk starts inside it.
+    // A hop the pattern only spells through normalization. `posix.normalize` is lexical, so the
+    // hop eats the segment in front of it — a globstar, an extglob, a brace — and the walk answers
+    // from the parent of the workspace, where it returns `../parent.ts`. These were allowed while
+    // the judgment enumerated the literal segment in front of them; the `globWalkScope` tests in
+    // tools/glob-regex.test.ts walk all three out of the workspace.
+    expect(glob('*/../../**')).toBe('refuse');
+    expect(glob('**/../../**')).toBe('refuse');
+    expect(glob('src/*/../../../*.ts')).toBe('refuse');
+    // A `..` inside a brace group is not a hop: the group is one segment the matcher resolves, so
+    // the walk answers from the directory in front of it and returns nothing outside — which is
+    // what the same tests walk, for each of the three below. `.{.,x}/*` was refused before because
+    // `fast-glob` reported a parent for it; the walk it describes does not happen.
+    expect(glob('src/{a,{b,../..}}/*')).toBe('allow');
+    expect(glob('.{.,x}/*')).toBe('allow');
+    expect(glob('{..,src}/*')).toBe('allow');
+    // These never leave the workspace: the walk answers from inside it.
     expect(glob('src/{a,{b,..}}/*')).toBe('allow');
     expect(glob('**/*.{ts,tsx}')).toBe('allow');
     expect(glob('logs/{1..3}.txt')).toBe('allow');
     expect(glob('{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}.txt')).toBe('allow');
     expect(glob('~$*.docx')).toBe('allow');
+    // A pattern the matcher cannot read at all: the walk it would do is unknown, so nothing it
+    // finds can be claimed to be inside. Nested groups are refused on their shape, not only on
+    // their length — 2500 of them are 7500 characters and abort the process once matched.
+    expect(glob('!('.repeat(2500) + ')'.repeat(2500))).toBe('refuse');
+    expect(glob('{a,'.repeat(10_000) + '}'.repeat(10_000))).toBe('refuse');
   });
 
   it('refuses an outside target even where reads keep asking, and still honours an ask rule', () => {

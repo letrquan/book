@@ -90,17 +90,44 @@ true` is the one loosening-adjacent key a workspace layer may set, and the loade
 - **A Glob pattern could take the process down** (GHSA-vfj7-8cjw-p6xm). `fast-glob` is replaced by
   `tinyglobby`, which drops `micromatch` and with it `braces` — the package the advisory names, and
   the whole reason it was there. Neither remains in the dependency tree. A pattern is now read by
-  `picomatch` directly, with a length limit (10 000 characters, the one `micromatch` enforced) before
-  the matcher sees it: deeply nested brace groups compile into a regular expression that overflows
-  V8's regexp stack, and the process aborts below the reach of any `catch`, so a pattern long enough
-  to do it is refused with a tool error instead. A walk compiles the entries of its `ignore` option —
-  the repository's own `.gitignore` — through the same matcher, so those are held to the same limit:
-  an entry over it is dropped before the walk rather than obeyed, and the rest of the file still
-  applies. Where the walk starts is still asked of the matcher rather than guessed from the pattern,
-  so `../**`, `.{.,x}/*` and an absolute pattern elsewhere are refused exactly as before; a brace
-  group naming `..` among its alternatives (`{..,src}/*`) is now refused as well, the same verdict
-  `{,..}/*` already got. The lockfile also picks up the current `hono`, `qs`, `fast-uri` and
-  `ip-address`, which close four moderate advisories.
+  `picomatch` directly, and refused on its **shape** as well as its length before the matcher sees
+  it: the length limit `micromatch` enforced (10 000 characters) is kept, and two patterns well
+  inside it are added. `'!('×2500 + ')'×2500` — 7500 characters — compiles in 201 ms and then
+  aborts Node with `FATAL ERROR: RegExpCompiler Allocation failed` the first time a path is matched
+  against it, and `'+('×3300 + ')'×3300` — 9900 characters — takes picomatch's own parse 145 s.
+  Both are below the reach of any `catch`. What they have in common is nesting, and nesting costs
+  cubic time: 32 deep compiles in 5 ms, 256 in 74 ms, 2000 in 38 s. So a pattern may nest groups 32
+  deep and open 256 of them; nothing real comes near either, and the two bounds answer with a tool
+  error instead of aborting. A walk compiles the entries of its `ignore` option — the repository's own
+  `.gitignore` — through the same matcher, so those are refused the same way: an entry picomatch
+  cannot compile is **dropped before the walk** rather than obeyed, the rest of the file still
+  applies, and each dropped entry is named once through `BOOK_DEBUG=tools:glob`, because dropping one
+  widens the walk by whatever it ignored. **Where a walk answers from is now asked of
+  the walk**, modelled on what `tinyglobby` really does rather than on how the pattern reads:
+  `posix.normalize` collapses a glob segment against the `..` after it, so `*/../../**`,
+  `**/../../**` and `src/*/../../../*.ts` are walked as `../**` from the parent of the workspace and
+  **are refused** as they should be — a permission bypass the migration opened by reading a dynamic
+  segment as a literal base. A brace group is read as the match it is, because a group is resolved
+  at match time and cannot move the walk: `{..,src}/*`, `src/{a,{b,../..}}/*` and `.{.,x}/*` all
+  answer from inside the workspace and return nothing outside it, so the first two are allowed as
+  before and the third is **allowed where `fast-glob`'s answer had it refused**; an absolute pattern
+  naming an honored `additionalDirectories` root still reaches it. Where the walk _searches from_ can
+  be an ancestor of where it answers — a pattern that climbs lists the directories between on its way
+  — but only what the pattern matches comes back, and the permission check judges the directory that
+  contains every entry. **A root-anchored `.gitignore` line is respelled where the walk reads it**:
+  git means `/build` relative to the repository root, while the walk reads a leading `/` as the
+  filesystem root and normalizes `/build` into `../../../build` — which moves the crawl to `/`, lists
+  every directory from there down to the workspace, and still prunes nothing. It becomes `build`
+  plus `build/**` (`loadGitignore` itself is unchanged), and the walk stays where it was. **Every walk
+  is now handed the abort signal** — Glob, Grep's include
+  walk and the file-mention walk — because `fdir` checks it between directories and otherwise lists
+  the rest of the repository before the call notices the cancellation. **A file mention can name a
+  symlinked directory**: the walk is entered through one but does not report the link itself, so
+  `@linkdir` had nothing to offer and the ancestors of every reported entry are spelled out where
+  the walk left them out. The mention list is also sized in one batch rather than one `stat` at a
+  time, and checked for cancellation after, so a list of fifty costs one round trip instead of fifty.
+  The lockfile also picks up the current `hono`, `qs`, `fast-uri` and `ip-address`, which close four
+  moderate advisories.
 
 ### Security
 

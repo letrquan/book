@@ -9,7 +9,7 @@ import type {
 } from './types/tools.js';
 import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
-import { globToRegex, globWalkBases } from './tools/glob-regex.js';
+import { globToRegex, globWalkScope } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
 import {
   canonicalizePath,
@@ -683,36 +683,20 @@ function pathRuleSpellings(
 }
 
 /**
- * Where a Glob reaches: `outside` when the walk would start anywhere outside the roots the tools
- * serve (`../**`, `.{.,x}/*`, an absolute path elsewhere), `servable` otherwise. It asks the
- * matcher for the directories the walk would start in rather than guessing from the pattern:
- * `{a,b}/*` walks the workspace and never climbs, while `.{.,x}/*` walks its parent. A pattern the
- * matcher cannot read at all is `outside`: the walk it would do is unknown, so nothing it finds
- * can be claimed to be inside.
+ * Where a Glob reaches: `outside` when the walk would answer from anywhere outside the roots the
+ * tools serve (`../**`, an absolute path elsewhere), `servable` otherwise. It asks the walk itself
+ * rather than guessing from the pattern, because a pattern can spell a climb in a way only
+ * normalization reveals — a globstar segment followed by two parent hops answers from the parent,
+ * though it reads as a glob and a hop. A pattern the matcher cannot read at all is `outside`: the
+ * walk it would do is unknown, so nothing it finds can be claimed to be inside.
  */
-function globTarget(pattern: string, paths: ResolvedPathScope): 'servable' | 'outside' {
-  const bases = globWalkBases(pattern);
-  if (bases.length === 0) return 'outside';
-  // Every base, including the ones that resolved nowhere: a pattern with an unresolvable base
-  // walks outside the roots, and dropping that base before the test would make `every` vacuously
-  // true and read as servable.
-  return bases.every((base) => 'path' in paths.detail(base, false)) ? 'servable' : 'outside';
-}
-
-/**
- * The directories a Glob would walk, canonicalized.
- *
- * The matcher answers this better than a pattern could be parsed for: `{a,b}/*` walks the
- * workspace and never climbs, while `.{.,x}/*` walks its parent, and only the library knows which
- * before the walk happens. The bases are read from the same converted pattern the walk uses, so
- * the two name the same directory even on Windows, where an unconverted pattern reports `.` for
- * every base and would make an absolute pattern look like it walked the workspace.
- */
-function globBases(pattern: string, paths: ResolvedPathScope): string[] {
-  return globWalkBases(pattern)
-    .map((base) => paths.detail(base, false))
-    .filter((detail): detail is Extract<typeof detail, { path: unknown }> => 'path' in detail)
-    .map((detail) => detail.path.canonicalPath);
+function globTarget(pattern: string, paths: ResolvedPathScope): 'servable' | 'outside' | 'guarded' {
+  const scope = globWalkScope(pattern, paths.scope.root);
+  if (scope === null) return 'outside';
+  const detail = paths.detail(scope, false);
+  if (!('path' in detail)) return 'outside';
+  // The scope is a directory, not a file: guarded the same way a Grep scope is (#334 finding 4).
+  return paths.scopeReachesHome(detail.path.canonicalPath) ? 'guarded' : 'servable';
 }
 
 /**
@@ -737,12 +721,14 @@ function readToolTarget(
   if (toolName === 'Glob') {
     const pattern = typeof args.pattern === 'string' ? args.pattern.trim() : '';
     if (!pattern) return 'none';
-    const target = globTarget(pattern, paths);
-    // A Glob is a subtree walk, so its bases are scopes, not files: guarded the same way a Grep
-    // scope is (PR #334 finding 4).
-    if (target === 'servable' && globBases(pattern, paths).some(paths.scopeReachesHome))
-      return 'guarded';
-    return target;
+    // A Glob is judged by the one directory its walk answers from, asked of the walk itself
+    // rather than guessed from the pattern: `{..,src}/*` and `.{.,x}/*` both answer from the
+    // workspace and return nothing outside it, while a globstar or an extglob followed by two
+    // parent hops — `*/../../**`, `**/../../**`, `src/*/../../../*.ts` — normalizes to a leading
+    // `../` and answers from a parent of it. A pattern picomatch cannot read at all is `outside`:
+    // the walk it would do is unknown, so nothing it finds can be claimed to be inside — as is a
+    // scope no root serves, which is the same answer a Read of an unreachable path gives.
+    return globTarget(pattern, paths);
   }
   // Grep: no path, or `.`, searches the workspace. Grep never reads Book's memory directory.
   const raw = typeof args.path === 'string' ? args.path.trim() : '';

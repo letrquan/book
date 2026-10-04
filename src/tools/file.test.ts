@@ -9,6 +9,23 @@ vi.mock('../async.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../async.js')>();
   return { ...actual, yieldToEventLoop: vi.fn(actual.yieldToEventLoop) };
 });
+
+/**
+ * Records the options every walk is asked for, and walks exactly as the library would. A walk
+ * handed no signal only notices a cancellation once it has listed everything it was going to,
+ * which no result of the call can show: the call answers the same either way.
+ */
+const walks = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>> }));
+vi.mock('tinyglobby', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('tinyglobby')>();
+  return {
+    ...actual,
+    glob: (patterns: string | string[], options?: Record<string, unknown>) => {
+      walks.calls.push({ patterns, ...options });
+      return actual.glob(patterns, options);
+    },
+  };
+});
 import { buildRipgrepArgs, fileTools, GREP_EVENT_MAX_CHARS, RipgrepLineReader } from './file.js';
 import { createRegistry } from './registry.js';
 import { boundToolResultOutput, TOOL_RESULT_MAX_BYTES } from './result.js';
@@ -1136,6 +1153,20 @@ describe('glob', () => {
     expect(r.structuredError?.message).toContain('10000');
   }, 60_000);
 
+  it('refuses a pattern nested deeply enough to crash the matcher, below the length limit', async () => {
+    // Length alone does not catch this one: 2500 extglob groups are 7500 characters, well inside
+    // the limit, and picomatch compiles them into a regular expression V8 refuses to build
+    // (`RegExpCompiler Allocation failed`) the first time a path is matched against it — a fatal
+    // error no `catch` intercepts, so the call has to answer before the walk starts.
+    const pattern = '!('.repeat(2500) + ')'.repeat(2500);
+
+    const r = await glob.execute({ pattern }, ctx);
+
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.code).toBe('invalid_pattern');
+    expect(r.structuredError?.message).toContain('32');
+  }, 60_000);
+
   it('drops a gitignore pattern too long for the matcher and keeps the rest', async () => {
     // The walk compiles every entry of its `ignore` list through the same matcher as the pattern,
     // and the Glob tool's list is the repository's own `.gitignore`. One line of 10 000 nested
@@ -1155,6 +1186,68 @@ describe('glob', () => {
     expect(r.content).toContain('src/app.ts');
     expect(r.content).not.toContain('dist/app.js');
   }, 60_000);
+
+  it('drops a gitignore line nested too deeply for the matcher and keeps the rest', async () => {
+    // The same fatal matcher error, reached through the `ignore` list this time, and below the
+    // length limit. `.gitignore` is repository-controlled input, so the entry goes and the
+    // ordinary line beside it still applies.
+    mkdirSync(join(dir, 'src'));
+    mkdirSync(join(dir, 'dist'));
+    writeFileSync(join(dir, 'src', 'app.ts'), 'app');
+    writeFileSync(join(dir, 'dist', 'app.js'), 'ignored');
+
+    const r = await glob.execute(
+      { pattern: '**/*' },
+      { ...ctx, gitignorePatterns: ['!('.repeat(2500) + ')'.repeat(2500), 'dist'] },
+    );
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('src/app.ts');
+    expect(r.content).not.toContain('dist/app.js');
+  }, 60_000);
+
+  it('keeps a root-anchored gitignore line pruning the directory it names', async () => {
+    // Git reads `/build` as the repository root's `build`, but the walk reads a leading `/` as the
+    // filesystem root: handed over as written it moves the search to `/` — every directory from
+    // there down is listed to reach one the pattern can never match — and prunes nothing, so the
+    // file comes back. The line is respelled where the walk reads it.
+    mkdirSync(join(dir, 'build'));
+    mkdirSync(join(dir, 'src'));
+    writeFileSync(join(dir, 'build', 'out.js'), 'built');
+    writeFileSync(join(dir, 'src', 'app.ts'), 'app');
+
+    const r = await glob.execute({ pattern: '**/*' }, { ...ctx, gitignorePatterns: ['/build'] });
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('src/app.ts');
+    expect(r.content).not.toContain('build/out.js');
+  });
+
+  it('hands the walk the signal it is to stop on', async () => {
+    // A walk handed no signal notices a cancellation only once it has listed everything, and then
+    // answers the same thing it would have: the difference is invisible in the result, so it is
+    // asked for here.
+    writeFileSync(join(dir, 'a.ts'), 'a');
+    const controller = new AbortController();
+    walks.calls.length = 0;
+
+    await glob.execute({ pattern: '**/*' }, { ...ctx, signal: controller.signal });
+
+    expect(walks.calls).toHaveLength(1);
+    expect(walks.calls[0].signal).toBe(controller.signal);
+  });
+
+  it('does not answer a cancelled walk with what it had already found', async () => {
+    // The signal reaches the agent loop as a thrown error, not as a result: a walk that stopped
+    // early must not be reported as the answer to a question nobody finished asking.
+    writeFileSync(join(dir, 'a.ts'), 'a');
+    const controller = new AbortController();
+    controller.abort(new Error('glob cancelled'));
+
+    await expect(
+      glob.execute({ pattern: '**/*' }, { ...ctx, signal: controller.signal }),
+    ).rejects.toThrow('glob cancelled');
+  });
 });
 
 describe('grep', () => {
@@ -1576,6 +1669,41 @@ describe('grep', () => {
 
     expect(result.content).toContain('sub/visible.ts');
     expect(result.content).not.toContain('secret.ts');
+  });
+
+  it('keeps a root-anchored gitignore line pruning what it names (portable)', async () => {
+    // The same respelling the Glob walk gets, on the walk a scoped Grep uses to expand its
+    // include: handed over as written, `/sub/secret.ts` names a filesystem path the walk cannot
+    // reach from the scope, so it prunes nothing.
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    writeFileSync(join(dir, 'sub', 'secret.ts'), 'const hidden = 1;');
+    writeFileSync(join(dir, 'sub', 'visible.ts'), 'const hidden = 2;');
+
+    const result = await grep.execute(
+      { pattern: 'hidden', include: '**/*.ts', path: 'sub' },
+      {
+        ...ctx,
+        env: { BOOK_GREP_BACKEND: 'typescript' },
+        gitignorePatterns: ['/sub/secret.ts'],
+      },
+    );
+
+    expect(result.content).toContain('sub/visible.ts');
+    expect(result.content).not.toContain('secret.ts');
+  });
+
+  it('hands its include walk the signal it is to stop on (portable)', async () => {
+    writeFileSync(join(dir, 'a.ts'), 'const x = 1;');
+    const controller = new AbortController();
+    walks.calls.length = 0;
+
+    await grep.execute(
+      { pattern: 'const', include: '**/*.ts' },
+      { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' }, signal: controller.signal },
+    );
+
+    expect(walks.calls.length).toBeGreaterThan(0);
+    expect(walks.calls.every((call) => call.signal === controller.signal)).toBe(true);
   });
 
   it('applies C as symmetric context on both backends', async () => {
