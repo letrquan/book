@@ -422,10 +422,11 @@ branch --set-upstream-to`, `git config`), for `Bash` and `Check` alike: git's ow
   strips only closed tags and leaves an unclosed tag in answer text; this favors preserving a real
   answer over triggering a retry on ambiguous markup. One shape is carved out of that reading: a
   turn that is nothing but an unclosed reasoning block — the tag opens the content, is never
-  closed, and no answer text stands beside it — gets the same single retry an empty turn gets,
-  because there is no answer there to protect; if the retry comes back the same shape the text
-  is kept as the answer rather than discarded. A reasoning-only/empty response receives at most
-  one same-turn retry, and already-emitted attempt text is marked `attempt_discarded` rather than
+  closed, and no answer text stands beside it — gets the same same-turn retries an empty turn
+  gets, because there is no answer there to protect; if the retries come back the same shape the
+  text is kept as the answer rather than discarded. A reasoning-only/empty response draws on
+  `retry.streamReissueAttempts` (default 3), with the same exponential backoff between attempts as a
+  transport re-issue, and already-emitted attempt text is marked `attempt_discarded` rather than
   persisted as the replacement turn. Print mode's exit code does not change with the terminal
   outcome (see "Exit codes" in [docs/guide/cli.md](guide/cli.md#print-mode)): a failed outcome
   still exits 0.

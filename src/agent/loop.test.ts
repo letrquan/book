@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { requiresToolPermission, runAgentLoop } from './loop.js';
+import * as asyncModule from '../async.js';
 import {
   applyCompactResult,
   estimateHistoryTokens,
@@ -21,6 +22,7 @@ import { toolSuccess } from '../tools/result.js';
 import { readToolUseRecords } from '../tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import type { Provider } from '../provider/index.js';
+import type { AgentConfig } from '../types/runtime.js';
 import type { CompactRequestHints, CompactResult, PreparedCompaction } from '../types/sessions.js';
 import type { AgentTerminalOutcome } from '../types/terminal.js';
 import { createAgentRunContext } from '../types/runs.js';
@@ -1223,6 +1225,18 @@ function noopCallbacks(overrides: Partial<AgentLoopCallbacks> = {}): AgentLoopCa
   };
 }
 
+/**
+ * Retry settings that grant a single turn re-issue.
+ *
+ * The empty-completion retry draws on the same allowance a stalled or dropped
+ * stream does, and the fixture's default of 0 means "re-issue nothing", so a
+ * test that models a re-issue has to grant one. `baseDelayMs` is already 0, so
+ * the backoff costs the suite nothing.
+ */
+function oneReissue(): AgentConfig['retry'] {
+  return { ...defaultConfig().retry, streamReissueAttempts: 1 };
+}
+
 describe('unparsed tool-call arguments', () => {
   it('refuses a call whose arguments never parsed before hooks or the permission prompt', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'book-loop-unparsed-'));
@@ -1634,7 +1648,7 @@ describe('runAgentLoop streaming render callbacks', () => {
     };
 
     const result = await runAgentLoop(
-      defaultConfig({ maxTurns: 1 }),
+      defaultConfig({ maxTurns: 1, retry: oneReissue() }),
       createRegistry(),
       'hello',
       [],
@@ -1766,34 +1780,137 @@ describe('runAgentLoop streaming render callbacks', () => {
     },
   );
 
-  it('fails visibly after two empty provider completions', async () => {
-    const errors: string[] = [];
-    let calls = 0;
-    const provider: Provider = {
-      id: 'scripted',
-      stream: async function* () {
-        calls++;
-        yield { type: 'done' };
-      },
-    };
+  describe('empty completion retries', () => {
+    // The empty-completion re-issue draws on the same allowance a stalled or
+    // dropped stream does, so a test that models a retry has to say so: the
+    // fixture's `streamReissueAttempts: 0` means "re-issue nothing".
+    //
+    // `baseDelayMs` is milliseconds rather than the shipped second, so the
+    // backoff between attempts costs the suite nothing.
+    const retrying = (streamReissueAttempts: number) => ({
+      ...defaultConfig().retry,
+      baseDelayMs: 1,
+      maxDelayMs: 4,
+      streamReissueAttempts,
+    });
 
-    const outcomes: AgentTerminalOutcome[] = [];
-    await runAgentLoop(
-      defaultConfig({ maxTurns: 1 }),
-      createRegistry(),
-      'hello',
-      [],
-      noopCallbacks({
-        onError: (error) => errors.push(error),
-        onTerminal: (outcome) => outcomes.push(outcome),
-      }),
-      'default',
-      { provider, isNewSession: false },
-    );
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
 
-    expect(calls).toBe(2);
-    expect(errors[0]).toMatch(/empty response/i);
-    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'protocol_error' });
+    function emptyProvider(calls: () => number, emptyFor: number): Provider {
+      return {
+        id: 'scripted',
+        stream: async function* () {
+          if (calls() <= emptyFor) {
+            yield { type: 'done' };
+            return;
+          }
+          yield { type: 'text', content: 'the answer' };
+          yield { type: 'done' };
+        },
+      };
+    }
+
+    it('answers after two empty completions', async () => {
+      let calls = 0;
+      const errors: string[] = [];
+      const outcomes: AgentTerminalOutcome[] = [];
+      const history = await runAgentLoop(
+        defaultConfig({ maxTurns: 1, retry: retrying(3) }),
+        createRegistry(),
+        'hello',
+        [],
+        noopCallbacks({
+          onError: (error) => errors.push(error),
+          onTerminal: (outcome) => outcomes.push(outcome),
+        }),
+        'default',
+        { provider: emptyProvider(() => ++calls, 2), isNewSession: false },
+      );
+
+      expect(calls).toBe(3);
+      expect(errors).toEqual([]);
+      expect(outcomes[0]).toMatchObject({ status: 'completed', reason: 'normal_completion' });
+      expect(history.at(-1)).toMatchObject({ role: 'assistant', content: 'the answer' });
+    });
+
+    it('gives up on an empty completion after the re-issue budget is spent', async () => {
+      // Once per turn is not a budget: a router that returns three empty
+      // completions in a row is a recoverable fault, and ending the run on the
+      // second one threw away work that a fourth request would have answered.
+      let calls = 0;
+      const errors: string[] = [];
+      const outcomes: AgentTerminalOutcome[] = [];
+      await runAgentLoop(
+        defaultConfig({ maxTurns: 1, retry: retrying(2) }),
+        createRegistry(),
+        'hello',
+        [],
+        noopCallbacks({
+          onError: (error) => errors.push(error),
+          onTerminal: (outcome) => outcomes.push(outcome),
+        }),
+        'default',
+        { provider: emptyProvider(() => ++calls, Number.POSITIVE_INFINITY), isNewSession: false },
+      );
+
+      // Two re-issues on top of the completion that started the turn.
+      expect(calls).toBe(3);
+      expect(errors).toEqual([
+        'The provider returned an empty response after 2 retries. Please retry the request.',
+      ]);
+      expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'protocol_error' });
+    });
+
+    it('re-issues nothing when the allowance is zero', async () => {
+      let calls = 0;
+      const errors: string[] = [];
+      const outcomes: AgentTerminalOutcome[] = [];
+      await runAgentLoop(
+        defaultConfig({ maxTurns: 1, retry: retrying(0) }),
+        createRegistry(),
+        'hello',
+        [],
+        noopCallbacks({
+          onError: (error) => errors.push(error),
+          onTerminal: (outcome) => outcomes.push(outcome),
+        }),
+        'default',
+        { provider: emptyProvider(() => ++calls, Number.POSITIVE_INFINITY), isNewSession: false },
+      );
+
+      expect(calls).toBe(1);
+      expect(errors).toEqual([
+        'The provider returned an empty response after 0 retries. Please retry the request.',
+      ]);
+      expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'protocol_error' });
+    });
+
+    it('backs off between re-issues, growing from the base delay', async () => {
+      // An immediate re-issue against a provider that just answered with nothing
+      // buys the same nothing; the backoff is what makes the second and third
+      // requests worth spending.
+      const waits: number[] = [];
+      vi.spyOn(asyncModule, 'delay').mockImplementation(async (ms: number) => {
+        waits.push(ms);
+      });
+      let calls = 0;
+
+      await runAgentLoop(
+        defaultConfig({ maxTurns: 1, retry: { ...retrying(3), baseDelayMs: 2, maxDelayMs: 6 } }),
+        createRegistry(),
+        'hello',
+        [],
+        noopCallbacks(),
+        'default',
+        { provider: emptyProvider(() => ++calls, Number.POSITIVE_INFINITY), isNewSession: false },
+      );
+
+      // baseDelayMs 2, doubling per spent attempt (2, 4), then capped at 6.
+      expect(waits).toEqual([2, 4, 6]);
+      expect(calls).toBe(4);
+    });
   });
 
   it('hands a half-streamed answer to the session store before failing', async () => {
@@ -1890,7 +2007,7 @@ describe('runAgentLoop streaming render callbacks', () => {
     };
 
     await runAgentLoop(
-      defaultConfig({ maxTurns: 1 }),
+      defaultConfig({ maxTurns: 1, retry: oneReissue() }),
       createRegistry(),
       'hello',
       [],
@@ -1928,7 +2045,7 @@ describe('runAgentLoop streaming render callbacks', () => {
 
     const outcomes: AgentTerminalOutcome[] = [];
     const history = await runAgentLoop(
-      defaultConfig({ maxTurns: 1 }),
+      defaultConfig({ maxTurns: 1, retry: oneReissue() }),
       createRegistry(),
       'hello',
       [],
@@ -1968,7 +2085,7 @@ describe('runAgentLoop streaming render callbacks', () => {
 
     const outcomes: AgentTerminalOutcome[] = [];
     const history = await runAgentLoop(
-      defaultConfig({ maxTurns: 1 }),
+      defaultConfig({ maxTurns: 1, retry: oneReissue() }),
       createRegistry(),
       'hello',
       [],
@@ -1999,7 +2116,7 @@ describe('runAgentLoop streaming render callbacks', () => {
 
     const outcomes: AgentTerminalOutcome[] = [];
     const history = await runAgentLoop(
-      defaultConfig({ maxTurns: 1 }),
+      defaultConfig({ maxTurns: 1, retry: oneReissue() }),
       createRegistry(),
       'hello',
       [],
@@ -2065,7 +2182,7 @@ describe('runAgentLoop streaming render callbacks', () => {
 
     const outcomes: AgentTerminalOutcome[] = [];
     const history = await runAgentLoop(
-      defaultConfig({ maxTurns: 1 }),
+      defaultConfig({ maxTurns: 1, retry: oneReissue() }),
       createRegistry(),
       'hello',
       [],
@@ -2096,7 +2213,7 @@ describe('runAgentLoop streaming render callbacks', () => {
 
     const outcomes: AgentTerminalOutcome[] = [];
     await runAgentLoop(
-      defaultConfig({ maxTurns: 1 }),
+      defaultConfig({ maxTurns: 1, retry: oneReissue() }),
       createRegistry(),
       'hello',
       [],
@@ -2108,7 +2225,13 @@ describe('runAgentLoop streaming render callbacks', () => {
       { provider, isNewSession: false },
     );
 
-    expect(calls).toBe(2);
+    // A cut stream that never produced a word is both an empty completion and a
+    // transport fault. Each gets its own allowance, so the turn is sent three
+    // times: the empty-completion re-issue, then the transport re-issue that
+    // spends the same budget again. What matters here is the ending: the
+    // generic "empty response" wording must not overwrite the transport
+    // diagnosis, which tells the user something different.
+    expect(calls).toBe(3);
     expect(errors[0]).toMatch(/before its terminal event/i);
     expect(outcomes[0]).toMatchObject({ status: 'interrupted' });
   });

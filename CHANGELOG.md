@@ -814,6 +814,33 @@ true` is the one loosening-adjacent key a workspace layer may set, and the loade
 
 ### Fixed
 
+- **A healthy reasoning stream is no longer cancelled at the chat stall ceiling, and an empty
+  completion is retried with backoff instead of once** (#379). **The stall ceiling is now chosen per
+  stream, not per request.** `src/provider/openai-compatible.ts` decided `reasoningEnabled` before the
+  read loop and armed the 20 s `retry.streamStallTimeoutMs` whenever the model had no catalog entry
+  and no effort was set — which is exactly the shape of a reasoning model served by a router, since
+  Book sends such a model no `reasoning_effort` and consults no `effort` entry for it. Any thinking
+  pause longer than 20 s then cancelled a healthy request mid-thought and reported it as
+  `stream_stall`, and the turn was re-asked: the single most common way a run "just stops". The first
+  `reasoning_content` delta is the evidence the request could not carry, so it now promotes the rest of
+  that stream to `max(retry.streamStallTimeoutMs, retry.thinkingStallTimeoutMs)`; a stream that never
+  reasons keeps the chat ceiling, a request with an explicit effort or a catalogued one is unchanged,
+  and the stall log, the `onStreamStall` countdown and the error text all report the ceiling that was
+  actually in force. Only the pause _before_ the first delta is judged by the chat ceiling, so an
+  endpoint that buffers a whole thinking block before emitting anything still wants an `effort`
+  entry. `src/provider/anthropic.ts` is untouched: its ceiling already follows the `thinking`
+  parameter Book sends. **An empty completion is retried on the transport budget, with backoff.**
+  `src/agent/loop.ts` re-issued an empty completion — or a reply that was nothing but an unclosed
+  reasoning block — exactly once per turn and then ended the run with `protocol_error` and
+  "The provider returned an empty response after one retry.", so a router that returned two empties in
+  a row ended a run a third request would have answered. The re-issue now draws on
+  `retry.streamReissueAttempts` (default 3), tracking the count per turn instead of a single flag,
+  with the same exponential backoff a transport re-issue gets (`retry.baseDelayMs`, doubling, capped
+  by `retry.maxDelayMs`) and abortable by the run's signal; `onAttemptDiscarded` still fires before
+  each one. When the budget is spent the endings are unchanged — an unclosed reasoning block is kept
+  as the answer, an empty completion ends on `protocol_error`, and a `transport_interrupted`
+  diagnosis is still kept rather than overwritten — but the message names the real count
+  ("… after 3 retries", singular at one). `retry.streamReissueAttempts: 0` spends nothing on either.
 - **Correct Claude rates, date-only suffix matching, and session-total `/cost` and `/usage`**
   (#370). **The price table was stale, missing, and matching versions as dates.** `src/pricing.ts`
   rated Opus 5 and 4.8/4.7 at $15/$75 per million — three times the published figure — left

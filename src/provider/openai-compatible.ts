@@ -401,6 +401,11 @@ export async function* chatCompletionStream(
 
       const reasoning = parseReasoningDelta(delta);
       if (reasoning) {
+        // The model is reasoning whatever the request could not say (#379). Every
+        // later read on this stream waits out the thinking ceiling.
+        if (retry.thinkingStallTimeoutMs) {
+          stallTimeoutMs = Math.max(stallTimeoutMs, retry.thinkingStallTimeoutMs);
+        }
         log.debug('stream reasoning', { len: reasoning.length });
         yield { type: 'reasoning', reasoning };
       }
@@ -457,15 +462,24 @@ export async function* chatCompletionStream(
     return false;
   };
 
-  // Stream stall detection: if no data arrives for streamStallTimeoutMs,
-  // call the onStreamStall callback and yield a visible error instead of
-  // leaving the TUI stuck in a pending read forever.
+  // Stream stall detection: if no data arrives for the ceiling in force, call
+  // the onStreamStall callback and yield a visible error instead of leaving the
+  // TUI stuck in a pending read forever.
   //
-  // A reasoning model goes quiet on purpose, and many OpenAI-compatible endpoints
-  // buffer the whole thinking block before emitting anything. The chat-tuned 20s
-  // ceiling cancels a healthy request mid-thought and reports it as a stalled
-  // stream, which is the single most common way a high-effort run "just stops".
-  const stallTimeoutMs =
+  // The ceiling is chosen per stream, not per request. It starts at what the
+  // request can already prove: the thinking ceiling when we asked for reasoning
+  // or the model's catalog entry declares an effort range, the chat-tuned
+  // `streamStallTimeoutMs` otherwise. What a request cannot prove is whether the
+  // model reasons, because plenty of routes serve a reasoning model Book has no
+  // catalog entry for, and send it no `reasoning_effort` — there is no evidence
+  // before the stream opens, so the first thinking pause lands on the chat
+  // ceiling and a healthy request is cancelled mid-thought and reported as a
+  // stalled stream (#379), the single most common way a run "just stops". The
+  // first reasoning delta is that evidence arriving late, so it promotes the rest
+  // of that stream to the thinking ceiling. A stream that never reasons keeps the
+  // chat ceiling, and a request with an explicit effort or a catalogued one
+  // behaves as it did before.
+  let stallTimeoutMs =
     reasoningEnabled && retry.thinkingStallTimeoutMs
       ? Math.max(retry.streamStallTimeoutMs, retry.thinkingStallTimeoutMs)
       : retry.streamStallTimeoutMs;

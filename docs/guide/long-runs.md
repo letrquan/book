@@ -82,14 +82,29 @@ Anthropic path it is adaptive thinking, which is on by default for Opus and Sonn
 On an OpenAI-compatible endpoint it is a request that sends `reasoning_effort`, or a model whose
 `provider.<id>.models.<model>.effort` entry declares an effort range — an endpoint that buffers a
 whole thinking block sends nothing at all until it is done, so the declaration is the only signal
-available before the silence starts. A model with `effort: false` stays on the chat ceiling, and so
-does a model with no catalog entry, since an unknown model is more likely a chat model than a
-reasoning one.
+available before the silence starts.
+
+On that path the ceiling is also chosen per stream, not just per request. A reasoning model behind a
+router often has no catalog entry, so Book sends it no `reasoning_effort` and the chat ceiling is
+armed at request time; the first `reasoning_content` delta is then the evidence the request could not
+carry, and it promotes the rest of that stream to `retry.thinkingStallTimeoutMs`. A stream that never
+reasons keeps `retry.streamStallTimeoutMs`. Only the pause before the first reasoning delta is judged
+by the chat ceiling, and any model that buffers its whole thinking block before emitting anything is
+not covered by this — give it an `effort` entry so the ceiling is right from the first byte.
 
 `retry.streamReissueAttempts` re-sends a turn after a transport fault — a stalled stream, a dropped
 socket — onto the history already committed. Set it to 0 to end the run on any stream error, as
 earlier versions did. `retry.outputCapContinuations` is a separate allowance for continuing after the
 provider's output limit, so a large generated file cannot drain the budget a real socket drop needs.
+
+An empty completion — one that ends the stream with no text and no tool call, and a reply that is
+nothing but an unclosed reasoning block — draws on that same `retry.streamReissueAttempts` allowance,
+up to the default 3 times per turn, with the same exponential backoff between attempts
+(`retry.baseDelayMs`, doubling, capped by `retry.maxDelayMs`): an immediate re-issue against a
+provider that just answered with nothing buys nothing. Once the allowance is spent the run ends on
+`protocol_error`, naming how many retries it actually made. A reply that is only an unclosed
+reasoning block is kept as the answer instead of discarded, since it is all the user would otherwise
+have. Set `retry.streamReissueAttempts` to 0 to spend nothing on either.
 
 A retryable status is classified by the error it quotes, not by the status alone. A router that
 wraps an upstream 4xx as a 503 with a cooldown

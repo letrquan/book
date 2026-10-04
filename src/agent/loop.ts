@@ -1008,7 +1008,9 @@ export async function runAgentLoop(
     const runStartedAt = clock.monotonicNowMs();
     /** Guards the periodic work-state message against a same-turn re-issue. */
     let lastWorkStateTurn = -1;
-    let emptyResponseRetryTurn: number | null = null;
+    /** The turn these empty-completion retries were spent on, and how many of them. */
+    let emptyResponseRetryTurn = -1;
+    let emptyResponseRetries = 0;
     let contentFilterRetryTurn = -1;
     let upstreamErrorRetryTurn = -1;
     let forcedCompactTurn: number | null = null;
@@ -1707,14 +1709,28 @@ export async function runAgentLoop(
         !signal?.aborted &&
         (!streamError || streamErrorCode === 'transport_interrupted')
       ) {
+        // A fresh turn starts with the whole allowance; a re-issue of the same
+        // turn spends into it.
         if (emptyResponseRetryTurn !== turn) {
           emptyResponseRetryTurn = turn;
+          emptyResponseRetries = 0;
+        }
+        // An empty completion is a fault, not a verdict, so it draws on the same
+        // allowance a stalled or dropped stream does. One re-issue was not a
+        // budget: a router that returns three empties in a row is recoverable,
+        // and ending the run on the second threw away a turn a fourth request
+        // would have answered.
+        const emptyRetryBudget = config.retry.streamReissueAttempts ?? 0;
+        if (emptyResponseRetries < emptyRetryBudget) {
+          emptyResponseRetries++;
           log.warn(
             unclosedReasoningOnly
-              ? 'provider returned only an unclosed reasoning block; retrying once'
-              : 'provider returned an empty completion; retrying once',
+              ? 'provider returned only an unclosed reasoning block; re-issuing'
+              : 'provider returned an empty completion; re-issuing',
             {
               turn,
+              attempt: emptyResponseRetries,
+              allowed: emptyRetryBudget,
               reasoningLen: reasoningContent.length,
               contentLen: assistantContent.length,
               streamDone,
@@ -1726,19 +1742,30 @@ export async function runAgentLoop(
           // them so the retry's answer does not queue up behind an abandoned
           // reasoning block that no history will ever record.
           callbacks.onAttemptDiscarded?.();
+          // Same backoff a transport re-issue gets: an immediate re-issue
+          // against a provider that just answered with nothing buys nothing.
+          await delay(
+            Math.min(
+              config.retry.maxDelayMs,
+              config.retry.baseDelayMs * 2 ** (emptyResponseRetries - 1),
+            ),
+            signal,
+          );
+          if (signal?.aborted) break;
           retrySameTurn = true;
           continue;
         }
         if (unclosedReasoningOnly) {
-          log.warn('unclosed reasoning block kept as the answer after one retry', {
-            turn,
-            contentLen: assistantContent.length,
-          });
+          log.warn(
+            `unclosed reasoning block kept as the answer after ${emptyResponseRetries} retries`,
+            { turn, contentLen: assistantContent.length },
+          );
         } else if (!streamError) {
           // Keep a transport diagnosis rather than overwriting it with a generic
           // one; `transport_interrupted` tells the user something different.
-          streamError =
-            'The provider returned an empty response after one retry. Please retry the request.';
+          // The count is the real one: a run that gave up after a single re-issue
+          // should not claim three.
+          streamError = `The provider returned an empty response after ${emptyResponseRetries} ${emptyResponseRetries === 1 ? 'retry' : 'retries'}. Please retry the request.`;
           streamErrorCode = 'protocol_error';
         }
       }
