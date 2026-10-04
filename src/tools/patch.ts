@@ -532,7 +532,23 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
             },
           },
         );
-        return result;
+        if (!staged.every((file) => file.mutation.kind === 'create')) return result;
+        // Every file in an add-only patch is a second copy of what the model just
+        // wrote: the diff is all-plus, with no before for the model to read the
+        // change against, and GPT/Codex-family models are steered here (#378).
+        // It stays the result's content — the TUI, the session record and the SDK
+        // render the diff from there — and the model reads one line a file. A
+        // patch that also updates or deletes keeps the diffs: their removed lines
+        // are the part the model cannot re-derive.
+        return {
+          ...result,
+          maskedPlaceholder: `${staged
+            .map(
+              (file, order) =>
+                `${order === 0 ? 'Created' : 'created'} ${file.relativePath} (${file.mutation.addedLines} lines, ${file.afterBytes?.byteLength ?? 0} bytes)`,
+            )
+            .join('; ')}.`,
+        };
       } catch (error) {
         const code = errorCodeFor(error);
         return toolFailure(error instanceof Error ? error.message : String(error), {

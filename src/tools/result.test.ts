@@ -755,4 +755,38 @@ describe('ToolResult V2', () => {
     expect(result).not.toHaveProperty('error');
     expect(normalizeToolResult(result).structuredError?.message).toBe('Plan was not approved.');
   });
+
+  it('sends a rewritten result’s own content to the model (#378)', () => {
+    // `Write` of a new file returns a one-line placeholder in place of the diff
+    // (#378). A PostToolUse hook that rewrites `toolOutput` goes through
+    // `replaceToolResult`, and its text is what the model must read: keeping
+    // the placeholder here would silently discard the hook's output while the
+    // diff the hook rewrote is still on the record.
+    const rewritten = replaceToolResult(
+      {
+        ...toolSuccess('@@ -1 +1 @@\n+one\n+two'),
+        maskedPlaceholder: 'Created a.ts (2 lines, 8 bytes).',
+      },
+      { content: 'hook rewrote this output' },
+    );
+
+    expect(rewritten.maskedPlaceholder).toBeUndefined();
+    expect(toolResultModelContent(rewritten)).toBe('hook rewrote this output');
+    expect(normalizeToolResult(rewritten).maskedPlaceholder).toBeUndefined();
+  });
+
+  it('keeps the placeholder when the replacement changes only status or presentation (#378)', () => {
+    const masked = {
+      ...toolSuccess('@@ -1 +1 @@\n+one'),
+      maskedPlaceholder: 'Created a.ts (1 line, 4 bytes).',
+    };
+
+    const blocked = replaceToolResult(masked, { status: 'blocked' });
+    expect(blocked.maskedPlaceholder).toBe('Created a.ts (1 line, 4 bytes).');
+    expect(toolResultModelContent(blocked)).toBe('Created a.ts (1 line, 4 bytes).');
+
+    const relabelled = replaceToolResult(masked, { presentation: { summary: 'Wrote a.ts' } });
+    expect(relabelled.maskedPlaceholder).toBe('Created a.ts (1 line, 4 bytes).');
+    expect(toolResultModelContent(relabelled)).toBe('Created a.ts (1 line, 4 bytes).');
+  });
 });

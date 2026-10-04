@@ -274,8 +274,28 @@ npm run eval:memory -- --models 9router/ag/gemini-3.8-flash-high --split dev --r
 npm run eval:memory -- --only poison-web,poison-readme --concurrency 3
 ```
 
-`Write` remains appropriate for generated or intentional full-file replacement. The
-`apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not silently reinterpreted.
+`Write` remains appropriate for generated or intentional full-file replacement. What the **model**
+reads back differs from what you see: overwriting returns a unified diff, but creating a new file
+returns a one-line confirmation — the path, the line count and the byte count — because a diff of
+content the model just wrote is a second copy of the whole file in every following request. The diff
+is still what the transcript, the session record and the SDK render. `ApplyPatch` gets the same
+confirmation when every file in the patch is a creation, one line per file, because GPT/Codex-family
+models are steered to it and an add-only patch is nothing but added lines; a patch that also updates
+or deletes a file keeps its diffs, whose removed lines are the part the model cannot re-derive. The
+`apply_patch` provider alias maps to `ApplyPatch`, and legacy tools are not silently reinterpreted.
+
+What a `PostToolUse` hook writes is what the model reads: a hook that rewrites `toolOutput` replaces
+the confirmation too, rather than having its text hidden behind the line the tool wrote in its place.
+
+The reasoning Book replays as text is bounded inside the turn in progress. Between 2 and 5 of a turn's
+newest assistant steps go back with their reasoning attached — the step being continued, the one
+before it, and room to grow — and the cut that drops the rest moves 4 steps at a time, so a request
+extending another does not change the messages the provider has already cached. Steps older than the
+cut lose their reasoning exactly as a closed turn's does. This bounds the reasoning Book replays as
+text: the OpenAI-compatible routes, and reasoning carried across providers. Anthropic's signed
+thinking blocks are replayed from the provider's own `providerMetadata` and are unaffected. The
+`/context` breakdown and the compaction estimates count only the reasoning a request actually sends,
+so a long single turn is not reported as fuller than it is.
 
 ## Tool discovery
 

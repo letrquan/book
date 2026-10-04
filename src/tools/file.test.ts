@@ -79,7 +79,8 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 import { buildRipgrepArgs, fileTools, GREP_EVENT_MAX_CHARS, RipgrepLineReader } from './file.js';
 import { createRegistry } from './registry.js';
-import { boundToolResultOutput, TOOL_RESULT_MAX_BYTES } from './result.js';
+import { boundToolResultOutput, toolResultModelContent, TOOL_RESULT_MAX_BYTES } from './result.js';
+import { isRenderableFileMutationDiff } from '../tui/file-mutation-display.js';
 import type { ToolContext } from '../types/tools.js';
 import { spawn, spawnSync } from 'child_process';
 import {
@@ -803,6 +804,39 @@ describe('write_file', () => {
       addedLines: 2,
       removedLines: 0,
     });
+  });
+
+  it('sends the model a one-line confirmation instead of a new file’s own diff (#378)', async () => {
+    // The model just wrote the content; a diff of it all back is a second copy
+    // of every byte in the request (#378). The diff stays on the result for the
+    // TUI, the session record and the SDK.
+    const content = 'one\ntwo\nthree\n';
+    const r = await write.execute({ filePath: 'created/new.txt', content }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.artifacts?.fileMutation?.kind).toBe('create');
+
+    const modelContent = toolResultModelContent(r);
+    expect(modelContent).toBe('Created created/new.txt (3 lines, 14 bytes).');
+    for (const line of content.split('\n')) {
+      if (line) expect(modelContent).not.toContain(line);
+    }
+
+    // The transcript's own input is unchanged: a diff the TUI can render.
+    expect(r.content).toBe('@@ -1 +1 @@\n+one\n+two\n+three');
+    expect(isRenderableFileMutationDiff('Write', r)).toBe(true);
+  });
+
+  it('sends the model the diff when overwriting an observed file (#378)', async () => {
+    writeFileSync(join(dir, 'existing.txt'), 'old\n', 'utf-8');
+    await observeFirst('existing.txt');
+
+    const r = await write.execute({ filePath: 'existing.txt', content: 'new\n' }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.maskedPlaceholder).toBeUndefined();
+    expect(toolResultModelContent(r)).toBe(r.content);
+    expect(r.content).toContain('+new');
   });
 
   it('allows legitimate in-workspace directories beginning with two dots', async () => {

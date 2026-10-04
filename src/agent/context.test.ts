@@ -9,6 +9,7 @@ import {
   buildSystemPrompt,
   buildSystemPromptZones,
 } from './context.js';
+import { TURN_REASONING_REPLAY_STRIDE, TURN_REASONING_REPLAY_WINDOW } from './reasoning-replay.js';
 import { normalizePromptPath } from './prompt-determinism.js';
 import { getProjectMemoryDir, writeMemoryCandidate } from '../memory-store.js';
 import { workspaceIdentity } from '../tools/file-provenance.js';
@@ -299,6 +300,101 @@ describe('buildMessages', () => {
       'inspect first',
       'then finish',
     ]);
+  });
+
+  it('steps the reasoning replay cut so the prompt prefix survives a request (#378)', async () => {
+    // Print mode is one user turn for the whole task, so a turn can run to
+    // hundreds of steps; replaying every step's reasoning re-sent the whole
+    // chain of thought on every request (a median 26% of input tokens on
+    // Terminal-Bench 2.0). The cut moves a stride at a time rather than a step
+    // at a time, so between two requests the messages the provider already has
+    // cached do not change.
+    const history: Message[] = [userMsg('do the whole task')];
+    for (let step = 1; step <= 6; step += 1) {
+      history.push({
+        ...assistantMsg(
+          '',
+          [toolCall(`c${step}`, 'Read', { filePath: `f${step}.ts` })],
+          [toolResult(`c${step}`, `contents of f${step}`)],
+        ),
+        id: `a${step}`,
+        reasoningContent: `thought ${step}`,
+      });
+    }
+
+    const out = await buildMessages(config, history);
+    const replayed = out.filter((m) => m.role === 'assistant').map((m) => m.reasoningContent);
+
+    expect(TURN_REASONING_REPLAY_WINDOW).toBe(2);
+    expect(TURN_REASONING_REPLAY_STRIDE).toBe(4);
+    expect(replayed).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'thought 5',
+      'thought 6',
+    ]);
+  });
+
+  it('leaves an already-sent message byte-identical while the cut holds (#378)', async () => {
+    // Every request of a turn re-sends everything before it, so a step whose
+    // reasoning was dropped must stay dropped: a window that slid one step per
+    // request turned the next request's replay of the previous step into a
+    // rewrite, which invalidates the prompt cache on every request.
+    const replayedFor = async (steps: number): Promise<(string | undefined)[]> => {
+      const history: Message[] = [userMsg('do the whole task')];
+      for (let step = 1; step <= steps; step += 1) {
+        history.push({
+          ...assistantMsg(
+            '',
+            [toolCall(`c${step}`, 'Read', { filePath: `f${step}.ts` })],
+            [toolResult(`c${step}`, `contents of f${step}`)],
+          ),
+          id: `a${step}`,
+          reasoningContent: `thought ${step}`,
+        });
+      }
+      const out = await buildMessages(config, history);
+      return out.filter((m) => m.role === 'assistant').map((m) => m.reasoningContent);
+    };
+
+    const firstKept = (replayed: (string | undefined)[]): number =>
+      replayed.findIndex((reasoning) => reasoning !== undefined);
+
+    const held: number[] = [];
+    for (let steps = 1; steps <= 12; steps += 1) {
+      const shorter = await replayedFor(steps);
+      const longer = await replayedFor(steps + 1);
+      // The cut moved, so the next request drops reasoning this one still sent.
+      if (firstKept(shorter) !== firstKept(longer)) continue;
+      held.push(steps);
+      // The messages this request already sent read the same in the next one.
+      expect(longer.slice(0, steps)).toEqual(shorter);
+    }
+
+    // The cut holds for four requests at a time and moves at 5 → 6 and 9 → 10.
+    expect(held).toEqual([1, 2, 3, 4, 6, 7, 8, 10, 11, 12]);
+  });
+
+  it('replays reasoning for every step of the turn when replayAllReasoning is set (#378)', async () => {
+    const history: Message[] = [userMsg('do the whole task')];
+    for (let step = 1; step <= 5; step += 1) {
+      history.push({
+        ...assistantMsg(
+          '',
+          [toolCall(`c${step}`, 'Read', { filePath: `f${step}.ts` })],
+          [toolResult(`c${step}`, `contents of f${step}`)],
+        ),
+        id: `a${step}`,
+        reasoningContent: `thought ${step}`,
+      });
+    }
+
+    const out = await buildMessages({ ...config, replayAllReasoning: true }, history);
+    const replayed = out.filter((m) => m.role === 'assistant').map((m) => m.reasoningContent);
+
+    expect(replayed).toEqual(['thought 1', 'thought 2', 'thought 3', 'thought 4', 'thought 5']);
   });
 
   it('replays every turn of reasoning when replayAllReasoning is set', async () => {

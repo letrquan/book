@@ -1457,7 +1457,7 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
       );
     }
     const observation = await observeFile(ctx, filePath, before.exists ? 'write' : 'create');
-    return toolSuccess(diff || 'File written successfully', {
+    const result = toolSuccess(diff || 'File written successfully', {
       artifacts: {
         fileMutation: {
           kind: before.exists ? 'update' : 'create',
@@ -1468,6 +1468,16 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
         fileObservations: [observation],
       },
     });
+    if (before.exists) return result;
+    // A file that did not exist has no before-and-after for the model to read: the diff is every
+    // line it just wrote, so replaying it bills a second copy of the whole file on the next request
+    // and on every one after (#378). The diff stays the result's content — the TUI, the session
+    // record and the SDK render it from there — and the model reads one line instead. An
+    // overwrite keeps the diff: its removed lines are the part the model cannot re-derive.
+    return {
+      ...result,
+      maskedPlaceholder: `Created ${relativePath} (${stats.addedLines} lines, ${Buffer.byteLength(newContent, 'utf8')} bytes).`,
+    };
   });
 }
 
@@ -2674,7 +2684,8 @@ export const fileTools: ToolDefinition[] = [
   {
     name: 'Write',
     argumentAliases: { file_path: 'filePath' },
-    description: 'Write content to a file, overwriting if it exists. Returns a unified diff.',
+    description:
+      'Write content to a file, overwriting if it exists. Overwriting returns a unified diff; creating a new file returns a one-line confirmation.',
     parameters: {
       type: 'object',
       properties: {

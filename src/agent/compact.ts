@@ -31,6 +31,7 @@ import {
 } from '../tools/result.js';
 import { normalizeObservedPath, supersedesObservation } from '../tools/file-provenance.js';
 import { scanSuspectInputs } from './compact-audit.js';
+import { reasoningReplayKeeps } from './reasoning-replay.js';
 import { containsSecretPattern } from '../secret-detect.js';
 import { createDebugLogger } from '../debug-log.js';
 
@@ -417,10 +418,15 @@ export function compactionGate(config: Pick<AgentConfig, 'modelInfo' | 'maxToken
  */
 export const DEFERRED_COMPACT_GATE_FRACTION = 0.85;
 
-export function estimateMessageTokens(message: Message): number {
+/**
+ * What one message costs on the wire. `options.reasoning: false` leaves the
+ * reasoning out for a caller that already knows the step's reasoning is not
+ * being sent (#378).
+ */
+export function estimateMessageTokens(message: Message, options?: { reasoning?: boolean }): number {
   let tokens =
     estimateTextTokens(message.contextContent ?? message.content) + MESSAGE_OVERHEAD_TOKENS;
-  tokens += estimateTextTokens(message.reasoningContent ?? '');
+  if (options?.reasoning !== false) tokens += estimateTextTokens(message.reasoningContent ?? '');
   // The session-state block ships with the turn, so it counts against the window.
   tokens += estimateTextTokens(message.sessionState ?? '');
   // Image tokens are provider-specific; reserve a conservative placeholder
@@ -438,9 +444,23 @@ export function estimateMessageTokens(message: Message): number {
   return tokens;
 }
 
-export function estimateHistoryTokens(messages: readonly Message[]): number {
+/**
+ * What a history costs in context, counting only the reasoning the request
+ * actually replays: a step whose reasoning `buildMessages` drops is not context
+ * pressure (#378). The default options are the default replay window, which is
+ * what the loop's own estimates ask for.
+ */
+export function estimateHistoryTokens(
+  messages: readonly Message[],
+  options?: { replayAllReasoning?: boolean },
+): number {
+  const keepsReasoning = reasoningReplayKeeps(messages, options);
   return messages.reduce(
-    (total, message) => total + (message.includeInContext ? estimateMessageTokens(message) : 0),
+    (total, message, index) =>
+      total +
+      (message.includeInContext
+        ? estimateMessageTokens(message, { reasoning: keepsReasoning(index) })
+        : 0),
     0,
   );
 }

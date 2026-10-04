@@ -190,9 +190,10 @@ export interface ToolResult<TData = unknown> {
   /** Concise provider-facing content. */
   content: string;
   /**
-   * Set by tool-output masking (`agent/tool-output-masking.ts`): the line the model
-   * reads in place of `content`, which is kept whole for the summarizer and the
-   * record. `toolResultModelContent` is the one reader that honours it.
+   * Set by tool-output masking (`agent/tool-output-masking.ts`) and by `Write`
+   * for a newly created file: the line the model reads in place of `content`,
+   * which is kept whole for the summarizer, the record and the TUI.
+   * `toolResultModelContent` is the one reader that honours it.
    */
   maskedPlaceholder?: string;
   /** Machine-readable payload for consumers that should not parse content. */
