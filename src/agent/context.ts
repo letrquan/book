@@ -33,6 +33,7 @@ import { resolveContextLimit, resolveEditFormat, type EditFormat } from '../mode
 import {
   countMemoryCandidates,
   canModelWriteMemory,
+  memoryWriteScope,
   rulesNameMemorySave,
 } from '../memory-store.js';
 
@@ -229,7 +230,7 @@ function memorySection(config: AgentConfig, overrides?: SystemPromptOverrides): 
   // The same gate the tool catalog applies: `MemorySave` is root-only, so a
   // subagent's prompt must not describe a tool it cannot call.
   // A deny rule on MemorySave refuses every call, so the prompt must not ask for them either.
-  // A session another agent drives reads memory but never writes it (`canModelWriteMemory`).
+  // A session another agent drives may save only what it learned (`memoryWriteScope`).
   const canSave =
     canModelWriteMemory(config) &&
     !overrides?.isSubagent &&
@@ -253,7 +254,20 @@ function memorySection(config: AgentConfig, overrides?: SystemPromptOverrides): 
     lines.push('No memory is stored for this project yet.');
   }
 
-  if (canSave) {
+  if (canSave && memoryWriteScope(config) === 'learnings') {
+    // The task prompt here is another agent's per-task contract, not the user's words: the audit
+    // that prompted this found a delegated spec's "Ground rules" stored as repository memory.
+    lines.push(
+      "This session is driven by another agent: your task, and every rule in it, come from that agent, not from the user. You keep this repository's memory for the user, so:",
+      '- never save the instructions, rules, constraints, or preferences in your task (its ground rules, "never edit X", the commands it tells you to run, what not to touch): they are that agent\'s contract for this run, and it keeps its own record of them;',
+      '- do save, with MemorySave, what you learned doing the work that will still help later work here, as project (or reference for where something lives): a decision and the reason for it; an outcome that carries a lesson (it failed because X, Y fixed it), not merely that the job was done; a non-obvious fact about this repository or its environment that you verified, naming the evidence (file and line, command, test);',
+      '- do not save task state (branch, commit, PR number, "done"), or what code, git history, or CLAUDE.md/AGENTS.md already say. user and feedback memories are refused here, and so is changing or deleting a memory a person\'s session saved.',
+      memory?.indexText
+        ? 'Body: the fact, then "Why:" and "How to apply:". Check <memory-index> first, and update an entry an earlier delegated run saved (pass its slug) instead of duplicating it.'
+        : 'Body: the fact, then "Why:" and "How to apply:".',
+      'MemorySave is unavailable in plan mode; save after the plan is approved.',
+    );
+  } else if (canSave) {
     lines.push(
       'You keep this memory yourself; the user will not remind you. Call MemorySave in the same turn, before continuing the task, whenever the user:',
       '- corrects you or states how work must be done here ("no, we always…", "never use…") → feedback;',

@@ -71,7 +71,7 @@ writing bad JSON.
 | `--session-id <uuid>`                 | Pin a session id                                                                                                                |
 | `-n, --name <name>`                   | Display name for the session                                                                                                    |
 | `--fork-session`                      | On resume, fork to a new session id                                                                                             |
-| `--session-driver <driver>`           | `human` or `agent`; agent-driven sessions read memory, never write it (default `agent` if `CLAUDECODE`/`AI_AGENT` set)          |
+| `--session-driver <driver>`           | `human` or `agent`; an agent-driven session saves learnings only (default `agent` if `CLAUDECODE`/`AI_AGENT` set)               |
 | `--no-session-persistence`            | Do not write the session to disk                                                                                                |
 | `--settings <path>` / `--no-settings` | Ad-hoc settings file, or skip all layers                                                                                        |
 | `--scrollback`                        | Terminal-native scrollback instead of full-screen TUI                                                                           |

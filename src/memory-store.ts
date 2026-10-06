@@ -86,23 +86,33 @@ export function isMemorySaveAvailable(settings?: {
 }
 
 /**
- * Why the model may not write memory in this session, or undefined when it may: the settings turn
- * it off, or another agent drives the session. A delegated run's prompt is its delegator's
- * per-task contract, and saving from it is how a spec's "Ground rules" became permanent
- * repository memory. The one rule the catalog, the prompt, the tool and `/memory status` all read.
+ * What the model may write to memory in this session — the one rule the catalog, the prompt, the
+ * tool and `/memory status` all read:
+ *
+ * - `none`: the settings turn model writes off.
+ * - `learnings`: another agent drives the session. Its task prompt is that agent's per-task
+ *   contract — saving from it is how a spec's "Ground rules" became permanent repository memory —
+ *   but what the run learned by doing the work (a decision and its reason, an outcome with a
+ *   lesson, a verified fact) is worth keeping. So only `DELEGATED_MEMORY_TYPES`, marked
+ *   `driver: agent`, and only delegated entries may be changed or deleted.
+ * - `full`: a person drives it.
  */
-export function memoryWriteBlock(config: {
+export type MemoryWriteScope = 'none' | 'learnings' | 'full';
+
+export function memoryWriteScope(config: {
   settings?: { memory?: { enabled?: boolean; autoSave?: boolean } };
   sessionDriver?: SessionDriver;
-}): 'settings' | 'agent-driven' | undefined {
-  if (!isMemorySaveAvailable(config.settings)) return 'settings';
-  if (config.sessionDriver === 'agent') return 'agent-driven';
-  return undefined;
+}): MemoryWriteScope {
+  if (!isMemorySaveAvailable(config.settings)) return 'none';
+  return config.sessionDriver === 'agent' ? 'learnings' : 'full';
 }
 
-export function canModelWriteMemory(config: Parameters<typeof memoryWriteBlock>[0]): boolean {
-  return memoryWriteBlock(config) === undefined;
+export function canModelWriteMemory(config: Parameters<typeof memoryWriteScope>[0]): boolean {
+  return memoryWriteScope(config) !== 'none';
 }
+
+/** The types a session another agent drives may save: what it learned, never a person's preferences. */
+export const DELEGATED_MEMORY_TYPES: readonly MemoryType[] = ['project', 'reference'];
 
 export function sanitizeMemoryTitle(rawTitle: string): string {
   return rawTitle
@@ -131,6 +141,7 @@ export interface MemoryFileSummary {
   created?: string;
   updated?: string;
   size: number;
+  driver?: SessionDriver;
 }
 
 export interface LoadedMemoryContext {
@@ -158,6 +169,8 @@ export interface MemoryCandidate {
   targetSlug?: string;
   /** File name of an approved memory this one replaces; it is kept on disk, out of the index. */
   supersedes?: string;
+  /** `agent` when a session another agent drove saved it (a delegated run's learning). */
+  driver?: SessionDriver;
 }
 
 export interface MemoryWriteInput extends Partial<MemoryCandidate> {
@@ -277,6 +290,7 @@ function summarizeMemoryFile(path: string, name = basename(path)): MemoryFileSum
       created: typeof frontmatter.created === 'string' ? frontmatter.created : undefined,
       updated: typeof frontmatter.updated === 'string' ? frontmatter.updated : undefined,
       size: st.size,
+      ...(frontmatter.driver === 'agent' ? { driver: 'agent' as const } : {}),
     };
   } catch {
     return null;
@@ -538,6 +552,8 @@ function renderMemoryMarkdown(input: MemoryWriteInput, status: MemoryStatus, now
     `updated: ${updated}`,
   ];
   if (input.sessionId) fm.push(`sessionId: ${input.sessionId}`);
+  // Only the delegated case is marked: a person's memories keep the shape they always had.
+  if (input.driver === 'agent') fm.push('driver: agent');
   if (input.evidence?.length) {
     fm.push(`evidence:\n${input.evidence.map((e) => `- ${e}`).join('\n')}`);
   }
@@ -677,6 +693,7 @@ export function readMemoryFile(
       tags,
       created,
       updated,
+      ...(frontmatter.driver === 'agent' ? { driver: 'agent' as const } : {}),
     };
   } catch {
     return null;
@@ -976,6 +993,20 @@ export function saveMemory(
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e), status: 'approved' };
   }
+}
+
+/**
+ * Who wrote an existing memory entry: `agent` for a delegated run's, `human` for any other, and
+ * null when there is no such entry. A delegated run may change only its own kind of entry.
+ */
+export function memoryEntryDriver(
+  workspace: string,
+  slug: string,
+  opts?: MemoryStoreOptions,
+): SessionDriver | null {
+  const named = memoryFileForSlug(getProjectMemoryDir(workspace, opts), slug);
+  if ('error' in named || !existsSync(named.target)) return null;
+  return readMemoryFile(named.target)?.driver === 'agent' ? 'agent' : 'human';
 }
 
 export function deleteMemoryEntry(

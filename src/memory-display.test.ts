@@ -35,14 +35,27 @@ describe('buildMemoryReport', () => {
     );
   });
 
-  it('says why model writes are off when another agent drives the session', () => {
+  it('says a delegated session keeps learnings only, and marks what delegated runs saved', () => {
+    saveMemory(
+      workspace,
+      {
+        type: 'project',
+        title: 'Build needs a bigger heap',
+        body: 'Use NODE_OPTIONS=--max-old-space-size=4096.',
+        origin: 'model-tool',
+        externalContext: false,
+        driver: 'agent',
+      },
+      { bookRoot },
+    );
     const report = buildMemoryReport({
       workspace,
       bookRoot,
       settings: DEFAULT_SETTINGS,
       sessionDriver: 'agent',
     });
-    expect(report).toContain('model writes disabled (session driven by another agent)');
+    expect(report).toContain('model writes learnings only (session driven by another agent');
+    expect(report).toContain('(project · from a delegated run)');
   });
 
   it('lists approved memory and reports the line cap', () => {

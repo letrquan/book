@@ -387,23 +387,26 @@ true` is the one loosening-adjacent key a workspace layer may set, and the loade
 
 ### Changed
 
-- **Memory writes are off in a session another agent drives, and background extraction is off by
-  default.** An audit of a real store found 5 of a repository's 6 memories copied from the "Ground
-  rules" of spec runs Claude Code drove in print mode — one, "never edit docs/", contradicting
-  CLAUDE.md — and `MemorySave` once saved a spec's temporary rule the same way. Book now works out
-  who drives the session (`src/session-driver.ts`): `--session-driver human|agent`, then
-  `BOOK_SESSION_DRIVER`, then `agent` when the environment carries Claude Code's `CLAUDECODE` or an
-  `AI_AGENT` marker, else `human`; every process Book starts gets `BOOK_SESSION_DRIVER=agent`, so
-  Book driving Book counts too. An agent-driven session still loads memory and its read
-  instructions, but `MemorySave` is not offered (and refuses if called anyway), the prompt's save
-  instructions are left out, and `/memory status` says why. The driver is recorded on the session
-  (`SessionMeta.driver`); a session an agent resumes — at launch or with `/resume` — or forks from
-  becomes `agent` for good. Background extraction (`memory.extraction.enabled`) now defaults to
-  `false` — it wrote 8 of the 10 memories in that store, and every wrong one — and when turned on
-  it reads only sessions recorded as human-driven (none from before this change) and does not run
-  at an agent-driven start. `npm run eval:memory` passes `--session-driver human`, takes
-  `--effort`, and counts a run that did not complete (a retired model, a rate limit, a timeout) as
-  an error instead of a forgotten memory.
+- **A session another agent drives keeps only what it learned, and background extraction is off
+  by default.** An audit of a real store found 5 of a repository's 6 memories copied from the
+  "Ground rules" of spec runs Claude Code drove in print mode — one, "never edit docs/",
+  contradicting CLAUDE.md — and `MemorySave` once saved a spec's temporary rule the same way. Book
+  now works out who drives the session (`src/session-driver.ts`): `--session-driver human|agent`,
+  then `BOOK_SESSION_DRIVER`, then `agent` when the environment carries Claude Code's `CLAUDECODE`
+  or an `AI_AGENT` marker, else `human`; every process Book starts gets
+  `BOOK_SESSION_DRIVER=agent`, so Book driving Book counts too. An agent-driven session's prompt
+  says its task and rules come from another agent: it may save what it learned doing the work — a
+  decision and its reason, an outcome that carries a lesson, a verified repository fact — never
+  its instructions. There `MemorySave` takes only `project` and `reference`, marks the file
+  `driver: agent` (shown as "from a delegated run" in `/memory`), and refuses to change or delete
+  a memory a person's session saved. The driver is recorded on the session (`SessionMeta.driver`);
+  a session an agent resumes — at launch or with `/resume` — or forks from becomes `agent` for
+  good. Background extraction (`memory.extraction.enabled`) now defaults to `false` — it wrote 8
+  of the 10 memories in that store, and every wrong one — and when turned on it reads only
+  sessions recorded as human-driven (none from before this change) and does not run at an
+  agent-driven start. `npm run eval:memory` passes `--session-driver human`, takes `--effort`, and
+  counts a run that did not complete (a retired model, a rate limit, a timeout) as an error
+  instead of a forgotten memory.
 - **A long single-turn run stopped re-sending its whole chain of thought, and a new file stopped
   being written back to the model** (#378). On Terminal-Bench 2.0 the replayed reasoning of earlier
   assistant steps was a median 26% of input tokens on every request: print mode runs a whole task as
@@ -2469,11 +2472,12 @@ requestedModel`. A record's own model names only the response that triggered the
 
 ### Added
 
-- **`eval:memory` items that look like real use.** Nine items join the short ones, selectable with
+- **`eval:memory` items that look like real use.** Ten items join the short ones, selectable with
   `--groups`: five `long-task` items where a fact arrives as a casual Vietnamese aside in the
   middle of fixing and extending a small module (no "remember"; a look-alike "from now on in this
-  task" and a today-only "answer briefly" that must not be kept), a `delegated` spec run whose
-  ground rule contradicts the repo's CLAUDE.md, two `worktree` items that teach in a linked
+  task" and a today-only "answer briefly" that must not be kept), two `delegated` spec runs — one
+  whose ground rule contradicts the repo's CLAUDE.md, one that works out a durable fact by doing the
+  job — two `worktree` items that teach in a linked
   worktree and probe the main checkout, and a `channel` item where the repo names its own
   `NOTES.md` (a save to both stores is reported as a duplicate). The report adds a per-group
   table; the default models are now glm-5.3-flash and deepseek-v4.1-flash.

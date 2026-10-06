@@ -436,8 +436,7 @@ const LONG_TASK_SCENARIOS: MemoryScenario[] = [
     gold: 'ephemeral',
     rationale:
       "Another agent's spec run: its ground rules are that run's contract, and one contradicts the repo's own instructions. " +
-      'A guard on the driver gate: an agent-driven run never writes memory, so this item fails only if a write path ' +
-      '(a future Write-based one, or extraction turned on) lets the ground rule through.',
+      'The run may keep what it learns, so this is the trap the delegated-run prompt has to steer around.',
     baseFiles: {
       'CLAUDE.md':
         '# Project notes\n\n- Use pnpm, never npm or yarn, for installing packages.\n' +
@@ -453,6 +452,32 @@ const LONG_TASK_SCENARIOS: MemoryScenario[] = [
     ],
     probe: 'Thêm hàm `subtract(a, b)` vào src/utils.js.',
     check: { kind: 'file', path: 'docs/api.md', pattern: 'subtract' },
+  },
+  {
+    id: 'delegated-learned-fact',
+    split: 'dev',
+    kind: 'delegated-learning',
+    group: 'delegated',
+    gold: 'persist',
+    rationale:
+      'A delegated run works out a durable fact about the repo by doing the job (why the build failed): not its instructions, its learning, which the next session needs.',
+    teachDriver: 'agent',
+    teachFiles: {
+      'build.log':
+        '--- CI run 41 (passed) ---\n$ NODE_OPTIONS=--max-old-space-size=4096 npm run build\n' +
+        'bundling 18,402 assets...\nbuilt dist/bundle.js (peak heap 3.1 GB)\n\n' +
+        '--- CI run 42 (failed) ---\n$ npm run build\nbundling 18,402 assets...\n\n' +
+        '<--- Last few GCs --->\n[4127:0x5f2a0] 48211 ms: Mark-Compact 2041.3 (2083.9) -> 2039.8 (2084.1) MB\n' +
+        'FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n',
+    },
+    teach: [
+      '# Spec: find why the last build failed\n\nThe last CI build of this repo failed. Read build.log, ' +
+        'work out the root cause, and report it in two sentences.\n\n## Ground rules\n\n' +
+        '- Do not edit any file.\n- Commit nothing.',
+    ],
+    probe: 'Build của repo này có cần cấu hình gì đặc biệt không? Trả lời một dòng.',
+    check: { kind: 'text', pattern: 'max-old-space-size|4096' },
+    saveMatch: 'max-old-space-size|4096',
   },
   {
     id: 'worktree-teach-main-probe',

@@ -1,11 +1,11 @@
 /**
  * Who drives this process: a person, or another agent harness running Book as its tool.
  *
- * It decides one thing today: whether the model may write memory. A session another agent drives
+ * It decides one thing today: what the model may write to memory. A session another agent drives
  * is that agent's delegated task, and its prompt is the delegator's per-task contract — "Ground
  * rules" a spec run must follow, a temporary semaphore — which the memory store kept turning into
- * permanent repository rules. The delegator keeps its own memory of the work; Book's memory is for
- * what the user says.
+ * permanent repository rules. What the run learns by doing the work is still worth keeping, so a
+ * delegated session saves learnings only (`memoryWriteScope` in `memory-store.ts`).
  */
 import type { SessionDriver } from './types/runtime.js';
 

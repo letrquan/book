@@ -49,7 +49,8 @@ export interface QueryOptions {
   forwardSubagentText?: boolean;
   /**
    * Who drives the session. Defaults to `BOOK_SESSION_DRIVER`, then to `agent` under another agent
-   * harness and `human` otherwise; an agent-driven session reads memory but never writes it.
+   * harness and `human` otherwise; an agent-driven session saves only what it learned, as
+   * project or reference memory, never its delegator's instructions.
    */
   sessionDriver?: SessionDriver;
 }
