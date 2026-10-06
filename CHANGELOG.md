@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **Dependency audit cleared at `--audit-level=high`, including production dependencies.**
+  `npm run audit:prod` and `npm run audit:all` now report zero vulnerabilities. `proxy-addr`
+  (critical, transitive via `@modelcontextprotocol/sdk` > `express`) moves 2.0.7 → 2.0.8,
+  `source-map-js` (high) 1.2.1 → 1.2.2, and `smol-toml` (moderate) 1.8.0 → 1.9.0 by lockfile
+  update. `esbuild` (moderate) moves 0.27.7 → 0.28.1 through a targeted `overrides` entry, because
+  `tsup` 8.5.1 — the newest 8.x — still pins `esbuild ^0.27.0` and cannot reach the fixed range on
+  its own. `vitest` moves 4.1.10 → 4.1.11 within the existing major (5 is a separate change), which
+  carries `@vitest/mocker` 4.1.10 → 4.1.11 and clears its moderate advisory, with
+  `@vitest/coverage-v8` following to 4.1.11.
 - **A repository could turn off the sandbox it was cloned into, rewrite the control files the host
   acts on after a command exits, and run a check outside the sandbox** (#373). Three escapes, one
   fix each.
