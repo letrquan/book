@@ -155,6 +155,14 @@ export interface BackgroundShellStore {
   shells: Map<string, BackgroundShellRecord>;
 }
 
+/**
+ * Who drives a session: a person at the keyboard, or another agent harness running Book as its
+ * tool (Claude Code driving a print-mode spec run, a PTY test driver). Agent-driven sessions read
+ * memory but never write it: their prompts are a delegator's per-task contract, not the user's
+ * standing preferences.
+ */
+export type SessionDriver = 'human' | 'agent';
+
 export interface AgentConfig {
   /** May be empty until an interactive user adds a BYOK provider. */
   apiKey: string;
@@ -238,6 +246,8 @@ export interface AgentConfig {
   modelInfo?: ProviderModelConfig;
   /** Approved memory snapshot loaded once at session start. */
   memoryContext?: LoadedMemoryContext;
+  /** Resolved once per process (`src/session-driver.ts`); absent means `human`. */
+  sessionDriver?: SessionDriver;
   /** Optional store for learned context window ceilings. */
   modelWindowStore?: ModelWindowStore;
 }

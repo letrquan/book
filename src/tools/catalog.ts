@@ -24,7 +24,7 @@ import { READ_ONLY_PLAN_TOOLS } from './plan-mode.js';
 import { normalizeToolSchema } from './schema.js';
 import { toolSearchTools } from './tool-search.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
-import { isMemorySaveAvailable } from '../memory-store.js';
+import { canModelWriteMemory } from '../memory-store.js';
 
 const ALWAYS_CORE = new Set([
   'Read',
@@ -408,7 +408,8 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       const name = canonicalToolName(definition.name);
       if (name === 'ToolSearch') return true;
       if (!definition.catalog?.roles?.includes(role)) return false;
-      if (name === 'MemorySave' && !isMemorySaveAvailable(config.settings)) {
+      // Not offered when the settings forbid memory writes or another agent drives the session.
+      if (name === 'MemorySave' && !canModelWriteMemory(config)) {
         return false;
       }
       if ([...ruleSets.values()].some((rules) => !isToolDefinitionAllowed(rules, definition)))
@@ -650,7 +651,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
 
   /**
    * Whether the run admits the tool at all — its role, the capability rule sets and the
-   * MemorySave setting — ignoring activation and the mode. A name this rejects can never be
+   * MemorySave gate (settings and session driver) — ignoring activation and the mode. A name this rejects can never be
    * activated by a search this run, so the registry's refusal names the allowed tools instead
    * of pointing at ToolSearch.
    */
@@ -660,7 +661,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     const definition = byName.get(canonical);
     if (!definition) return false;
     if (!definition.catalog?.roles?.includes(role)) return false;
-    if (canonical === 'MemorySave' && !isMemorySaveAvailable(config.settings)) return false;
+    if (canonical === 'MemorySave' && !canModelWriteMemory(config)) return false;
     return [...ruleSets.values()].every((rules) => isToolDefinitionAllowed(rules, definition));
   };
 

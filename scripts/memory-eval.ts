@@ -5,6 +5,7 @@
  *
  *   npm run eval:memory -- [--models a,b] [--split test|dev|all] [--repeats 3]
  *                          [--only id1,id2] [--concurrency 2] [--timeout-ms 300000]
+ *                          [--effort low|medium|high|xhigh|max]
  */
 import { spawn, execFile } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -53,6 +54,8 @@ export interface MemoryEvalOptions {
   only?: string[];
   concurrency: number;
   timeoutMs: number;
+  /** Passed to every session as `--effort`; omitted, each model runs at its default. */
+  effort?: string;
 }
 
 export function parseArgs(argv: string[]): MemoryEvalOptions {
@@ -76,6 +79,7 @@ export function parseArgs(argv: string[]): MemoryEvalOptions {
     only: get('--only')?.split(',').filter(Boolean),
     concurrency: int('--concurrency', 2),
     timeoutMs: int('--timeout-ms', 300_000),
+    effort: get('--effort'),
   };
 }
 
@@ -112,11 +116,27 @@ interface SessionResult {
  * that field opt-in to keep a long run's last line small, and without the flag
  * every session scored an empty answer.
  */
-export function sessionArgs(model: string, resume: boolean): string[] {
+export function sessionArgs(model: string, resume: boolean, effort?: string): string[] {
   const args = [CLI, '--print', '--model', model, '--permission-mode', 'bypassPermissions'];
+  // The harness runs under whatever launched it, often another agent: without this every teaching
+  // session would be agent-driven, which reads memory but never writes it.
+  args.push('--session-driver', 'human');
   args.push('--output-format', 'stream-json', '--include-result-messages');
+  if (effort) args.push('--effort', effort);
   if (resume) args.push('--continue');
   return args;
+}
+
+/**
+ * Why a stream-json `result` event's run did not finish, or undefined when it completed (or the
+ * event predates outcomes). A provider timeout ends `timed_out`, a lost stream `interrupted`: none
+ * of them is an answer to score.
+ */
+export function sessionFailure(event: Record<string, unknown>): string | undefined {
+  const outcome = event.outcome as
+    { status?: string; reason?: string; message?: string } | undefined;
+  if (!outcome?.status || outcome.status === 'completed') return undefined;
+  return `session ${outcome.status} (${outcome.reason ?? 'unknown'}): ${(outcome.message ?? '').slice(0, 300)}`;
 }
 
 /** One `book --print` conversation turn; `resume` continues the workspace's latest session. */
@@ -126,9 +146,10 @@ async function session(
   ws: string,
   home: string,
   resume: boolean,
-  timeoutMs: number,
+  opts: Pick<MemoryEvalOptions, 'timeoutMs' | 'effort'>,
 ): Promise<SessionResult> {
-  const args = sessionArgs(model, resume);
+  const { timeoutMs } = opts;
+  const args = sessionArgs(model, resume, opts.effort);
   return new Promise((resolvePromise, reject) => {
     // `--model` decides the model; an inherited BOOK_MODEL must not.
     const { BOOK_MODEL: _ignored, ...inherited } = process.env;
@@ -155,6 +176,7 @@ async function session(
       clearTimeout(timer);
       const result: SessionResult = { text: '', commands: [], tools: [], inputTokens: 0 };
       let sawResult = false;
+      let failure: string | undefined;
       for (const line of out.split('\n')) {
         if (!line.trim().startsWith('{')) continue;
         let event: Record<string, unknown>;
@@ -172,6 +194,7 @@ async function session(
         }
         if (event.type === 'result') {
           sawResult = true;
+          failure = sessionFailure(event);
           const body = event.result as {
             messages?: Array<{ role: string; content?: string }>;
             usage?: {
@@ -192,6 +215,12 @@ async function session(
       }
       if (!sawResult) {
         reject(new Error(`session exited ${code} without a result: ${err.trim().slice(-300)}`));
+        return;
+      }
+      // A run the provider refused (a retired model, a rate limit) is an error, not a wrong
+      // answer: scored as a probe it read as "the model forgot" with the error count at 0.
+      if (failure) {
+        reject(new Error(failure));
         return;
       }
       resolvePromise(result);
@@ -275,7 +304,7 @@ async function runItem(
           ws,
           home,
           i > 0,
-          opts.timeoutMs,
+          opts,
         );
         obs.teachTools.push(...taught.tools);
       }
@@ -284,7 +313,7 @@ async function runItem(
       Object.assign(obs, readStore(home));
     }
 
-    const probe = await session(model, scenario.probe, ws, home, false, opts.timeoutMs);
+    const probe = await session(model, scenario.probe, ws, home, false, opts);
     obs.probeText = probe.text;
     obs.probeCommands = probe.commands;
     obs.probeInputTokens = probe.inputTokens;
@@ -356,7 +385,13 @@ export async function main(argv: string[]): Promise<void> {
   const reports = join(ROOT, '.book', 'reports');
   mkdirSync(reports, { recursive: true });
   const base = join(reports, `memory-eval-${opts.split}-${stamp}`);
-  const meta = { generatedAt, split: opts.split, repeats: opts.repeats, models: opts.models };
+  const meta = {
+    generatedAt,
+    split: opts.split,
+    repeats: opts.repeats,
+    models: opts.models,
+    ...(opts.effort ? { effort: opts.effort } : {}),
+  };
   writeFileSync(`${base}.json`, JSON.stringify({ meta, results, observations }, null, 2));
   const md = renderMarkdown(meta, results);
   writeFileSync(`${base}.md`, md);

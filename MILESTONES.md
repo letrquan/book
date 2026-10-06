@@ -11,7 +11,7 @@ runtime defaults and known boundaries, see [docs/current-state.md](docs/current-
       shared session lifecycle, resume/fork/name support, compaction, rewind, and structured output.
 - [x] Layered settings, atomic settings repository, migration/redaction, permission modes and rules,
       lifecycle hooks, optional bubblewrap sandbox, project/user instructions, and themes.
-- [x] Auto-memory Phase 1: model writes via `MemorySave` (part A, measured by `npm run eval:memory`) and background extraction of missed memories from idle sessions at the next interactive start (part B, verified in the real TUI; the eval runs print mode, where extraction does not run).
+- [x] Auto-memory Phase 1: model writes via `MemorySave` (part A, measured by `npm run eval:memory`) and background extraction of missed memories from idle sessions at the next interactive start (part B, verified in the real TUI; the eval runs print mode, where extraction does not run). Since 2026-10 extraction is opt-in and no memory is written in sessions another agent drives (`--session-driver`), after an audit found delegated runs' rules stored as repository memory.
 - [x] Auto-memory Phase 2: supersession (old entries kept as history, out of the index), index hooks, and index-pressure consolidation prompts.
 - [x] Provider-neutral tool registry with closed schemas, aliases, capability intersections,
       model-conditional mutation guidance, read-before-edit, tool discovery, bounded parallel-safe

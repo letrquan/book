@@ -278,10 +278,14 @@ export const memorySettingsSchema = z.object({
   autoSave: z.boolean().default(true),
   requireApproval: z.boolean().default(false),
   quarantineExternal: z.boolean().default(true),
-  /** Phase 1b: at the next session start, extract memories the model missed from idle sessions. */
+  /**
+   * Phase 1b: at the next session start, extract memories the model missed from idle sessions.
+   * Off by default since 2026-10: on the owner's machine it wrote 8 of the 10 memories and all the
+   * wrong ones, copied from delegated spec runs; it stays available as an opt-in.
+   */
   extraction: z
     .object({
-      enabled: z.boolean().default(true),
+      enabled: z.boolean().default(false),
       idleHours: z.number().min(0).default(3),
       minMessages: unboundedInt().min(1).default(10),
       maxPerSession: z.number().int().min(1).max(20).default(5),
@@ -637,7 +641,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     requireApproval: false,
     quarantineExternal: true,
     extraction: {
-      enabled: true,
+      enabled: false,
       idleHours: 3,
       minMessages: 10,
       maxPerSession: 5,

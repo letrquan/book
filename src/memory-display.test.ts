@@ -35,6 +35,16 @@ describe('buildMemoryReport', () => {
     );
   });
 
+  it('says why model writes are off when another agent drives the session', () => {
+    const report = buildMemoryReport({
+      workspace,
+      bookRoot,
+      settings: DEFAULT_SETTINGS,
+      sessionDriver: 'agent',
+    });
+    expect(report).toContain('model writes disabled (session driven by another agent)');
+  });
+
   it('lists approved memory and reports the line cap', () => {
     const dir = getProjectMemoryDir(workspace, { bookRoot });
     mkdirSync(dir, { recursive: true });

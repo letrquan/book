@@ -31,7 +31,9 @@ import type {
   TurnCheckpointRecordData,
 } from '../types/sessions.js';
 import type { ImageAttachment, Message, Usage } from '../types/messages.js';
+import type { SessionDriver } from '../types/runtime.js';
 import { addUsage } from '../pricing.js';
+import { isSessionDriver } from '../session-driver.js';
 import { createDebugLogger } from '../debug-log.js';
 import { normalizeToolResult } from '../tools/result.js';
 import { deriveSessionName } from './name.js';
@@ -296,7 +298,7 @@ export class SessionStore {
     this.persistIndex([], [meta.id]);
   }
 
-  create(meta: { cwd: string; name?: string; id?: string }): string {
+  create(meta: { cwd: string; name?: string; id?: string; driver?: SessionDriver }): string {
     const id = meta.id ?? crypto.randomUUID();
     const now = Date.now();
     const header: SessionRecord = {
@@ -310,6 +312,7 @@ export class SessionStore {
         createdAt: now,
         updatedAt: now,
         messageCount: 0,
+        ...(meta.driver ? { driver: meta.driver } : {}),
       },
     };
     appendFileSync(this.path(id), JSON.stringify(header) + '\n', 'utf-8');
@@ -401,6 +404,9 @@ export class SessionStore {
     entry.meta.updatedAt = record.timestamp;
     if (data.kind === 'session_meta_patch') {
       if (Object.prototype.hasOwnProperty.call(data, 'name')) entry.meta.name = data.name;
+      if (isSessionDriver((data as { driver?: unknown }).driver)) {
+        entry.meta.driver = (data as { driver: SessionDriver }).driver;
+      }
     } else if (record.type === 'user') {
       entry.meta.messageCount++;
       entry.lastMessageRole = 'user';
@@ -424,7 +430,7 @@ export class SessionStore {
     this.persistIndex([], [id]);
   }
 
-  patchMeta(id: string, patch: { name?: string }): void {
+  patchMeta(id: string, patch: { name?: string; driver?: SessionDriver }): void {
     this.append(id, {
       type: 'session_meta',
       timestamp: Date.now(),
@@ -456,6 +462,7 @@ export class SessionStore {
       updatedAt: storedMeta?.updatedAt ?? 0,
       messageCount: 0,
       ...(storedMeta?.name === undefined ? {} : { name: storedMeta.name }),
+      ...(isSessionDriver(storedMeta?.driver) ? { driver: storedMeta.driver } : {}),
     };
 
     const transcript: Message[] = [];
@@ -511,6 +518,8 @@ export class SessionStore {
 
       if (data.kind === 'session_meta_patch') {
         if (Object.prototype.hasOwnProperty.call(data, 'name')) meta.name = data.name;
+        const driver = (data as { driver?: unknown }).driver;
+        if (isSessionDriver(driver)) meta.driver = driver;
         continue;
       }
       if (data.kind === 'session_meta' || data.kind === 'session_touch') continue;
@@ -783,7 +792,10 @@ export class SessionStore {
     return cloneLoadedSession(loaded);
   }
 
-  fork(sourceId: string, meta: { cwd: string; name?: string; id?: string }): string {
+  fork(
+    sourceId: string,
+    meta: { cwd: string; name?: string; id?: string; driver?: SessionDriver },
+  ): string {
     const targetId = this.create(meta);
     for (const record of this.readRecords(sourceId)) {
       const kind = (record.data as { kind?: string })?.kind;

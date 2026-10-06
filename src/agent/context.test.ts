@@ -696,6 +696,51 @@ describe('buildMessages', () => {
     }
   });
 
+  it('reads memory but omits the save spec when another agent drives the session', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-context-agent-driven-'));
+    try {
+      const memoryDir = getProjectMemoryDir(dir);
+      mkdirSync(memoryDir, { recursive: true });
+      writeFileSync(join(memoryDir, 'MEMORY.md'), '- [Fact](fact.md)\n', 'utf-8');
+      const memoryContext = {
+        dir: memoryDir,
+        indexFile: join(memoryDir, 'MEMORY.md'),
+        indexLoaded: true,
+        indexLineCount: 1,
+        loadedLineCount: 1,
+        indexText: '- [Fact](fact.md)',
+        files: [],
+        candidates: [],
+      };
+      const agent = await buildMessages(
+        { ...defaultConfig({ workspace: dir, memoryContext }), sessionDriver: 'agent' },
+        [userMsg('hi')],
+        [],
+      );
+      expect(systemPrefix(agent)).toContain('<memory-index>');
+      expect(systemPrefix(agent)).toContain('Read the file');
+      expect(systemPrefix(agent)).not.toContain('Call MemorySave');
+
+      const human = await buildMessages(
+        { ...defaultConfig({ workspace: dir, memoryContext }), sessionDriver: 'human' },
+        [userMsg('hi')],
+        [],
+      );
+      expect(systemPrefix(human)).toContain('Call MemorySave in the same turn');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('omits memory section entirely when another agent drives a session with no memory', async () => {
+    const config = {
+      ...defaultConfig({ memoryContext: undefined }),
+      sessionDriver: 'agent' as const,
+    };
+    const out = await buildMessages(config, [userMsg('hi')], []);
+    expect(systemPrefix(out)).not.toContain('## Local memory');
+  });
+
   it('omits memory section entirely when memory.autoSave is false and index is empty', async () => {
     const config = defaultConfig({ memoryContext: undefined });
     config.settings.memory.autoSave = false;

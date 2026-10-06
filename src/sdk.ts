@@ -2,7 +2,7 @@
 
 import { join } from 'path';
 import type { ElicitationHandler, UserQuestionHandler } from './types/tools.js';
-import type { AgentConfig } from './types/runtime.js';
+import type { AgentConfig, SessionDriver } from './types/runtime.js';
 import type { SessionStoreInterface } from './types/sessions.js';
 import { freezeAgentConfig, loadConfig, type LoadConfigOptions } from './config.js';
 import { runHeadless } from './headless.js';
@@ -22,6 +22,7 @@ import {
 } from './debug-log.js';
 import { resolvePermissionMode } from './permission-mode.js';
 import { resolveBookHome } from './book-home.js';
+import { resolveSessionDriver } from './session-driver.js';
 
 export type QueryEvent = AgentEvent;
 
@@ -46,6 +47,11 @@ export interface QueryOptions {
   agents?: 'adaptive' | 'manual' | 'off';
   /** Forward high-volume managed-agent text deltas. Defaults to false. */
   forwardSubagentText?: boolean;
+  /**
+   * Who drives the session. Defaults to `BOOK_SESSION_DRIVER`, then to `agent` under another agent
+   * harness and `human` otherwise; an agent-driven session reads memory but never writes it.
+   */
+  sessionDriver?: SessionDriver;
 }
 
 class AsyncEventQueue<T> {
@@ -86,6 +92,8 @@ export async function* query(
   });
   const config = freezeAgentConfig({
     ...loadedConfig,
+    sessionDriver: resolveSessionDriver({ explicit: options.sessionDriver, env: process.env })
+      .driver,
     ...(options.model ? { model: options.model } : {}),
     ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
     ...(options.agents
@@ -110,6 +118,7 @@ export async function* query(
   const bootstrap = resolveSessionBootstrap(sessionStore, {
     cwd: config.workspace,
     sessionId: options.sessionId,
+    driver: config.sessionDriver,
   });
   if (persistSession && !options.sessionStore && sessionStore) {
     cleanupDebugLogs(DEFAULT_LOCAL_DATA_RETENTION_DAYS, getDebugLogPath());

@@ -327,8 +327,9 @@ describe('resolveSettings — layered merging', () => {
       autoSave: true,
       requireApproval: false,
       quarantineExternal: true,
+      // Opt-in: the extractor stored delegated runs' per-task rules as repository memory.
       extraction: {
-        enabled: true,
+        enabled: false,
         idleHours: 3,
         minMessages: 10,
         maxPerSession: 5,

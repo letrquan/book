@@ -93,6 +93,10 @@ program
   .option('-n, --name <name>', 'Set a display name for the session')
   .option('--no-session-persistence', 'Do not save the session to disk')
   .option('--fork-session', 'On resume, create a new session id instead of reusing')
+  .option(
+    '--session-driver <driver>',
+    'human or agent (default: agent under another agent harness); agent-driven sessions read memory but never write it',
+  )
   .option('--include-hook-events', 'Emit hook lifecycle events in stream-json output')
   .option('--include-partial-messages', 'Emit partial assistant text deltas in stream-json output')
   .option(

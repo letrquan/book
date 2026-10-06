@@ -16,6 +16,7 @@ import { writeFileAtomic } from './settings-repository.js';
 import { permissionRuleMatchesCall } from './permissions.js';
 import { resolveBookHome } from './book-home.js';
 import { looksLikeSecretOrUnfit } from './secret-detect.js';
+import type { SessionDriver } from './types/runtime.js';
 
 export const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
 export type MemoryType = (typeof MEMORY_TYPES)[number];
@@ -82,6 +83,25 @@ export function isMemorySaveAvailable(settings?: {
 }): boolean {
   if (!settings?.memory) return true;
   return settings.memory.enabled !== false && settings.memory.autoSave !== false;
+}
+
+/**
+ * Why the model may not write memory in this session, or undefined when it may: the settings turn
+ * it off, or another agent drives the session. A delegated run's prompt is its delegator's
+ * per-task contract, and saving from it is how a spec's "Ground rules" became permanent
+ * repository memory. The one rule the catalog, the prompt, the tool and `/memory status` all read.
+ */
+export function memoryWriteBlock(config: {
+  settings?: { memory?: { enabled?: boolean; autoSave?: boolean } };
+  sessionDriver?: SessionDriver;
+}): 'settings' | 'agent-driven' | undefined {
+  if (!isMemorySaveAvailable(config.settings)) return 'settings';
+  if (config.sessionDriver === 'agent') return 'agent-driven';
+  return undefined;
+}
+
+export function canModelWriteMemory(config: Parameters<typeof memoryWriteBlock>[0]): boolean {
+  return memoryWriteBlock(config) === undefined;
 }
 
 export function sanitizeMemoryTitle(rawTitle: string): string {

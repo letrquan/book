@@ -328,6 +328,7 @@ after a failed run.
 | `BOOK_TUI_RENDERER`                                                                               | `safe`, `incremental`, or experimental scroll renderer                                     |
 | `BOOK_INK_OUTPUT_CACHE`                                                                           | `off` disables the cross-frame row cache of Ink's output, which is on by default           |
 | `BOOK_STARTUP_ANIMATION`                                                                          | Startup splash on or off; outranks `ui.startupAnimation`, as `BOOK_MODEL` does for `model` |
+| `BOOK_SESSION_DRIVER`                                                                             | `human` or `agent`, over `CLAUDECODE`/`AI_AGENT`; agent-driven sessions never write memory |
 | `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                                                        |
 | `BOOK_DEBUG_FILE` / `BOOK_DEBUG_STDERR` / `BOOK_DEBUG_MAX_BYTES` / `BOOK_DEBUG_BACKUPS`           | Debug log destination and rotation controls                                                |
 

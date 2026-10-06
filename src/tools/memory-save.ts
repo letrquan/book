@@ -6,7 +6,7 @@ import {
   MEMORY_TYPES,
   type MemoryType,
   deleteMemoryEntry,
-  isMemorySaveAvailable,
+  memoryWriteBlock,
   sanitizeMemoryTitle,
   saveMemory,
   shouldRejectMemoryText,
@@ -60,8 +60,13 @@ export async function memorySaveExecute(
   args: Record<string, unknown>,
   context: ToolContext,
 ): Promise<ToolResult> {
-  if (!isMemorySaveAvailable(context.agentConfig?.settings)) {
-    return fail('Model memory writes are disabled in settings.');
+  // The catalog does not offer the tool then; this covers a call that reaches it anyway.
+  const blocked = memoryWriteBlock(context.agentConfig ?? {});
+  if (blocked === 'settings') return fail('Model memory writes are disabled in settings.');
+  if (blocked === 'agent-driven') {
+    return fail(
+      'This session is driven by another agent, so memory writes are off. Report what you would save to whoever is driving you instead; a human-driven session (or --session-driver human) can save it.',
+    );
   }
 
   const action = args.action;
