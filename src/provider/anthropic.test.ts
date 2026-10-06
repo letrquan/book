@@ -130,7 +130,10 @@ describe('convertMessages', () => {
   });
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 describe('Anthropic request URL', () => {
   it.each([
@@ -203,6 +206,86 @@ describe('Anthropic thinking configuration', () => {
     expect(requestBody).toBeDefined();
     expect(requestBody).not.toHaveProperty('thinking');
     expect(requestBody).not.toHaveProperty('output_config');
+  });
+});
+
+// The request body each Anthropic model family carries (#371): Messages API
+// fields only — no OpenAI `stream_options` — and `thinking` plus
+// `output_config.effort` where the model takes them: both for the adaptive
+// thinkers (4.6 and the 5.x ids), effort alone for Opus 4.5, and neither for
+// Sonnet 4.5.
+describe('Anthropic request body per model family (#371)', () => {
+  async function capturedBody(
+    model: string,
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max',
+  ): Promise<Record<string, unknown>> {
+    let requestBody: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        requestBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return new Response('{}', { status: 400 });
+      }),
+    );
+
+    for await (const event of chatCompletionStream(
+      defaultConfig({ model, provider: 'anthropic', baseUrl: 'https://api.anthropic.com', effort }),
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      void event;
+    }
+
+    if (!requestBody) throw new Error('request body was never captured');
+    return requestBody;
+  }
+
+  it('never sends OpenAI stream_options, whatever the family', async () => {
+    for (const model of [
+      'claude-opus-4-5-20260101',
+      'claude-opus-4-6-20260101',
+      'claude-opus-5-5-20260101',
+      'claude-sonnet-5-5',
+      'claude-fable-5-1',
+    ]) {
+      expect(await capturedBody(model, 'high')).not.toHaveProperty('stream_options');
+    }
+  });
+
+  it('sends effort alone, clamped to high, for Opus 4.5 (#371)', async () => {
+    // Opus 4.5 reads `output_config.effort` but rejects adaptive thinking, so
+    // the effort rides alone on a low/medium/high axis and `thinking` is absent.
+    for (const [model, effort, sent] of [
+      ['claude-opus-4-5-20260101', 'low', 'low'],
+      ['claude-opus-4-5-20260101', 'medium', 'medium'],
+      ['claude-opus-4-5-20260101', 'high', 'high'],
+      ['claude-opus-4-5-20260101', 'xhigh', 'high'],
+      ['claude-opus-4-5-20260101', 'max', 'high'],
+      ['claude-opus-4-5', 'max', 'high'],
+    ] as const) {
+      const body = await capturedBody(model, effort);
+      expect(body, `${model} at ${effort}`).not.toHaveProperty('thinking');
+      expect(body.output_config, `${model} at ${effort}`).toEqual({ effort: sent });
+    }
+  });
+
+  it('sends neither field for Sonnet 4.5, which supports neither (#371)', async () => {
+    const body = await capturedBody('claude-sonnet-4-5', 'high');
+    expect(body).not.toHaveProperty('thinking');
+    expect(body).not.toHaveProperty('output_config');
+  });
+
+  it('sends adaptive thinking and effort from 4.6 and across the 5.x ids', async () => {
+    for (const model of [
+      'claude-opus-4-6-20260101',
+      'claude-opus-5-5-20260101',
+      'claude-sonnet-5-5',
+      'claude-fable-5-1',
+    ]) {
+      const body = await capturedBody(model, 'high');
+      expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+      expect(body.output_config).toEqual({ effort: 'high' });
+    }
   });
 });
 
@@ -701,6 +784,54 @@ describe('countCacheBreakpoints', () => {
 });
 
 describe('stall tolerance while thinking', () => {
+  // A never-settling read, so the only thing that can end the stream is the
+  // stall ceiling the request armed; the first stream_stall error names it.
+  async function stallFrom(model: string, effort?: 'low' | 'medium' | 'high'): Promise<string> {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(new ReadableStream({ start() {} }), { status: 200 })),
+    );
+    const stream = chatCompletionStream(
+      defaultConfig({
+        model,
+        provider: 'anthropic',
+        baseUrl: 'https://api.anthropic.com',
+        effort,
+        retry: {
+          ...defaultConfig().retry,
+          streamStallTimeoutMs: 50,
+          thinkingStallTimeoutMs: 60_000,
+        },
+      }),
+      [{ role: 'user', content: 'x' }],
+      [],
+    );
+    const pending = (async () => {
+      const events = [];
+      for await (const event of stream) events.push(event);
+      return events;
+    })();
+    await vi.advanceTimersByTimeAsync(60_000);
+    const events = await pending;
+    const stall = events.find((e) => e.type === 'error' && e.errorCode === 'stream_stall') as
+      { error: string } | undefined;
+    expect(stall).toBeDefined();
+    return String(stall?.error);
+  }
+
+  it('keeps the chat stall ceiling for Opus 4.5, which sends no thinking field', async () => {
+    const stall = await stallFrom('claude-opus-4-5-20260101', 'high');
+    // Stalled at the 50ms chat ceiling, not the 60s thinking one, even though
+    // the request carries an effort: reasoning here rides only the effort level.
+    expect(stall).toContain('no data received for 50ms');
+  });
+
+  it('keeps the thinking stall ceiling for Opus 5, which sends the thinking field', async () => {
+    const stall = await stallFrom('claude-opus-5-20260101', 'high');
+    expect(stall).toContain('no data received for 60000ms');
+  });
+
   it('gives a thinking model a longer stall ceiling than the chat one', async () => {
     // The chat-tuned 20s ceiling cancels a healthy high-effort request mid-thought
     // and reports stream_stall — the most common way an Opus run "just stops".

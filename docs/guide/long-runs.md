@@ -78,7 +78,10 @@ Book uses `retry.thinkingStallTimeoutMs` instead (default 15 minutes,
 `BOOK_THINKING_STALL_TIMEOUT_MS`). Raise it if a very high-effort run still reports `stream_stall`.
 
 What counts as "enables reasoning" differs by path, because the two carry different evidence. On the
-Anthropic path it is adaptive thinking, which is on by default for Opus and Sonnet at `high` effort.
+Anthropic path it is adaptive thinking, which is sent for Opus 4.6 and Sonnet 4.6 and later at
+`high` effort — the field the pre-4.6 models refuse, although Opus 4.5 among them takes
+`output_config.effort` alone (with `xhigh` and `max` clamped to `high`) and keeps the chat stall
+ceiling, and Sonnet 4.5, which takes neither, runs at its own default.
 On an OpenAI-compatible endpoint it is a request that sends `reasoning_effort`, or a model whose
 `provider.<id>.models.<model>.effort` entry declares an effort range — an endpoint that buffers a
 whole thinking block sends nothing at all until it is done, so the declaration is the only signal
@@ -119,11 +122,17 @@ wraps an upstream 4xx as a 503 with a cooldown
 ends on that 400; it is not retried ten times and not re-issued, since the request itself is what
 was refused. Only the router's `[<route>] [4xx]:` prefix or a 4xx `code` in a JSON `"error"` object
 counts as a quote: a 503 whose body merely mentions `HTTP 403` or `"code": 4001` is retried like
-any other outage. Any error body is read for at most 5 s and 64 KB. Behind a retryable status the
+any other outage. One quoted count is read as an outage even so: a 404 whose body says no endpoints
+or no accounts were found
+(`503 [commandcode/<model>] [404]: [CommandCode error: No endpoints found for <model>.] (reset after 5s)`)
+is a capacity outage rather than a verdict on the request, so the 503 stays retryable, and with no
+`Retry-After` header the wait is the `(reset after …)` cooldown the body states — `5s`, `42s`,
+`1m26s` and `1 min 26 s` all read — capped by `retry.maxDelayMs` and the total retry budget as
+every retry delay is. Any error body is read for at most 5 s and 64 KB. Behind a retryable status the
 decision is made on what arrived, so a router that sends its headers and then stalls cannot hold an
 attempt for the whole request timeout.
 
-A 408 or a 429 is retried like an outage. A 400, 404 or 422, plain or quoted, and Anthropic's
+A 408 or a 429 is retried like an outage. A 400 or a 422, plain or quoted, a 404 that is not the capacity outage above, and Anthropic's
 mid-stream `invalid_request_error` and `not_found_error` end the run on the first answer, since
 re-sending the same request reproduces them. A 401, 402 or 403, or a mid-stream
 `authentication_error` or `permission_error`, parks the run as `credentials_rejected`, and a 413

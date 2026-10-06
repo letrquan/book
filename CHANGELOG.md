@@ -944,6 +944,32 @@ true` is the one loosening-adjacent key a workspace layer may set, and the loade
 
 ### Fixed
 
+- **A 9router 503 that quotes an upstream capacity outage is retried after the cooldown it states**
+  (#383). 9router answers an upstream
+  `[CommandCode error: No endpoints found for <model>.]` — the capacity moment a route has nothing
+  to serve it with — as a 503 carrying the quoted 404 and a `(reset after 5s)` cooldown, and
+  `quotedUpstreamStatus` read that 404 as "the request itself is invalid", ending the run on the
+  first response. A quoted 404 whose body says no endpoints or no accounts were found is now
+  recognized as the capacity outage it is and quoted no longer: the 503 stays retryable, and the
+  error a spent run finally reports classifies as `server_error` rather than `not_found`. When such
+  a response carries no `Retry-After` header, the wait is the duration the body states — `5s`,
+  `42s`, `1m26s` and `1 min 26 s` are all read by a new `parseCooldownReset` beside
+  `parseRetryAfter`, then capped by `retry.maxDelayMs` and the total retry budget as every retry
+  delay is. A quoted 400, 401, 403 or 422 stays terminal exactly as before, cooldown and all, and
+  a quoted 404 that names no capacity outage still ends the run.
+
+- **The Anthropic request body carries only Messages API fields** (#371). The body sent
+  `stream_options: { include_usage: true }` — an OpenAI-only field — on every request; Anthropic's
+  SSE already carries usage in `message_start` and `message_delta`, where it is read, so the field
+  is gone. `claude-opus-4-5` and `claude-sonnet-4-5` are out of `ADAPTIVE_THINKING_MODELS`, because
+  the pre-4.6 models refuse the adaptive `thinking` parameter: a 4.5 stream takes the chat stall
+  ceiling rather than the thinking one. Of the two, only Sonnet 4.5 lacks `output_config.effort`
+  as well, so it sends neither field even with an effort set and runs at its own default; Opus 4.5
+  does accept the effort, so it sends `output_config` alone — low/medium/high only, `xhigh` and
+  `max` clamped down to `high` — and no `thinking` field. The 5.x ids
+  (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-fable-5-1`) still match the `claude-opus-5`,
+  `claude-sonnet-5` and `claude-fable-5` prefixes and keep adaptive thinking and their effort.
+
 - **A healthy reasoning stream is no longer cancelled at the chat stall ceiling, and an empty
   completion is retried with backoff instead of once** (#379). **The stall ceiling is now chosen per
   stream, and it follows that stream's phase.** `src/provider/openai-compatible.ts` decided
