@@ -95,7 +95,7 @@ program
   .option('--fork-session', 'On resume, create a new session id instead of reusing')
   .option(
     '--session-driver <driver>',
-    'human or agent (default: agent under another agent harness); agent-driven sessions read memory but never write it',
+    'human or agent (default: agent under another agent harness); an agent-driven session saves only what it learned, never its instructions',
   )
   .option('--include-hook-events', 'Emit hook lifecycle events in stream-json output')
   .option('--include-partial-messages', 'Emit partial assistant text deltas in stream-json output')

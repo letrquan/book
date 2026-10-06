@@ -6,7 +6,9 @@ import {
   MEMORY_TYPES,
   type MemoryType,
   deleteMemoryEntry,
-  memoryWriteBlock,
+  DELEGATED_MEMORY_TYPES,
+  memoryEntryDriver,
+  memoryWriteScope,
   sanitizeMemoryTitle,
   saveMemory,
   shouldRejectMemoryText,
@@ -52,6 +54,11 @@ export function hasExternalContext(context: ToolContext): boolean {
   return false;
 }
 
+/** The refusal for a delegated run that tries to change or delete a person's own memory. */
+function notTheirsToChange(slug: string): string {
+  return `This session is driven by another agent, and ${slug} is the user's own memory: only memories saved from delegated runs can be changed or deleted here.`;
+}
+
 function fail(message: string): ToolResult {
   return toolFailure(message, { content: message });
 }
@@ -61,13 +68,11 @@ export async function memorySaveExecute(
   context: ToolContext,
 ): Promise<ToolResult> {
   // The catalog does not offer the tool then; this covers a call that reaches it anyway.
-  const blocked = memoryWriteBlock(context.agentConfig ?? {});
-  if (blocked === 'settings') return fail('Model memory writes are disabled in settings.');
-  if (blocked === 'agent-driven') {
-    return fail(
-      'This session is driven by another agent, so memory writes are off. Report what you would save to whoever is driving you instead; a human-driven session (or --session-driver human) can save it.',
-    );
-  }
+  const scope = memoryWriteScope(context.agentConfig ?? {});
+  if (scope === 'none') return fail('Model memory writes are disabled in settings.');
+  // Another agent drives the session: keep what the run learned, never that agent's instructions
+  // or a person's memories (`memoryWriteScope`).
+  const delegated = scope === 'learnings';
 
   const action = args.action;
   if (action !== 'save' && action !== 'delete') {
@@ -94,6 +99,9 @@ export async function memorySaveExecute(
     if (typeof args.slug !== 'string' || !args.slug.trim()) {
       return fail('slug is required for delete action.');
     }
+    if (delegated && memoryEntryDriver(workspace, args.slug) === 'human') {
+      return fail(notTheirsToChange(args.slug));
+    }
     const result = deleteMemoryEntry(workspace, args.slug);
     if (!result.ok || !result.path) {
       return fail(result.error ?? 'Failed to delete memory entry.');
@@ -109,6 +117,12 @@ export async function memorySaveExecute(
   const type = args.type;
   if (typeof type !== 'string' || !MEMORY_TYPES.includes(type as MemoryType)) {
     return fail(`type is required for save action and must be one of: ${MEMORY_TYPES.join(', ')}.`);
+  }
+
+  if (delegated && !DELEGATED_MEMORY_TYPES.includes(type as MemoryType)) {
+    return fail(
+      `This session is driven by another agent: its instructions are that agent's, not the user's, so ${type} memories are refused here. Save what you learned doing the work (a decision and why, an outcome with its lesson, a fact you verified) as ${DELEGATED_MEMORY_TYPES.join(' or ')}.`,
+    );
   }
 
   const rawTitle = typeof args.title === 'string' ? args.title : '';
@@ -137,6 +151,13 @@ export async function memorySaveExecute(
   const slug = typeof args.slug === 'string' && args.slug.trim() ? args.slug : undefined;
   const supersedes =
     typeof args.supersedes === 'string' && args.supersedes.trim() ? args.supersedes : undefined;
+  if (delegated) {
+    for (const target of [slug, supersedes]) {
+      if (target && memoryEntryDriver(workspace, target) === 'human') {
+        return fail(notTheirsToChange(target));
+      }
+    }
+  }
 
   const result = saveMemory(
     workspace,
@@ -149,6 +170,7 @@ export async function memorySaveExecute(
       externalContext,
       sessionId,
       supersedes,
+      ...(delegated ? { driver: 'agent' as const } : {}),
     },
     {
       requireApproval,

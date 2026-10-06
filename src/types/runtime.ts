@@ -157,9 +157,9 @@ export interface BackgroundShellStore {
 
 /**
  * Who drives a session: a person at the keyboard, or another agent harness running Book as its
- * tool (Claude Code driving a print-mode spec run, a PTY test driver). Agent-driven sessions read
- * memory but never write it: their prompts are a delegator's per-task contract, not the user's
- * standing preferences.
+ * tool (Claude Code driving a print-mode spec run, a PTY test driver). An agent-driven session's
+ * prompt is its delegator's per-task contract, not the user's standing preferences: it may save
+ * only what it learned doing the work (`memoryWriteScope` in `memory-store.ts`).
  */
 export type SessionDriver = 'human' | 'agent';
 

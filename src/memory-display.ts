@@ -4,7 +4,7 @@ import {
   DEFAULT_MAX_INDEX_LINES,
   getMemoryHealth,
   getMemoryInboxDir,
-  memoryWriteBlock,
+  memoryWriteScope,
   listMemoryCandidates,
   loadMemoryContext,
   readMemoryFile,
@@ -90,12 +90,12 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
   // (Location, Path), a Loading line, an Approval line the writes line already
   // implied, and a pending count the health line already held.
   const quarantineExternal = settings?.memory.quarantineExternal ?? true;
-  const blocked = memoryWriteBlock({ settings, sessionDriver: input.sessionDriver });
+  const scope = memoryWriteScope({ settings, sessionDriver: input.sessionDriver });
   const modelWrites =
-    blocked === 'settings'
+    scope === 'none'
       ? 'disabled'
-      : blocked === 'agent-driven'
-        ? 'disabled (session driven by another agent)'
+      : scope === 'learnings'
+        ? 'learnings only (session driven by another agent: project/reference, never its instructions)'
         : requireApproval
           ? 'enabled (to inbox, needs approval)'
           : quarantineExternal
@@ -123,7 +123,9 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
     lines.push('No approved memories yet.');
   } else {
     for (const file of approvedFiles) {
-      lines.push(`- ${file.title ?? file.name} (${file.type ?? 'unknown'}) — ${file.name}`);
+      // A delegated run's learning is marked, so the user can tell it apart and prune it.
+      const from = file.driver === 'agent' ? ' · from a delegated run' : '';
+      lines.push(`- ${file.title ?? file.name} (${file.type ?? 'unknown'}${from}) — ${file.name}`);
     }
   }
 

@@ -696,7 +696,7 @@ describe('buildMessages', () => {
     }
   });
 
-  it('reads memory but omits the save spec when another agent drives the session', async () => {
+  it('gives a delegated run the learnings-only save spec, not the user-facing one', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'book-context-agent-driven-'));
     try {
       const memoryDir = getProjectMemoryDir(dir);
@@ -719,7 +719,12 @@ describe('buildMessages', () => {
       );
       expect(systemPrefix(agent)).toContain('<memory-index>');
       expect(systemPrefix(agent)).toContain('Read the file');
-      expect(systemPrefix(agent)).not.toContain('Call MemorySave');
+      // The task's rules are the delegating agent's; what the run learns is still kept.
+      expect(systemPrefix(agent)).toContain('This session is driven by another agent');
+      expect(systemPrefix(agent)).toContain('never save the instructions');
+      expect(systemPrefix(agent)).toContain('an outcome that carries a lesson');
+      expect(systemPrefix(agent)).not.toContain('Call MemorySave in the same turn');
+      expect(systemPrefix(agent)).not.toContain('tells you about themselves');
 
       const human = await buildMessages(
         { ...defaultConfig({ workspace: dir, memoryContext }), sessionDriver: 'human' },
@@ -727,18 +732,20 @@ describe('buildMessages', () => {
         [],
       );
       expect(systemPrefix(human)).toContain('Call MemorySave in the same turn');
+      expect(systemPrefix(human)).not.toContain('This session is driven by another agent');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('omits memory section entirely when another agent drives a session with no memory', async () => {
+  it('gives a delegated run with no memory yet the learnings-only spec', async () => {
     const config = {
       ...defaultConfig({ memoryContext: undefined }),
       sessionDriver: 'agent' as const,
     };
     const out = await buildMessages(config, [userMsg('hi')], []);
-    expect(systemPrefix(out)).not.toContain('## Local memory');
+    expect(systemPrefix(out)).toContain('No memory is stored for this project yet.');
+    expect(systemPrefix(out)).toContain('never save the instructions');
   });
 
   it('omits memory section entirely when memory.autoSave is false and index is empty', async () => {

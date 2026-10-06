@@ -278,7 +278,7 @@ describe('long-task, delegated, worktree and channel items', () => {
   const grouped = (group: string) => MEMORY_SCENARIOS.filter((s) => s.group === group);
 
   it('cover each group in both halves where it has more than one item', () => {
-    for (const group of ['long-task', 'worktree']) {
+    for (const group of ['long-task', 'worktree', 'delegated']) {
       for (const split of ['dev', 'test'] as const) {
         expect(grouped(group).some((s) => s.split === split)).toBe(true);
       }

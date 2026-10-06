@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import type { ToolContext } from '../types/tools.js';
 import type { Message } from '../types/messages.js';
 import {
@@ -418,21 +418,80 @@ describe('MemorySave tool', () => {
       expect(result.content).toContain('Model memory writes are disabled in settings');
     });
 
-    it('refuses save and delete when another agent drives the session, writing nothing', async () => {
-      const context = createContext({
-        agentConfig: { ...defaultConfig({ workspace }), sessionDriver: 'agent' },
+    describe('when another agent drives the session', () => {
+      const delegated = () =>
+        createContext({
+          agentConfig: { ...defaultConfig({ workspace }), sessionDriver: 'agent' },
+        });
+      const human = () =>
+        createContext({
+          agentConfig: { ...defaultConfig({ workspace }), sessionDriver: 'human' },
+        });
+      const fileOf = (content: unknown) =>
+        String(content)
+          .match(/Memory saved: (.*)/)?.[1]
+          ?.trim() ?? '';
+
+      it('keeps a learning as project memory, marked as from a delegated run', async () => {
+        const result = await memorySaveTool.execute(
+          {
+            action: 'save',
+            type: 'project',
+            title: 'Build needs a bigger heap',
+            body: 'The build runs out of memory at the default heap.\n\nWhy: build.log showed an OOM.\nHow to apply: run it with NODE_OPTIONS=--max-old-space-size=4096.',
+          },
+          delegated(),
+        );
+        expect(result.status).toBe('success');
+        const path = fileOf(result.content);
+        expect(readFileSync(path, 'utf-8')).toMatch(/^driver: agent$/m);
+        expect(readMemoryFile(path)?.driver).toBe('agent');
       });
 
-      const saved = await memorySaveTool.execute(
-        { action: 'save', type: 'project', title: 'Ground rule', body: 'Never edit docs/.' },
-        context,
-      );
-      expect(saved.status).toBe('error');
-      expect(saved.content).toContain('driven by another agent');
-      const deleted = await memorySaveTool.execute({ action: 'delete', slug: 'x' }, context);
-      expect(deleted.status).toBe('error');
-      expect(deleted.content).toContain('driven by another agent');
-      expect(existsSync(getProjectMemoryDir(workspace))).toBe(false);
+      it("refuses user and feedback memories: the delegator's preferences are not the user's", async () => {
+        for (const type of ['user', 'feedback']) {
+          const result = await memorySaveTool.execute(
+            { action: 'save', type, title: 'Ground rule', body: 'Never edit docs/.' },
+            delegated(),
+          );
+          expect(result.status).toBe('error');
+          expect(result.content).toContain('driven by another agent');
+        }
+        expect(existsSync(getProjectMemoryDir(workspace))).toBe(false);
+      });
+
+      it("never updates, retires or deletes a person's own memory", async () => {
+        const mine = await memorySaveTool.execute(
+          { action: 'save', type: 'project', title: 'Tests', body: 'Run npm run test:unit.' },
+          human(),
+        );
+        const slug = basename(fileOf(mine.content));
+        for (const args of [
+          { action: 'save', type: 'project', title: 'Tests', body: 'Changed.', slug },
+          { action: 'save', type: 'project', title: 'Tests v2', body: 'New.', supersedes: slug },
+          { action: 'delete', slug },
+        ]) {
+          const result = await memorySaveTool.execute(args, delegated());
+          expect(result.status).toBe('error');
+          expect(result.content).toContain("the user's own memory");
+        }
+        expect(readFileSync(fileOf(mine.content), 'utf-8')).toContain('Run npm run test:unit.');
+      });
+
+      it('may update and delete what a delegated run saved', async () => {
+        const first = await memorySaveTool.execute(
+          { action: 'save', type: 'project', title: 'Flaky test', body: 'A is flaky on Windows.' },
+          delegated(),
+        );
+        const slug = basename(fileOf(first.content));
+        const updated = await memorySaveTool.execute(
+          { action: 'save', type: 'project', title: 'Flaky test', body: 'A and B.', slug },
+          delegated(),
+        );
+        expect(updated.status).toBe('success');
+        const deleted = await memorySaveTool.execute({ action: 'delete', slug }, delegated());
+        expect(deleted.status).toBe('success');
+      });
     });
 
     it('still saves when a human drives the session', async () => {
@@ -878,7 +937,7 @@ describe('MemorySave tool', () => {
       runtime.dispose();
     });
 
-    it('is hidden from catalog when another agent drives the session', () => {
+    it('is offered when another agent drives the session, for its learnings', () => {
       const parent = createDefaultRegistry();
       const runtime = new SessionRuntime();
       const config = { ...defaultConfig({ workspace }), sessionDriver: 'agent' as const };
@@ -890,9 +949,7 @@ describe('MemorySave tool', () => {
         definitions: parent.getDefinitions(),
       });
 
-      const activeNames = surface.activeDefinitions().map((d) => d.name);
-      expect(activeNames).not.toContain('MemorySave');
-      expect(surface.search('memory').map((m) => m.name)).not.toContain('MemorySave');
+      expect(surface.activeDefinitions().map((d) => d.name)).toContain('MemorySave');
       runtime.dispose();
     });
 

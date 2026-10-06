@@ -26,8 +26,9 @@
 
 /**
  * Every process Book starts runs under Book, so a `book` among them is driven by Book, not by the
- * user typing (`src/session-driver.ts`): it reads memory but never writes it, as a delegated run
- * of any other harness does. Its own `--session-driver` flag still wins.
+ * user typing (`src/session-driver.ts`): it may keep what it learns, never its delegator's
+ * instructions, as a delegated run of any other harness does. Its own `--session-driver` flag
+ * still wins.
  */
 export const CHILD_SESSION_DRIVER = 'agent';
 

@@ -135,8 +135,8 @@ export function sessionArgs(
 ): string[] {
   const args = [CLI, '--print', '--model', model, '--permission-mode', 'bypassPermissions'];
   // The harness runs under whatever launched it, often another agent: without an explicit driver
-  // every teaching session would be agent-driven, which reads memory but never writes it. An item
-  // that is about a delegated run asks for `agent` itself.
+  // every teaching session would be agent-driven, which saves only project/reference learnings. An
+  // item that is about a delegated run asks for `agent` itself.
   args.push('--session-driver', driver);
   args.push('--output-format', 'stream-json', '--include-result-messages');
   if (effort) args.push('--effort', effort);
