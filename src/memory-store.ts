@@ -16,6 +16,7 @@ import { writeFileAtomic } from './settings-repository.js';
 import { permissionRuleMatchesCall } from './permissions.js';
 import { resolveBookHome } from './book-home.js';
 import { looksLikeSecretOrUnfit } from './secret-detect.js';
+import type { SessionDriver } from './types/runtime.js';
 
 export const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
 export type MemoryType = (typeof MEMORY_TYPES)[number];
@@ -82,6 +83,18 @@ export function isMemorySaveAvailable(settings?: {
 }): boolean {
   if (!settings?.memory) return true;
   return settings.memory.enabled !== false && settings.memory.autoSave !== false;
+}
+
+/**
+ * Whether the model may write memory in this session: the settings allow it, and no other agent is
+ * driving the session. A delegated run's prompt is its delegator's per-task contract, and saving
+ * from it is how a spec's "Ground rules" became permanent repository memory.
+ */
+export function canModelWriteMemory(config: {
+  settings?: { memory?: { enabled?: boolean; autoSave?: boolean } };
+  sessionDriver?: SessionDriver;
+}): boolean {
+  return isMemorySaveAvailable(config.settings) && config.sessionDriver !== 'agent';
 }
 
 export function sanitizeMemoryTitle(rawTitle: string): string {

@@ -244,7 +244,11 @@ export async function runHeadless(
     let sessionName = opts.sessionName;
     let sessionCreated = opts.sessionCreated === true;
     if (store && !sessionId) {
-      sessionId = store.create({ cwd: config.workspace, name: sessionName });
+      sessionId = store.create({
+        cwd: config.workspace,
+        name: sessionName,
+        driver: config.sessionDriver,
+      });
       sessionCreated = true;
     }
     if (store && sessionId && !sessionName) {

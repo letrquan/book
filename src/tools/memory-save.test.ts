@@ -417,6 +417,34 @@ describe('MemorySave tool', () => {
       expect(result.status).toBe('error');
       expect(result.content).toContain('Model memory writes are disabled in settings');
     });
+
+    it('refuses save and delete when another agent drives the session, writing nothing', async () => {
+      const context = createContext({
+        agentConfig: { ...defaultConfig({ workspace }), sessionDriver: 'agent' },
+      });
+
+      const saved = await memorySaveTool.execute(
+        { action: 'save', type: 'project', title: 'Ground rule', body: 'Never edit docs/.' },
+        context,
+      );
+      expect(saved.status).toBe('error');
+      expect(saved.content).toContain('driven by another agent');
+      const deleted = await memorySaveTool.execute({ action: 'delete', slug: 'x' }, context);
+      expect(deleted.status).toBe('error');
+      expect(deleted.content).toContain('driven by another agent');
+      expect(existsSync(getProjectMemoryDir(workspace))).toBe(false);
+    });
+
+    it('still saves when a human drives the session', async () => {
+      const context = createContext({
+        agentConfig: { ...defaultConfig({ workspace }), sessionDriver: 'human' },
+      });
+      const result = await memorySaveTool.execute(
+        { action: 'save', type: 'project', title: 'Tests', body: 'Run npm run test:unit.' },
+        context,
+      );
+      expect(result.status).toBe('success');
+    });
   });
 
   describe('delete action', () => {
@@ -836,6 +864,24 @@ describe('MemorySave tool', () => {
       const runtime = new SessionRuntime();
       const config = defaultConfig({ workspace });
       config.settings.memory.autoSave = false;
+      const context = createContext({ runtime, agentConfig: config });
+
+      const surface = createToolSurface({
+        config,
+        context,
+        definitions: parent.getDefinitions(),
+      });
+
+      const activeNames = surface.activeDefinitions().map((d) => d.name);
+      expect(activeNames).not.toContain('MemorySave');
+      expect(surface.search('memory').map((m) => m.name)).not.toContain('MemorySave');
+      runtime.dispose();
+    });
+
+    it('is hidden from catalog when another agent drives the session', () => {
+      const parent = createDefaultRegistry();
+      const runtime = new SessionRuntime();
+      const config = { ...defaultConfig({ workspace }), sessionDriver: 'agent' as const };
       const context = createContext({ runtime, agentConfig: config });
 
       const surface = createToolSurface({

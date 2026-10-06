@@ -453,6 +453,7 @@ function memoryCommandEffect(
       content: buildMemoryReport({
         workspace: context.workspace,
         settings: context.runtimeConfig.settings,
+        sessionDriver: context.runtimeConfig.sessionDriver,
       }),
     };
   }

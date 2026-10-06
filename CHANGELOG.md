@@ -387,6 +387,21 @@ true` is the one loosening-adjacent key a workspace layer may set, and the loade
 
 ### Changed
 
+- **Memory writes are off in a session another agent drives, and background extraction is off by
+  default.** An audit of a real store found 5 of a repository's 6 memories copied from the "Ground
+  rules" of spec runs Claude Code drove in print mode — one, "never edit docs/", contradicting
+  CLAUDE.md — and `MemorySave` once saved a spec's temporary rule the same way. Book now works out
+  who drives the session (`src/session-driver.ts`): `--session-driver human|agent`, then
+  `BOOK_SESSION_DRIVER`, then `agent` when the environment carries Claude Code's `CLAUDECODE` or an
+  `AI_AGENT` marker, else `human`. An agent-driven session still loads memory and its read
+  instructions, but `MemorySave` is not offered (and refuses if called anyway), the prompt's save
+  instructions are left out, and `/memory status` says why. The driver is recorded on the session
+  (`SessionMeta.driver`, and `agent` for good once an agent resumes it). Background extraction
+  (`memory.extraction.enabled`) now defaults to `false` — it wrote 8 of the 10 memories in that
+  store, and every wrong one — and when turned on it never reads an agent-driven session and does
+  not run at an agent-driven start. `npm run eval:memory` passes `--session-driver human`, and
+  counts a run the provider refused (a retired model, a rate limit) as an error instead of a
+  forgotten memory.
 - **A long single-turn run stopped re-sending its whole chain of thought, and a new file stopped
   being written back to the model** (#378). On Terminal-Bench 2.0 the replayed reasoning of earlier
   assistant steps was a median 26% of input tokens on every request: print mode runs a whole task as

@@ -6,6 +6,7 @@ import type {
   SessionStoreInterface,
 } from '../types/sessions.js';
 import type { Message, Usage } from '../types/messages.js';
+import type { SessionDriver } from '../types/runtime.js';
 import { normalizeWorkspace } from './store.js';
 
 export type SessionStartSource = 'startup' | 'resume' | 'clear';
@@ -40,6 +41,8 @@ export interface ResolveSessionOptions {
   sessionId?: string;
   sessionName?: string;
   forkSession?: boolean;
+  /** Recorded on a session this process creates, and made `agent` on one an agent resumes. */
+  driver?: SessionDriver;
 }
 
 export function selectSession(
@@ -134,6 +137,7 @@ export function resolveSessionBootstrap(
         id: options.sessionId,
         cwd: options.cwd,
         name: options.sessionName,
+        driver: options.driver,
       });
       return {
         sessionId,
@@ -157,8 +161,12 @@ export function resolveSessionBootstrap(
     const loaded = store.load(selected.id);
     if (options.forkSession) {
       const sessionId = store.fork
-        ? store.fork(selected.id, { cwd: options.cwd, name: options.sessionName })
-        : store.create({ cwd: options.cwd, name: options.sessionName });
+        ? store.fork(selected.id, {
+            cwd: options.cwd,
+            name: options.sessionName,
+            driver: options.driver,
+          })
+        : store.create({ cwd: options.cwd, name: options.sessionName, driver: options.driver });
       if (!store.fork) persistHistory(store, sessionId, loaded.transcript);
       return {
         sessionId,
@@ -176,6 +184,11 @@ export function resolveSessionBootstrap(
       };
     }
     store.touch(selected.id);
+    // Once another agent has driven a session, its later turns are that agent's too: background
+    // extraction must not read the session as the user's, so the mark never goes back to human.
+    if (options.driver === 'agent' && loaded.meta.driver !== 'agent') {
+      store.patchMeta(selected.id, { driver: 'agent' });
+    }
     return {
       sessionId: selected.id,
       sessionName: loaded.meta.name,
@@ -194,7 +207,11 @@ export function resolveSessionBootstrap(
     };
   }
 
-  const sessionId = store.create({ cwd: options.cwd, name: options.sessionName });
+  const sessionId = store.create({
+    cwd: options.cwd,
+    name: options.sessionName,
+    driver: options.driver,
+  });
   return {
     sessionId,
     sessionName: options.sessionName,

@@ -8,7 +8,7 @@ import {
   summarizeModel,
   type MemoryObservation,
 } from './memory-eval-score.js';
-import { parseArgs, selectScenarios, sessionArgs } from './memory-eval.js';
+import { parseArgs, selectScenarios, sessionArgs, sessionFailure } from './memory-eval.js';
 
 function obs(partial: Partial<MemoryObservation>): MemoryObservation {
   return {
@@ -219,5 +219,39 @@ describe('sessionArgs', () => {
     expect(fresh).toContain('stream-json');
     expect(fresh).not.toContain('--continue');
     expect(sessionArgs('gpt-5', true)).toContain('--continue');
+  });
+
+  it('passes an effort through only when one was asked for', () => {
+    const args = sessionArgs('gpt-5', false, 'xhigh');
+    expect(args[args.indexOf('--effort') + 1]).toBe('xhigh');
+    expect(sessionArgs('gpt-5', false)).not.toContain('--effort');
+    expect(parseArgs(['--effort', 'xhigh']).effort).toBe('xhigh');
+  });
+
+  it('runs every session as human-driven, so an agent launching the eval does not gate its saves', () => {
+    const args = sessionArgs('gpt-5', false);
+    expect(args[args.indexOf('--session-driver') + 1]).toBe('human');
+  });
+});
+
+describe('sessionFailure', () => {
+  it('reports a run the provider refused, so it counts as an error and not a forgotten memory', () => {
+    // A retired model came back as a stream-json result with no assistant message; scored as a
+    // probe it read as "the model did not remember" while the report's error count stayed 0.
+    const refused = {
+      type: 'result',
+      stopReason: 'credentials_rejected',
+      outcome: {
+        status: 'failed',
+        reason: 'credentials_rejected',
+        message: 'API Error: 503 [403]: Space Bunny Alpha is no longer available.',
+      },
+    };
+    expect(sessionFailure(refused)).toMatch(/credentials_rejected.*no longer available/);
+  });
+
+  it('passes a finished run through', () => {
+    expect(sessionFailure({ type: 'result', outcome: { status: 'completed' } })).toBeUndefined();
+    expect(sessionFailure({ type: 'result' })).toBeUndefined();
   });
 });

@@ -1,4 +1,5 @@
 import type { ResolvedSettings } from './settings.js';
+import type { SessionDriver } from './types/runtime.js';
 import {
   DEFAULT_MAX_INDEX_LINES,
   getMemoryHealth,
@@ -13,6 +14,7 @@ import {
 interface MemoryReportInput extends MemoryStoreOptions {
   workspace: string;
   settings?: ResolvedSettings;
+  sessionDriver?: SessionDriver;
 }
 
 export interface MemoryIndex {
@@ -90,11 +92,13 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
   const quarantineExternal = settings?.memory.quarantineExternal ?? true;
   const modelWrites = !isMemorySaveAvailable(settings)
     ? 'disabled'
-    : requireApproval
-      ? 'enabled (to inbox, needs approval)'
-      : quarantineExternal
-        ? 'enabled (direct to store; to inbox after external content)'
-        : 'enabled (direct to store)';
+    : input.sessionDriver === 'agent'
+      ? 'disabled (session driven by another agent)'
+      : requireApproval
+        ? 'enabled (to inbox, needs approval)'
+        : quarantineExternal
+          ? 'enabled (direct to store; to inbox after external content)'
+          : 'enabled (direct to store)';
   const lines: string[] = [
     `Memory: ${enabled ? 'loaded each session' : 'not loaded'} · model writes ${modelWrites}`,
     `Health: ${health.approvedCount} approved, ${health.supersededCount} superseded, ${health.inboxCount} inbox, ${health.indexLineCount}/${DEFAULT_MAX_INDEX_LINES} index lines, last write: ${lastWrite}`,

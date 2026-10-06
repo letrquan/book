@@ -23,6 +23,28 @@ describe('resolveSessionBootstrap', () => {
     expect(store.load(result.sessionId).meta.name).toBe('work');
   });
 
+  it('records the driver on a session it creates or forks', () => {
+    const created = resolveSessionBootstrap(store, { cwd: '/proj', driver: 'agent' });
+    expect(store.findById(created.sessionId)?.driver).toBe('agent');
+    const forked = resolveSessionBootstrap(store, {
+      cwd: '/proj',
+      resume: created.sessionId,
+      forkSession: true,
+      driver: 'human',
+    });
+    expect(store.findById(forked.sessionId)?.driver).toBe('human');
+  });
+
+  it('marks a session agent-driven once an agent resumes it, and never back', () => {
+    // A delegator resuming a session the user started writes the turns that follow; extraction
+    // must stop reading that session as the user's.
+    const id = store.create({ cwd: '/proj', name: 'typed', driver: 'human' });
+    resolveSessionBootstrap(store, { cwd: '/proj', resume: 'typed', driver: 'agent' });
+    expect(store.findById(id)?.driver).toBe('agent');
+    resolveSessionBootstrap(store, { cwd: '/proj', resume: 'typed', driver: 'human' });
+    expect(store.findById(id)?.driver).toBe('agent');
+  });
+
   it('resumes by name', () => {
     const id = store.create({ cwd: '/proj', name: 'feature' });
     store.append(id, { type: 'user', timestamp: 1, data: { content: 'remember me' } });

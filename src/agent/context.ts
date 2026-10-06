@@ -32,7 +32,7 @@ import { unparsedArgumentsText } from '../tools/unparsed-arguments.js';
 import { resolveContextLimit, resolveEditFormat, type EditFormat } from '../models.js';
 import {
   countMemoryCandidates,
-  isMemorySaveAvailable,
+  canModelWriteMemory,
   rulesNameMemorySave,
 } from '../memory-store.js';
 
@@ -229,8 +229,9 @@ function memorySection(config: AgentConfig, overrides?: SystemPromptOverrides): 
   // The same gate the tool catalog applies: `MemorySave` is root-only, so a
   // subagent's prompt must not describe a tool it cannot call.
   // A deny rule on MemorySave refuses every call, so the prompt must not ask for them either.
+  // A session another agent drives reads memory but never writes it (`canModelWriteMemory`).
   const canSave =
-    isMemorySaveAvailable(config.settings) &&
+    canModelWriteMemory(config) &&
     !overrides?.isSubagent &&
     !rulesNameMemorySave(config.settings.permissions.deny);
   if (!canSave && !memory?.indexText) return '';

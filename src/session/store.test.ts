@@ -33,6 +33,36 @@ describe('SessionStore', () => {
     expect(s.readImageAttachment(forkId, attachment)).toEqual(Uint8Array.from([1, 2, 3]));
   });
 
+  it('records who drives a session and keeps it through a reload and a fresh index', () => {
+    const s = new SessionStore(dir);
+    const delegated = s.create({ cwd: '/proj', driver: 'agent' });
+    const typed = s.create({ cwd: '/proj', driver: 'human' });
+    const unrecorded = s.create({ cwd: '/proj' });
+    s.append(delegated, { type: 'user', timestamp: 1, data: { content: '# Spec' } });
+
+    // `load` rebuilds the index entry from the file, so the driver must survive it.
+    expect(s.load(delegated).meta.driver).toBe('agent');
+    const byId = (store: SessionStore) =>
+      Object.fromEntries(store.list().map((meta) => [meta.id, meta.driver]));
+    expect(byId(s)).toEqual({ [delegated]: 'agent', [typed]: 'human', [unrecorded]: undefined });
+    expect('driver' in s.findById(unrecorded)!).toBe(false);
+
+    rmSync(join(dir, 'session-index.json'), { force: true });
+    expect(byId(new SessionStore(dir))).toEqual({
+      [delegated]: 'agent',
+      [typed]: 'human',
+      [unrecorded]: undefined,
+    });
+  });
+
+  it('marks a session agent-driven through a meta patch, in the index and on reload', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj', driver: 'human' });
+    s.patchMeta(id, { driver: 'agent' });
+    expect(s.findById(id)?.driver).toBe('agent');
+    expect(new SessionStore(dir).load(id).meta.driver).toBe('agent');
+  });
+
   it('creates a session with a uuid id', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj', name: 'my-feature' });

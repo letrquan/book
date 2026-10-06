@@ -7,6 +7,10 @@
  * which, unlike session end, does not depend on a clean exit.
  *
  * Rules:
+ * - Off by default (`memory.extraction.enabled`): on the owner's machine it wrote 8 of the 10
+ *   memories, and every wrong one — a delegated spec's "Ground rules" read as the user's words.
+ * - A session another agent drove (`SessionMeta.driver`) is never read, and a start another agent
+ *   drives reads nothing: a delegator's per-task contract is not the user's preference.
  * - A session that brought in external content (web, MCP, another agent's text) is never read —
  *   the same boundary `MemorySave` quarantines on, applied here by skipping (Codex's
  *   `disable_on_external_context`).
@@ -204,7 +208,10 @@ function acquireLock(path: string, nowMs: number): ExtractionLock | null {
   };
 }
 
-/** Sessions of this workspace that are idle, long enough, and new or grown since last read. */
+/**
+ * Sessions of this workspace that no other agent drove, idle, long enough, and new or grown since
+ * last read.
+ */
 export function eligibleSessions(
   sessions: SessionMeta[],
   opts: {
@@ -223,6 +230,7 @@ export function eligibleSessions(
       (s) =>
         normalizeWorkspace(s.cwd) === workspace &&
         s.id !== opts.currentSessionId &&
+        s.driver !== 'agent' &&
         (opts.processed[s.id] === undefined || s.messageCount > opts.processed[s.id]) &&
         s.updatedAt <= idleBefore &&
         s.updatedAt >= opts.nowMs - MAX_AGE_MS &&
@@ -400,6 +408,10 @@ export async function runMemoryExtraction(
   ) {
     log.info('extraction skipped', { reason: 'disabled' });
     return { processed: [], reason: 'disabled' };
+  }
+  if (config.sessionDriver === 'agent') {
+    log.info('extraction skipped', { reason: 'agent-driven' });
+    return { processed: [], reason: 'agent-driven' };
   }
   // Let the TUI finish its first render before any synchronous session reads.
   await new Promise<void>((r) => setImmediate(r));

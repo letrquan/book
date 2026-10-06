@@ -1,5 +1,5 @@
 import type { ImageAttachment, Message, Usage } from './messages.js';
-import type { AgentTask } from './runtime.js';
+import type { AgentTask, SessionDriver } from './runtime.js';
 import type { FileObservation } from './tools.js';
 
 /** What triggered a compaction attempt. */
@@ -555,6 +555,11 @@ export interface SessionMeta {
   createdAt: number;
   updatedAt: number;
   messageCount: number;
+  /**
+   * `agent` once any process driven by another agent created or resumed the session; absent on
+   * sessions recorded before the driver was tracked.
+   */
+  driver?: SessionDriver;
 }
 
 export interface LoadedSession {
@@ -592,13 +597,16 @@ export interface SessionHistorySearchResult {
 
 /** Minimal interface for SessionStore, defined here to avoid circular imports. */
 export interface SessionStoreInterface {
-  create(meta: { cwd: string; name?: string; id?: string }): string;
+  create(meta: { cwd: string; name?: string; id?: string; driver?: SessionDriver }): string;
   append(id: string, record: SessionRecord): void;
-  patchMeta(id: string, patch: { name?: string }): void;
+  patchMeta(id: string, patch: { name?: string; driver?: SessionDriver }): void;
   touch(id: string): void;
   load(id: string): LoadedSession;
   readRecords?(id: string): SessionRecord[];
-  fork?(sourceId: string, meta: { cwd: string; name?: string; id?: string }): string;
+  fork?(
+    sourceId: string,
+    meta: { cwd: string; name?: string; id?: string; driver?: SessionDriver },
+  ): string;
   searchCurrent?(id: string, query: string, limit?: number): SessionHistorySearchResult[];
   readCurrent?(id: string, refs: string[]): Array<{ ref: string; content: string }>;
   listRewindTargets?(id: string): RewindTarget[];

@@ -94,8 +94,19 @@ const SAVE = JSON.stringify({
   ],
 });
 
+/** Extraction is opt-in since it was found storing delegated runs' rules; these tests opt in. */
 function config() {
-  return defaultConfig({ workspace });
+  const base = defaultConfig({ workspace });
+  return {
+    ...base,
+    settings: {
+      ...base.settings,
+      memory: {
+        ...base.settings.memory,
+        extraction: { ...base.settings.memory.extraction, enabled: true },
+      },
+    },
+  };
 }
 
 describe('eligibleSessions', () => {
@@ -122,6 +133,20 @@ describe('eligibleSessions', () => {
     // 'grown' was read at 12 messages and now has 20, so it is read again; 'ancient' is past
     // the age limit.
     expect(got.map((s) => s.id)).toEqual(['b', 'grown', 'a']);
+  });
+
+  it('never offers a session another agent drove', () => {
+    // A delegated spec run's prompt is its delegator's per-task contract: read as a conversation,
+    // its "Ground rules" became permanent repository memory.
+    const got = eligibleSessions(
+      [
+        meta('delegated', { driver: 'agent' }),
+        meta('typed', { driver: 'human' }),
+        meta('unrecorded', { updatedAt: NOW - 6 * HOUR }),
+      ],
+      { workspace, processed: {}, idleHours: 3, minMessages: 10, nowMs: NOW },
+    );
+    expect(got.map((s) => s.id)).toEqual(['typed', 'unrecorded']);
   });
 });
 
@@ -392,6 +417,37 @@ describe('runMemoryExtraction', () => {
     });
     expect(plan.reason).toBe('disabled');
     expect(sessions.loads).toEqual([]);
+  });
+
+  it('is off unless the settings turn it on', async () => {
+    const sessions = source({ s1: { meta: meta('s1'), transcript: talk } });
+    const prompts: string[] = [];
+    const result = await runMemoryExtraction({
+      config: defaultConfig({ workspace }),
+      sessions,
+      bookRoot,
+      nowMs: NOW,
+      provider: provider(SAVE, prompts),
+    });
+    expect(result.reason).toBe('disabled');
+    expect(prompts).toEqual([]);
+    expect(sessions.loads).toEqual([]);
+  });
+
+  it('reads nothing at a start another agent drives', async () => {
+    const sessions = source({ s1: { meta: meta('s1'), transcript: talk } });
+    const prompts: string[] = [];
+    const result = await runMemoryExtraction({
+      config: { ...config(), sessionDriver: 'agent' },
+      sessions,
+      bookRoot,
+      nowMs: NOW,
+      provider: provider(SAVE, prompts),
+    });
+    expect(result).toEqual({ processed: [], reason: 'agent-driven' });
+    expect(prompts).toEqual([]);
+    expect(sessions.loads).toEqual([]);
+    expect(existsSync(getMemoryExtractionLockPath(workspace, { bookRoot }))).toBe(false);
   });
 
   it('does nothing when another start holds a fresh lock, or when extraction is off', async () => {

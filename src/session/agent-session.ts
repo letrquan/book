@@ -780,10 +780,20 @@ export class AgentSession {
     }
 
     const sessionId = request.store
-      ? request.store.create({ cwd: request.config.workspace })
-      : (request.timelineStore?.create({ cwd: request.config.workspace }) ?? crypto.randomUUID());
+      ? request.store.create({
+          cwd: request.config.workspace,
+          driver: request.config.sessionDriver,
+        })
+      : (request.timelineStore?.create({
+          cwd: request.config.workspace,
+          driver: request.config.sessionDriver,
+        }) ?? crypto.randomUUID());
     if (request.store && request.timelineStore && request.timelineStore !== request.store) {
-      request.timelineStore.create({ id: sessionId, cwd: request.config.workspace });
+      request.timelineStore.create({
+        id: sessionId,
+        cwd: request.config.workspace,
+        driver: request.config.sessionDriver,
+      });
     }
 
     const bootstrap = emptySessionBootstrap(

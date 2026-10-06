@@ -17,6 +17,7 @@ import type { AgentConfig } from '../types/runtime.js';
 import type { RewindSnapshotStoreInterface } from '../types/sessions.js';
 import type { HeadlessResult } from '../types/public-sdk.js';
 import { resolveSessionBootstrap } from '../session/resolve.js';
+import { parseSessionDriver, resolveSessionDriver } from '../session-driver.js';
 import { runMemoryExtraction } from '../memory-extract.js';
 import {
   createRewindSnapshotStore,
@@ -214,6 +215,16 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         config.provider = raw as AgentConfig['provider'];
       }
     }
+    if (options.sessionDriver !== undefined && !parseSessionDriver(String(options.sessionDriver))) {
+      throw new Error('--session-driver must be human or agent');
+    }
+    // Who drives this process decides whether the model may write memory (src/session-driver.ts).
+    const sessionDriver = resolveSessionDriver({
+      explicit: options.sessionDriver as string | undefined,
+      env: process.env,
+    });
+    config.sessionDriver = sessionDriver.driver;
+    createDebugLogger('memory').info('session driver', { ...sessionDriver });
     freezeAgentConfig(config);
     cleanupDebugLogs(DEFAULT_LOCAL_DATA_RETENTION_DAYS, getDebugLogPath());
 
@@ -261,6 +272,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           sessionId: options.sessionId as string | undefined,
           sessionName: options.name as string | undefined,
           forkSession: options.forkSession as boolean | undefined,
+          driver: config.sessionDriver,
         });
         sessionStore?.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
 
@@ -362,6 +374,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       sessionId: options.sessionId as string | undefined,
       sessionName: options.name as string | undefined,
       forkSession: options.forkSession as boolean | undefined,
+      driver: config.sessionDriver,
     });
     sessionStore?.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
     if (!sessionStore) {
@@ -369,6 +382,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         id: bootstrap.sessionId,
         cwd: config.workspace,
         name: bootstrap.sessionName,
+        driver: config.sessionDriver,
       });
     }
 
