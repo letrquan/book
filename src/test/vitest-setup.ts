@@ -14,6 +14,14 @@ const telemetryRoot = join(tmpdir(), 'book-vitest-tool-telemetry', `${process.pi
 
 process.env.BOOK_TOOL_TELEMETRY_DIR = telemetryRoot;
 
+// Who drives the session is read from the environment (src/session-driver.ts), and the suite is
+// often run by an agent — Claude Code sets CLAUDECODE and AI_AGENT, Book sets BOOK_SESSION_DRIVER
+// in its children. A test of the human path must not turn into the agent path because of who
+// launched `vitest`; the tests of the agent path set these themselves.
+delete process.env.CLAUDECODE;
+delete process.env.AI_AGENT;
+delete process.env.BOOK_SESSION_DRIVER;
+
 // BOOK_HOME is deliberately NOT pinned here, unlike the telemetry root above. Its being
 // unset is an observable production state rather than an accident: createRunAmbientSnapshot
 // attributes `isolation: 'shared'` and reports `book_home_isolation` as a missing source from

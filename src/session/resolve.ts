@@ -45,6 +45,19 @@ export interface ResolveSessionOptions {
   driver?: SessionDriver;
 }
 
+/**
+ * Once another agent has driven a session, its later turns are that agent's too: background
+ * extraction must not read the session as the user's, so the mark never goes back to human.
+ */
+export function recordResumeDriver(
+  store: Pick<SessionStoreInterface, 'patchMeta'>,
+  sessionId: string,
+  recorded: SessionDriver | undefined,
+  driver: SessionDriver | undefined,
+): void {
+  if (driver === 'agent' && recorded !== 'agent') store.patchMeta(sessionId, { driver: 'agent' });
+}
+
 export function selectSession(
   store: SessionStoreInterface,
   selector: string,
@@ -160,13 +173,11 @@ export function resolveSessionBootstrap(
   if (selected) {
     const loaded = store.load(selected.id);
     if (options.forkSession) {
+      // A fork carries the source's turns, so an agent-driven source makes an agent-driven fork.
+      const driver = loaded.meta.driver === 'agent' ? 'agent' : options.driver;
       const sessionId = store.fork
-        ? store.fork(selected.id, {
-            cwd: options.cwd,
-            name: options.sessionName,
-            driver: options.driver,
-          })
-        : store.create({ cwd: options.cwd, name: options.sessionName, driver: options.driver });
+        ? store.fork(selected.id, { cwd: options.cwd, name: options.sessionName, driver })
+        : store.create({ cwd: options.cwd, name: options.sessionName, driver });
       if (!store.fork) persistHistory(store, sessionId, loaded.transcript);
       return {
         sessionId,
@@ -184,11 +195,7 @@ export function resolveSessionBootstrap(
       };
     }
     store.touch(selected.id);
-    // Once another agent has driven a session, its later turns are that agent's too: background
-    // extraction must not read the session as the user's, so the mark never goes back to human.
-    if (options.driver === 'agent' && loaded.meta.driver !== 'agent') {
-      store.patchMeta(selected.id, { driver: 'agent' });
-    }
+    recordResumeDriver(store, selected.id, loaded.meta.driver, options.driver);
     return {
       sessionId: selected.id,
       sessionName: loaded.meta.name,

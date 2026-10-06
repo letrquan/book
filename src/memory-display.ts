@@ -4,7 +4,7 @@ import {
   DEFAULT_MAX_INDEX_LINES,
   getMemoryHealth,
   getMemoryInboxDir,
-  isMemorySaveAvailable,
+  memoryWriteBlock,
   listMemoryCandidates,
   loadMemoryContext,
   readMemoryFile,
@@ -90,15 +90,17 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
   // (Location, Path), a Loading line, an Approval line the writes line already
   // implied, and a pending count the health line already held.
   const quarantineExternal = settings?.memory.quarantineExternal ?? true;
-  const modelWrites = !isMemorySaveAvailable(settings)
-    ? 'disabled'
-    : input.sessionDriver === 'agent'
-      ? 'disabled (session driven by another agent)'
-      : requireApproval
-        ? 'enabled (to inbox, needs approval)'
-        : quarantineExternal
-          ? 'enabled (direct to store; to inbox after external content)'
-          : 'enabled (direct to store)';
+  const blocked = memoryWriteBlock({ settings, sessionDriver: input.sessionDriver });
+  const modelWrites =
+    blocked === 'settings'
+      ? 'disabled'
+      : blocked === 'agent-driven'
+        ? 'disabled (session driven by another agent)'
+        : requireApproval
+          ? 'enabled (to inbox, needs approval)'
+          : quarantineExternal
+            ? 'enabled (direct to store; to inbox after external content)'
+            : 'enabled (direct to store)';
   const lines: string[] = [
     `Memory: ${enabled ? 'loaded each session' : 'not loaded'} · model writes ${modelWrites}`,
     `Health: ${health.approvedCount} approved, ${health.supersededCount} superseded, ${health.inboxCount} inbox, ${health.indexLineCount}/${DEFAULT_MAX_INDEX_LINES} index lines, last write: ${lastWrite}`,

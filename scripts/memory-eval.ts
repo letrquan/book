@@ -127,12 +127,16 @@ export function sessionArgs(model: string, resume: boolean, effort?: string): st
   return args;
 }
 
-/** The reason a stream-json `result` event reports a failed run, or undefined when it did not fail. */
+/**
+ * Why a stream-json `result` event's run did not finish, or undefined when it completed (or the
+ * event predates outcomes). A provider timeout ends `timed_out`, a lost stream `interrupted`: none
+ * of them is an answer to score.
+ */
 export function sessionFailure(event: Record<string, unknown>): string | undefined {
   const outcome = event.outcome as
     { status?: string; reason?: string; message?: string } | undefined;
-  if (outcome?.status !== 'failed') return undefined;
-  return `session failed (${outcome.reason ?? 'unknown'}): ${(outcome.message ?? '').slice(0, 300)}`;
+  if (!outcome?.status || outcome.status === 'completed') return undefined;
+  return `session ${outcome.status} (${outcome.reason ?? 'unknown'}): ${(outcome.message ?? '').slice(0, 300)}`;
 }
 
 /** One `book --print` conversation turn; `resume` continues the workspace's latest session. */

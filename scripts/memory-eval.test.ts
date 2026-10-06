@@ -247,7 +247,18 @@ describe('sessionFailure', () => {
         message: 'API Error: 503 [403]: Space Bunny Alpha is no longer available.',
       },
     };
-    expect(sessionFailure(refused)).toMatch(/credentials_rejected.*no longer available/);
+    expect(sessionFailure(refused)).toMatch(/failed \(credentials_rejected\).*no longer available/);
+  });
+
+  it('reports a run that timed out or lost its stream as well', () => {
+    const timedOut = {
+      type: 'result',
+      outcome: { status: 'timed_out', reason: 'provider_timeout' },
+    };
+    expect(sessionFailure(timedOut)).toMatch(/timed_out \(provider_timeout\)/);
+    expect(sessionFailure({ type: 'result', outcome: { status: 'interrupted' } })).toMatch(
+      /interrupted/,
+    );
   });
 
   it('passes a finished run through', () => {

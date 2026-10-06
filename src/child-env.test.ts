@@ -84,7 +84,21 @@ describe('buildChildEnv', () => {
   it('leaves an environment with nothing to remove alone', () => {
     const env = buildChildEnv(USER_ENV, { CI: '1' });
 
-    expect(env).toEqual({ PATH: '/usr/bin', NODE_ENV: 'development', CI: '1' });
+    expect(env).toEqual({
+      PATH: '/usr/bin',
+      NODE_ENV: 'development',
+      CI: '1',
+      BOOK_SESSION_DRIVER: 'agent',
+    });
+  });
+
+  it('marks every child as driven by Book, whatever Book itself was told', () => {
+    // A `book` that Book's Bash tool runs is Book driving Book: the child must read memory but
+    // not write it, even when the parent was started with BOOK_SESSION_DRIVER=human.
+    expect(buildChildEnv(USER_ENV).BOOK_SESSION_DRIVER).toBe('agent');
+    expect(buildChildEnv({ ...USER_ENV, BOOK_SESSION_DRIVER: 'human' }).BOOK_SESSION_DRIVER).toBe(
+      'agent',
+    );
   });
 });
 

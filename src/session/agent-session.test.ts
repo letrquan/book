@@ -1189,6 +1189,30 @@ describe('AgentSession', () => {
     }
   });
 
+  it('marks a session agent-driven when an agent-driven TUI resumes it with /resume', async () => {
+    const fixture = createSessionFixture('book-agent-session-resume-driver-');
+    try {
+      const currentSessionId = fixture.store.create({ cwd: '/proj', driver: 'agent' });
+      const typedId = fixture.store.create({ cwd: '/proj', name: 'typed', driver: 'human' });
+      const config = { ...defaultConfig(), workspace: '/proj', sessionDriver: 'agent' as const };
+
+      const session = new AgentSession();
+      await session.startLifecycle(config, currentSessionId, 'startup');
+      const result = await session.resumeSession({
+        config,
+        currentSessionId,
+        store: fixture.store,
+        selector: 'typed',
+      });
+
+      expect(result.status).toBe('transitioned');
+      // The turns that follow are the delegator's, so extraction must stop reading it as the user's.
+      expect(fixture.store.findById(typedId)?.driver).toBe('agent');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('owns resume selection and returns the persisted session projection', async () => {
     const fixture = createSessionFixture('book-agent-session-resume-');
     try {

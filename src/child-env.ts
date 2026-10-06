@@ -24,6 +24,13 @@
  * the one a value-comparison rule would silently delete.
  */
 
+/**
+ * Every process Book starts runs under Book, so a `book` among them is driven by Book, not by the
+ * user typing (`src/session-driver.ts`): it reads memory but never writes it, as a delegated run
+ * of any other harness does. Its own `--session-driver` flag still wins.
+ */
+export const CHILD_SESSION_DRIVER = 'agent';
+
 /** Set alongside the default `NODE_ENV`, and stripped from every child. */
 export const DEFAULTED_NODE_ENV_MARKER = 'BOOK_DEFAULTED_NODE_ENV';
 
@@ -39,6 +46,7 @@ export function buildChildEnv(
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base, ...overrides };
   delete env[DEFAULTED_NODE_ENV_MARKER];
+  env.BOOK_SESSION_DRIVER = CHILD_SESSION_DRIVER;
   // Only Book's own default is removed, and only when nothing asked for it. A NODE_ENV that
   // arrived some other way is the user's and the command's to keep.
   //

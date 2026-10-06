@@ -9,8 +9,9 @@
  * Rules:
  * - Off by default (`memory.extraction.enabled`): on the owner's machine it wrote 8 of the 10
  *   memories, and every wrong one — a delegated spec's "Ground rules" read as the user's words.
- * - A session another agent drove (`SessionMeta.driver`) is never read, and a start another agent
- *   drives reads nothing: a delegator's per-task contract is not the user's preference.
+ * - Only a session recorded as human-driven (`SessionMeta.driver`) is read, and a start another
+ *   agent drives reads nothing: a delegator's per-task contract is not the user's preference, and a
+ *   session from before the driver was tracked may well have been one.
  * - A session that brought in external content (web, MCP, another agent's text) is never read —
  *   the same boundary `MemorySave` quarantines on, applied here by skipping (Codex's
  *   `disable_on_external_context`).
@@ -209,8 +210,9 @@ function acquireLock(path: string, nowMs: number): ExtractionLock | null {
 }
 
 /**
- * Sessions of this workspace that no other agent drove, idle, long enough, and new or grown since
- * last read.
+ * Sessions of this workspace a person drove, idle, long enough, and new or grown since last read. A
+ * session recorded before the driver was tracked is not read: on the machine that prompted the
+ * check, most of those were delegated spec runs.
  */
 export function eligibleSessions(
   sessions: SessionMeta[],
@@ -230,7 +232,7 @@ export function eligibleSessions(
       (s) =>
         normalizeWorkspace(s.cwd) === workspace &&
         s.id !== opts.currentSessionId &&
-        s.driver !== 'agent' &&
+        s.driver === 'human' &&
         (opts.processed[s.id] === undefined || s.messageCount > opts.processed[s.id]) &&
         s.updatedAt <= idleBefore &&
         s.updatedAt >= opts.nowMs - MAX_AGE_MS &&

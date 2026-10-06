@@ -187,6 +187,14 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     const effortOverride = options.effort
       ? parseEffortLevel(String(options.effort), '--effort')
       : undefined;
+    // Before loadConfig, which may run settings migrations: a rejected flag leaves nothing behind.
+    const explicitDriver =
+      options.sessionDriver === undefined
+        ? undefined
+        : parseSessionDriver(String(options.sessionDriver));
+    if (options.sessionDriver !== undefined && !explicitDriver) {
+      throw new Error('--session-driver must be human or agent');
+    }
     const config = loadConfig(requestedWorkspace, {
       settingsOverridePath: options.settings as string | undefined,
       noSettings: options.settings === false,
@@ -215,14 +223,8 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         config.provider = raw as AgentConfig['provider'];
       }
     }
-    if (options.sessionDriver !== undefined && !parseSessionDriver(String(options.sessionDriver))) {
-      throw new Error('--session-driver must be human or agent');
-    }
     // Who drives this process decides whether the model may write memory (src/session-driver.ts).
-    const sessionDriver = resolveSessionDriver({
-      explicit: options.sessionDriver as string | undefined,
-      env: process.env,
-    });
+    const sessionDriver = resolveSessionDriver({ explicit: explicitDriver, env: process.env });
     config.sessionDriver = sessionDriver.driver;
     createDebugLogger('memory').info('session driver', { ...sessionDriver });
     freezeAgentConfig(config);

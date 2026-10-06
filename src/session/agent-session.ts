@@ -58,7 +58,7 @@ import {
   type AgentEvent,
   type AgentSessionSnapshot,
 } from './agent-events.js';
-import { selectSession, type SessionBootstrap } from './resolve.js';
+import { recordResumeDriver, selectSession, type SessionBootstrap } from './resolve.js';
 import { isSpendlessUsage } from './run-accounting.js';
 import { SessionRuntime, type SessionRuntimeOptions } from './runtime.js';
 import { createRunAmbientSnapshot } from './run-ambient.js';
@@ -822,6 +822,12 @@ export class AgentSession {
     this.operations.cancel({ bookTerminalReason: 'session_replaced' });
     await this.endLifecycle(request.config, request.currentSessionId, 'resume');
     request.store.touch(selected.id);
+    recordResumeDriver(
+      request.store,
+      selected.id,
+      loaded.meta.driver,
+      request.config.sessionDriver,
+    );
 
     const bootstrap: SessionBootstrap = {
       sessionId: selected.id,

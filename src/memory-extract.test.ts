@@ -42,6 +42,7 @@ function meta(id: string, partial: Partial<SessionMeta> = {}): SessionMeta {
     createdAt: 0,
     updatedAt: NOW - 5 * HOUR,
     messageCount: 12,
+    driver: 'human',
     ...partial,
   };
 }
@@ -135,18 +136,19 @@ describe('eligibleSessions', () => {
     expect(got.map((s) => s.id)).toEqual(['b', 'grown', 'a']);
   });
 
-  it('never offers a session another agent drove', () => {
+  it('offers only a session a person drove', () => {
     // A delegated spec run's prompt is its delegator's per-task contract: read as a conversation,
     // its "Ground rules" became permanent repository memory.
     const got = eligibleSessions(
       [
         meta('delegated', { driver: 'agent' }),
         meta('typed', { driver: 'human' }),
-        meta('unrecorded', { updatedAt: NOW - 6 * HOUR }),
+        meta('unrecorded', { driver: undefined, updatedAt: NOW - 6 * HOUR }),
       ],
       { workspace, processed: {}, idleHours: 3, minMessages: 10, nowMs: NOW },
     );
-    expect(got.map((s) => s.id)).toEqual(['typed', 'unrecorded']);
+    // A session from before the driver was tracked may have been a delegated run: not read.
+    expect(got.map((s) => s.id)).toEqual(['typed']);
   });
 });
 

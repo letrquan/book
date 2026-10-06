@@ -21,13 +21,13 @@ export interface ResolvedSessionDriver {
 
 /** Exactly `human` or `agent`: a driver read back from a session file or another process. */
 export function isSessionDriver(value: unknown): value is SessionDriver {
-  return value === 'human' || value === 'agent';
+  return SESSION_DRIVERS.includes(value as SessionDriver);
 }
 
 /** `human` or `agent`, ignoring case and surrounding space; anything else is not a driver. */
 export function parseSessionDriver(value: string | undefined): SessionDriver | undefined {
   const normalized = value?.trim().toLowerCase();
-  return SESSION_DRIVERS.find((driver) => driver === normalized);
+  return isSessionDriver(normalized) ? normalized : undefined;
 }
 
 /**

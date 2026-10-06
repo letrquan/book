@@ -24,15 +24,35 @@ describe('resolveSessionBootstrap', () => {
   });
 
   it('records the driver on a session it creates or forks', () => {
-    const created = resolveSessionBootstrap(store, { cwd: '/proj', driver: 'agent' });
-    expect(store.findById(created.sessionId)?.driver).toBe('agent');
-    const forked = resolveSessionBootstrap(store, {
+    const created = resolveSessionBootstrap(store, { cwd: '/proj', driver: 'human' });
+    expect(store.findById(created.sessionId)?.driver).toBe('human');
+    const byHuman = resolveSessionBootstrap(store, {
       cwd: '/proj',
       resume: created.sessionId,
       forkSession: true,
       driver: 'human',
     });
-    expect(store.findById(forked.sessionId)?.driver).toBe('human');
+    expect(store.findById(byHuman.sessionId)?.driver).toBe('human');
+    const byAgent = resolveSessionBootstrap(store, {
+      cwd: '/proj',
+      resume: created.sessionId,
+      forkSession: true,
+      driver: 'agent',
+    });
+    expect(store.findById(byAgent.sessionId)?.driver).toBe('agent');
+  });
+
+  it('keeps a fork of an agent-driven session agent-driven, whoever forks it', () => {
+    // The fork carries every delegated turn; a human fork would hand them to extraction.
+    const id = store.create({ cwd: '/proj', name: 'delegated', driver: 'agent' });
+    const forked = resolveSessionBootstrap(store, {
+      cwd: '/proj',
+      resume: 'delegated',
+      forkSession: true,
+      driver: 'human',
+    });
+    expect(forked.sessionId).not.toBe(id);
+    expect(store.findById(forked.sessionId)?.driver).toBe('agent');
   });
 
   it('marks a session agent-driven once an agent resumes it, and never back', () => {
