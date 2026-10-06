@@ -49,7 +49,14 @@ export function classifyHttpStatus(status: number): {
  * (`upstream sent HTTP 403`, `chunk [404]`) or a longer number that merely starts
  * like one (`"code": 4001`) is not: misreading an outage body ends the run after
  * a single request, or parks it as a rejected credential.
+ *
+ * A quoted 404 whose body says no endpoints or no accounts were found is a
+ * capacity outage (#383): the router turns an upstream
+ * `[CommandCode error: No endpoints found for <model>.]` into a 503 with a
+ * cooldown, so it is transient and the quote must not end the retries.
  */
+const CAPACITY_OUTAGE_404 = /no\s+(?:endpoints|accounts)\s+found/i;
+
 export function quotedUpstreamStatus(body: string): number | undefined {
   if (!body) return undefined;
   const text = body.length > 65536 ? body.slice(0, 65536) : body;
@@ -60,6 +67,7 @@ export function quotedUpstreamStatus(body: string): number | undefined {
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match) {
+      if (match[1] === '404' && CAPACITY_OUTAGE_404.test(text)) continue;
       return Number(match[1]);
     }
   }
@@ -501,7 +509,7 @@ export async function fetchWithRetry(
 
     const delay = boundedDelay(
       clock,
-      backoffMs(attempt, retry, response.headers.get('retry-after')),
+      backoffMs(attempt, retry, response.headers.get('retry-after'), bodyText),
       startMs,
       retry.totalBudgetMs,
     );
@@ -613,8 +621,13 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-function backoffMs(attempt: number, retry: RetryConfig, retryAfter?: string | null): number {
-  const retryAfterMs = parseRetryAfter(retryAfter);
+function backoffMs(
+  attempt: number,
+  retry: RetryConfig,
+  retryAfter?: string | null,
+  body?: string,
+): number {
+  const retryAfterMs = parseRetryAfter(retryAfter) ?? parseCooldownReset(body);
   if (retryAfterMs !== undefined) return Math.min(retryAfterMs, retry.maxDelayMs);
   const exponential = Math.min(retry.baseDelayMs * 2 ** attempt, retry.maxDelayMs);
   return Math.round(exponential * (0.5 + Math.random()));
@@ -630,6 +643,26 @@ function parseRetryAfter(value?: string | null): number | undefined {
   // server sent an HTTP date, which is a point on the wall clock by definition.
   // Subtracting a monotonic reading from it would be meaningless.
   return Math.max(0, timestamp - Date.now());
+}
+
+/**
+ * The cooldown a router states in its error body (`(reset after 5s)`), read when
+ * there is no Retry-After header to wait by (#383). Forms seen in the wild:
+ * `5s`, `42s`, `1m26s`, `1 min 26 s`. Returns milliseconds, or undefined when
+ * the body states no duration.
+ */
+function parseCooldownReset(body?: string | null): number | undefined {
+  if (!body) return undefined;
+  const stated = body.match(/\(reset after\s*([^)]+)\)/i);
+  if (!stated) return undefined;
+  const unitMs: Record<string, number> = { h: 3_600_000, min: 60_000, m: 60_000, s: 1_000 };
+  let totalMs = 0;
+  let statedUnits = 0;
+  for (const unit of stated[1].matchAll(/(\d+)\s*(h|min|m|s)/gi)) {
+    totalMs += Number(unit[1]) * unitMs[unit[2].toLowerCase()];
+    statedUnits++;
+  }
+  return statedUnits > 0 && totalMs > 0 ? totalMs : undefined;
 }
 
 function budgetExhausted(clock: Clock, startMs: MonotonicMs, budgetMs: number): boolean {

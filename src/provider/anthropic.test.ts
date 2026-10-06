@@ -206,6 +206,69 @@ describe('Anthropic thinking configuration', () => {
   });
 });
 
+// The request body each Anthropic model family carries (#371): Messages API
+// fields only — no OpenAI `stream_options` — and `thinking` plus
+// `output_config.effort` only where the model supports adaptive thinking.
+describe('Anthropic request body per model family (#371)', () => {
+  async function capturedBody(
+    model: string,
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max',
+  ): Promise<Record<string, unknown>> {
+    let requestBody: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        requestBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return new Response('{}', { status: 400 });
+      }),
+    );
+
+    for await (const event of chatCompletionStream(
+      defaultConfig({ model, provider: 'anthropic', baseUrl: 'https://api.anthropic.com', effort }),
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      void event;
+    }
+
+    if (!requestBody) throw new Error('request body was never captured');
+    return requestBody;
+  }
+
+  it('never sends OpenAI stream_options, whatever the family', async () => {
+    for (const model of [
+      'claude-opus-4-5-20260101',
+      'claude-opus-4-6-20260101',
+      'claude-opus-5-5-20260101',
+      'claude-sonnet-5-5',
+      'claude-fable-5-1',
+    ]) {
+      expect(await capturedBody(model, 'high')).not.toHaveProperty('stream_options');
+    }
+  });
+
+  it('sends no thinking fields for the 4.5 models, even with an effort', async () => {
+    for (const model of ['claude-opus-4-5-20260101', 'claude-sonnet-4-5']) {
+      const body = await capturedBody(model, 'high');
+      expect(body).not.toHaveProperty('thinking');
+      expect(body).not.toHaveProperty('output_config');
+    }
+  });
+
+  it('sends adaptive thinking and effort from 4.6 and across the 5.x ids', async () => {
+    for (const model of [
+      'claude-opus-4-6-20260101',
+      'claude-opus-5-5-20260101',
+      'claude-sonnet-5-5',
+      'claude-fable-5-1',
+    ]) {
+      const body = await capturedBody(model, 'high');
+      expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+      expect(body.output_config).toEqual({ effort: 'high' });
+    }
+  });
+});
+
 describe('Anthropic terminal framing', () => {
   it('captures complete thinking blocks and signatures for replay', async () => {
     vi.stubGlobal(

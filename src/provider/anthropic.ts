@@ -239,16 +239,20 @@ function assertCacheBreakpointBudget(body: Parameters<typeof countCacheBreakpoin
   }
 }
 
-/** Models that support adaptive thinking. All others get no thinking field. */
+/**
+ * Models that support adaptive thinking. All others get no thinking field. The
+ * 4.5 ancestors are absent (#371): they support neither adaptive thinking nor
+ * `output_config.effort`, so they send neither field and run at their own
+ * default, and their streams get the chat stall ceiling rather than the
+ * thinking one.
+ */
 const ADAPTIVE_THINKING_MODELS = new Set([
   'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
-  'claude-opus-4-5',
   'claude-sonnet-5',
   'claude-sonnet-4-6',
-  'claude-sonnet-4-5',
   'claude-fable-5',
   'claude-mythos-5',
 ]);
@@ -471,7 +475,6 @@ export async function* chatCompletionStream(
     max_tokens: options?.maxOutputTokens ?? config.maxTokens,
     messages: anthropicMessages,
     stream: true,
-    stream_options: { include_usage: true },
   };
 
   // System prompt as top-level field. Book emits a cacheable static prefix

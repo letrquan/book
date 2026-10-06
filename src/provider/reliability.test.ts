@@ -143,6 +143,96 @@ describe('provider reliability transport', () => {
     expect(await response.text()).toBe('ok');
   });
 
+  it('retries a quoted capacity 404 after the cooldown its 503 states (#383)', async () => {
+    vi.useFakeTimers();
+    const capacityBody =
+      '503 [commandcode/stealth/x] [404]: [CommandCode error: No endpoints found for stealth/x.] (reset after 5s)';
+    // The accounts wording is the other form the outage takes.
+    const accountsBody =
+      '503 [commandcode/stealth/x] [404]: [CommandCode error: No accounts found for stealth/x.] (reset after 5s)';
+    expect(quotedUpstreamStatus(capacityBody)).toBeUndefined();
+    expect(quotedUpstreamStatus(accountsBody)).toBeUndefined();
+    expect(classifyApiError(503, capacityBody)).toBe('server_error');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(capacityBody, { status: 503 }))
+      .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const retryEvents: Array<[number, number, number]> = [];
+
+    const pending = fetchWithRetry(
+      'https://example.test',
+      {},
+      {
+        ...defaultConfig().retry,
+        maxAttempts: 1,
+        // Above the stated cooldown, so the test observes the stated delay uncapped.
+        maxDelayMs: 60_000,
+        totalBudgetMs: 10_000,
+        requestTimeoutMs: 0,
+      },
+      undefined,
+      (attempt, max, delay) => retryEvents.push([attempt, max, delay]),
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await expect(pending).resolves.toMatchObject({ status: 200 });
+    expect(retryEvents).toEqual([[1, 1, 5_000]]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns at once on a quoted 400 whose body states a cooldown (#383)', async () => {
+    const nineRouterBody =
+      'API Error: 503 [antigravity/...] [400]: {"error":{"code":400,"status":"INVALID_ARGUMENT",...}} (reset after 29s)';
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(nineRouterBody, { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = defaultConfig();
+
+    const response = await fetchWithRetry(
+      'https://example.test',
+      {},
+      {
+        ...config.retry,
+        maxAttempts: 3,
+        baseDelayMs: 1,
+        maxDelayMs: 2,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(503);
+    expect(await response.text()).toBe(nineRouterBody);
+  });
+
+  it('ends the run on a quoted 404 that names no capacity outage (#383)', async () => {
+    const modelMissingBody =
+      'API Error: 503 [commandcode/stealth/x] [404]: {"error":{"code":404,"message":"model not found"}} (reset after 5s)';
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(modelMissingBody, { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = defaultConfig();
+
+    const response = await fetchWithRetry(
+      'https://example.test',
+      {},
+      {
+        ...config.retry,
+        maxAttempts: 3,
+        baseDelayMs: 1,
+        maxDelayMs: 2,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(503);
+    expect(classifyApiError(503, modelMissingBody)).toBe('not_found');
+  });
+
   it('retries plain 503 and preserves response body after retry exhaustion', async () => {
     const busyBody = '{"error":{"message":"busy"}}';
     const fetchMock = vi
