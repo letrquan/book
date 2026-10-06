@@ -952,10 +952,12 @@ true` is the one loosening-adjacent key a workspace layer may set, and the loade
 - **The Anthropic request body carries only Messages API fields** (#371). The body sent
   `stream_options: { include_usage: true }` — an OpenAI-only field — on every request; Anthropic's
   SSE already carries usage in `message_start` and `message_delta`, where it is read, so the field
-  is gone. `claude-opus-4-5` and `claude-sonnet-4-5` are removed from `ADAPTIVE_THINKING_MODELS`:
-  the pre-4.6 models support neither adaptive thinking nor `output_config.effort`, so they now send
-  neither `thinking` nor `output_config` even with an effort set — they run at their own default —
-  and their streams take the chat stall ceiling rather than the thinking one. The 5.x ids
+  is gone. `claude-opus-4-5` and `claude-sonnet-4-5` are out of `ADAPTIVE_THINKING_MODELS`, because
+  the pre-4.6 models refuse the adaptive `thinking` parameter: a 4.5 stream takes the chat stall
+  ceiling rather than the thinking one. Of the two, only Sonnet 4.5 lacks `output_config.effort`
+  as well, so it sends neither field even with an effort set and runs at its own default; Opus 4.5
+  does accept the effort, so it sends `output_config` alone — low/medium/high only, `xhigh` and
+  `max` clamped down to `high` — and no `thinking` field. The 5.x ids
   (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-fable-5-1`) still match the `claude-opus-5`,
   `claude-sonnet-5` and `claude-fable-5` prefixes and keep adaptive thinking and their effort.
 

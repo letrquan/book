@@ -181,6 +181,26 @@ describe('provider reliability transport', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('reads a capacity 404 with an embedded JSON 403 as no quote at all (#383)', () => {
+    // The outage body embeds the router's own JSON error, whose 403 code is one
+    // of Book's second patterns. The capacity recognition must end the read:
+    // returning undefined beats falling through to a pattern that turns a
+    // transient outage into a rejected credential.
+    const body =
+      '503 [commandcode/stealth/x] [404]: [CommandCode error: No endpoints found for stealth/x.] (reset after 5s) {"error":{"code":403}}';
+    expect(quotedUpstreamStatus(body)).toBeUndefined();
+  });
+
+  it('ends the run on a capacity-shaped 404 that states no cooldown (#383)', () => {
+    // "No endpoints found" for a model that does not exist on any route never
+    // gets better while waiting, and there is no cooldown to honour anyway: the
+    // exemption is for the cooldown-carrying outage only.
+    const body =
+      '503 [commandcode/unknown-model/x] [404]: [CommandCode error: No endpoints found for unknown-model/x.]';
+    expect(quotedUpstreamStatus(body)).toBe(404);
+    expect(classifyApiError(503, body)).toBe('not_found');
+  });
+
   it('returns at once on a quoted 400 whose body states a cooldown (#383)', async () => {
     const nineRouterBody =
       'API Error: 503 [antigravity/...] [400]: {"error":{"code":400,"status":"INVALID_ARGUMENT",...}} (reset after 29s)';
@@ -258,6 +278,122 @@ describe('provider reliability transport', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(response.status).toBe(503);
     expect(await response.text()).toBe(busyBody);
+  });
+
+  describe('body cooldown (#383)', () => {
+    // parseCooldownReset reads the duration a router states in its error body,
+    // through fetchWithRetry's first retry delay (no Retry-After present).
+    // `backoffMs` is not exported, so the delay the loop observes is the unit.
+    async function firstRetryDelay(
+      resetAfter: string,
+      retry: Partial<{ maxDelayMs: number }>,
+    ): Promise<number> {
+      vi.useFakeTimers();
+      const body = `429 rate limited (reset after ${resetAfter})`;
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(body, { status: 429 }))
+        .mockResolvedValue(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const retryEvents: Array<[number, number, number]> = [];
+      const pending = fetchWithRetry(
+        'https://example.test',
+        {},
+        {
+          ...defaultConfig().retry,
+          maxAttempts: 1,
+          // Well above every stated duration, so the delay is read uncapped.
+          maxDelayMs: 10_000_000,
+          totalBudgetMs: 0,
+          requestTimeoutMs: 0,
+          ...retry,
+        },
+        undefined,
+        (attempt, max, delay) => retryEvents.push([attempt, max, delay]),
+      );
+      // Far past any stated cooldown, so the sleep finishes and attempt two runs.
+      await vi.advanceTimersByTimeAsync(10_000_000);
+      await pending;
+      expect(retryEvents.length).toBeGreaterThan(0);
+      return retryEvents[0][2];
+    }
+
+    it('reads the duration forms the cooldowns arrive in', async () => {
+      expect(await firstRetryDelay('5s', {})).toBe(5_000);
+      expect(await firstRetryDelay('42s', {})).toBe(42_000);
+      expect(await firstRetryDelay('1m26s', {})).toBe(86_000);
+      expect(await firstRetryDelay('1 min 26 s', {})).toBe(86_000);
+    });
+
+    it('reads milliseconds as milliseconds, not minutes', async () => {
+      expect(await firstRetryDelay('500ms', {})).toBe(500);
+      expect(await firstRetryDelay('1s 200ms', {})).toBe(1_200);
+      expect(await firstRetryDelay('2m', {})).toBe(120_000);
+    });
+  });
+
+  describe('retry delay precedence (#383)', () => {
+    it('a Retry-After header wins over the cooldown the body states', async () => {
+      vi.useFakeTimers();
+      const fetchMock = vi
+        .fn()
+        // The header and the body disagree; the header is the one honoured.
+        .mockResolvedValueOnce(
+          new Response('rate limited (reset after 5s)', {
+            status: 429,
+            headers: { 'retry-after': '2' },
+          }),
+        )
+        .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const retryEvents: Array<[number, number, number]> = [];
+
+      const pending = fetchWithRetry(
+        'https://example.test',
+        {},
+        {
+          ...defaultConfig().retry,
+          maxAttempts: 1,
+          maxDelayMs: 60_000,
+          totalBudgetMs: 10_000,
+          requestTimeoutMs: 0,
+        },
+        undefined,
+        (attempt, max, delay) => retryEvents.push([attempt, max, delay]),
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await expect(pending).resolves.toMatchObject({ status: 200 });
+      expect(retryEvents).toEqual([[1, 1, 2_000]]);
+    });
+
+    it('caps the cooldown the body states at retry.maxDelayMs', async () => {
+      vi.useFakeTimers();
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response('rate limited (reset after 5s)', { status: 429 }))
+        .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const retryEvents: Array<[number, number, number]> = [];
+
+      const pending = fetchWithRetry(
+        'https://example.test',
+        {},
+        {
+          ...defaultConfig().retry,
+          maxAttempts: 1,
+          maxDelayMs: 1_000,
+          totalBudgetMs: 10_000,
+          requestTimeoutMs: 0,
+        },
+        undefined,
+        (attempt, max, delay) => retryEvents.push([attempt, max, delay]),
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await expect(pending).resolves.toMatchObject({ status: 200 });
+      expect(retryEvents).toEqual([[1, 1, 1_000]]);
+    });
   });
 
   it('detects upstream error envelopes rendered as assistant content', () => {

@@ -241,10 +241,8 @@ function assertCacheBreakpointBudget(body: Parameters<typeof countCacheBreakpoin
 
 /**
  * Models that support adaptive thinking. All others get no thinking field. The
- * 4.5 ancestors are absent (#371): they support neither adaptive thinking nor
- * `output_config.effort`, so they send neither field and run at their own
- * default, and their streams get the chat stall ceiling rather than the
- * thinking one.
+ * 4.6-and-later ids are present (#371): they accept the adaptive `thinking`
+ * parameter, and their streams get the thinking stall ceiling when it is sent.
  */
 const ADAPTIVE_THINKING_MODELS = new Set([
   'claude-opus-5',
@@ -259,6 +257,21 @@ const ADAPTIVE_THINKING_MODELS = new Set([
 
 function supportsAdaptiveThinking(model: string): boolean {
   for (const prefix of ADAPTIVE_THINKING_MODELS) {
+    if (model.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+/**
+ * Models that accept `output_config.effort` without the adaptive `thinking`
+ * parameter (#371): Claude Opus 4.5. Its sibling Sonnet 4.5 accepts neither and
+ * runs at its own default, like every model outside both sets. `xhigh` and `max`
+ * clamp down to `high`, the highest level 4.5 reads.
+ */
+const EFFORT_WITHOUT_THINKING_MODELS = new Set(['claude-opus-4-5']);
+
+function supportsEffortOnly(model: string): boolean {
+  for (const prefix of EFFORT_WITHOUT_THINKING_MODELS) {
     if (model.startsWith(prefix)) return true;
   }
   return false;
@@ -492,19 +505,31 @@ export async function* chatCompletionStream(
     messages: anthropicMessages,
   });
 
-  // Thinking / effort — only for models that support adaptive thinking, and only
-  // when an effort was resolved. An effort that resolved to none (a compact-model
-  // request on a catalog with no level at or below its cap) sends neither field,
-  // so the model runs at its own default: no thinking at all on Opus 4.6–4.8 and
-  // Sonnet 4.6, adaptive thinking at the model's default effort on Opus 5 and
-  // 5.5, Fable 5 and Sonnet 5. `{ type: 'disabled' }` is not sent instead: Fable 5
-  // and Opus 5.5 reject it with a 400. The stall ceiling stays the thinking one
-  // either way, since the later models think when the field is omitted.
-  const thinkingEnabled =
-    config.modelInfo?.effort !== false && supportsAdaptiveThinking(config.model);
-  if (thinkingEnabled && config.effort) {
-    body.thinking = { type: 'adaptive', display: 'summarized' };
-    body.output_config = { effort: config.effort };
+  // Thinking / effort, per what the model accepts (#371). Adaptive thinking
+  // goes to the 4.6-and-later models, and only when an effort resolved: an
+  // effort that resolved to none (a compact-model request on a catalog with no
+  // level at or below its cap) sends neither field, so the model runs at its
+  // own default — no thinking at all on Opus 4.6–4.8 and Sonnet 4.6, adaptive
+  // thinking at the model's default effort on Opus 5 and 5.5, Fable 5 and
+  // Sonnet 5. `{ type: 'disabled' }` is not sent instead: Fable 5 and Opus 5.5
+  // reject it with a 400.
+  //
+  // Opus 4.5 straddles the two: it accepts `output_config.effort`
+  // (low/medium/high) but not adaptive thinking, so it gets the effort alone,
+  // with `xhigh` and `max` clamped down to `high`, and no `thinking` field.
+  // Sonnet 4.5 accepts neither and sends neither. The stall ceiling follows the
+  // `thinking` field: a 4.5 request — reasoning only through the effort level —
+  // keeps the chat-tuned one, as does Sonnet 4.5 and every no-effort request.
+  const effort = config.modelInfo?.effort === false ? undefined : config.effort;
+  if (supportsAdaptiveThinking(config.model)) {
+    if (effort) {
+      body.thinking = { type: 'adaptive', display: 'summarized' };
+      body.output_config = { effort };
+    }
+  } else if (supportsEffortOnly(config.model) && effort) {
+    body.output_config = {
+      effort: effort === 'xhigh' || effort === 'max' ? 'high' : effort,
+    };
   }
 
   log.debug('chatCompletionStream request', {
@@ -584,11 +609,14 @@ export async function* chatCompletionStream(
   let responseModel: string | undefined;
   let responseId: string | undefined;
   const finishReasons = new Set<string>();
-  // A thinking model goes quiet on purpose. The chat-tuned 20s ceiling cancels a
-  // healthy request mid-thought and reports it as a stalled stream, which is the
-  // single most common way a high-effort Opus run "just stops".
+  // A request carrying the adaptive `thinking` field goes quiet on purpose: the
+  // model may think for minutes before its first token. The chat-tuned 20s
+  // ceiling cancels such a healthy request mid-thought and reports it as a
+  // stalled stream, which is the single most common way a high-effort Opus run
+  // "just stops". A model with no `thinking` field — Opus 4.5 reasoning through
+  // its effort level, Sonnet 4.5, every no-effort request — keeps the chat one.
   const stallTimeoutMs =
-    thinkingEnabled && retry.thinkingStallTimeoutMs
+    body.thinking && retry.thinkingStallTimeoutMs
       ? Math.max(retry.streamStallTimeoutMs, retry.thinkingStallTimeoutMs)
       : retry.streamStallTimeoutMs;
 

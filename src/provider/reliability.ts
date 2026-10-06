@@ -38,6 +38,18 @@ export function classifyHttpStatus(status: number): {
 }
 
 /**
+ * The two 404 wordings a router hands back when its route has nothing left to
+ * serve a model with (#383). Recognized only when the body also states a
+ * `(reset after …)` cooldown, so a permanent "No endpoints found for
+ * unknown-model" — a missing model, not a capacity moment — stays a terminal
+ * 404.
+ */
+const CAPACITY_OUTAGE_404 = /no\s+(?:endpoints|accounts)\s+found/i;
+
+/** The cooldown statement the capacity outage arrives with. */
+const RESET_AFTER = /\(reset after\s*[^)]+\)/i;
+
+/**
  * The upstream HTTP status a router quoted inside its own error body, if any.
  *
  * 9router wraps an upstream 4xx as a 503 plus a cooldown, so the wrapper's status
@@ -50,13 +62,15 @@ export function classifyHttpStatus(status: number): {
  * like one (`"code": 4001`) is not: misreading an outage body ends the run after
  * a single request, or parks it as a rejected credential.
  *
- * A quoted 404 whose body says no endpoints or no accounts were found is a
- * capacity outage (#383): the router turns an upstream
+ * A quoted 404 whose body says no endpoints or no accounts were found — and
+ * states a cooldown — is a capacity outage (#383): the router turns an upstream
  * `[CommandCode error: No endpoints found for <model>.]` into a 503 with a
- * cooldown, so it is transient and the quote must not end the retries.
+ * `(reset after …)` cooldown, so it is transient and the quote must not end the
+ * retries. The read ends there: such a body can also carry a JSON error object
+ * with some other code, and reading that quote would park the run as if the
+ * credential had been refused. A cooldown-less "no endpoints found" is kept as
+ * the 404 it is.
  */
-const CAPACITY_OUTAGE_404 = /no\s+(?:endpoints|accounts)\s+found/i;
-
 export function quotedUpstreamStatus(body: string): number | undefined {
   if (!body) return undefined;
   const text = body.length > 65536 ? body.slice(0, 65536) : body;
@@ -64,12 +78,11 @@ export function quotedUpstreamStatus(body: string): number | undefined {
     /\[[^\]\s]+\]\s*\[(4\d\d)\]:/,
     /"error"\s*:\s*\{[^{}]*?"code"\s*:\s*"?(4\d\d)(?![\d.])/,
   ];
+  const capacityOutage = CAPACITY_OUTAGE_404.test(text) && RESET_AFTER.test(text);
+  if (capacityOutage) return undefined;
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (match) {
-      if (match[1] === '404' && CAPACITY_OUTAGE_404.test(text)) continue;
-      return Number(match[1]);
-    }
+    if (match) return Number(match[1]);
   }
   return undefined;
 }
@@ -646,20 +659,50 @@ function parseRetryAfter(value?: string | null): number | undefined {
 }
 
 /**
+ * How many milliseconds each unit word in a stated cooldown is worth. Keyed by
+ * every spelling the matcher accepts.
+ */
+const COOLDOWN_UNIT_MS: Record<string, number> = {
+  ms: 1,
+  s: 1_000,
+  sec: 1_000,
+  secs: 1_000,
+  second: 1_000,
+  seconds: 1_000,
+  m: 60_000,
+  min: 60_000,
+  mins: 60_000,
+  minute: 60_000,
+  minutes: 60_000,
+  h: 3_600_000,
+  hr: 3_600_000,
+  hrs: 3_600_000,
+  hour: 3_600_000,
+  hours: 3_600_000,
+};
+
+// Longest unit spellings first, and no unit may be followed by another letter:
+// the boundary is what keeps `500ms` from being read as 500 minutes — the `m`
+// would otherwise swallow the `ms` — while still reading compound forms such as
+// `1m26s`, where a digit follows the unit.
+const COOLDOWN_UNIT = /(\d+)\s*(ms|sec(?:ond)?s?|min(?:ute)?s?|h(?:ours?|rs?)?|s|m)(?![a-z])/gi;
+
+/**
  * The cooldown a router states in its error body (`(reset after 5s)`), read when
  * there is no Retry-After header to wait by (#383). Forms seen in the wild:
- * `5s`, `42s`, `1m26s`, `1 min 26 s`. Returns milliseconds, or undefined when
- * the body states no duration.
+ * `5s`, `42s`, `1m26s`, `1 min 26 s`, and millisecond durations such as `500ms`
+ * and `1s 200ms`. Units are ms, s/sec/seconds, m/min/minutes and h/hours, so `m`
+ * is never read when it belongs to `ms`. Returns milliseconds, or undefined
+ * when the body states no duration.
  */
 function parseCooldownReset(body?: string | null): number | undefined {
   if (!body) return undefined;
   const stated = body.match(/\(reset after\s*([^)]+)\)/i);
   if (!stated) return undefined;
-  const unitMs: Record<string, number> = { h: 3_600_000, min: 60_000, m: 60_000, s: 1_000 };
   let totalMs = 0;
   let statedUnits = 0;
-  for (const unit of stated[1].matchAll(/(\d+)\s*(h|min|m|s)/gi)) {
-    totalMs += Number(unit[1]) * unitMs[unit[2].toLowerCase()];
+  for (const unit of stated[1].matchAll(COOLDOWN_UNIT)) {
+    totalMs += Number(unit[1]) * COOLDOWN_UNIT_MS[unit[2].toLowerCase()];
     statedUnits++;
   }
   return statedUnits > 0 && totalMs > 0 ? totalMs : undefined;

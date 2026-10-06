@@ -79,8 +79,9 @@ Book uses `retry.thinkingStallTimeoutMs` instead (default 15 minutes,
 
 What counts as "enables reasoning" differs by path, because the two carry different evidence. On the
 Anthropic path it is adaptive thinking, which is sent for Opus 4.6 and Sonnet 4.6 and later at
-`high` effort — the 4.5 ancestors support neither it nor `output_config.effort`, and run at their
-own default.
+`high` effort — the field the pre-4.6 models refuse, although Opus 4.5 among them takes
+`output_config.effort` alone (with `xhigh` and `max` clamped to `high`) and keeps the chat stall
+ceiling, and Sonnet 4.5, which takes neither, runs at its own default.
 On an OpenAI-compatible endpoint it is a request that sends `reasoning_effort`, or a model whose
 `provider.<id>.models.<model>.effort` entry declares an effort range — an endpoint that buffers a
 whole thinking block sends nothing at all until it is done, so the declaration is the only signal
