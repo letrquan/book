@@ -5,7 +5,7 @@
  *
  *   npm run eval:memory -- [--models a,b] [--split test|dev|all] [--repeats 3]
  *                          [--only id1,id2] [--concurrency 2] [--timeout-ms 300000]
- *                          [--effort low|medium|high|xhigh|max]
+ *                          [--effort low|medium|high|xhigh|max] [--groups long-task,worktree]
  */
 import { spawn, execFile } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -40,10 +40,12 @@ const run = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(ROOT, 'dist', 'index.js');
 
+/**
+ * The model the owner steers Book with (run it at `--effort xhigh`), and a second family for
+ * contrast. The `cx/` routes hit usage limits under eval load, and `space-bunny-alpha` was retired.
+ */
 export const DEFAULT_MODELS = [
-  '9router/ag/gemini-3.8-flash-high',
-  '9router/cx/gpt-5.6-luna',
-  '9router/cc/claude-sonnet-5',
+  '9router/cmc/z-ai/glm-5.3-flash',
   '9router/cmc/deepseek/deepseek-v4.1-flash',
 ];
 
@@ -52,6 +54,8 @@ export interface MemoryEvalOptions {
   split: 'dev' | 'test' | 'all';
   repeats: number;
   only?: string[];
+  /** Only items of these groups (`short`, `long-task`, `delegated`, `worktree`, `channel`). */
+  groups?: string[];
   concurrency: number;
   timeoutMs: number;
   /** Passed to every session as `--effort`; omitted, each model runs at its default. */
@@ -63,7 +67,9 @@ export function parseArgs(argv: string[]): MemoryEvalOptions {
     const i = argv.indexOf(flag);
     return i >= 0 ? argv[i + 1] : undefined;
   };
-  const split = (get('--split') ?? 'test') as MemoryEvalOptions['split'];
+  // A group spans both halves, so `--groups` alone runs all of it rather than silently half.
+  const split = (get('--split') ??
+    (get('--groups') ? 'all' : 'test')) as MemoryEvalOptions['split'];
   if (!['dev', 'test', 'all'].includes(split)) throw new Error(`--split must be dev, test or all`);
   const int = (flag: string, fallback: number) => {
     const raw = get(flag);
@@ -77,16 +83,21 @@ export function parseArgs(argv: string[]): MemoryEvalOptions {
     split,
     repeats: int('--repeats', 3),
     only: get('--only')?.split(',').filter(Boolean),
+    groups: get('--groups')?.split(',').filter(Boolean),
     concurrency: int('--concurrency', 2),
     timeoutMs: int('--timeout-ms', 300_000),
     effort: get('--effort'),
   };
 }
 
-export function selectScenarios(opts: Pick<MemoryEvalOptions, 'split' | 'only'>): MemoryScenario[] {
+export function selectScenarios(
+  opts: Pick<MemoryEvalOptions, 'split' | 'only' | 'groups'>,
+): MemoryScenario[] {
   return MEMORY_SCENARIOS.filter(
     (s) =>
-      (opts.split === 'all' || s.split === opts.split) && (!opts.only || opts.only.includes(s.id)),
+      (opts.split === 'all' || s.split === opts.split) &&
+      (!opts.only || opts.only.includes(s.id)) &&
+      (!opts.groups || opts.groups.includes(s.group ?? 'short')),
   );
 }
 
@@ -116,11 +127,17 @@ interface SessionResult {
  * that field opt-in to keep a long run's last line small, and without the flag
  * every session scored an empty answer.
  */
-export function sessionArgs(model: string, resume: boolean, effort?: string): string[] {
+export function sessionArgs(
+  model: string,
+  resume: boolean,
+  effort?: string,
+  driver: 'human' | 'agent' = 'human',
+): string[] {
   const args = [CLI, '--print', '--model', model, '--permission-mode', 'bypassPermissions'];
-  // The harness runs under whatever launched it, often another agent: without this every teaching
-  // session would be agent-driven, which reads memory but never writes it.
-  args.push('--session-driver', 'human');
+  // The harness runs under whatever launched it, often another agent: without an explicit driver
+  // every teaching session would be agent-driven, which reads memory but never writes it. An item
+  // that is about a delegated run asks for `agent` itself.
+  args.push('--session-driver', driver);
   args.push('--output-format', 'stream-json', '--include-result-messages');
   if (effort) args.push('--effort', effort);
   if (resume) args.push('--continue');
@@ -147,9 +164,10 @@ async function session(
   home: string,
   resume: boolean,
   opts: Pick<MemoryEvalOptions, 'timeoutMs' | 'effort'>,
+  driver: 'human' | 'agent' = 'human',
 ): Promise<SessionResult> {
   const { timeoutMs } = opts;
-  const args = sessionArgs(model, resume, opts.effort);
+  const args = sessionArgs(model, resume, opts.effort, driver);
   return new Promise((resolvePromise, reject) => {
     // `--model` decides the model; an inherited BOOK_MODEL must not.
     const { BOOK_MODEL: _ignored, ...inherited } = process.env;
@@ -261,6 +279,30 @@ function readStore(home: string): { approved: string[]; inbox: string[] } {
   return { approved, inbox };
 }
 
+/**
+ * Put the repository back exactly at the base commit before the probe, leaving nothing the
+ * teaching session did that git could show it: in bypassPermissions a model often commits (its
+ * message may carry the very convention being taught), opens a branch, or stashes. A plain
+ * `reset --hard` keeps such a commit at HEAD, so the probe could pass by reading `git log` and the
+ * memory arm would be credited with it.
+ */
+export async function restoreBase(
+  git: (...args: string[]) => Promise<{ stdout: string }>,
+  baseSha: string,
+  baseBranch: string,
+): Promise<void> {
+  await git('checkout', '-q', '-f', baseBranch);
+  await git('reset', '--hard', '-q', baseSha);
+  await git('clean', '-fdxq');
+  const refs = (await git('for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/tags')).stdout
+    .split('\n')
+    .map((ref) => ref.trim())
+    .filter((ref) => ref && ref !== `refs/heads/${baseBranch}`);
+  for (const ref of refs) await git('update-ref', '-d', ref);
+  await git('stash', 'clear');
+  await git('reflog', 'expire', '--expire=now', '--all');
+}
+
 async function runItem(
   model: string,
   scenario: MemoryScenario,
@@ -288,28 +330,43 @@ async function runItem(
   try {
     mkdirSync(join(home, '.book'), { recursive: true });
     writeFileSync(join(home, '.book', 'settings.json'), armSettings(arm));
-    writeFiles(ws, BASE_WORKSPACE);
+    writeFiles(ws, { ...BASE_WORKSPACE, ...scenario.baseFiles });
     const git = (...args: string[]) => run('git', ['-C', ws, ...args]);
     await git('init', '-q');
     await git('add', '-A');
     await git('-c', 'user.email=eval@book', '-c', 'user.name=eval', 'commit', '-qm', 'base');
+    const baseSha = (await git('rev-parse', 'HEAD')).stdout.trim();
+    const baseBranch = (await git('rev-parse', '--abbrev-ref', 'HEAD')).stdout.trim();
 
     // The baseline has no memory, so nothing a teaching session did could reach its probe.
     if (arm === 'memory') {
-      writeFiles(ws, scenario.teachFiles ?? {});
+      // A worktree item teaches in a linked worktree of the same repository and probes the main
+      // checkout, the way a fact learned in a sweep worktree should reach the repo.
+      const teachDir = scenario.teachIn === 'worktree' ? join(root, 'wt') : ws;
+      if (teachDir !== ws) await git('worktree', 'add', '-q', '-b', 'eval-wt', teachDir);
+      writeFiles(teachDir, scenario.teachFiles ?? {});
       for (const [i, turn] of scenario.teach.entries()) {
         const taught = await session(
           model,
           turn.replaceAll('{{WEB}}', webUrl),
-          ws,
+          teachDir,
           home,
           i > 0,
           opts,
+          scenario.teachDriver ?? 'human',
         );
         obs.teachTools.push(...taught.tools);
       }
-      await git('reset', '--hard', '-q');
-      await git('clean', '-fdxq');
+      // A kept file (a repo's own notes file) outlives the reset, as it would in a real workspace.
+      const kept: Record<string, string> = {};
+      for (const path of scenario.keepFiles ?? []) {
+        const file = join(teachDir, path);
+        if (existsSync(file)) kept[path] = readFileSync(file, 'utf8');
+      }
+      if (teachDir !== ws) await git('worktree', 'remove', '--force', teachDir);
+      await restoreBase(git, baseSha, baseBranch);
+      writeFiles(ws, kept);
+      if (scenario.keepFiles?.length) obs.keptFiles = kept;
       Object.assign(obs, readStore(home));
     }
 
@@ -384,13 +441,15 @@ export async function main(argv: string[]): Promise<void> {
   const stamp = generatedAt.replace(/[:.]/g, '').slice(0, 15);
   const reports = join(ROOT, '.book', 'reports');
   mkdirSync(reports, { recursive: true });
-  const base = join(reports, `memory-eval-${opts.split}-${stamp}`);
+  const groups = opts.groups ? `-${opts.groups.join('+')}` : '';
+  const base = join(reports, `memory-eval-${opts.split}${groups}-${stamp}`);
   const meta = {
     generatedAt,
     split: opts.split,
     repeats: opts.repeats,
     models: opts.models,
     ...(opts.effort ? { effort: opts.effort } : {}),
+    ...(opts.groups ? { groups: opts.groups } : {}),
   };
   writeFileSync(`${base}.json`, JSON.stringify({ meta, results, observations }, null, 2));
   const md = renderMarkdown(meta, results);

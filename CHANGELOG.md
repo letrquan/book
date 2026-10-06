@@ -2469,6 +2469,15 @@ requestedModel`. A record's own model names only the response that triggered the
 
 ### Added
 
+- **`eval:memory` items that look like real use.** Nine items join the short ones, selectable with
+  `--groups`: five `long-task` items where a fact arrives as a casual Vietnamese aside in the
+  middle of fixing and extending a small module (no "remember"; a look-alike "from now on in this
+  task" and a today-only "answer briefly" that must not be kept), a `delegated` spec run whose
+  ground rule contradicts the repo's CLAUDE.md, two `worktree` items that teach in a linked
+  worktree and probe the main checkout, and a `channel` item where the repo names its own
+  `NOTES.md` (a save to both stores is reported as a duplicate). The report adds a per-group
+  table; the default models are now glm-5.3-flash and deepseek-v4.1-flash.
+
 - **`npm run eval:prompt`** measures prompt-shaping choices with the real agent loop in throwaway
   git sandboxes, with config loaded against an empty workspace. `--suite verify` pits a checkpoint's
   claim against a transcript's tool result across four conditions. `--suite replay` records a
