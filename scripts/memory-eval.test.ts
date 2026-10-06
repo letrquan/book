@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { MEMORY_SCENARIOS, type MemoryScenario } from './memory-eval-scenarios.js';
+import { BASE_WORKSPACE, MEMORY_SCENARIOS, type MemoryScenario } from './memory-eval-scenarios.js';
 import {
   checkPasses,
   pairedBootstrap,
   renderMarkdown,
   scoreItem,
+  summarizeGroups,
   summarizeModel,
   type MemoryObservation,
 } from './memory-eval-score.js';
@@ -264,5 +265,118 @@ describe('sessionFailure', () => {
   it('passes a finished run through', () => {
     expect(sessionFailure({ type: 'result', outcome: { status: 'completed' } })).toBeUndefined();
     expect(sessionFailure({ type: 'result' })).toBeUndefined();
+  });
+});
+
+describe('long-task, delegated, worktree and channel items', () => {
+  const grouped = (group: string) => MEMORY_SCENARIOS.filter((s) => s.group === group);
+
+  it('cover each group in both halves where it has more than one item', () => {
+    for (const group of ['long-task', 'worktree']) {
+      for (const split of ['dev', 'test'] as const) {
+        expect(grouped(group).some((s) => s.split === split)).toBe(true);
+      }
+    }
+    expect(grouped('delegated').every((s) => s.teachDriver === 'agent')).toBe(true);
+    expect(grouped('worktree').every((s) => s.teachIn === 'worktree')).toBe(true);
+    expect(grouped('channel').every((s) => s.keepFiles?.length)).toBe(true);
+  });
+
+  it('bury the fact in several turns of real work and never ask to remember it', () => {
+    // The owner's real teach events are asides in casual Vietnamese in the middle of a task; an
+    // item that says "remember" measures obedience, not judgement.
+    for (const s of grouped('long-task')) {
+      expect(s.teach.length).toBeGreaterThanOrEqual(3);
+      expect(s.teach.join('\n')).not.toMatch(/\bremember\b|\bnhớ\b/i);
+    }
+  });
+
+  it('cannot be passed by reading the workspace: no saved fact is already in a base file', () => {
+    // Only the newer groups: the short `explicit-test-command` item predates this rule and its
+    // `test:fast` is a script in the base package.json (its baseline passed 1 of 3 on two models in
+    // the 2026-10-06 runs). It is kept as it is so those runs stay comparable.
+    const newer = MEMORY_SCENARIOS.filter((x) => (x.group ?? 'short') !== 'short');
+    for (const s of newer.filter((x) => x.gold === 'persist' && x.saveMatch)) {
+      const files = { ...BASE_WORKSPACE, ...s.baseFiles };
+      for (const [path, content] of Object.entries(files)) {
+        expect(new RegExp(s.saveMatch!, 'i').test(content), `${s.id}: ${path}`).toBe(false);
+      }
+    }
+  });
+});
+
+describe('command checks with absent', () => {
+  const check = { kind: 'command' as const, pattern: 'npm (run )?test(?!:)', absent: 'test:fast' };
+
+  it('passes the full suite and fails a run of the fast subset', () => {
+    expect(checkPasses(check, obs({ probeCommands: ['npm test'] }))).toBe(true);
+    expect(checkPasses(check, obs({ probeCommands: ['npm run test:fast'] }))).toBe(false);
+    expect(checkPasses(check, obs({ probeCommands: ['npm test', 'npm run test:fast'] }))).toBe(
+      false,
+    );
+  });
+});
+
+describe('a notes-file channel', () => {
+  const channel: MemoryScenario = {
+    ...persist,
+    id: 'c',
+    group: 'channel',
+    keepFiles: ['NOTES.md'],
+    saveMatch: 'TL;DR',
+  };
+
+  it('counts a matching note in a kept file as a save, and both stores as a duplicate', () => {
+    const r = scoreItem(channel, [
+      obs({ scenarioId: 'c', keptFiles: { 'NOTES.md': 'Prefers a TL;DR line' } }),
+      obs({
+        scenarioId: 'c',
+        repeat: 1,
+        approved: ['End with TL;DR'],
+        keptFiles: { 'NOTES.md': 'TL;DR at the end' },
+      }),
+      obs({ scenarioId: 'c', repeat: 2, keptFiles: { 'NOTES.md': 'unrelated' } }),
+    ]);
+    expect(r.saveRate).toBeCloseTo(2 / 3);
+    expect(r.fileSaveRate).toBeCloseTo(2 / 3);
+    expect(r.bothRate).toBeCloseTo(1 / 3);
+    expect(scoreItem(persist, [obs({ scenarioId: 'p' })]).fileSaveRate).toBeNull();
+  });
+});
+
+describe('summarizeGroups', () => {
+  it('reports recall and over-memory per group, so long-task results are not averaged away', () => {
+    const long: MemoryScenario = { ...persist, id: 'l', group: 'long-task' };
+    const items = [
+      scoreItem(persist, [
+        obs({ arm: 'baseline', scenarioId: 'p', probeText: 'no' }),
+        obs({ scenarioId: 'p', probeText: 'yes', approved: ['X'] }),
+      ]),
+      scoreItem(long, [
+        obs({ arm: 'baseline', scenarioId: 'l', probeText: 'no' }),
+        obs({ scenarioId: 'l', probeText: 'no' }),
+      ]),
+    ];
+    const groups = Object.fromEntries(summarizeGroups(items).map((g) => [g.group, g]));
+    expect(groups.short).toMatchObject({ memoryRecall: 1, underMemory: 0 });
+    expect(groups['long-task']).toMatchObject({
+      memoryRecall: 0,
+      underMemory: 1,
+      overMemory: null,
+    });
+  });
+});
+
+describe('driver and group selection', () => {
+  it('runs a delegated item as agent-driven when asked', () => {
+    const args = sessionArgs('gpt-5', false, undefined, 'agent');
+    expect(args[args.indexOf('--session-driver') + 1]).toBe('agent');
+  });
+
+  it('selects items by group', () => {
+    const picked = selectScenarios({ split: 'all', groups: ['worktree'] });
+    expect(picked.length).toBeGreaterThan(0);
+    expect(picked.every((s) => s.group === 'worktree')).toBe(true);
+    expect(parseArgs(['--groups', 'long-task,short']).groups).toEqual(['long-task', 'short']);
   });
 });
