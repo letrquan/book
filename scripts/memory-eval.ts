@@ -67,7 +67,9 @@ export function parseArgs(argv: string[]): MemoryEvalOptions {
     const i = argv.indexOf(flag);
     return i >= 0 ? argv[i + 1] : undefined;
   };
-  const split = (get('--split') ?? 'test') as MemoryEvalOptions['split'];
+  // A group spans both halves, so `--groups` alone runs all of it rather than silently half.
+  const split = (get('--split') ??
+    (get('--groups') ? 'all' : 'test')) as MemoryEvalOptions['split'];
   if (!['dev', 'test', 'all'].includes(split)) throw new Error(`--split must be dev, test or all`);
   const int = (flag: string, fallback: number) => {
     const raw = get(flag);
@@ -277,6 +279,30 @@ function readStore(home: string): { approved: string[]; inbox: string[] } {
   return { approved, inbox };
 }
 
+/**
+ * Put the repository back exactly at the base commit before the probe, leaving nothing the
+ * teaching session did that git could show it: in bypassPermissions a model often commits (its
+ * message may carry the very convention being taught), opens a branch, or stashes. A plain
+ * `reset --hard` keeps such a commit at HEAD, so the probe could pass by reading `git log` and the
+ * memory arm would be credited with it.
+ */
+export async function restoreBase(
+  git: (...args: string[]) => Promise<{ stdout: string }>,
+  baseSha: string,
+  baseBranch: string,
+): Promise<void> {
+  await git('checkout', '-q', '-f', baseBranch);
+  await git('reset', '--hard', '-q', baseSha);
+  await git('clean', '-fdxq');
+  const refs = (await git('for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/tags')).stdout
+    .split('\n')
+    .map((ref) => ref.trim())
+    .filter((ref) => ref && ref !== `refs/heads/${baseBranch}`);
+  for (const ref of refs) await git('update-ref', '-d', ref);
+  await git('stash', 'clear');
+  await git('reflog', 'expire', '--expire=now', '--all');
+}
+
 async function runItem(
   model: string,
   scenario: MemoryScenario,
@@ -309,6 +335,8 @@ async function runItem(
     await git('init', '-q');
     await git('add', '-A');
     await git('-c', 'user.email=eval@book', '-c', 'user.name=eval', 'commit', '-qm', 'base');
+    const baseSha = (await git('rev-parse', 'HEAD')).stdout.trim();
+    const baseBranch = (await git('rev-parse', '--abbrev-ref', 'HEAD')).stdout.trim();
 
     // The baseline has no memory, so nothing a teaching session did could reach its probe.
     if (arm === 'memory') {
@@ -336,8 +364,7 @@ async function runItem(
         if (existsSync(file)) kept[path] = readFileSync(file, 'utf8');
       }
       if (teachDir !== ws) await git('worktree', 'remove', '--force', teachDir);
-      await git('reset', '--hard', '-q');
-      await git('clean', '-fdxq');
+      await restoreBase(git, baseSha, baseBranch);
       writeFiles(ws, kept);
       if (scenario.keepFiles?.length) obs.keptFiles = kept;
       Object.assign(obs, readStore(home));
@@ -414,7 +441,8 @@ export async function main(argv: string[]): Promise<void> {
   const stamp = generatedAt.replace(/[:.]/g, '').slice(0, 15);
   const reports = join(ROOT, '.book', 'reports');
   mkdirSync(reports, { recursive: true });
-  const base = join(reports, `memory-eval-${opts.split}-${stamp}`);
+  const groups = opts.groups ? `-${opts.groups.join('+')}` : '';
+  const base = join(reports, `memory-eval-${opts.split}${groups}-${stamp}`);
   const meta = {
     generatedAt,
     split: opts.split,

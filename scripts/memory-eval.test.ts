@@ -9,7 +9,13 @@ import {
   summarizeModel,
   type MemoryObservation,
 } from './memory-eval-score.js';
-import { parseArgs, selectScenarios, sessionArgs, sessionFailure } from './memory-eval.js';
+import {
+  parseArgs,
+  restoreBase,
+  selectScenarios,
+  sessionArgs,
+  sessionFailure,
+} from './memory-eval.js';
 
 function obs(partial: Partial<MemoryObservation>): MemoryObservation {
   return {
@@ -287,7 +293,8 @@ describe('long-task, delegated, worktree and channel items', () => {
     // item that says "remember" measures obedience, not judgement.
     for (const s of grouped('long-task')) {
       expect(s.teach.length).toBeGreaterThanOrEqual(3);
-      expect(s.teach.join('\n')).not.toMatch(/\bremember\b|\bnhớ\b/i);
+      // `\b` is ASCII-only in JS: `\bnhớ\b` never matches, since `ớ` is not a word character.
+      expect(s.teach.join('\n')).not.toMatch(/\bremember\b|(?<!\p{L})nhớ(?!\p{L})/iu);
     }
   });
 
@@ -378,5 +385,86 @@ describe('driver and group selection', () => {
     expect(picked.length).toBeGreaterThan(0);
     expect(picked.every((s) => s.group === 'worktree')).toBe(true);
     expect(parseArgs(['--groups', 'long-task,short']).groups).toEqual(['long-task', 'short']);
+  });
+});
+
+describe('restoreBase', () => {
+  it('leaves nothing a teaching session did that git could show the probe', async () => {
+    const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    const ws = mkdtempSync(join(tmpdir(), 'book-restore-base-'));
+    const git = (...args: string[]) =>
+      run('git', ['-C', ws, '-c', 'user.email=e@b', '-c', 'user.name=e', ...args]);
+    try {
+      writeFileSync(join(ws, 'a.txt'), 'base\n');
+      await git('init', '-q');
+      await git('add', '-A');
+      await git('commit', '-qm', 'base');
+      const base = (await git('rev-parse', 'HEAD')).stdout.trim();
+      const branch = (await git('rev-parse', '--abbrev-ref', 'HEAD')).stdout.trim();
+      // What a model in bypassPermissions does while being taught a commit convention.
+      writeFileSync(join(ws, 'a.txt'), 'fixed\n');
+      await git('commit', '-qam', 'INV-42: fix rounding');
+      await git('tag', 'v1');
+      await git('checkout', '-qb', 'feature');
+      writeFileSync(join(ws, 'a.txt'), 'wip\n');
+      await git('stash');
+      writeFileSync(join(ws, 'untracked.txt'), 'x\n');
+
+      await restoreBase(git, base, branch);
+
+      expect((await git('rev-parse', 'HEAD')).stdout.trim()).toBe(base);
+      expect((await git('rev-parse', '--abbrev-ref', 'HEAD')).stdout.trim()).toBe(branch);
+      expect((await git('log', '--all', '--format=%s')).stdout.trim()).toBe('base');
+      expect((await git('stash', 'list')).stdout.trim()).toBe('');
+      expect((await git('status', '--porcelain')).stdout.trim()).toBe('');
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the review round on the new items', () => {
+  it('runs both halves when only --groups is given', () => {
+    expect(parseArgs(['--groups', 'channel']).split).toBe('all');
+    expect(parseArgs(['--groups', 'channel', '--split', 'dev']).split).toBe('dev');
+    expect(parseArgs([]).split).toBe('test');
+  });
+
+  it('counts a notes-file save in precision and a save to both in duplication', () => {
+    const channel: MemoryScenario = {
+      ...persist,
+      id: 'c',
+      group: 'channel',
+      keepFiles: ['NOTES.md'],
+      saveMatch: 'TL;DR',
+    };
+    const { summary } = summarizeModel(
+      'm',
+      [channel],
+      [
+        obs({ scenarioId: 'c', keptFiles: { 'NOTES.md': 'TL;DR' } }),
+        obs({
+          scenarioId: 'c',
+          repeat: 1,
+          approved: ['TL;DR line'],
+          keptFiles: { 'NOTES.md': 'TL;DR' },
+        }),
+      ],
+    );
+    expect(summary.savePrecision).toBe(1);
+    expect(summary.duplication).toBe(0.5);
+  });
+
+  it('says in the header which groups a run was restricted to', () => {
+    const md = renderMarkdown(
+      { generatedAt: 't', split: 'all', repeats: 1, models: [], groups: ['worktree'] },
+      [],
+    );
+    expect(md).toContain('groups `worktree` only');
   });
 });

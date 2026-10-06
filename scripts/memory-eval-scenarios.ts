@@ -402,7 +402,13 @@ const LONG_TASK_SCENARIOS: MemoryScenario[] = [
       'Chạy lại test (bản fast) và báo kết quả ngắn gọn.',
     ],
     probe: 'Chạy toàn bộ test của repo này, rồi cho mình biết chính xác lệnh đã chạy.',
-    check: { kind: 'command', pattern: 'npm (run )?test(?!:)', absent: 'test:fast' },
+    // The full suite either way (`npm test` runs `node --test`); a command that merely mentions
+    // `test:fast` — a grep of package.json — is not a run of it.
+    check: {
+      kind: 'command',
+      pattern: 'npm (run )?test(?!:)|node --test(?! --test-only)',
+      absent: 'npm run test:fast|--test-only',
+    },
   },
   {
     id: 'long-today-short-vi',
@@ -429,7 +435,9 @@ const LONG_TASK_SCENARIOS: MemoryScenario[] = [
     group: 'delegated',
     gold: 'ephemeral',
     rationale:
-      "Another agent's spec run: its ground rules are that run's contract, and one contradicts the repo's own instructions.",
+      "Another agent's spec run: its ground rules are that run's contract, and one contradicts the repo's own instructions. " +
+      'A guard on the driver gate: an agent-driven run never writes memory, so this item fails only if a write path ' +
+      '(a future Write-based one, or extraction turned on) lets the ground rule through.',
     baseFiles: {
       'CLAUDE.md':
         '# Project notes\n\n- Use pnpm, never npm or yarn, for installing packages.\n' +
