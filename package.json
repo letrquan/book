@@ -1,6 +1,6 @@
 {
   "name": "@letrquan/book",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AI coding agent CLI with rich TUI",
   "type": "module",
   "license": "PolyForm-Small-Business-1.0.0",
