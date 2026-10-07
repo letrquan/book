@@ -132,8 +132,8 @@ See [plans/security-assessment.md](plans/security-assessment.md) for the current
       the full gate and the installed-artifact smoke test, then publishes with provenance. This also
       replaces the bypass-2FA token 0.2.0 shipped on, which npm retires for direct publish in
       January 2027.
-- [ ] Cut the next version only after `npm run release:check`, full Node 22/24 validation, package
-      inspection, changelog promotion, and installed-artifact smoke tests.
+- [x] 0.3.0 cut after `npm run release:check`, full Node 22/24 validation, package inspection,
+      changelog promotion, and installed-artifact smoke tests. Later versions hold to the same gate.
 
 ### 3. Background Job Follow-up
 

@@ -8,7 +8,7 @@ Book is a proprietary, provider-agnostic alternative to Claude Code. It provides
 
 **Tech stack**: TypeScript (ES2022/ESM, `moduleResolution: bundler`), React 19 via Ink 7.1.1 for the TUI, tsup for building, Vitest 4 for testing, Zod 4 for config validation. Node.js 22.19+.
 
-**Version**: `0.1.0` plus the unreleased changes in `CHANGELOG.md`. `docs/current-state.md` is the authoritative status snapshot, `README.md` is the front door, `docs/guide/` is the usage reference, and `MILESTONES.md` tracks remaining work.
+**Version**: `0.3.0` plus the unreleased changes in `CHANGELOG.md`. `docs/current-state.md` is the authoritative status snapshot, `README.md` is the front door, `docs/guide/` is the usage reference, and `MILESTONES.md` tracks remaining work.
 
 ## Architecture
 

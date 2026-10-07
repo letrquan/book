@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-07
+
 ### Security
 
 - **Dependency audit cleared at `--audit-level=high`, including production dependencies.**
@@ -179,8 +181,6 @@ true` is the one loosening-adjacent key a workspace layer may set, and the loade
   at what can be typed, not an account of what is in the workspace.
   The lockfile also picks up the current `hono`, `qs`, `fast-uri` and `ip-address`, which close four
   moderate advisories.
-
-### Security
 
 - **High-severity dependency advisories cleared** (#361). `undici` moves to 8.11.2 and the
   transitive `brace-expansion` to 5.0.12, so `npm audit --audit-level=high` is clean. The routine

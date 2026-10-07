@@ -15,7 +15,7 @@ fresh verification pass.
 
 ## Release Identity
 
-- Package version: `0.2.0`, published as `@letrquan/book`.
+- Package version: `0.3.0`, published as `@letrquan/book`.
 - Distribution: `npm install -g @letrquan/book`, a source checkout, or a GitHub tag. The command
   is `book`; the package is scoped because the unscoped name was taken.
 - License: PolyForm Small Business 1.0.0 — source-available, commercial use limited to companies
