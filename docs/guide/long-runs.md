@@ -142,7 +142,14 @@ every retry delay is. Any error body is read for at most 5 s and 64 KB. Behind a
 decision is made on what arrived, so a router that sends its headers and then stalls cannot hold an
 attempt for the whole request timeout.
 
-A 408 or a 429 is retried like an outage. A 400 or a 422, plain or quoted, a 404 that is neither the capacity outage above nor the model verdict below, and Anthropic's
+A 408 or a 429 is retried like an outage. A 429 (plain or quoted by a router) that says a
+weekly/daily/monthly/N-hour usage or plan limit was reached, exceeded, or spent, or OpenAI's
+`insufficient_quota`, is answered once (unless `retry.watchdog` is enabled) and parks the run
+like a 402 (`credentials_rejected`, provider code `quota`), with a message naming the stated
+reset time and remedy, while `insufficient_quota` keeps the credits advice; naming a short
+window anywhere in the message keeps it a rate limit. On any retryable 429, a stated absolute
+`resets at <time>` within reach is waited for, up to `retry.maxDelayMs` per attempt, while a
+reset later than the retries can wait is not retried. A 400 or a 422, plain or quoted, a 404 that is neither the capacity outage above nor the model verdict below, and Anthropic's
 mid-stream `invalid_request_error` and `not_found_error` end the run on the first answer, since
 re-sending the same request reproduces them. One 403/404 verdict is read from the body rather than
 the status: when the body says the model itself is gone — a retirement notice, an OpenAI

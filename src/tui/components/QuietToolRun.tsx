@@ -44,16 +44,23 @@ function QuietToolRunInner({
 
   return (
     <Box height={1} marginLeft={CONTENT_COLUMN}>
+      {/* The row is one line by contract; it must truncate, never wrap, because a wrapped line is drawn outside the box and the render cull relies on rows drawing inside their own box. */}
       {summary.running ? (
         // Spinner emits its own trailing space, keeping the gutter two wide.
         <Spinner active style="dots" color={theme.assistantAccent} reducedMotion={reducedMotion} />
       ) : (
-        <Text color={theme.inactive}>{'✓ '}</Text>
+        <Text wrap="truncate-end" color={theme.inactive}>
+          {'✓ '}
+        </Text>
       )}
-      {row.label ? <Text color={theme.inactive}>{row.label} </Text> : null}
-      <TargetText target={row.target} failed={false} />
-      <Text>{row.gap}</Text>
-      <MetaText meta={row.meta} failed={false} />
+      {row.label ? (
+        <Text wrap="truncate-end" color={theme.inactive}>
+          {row.label}{' '}
+        </Text>
+      ) : null}
+      <TargetText target={row.target} failed={false} wrap="truncate-end" />
+      <Text wrap="truncate-end">{row.gap}</Text>
+      <MetaText meta={row.meta} failed={false} wrap="truncate-end" />
     </Box>
   );
 }

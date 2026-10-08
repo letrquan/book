@@ -3,8 +3,8 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
-import { Text, render } from 'ink';
-import { createElement } from 'react';
+import { Box, Text, render } from 'ink';
+import { createElement, type ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { installInkFrameThrottle } from './ink-frame-throttle.js';
 import {
@@ -13,9 +13,15 @@ import {
   type InkClip,
   type InkOutput,
   type InkOutputConstructor,
+  type InkOutputFrame,
   type InkTransformer,
   type SliceAnsi,
 } from './ink-output-cache.js';
+import {
+  cullWhenOffscreen,
+  installInkRenderCull,
+  type CullableElement,
+} from './ink-render-cull.js';
 import {
   VERIFIED_INK_VERSION,
   hasInkTrailingNewlineFix,
@@ -107,7 +113,527 @@ describe('Ink renderer contract', () => {
       }
     }
   });
+
+  it.each([
+    {
+      shape: 'rows' as const,
+      prefix: 'row',
+      description: 'transcript rows wholly outside the viewport clip',
+    },
+    {
+      shape: 'tall-row' as const,
+      prefix: 'line',
+      description: 'lines of a tall transcript row straddling the viewport clip',
+    },
+  ])('culls $description', async ({ shape, prefix }) => {
+    const outputPath = join(inkBuildDir(), 'output.js');
+    const outputModule = (await import(pathToFileURL(outputPath).href)) as {
+      default: ContractInkOutputConstructor;
+    };
+    const Output = outputModule.default;
+    const originalClip = Output.prototype.clip;
+    const originalUnclip = Output.prototype.unclip;
+    try {
+      // The frames drawn without the cull come first: the install wraps the prototype for the rest
+      // of the process, so the baseline must be drawn before it.
+      const baselines = new Map<number, DrawnTranscript>();
+      for (const offset of CULL_OFFSETS) {
+        baselines.set(offset, await drawTranscript(Output, shape, offset, false));
+      }
+      expect(
+        await installInkRenderCull(),
+        "Ink's private Output changed shape; update ink-render-cull.ts before VERIFIED_INK_VERSION.",
+      ).toBe(true);
+      for (const offset of CULL_OFFSETS) {
+        const baseline = baselines.get(offset)!;
+        const culled = await drawTranscript(Output, shape, offset, true);
+        expect(baseline.frame, `offset ${offset} baseline not empty`).not.toBe('');
+        expect(baseline.frame.split('\n')[0], `offset ${offset} first line`).toContain(
+          `${prefix} ${offset}`,
+        );
+        // The cull decides against the clip Output.get replays, so every culled frame is byte-identical
+        // to the frame Ink draws itself.
+        expect(culled.frame, `offset ${offset}`).toBe(baseline.frame);
+        // The unculled walk recorded every mounted row, including the ones `get` threw away.
+        expect(baseline.rowsWritten.length).toBe(CULL_ROWS);
+        // The culled walk recorded only the visible rows: none outside the viewport was written.
+        const expectedVisible = Array.from(
+          { length: CULL_CONTENT_HEIGHT },
+          (_, index) => `${prefix} ${offset + index}`,
+        );
+        expect(culled.rowsWritten, `offset ${offset}`).toEqual(expectedVisible);
+      }
+    } finally {
+      Output.prototype.clip = originalClip;
+      Output.prototype.unclip = originalUnclip;
+    }
+  });
+
+  it('culls rows when registered once at the scroll container and re-rendered through offsets', async () => {
+    const outputPath = join(inkBuildDir(), 'output.js');
+    const outputModule = (await import(pathToFileURL(outputPath).href)) as {
+      default: ContractInkOutputConstructor;
+    };
+    const Output = outputModule.default;
+    const originalClip = Output.prototype.clip;
+    const originalUnclip = Output.prototype.unclip;
+    const originalGet = Output.prototype.get;
+    const offsets = [0, 7, 25, 50, 7, 0] as const;
+
+    try {
+      const baselines: string[] = [];
+      let lastOutput = '';
+      Output.prototype.get = function (this: InkOutput) {
+        const frame = originalGet.call(this);
+        lastOutput = frame.output;
+        return frame;
+      };
+
+      const stdoutBaseline = makeStdout();
+      const stdinBaseline = makeStdin();
+      const baselineApp = render(
+        createElement(ScrollContainerTranscript, { offset: offsets[0]!, culled: false }),
+        {
+          stdout: stdoutBaseline,
+          stdin: stdinBaseline,
+          patchConsole: false,
+          interactive: true,
+          maxFps: 1000,
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      for (const offset of offsets) {
+        lastOutput = '';
+        baselineApp.rerender(createElement(ScrollContainerTranscript, { offset, culled: false }));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        baselines.push(lastOutput);
+      }
+      baselineApp.unmount();
+      baselineApp.cleanup();
+
+      expect(
+        await installInkRenderCull(),
+        "Ink's private Output changed shape; update ink-render-cull.ts before VERIFIED_INK_VERSION.",
+      ).toBe(true);
+
+      const stdoutCulled = makeStdout();
+      const stdinCulled = makeStdin();
+      const culledApp = render(
+        createElement(ScrollContainerTranscript, { offset: offsets[0]!, culled: true }),
+        {
+          stdout: stdoutCulled,
+          stdin: stdinCulled,
+          patchConsole: false,
+          interactive: true,
+          maxFps: 1000,
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      for (let index = 0; index < offsets.length; index++) {
+        const offset = offsets[index]!;
+        lastOutput = '';
+        culledApp.rerender(createElement(ScrollContainerTranscript, { offset, culled: true }));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const frame = lastOutput;
+        expect(frame, `offset ${offset} frame not empty`).not.toBe('');
+        expect(frame.split('\n')[0], `offset ${offset} first line`).toContain(`row ${offset}`);
+        expect(frame, `offset ${offset}`).toBe(baselines[index]);
+      }
+      culledApp.unmount();
+      culledApp.cleanup();
+    } finally {
+      Output.prototype.clip = originalClip;
+      Output.prototype.unclip = originalUnclip;
+      Output.prototype.get = originalGet;
+    }
+  });
+
+  it('keeps frames identical when a registered row is held with overflow="hidden" wholly above the clip', async () => {
+    const outputPath = join(inkBuildDir(), 'output.js');
+    const outputModule = (await import(pathToFileURL(outputPath).href)) as {
+      default: ContractInkOutputConstructor;
+    };
+    const Output = outputModule.default;
+    const originalClip = Output.prototype.clip;
+    const originalUnclip = Output.prototype.unclip;
+    const originalGet = Output.prototype.get;
+
+    try {
+      let baselineFrame = '';
+      Output.prototype.get = function (this: InkOutput) {
+        const frame = originalGet.call(this);
+        baselineFrame = frame.output;
+        return frame;
+      };
+
+      const stdoutBaseline = makeStdout();
+      const stdinBaseline = makeStdin();
+      const baselineApp = render(createElement(HeldRowTranscript, { culled: false }), {
+        stdout: stdoutBaseline,
+        stdin: stdinBaseline,
+        patchConsole: false,
+        interactive: true,
+        maxFps: 1000,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      baselineFrame = '';
+      baselineApp.rerender(createElement(HeldRowTranscript, { culled: false }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const expected = baselineFrame;
+      baselineApp.unmount();
+      baselineApp.cleanup();
+
+      expect(
+        await installInkRenderCull(),
+        "Ink's private Output changed shape; update ink-render-cull.ts before VERIFIED_INK_VERSION.",
+      ).toBe(true);
+
+      let culledFrame = '';
+      Output.prototype.get = function (this: InkOutput) {
+        const frame = originalGet.call(this);
+        culledFrame = frame.output;
+        return frame;
+      };
+
+      const stdoutCulled = makeStdout();
+      const stdinCulled = makeStdin();
+      const culledApp = render(createElement(HeldRowTranscript, { culled: true }), {
+        stdout: stdoutCulled,
+        stdin: stdinCulled,
+        patchConsole: false,
+        interactive: true,
+        maxFps: 1000,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      culledFrame = '';
+      culledApp.rerender(createElement(HeldRowTranscript, { culled: true }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const actual = culledFrame;
+      culledApp.unmount();
+      culledApp.cleanup();
+
+      expect(actual).not.toBe('');
+      expect(actual).toBe(expected);
+      expect(actual).not.toContain('held line');
+    } finally {
+      Output.prototype.clip = originalClip;
+      Output.prototype.unclip = originalUnclip;
+      Output.prototype.get = originalGet;
+    }
+  });
+
+  it('keeps a DISPLAY_NONE node from drawing while its sibling holds its position', async () => {
+    const outputPath = join(inkBuildDir(), 'output.js');
+    const outputModule = (await import(pathToFileURL(outputPath).href)) as {
+      default: ContractInkOutputConstructor;
+    };
+    const Output = outputModule.default;
+    const yogaPath = createRequire(outputPath).resolve('yoga-layout');
+    const yogaModule = (await import(pathToFileURL(yogaPath).href)) as {
+      default?: { DISPLAY_NONE: number };
+    };
+    const displayNone = yogaModule.default?.DISPLAY_NONE ?? 1;
+
+    const originalGet = Output.prototype.get;
+    let lastOutput = '';
+    Output.prototype.get = function (this: InkOutput) {
+      const frame = originalGet.call(this);
+      lastOutput = frame.output;
+      return frame;
+    };
+
+    try {
+      const stdout = makeStdout();
+      const stdin = makeStdin();
+
+      function App() {
+        return createElement(
+          Box,
+          { flexDirection: 'column' },
+          createElement(HiddenRow, { displayNone }, createElement(Text, null, 'hidden row')),
+          createElement(Box, { height: 1 }, createElement(Text, null, 'after')),
+        );
+      }
+
+      const app = render(createElement(App), {
+        stdout,
+        stdin,
+        patchConsole: false,
+        interactive: true,
+        maxFps: 1000,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      lastOutput = '';
+      app.rerender(createElement(App));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const frame = lastOutput;
+      Output.prototype.get = originalGet;
+      app.unmount();
+      app.cleanup();
+
+      const lines = frame.split('\n');
+      expect(lines[0]).toBe('');
+      expect(lines[1]?.startsWith('after')).toBe(true);
+      expect(frame).not.toContain('hidden row');
+    } finally {
+      Output.prototype.get = originalGet;
+    }
+  });
 });
+
+interface ContractInkOutputConstructor {
+  new (options: { width: number; height: number }): InkOutput;
+  prototype: InkOutput & { get: (this: InkOutput) => InkOutputFrame };
+}
+
+const CULL_ROWS = 60;
+const CULL_CONTENT_HEIGHT = 10;
+const CULL_OFFSETS = [0, 7, 25, 50] as const;
+
+interface DrawnTranscript {
+  frame: string;
+  rowsWritten: string[];
+}
+
+function makeStdout(writes?: string[]): NodeJS.WriteStream {
+  return Object.assign(new EventEmitter(), {
+    columns: 80,
+    rows: 24,
+    isTTY: true,
+    write: (data: string | Uint8Array) => {
+      if (writes) writes.push(String(data));
+      return true;
+    },
+  }) as unknown as NodeJS.WriteStream;
+}
+
+function makeStdin(): NodeJS.ReadStream {
+  return Object.assign(new PassThrough(), {
+    isTTY: false,
+  }) as unknown as NodeJS.ReadStream;
+}
+
+type TranscriptShape = 'rows' | 'tall-row';
+
+function Transcript({
+  shape,
+  offset,
+  culled,
+}: {
+  shape: TranscriptShape;
+  offset: number;
+  culled: boolean;
+}): ReactNode {
+  if (shape === 'rows') {
+    const rows: ReactNode[] = [];
+    for (let index = 0; index < CULL_ROWS; index++) {
+      rows.push(
+        createElement(
+          Box,
+          {
+            key: index,
+            flexShrink: 0,
+            ref: (node: CullableElement | null) => {
+              if (node && culled) cullWhenOffscreen(node);
+            },
+          },
+          createElement(Text, null, `row ${index}`),
+        ),
+      );
+    }
+    return createElement(
+      Box,
+      { height: CULL_CONTENT_HEIGHT, overflowY: 'hidden' },
+      createElement(Box, { marginTop: -offset, flexDirection: 'column' }, rows),
+    );
+  }
+
+  const lines: ReactNode[] = [];
+  for (let index = 0; index < CULL_ROWS; index++) {
+    lines.push(createElement(Text, { key: index }, `line ${index}`));
+  }
+  return createElement(
+    Box,
+    { height: CULL_CONTENT_HEIGHT, overflowY: 'hidden' },
+    createElement(
+      Box,
+      { marginTop: -offset, flexDirection: 'column' },
+      createElement(
+        Box,
+        {
+          flexDirection: 'column',
+          flexShrink: 0,
+          ref: (node: CullableElement | null) => {
+            if (node && culled) cullWhenOffscreen(node);
+          },
+        },
+        lines,
+      ),
+    ),
+  );
+}
+
+async function drawTranscript(
+  Output: ContractInkOutputConstructor,
+  shape: TranscriptShape,
+  offset: number,
+  culled: boolean,
+): Promise<DrawnTranscript> {
+  const stdoutWrites: string[] = [];
+  const stdout = makeStdout(stdoutWrites);
+  const stdin = makeStdin();
+  const recordedWrites: string[] = [];
+  const originalWrite = Output.prototype.write;
+  const originalGet = Output.prototype.get;
+  let lastOutput = '';
+  Output.prototype.write = function (
+    this: InkOutput,
+    x: number,
+    y: number,
+    text: string,
+    options: { transformers: InkTransformer[] },
+  ) {
+    recordedWrites.push(text);
+    return originalWrite.call(this, x, y, text, options);
+  };
+  Output.prototype.get = function (this: InkOutput) {
+    const frame = originalGet.call(this);
+    lastOutput = frame.output;
+    return frame;
+  };
+  try {
+    const app = render(createElement(Transcript, { shape, offset, culled }), {
+      stdout,
+      stdin,
+      patchConsole: false,
+      interactive: true,
+      maxFps: 1000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    recordedWrites.length = 0;
+    stdoutWrites.length = 0;
+    lastOutput = '';
+    app.rerender(createElement(Transcript, { shape, offset, culled }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const frame = lastOutput;
+    const prefix = shape === 'rows' ? 'row ' : 'line ';
+    const rowsWritten = recordedWrites.filter((text) => text.startsWith(prefix));
+    Output.prototype.write = originalWrite;
+    Output.prototype.get = originalGet;
+    app.unmount();
+    app.cleanup();
+    return {
+      frame,
+      rowsWritten,
+    };
+  } finally {
+    Output.prototype.write = originalWrite;
+    Output.prototype.get = originalGet;
+  }
+}
+
+function ScrollContainerTranscript({
+  offset,
+  culled,
+}: {
+  offset: number;
+  culled: boolean;
+}): ReactNode {
+  const rows: ReactNode[] = [];
+  for (let index = 0; index < CULL_ROWS; index++) {
+    rows.push(
+      createElement(
+        Box,
+        {
+          key: index,
+          flexShrink: 0,
+        },
+        createElement(Text, null, `row ${index}`),
+      ),
+    );
+  }
+  return createElement(
+    Box,
+    { height: CULL_CONTENT_HEIGHT, overflowY: 'hidden' },
+    createElement(
+      Box,
+      {
+        marginTop: -offset,
+        flexDirection: 'column',
+        ref: (node: CullableElement | null) => {
+          if (node && culled) cullWhenOffscreen(node);
+        },
+      },
+      rows,
+    ),
+  );
+}
+
+function HeldRowTranscript({ culled }: { culled: boolean }): ReactNode {
+  const visibleRows: ReactNode[] = [];
+  for (let index = 0; index < 20; index++) {
+    visibleRows.push(
+      createElement(
+        Box,
+        { key: `vis-${index}`, flexShrink: 0 },
+        createElement(Text, null, `visible row ${index}`),
+      ),
+    );
+  }
+  return createElement(
+    Box,
+    { height: CULL_CONTENT_HEIGHT, overflowY: 'hidden' },
+    createElement(
+      Box,
+      { marginTop: -10, flexDirection: 'column' },
+      createElement(
+        Box,
+        {
+          key: 'held',
+          height: 5,
+          overflow: 'hidden',
+          flexShrink: 0,
+          ref: (node: CullableElement | null) => {
+            if (node && culled) cullWhenOffscreen(node);
+          },
+        },
+        createElement(
+          Box,
+          { flexDirection: 'column', flexShrink: 0 },
+          createElement(Text, null, 'held line 0'),
+          createElement(Text, null, 'held line 1'),
+          createElement(Text, null, 'held line 2'),
+        ),
+      ),
+      visibleRows,
+    ),
+  );
+}
+
+function HiddenRow({
+  displayNone,
+  children,
+}: {
+  displayNone: number;
+  children?: ReactNode;
+}): ReactNode {
+  return createElement(
+    Box,
+    {
+      height: 1,
+      ref: (node: { yogaNode?: { getDisplay?: () => number } } | null) => {
+        if (node?.yogaNode && !Object.prototype.hasOwnProperty.call(node.yogaNode, 'getDisplay')) {
+          Object.defineProperty(node.yogaNode, 'getDisplay', {
+            value: () => displayNone,
+            configurable: true,
+          });
+        }
+      },
+    },
+    children,
+  );
+}
 
 /** The operations a list asks for, recorded through Ink's own methods on a fresh instance. */
 type Command =
