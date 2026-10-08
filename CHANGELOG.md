@@ -18,7 +18,8 @@ All notable changes to this project are documented in this file.
   vertical clip. Absolute tops are memoized per frame to avoid redundant ancestor traversals across
   siblings. Yoga layout is untouched — Yoga reads display from its native style rather than the
   JavaScript method — so layout positions are preserved while Ink skips the subtree walk entirely.
-  Set `BOOK_INK_RENDER_CULL=off` to restore the previous behavior. **Measured** on the shipped
+  Set `BOOK_INK_RENDER_CULL=off` to restore the previous behavior. At very narrow widths a tool
+  summary row now truncates instead of wrapping onto the row below it. **Measured** on the shipped
   code: every real frame was drawn twice in the same process, once with the cull and once without
   it, from the same layout: 0 mismatches over 512 frames (Windows 246, Linux 266). The cull
   removes 65% (Windows) and 70% (Linux) of the walk's writes (before it, 73% of the writes the

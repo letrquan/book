@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   InkClip,
   InkOperation,
@@ -72,6 +72,11 @@ interface FakeRowElement extends CullableElement {
   yogaNode: CullableYogaNode;
   parentNode: CullableElement | null;
   childNodes?: FakeRowElement[];
+  style?: {
+    overflow?: string;
+    overflowX?: string;
+    overflowY?: string;
+  };
 }
 
 /** A row under a root box whose own top is zero, so the row's top is its absolute top. */
@@ -206,6 +211,75 @@ describe("culling rows against the walk's clips", () => {
     const registered = rowElement.yogaNode.getDisplay;
     cull.cullWhenOffscreen(rowElement);
     expect(rowElement.yogaNode.getDisplay).toBe(registered);
+  });
+
+  it('does not cull a self-clipping registered node wholly outside the clip', () => {
+    const output = new FakeOutput();
+    output.clip({ y1: 10, y2: 20 });
+    // Wholly above (bottom 5 <= 10)
+    const above = row(0, 5);
+    above.style = { overflow: 'hidden' };
+    cull.cullWhenOffscreen(above);
+    expect(above.yogaNode.getDisplay()).toBe(DISPLAY_FLEX);
+
+    // Wholly below (top 25 >= 20)
+    const below = row(25, 5);
+    below.style = { overflowY: 'hidden' };
+    cull.cullWhenOffscreen(below);
+    expect(below.yogaNode.getDisplay()).toBe(DISPLAY_FLEX);
+
+    output.unclip();
+  });
+
+  it("re-scans a straddling node's children only when they changed", () => {
+    const output = new FakeOutput();
+    output.clip({ y1: 10, y2: 20 });
+    const parent = rowWithChildren(5, 10, [
+      { top: 0, height: 4 },
+      { top: 4, height: 4 },
+    ]);
+    const spy = vi.spyOn(cull, 'cullWhenOffscreen');
+    cull.cullWhenOffscreen(parent);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // Walk parent on frame 1: registers its 2 children:
+    parent.yogaNode.getDisplay();
+    expect(spy).toHaveBeenCalledTimes(3);
+
+    // Walk parent again: unchanged children (identity and length):
+    parent.yogaNode.getDisplay();
+    expect(spy).toHaveBeenCalledTimes(3);
+
+    // Append a child to parent.childNodes:
+    parent.childNodes!.push({
+      yogaNode: fakeYogaNode(8, 4),
+      parentNode: parent,
+    });
+    // Walk parent again: scans newly appended child:
+    parent.yogaNode.getDisplay();
+    expect(spy).toHaveBeenCalledTimes(6);
+    output.unclip();
+  });
+
+  it('re-registers a node a previous cull instance marked', () => {
+    const cull1 = createInkRenderCull({
+      clip: fakeClip,
+      unclip: fakeUnclip,
+      displayNone: DISPLAY_NONE,
+    });
+    const cull2 = createInkRenderCull({
+      clip: fakeClip,
+      unclip: fakeUnclip,
+      displayNone: DISPLAY_NONE,
+    });
+    const rowElement = row(0, 1);
+    cull1.cullWhenOffscreen(rowElement);
+    const display1 = rowElement.yogaNode.getDisplay;
+
+    cull2.cullWhenOffscreen(rowElement);
+    const display2 = rowElement.yogaNode.getDisplay;
+
+    expect(display2).not.toBe(display1);
   });
 
   it('does nothing for a null element or an element without a usable yoga node', () => {
