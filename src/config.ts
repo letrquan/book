@@ -168,6 +168,10 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     thinkingStallTimeoutMs: process.env.BOOK_THINKING_STALL_TIMEOUT_MS
       ? clampInt(process.env.BOOK_THINKING_STALL_TIMEOUT_MS, 10_000, 1_800_000)
       : (settings.retry?.thinkingStallTimeoutMs ?? DEFAULT_SETTINGS.retry.thinkingStallTimeoutMs),
+    firstDeltaStallTimeoutMs: process.env.BOOK_FIRST_DELTA_STALL_TIMEOUT_MS
+      ? clampInt(process.env.BOOK_FIRST_DELTA_STALL_TIMEOUT_MS, 5_000, 1_800_000)
+      : (settings.retry?.firstDeltaStallTimeoutMs ??
+        DEFAULT_SETTINGS.retry.firstDeltaStallTimeoutMs),
     toolRetries: process.env.BOOK_TOOL_RETRIES
       ? clampInt(process.env.BOOK_TOOL_RETRIES, 0, 3)
       : (settings.retry?.toolRetries ?? DEFAULT_SETTINGS.retry.toolRetries),

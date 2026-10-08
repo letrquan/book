@@ -89,15 +89,25 @@ available before the silence starts.
 
 On that path the ceiling is also chosen per stream, not just per request, and it follows the
 stream's phase. A reasoning model behind a router often has no catalog entry, so Book sends it no
-`reasoning_effort` and the chat ceiling is armed at request time; the first `reasoning_content`
-delta is then the evidence the request could not carry, and it raises the ceiling to
-`retry.thinkingStallTimeoutMs` while the model thinks. The first answer or tool-call delta ends
-the thinking phase and the ceiling goes back to where the stream started, because a hang in the
+`reasoning_effort` and the first-delta ceiling is armed at request time; the first
+`reasoning_content` delta is then the evidence the request could not carry, and it raises the
+ceiling to `retry.thinkingStallTimeoutMs` while the model thinks. The first answer or tool-call delta
+ends the thinking phase and the ceiling goes back to where the stream started, because a hang in the
 answer is a dead socket and is worth noticing in twenty seconds rather than fifteen minutes;
 reasoning that resumes mid-answer raises it again. A stream that never reasons keeps
-`retry.streamStallTimeoutMs` throughout. Only the pause before the first reasoning delta is judged
-by the chat ceiling, and any model that buffers its whole thinking block before emitting anything
-is not covered by this — give it an `effort` entry so the ceiling is right from the first byte.
+`retry.streamStallTimeoutMs` throughout, once a delta has shown what kind of stream it is.
+
+The one pause no delta has yet explained gets a ceiling of its own. Until a stream shows its first
+non-empty content, tool call or reasoning delta — a role-only chunk, an empty content string and a
+usage-only chunk do not count — a request that sends no `reasoning_effort` for a model with no
+catalogued `effort` range (no entry at all, or one without an `effort` key, such as `{}`) is judged
+by `retry.firstDeltaStallTimeoutMs` (default 120 s, `BOOK_FIRST_DELTA_STALL_TIMEOUT_MS`): a router
+that buffers a model's whole thinking block sends that role-only chunk and then stays silent for as
+long as the model thinks, up to about 80 s, which the 20 s chat ceiling reads as a fault. The first
+meaningful delta spends the grace and hands the stream back to the per-phase ceilings. A model whose
+entry says `effort: false`, an explicit `--effort`, and a catalogued effort range all skip it — give
+a silent-thinking model an `effort` entry so its thinking phase gets the thinking ceiling from the
+first byte.
 
 `retry.streamReissueAttempts` re-sends a turn after a transport fault — a stalled stream, a dropped
 socket — onto the history already committed. Set it to 0 to end the run on any stream error, as
@@ -132,10 +142,16 @@ every retry delay is. Any error body is read for at most 5 s and 64 KB. Behind a
 decision is made on what arrived, so a router that sends its headers and then stalls cannot hold an
 attempt for the whole request timeout.
 
-A 408 or a 429 is retried like an outage. A 400 or a 422, plain or quoted, a 404 that is not the capacity outage above, and Anthropic's
+A 408 or a 429 is retried like an outage. A 400 or a 422, plain or quoted, a 404 that is neither the capacity outage above nor the model verdict below, and Anthropic's
 mid-stream `invalid_request_error` and `not_found_error` end the run on the first answer, since
-re-sending the same request reproduces them. A 401, 402 or 403, or a mid-stream
-`authentication_error` or `permission_error`, parks the run as `credentials_rejected`, and a 413
+re-sending the same request reproduces them. One 403/404 verdict is read from the body rather than
+the status: when the body says the model itself is gone — a retirement notice, an OpenAI
+`model_not_found`, a "please select another model" — the run ends `failed/model_unavailable` and
+parks, like a rejected credential: nothing is wrong with the work, and the message carries no
+API-key advice, just the remedy (choose another with `--model` or `/model`). A 401 is always a
+credential, whatever its body says, and a plain "Forbidden" or "Not Found" keeps its old reading. A
+401, 402, or a 403 that is not the model verdict above — or a mid-stream
+`authentication_error` or `permission_error` — parks the run as `credentials_rejected`, and a 413
 or a mid-stream `request_too_large` goes through the overflow recovery below. Any other 4xx (a
 409, 423, 425, or Google's 499) is re-sent at the stream level, up to
 `retry.streamReissueAttempts` times. 9router's antigravity route treats a 409 like a 429 with a

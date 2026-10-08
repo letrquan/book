@@ -181,6 +181,17 @@ describe('settings schema rejection', () => {
     expect(issuePaths({ agents: { checks: { unit: [] } } })).toEqual(['agents.checks.unit']);
   });
 
+  it('defaults and bounds the first-delta stall ceiling (#379)', () => {
+    expect(bookSettingsSchema.parse({}).retry.firstDeltaStallTimeoutMs).toBe(120_000);
+    expect(issuePaths({ retry: { firstDeltaStallTimeoutMs: 4_999 } })).toEqual([
+      'retry.firstDeltaStallTimeoutMs',
+    ]);
+    expect(issuePaths({ retry: { firstDeltaStallTimeoutMs: 1_800_001 } })).toEqual([
+      'retry.firstDeltaStallTimeoutMs',
+    ]);
+    expect(issuePaths({ retry: { firstDeltaStallTimeoutMs: 1_800_000 } })).toEqual([]);
+  });
+
   it('validates record values under string keys', () => {
     expect(issuePaths({ permissions: { projectAllowRules: { Read: 'maybe' } } })).toEqual([
       'permissions.projectAllowRules.Read',

@@ -247,6 +247,54 @@ describe('a rejected credential parks rather than retries', () => {
     expect(attempt).toBe(1);
     expect(outcome?.reason).toBe('credentials_rejected');
   });
+
+  it('ends a model_unavailable stream failed and parked, and alarms under that kind (#387)', async () => {
+    // A retired model is not a rejected credential: no transport attempt is
+    // spent, the run fails under its own reason, and the Notification hook —
+    // the alarm an operator is woken by — names the model, not the key.
+    let attempt = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        attempt++;
+        yield {
+          type: 'error',
+          error:
+            'API Error: 503 Space Bunny Alpha is no longer available. Please select another model.',
+          errorCode: 'model_unavailable',
+        };
+      },
+    } as unknown as Provider;
+
+    const hookEvents: Array<Record<string, unknown>> = [];
+    const config = configWith(3);
+    config.settings.hooks.Notification = [{ command: 'true', env: {} }];
+    let outcome: AgentTerminalOutcome | undefined;
+    const errors: string[] = [];
+    await runAgentLoop(
+      config,
+      createRegistry(),
+      'do the work',
+      [],
+      {
+        ...callbacks((value) => (outcome = value), errors),
+        onHookEvent: (event: string, payload: Record<string, unknown>) =>
+          hookEvents.push({ event, ...payload }),
+      } as unknown as AgentLoopCallbacks,
+      'auto',
+      { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(attempt).toBe(1);
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'model_unavailable' });
+    expect(errors).toHaveLength(1);
+    const notification = hookEvents.find((e) => e.event === 'Notification');
+    expect(notification).toBeDefined();
+    expect(notification?.kind).toBe('model_unavailable');
+    // The hook runs detached; give the `true` command a moment to be reaped so
+    // the test leaves no dangling child handle behind.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
 });
 
 describe('the shape of a re-issued request', () => {

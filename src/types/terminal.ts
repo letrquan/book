@@ -20,6 +20,7 @@ export type AgentTerminalReason =
   | 'transport_interrupted'
   | 'output_cap'
   | 'credentials_rejected'
+  | 'model_unavailable'
   | 'objective_complete'
   | 'continuation_limit'
   | 'blocked_plan'
@@ -38,7 +39,8 @@ export type AgentTerminalReason =
  *   output cap and should carry on. Kept distinct from `reissue` so a large
  *   generated file cannot drain the budget reserved for real transport faults.
  * - `park` — the run cannot proceed but nothing is wrong with the work; it needs
- *   an operator (an expired credential). Distinguished from `none` so a
+ *   an operator (an expired credential, or a model the provider no longer
+ *   serves — the operator picks another). Distinguished from `none` so a
  *   supervisor can wait rather than declare failure.
  * - `none` — a genuine end: the budget is gone, policy refused, the user
  *   cancelled, the context will not fit.
@@ -93,6 +95,9 @@ export function terminalRecovery(outcome: AgentTerminalOutcome): TerminalRecover
     case 'output_cap':
       return 'continue';
     case 'credentials_rejected':
+    case 'model_unavailable':
+      // A retired or unknown model is not a fault in the work either: re-sending
+      // reproduces it, and only an operator choosing another model unblocks it.
       return 'park';
     default:
       // Everything else — budget_exceeded, blocked_by_policy, user_cancelled,

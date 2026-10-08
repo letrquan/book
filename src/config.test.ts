@@ -64,11 +64,33 @@ describe('loadConfig retry defaults', () => {
     expect(config.retry.maxAttempts).toBe(10);
     expect(config.retry.requestTimeoutMs).toBe(600000);
     expect(config.retry.streamStallTimeoutMs).toBe(20000);
+    expect(config.retry.firstDeltaStallTimeoutMs).toBe(120000);
     expect(config.retry.toolRetries).toBe(1);
     expect(config.retry.watchdog).toBe(false);
     expect(config.retry.baseDelayMs).toBe(1000);
     expect(config.retry.maxDelayMs).toBe(30000);
     expect(config.retry.totalBudgetMs).toBe(0);
+  });
+
+  it('overrides and clamps firstDeltaStallTimeoutMs (#379)', () => {
+    process.env.BOOK_FIRST_DELTA_STALL_TIMEOUT_MS = '300000';
+    expect(loadConfig(workspace, { noSettings: true }).retry.firstDeltaStallTimeoutMs).toBe(300000);
+
+    // The same range the settings schema enforces: 5 s to 30 min.
+    process.env.BOOK_FIRST_DELTA_STALL_TIMEOUT_MS = '100';
+    expect(loadConfig(workspace, { noSettings: true }).retry.firstDeltaStallTimeoutMs).toBe(5000);
+    process.env.BOOK_FIRST_DELTA_STALL_TIMEOUT_MS = '99999999';
+    expect(loadConfig(workspace, { noSettings: true }).retry.firstDeltaStallTimeoutMs).toBe(
+      1_800_000,
+    );
+  });
+
+  it('loads firstDeltaStallTimeoutMs from settings.json (#379)', () => {
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ retry: { firstDeltaStallTimeoutMs: 240000 } }),
+    );
+    expect(loadConfig(workspace).retry.firstDeltaStallTimeoutMs).toBe(240000);
   });
 });
 

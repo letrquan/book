@@ -2144,23 +2144,29 @@ export async function runAgentLoop(
                         message: streamError,
                         providerCode: streamErrorCode,
                       })
-                    : streamErrorCode === 'auth' || streamErrorCode === 'quota'
-                      ? createTerminalOutcome('failed', 'credentials_rejected', {
+                    : streamErrorCode === 'model_unavailable'
+                      ? createTerminalOutcome('failed', 'model_unavailable', {
                           partialOutput: hasPartialOutput(),
                           message: streamError,
                           providerCode: streamErrorCode,
                         })
-                      : streamErrorCode === 'output_cap'
-                        ? createTerminalOutcome('failed', 'output_cap', {
+                      : streamErrorCode === 'auth' || streamErrorCode === 'quota'
+                        ? createTerminalOutcome('failed', 'credentials_rejected', {
                             partialOutput: hasPartialOutput(),
                             message: streamError,
                             providerCode: streamErrorCode,
                           })
-                        : createTerminalOutcome('failed', 'provider_error', {
-                            partialOutput: hasPartialOutput(),
-                            message: streamError,
-                            providerCode: streamErrorCode,
-                          });
+                        : streamErrorCode === 'output_cap'
+                          ? createTerminalOutcome('failed', 'output_cap', {
+                              partialOutput: hasPartialOutput(),
+                              message: streamError,
+                              providerCode: streamErrorCode,
+                            })
+                          : createTerminalOutcome('failed', 'provider_error', {
+                              partialOutput: hasPartialOutput(),
+                              message: streamError,
+                              providerCode: streamErrorCode,
+                            });
 
         // A transport fault is not a failure of the work. Everything needed to send
         // the turn again is already committed: the partial assistant message was
@@ -2242,8 +2248,10 @@ export async function runAgentLoop(
         }
 
         // A parked run is not a failed one: nothing is wrong with the work, it
-        // needs an operator. Escalate so a supervisor can wait for a new key
-        // rather than tear the objective down.
+        // needs an operator. Escalate so a supervisor can wait for a new key —
+        // or, for a retired model (#387), for an operator to pick another —
+        // rather than tear the objective down. The kind is the reason itself,
+        // so a retirement alarm does not read as a rejected credential.
         if (terminalRecovery(streamOutcome) === 'park' && !options?.isSubagent) {
           runHooks(
             config.settings.hooks.Notification,
@@ -2252,7 +2260,7 @@ export async function runAgentLoop(
               workspace: config.workspace,
               event: 'Notification',
               severity: 'alarm',
-              kind: 'credentials_rejected',
+              kind: streamOutcome.reason,
               message: streamError,
             },
             { onHookEvent: callbacks.onHookEvent },

@@ -250,7 +250,8 @@ describe('provider reliability transport', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(503);
-    expect(classifyApiError(503, modelMissingBody)).toBe('not_found');
+    // "model not found" says the model is gone, not that the key was refused (#387).
+    expect(classifyApiError(503, modelMissingBody)).toBe('model_unavailable');
   });
 
   it('retries plain 503 and preserves response body after retry exhaustion', async () => {
@@ -897,6 +898,144 @@ describe('stated context overflow (#244)', () => {
         'API Error: 429 Request too large for gpt-4o in organization org-x on tokens per min (TPM): Limit 30000, Requested 45000.',
       ),
     ).toBe(true);
+  });
+});
+
+describe('a model that is gone is not a credentials problem (#387)', () => {
+  // The reproduced bodies. 9router wraps the upstream 403 as its own 503 and
+  // quotes the real status in the message; OpenAI answers 404 as itself.
+  const retiredRouterBody = JSON.stringify({
+    error: {
+      message:
+        '[commandcode/stealth/space-bunny-alpha] [403]: Space Bunny Alpha is no longer available. The free stealth preview has ended. Please select another model by running /model or -m to keep going.\nhttps://commandcode.ai/models (reset after 1m 43s)',
+    },
+  });
+  const unknownModelBody = JSON.stringify({
+    error: {
+      message: 'The model `gpt-9` does not exist or you do not have access to it.',
+      type: 'invalid_request_error',
+      code: 'model_not_found',
+    },
+  });
+
+  it('classifies a router 503 quoting a 403 that retires the model as model_unavailable', () => {
+    expect(classifyApiError(503, retiredRouterBody)).toBe('model_unavailable');
+  });
+
+  it('classifies a plain 404 model_not_found body as model_unavailable', () => {
+    expect(classifyApiError(404, unknownModelBody)).toBe('model_unavailable');
+  });
+
+  it('classifies a plain 403 that retires the model as model_unavailable', () => {
+    expect(
+      classifyApiError(
+        403,
+        JSON.stringify({
+          error: {
+            message: 'Space Bunny Alpha is no longer available. Please select another model.',
+          },
+        }),
+      ),
+    ).toBe('model_unavailable');
+  });
+
+  it('classifies a quoted 403 that says the model is not supported as model_unavailable', () => {
+    expect(
+      classifyApiError(
+        503,
+        JSON.stringify({
+          error: {
+            message:
+              "[openai/gpt-5.6-sol] [403]: The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
+          },
+        }),
+      ),
+    ).toBe('model_unavailable');
+  });
+
+  it('reads the model-gone wording OpenRouter forwards in metadata.raw', () => {
+    // OpenRouter answers its provider's 403 with its own retryable status and
+    // forwards the upstream body; the quoted 403 is what opens the read, and
+    // the forwarded message is where the retirement is stated.
+    expect(
+      classifyApiError(
+        503,
+        JSON.stringify({
+          error: {
+            code: 403,
+            message: 'Provider returned error',
+            metadata: {
+              raw: JSON.stringify({
+                error: {
+                  message: 'Space Bunny Alpha is no longer available. Please select another model.',
+                },
+              }),
+            },
+          },
+        }),
+      ),
+    ).toBe('model_unavailable');
+  });
+
+  it('keeps a 401 an auth error even when the body reads like a retirement', () => {
+    // A 401 is always about the credential; its body is never read for this.
+    expect(
+      classifyApiError(
+        401,
+        JSON.stringify({
+          error: { message: 'This model is no longer available. Please select another model.' },
+        }),
+      ),
+    ).toBe('auth');
+  });
+
+  it('keeps a plain 403 without retirement wording an auth error', () => {
+    expect(
+      classifyApiError(403, JSON.stringify({ error: { message: 'Invalid API key provided' } })),
+    ).toBe('auth');
+    expect(classifyApiError(403, '')).toBe('auth');
+  });
+
+  it('keeps a plain 404 Not Found a not_found', () => {
+    expect(classifyApiError(404, 'Not Found')).toBe('not_found');
+  });
+
+  it('keeps the #383 capacity outage a retryable server_error', () => {
+    const capacityBody =
+      '503 [commandcode/stealth/x] [404]: [CommandCode error: No endpoints found for stealth/x.] (reset after 5s)';
+    expect(classifyApiError(503, capacityBody)).toBe('server_error');
+  });
+
+  it('keeps a capacity-shaped 404 without a cooldown a not_found', () => {
+    const body =
+      '503 [commandcode/unknown-model/x] [404]: [CommandCode error: No endpoints found for unknown-model/x.]';
+    expect(classifyApiError(503, body)).toBe('not_found');
+  });
+
+  it('does not read a model word far from any retirement wording, or across sentences', () => {
+    const farBody = JSON.stringify({
+      error: {
+        message: `Access denied for this key.${'x'.repeat(200)}see the model list`,
+      },
+    });
+    expect(classifyApiError(403, farBody)).toBe('auth');
+    // A model word and a gone-phrase in different sentences say nothing about
+    // the model: the phrase has to name the model in its own sentence.
+    const acrossSentences = JSON.stringify({
+      error: {
+        message:
+          'Access denied for this key. The model is healthy. This endpoint is not available today.',
+      },
+    });
+    expect(classifyApiError(403, acrossSentences)).toBe('auth');
+  });
+
+  it('formats the retirement with model-choice advice and no credential advice', () => {
+    const message = formatApiError(503, retiredRouterBody);
+    expect(message).toContain('--model');
+    expect(message).toContain('/model');
+    expect(message).not.toContain('BOOK_API_KEY');
+    expect(message).toContain('no longer available');
   });
 });
 
