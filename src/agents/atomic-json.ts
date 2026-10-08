@@ -27,6 +27,10 @@ export type AtomicWriteResult =
   | {
       status: 'ok';
       target: string;
+      /**
+       * How many times this write tried: 1 for a clean write, plus 1 for each contended retry of
+       * either the lock step or the rename step.
+       */
       attempts: number;
       elapsedMs: number;
     }
@@ -35,6 +39,11 @@ export type AtomicWriteResult =
       target: string;
       tempPath?: string;
       operation: 'lock' | 'rename';
+      /**
+       * How many times this write tried: 1 for a clean write, plus 1 for each contended retry of
+       * either the lock step or the rename step. Failures that return before the rename step
+       * report the lock tries only.
+       */
       attempts: number;
       elapsedMs: number;
     }
@@ -45,6 +54,11 @@ export type AtomicWriteResult =
       operation: AtomicWriteOperation;
       errorCode?: string;
       message: string;
+      /**
+       * How many times this write tried: 1 for a clean write, plus 1 for each contended retry of
+       * either the lock step or the rename step. Failures that return before the rename step
+       * report the lock tries only.
+       */
       attempts: number;
       elapsedMs: number;
     }
@@ -56,6 +70,10 @@ export type AtomicWriteResult =
        */
       status: 'cancelled';
       target: string;
+      /**
+       * How many times this write tried: 1 for a clean write, plus 1 for each contended retry of
+       * either the lock step or the rename step.
+       */
       attempts: number;
       elapsedMs: number;
     };
@@ -274,6 +292,7 @@ export class AtomicJsonWriter {
     const deadline = startedAt + this.deadlineMs;
     const lockPath = `${target}.lock`;
     let attempts = 0;
+    let ladderAttempts = 0;
     let lockDescriptor: number | undefined;
     let ownsLock = false;
     let tempPath = preparedTemp;
@@ -281,6 +300,7 @@ export class AtomicJsonWriter {
     try {
       while (!ownsLock) {
         attempts++;
+        ladderAttempts++;
         try {
           lockDescriptor = this.fs.openSync(lockPath, 'wx', 0o600);
           ownsLock = true;
@@ -324,7 +344,7 @@ export class AtomicJsonWriter {
               elapsedMs: this.now() - startedAt,
             };
           }
-          this.pause(attempts, deadline);
+          this.pause(ladderAttempts, deadline);
         }
       }
 
@@ -383,14 +403,16 @@ export class AtomicJsonWriter {
         }
       }
 
+      let renameRetries = 0;
       while (true) {
-        attempts++;
+        ladderAttempts++;
+        const currentAttempts = attempts + renameRetries;
         try {
           this.fs.renameSync(tempPath, target);
           return {
             status: 'ok',
             target,
-            attempts,
+            attempts: currentAttempts,
             elapsedMs: this.now() - startedAt,
           };
         } catch (error) {
@@ -403,7 +425,7 @@ export class AtomicJsonWriter {
               operation: 'rename',
               errorCode: code,
               message: safeMessage(error),
-              attempts,
+              attempts: currentAttempts,
               elapsedMs: this.now() - startedAt,
             };
           }
@@ -413,11 +435,12 @@ export class AtomicJsonWriter {
               target,
               tempPath,
               operation: 'rename',
-              attempts,
+              attempts: currentAttempts,
               elapsedMs: this.now() - startedAt,
             };
           }
-          this.pause(attempts, deadline);
+          renameRetries++;
+          this.pause(ladderAttempts, deadline);
         }
       }
     } finally {
@@ -451,12 +474,14 @@ export class AtomicJsonWriter {
     const deadline = startedAt + this.deadlineMs;
     const lockPath = `${target}.lock`;
     let attempts = 0;
+    let ladderAttempts = 0;
     let ownsLock = false;
     let lockHandle: FileHandle | undefined;
 
     try {
       while (!ownsLock) {
         attempts++;
+        ladderAttempts++;
         try {
           lockHandle = await this.asyncFs.open(lockPath, 'wx', 0o600);
           ownsLock = true;
@@ -500,7 +525,7 @@ export class AtomicJsonWriter {
               elapsedMs: this.now() - startedAt,
             };
           }
-          await this.pauseAsync(attempts, deadline);
+          await this.pauseAsync(ladderAttempts, deadline);
         }
       }
 
@@ -560,6 +585,7 @@ export class AtomicJsonWriter {
         };
       }
 
+      let renameRetries = 0;
       while (true) {
         if (options.canCommit && !options.canCommit()) {
           // Asked once per attempt, so a write whose caller gave up while it waited out a
@@ -568,17 +594,18 @@ export class AtomicJsonWriter {
           return {
             status: 'cancelled',
             target,
-            attempts,
+            attempts: attempts + renameRetries,
             elapsedMs: this.now() - startedAt,
           };
         }
-        attempts++;
+        ladderAttempts++;
+        const currentAttempts = attempts + renameRetries;
         try {
           await this.asyncFs.rename(tempPath, target);
           return {
             status: 'ok',
             target,
-            attempts,
+            attempts: currentAttempts,
             elapsedMs: this.now() - startedAt,
           };
         } catch (error) {
@@ -591,7 +618,7 @@ export class AtomicJsonWriter {
               operation: 'rename',
               errorCode: code,
               message: safeMessage(error),
-              attempts,
+              attempts: currentAttempts,
               elapsedMs: this.now() - startedAt,
             };
           }
@@ -601,11 +628,12 @@ export class AtomicJsonWriter {
               target,
               tempPath,
               operation: 'rename',
-              attempts,
+              attempts: currentAttempts,
               elapsedMs: this.now() - startedAt,
             };
           }
-          await this.pauseAsync(attempts, deadline);
+          renameRetries++;
+          await this.pauseAsync(ladderAttempts, deadline);
         }
       }
     } finally {

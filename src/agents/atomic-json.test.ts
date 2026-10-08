@@ -252,4 +252,43 @@ describe('AtomicJsonWriter', () => {
     expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ version: 'new' });
     expect(readdirSync(directory)).toEqual(['record.json']);
   });
+
+  it('returns attempts === 1 for an uncontended write and writeAsync', async () => {
+    const { target } = fixture();
+    const writer = new AtomicJsonWriter({
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 10,
+      hostname: 'test-host',
+    });
+
+    const syncResult = writer.write(target, { version: 'sync' });
+    expect(syncResult.status).toBe('ok');
+    expect(syncResult.attempts).toBe(1);
+
+    const asyncResult = await writer.writeAsync(target, { version: 'async' });
+    expect(asyncResult.status).toBe('ok');
+    expect(asyncResult.attempts).toBe(1);
+  });
+
+  it('returns attempts === 2 when rename hits one contention error then succeeds', () => {
+    const { target } = fixture();
+    let renameCalls = 0;
+    const writer = new AtomicJsonWriter({
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 10,
+      hostname: 'test-host',
+      fs: {
+        renameSync: (source, destination) => {
+          renameCalls++;
+          if (renameCalls === 1) throw contention('EBUSY');
+          return renameSync(source, destination);
+        },
+      },
+    });
+
+    const result = writer.write(target, { version: 'retried' });
+    expect(result.status).toBe('ok');
+    expect(result.attempts).toBe(2);
+    expect(renameCalls).toBe(2);
+  });
 });

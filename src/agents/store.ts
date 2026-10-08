@@ -583,7 +583,13 @@ export class AgentStore {
     pending.flushing = false;
     if (result.status === 'ok') {
       this.pendingWrites.delete(target);
-      this.safeLog('retry succeeded', { target: pending.targetType, attempts: result.attempts });
+      if (pending.retryIndex > 0 || result.attempts > 1) {
+        this.safeLog('retry succeeded', {
+          target: pending.targetType,
+          attempts: result.attempts,
+          retries: pending.retryIndex,
+        });
+      }
       this.maybeRecover();
       return result;
     }

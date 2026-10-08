@@ -25,6 +25,11 @@ All notable changes to this project are documented in this file.
   budget: a round that passes decides the run, and with no passing round any failed round fails it, so a
   regression still fails. Every other platform still decides on one round. Each printed sample also says
   where its time went: before the child started, or after it finished.
+- **The agent store no longer logs spurious write retry events for first-try writes** (#402).
+  Atomic JSON writes incremented an attempt counter across both lock and rename steps, returning
+  two attempts on clean writes and causing the agent store to log a retry event on every success.
+  Attempts now count the initial write plus only contended retries, and the store logs retry
+  successes only when a pending write or internal file operation actually retried.
 
 ### Changed
 

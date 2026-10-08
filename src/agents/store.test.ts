@@ -18,8 +18,30 @@ import type { AgentRecord, EvidenceItem } from './types.js';
 
 let root = '';
 
+const { debugEvents } = vi.hoisted(() => ({
+  debugEvents: [] as Array<{ event: string; metadata?: Record<string, unknown> }>,
+}));
+
+vi.mock('../debug-log.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../debug-log.js')>();
+  return {
+    ...actual,
+    createDebugLogger: (namespace: string) => {
+      const logger = actual.createDebugLogger(namespace);
+      return {
+        ...logger,
+        event: (event: string, meta?: Record<string, unknown>) => {
+          debugEvents.push({ event, metadata: meta });
+          logger.event(event, meta);
+        },
+      };
+    },
+  };
+});
+
 afterEach(() => {
   vi.useRealTimers();
+  debugEvents.length = 0;
   if (root) rmSync(root, { recursive: true, force: true });
   root = '';
 });
@@ -1109,5 +1131,84 @@ describe('AgentStore lease heartbeat', () => {
 
     agents.dispose();
     await waitFor(() => !existsSync(leasePath(root)), 'the lease to be removed on dispose');
+  });
+});
+
+describe('AgentStore retry logging', () => {
+  it('emits no retry succeeded debug event on a first-try write', () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const writer = {
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
+      write: vi.fn((target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
+    } as unknown as AtomicJsonWriter;
+    const store = new AgentStore('repo', root, true, { writer });
+    debugEvents.length = 0;
+
+    store.saveAgent(recordFixture('first-try'));
+
+    const retrySucceeded = debugEvents.filter((e) => e.event === 'retry succeeded');
+    expect(retrySucceeded).toEqual([]);
+    store.dispose();
+  });
+
+  it('emits exactly one retry succeeded debug event for a busy-then-ok write', () => {
+    vi.useFakeTimers();
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    let recordAttempts = 0;
+    const writer = {
+      writeAsync: vi.fn(async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      })),
+      write: vi.fn((target: string) => {
+        if (!target.includes(join('records', ''))) {
+          return { status: 'ok' as const, target, attempts: 1, elapsedMs: 0 };
+        }
+        recordAttempts++;
+        if (recordAttempts === 1) {
+          return {
+            status: 'busy' as const,
+            target,
+            operation: 'rename' as const,
+            attempts: 1,
+            elapsedMs: 50,
+          };
+        }
+        return {
+          status: 'ok' as const,
+          target,
+          attempts: 1,
+          elapsedMs: 0,
+        };
+      }),
+    } as unknown as AtomicJsonWriter;
+    const store = new AgentStore('repo', root, true, { writer });
+    debugEvents.length = 0;
+
+    store.saveAgent(recordFixture('retry-agent'));
+    expect(recordAttempts).toBe(1);
+
+    vi.advanceTimersByTime(500);
+    expect(recordAttempts).toBe(2);
+
+    const retrySucceeded = debugEvents.filter((e) => e.event === 'retry succeeded');
+    expect(retrySucceeded).toHaveLength(1);
+    expect(retrySucceeded[0]?.metadata).toMatchObject({
+      retries: 1,
+      attempts: 1,
+    });
+    store.dispose();
   });
 });
