@@ -21,13 +21,17 @@ All notable changes to this project are documented in this file.
   Set `BOOK_INK_RENDER_CULL=off` to restore the previous behavior. At very narrow widths a tool
   summary row now truncates instead of wrapping onto the row below it. **Measured** on the shipped
   code: every real frame was drawn twice in the same process, once with the cull and once without
-  it, from the same layout: 0 mismatches over 512 frames (Windows 246, Linux 266). The cull
-  removes 65% (Windows) and 70% (Linux) of the walk's writes (before it, 73% of the writes the
-  walk made landed wholly outside the clip; with it, 21% (Windows) and 10% (Linux)), while on
-  Linux (5 runs per build), Ink's draw time summed over the wheel-up phase fell from 486 ms to 306 ms
-  (median draw 5.7 ms to 3.2 ms) and over the wheel-down phase from 374 ms to 209 ms (median draw
-  4.3 ms to 2.3 ms), stalls over 40 ms during wheel-up fell from 1.6 to 1.0 per run, and the worst
-  stall per run from 50 ms to 41 ms at the median.
+  it, from the same layout: 0 mismatches over 514 frames (Windows 248, Linux 266), and colour
+  screenshots are byte-identical with the cull on, off, and on main. The cull removes 68% (Windows)
+  and 66% (Linux) of the walk's writes (before it, 73% of the writes the walk made landed wholly
+  outside the clip; with it, 14% (Windows) and 20% (Linux)). Draw time fell from 475 ms to 303 ms
+  over wheel-up and 365 ms to 211 ms over wheel-down on Linux, and from 483 ms to 361 ms over wheel-up
+  and 355 ms to 200 ms over wheel-down on Windows. On Linux, stalls over 40 ms during wheel-up fell
+  from 1.5 to 0.3 per run (summed 66 ms to 15 ms), and the worst stall per run from 45 ms to 37 ms at
+  the median. Under load on Windows, stalls over 40 ms during wheel-up fell from 3.6 to 0.9 per run
+  (summed 182 ms to 40 ms), and the worst stall per run from 56 ms to 42 ms at the median. On a quiet
+  Windows box, stalls over 40 ms did not move (about one per run in either build): what remains there
+  is the React mount and Yoga layout of newly mounted heavy rows, which the cull does not touch.
 - **A model the provider no longer serves is no longer reported as a rejected credential** (#387).
   9router wraps an upstream 403 in its own 503 (`[route] [403]: Model is no longer available`),
   which `classifyApiError` read through the quoted status as `auth` — so the run parked as

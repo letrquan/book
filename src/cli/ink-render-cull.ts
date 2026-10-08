@@ -72,13 +72,22 @@ import { inkBuildDir } from './ink-renderer.js';
  * Measured on the shipped code, over the real 4 MB session the issue used, at 120x40, resumed in a
  * PTY (40 wheel-up reports at 30/s, then 40 wheel-down at 30/s, then flicks; main's build against
  * this branch's build, interleaved runs): every real frame was drawn twice in the same process,
- * once with the cull and once without it, from the same layout — 0 mismatches over 512 frames
- * (Windows 246, Linux 266). The cull removes 65% (Windows) and 70% (Linux) of the walk's writes;
- * before it, 73% of the writes the walk made landed wholly outside the clip; with it, 21% (Windows)
- * and 10% (Linux). On Linux (5 runs per build), Ink's draw time summed over the wheel-up phase fell
- * from 486 ms to 306 ms (median draw 5.7 ms to 3.2 ms), over the wheel-down phase from 374 ms to
- * 209 ms (median draw 4.3 ms to 2.3 ms). Event-loop stalls over 40 ms during wheel-up fell from 1.6
- * to 1.0 per run, and the worst stall per run from 50 ms to 41 ms at the median.
+ * once with the cull and once without it, from the same layout: 0 mismatches over 514 frames
+ * (Windows 248, Linux 266). The real TUI's colour screenshots (run-book, 120x40 and 30x30) are
+ * byte-identical with the cull on, off, and on main. The cull removes 68% (Windows) and 66% (Linux)
+ * of the walk's writes; before it, 73% of the writes the walk made landed wholly outside the clip;
+ * with it, 14% (Windows) and 20% (Linux). On Linux, quiet box (6 runs per build): Ink's draw time
+ * summed over the wheel-up phase fell from 475 ms to 303 ms (median draw 5.9 ms to 3.3 ms), over the
+ * wheel-down phase from 365 ms to 211 ms (4.3 ms to 2.5 ms). Event-loop stalls over 40 ms during
+ * wheel-up fell from 1.5 to 0.3 per run (summed 66 ms to 15 ms), and the worst stall per run from
+ * 45 ms to 37 ms at the median. On Windows, quiet box (5 runs per build): draw time over wheel-up fell
+ * from 483 ms to 361 ms (median draw 6.8 ms to 4.7 ms), over wheel-down from 355 ms to 200 ms
+ * (median draw 4.8 ms to 2.7 ms). Stalls over 20 ms during wheel-up fell from 15.2 to 11.8 per run;
+ * stalls over 40 ms did not move (about one per run in either build): what remains there is the React
+ * mount and Yoga layout of newly mounted heavy rows, which the cull does not touch. On Windows under
+ * load (a game started half a minute into an 8-round set; rounds interleaved): stalls over 40 ms
+ * during wheel-up fell from 3.6 to 0.9 per run (summed 182 ms to 40 ms), the worst stall per run from
+ * 56 ms to 42 ms at the median, and draw time over wheel-up from 538 ms to 358 ms.
  *
  * `installInkRenderCull` refuses to touch Ink unless the prototype carries the clip push, pop and
  * `get` the cull needs, and `ink-renderer.contract.test.ts` draws the same frames with and without
