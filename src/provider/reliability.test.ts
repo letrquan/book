@@ -1372,18 +1372,138 @@ describe('spent usage limit (#400)', () => {
     }
 
     vi.useFakeTimers();
-    const reset1sIso = new Date(Date.now() + 1000).toISOString();
-    const body1s = `Too many requests. Your limit resets at ${reset1sIso}.`;
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(body1s, { status: 429 }))
-      .mockResolvedValueOnce(new Response('ok', { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
-    const pending = fetchWithRetry('http://x/v1', {}, DEFAULT_SETTINGS.retry);
-    await vi.advanceTimersByTimeAsync(5_000);
-    const response = await pending;
-    expect(response.status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    try {
+      const reset1sIso = new Date(Date.now() + 1000).toISOString();
+      const body1s = `Too many requests. Your limit resets at ${reset1sIso}.`;
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(body1s, { status: 429 }))
+        .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = fetchWithRetry('http://x/v1', {}, DEFAULT_SETTINGS.retry);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits up to maxDelayMs for an absolute reset within budget on retry', async () => {
+    vi.useFakeTimers();
+    try {
+      const reset4mIso = new Date(Date.now() + 4 * 60 * 1000).toISOString();
+      const body4m = `Too many requests. Your limit resets at ${reset4mIso}.`;
+      let firstRetryDelay: number | undefined;
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(body4m, { status: 429 }))
+        .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = fetchWithRetry(
+        'http://x/v1',
+        {},
+        DEFAULT_SETTINGS.retry,
+        undefined,
+        (attempt, _max, delayMs) => {
+          if (attempt === 1) firstRetryDelay = delayMs;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(firstRetryDelay).toBe(DEFAULT_SETTINGS.retry.maxDelayMs);
+      await vi.advanceTimersByTimeAsync(DEFAULT_SETTINGS.retry.maxDelayMs);
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('requires reached or spent wording for quota classification', () => {
+    expect(
+      classifyApiError(
+        429,
+        'Too many concurrent requests, slow down. Your daily quota is 10000 requests and resets every 24 hours.',
+      ),
+    ).toBe('rate_limited');
+  });
+
+  it('treats message with a short window anywhere as a rate limit', () => {
+    expect(
+      classifyApiError(429, 'Daily quota exceeded: limit 60 requests per minute, retry in 10s'),
+    ).toBe('rate_limited');
+  });
+
+  it('retries spent-limit 429 under watchdog', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(issueBody, { status: 503 }))
+        .mockResolvedValueOnce(new Response(issueBody, { status: 503 }))
+        .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = fetchWithRetry(
+        'http://x/v1',
+        {},
+        { ...DEFAULT_SETTINGS.retry, watchdog: true },
+      );
+      await vi.advanceTimersByTimeAsync(100_000);
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('formats insufficient_quota and 402 with credit advice without reset wording', () => {
+    const insufficientQuotaBody = JSON.stringify({
+      error: {
+        code: 'insufficient_quota',
+        message: 'You exceeded your current quota, please check your plan and billing details.',
+      },
+    });
+    expect(classifyApiError(429, insufficientQuotaBody)).toBe('quota');
+    const msg429 = formatApiError(429, insufficientQuotaBody);
+    expect(msg429).toContain('Check your usage/credits.');
+    expect(msg429).not.toContain('Wait for the reset');
+
+    const msg402 = formatApiError(402, 'Monthly usage limit exceeded.');
+    expect(msg402).toContain('Check your usage/credits.');
+    expect(msg402).not.toContain('Wait for the reset');
+  });
+
+  it('ignores absolute reset found only in non-message json fields', async () => {
+    const echoBody = JSON.stringify({
+      error: { message: 'Too many requests' },
+      echo: 'resets at 2099-01-01T00:00:00Z',
+    });
+    const formatted = formatApiError(429, echoBody);
+    expect(formatted).toContain('Try again in a moment');
+    expect(formatted).not.toContain('2099-01-01');
+
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(echoBody, { status: 429 }))
+        .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = fetchWithRetry('http://x/v1', {}, DEFAULT_SETTINGS.retry);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
   });
 
   it('formats error with reset time and remedy without temporary capacity wording', () => {

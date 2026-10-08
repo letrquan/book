@@ -11,12 +11,16 @@ All notable changes to this project are documented in this file.
   spent was treated as a transient rate limit: Book waited the router's cooldown hint up to
   `retry.maxDelayMs` on every attempt, then re-issued the turn and repeated the cycle for ~14
   minutes and ~33 requests before claiming a temporary capacity issue for a limit resetting days
-  later. An effective 429 stating a usage, plan, quota, or subscription limit over a long window —
-  or carrying OpenAI's `insufficient_quota` code — now classifies as `quota`: `fetchWithRetry`
-  answers with a single request, the run parks like a 402 (`credentials_rejected`, provider code
-  `quota`), and the formatted error names the stated reset time and remedy without temporary
-  capacity advice. In addition, an absolute `resets at <time>` on any retryable 429 that falls
-  beyond what the remaining retry budget can wait halts retries immediately.
+  later. An effective 429 whose message states a usage, plan, quota, or subscription limit over a
+  long window was reached, exceeded, or spent — or carrying OpenAI's `insufficient_quota` code —
+  now classifies as `quota`: without `retry.watchdog`, `fetchWithRetry` answers with a single
+  request and the run parks like a 402 (`credentials_rejected`, provider code `quota`). The
+  formatted error names the stated reset time and remedy without temporary capacity advice, while
+  `insufficient_quota` keeps the credits advice. A short window anywhere in the message keeps the
+  error a rate limit. Under `retry.watchdog`, spent-limit 429s are still retried. On any retryable
+  429, an absolute `resets at <time>` within reach is waited for, up to `retry.maxDelayMs` per
+  attempt; a reset that falls beyond what the remaining attempts and retry budget can wait halts
+  retries immediately.
 - **A model the provider no longer serves is no longer reported as a rejected credential** (#387).
   9router wraps an upstream 403 in its own 503 (`[route] [403]: Model is no longer available`),
   which `classifyApiError` read through the quoted status as `auth` — so the run parked as
