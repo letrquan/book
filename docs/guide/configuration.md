@@ -327,6 +327,7 @@ after a failed run.
 | `BOOK_WEB_MAX_REDIRECTS`                                                                          | Same-origin redirect limit for `WebFetch` (default 5, maximum 10)                          |
 | `BOOK_TUI_RENDERER`                                                                               | `safe`, `incremental`, or experimental scroll renderer                                     |
 | `BOOK_INK_OUTPUT_CACHE`                                                                           | `off` disables the cross-frame row cache of Ink's output, which is on by default           |
+| `BOOK_INK_RENDER_CULL`                                                                            | `off` draws transcript rows outside the viewport as before; skipping them is on by default |
 | `BOOK_STARTUP_ANIMATION`                                                                          | Startup splash on or off; outranks `ui.startupAnimation`, as `BOOK_MODEL` does for `model` |
 | `BOOK_SESSION_DRIVER`                                                                             | `human` or `agent`, over `CLAUDECODE`/`AI_AGENT`; agent-driven runs save learnings only    |
 | `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                                                        |

@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Scrolling a long transcript no longer draws rows outside the viewport** (#353). The virtual
+  transcript mounts about one viewport of rows above and below the view as overscan, and Ink's
+  render walk visited every mounted node every frame: measuring `widestLine`, wrapping text, and
+  recording writes that `Output.get` discarded because they lay outside the clip. A profile of a
+  heavy session put that walk at 26% of the TUI's busy CPU while scrolling. `src/cli/` now installs
+  `ink-render-cull.ts`, which tracks the walk's clip stack and gives mounted transcript rows an own
+  `getDisplay` reporting `DISPLAY_NONE` whenever the row's box lies wholly outside the innermost
+  vertical clip. Yoga layout is untouched — Yoga reads display from its native style rather than
+  the JavaScript method — so layout positions are preserved while Ink skips the subtree walk
+  entirely. Set `BOOK_INK_RENDER_CULL=off` to restore the previous behavior. TODO(353): numbers
+
 ## [0.3.0] - 2026-10-07
 
 ### Security

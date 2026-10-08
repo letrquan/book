@@ -1,10 +1,10 @@
-import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
-import { Text, render } from 'ink';
-import { createElement } from 'react';
+import { Box, Text, render } from 'ink';
+import { createElement, type ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { installInkFrameThrottle } from './ink-frame-throttle.js';
 import {
@@ -13,9 +13,15 @@ import {
   type InkClip,
   type InkOutput,
   type InkOutputConstructor,
+  type InkOutputFrame,
   type InkTransformer,
   type SliceAnsi,
 } from './ink-output-cache.js';
+import {
+  cullWhenOffscreen,
+  installInkRenderCull,
+  type CullableElement,
+} from './ink-render-cull.js';
 import {
   VERIFIED_INK_VERSION,
   hasInkTrailingNewlineFix,
@@ -107,7 +113,216 @@ describe('Ink renderer contract', () => {
       }
     }
   });
+
+  it('culls transcript rows wholly outside the viewport clip', async () => {
+    const outputPath = join(inkBuildDir(), 'output.js');
+    const outputModule = (await import(pathToFileURL(outputPath).href)) as {
+      default: ContractInkOutputConstructor;
+    };
+    const Output = outputModule.default;
+    const originalClip = Output.prototype.clip;
+    const originalUnclip = Output.prototype.unclip;
+    try {
+      // The frames drawn without the cull come first: the install wraps the prototype for the rest
+      // of the process, so the baseline must be drawn before it.
+      const baselines = new Map<number, DrawnTranscript>();
+      for (const offset of CULL_OFFSETS) {
+        baselines.set(offset, await drawTranscript(Output, offset, false));
+      }
+      expect(
+        await installInkRenderCull(),
+        "Ink's private Output changed shape; update ink-render-cull.ts before VERIFIED_INK_VERSION.",
+      ).toBe(true);
+      for (const offset of CULL_OFFSETS) {
+        const baseline = baselines.get(offset)!;
+        const culled = await drawTranscript(Output, offset, true);
+        // The cull decides against the clip Output.get replays, so every culled frame is byte-identical
+        // to the frame Ink draws itself.
+        expect(culled.frame, `offset ${offset}`).toBe(baseline.frame);
+        // The unculled walk recorded every mounted row, including the ones `get` threw away.
+        expect(baseline.rowsWritten.length).toBe(CULL_ROWS);
+        // The culled walk recorded only the visible rows: none outside the viewport was written.
+        const expectedVisible = Array.from(
+          { length: CULL_CONTENT_HEIGHT },
+          (_, index) => `row ${offset + index}`,
+        );
+        expect(culled.rowsWritten, `offset ${offset}`).toEqual(expectedVisible);
+      }
+    } finally {
+      Output.prototype.clip = originalClip;
+      Output.prototype.unclip = originalUnclip;
+    }
+  });
+
+  it('keeps a DISPLAY_NONE node from drawing while its sibling holds its position', async () => {
+    const outputPath = join(inkBuildDir(), 'output.js');
+    const yogaPath = createRequire(outputPath).resolve('yoga-layout');
+    const yogaModule = (await import(pathToFileURL(yogaPath).href)) as {
+      default?: { DISPLAY_NONE: number };
+    };
+    const displayNone = yogaModule.default?.DISPLAY_NONE ?? 1;
+
+    const stdoutWrites: string[] = [];
+    const stdout = makeStdout(stdoutWrites);
+    const stdin = makeStdin();
+
+    function App() {
+      return createElement(
+        Box,
+        { flexDirection: 'column' },
+        createElement(HiddenRow, { displayNone }, createElement(Text, null, 'hidden row')),
+        createElement(Box, { height: 1 }, createElement(Text, null, 'after')),
+      );
+    }
+
+    const app = render(createElement(App), {
+      stdout,
+      stdin,
+      patchConsole: false,
+      interactive: true,
+      maxFps: 1000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stdoutWrites.length = 0;
+    app.rerender(createElement(App));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    app.unmount();
+    app.cleanup();
+
+    const frame = stdoutWrites.join('');
+    expect(frame).toContain('after');
+    expect(frame).not.toContain('hidden row');
+    // "after" kept its position at row 1 rather than moving up to row 0.
+    expect(frame).toMatch(/\n.*after/);
+  });
 });
+
+interface ContractInkOutputConstructor {
+  new (options: { width: number; height: number }): InkOutput;
+  prototype: InkOutput & { get: (this: InkOutput) => InkOutputFrame };
+}
+
+const CULL_ROWS = 60;
+const CULL_CONTENT_HEIGHT = 10;
+const CULL_OFFSETS = [0, 7, 25, 50] as const;
+
+interface DrawnTranscript {
+  frame: string;
+  rowsWritten: string[];
+}
+
+function makeStdout(writes?: string[]): NodeJS.WriteStream {
+  return Object.assign(new EventEmitter(), {
+    columns: 80,
+    rows: 24,
+    isTTY: true,
+    write: (data: string | Uint8Array) => {
+      if (writes) writes.push(String(data));
+      return true;
+    },
+  }) as unknown as NodeJS.WriteStream;
+}
+
+function makeStdin(): NodeJS.ReadStream {
+  return Object.assign(new PassThrough(), {
+    isTTY: false,
+  }) as unknown as NodeJS.ReadStream;
+}
+
+function Transcript({ offset, culled }: { offset: number; culled: boolean }): ReactNode {
+  const rows: ReactNode[] = [];
+  for (let index = 0; index < CULL_ROWS; index++) {
+    rows.push(
+      createElement(
+        Box,
+        {
+          key: index,
+          flexShrink: 0,
+          ref: (node: CullableElement | null) => {
+            if (node && culled) cullWhenOffscreen(node);
+          },
+        },
+        createElement(Text, null, `row ${index}`),
+      ),
+    );
+  }
+  return createElement(
+    Box,
+    { height: CULL_CONTENT_HEIGHT, overflowY: 'hidden' },
+    createElement(Box, { marginTop: -offset, flexDirection: 'column' }, rows),
+  );
+}
+
+async function drawTranscript(
+  Output: ContractInkOutputConstructor,
+  offset: number,
+  culled: boolean,
+): Promise<DrawnTranscript> {
+  const stdoutWrites: string[] = [];
+  const stdout = makeStdout(stdoutWrites);
+  const stdin = makeStdin();
+  const recordedWrites: string[] = [];
+  const originalWrite = Output.prototype.write;
+  Output.prototype.write = function (
+    this: InkOutput,
+    x: number,
+    y: number,
+    text: string,
+    options: { transformers: InkTransformer[] },
+  ) {
+    recordedWrites.push(text);
+    return originalWrite.call(this, x, y, text, options);
+  };
+  try {
+    const app = render(createElement(Transcript, { offset, culled }), {
+      stdout,
+      stdin,
+      patchConsole: false,
+      interactive: true,
+      maxFps: 1000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    recordedWrites.length = 0;
+    stdoutWrites.length = 0;
+    app.rerender(createElement(Transcript, { offset, culled }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const frame = stdoutWrites.join('');
+    const rowsWritten = recordedWrites.filter((text) => text.startsWith('row '));
+    Output.prototype.write = originalWrite;
+    app.unmount();
+    app.cleanup();
+    return {
+      frame,
+      rowsWritten,
+    };
+  } finally {
+    Output.prototype.write = originalWrite;
+  }
+}
+
+function HiddenRow({
+  displayNone,
+  children,
+}: {
+  displayNone: number;
+  children?: ReactNode;
+}): ReactNode {
+  return createElement(
+    Box,
+    {
+      height: 1,
+      ref: (node: { yogaNode?: { getDisplay?: () => number } } | null) => {
+        if (node?.yogaNode && !Object.prototype.hasOwnProperty.call(node.yogaNode, 'getDisplay')) {
+          Object.defineProperty(node.yogaNode, 'getDisplay', {
+            value: () => displayNone,
+            configurable: true,
+          });
+        }
+      },
+    },
+    children,
+  );
+}
 
 /** The operations a list asks for, recorded through Ink's own methods on a fresh instance. */
 type Command =

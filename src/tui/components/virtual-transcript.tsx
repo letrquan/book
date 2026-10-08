@@ -8,6 +8,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { cullWhenOffscreen } from '../../cli/ink-render-cull.js';
 import {
   TranscriptViewportContext,
   useTranscriptLayoutChange,
@@ -272,6 +273,7 @@ export const VirtualTranscriptRow = React.memo(function VirtualTranscriptRow({
   children: React.ReactNode;
 }) {
   const contentRef = useRef<DOMElement>(null);
+  const outerRef = useRef<DOMElement>(null);
   const [reserved, setReserved] = useState(reserveRows);
 
   useLayoutEffect(() => {
@@ -282,10 +284,17 @@ export const VirtualTranscriptRow = React.memo(function VirtualTranscriptRow({
     if (reserved !== undefined) setReserved(undefined);
   }, [children, measurementKey, onMeasure, reserved]);
 
+  // Mount only: the cull reads the live clip and layout at draw time, so it never needs
+  // re-registering.
+  useLayoutEffect(() => {
+    cullWhenOffscreen(outerRef.current);
+  }, []);
+
   // The inner box keeps its natural height inside a held outer one, so it measures the same
   // either way, and the tree keeps one shape so releasing the hold does not remount the row.
   return (
     <Box
+      ref={outerRef}
       flexDirection="column"
       flexShrink={0}
       height={reserved}
