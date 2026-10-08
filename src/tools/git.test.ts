@@ -418,4 +418,30 @@ describe('hardening against a real git', () => {
     // pins is that the call returns at all rather than waiting on a stdin nobody will write to.
     expect(result.status).toBe('success');
   });
+
+  it('leaves no marker for GitStatus and GitDiff with a repository clean filter', async () => {
+    const filterMarker = join(root, 'CLEAN_FILTER_RAN');
+    const filterProgram = `sh -c "touch '${filterMarker.replace(/\\/g, '/')}'"`;
+    git(['config', 'filter.x.clean', filterProgram], repo);
+    git(['config', 'filter.x.required', 'true'], repo);
+    writeFileSync(join(repo, '.gitattributes'), '* filter=x\n');
+    git(['add', '.gitattributes'], repo);
+    git(['commit', '-qm', 'attributes'], repo);
+
+    // Make file stat-dirty
+    writeFileSync(join(repo, 'a.txt'), 'changed for filter test\n');
+    rmSync(filterMarker, { force: true });
+
+    await toolFor('GitStatus').execute({}, { workspaceRoot: repo, env: {} });
+    expect(existsSync(filterMarker)).toBe(false);
+
+    await toolFor('GitDiff').execute({}, { workspaceRoot: repo, env: {} });
+    expect(existsSync(filterMarker)).toBe(false);
+  });
+
+  it('keeps GitStatus working when core.fsmonitor is true', async () => {
+    git(['config', 'core.fsmonitor', 'true'], repo);
+    const result = await toolFor('GitStatus').execute({}, { workspaceRoot: repo, env: {} });
+    expect(result.status).toBe('success');
+  });
 });

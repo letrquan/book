@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Repository-local filters and merge drivers are disabled for Book's git calls, and lazy fetch is refused in git isolation** (#357).
+  A repository's own `.git/config` (or a file it includes) can no longer execute programs through
+  `filter.<name>.clean`, `filter.<name>.smudge`, `filter.<name>.process`, or `merge.<name>.driver`
+  during Book's git operations — these keys are pinned empty (with `filter.<name>.required=false`)
+  across git isolation, the read-only Git tools, `/review`, and the status poll. Operator-configured
+  filters and merge drivers (such as from `~/.gitconfig` or system config) continue to run, so global
+  git-lfs remains functional. In git isolation, lazy object fetching in partial clones is refused
+  (`GIT_NO_LAZY_FETCH=1`, `GIT_ALLOW_PROTOCOL=`) to prevent unprompted execution of repository
+  transports (`core.sshCommand`, `credential.helper`), failing cleanly with an explanation on how
+  to fetch missing objects manually. Git's built-in `core.fsmonitor=true` daemon is permitted while
+  hook paths remain disabled.
 - **A model the provider no longer serves is no longer reported as a rejected credential** (#387).
   9router wraps an upstream 403 in its own 503 (`[route] [403]: Model is no longer available`),
   which `classifyApiError` read through the quoted status as `auth` — so the run parked as

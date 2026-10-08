@@ -23,6 +23,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 import { hardenedGitArgs } from '../../tools/git.js';
+import { REPOSITORY_PROGRAM_CONFIG_PATTERN } from '../../tools/git-repository-programs.js';
 import { isInsideWorkTree, sameStatus, useGitStatus } from './useGitStatus.js';
 
 const roots: string[] = [];
@@ -104,7 +105,15 @@ describe('useGitStatus outside the repository root', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].args).toEqual(hardenedGitArgs(['rev-parse', '--abbrev-ref', 'HEAD']));
+    expect(calls[0].args).toEqual(
+      hardenedGitArgs([
+        'config',
+        '--show-scope',
+        '-z',
+        '--get-regexp',
+        REPOSITORY_PROGRAM_CONFIG_PATTERN,
+      ]),
+    );
     view.unmount();
   });
 });
@@ -129,6 +138,13 @@ describe('useGitStatus argv', () => {
     for (const call of calls) {
       // Hardened argv, the poll's own command last: one of the two it makes.
       expect([
+        hardenedGitArgs([
+          'config',
+          '--show-scope',
+          '-z',
+          '--get-regexp',
+          REPOSITORY_PROGRAM_CONFIG_PATTERN,
+        ]),
         hardenedGitArgs(['rev-parse', '--abbrev-ref', 'HEAD']),
         hardenedGitArgs(['status', '--short']),
       ]).toContainEqual(call.args);

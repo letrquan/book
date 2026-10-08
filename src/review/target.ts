@@ -4,6 +4,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import type { ReviewScope } from './types.js';
 import { buildChildEnv } from '../child-env.js';
 import { hardenedGitArgs, hardenedGitEnv, HARDENED_DIFF_ARGS } from '../tools/git.js';
+import { readRepositoryProgramPins } from '../tools/git-repository-programs.js';
 
 interface GitResult {
   stdout: string;
@@ -31,11 +32,16 @@ const MAX_REVIEW_DIFF_BYTES = 20 * 1024 * 1024;
  * they print, and `diff.external` one it runs to produce them at all. A pager and a credential
  * prompt it cannot wait on come with it in `hardenedGitEnv`, as in `readOnlyGit`.
  */
-function git(workspace: string, args: string[], allowExitCodes: number[] = []): Promise<GitResult> {
+async function git(
+  workspace: string,
+  args: string[],
+  allowExitCodes: number[] = [],
+): Promise<GitResult> {
+  const pins = await readRepositoryProgramPins(workspace);
   return new Promise((resolvePromise, reject) => {
     execFile(
       'git',
-      hardenedGitArgs(args),
+      hardenedGitArgs([...pins, ...args]),
       {
         cwd: workspace,
         encoding: 'utf8',

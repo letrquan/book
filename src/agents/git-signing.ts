@@ -23,23 +23,15 @@
  * already had.
  */
 
+import {
+  canonicalConfigKey,
+  parseGitConfig,
+  type GitConfigEntry,
+} from '../tools/git-repository-programs.js';
+
 /** One `git config` entry, in the order git reported it. */
-export interface SigningConfigEntry {
-  /**
-   * Git's own name for where the value came from: `system`, `global`, `local`, `worktree` or
-   * `command`. An entry a repository pulled in with `include`/`includeIf` carries the scope of
-   * the file that included it, so it is a repository value (checked on git 2.43).
-   */
-  scope: string;
-  /**
-   * The key as git canonicalized it: the section and the variable name lower-cased, a subsection
-   * left exactly as written — `gpg.ssh.program`, and `gpg.SSH.program` for a key that is not
-   * this one at all.
-   */
-  key: string;
-  /** The value, or `true` for a key written without one — `[commit] gpgsign` means what it says. */
-  value: string;
-}
+export type SigningConfigEntry = GitConfigEntry;
+export { canonicalConfigKey };
 
 /** What {@link HardenedRunner} is given, and what it is asked for. */
 export interface RunOptions {
@@ -187,50 +179,9 @@ async function gitVersion(run: HardenedRunner, repoRoot: string): Promise<string
 
 /**
  * Parse `git config --show-scope -z --get-regexp` output.
- *
- * The `-z` layout, read off a real git, is a NUL-separated stream of pairs: the scope, then the
- * key, then the value — `scope\0key\nvalue\0` — and a key written without a value has neither the
- * newline nor the value, `scope\0key\0`, because git is about to read it as a boolean. A value may
- * itself contain newlines, so the key is what the first newline ends, and the rest is the value.
  */
 export function parseSigningConfig(stdout: string): SigningConfigEntry[] {
-  const fields = stdout.split('\0');
-  const entries: SigningConfigEntry[] = [];
-  for (let index = 0; index + 1 < fields.length; index += 2) {
-    const separator = fields[index + 1].indexOf('\n');
-    entries.push({
-      scope: fields[index].toLowerCase(),
-      key: canonicalConfigKey(
-        separator === -1 ? fields[index + 1] : fields[index + 1].slice(0, separator),
-      ),
-      // Git's own reading of a key with no value: a boolean true.
-      value: separator === -1 ? 'true' : fields[index + 1].slice(separator + 1),
-    });
-  }
-  return entries;
-}
-
-/**
- * Canonicalize a config key the way git does, which is not by lower-casing all of it: the section
- * and the variable name are case-insensitive and git reports them folded, but a **subsection is
- * case-sensitive and git keeps it exactly as written** (checked on git 2.43: `[gpg "SSH"] program`
- * is reported as `gpg.SSH.program`).
- *
- * That matters because `gpg.SSH.program` is not `gpg.ssh.program`. Git does not use the former for
- * ssh signing, so treating it as the latter would read the operator's own key-setting program out
- * of their configuration and pin it where the repository's would otherwise have gone. As written
- * it is an unknown key, and an unknown key a repository sets is neutralized rather than honored.
- */
-export function canonicalConfigKey(raw: string): string {
-  const nameStart = raw.lastIndexOf('.');
-  if (nameStart === -1) return raw.toLowerCase();
-  const head = raw.slice(0, nameStart);
-  const name = raw.slice(nameStart + 1).toLowerCase();
-  const subsectionStart = head.indexOf('.');
-  if (subsectionStart === -1) return `${head.toLowerCase()}.${name}`;
-  // A subsection may itself contain dots, so only the section in front of the first one is folded.
-  const section = head.slice(0, subsectionStart).toLowerCase();
-  return `${section}.${head.slice(subsectionStart + 1)}.${name}`;
+  return parseGitConfig(stdout);
 }
 
 /** What the entries say, split the way every decision below needs it. Computed once, used once. */

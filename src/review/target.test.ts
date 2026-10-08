@@ -238,4 +238,22 @@ describe('resolveReviewTarget', () => {
     expect(target.changedFiles).toEqual([]);
     expect(target.diff).not.toContain('pipe');
   });
+
+  it('leaves no marker when the repository configures a clean filter', async () => {
+    const marker = join(root, 'FILTER_RAN');
+    const filter = `sh -c "touch '${marker.replace(/\\/g, '/')}'"`;
+    git(root, 'config', 'filter.x.clean', filter);
+    git(root, 'config', 'filter.x.required', 'true');
+    writeFileSync(join(root, '.gitattributes'), '* filter=x\n', 'utf8');
+    git(root, 'add', '.gitattributes');
+    git(root, 'commit', '-qm', 'attributes');
+
+    // Make a file stat-dirty
+    writeFileSync(join(root, 'tracked.txt'), 'clean filter test\n', 'utf8');
+    rmSync(marker, { force: true });
+
+    const target = await resolveReviewTarget(root, scope());
+    expect(target.changedFiles).toContain('tracked.txt');
+    expect(existsSync(marker)).toBe(false);
+  });
 });

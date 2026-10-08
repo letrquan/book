@@ -2,6 +2,12 @@ import { execFile } from 'child_process';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { buildChildEnv } from '../child-env.js';
 import { toolFailure, toolSuccess } from './result.js';
+import {
+  GIT_HARDENING_ARGS,
+  hardenedGitArgs,
+  hardenedGitEnv,
+  readRepositoryProgramPins,
+} from './git-repository-programs.js';
 
 type ExecFile = typeof execFile;
 
@@ -13,9 +19,11 @@ type ExecFile = typeof execFile;
  * shared directory, or someone else's machine, so any of these can be set without the operator
  * having made that choice themselves:
  *
- * - `core.fsmonitor` — a command `git status` executes to check whether the tree changed. This
- *   is the sharpest one: a status call is supposed to be inert and it will happily run whatever
- *   the repository named.
+ * - `core.fsmonitor` — default off. A command `git status` executes to check whether the tree
+ *   changed. This is the sharpest one: a status call is supposed to be inert and it will happily
+ *   run whatever the repository named. `GIT_HARDENING_ARGS` turns it off by default; git's
+ *   built-in daemon (`core.fsmonitor=true`) is allowed back by `readRepositoryProgramPins` when
+ *   configured, while hook paths remain disabled (#357).
  * - `log.showSignature` — `git log` then verifies every signature it prints, and verification
  *   runs `gpg.program`, another program the repository names. `GitDiff` and `GitStatus` do not
  *   reach it, but `GitLog` does on every commit that carries a `gpgsig` header.
@@ -45,23 +53,7 @@ type ExecFile = typeof execFile;
  * `diff.external`) is not here either, because the flags that close those are per-command and
  * belong in {@link HARDENED_DIFF_ARGS}, which every hardened caller that runs `git diff` uses.
  */
-const GIT_HARDENING_ARGS: readonly string[] = [
-  '-c',
-  'core.fsmonitor=false',
-  '-c',
-  'core.pager=cat',
-  '-c',
-  'core.hooksPath=',
-  '-c',
-  'core.untrackedCache=false',
-  '-c',
-  'gc.auto=0',
-  '-c',
-  'maintenance.auto=false',
-  '-c',
-  'log.showSignature=false',
-  '--no-optional-locks',
-];
+export { GIT_HARDENING_ARGS };
 
 /**
  * The per-command flags that close the two remaining routes a checkout owns for producing a diff,
@@ -84,9 +76,7 @@ export const HARDENED_DIFF_ARGS = ['--no-ext-diff', '--no-textconv'] as const;
  * environment is `Record<string, string>` too, and spreading a wider one into it would make the
  * whole object `string | undefined` where nothing may be undefined.
  */
-export function hardenedGitEnv(): Record<string, string> {
-  return { GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' };
-}
+export { hardenedGitEnv };
 
 /**
  * The hardening flags in front of a caller's own arguments; see {@link GIT_HARDENING_ARGS}.
@@ -100,10 +90,11 @@ export function hardenedGitEnv(): Record<string, string> {
  * off is a decision (#348) rather than a consequence: that work is Book's, in Book's worktree,
  * and a hook the operator installed is theirs to decide when it runs. The operator's own commits
  * keep their hooks, through {@link runGit} below.
+ *
+ * Note that guarded callers pass repository program pins after these base flags
+ * (`hardenedGitArgs([...pins, ...args])`) so operator values and neutralized pins override them (#357).
  */
-export function hardenedGitArgs(args: readonly string[]): string[] {
-  return [...GIT_HARDENING_ARGS, ...args];
-}
+export { hardenedGitArgs };
 
 /**
  * `runGit` runs a caller's arguments as given, and the caller chooses.
@@ -154,11 +145,22 @@ export async function runGit(
 }
 
 /** A read-only report: hardened, and with the pager and credential prompt it cannot wait on. */
-function readOnlyGit(args: readonly string[], ctx: ToolContext) {
-  return runGit(hardenedGitArgs(args), {
-    ...ctx,
-    env: { ...ctx.env, ...hardenedGitEnv() },
-  });
+async function readOnlyGit(args: readonly string[], ctx: ToolContext) {
+  try {
+    const pins = await readRepositoryProgramPins(ctx.workspaceRoot, undefined, {
+      signal: ctx.signal,
+    });
+    return await runGit(hardenedGitArgs([...pins, ...args]), {
+      ...ctx,
+      env: { ...ctx.env, ...hardenedGitEnv() },
+    });
+  } catch (error) {
+    return {
+      success: false,
+      output: '',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function gitResult(result: Awaited<ReturnType<typeof runGit>>): ToolResult {

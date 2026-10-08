@@ -7,6 +7,7 @@ import type { AgentApplyResult, AgentRecord, AgentSnapshot, PatchCandidate } fro
 import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 import { hardenedGitArgs, hardenedGitEnv, HARDENED_DIFF_ARGS } from '../tools/git.js';
+import { readRepositoryProgramPins } from '../tools/git-repository-programs.js';
 import {
   signingPinArgs,
   type HardenedRunner,
@@ -30,21 +31,23 @@ import {
  * it, and `git-signing.ts` is given that function rather than a runner of its own for the same
  * reason: a fix here reaches every read that decides how a commit is signed.
  *
- * **What is still followed, deliberately (#357).** Hooks, `core.fsmonitor` and the diff drivers
- * are off, and the agent's own commit is unsigned, but three routes a checkout owns remain open,
- * because closing them would change the content Book manages:
+ * **What is protected against repository-local configuration (#357).** Hooks, diff drivers,
+ * and repository-local programs are off, the agent's own commit is unsigned, and calls carry
+ * pins for repository-level programs:
  *
- * - **`.gitattributes` clean/smudge and process filters.** They rewrite the bytes on checkout and
- *   on add, and a process filter is a program the checkout names. `git-lfs` needs them: without
- *   them a pointer file is a pointer file rather than the large blob it stands for.
- * - **`.gitattributes` merge drivers.** The cherry-pick that applies an agent's result merges
- *   through whatever the checkout names, for the same reason.
- * - **Lazy fetch in a partial clone.** `--filter=blob:none` means a missing blob is fetched on
- *   demand, through the `credential.helper` and `core.sshCommand` that fetch needs.
- *
- * So a checkout can still have Book run a program through one of those three, and that is a known
- * gap rather than an oversight: it is tracked as issue 357, and the decision belongs to whoever
- * clones a repository that carries a `.gitattributes` naming a program.
+ * - **`.gitattributes` clean/smudge and process filters.** Filters defined in repository scope
+ *   are pinned empty (and `filter.<n>.required=false`); the operator's own filters (such as
+ *   git-lfs from `git lfs install` in global or system config) still run so operator-configured
+ *   filters continue to work.
+ * - **`.gitattributes` merge drivers.** Merge drivers defined in repository scope are pinned
+ *   empty; the operator's own drivers still run. A conflicting cherry-pick under a repository
+ *   driver stops as an ordinary conflict with no driver run.
+ * - **Lazy fetch in a partial clone.** Refused in git isolation (`GIT_NO_LAZY_FETCH=1`,
+ *   `GIT_ALLOW_PROTOCOL=`). Nothing in git isolation needs a transport, and a fetch would run
+ *   the repository's configured transport (`core.sshCommand`, `credential.helper`) without a
+ *   prompt. When missing objects are encountered, calls fail with a clear explanatory message.
+ *   Read-only Git tools, `/review` and the TUI poll keep lazy fetch for now by owner decision.
+ * - **`core.fsmonitor=true`** (git's built-in daemon) is honoured, while hook paths are disabled.
  *
  * Three properties of a child are load-bearing for the reads this module makes, and all three
  * live here rather than at the call sites because each one has a way of failing *open*:
@@ -165,10 +168,15 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
           // fallback for a git that exited without a word.
           reject(
             new Error(
-              stderr.trim() ||
-                stdout.trim() ||
-                stdinError?.message ||
-                `${command} ${subcommandOf(args)} failed (${code})`,
+              failureDescription(
+                null,
+                stderr.trim() || stdout.trim() || stdinError?.message || outputError?.message || '',
+                command,
+                args,
+                timeoutMs,
+                stoppedBy === 'aborted',
+                code,
+              ),
             ),
           );
         });
@@ -273,11 +281,15 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
         settle(() =>
           reject(
             new Error(
-              // git's own words first, because they are the ones that say what went wrong. Then the
-              // composed message, and not Node's: with no output to prefer, Node's is the whole argv
-              // — hardening pairs included — which names `-c` where a reader needs the subcommand,
-              // and says nothing that the exit code does not (#357).
-              stderr.trim() || stdout.trim() || `${command} ${subcommandOf(args)} failed (${code})`,
+              failureDescription(
+                error,
+                stderr || stdout,
+                command,
+                args,
+                timeoutMs,
+                stoppedBy === 'aborted',
+                code,
+              ),
             ),
           ),
         );
@@ -441,13 +453,26 @@ function failureDescription(
   args: readonly string[],
   timeoutMs: number,
   aborted: boolean,
+  code?: number,
 ): string {
   const invocation = `${command} ${subcommandOf(args)}`;
   if (aborted || isAbortError(error)) return `${invocation} was cancelled`;
   if (error?.killed) return `${invocation} timed out after ${timeoutMs}ms and was killed`;
   if (error?.signal) return `${invocation} was killed with ${error.signal}`;
   if (typeof error?.code === 'string') return `${invocation} failed: ${error.code}`;
-  return output.trim() || error?.message || `${invocation} failed`;
+
+  const trimmed = output.trim();
+  if (/promisor remote|lazy fetching disabled/i.test(trimmed)) {
+    return (
+      "this repository is a partial clone; Book's agent isolation does not fetch missing objects, because the fetch would run the transport this checkout configures (`core.sshCommand`, `credential.helper`) with no prompt; fetch the missing objects yourself (for example `git fetch --refetch <remote>` after unsetting `remote.<remote>.partialclonefilter`), then retry.\n" +
+      trimmed
+    );
+  }
+
+  if (trimmed) return trimmed;
+  if (code !== undefined) return `${invocation} failed (${code})`;
+  if (error?.message) return error.message;
+  return `${invocation} failed`;
 }
 
 /**
@@ -512,11 +537,39 @@ function internalGitEnv(overrides: NodeJS.ProcessEnv | undefined): NodeJS.Proces
   // The call site's own environment is spread next, so a `GIT_INDEX_FILE` naming a temporary index
   // — the snapshot's, the pre-check's — is Book's own decision and outranks the ambient one it has
   // just removed.
-  return { ...ambient, ...overrides, ...hardenedGitEnv() };
+  return {
+    ...ambient,
+    ...overrides,
+    ...hardenedGitEnv(),
+    GIT_NO_LAZY_FETCH: '1',
+    GIT_ALLOW_PROTOCOL: '',
+  };
 }
 
 /** git, with the argv hardening that belongs to git and not to {@link run}. */
-function git(
+async function git(
+  cwd: string,
+  args: string[],
+  options: Omit<RunOptions, 'cwd'> = {},
+): Promise<RunResult> {
+  const pins = await readRepositoryProgramPins(
+    cwd,
+    (pinArgs, pinOpts) =>
+      run('git', pinArgs, {
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
+        ...pinOpts,
+      }),
+    { signal: options.signal, timeoutMs: options.timeoutMs },
+  );
+  return run('git', hardenedGitArgs([...pins, ...args]), { ...options, cwd });
+}
+
+/**
+ * Unpinned git runner, exported for testing {@link run}'s own boundaries and environment isolation.
+ * Reached through `git-isolation-internal.ts` rather than from here.
+ */
+function rawGit(
   cwd: string,
   args: string[],
   options: Omit<RunOptions, 'cwd'> = {},
@@ -524,14 +577,7 @@ function git(
   return run('git', hardenedGitArgs(args), { ...options, cwd });
 }
 
-/**
- * {@link git}, exported for tests only, and reached through `git-isolation-internal.ts` rather than
- * from here: see that module for why.
- *
- * No exported path reaches `git()`'s `input` branch without a real snapshot, and #351 needs a patch
- * git exits on before reading it.
- */
-export const gitForTest = git;
+export const gitForTest = rawGit;
 
 /** The runner `git-signing.ts` reads the signing configuration through; see {@link HardenedRunner}. */
 const hardenedRunner: HardenedRunner = run;
@@ -1137,8 +1183,8 @@ export async function applyVerifiedCandidate(
     // start, in a flow nothing asked about (#348). The commit still signs, and signs as the
     // operator configured, because the pins carry their own value forward — see `git-signing.ts`
     // for what is read, from where, and the one signing shape that cannot be carried over.
-    // Filters and merge drivers still run on this checkout, deliberately, because git-lfs depends
-    // on them (#357); they are configuration a repository can own in a way signing now is not.
+    // Repository-local filters and merge drivers are pinned empty by git(), while the
+    // operator's own (such as git-lfs from `git lfs install`) continue to run (#357).
     //
     // The read is a separate step, before the `try` below, because it is not a cherry-pick: a
     // failure here means no pick has started, and reporting it as a rolled-back pick would be
