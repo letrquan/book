@@ -11,8 +11,8 @@ import { inkBuildDir } from './ink-renderer.js';
  *
  * The row cache in `ink-output-cache.ts` took the per-frame string building out of Ink's frame, but
  * the walk that visits every mounted node every frame — Ink's private `renderNodeToOutput` — was
- * still 26% of the TUI's busy CPU while scrolling a real session (TODO(353): numbers for this
- * cull). The virtual transcript keeps about one viewport of rows mounted above and below the view,
+ * still 26% of the TUI's busy CPU while scrolling a real session. The virtual transcript keeps
+ * about one viewport of rows mounted above and below the view,
  * so most of that walk is spent on rows nobody can see: for each text node it squashes the text,
  * measures `widestLine` and wraps it, then records a write that `Output.get` throws away when it
  * lies outside the clip. Even after culling wholly offscreen rows, rows that straddle the viewport
@@ -50,6 +50,17 @@ import { inkBuildDir } from './ink-renderer.js';
  * stack, because `Output.get` applies only the innermost clip and only its vertical bounds, so
  * "wholly outside" is decided exactly as `Output.get` decides what to keep: a box whose bottom is
  * at or above the clip's first row, or whose top is at or below its last, draws nothing.
+ *
+ * Measured on the shipped code, over the real 4 MB session the issue used, at 120x40, resumed in a
+ * PTY (40 wheel-up reports at 30/s, then 40 wheel-down at 30/s, then flicks; main's build against
+ * this branch's build, interleaved runs): every real frame was drawn twice in the same process,
+ * once with the cull and once without it, from the same layout — 0 mismatches over 512 frames
+ * (Windows 246, Linux 266). The cull removes 65% (Windows) and 70% (Linux) of the walk's writes;
+ * before it, 73% of the writes the walk made landed wholly outside the clip; with it, 21% (Windows)
+ * and 10% (Linux). On Linux (5 runs per build), Ink's draw time summed over the wheel-up phase fell
+ * from 486 ms to 306 ms (median draw 5.7 ms to 3.2 ms), over the wheel-down phase from 374 ms to
+ * 209 ms (median draw 4.3 ms to 2.3 ms). Event-loop stalls over 40 ms during wheel-up fell from 1.6
+ * to 1.0 per run, and the worst stall per run from 50 ms to 41 ms at the median.
  *
  * `installInkRenderCull` refuses to touch Ink unless the prototype carries the clip push, pop and
  * `get` the cull needs, and `ink-renderer.contract.test.ts` draws the same frames with and without
