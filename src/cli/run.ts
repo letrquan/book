@@ -35,6 +35,7 @@ import { installFrameCapture } from './frame-buffer.js';
 import { hasInkTrailingNewlineFix } from './ink-renderer.js';
 import { installInkFrameThrottle } from './ink-frame-throttle.js';
 import { installInkOutputCache } from './ink-output-cache.js';
+import { installInkRenderCull } from './ink-render-cull.js';
 import { isCiEnvironment, resolveInkMaxFps, resolveTuiRendererMode } from './tui-renderer-mode.js';
 import { resolvePermissionMode } from '../permission-mode.js';
 import { spawn } from 'node:child_process';
@@ -426,6 +427,8 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       // Ink rebuilds every row of every frame from scratch, with fresh caches per frame, which is
       // where a scroll through a long session stalls. This shares them across frames.
       await installInkOutputCache();
+      // Ink's walk draws every mounted transcript row, even the ones the viewport cannot see.
+      await installInkRenderCull();
       app = render(
         createElement(App, {
           config,

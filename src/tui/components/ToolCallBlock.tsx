@@ -183,23 +183,34 @@ export function TargetText({
   target,
   failed,
   path = false,
+  wrap,
 }: {
   target: string;
   failed: boolean;
   /** Split the directory prefix off. Only meaningful for filesystem paths. */
   path?: boolean;
+  wrap?: React.ComponentProps<typeof Text>['wrap'];
 }) {
   const theme = useTheme();
-  if (failed) return <Text color={theme.error}>{target}</Text>;
+  if (failed)
+    return (
+      <Text wrap={wrap} color={theme.error}>
+        {target}
+      </Text>
+    );
   const split = path ? target.lastIndexOf('/') : -1;
   // A trailing slash leaves no basename, which would paint the whole target in
   // the dim prefix colour and make the row's only content the faintest thing
   // on screen.
   if (split < 0 || split === target.length - 1) {
-    return <Text color={theme.subtle}>{target}</Text>;
+    return (
+      <Text wrap={wrap} color={theme.subtle}>
+        {target}
+      </Text>
+    );
   }
   return (
-    <Text>
+    <Text wrap={wrap}>
       <Text color={theme.inactive}>{target.slice(0, split + 1)}</Text>
       <Text color={theme.subtle}>{target.slice(split + 1)}</Text>
     </Text>
@@ -215,14 +226,31 @@ const CHURN_TOKEN = /^([+-])(\d+)$/;
  * Everything else stays recessive — the figures a reader scans for are the
  * lines added and removed, and an error.
  */
-export function MetaText({ meta, failed }: { meta: string; failed: boolean }) {
+export function MetaText({
+  meta,
+  failed,
+  wrap,
+}: {
+  meta: string;
+  failed: boolean;
+  wrap?: React.ComponentProps<typeof Text>['wrap'];
+}) {
   const theme = useTheme();
-  if (failed) return <Text color={theme.error}>{meta}</Text>;
+  if (failed)
+    return (
+      <Text wrap={wrap} color={theme.error}>
+        {meta}
+      </Text>
+    );
   if (!CHURN_TOKEN.test(meta.split(' ')[0] ?? '')) {
-    return <Text color={theme.inactive}>{meta}</Text>;
+    return (
+      <Text wrap={wrap} color={theme.inactive}>
+        {meta}
+      </Text>
+    );
   }
   return (
-    <Text>
+    <Text wrap={wrap}>
       {meta.split(' ').map((token, index) => {
         const churn = CHURN_TOKEN.exec(token);
         const color = !churn ? theme.inactive : churn[1] === '+' ? theme.success : theme.error;
@@ -332,10 +360,13 @@ function ToolCallBlockInner({
       flexDirection="column"
       marginLeft={isFileChild ? CONTENT_COLUMN + GUTTER_WIDTH : CONTENT_COLUMN}
     >
+      {/* The row is one line by contract; it must truncate, never wrap, because a wrapped line is drawn outside the box and the render cull relies on rows drawing inside their own box. */}
       <Box ref={summaryRef} height={1}>
         {/* The gutter carries status; content always begins on the next column. */}
         {isFileChild ? (
-          <Text color={theme.toolRail}>└ </Text>
+          <Text wrap="truncate-end" color={theme.toolRail}>
+            └{' '}
+          </Text>
         ) : isRunning ? (
           <>
             {/* Spinner emits its own trailing space, so the gutter stays two
@@ -348,20 +379,25 @@ function ToolCallBlockInner({
             />
           </>
         ) : (
-          <Text color={statusColor(presentation.status, theme)}>
+          <Text wrap="truncate-end" color={statusColor(presentation.status, theme)}>
             {statusSymbol(presentation.status)}{' '}
           </Text>
         )}
         {/* Recessive, but never faint: SGR 2 on an already-muted grey left the
             verb nearly invisible on a dark background. */}
-        {row.label ? <Text color={theme.inactive}>{row.label} </Text> : null}
+        {row.label ? (
+          <Text wrap="truncate-end" color={theme.inactive}>
+            {row.label}{' '}
+          </Text>
+        ) : null}
         <TargetText
           target={row.target}
           failed={presentation.status === 'failure'}
           path={Boolean(presentation.filePath) || isFileChild}
+          wrap="truncate-end"
         />
-        <Text>{row.gap}</Text>
-        <MetaText meta={row.meta} failed={Boolean(inlineError)} />
+        <Text wrap="truncate-end">{row.gap}</Text>
+        <MetaText meta={row.meta} failed={Boolean(inlineError)} wrap="truncate-end" />
       </Box>
       {isExpanded && result && isDiffOutput(name, result) ? (
         <DiffBlock

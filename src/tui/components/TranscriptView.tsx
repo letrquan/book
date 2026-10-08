@@ -49,6 +49,7 @@ import { useTheme } from '../theme.js';
 import { setTranscriptScrollHint } from '../ink-scroll-renderer.js';
 import { markTranscriptScrollActivity } from '../scroll-activity.js';
 import { resolveInkMaxFps } from '../../cli/tui-renderer-mode.js';
+import { cullWhenOffscreen } from '../../cli/ink-render-cull.js';
 import {
   ToolRowInteractionContext,
   type ToolSummaryRowRegistration,
@@ -197,6 +198,10 @@ export function TranscriptView({
   const { stdout } = useStdout();
   const viewportRef = useRef<DOMElement>(null);
   const contentRef = useRef<DOMElement>(null);
+
+  useLayoutEffect(() => {
+    cullWhenOffscreen(contentRef.current);
+  }, []);
   const metricsRef = useRef(INITIAL_METRICS);
   const stateRef = useRef<TranscriptScrollState>(createTranscriptScrollState());
   const previousContentRowsRef = useRef(0);
