@@ -146,6 +146,71 @@ const MODEL_GONE_PROXIMITY_CHARS = 60;
 /** Credential words: a sentence that names a credential is never about a model. */
 const CREDENTIAL_WORD = /\b(?:api\s+key|key|token|credential)s?\b/i;
 
+/** `error.code` or `error.type` values that name a spent quota outright (#400). */
+const INSUFFICIENT_QUOTA_ERROR_NAMES: ReadonlySet<string> = new Set(['insufficient_quota']);
+
+/** Limit phrases for spent quota or plan usage limits (#400). */
+const SPENT_USAGE_LIMIT_PHRASES =
+  /\b(?:usage\s+limits?|plan\s+limits?|quotas?|subscription\s+limits?|limits?\s+for\s+your\s+plan)\b/i;
+
+/** Long window phrases: weekly, daily, monthly, N-hour, per day/week/month (#400). */
+const LONG_WINDOW_PHRASES =
+  /\b(?:weekly|daily|monthly|\d+(?:\.\d+)?(?:-|\s+)hours?|per\s+(?:day|week|month))\b/i;
+
+/**
+ * Short window phrases that designate rate limits rather than plan quotas (#400).
+ * A sentence containing any of these stays rate_limited.
+ */
+const SHORT_WINDOW_PHRASES = /\b(?:per\s+min(?:ute)?|per\s+sec(?:ond)?|rpm|tpm|rps)\b/i;
+
+/**
+ * True when an error body says a usage or plan limit is spent over a long
+ * window (weekly, daily, monthly, N-hour), or names OpenAI's `insufficient_quota`
+ * (#400).
+ *
+ * Read through `errorBodyParts` (the message, the `code` / `type` names, and
+ * OpenRouter's forwarded `raw`). A short window (per minute, RPM, TPM) stays
+ * a rate limit.
+ */
+function statesSpentUsageLimit(body: string): boolean {
+  if (!body) return false;
+  const { message, names, raw } = errorBodyParts(body);
+  if (names.some((name) => INSUFFICIENT_QUOTA_ERROR_NAMES.has(name.toLowerCase()))) {
+    return true;
+  }
+  const saysIt = (text: string): boolean => {
+    for (const sentence of text.split(/[.!?:;]+(?:\s+|$)|[\r\n]+/)) {
+      if (SHORT_WINDOW_PHRASES.test(sentence)) continue;
+      if (SPENT_USAGE_LIMIT_PHRASES.test(sentence) && LONG_WINDOW_PHRASES.test(sentence)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  return saysIt(message) || (raw !== undefined && statesSpentUsageLimit(raw));
+}
+
+/**
+ * An absolute reset time stated in an error body (#400):
+ * `resets at <ISO>`, `reset at <ISO>`, `resets on <ISO>`, `reset on <ISO>`.
+ * The ISO timestamp must have a date, `T`, time, and `Z` or `±hh:mm` offset.
+ */
+const ABSOLUTE_RESET_PATTERN =
+  /\b(?:resets?)\s+(?:at|on)\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))\b/i;
+
+export function parseAbsoluteResetIso(body?: string | null): string | undefined {
+  if (!body) return undefined;
+  const match = body.match(ABSOLUTE_RESET_PATTERN);
+  if (!match) return undefined;
+  const timestamp = Date.parse(match[1]);
+  return Number.isFinite(timestamp) ? match[1] : undefined;
+}
+
+export function parseAbsoluteReset(body?: string | null): number | undefined {
+  const iso = parseAbsoluteResetIso(body);
+  return iso !== undefined ? Date.parse(iso) : undefined;
+}
+
 /**
  * True when an error body says the model is gone or unusable, read from the
  * same message parts every other body reading uses (`errorBodyParts`: the
@@ -308,6 +373,9 @@ function statesContextOverflow(body: string): boolean {
  */
 export function classifyApiError(status: number, body: string): ProviderErrorCode {
   const effective = wrappedUpstreamStatus(status, body) ?? status;
+  if (effective === 429 && statesSpentUsageLimit(body)) {
+    return 'quota';
+  }
   const code = classifyHttpStatus(effective).code;
   if ((effective === 403 || effective === 404) && statesModelUnavailable(body, effective)) {
     return 'model_unavailable';
@@ -347,10 +415,17 @@ export function formatApiError(status: number, body: string): string {
   switch (code) {
     case 'context_overflow':
       return `${base} ${detail || 'Input exceeds the model context window.'} Reduce the conversation or tool output and try again.`;
-    case 'rate_limited':
-      return isOversizedForRateLimit(detail)
-        ? `${base} ${detail}. The request is larger than the rate limit allows at once, so it has to shrink; waiting will not help.`
-        : `${base} ${detail}. This may be a temporary capacity issue. Try again in a moment.`;
+    case 'rate_limited': {
+      if (isOversizedForRateLimit(detail)) {
+        return `${base} ${detail}. The request is larger than the rate limit allows at once, so it has to shrink; waiting will not help.`;
+      }
+      const resetTime = parseAbsoluteReset(body);
+      if (resetTime !== undefined && resetTime > Date.now()) {
+        const resetIso = parseAbsoluteResetIso(body);
+        return `${base} ${detail}. It resets at ${resetIso}.`;
+      }
+      return `${base} ${detail}. This may be a temporary capacity issue. Try again in a moment.`;
+    }
     case 'overloaded':
       return `${base} Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment.`;
     case 'server_error':
@@ -365,8 +440,14 @@ export function formatApiError(status: number, body: string): string {
       const modelDetail = safeModelUnavailableDetail(body);
       return `${base} ${modelDetail}. This model is not available on this provider or route — choose another with --model or /model.`;
     }
-    case 'quota':
+    case 'quota': {
+      if (statesSpentUsageLimit(body)) {
+        const resetIso = parseAbsoluteResetIso(body);
+        const resetClause = resetIso !== undefined ? `; it resets at ${resetIso}` : '';
+        return `${base} ${detail}. The usage limit for this plan is spent${resetClause}. Wait for the reset, or choose another model with --model or /model.`;
+      }
       return `${base} ${detail}. Check your usage/credits.`;
+    }
     default:
       return `${base} ${detail}`;
   }
@@ -620,6 +701,17 @@ export async function fetchWithRetry(
       });
     }
 
+    if (classifyApiError(response.status, bodyText) === 'quota') {
+      logger?.warn('usage limit reached; not retrying', {
+        status: response.status,
+      });
+      return new Response(bodyText, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }
+
     // A 429 that states the request itself is too large (OpenAI's per-minute cap on one request
     // that can never fit under it) is refused the same way however long the retries wait: the
     // loop's overflow recovery is what lets it through, so it gets the response now. Tested on
@@ -638,6 +730,31 @@ export async function fetchWithRetry(
         statusText: response.statusText,
         headers: response.headers,
       });
+    }
+
+    // For a retryable 429 (plain or quoted) whose body states an absolute reset: if the reset
+    // is longer than what this call can still wait, return at once rather than burning attempts.
+    if ((quoted ?? response.status) === 429) {
+      const resetEpochMs = parseAbsoluteReset(bodyText);
+      if (resetEpochMs !== undefined && !retry.watchdog) {
+        // Wall clock on purpose, exactly like parseRetryAfter: the server sent an
+        // absolute timestamp, which is a point on the wall clock by definition.
+        // Subtracting a monotonic reading from it would be meaningless.
+        const remainingWaitMs =
+          retry.totalBudgetMs > 0
+            ? Math.max(0, retry.totalBudgetMs - (clock.monotonicNowMs() - startMs))
+            : (maxAttempts - attempt) * retry.maxDelayMs;
+        if (resetEpochMs - Date.now() > remainingWaitMs) {
+          logger?.warn('reset time beyond retry budget; not retrying', {
+            status: response.status,
+          });
+          return new Response(bodyText, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+          });
+        }
+      }
     }
 
     const watchdogRetry = retry.watchdog && (response.status === 429 || response.status === 529);

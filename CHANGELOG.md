@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A router-wrapped or direct 429 for a spent plan usage limit no longer burns the retry budget**
+  (#400). A router-wrapped 429 that says a plan's weekly, daily, monthly, or N-hour usage limit is
+  spent was treated as a transient rate limit: Book waited the router's cooldown hint up to
+  `retry.maxDelayMs` on every attempt, then re-issued the turn and repeated the cycle for ~14
+  minutes and ~33 requests before claiming a temporary capacity issue for a limit resetting days
+  later. An effective 429 stating a usage, plan, quota, or subscription limit over a long window —
+  or carrying OpenAI's `insufficient_quota` code — now classifies as `quota`: `fetchWithRetry`
+  answers with a single request, the run parks like a 402 (`credentials_rejected`, provider code
+  `quota`), and the formatted error names the stated reset time and remedy without temporary
+  capacity advice. In addition, an absolute `resets at <time>` on any retryable 429 that falls
+  beyond what the remaining retry budget can wait halts retries immediately.
 - **A model the provider no longer serves is no longer reported as a rejected credential** (#387).
   9router wraps an upstream 403 in its own 503 (`[route] [403]: Model is no longer available`),
   which `classifyApiError` read through the quoted status as `auth` — so the run parked as
