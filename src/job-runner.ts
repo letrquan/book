@@ -68,6 +68,7 @@ let state: PersistentShellState = {
   status: 'starting',
   notify: spec.notify,
   sandboxed: spec.sandboxed,
+  gitDirReadOnly: spec.gitDirReadOnly,
   runnerPid: process.pid,
   tokenHash: spec.tokenHash,
   startedAt,

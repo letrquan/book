@@ -34,6 +34,13 @@ export interface PersistentShellSpec {
   workdir: string;
   env: Record<string, string>;
   sandboxed: boolean;
+  /**
+   * The sandbox's git-dir mode (issue 373): true binds every git directory of the
+   * workspace read-only, which is what the failed `git` command's note describes.
+   * Specs written before this field existed simply lack it and read as the
+   * writable-git-dir shape they were started under.
+   */
+  gitDirReadOnly?: boolean;
   notify: BackgroundShellNotify;
   timeoutMs?: number;
   parentSessionId?: string;
@@ -57,6 +64,8 @@ export interface PersistentShellState {
   status: BackgroundShellStatus;
   notify: BackgroundShellNotify;
   sandboxed: boolean;
+  /** The git-dir mode the spec recorded; absent in a spec written before it existed. */
+  gitDirReadOnly?: boolean;
   runnerPid: number;
   childPid?: number;
   tokenHash: string;

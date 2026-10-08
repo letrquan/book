@@ -157,7 +157,12 @@ describe('mergeSettings', () => {
           autoAllowBashIfSandboxed: true,
           excludedCommands: [],
           allowUnsandboxedCommands: true,
-          filesystem: { allowWrite: ['/tmp'], denyWrite: ['/var'], denyRead: ['~/.ssh'] },
+          filesystem: {
+            allowWrite: ['/tmp'],
+            denyWrite: ['/var'],
+            denyRead: ['~/.ssh'],
+            allowGitWrites: false,
+          },
           network: { allowedDomains: [], deniedDomains: [] },
         },
       },
@@ -717,6 +722,28 @@ describe('workspace layers may only tighten the sandbox', () => {
     },
   );
 
+  it.each(['settings.json', 'settings.local.json'] as const)(
+    'a workspace layer cannot set allowGitWrites to true (%s)',
+    (name) => {
+      writeUser({ sandbox: { filesystem: { allowGitWrites: false } } });
+      writeLayer(name, { sandbox: { filesystem: { allowGitWrites: true } } });
+
+      const { sandbox } = load();
+      expect(sandbox.filesystem.allowGitWrites).toBe(false);
+    },
+  );
+
+  it.each(['settings.json', 'settings.local.json'] as const)(
+    'a workspace layer can tighten allowGitWrites to false (%s)',
+    (name) => {
+      writeUser({ sandbox: { filesystem: { allowGitWrites: true } } });
+      writeLayer(name, { sandbox: { filesystem: { allowGitWrites: false } } });
+
+      const { sandbox } = load();
+      expect(sandbox.filesystem.allowGitWrites).toBe(false);
+    },
+  );
+
   it('lets a workspace layer turn the sandbox on, add deny entries, and refuse unsandboxed commands', () => {
     writeUser({
       sandbox: {
@@ -966,6 +993,27 @@ describe('workspace layers may only tighten the sandbox', () => {
       }),
     ).toEqual([]);
     expect(ignoredWorkspaceSandboxKeys({})).toEqual([]);
+  });
+
+  it('reports allowGitWrites: true as an ignored workspace key and accepts false', () => {
+    const ignored = ignoredWorkspaceSandboxKeys({
+      sandbox: {
+        filesystem: { allowGitWrites: true },
+      },
+    });
+    expect(ignored).toEqual([{ key: 'sandbox.filesystem.allowGitWrites', value: true }]);
+    expect(formatIgnoredWorkspaceSandboxKey(ignored[0])).toBe(
+      'sandbox.filesystem.allowGitWrites=true',
+    );
+
+    // Tightening to false is honoured and not reported:
+    expect(
+      ignoredWorkspaceSandboxKeys({
+        sandbox: {
+          filesystem: { allowGitWrites: false },
+        },
+      }),
+    ).toEqual([]);
   });
 
   it('reports an explicitly empty array as ignored, because it used to replace', () => {

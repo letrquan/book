@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **The sandbox binds the workspace's git directories read-only by default, closing the pointer-file redirect** (issue 373).
+  Inside the namespace every git directory of the workspace (`.git`, linked worktree admin directories,
+  and submodule git directories) is now bound read-only by default, closing the gap where a sandboxed command
+  could create `.git/commondir` to redirect the host's next git invocation. Sandboxed git writes
+  (`git commit`, `git checkout`, `git add`, `git stash`, `git fetch`) fail by default (a breaking
+  behaviour change) with a diagnostic note explaining that the git directory is read-only and how to
+  opt out. The new `sandbox.filesystem.allowGitWrites` setting (default `false`) restores the previous
+  behaviour when set to `true`: git directories stay writable, control files stay protected per-file,
+  and the pointer-file gap reopens. Only a trusted layer (`~/.book/settings.json`, `--settings`) may
+  set it: workspace layers may only tighten it to `false`.
+
 ## [0.3.0] - 2026-10-07
 
 ### Security

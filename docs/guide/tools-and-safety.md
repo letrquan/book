@@ -702,16 +702,17 @@ The sandbox gives the command fresh PID/IPC/UTS namespaces, a private `/tmp`, re
 
 The writable workspace bind deliberately stops at the control files your machine acts on _after_ the command exits. Each of these is a way to change what the host does next, not a scratch file:
 
-| Path                                    | How it is protected                 |
-| --------------------------------------- | ----------------------------------- |
-| `<workspace>/.book/`                    | read-only bind, or a read-only mask |
-| `<workspace>/.book/settings.local.json` | read-only mask over `/dev/null`     |
-| `<workspace>/.bookrc.json`              | read-only bind when the file exists |
-| a git dir's `hooks/`                    | read-only bind, or a read-only mask |
-| a git dir's `config`, `config.worktree` | read-only bind when the file exists |
-| a git dir's `commondir`, `gitdir`       | read-only bind when the file exists |
-| a `.git` pointer file                   | read-only bind                      |
-| a `core.hooksPath` inside the workspace | as `hooks/` above                   |
+| Path                                    | How it is protected                                |
+| --------------------------------------- | -------------------------------------------------- |
+| `<workspace>/.book/`                    | read-only bind, or a read-only mask                |
+| `<workspace>/.book/settings.local.json` | read-only mask over `/dev/null`                    |
+| `<workspace>/.bookrc.json`              | read-only bind when the file exists                |
+| every workspace git directory           | read-only bind by default (issue 373)              |
+| a git dir's `hooks/`                    | as above (or read-only mask when `allowGitWrites`) |
+| a git dir's `config`, `config.worktree` | as above (or read-only bind when `allowGitWrites`) |
+| a git dir's `commondir`, `gitdir`       | as above (or read-only bind when `allowGitWrites`) |
+| a `.git` pointer file                   | read-only bind                                     |
+| a `core.hooksPath` inside the workspace | read-only bind, or read-only mask                  |
 
 Without this, a sandboxed command could write `.book/settings.local.json` (resolved on the host from
 the next session — it can disable the sandbox or add `Bash(*)`), drop a `.git/hooks/*` script the
@@ -722,17 +723,17 @@ A git dir is found by following a `.git` **file** (`gitdir: …`), a `commondir`
 whose git dir is at `.git/modules/libs/deep` under the container directory `libs` — so linked
 worktrees and submodules are covered as well as a plain repository. Every work tree inside the
 workspace has its own `.git` **pointer file** bound read-only, so a submodule's `sub/.git` cannot be
-rewritten to `gitdir: ../evil` and handed to the host's next `git -C sub` invocation. The directory
-itself is **not** made read-only — sandboxed `git commit`, `git checkout` and `git fetch` have to
-keep working — so only the **workspace's own top-level git dir** is pinned, with a read-write
-self-bind: renaming or replacing it fails with `EBUSY` rather than redirecting the host's git, while
-the files inside every discovered git dir are protected one by one. A git command that then cannot
-write `.git/config` (`git checkout -b`, `git push -u`, `git remote add`,
-`git branch --set-upstream-to`, `git config`) gets one appended line saying so — in `Bash` output and
-in `BashOutput` for a backgrounded shell alike — because git's own message names no cause and the
-obvious-looking response is to run the command again. A `git config --global` or `--system` write is
-left out of that: it writes `~/.gitconfig` or the system config, not `.git/config`, and pointing the
-note at the wrong file sends the model after it.
+rewritten to `gitdir: ../evil` and handed to the host's next `git -C sub` invocation.
+
+By default, every git directory of the workspace is bound read-only inside the namespace (issue 373).
+This closes the pointer-file redirect gap where a command could create `.git/commondir` naming a
+repository it built. Sandboxed git writes fail with an appended line explaining that the git directory
+is read-only. Setting `sandbox.filesystem.allowGitWrites: true` in `~/.book/settings.json` restores
+the previous behaviour: git directories stay writable, control files are protected per-file, and the
+workspace's own top-level git directory is pinned with a read-write self-bind so renaming it fails with
+`EBUSY`. In that mode, a git command that cannot write `.git/config` gets an appended line explaining
+the read-only config. A `git config --global` or `--system` write is left out of that note: it writes
+`~/.gitconfig` or the system config, not `.git/config`.
 
 `core.hooksPath` is read from every config that can set it. **Every** `hooksPath` value in a `[core]`
 section is protected rather than the first (git takes the last), unquoted `;` and `#` comments are
@@ -751,12 +752,11 @@ symlinked control path — refused before the command runs, not an aborted `bwra
 
 Five consequences worth knowing:
 
-- **New pointer files are still writable.** Nothing about the git dir is read-only, so a sandboxed
-  command can create a file that does not exist yet — `.git/commondir` naming a directory it built,
-  for instance — and the host's git will read it on the next command, running code in a repository the
-  sandbox chose. Closing this needs the whole git directory read-only inside the sandbox, which is
-  what would make sandboxed `git commit`, `git checkout` and `git fetch` fail. Whether to pay that
-  cost is an open decision on issue 373.
+- **Pointer-file redirects are closed by default.** Every git directory of the workspace is bound
+  read-only by default (issue 373), which closes the pointer-file redirect gap where a sandboxed command
+  could create `.git/commondir` naming a repository it built. Setting
+  `sandbox.filesystem.allowGitWrites: true` in user settings restores writable git directories and
+  reopens that gap.
 - A nested repository that is **not** a submodule stays writable: nothing outside the discovered git
   dirs is touched, because a plain directory named `foo/.git` is not something Book can tell from a
   repository the workspace is not working in.

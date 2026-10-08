@@ -202,7 +202,7 @@ describe('Check and the sandbox', () => {
   );
 
   it.skipIf(!sandboxBackendAvailable())(
-    'explains the read-only config when a sandboxed check cannot write it',
+    'explains the read-only git directory when a sandboxed check cannot write it',
     async () => {
       const dir = mkdtempSync(join(tmpdir(), 'book-check-git-config-'));
       try {
@@ -217,9 +217,26 @@ describe('Check and the sandbox', () => {
         const result = await run(ctx, 'remote');
 
         expect(result.status).not.toBe('success');
-        expect(result.structuredError?.message).toContain('.git/config is read-only inside');
-        expect(result.structuredError?.message).not.toMatch(
-          /could not write config file[^\n]*\n[^\n]*\n[^\n]*read-only/,
+        expect(result.structuredError?.message).toContain(
+          'the git directory is read-only inside the sandbox',
+        );
+        expect(result.structuredError?.message).toContain(
+          'sandbox.filesystem.allowGitWrites=false',
+        );
+
+        // With allowGitWrites: true, git may write but .git/config is read-only:
+        const ctxOptOut = contextWith({
+          remote: 'git remote add origin https://example.test/repo.git',
+        });
+        ctxOptOut.workspaceRoot = dir;
+        ctxOptOut.sandbox = {
+          ...SANDBOX_ENABLED,
+          filesystem: { ...SANDBOX_ENABLED.filesystem, allowGitWrites: true },
+        };
+        const optOutResult = await run(ctxOptOut, 'remote');
+        expect(optOutResult.status).not.toBe('success');
+        expect(optOutResult.structuredError?.message).toContain(
+          '.git/config is read-only inside the sandbox',
         );
       } finally {
         rmSync(dir, { recursive: true, force: true });
