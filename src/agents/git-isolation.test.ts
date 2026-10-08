@@ -21,6 +21,7 @@ import {
   commitAgentWork,
   createAgentWorktree,
   createSyntheticSnapshot,
+  findGitRoot,
   removeAgentWorktree,
   removeSnapshotRef,
 } from './git-isolation.js';
@@ -2196,4 +2197,19 @@ describe('removing a worktree the workspace no longer holds (#357)', () => {
     },
     20_000,
   );
+
+  it('rethrows refused pin read instead of saying repository requires a commit (Fix 5)', async () => {
+    const root = repository();
+    git(root, 'config', 'filter.a=b.clean', '/tmp/evil.sh');
+    await expect(createSyntheticSnapshot(root, true)).rejects.toThrow(
+      'the repository\'s configuration defines a filter or merge driver named "a=b", which Book cannot neutralize, so it will not run git here',
+    );
+  });
+
+  it('findGitRoot returns undefined only when directory is not a git repository or does not exist (Fix 5)', async () => {
+    const nonGit = mkdtempSync(join(tmpdir(), 'book-non-git-'));
+    roots.push(nonGit);
+    expect(await findGitRoot(nonGit)).toBeUndefined();
+    expect(await findGitRoot(join(nonGit, 'does-not-exist'))).toBeUndefined();
+  });
 });

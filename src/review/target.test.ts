@@ -13,6 +13,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveReviewTarget } from './target.js';
+import {
+  defaultGitRunner,
+  type RepositoryProgramRunner,
+} from '../tools/git-repository-programs.js';
 
 const roots: string[] = [];
 
@@ -255,5 +259,16 @@ describe('resolveReviewTarget', () => {
     const target = await resolveReviewTarget(root, scope());
     expect(target.changedFiles).toContain('tracked.txt');
     expect(existsSync(marker)).toBe(false);
+  });
+
+  it('calls git runner with timeoutMs: 0 (no timeout) for all calls including pins read (Fix 3)', async () => {
+    const timeouts: (number | undefined)[] = [];
+    const runner: RepositoryProgramRunner = async (args, options) => {
+      timeouts.push(options.timeoutMs);
+      return defaultGitRunner(args, options);
+    };
+    await resolveReviewTarget(root, scope(), runner);
+    expect(timeouts.length).toBeGreaterThan(0);
+    expect(timeouts.every((t) => t === 0)).toBe(true);
   });
 });

@@ -2,7 +2,11 @@ import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from 'nod
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { ReviewScope } from './types.js';
 import { hardenedGitArgs, HARDENED_DIFF_ARGS } from '../tools/git.js';
-import { defaultGitRunner, readRepositoryProgramPins } from '../tools/git-repository-programs.js';
+import {
+  defaultGitRunner,
+  readRepositoryProgramPins,
+  type RepositoryProgramRunner,
+} from '../tools/git-repository-programs.js';
 
 interface GitResult {
   stdout: string;
@@ -35,10 +39,13 @@ async function git(
   args: string[],
   pins: readonly string[],
   allowExitCodes: number[] = [],
+  exec?: RepositoryProgramRunner,
 ): Promise<GitResult> {
-  return defaultGitRunner(hardenedGitArgs([...pins, ...args]), {
+  const runner = exec ?? defaultGitRunner;
+  return runner(hardenedGitArgs([...pins, ...args]), {
     cwd: workspace,
     allowExitCodes,
+    timeoutMs: 0,
   });
 }
 
@@ -66,8 +73,11 @@ async function resolveCommit(
   workspace: string,
   ref: string,
   pins: readonly string[],
+  exec?: RepositoryProgramRunner,
 ): Promise<string> {
-  return (await git(workspace, ['rev-parse', '--verify', `${ref}^{commit}`], pins)).stdout.trim();
+  return (
+    await git(workspace, ['rev-parse', '--verify', `${ref}^{commit}`], pins, [], exec)
+  ).stdout.trim();
 }
 
 /**
@@ -91,9 +101,10 @@ async function validatePath(
   workspace: string,
   path: string,
   pins: readonly string[],
+  exec?: RepositoryProgramRunner,
 ): Promise<void> {
   if (existsSync(resolve(workspace, path))) return;
-  const tracked = await git(workspace, ['ls-files', '--cached', '--', path], pins);
+  const tracked = await git(workspace, ['ls-files', '--cached', '--', path], pins, [], exec);
   if (tracked.stdout.trim()) return;
   throw new Error(`Review path does not exist or is not tracked: ${path}`);
 }
@@ -155,13 +166,14 @@ function untrackedSymlinkDiff(file: string, linkTarget: string): string {
 export async function resolveReviewTarget(
   workspace: string,
   scope: ReviewScope,
+  exec?: RepositoryProgramRunner,
 ): Promise<ReviewTarget> {
   if (scope.error) throw new Error(scope.error);
   if (scope.base) gitRef(scope.base);
   const rawPath = targetPath(scope);
   const path = rawPath ? normalizePath(workspace, rawPath) : undefined;
-  const pins = await readRepositoryProgramPins(workspace);
-  if (path && path !== '.') await validatePath(workspace, path, pins);
+  const pins = await readRepositoryProgramPins(workspace, exec, { timeoutMs: 0 });
+  if (path && path !== '.') await validatePath(workspace, path, pins, exec);
   const pathArgs = path ? ['--', path] : [];
 
   if (scope.target?.includes('...')) {
@@ -173,13 +185,17 @@ export async function resolveReviewTarget(
     const [baseRef, headRef] = parts as [string, string];
     const base = gitRef(baseRef);
     const head = gitRef(headRef);
-    const baseSha = (await git(workspace, ['merge-base', base, head], pins)).stdout.trim();
-    const headSha = await resolveCommit(workspace, head, pins);
+    const baseSha = (
+      await git(workspace, ['merge-base', base, head], pins, [], exec)
+    ).stdout.trim();
+    const headSha = await resolveCommit(workspace, head, pins, exec);
     const [files, diff] = await Promise.all([
       git(
         workspace,
         ['diff', ...HARDENED_DIFF_ARGS, '--name-only', '-z', baseSha, headSha, ...pathArgs],
         pins,
+        [],
+        exec,
       ),
       git(
         workspace,
@@ -194,6 +210,8 @@ export async function resolveReviewTarget(
           ...pathArgs,
         ],
         pins,
+        [],
+        exec,
       ),
     ]);
     return {
@@ -211,13 +229,15 @@ export async function resolveReviewTarget(
   }
 
   const baseSha = scope.base
-    ? (await git(workspace, ['merge-base', 'HEAD', scope.base], pins)).stdout.trim()
-    : await resolveCommit(workspace, 'HEAD', pins);
+    ? (await git(workspace, ['merge-base', 'HEAD', scope.base], pins, [], exec)).stdout.trim()
+    : await resolveCommit(workspace, 'HEAD', pins, exec);
   const [trackedFiles, trackedDiff, untrackedFiles] = await Promise.all([
     git(
       workspace,
       ['diff', ...HARDENED_DIFF_ARGS, '--name-only', '-z', baseSha, ...pathArgs],
       pins,
+      [],
+      exec,
     ),
     git(
       workspace,
@@ -231,8 +251,16 @@ export async function resolveReviewTarget(
         ...pathArgs,
       ],
       pins,
+      [],
+      exec,
     ),
-    git(workspace, ['ls-files', '--others', '--exclude-standard', '-z', ...pathArgs], pins),
+    git(
+      workspace,
+      ['ls-files', '--others', '--exclude-standard', '-z', ...pathArgs],
+      pins,
+      [],
+      exec,
+    ),
   ]);
 
   const untracked = splitZeroDelimited(untrackedFiles.stdout);

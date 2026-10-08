@@ -667,10 +667,22 @@ export async function findGitRoot(
   workspace: string,
   signal?: AbortSignal,
 ): Promise<string | undefined> {
+  if (!existsSync(workspace)) {
+    return undefined;
+  }
   try {
     return (await git(workspace, ['rev-parse', '--show-toplevel'], { signal })).stdout.trim();
-  } catch {
-    return undefined;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (
+      /not a git repository/i.test(message) ||
+      code === 'ENOENT' ||
+      /no such file or directory/i.test(message)
+    ) {
+      return undefined;
+    }
+    throw error;
   }
 }
 

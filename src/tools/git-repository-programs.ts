@@ -221,7 +221,9 @@ export function repositoryProgramPins(
     const isOperator = OPERATOR_SCOPES.has(entry.scope);
 
     if (entry.key === 'core.fsmonitor') {
-      lastFsmonitor = entry.value;
+      if (entry.scope !== 'command') {
+        lastFsmonitor = entry.value;
+      }
     } else if (entry.key.startsWith('filter.')) {
       const lastDot = entry.key.lastIndexOf('.');
       if (lastDot >= 7) {
@@ -231,7 +233,7 @@ export function repositoryProgramPins(
           if (isRepo) {
             if (name.includes('=')) {
               throw new Error(
-                `the repository's configuration defines a filter or merge driver named ${name}, which Book cannot neutralize, so it will not run git here`,
+                `the repository's configuration defines a filter or merge driver named ${JSON.stringify(name)}, which Book cannot neutralize, so it will not run git here`,
               );
             }
             repoFilterNames.add(name);
@@ -254,7 +256,7 @@ export function repositoryProgramPins(
       if (isRepo) {
         if (name.includes('=')) {
           throw new Error(
-            `the repository's configuration defines a filter or merge driver named ${name}, which Book cannot neutralize, so it will not run git here`,
+            `the repository's configuration defines a filter or merge driver named ${JSON.stringify(name)}, which Book cannot neutralize, so it will not run git here`,
           );
         }
         repoMergeDriverNames.add(name);
@@ -312,13 +314,14 @@ export async function defaultGitRunner(
     windowsHide?: boolean;
   },
 ): Promise<{ stdout: string; stderr: string; code: number }> {
+  const timeout = options.timeoutMs === 0 ? 0 : (options.timeoutMs ?? 30_000);
   return new Promise((resolvePromise, reject) => {
     execFile(
       'git',
       args,
       {
         cwd: options.cwd,
-        timeout: options.timeoutMs ?? 30_000,
+        timeout,
         signal: options.signal,
         encoding: 'utf8',
         maxBuffer: 50 * 1024 * 1024,
@@ -329,12 +332,42 @@ export async function defaultGitRunner(
         ),
       },
       (error, stdout, stderr) => {
-        const code = typeof error?.code === 'number' ? error.code : error ? 1 : 0;
-        if (!error || options.allowExitCodes?.includes(code)) {
-          resolvePromise({ stdout, stderr, code });
+        if (!error) {
+          resolvePromise({ stdout, stderr, code: 0 });
           return;
         }
-        reject(new Error(stderr.trim() || stdout.trim() || error.message));
+
+        const isKilled = Boolean(error.killed || error.signal);
+
+        if (
+          !isKilled &&
+          typeof error.code === 'number' &&
+          options.allowExitCodes?.includes(error.code)
+        ) {
+          resolvePromise({ stdout, stderr, code: error.code });
+          return;
+        }
+
+        let failureReason: string;
+        if (error.killed) {
+          failureReason =
+            timeout > 0
+              ? `git timed out after ${timeout}ms and was killed`
+              : 'git timed out and was killed';
+        } else if (error.signal) {
+          failureReason = `git was killed with ${error.signal}`;
+        } else if (
+          error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ||
+          /maxBuffer/i.test(error.message)
+        ) {
+          failureReason = 'git output too large (maxBuffer exceeded)';
+        } else if (typeof error.code === 'string') {
+          failureReason = `git failed: ${error.code}`;
+        } else {
+          failureReason = stderr.trim() || stdout.trim() || error.message || 'git failed';
+        }
+
+        reject(new Error(failureReason));
       },
     );
   });
@@ -356,7 +389,7 @@ export async function readRepositoryProgramPins(
   options?: ReadPinsOptions,
 ): Promise<string[]> {
   const runner = exec ?? defaultGitRunner;
-  const timeoutMs = options?.timeoutMs ?? 30_000;
+  const timeoutMs = options?.timeoutMs === 0 ? 0 : (options?.timeoutMs ?? 30_000);
   const signal = options?.signal;
   const env = options?.env;
   const allowFsmonitor = options?.allowFsmonitor ?? true;
@@ -375,7 +408,7 @@ export async function readRepositoryProgramPins(
   try {
     showScopeResult = await runner(showScopeArgs, {
       cwd,
-      allowExitCodes: [1, 128, 129],
+      allowExitCodes: [1, 129],
       timeoutMs,
       signal,
       env,

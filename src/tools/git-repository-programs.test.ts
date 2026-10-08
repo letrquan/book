@@ -1,6 +1,11 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   canonicalConfigKey,
+  defaultGitRunner,
   parseGitConfig,
   readRepositoryProgramPins,
   repositoryProgramPins,
@@ -188,7 +193,7 @@ describe('repositoryProgramPins (pure)', () => {
       { scope: 'local', key: 'filter.a=b.clean', value: '/tmp/evil.sh' },
     ];
     expect(() => repositoryProgramPins(entries)).toThrow(
-      "the repository's configuration defines a filter or merge driver named a=b, which Book cannot neutralize, so it will not run git here",
+      'the repository\'s configuration defines a filter or merge driver named "a=b", which Book cannot neutralize, so it will not run git here',
     );
   });
 
@@ -197,8 +202,24 @@ describe('repositoryProgramPins (pure)', () => {
       { scope: 'worktree', key: 'merge.custom=driver.driver', value: '/tmp/evil.sh' },
     ];
     expect(() => repositoryProgramPins(entries)).toThrow(
-      "the repository's configuration defines a filter or merge driver named custom=driver, which Book cannot neutralize, so it will not run git here",
+      'the repository\'s configuration defines a filter or merge driver named "custom=driver", which Book cannot neutralize, so it will not run git here',
     );
+  });
+
+  it('escapes control characters and ANSI escape sequences in refused name error (Fix 4)', () => {
+    const hostileName = '\u001b[31m=';
+    const entries: GitConfigEntry[] = [
+      { scope: 'local', key: `filter.${hostileName}.clean`, value: '/tmp/evil.sh' },
+    ];
+    let thrownError: Error | undefined;
+    try {
+      repositoryProgramPins(entries);
+    } catch (err) {
+      thrownError = err as Error;
+    }
+    expect(thrownError).toBeDefined();
+    expect(thrownError?.message).toContain(JSON.stringify(hostileName));
+    expect(thrownError?.message.includes('\u001b')).toBe(false);
   });
 
   it('does not throw when an operator-scope filter has = in its name (Fix 1)', () => {
@@ -366,7 +387,37 @@ describe('readRepositoryProgramPins', () => {
     ]);
   });
 
-  it('throws and fails closed on unexpected exit code', async () => {
+  it('detects core.fsmonitor=true in a real git repository and ignores command scope (Fix 2)', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'book-fsm-real-'));
+    try {
+      execFileSync('git', ['init', '-q', repo]);
+      execFileSync('git', ['-C', repo, 'config', 'core.fsmonitor', 'true']);
+      const pins = await readRepositoryProgramPins(repo);
+      expect(pins).toEqual(['-c', 'core.fsmonitor=true']);
+
+      const pinsNoAllow = await readRepositoryProgramPins(repo, undefined, {
+        allowFsmonitor: false,
+      });
+      expect(pinsNoAllow).toEqual([]);
+
+      execFileSync('git', ['-C', repo, 'config', 'core.fsmonitor', '/usr/local/bin/hook']);
+      const pinsHook = await readRepositoryProgramPins(repo);
+      expect(pinsHook).toEqual([]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects when its runner reports a kill or timeout (Fix 1)', async () => {
+    const runner: RepositoryProgramRunner = async () => {
+      throw new Error('git timed out after 30000ms and was killed');
+    };
+    await expect(readRepositoryProgramPins('/tmp/repo', runner)).rejects.toThrow(
+      'git timed out after 30000ms and was killed',
+    );
+  });
+
+  it('throws and fails closed on unexpected exit code (exit 128) (Fix 1)', async () => {
     const runner: RepositoryProgramRunner = async () => ({
       stdout: '',
       stderr: 'fatal: corrupt repository',
@@ -376,6 +427,41 @@ describe('readRepositoryProgramPins', () => {
       'fatal: corrupt repository',
     );
   });
+});
+
+describe('defaultGitRunner (Fix 1, Fix 3)', () => {
+  it('defaultGitRunner with a real git and a 1 ms timeout rejects (Fix 1)', async () => {
+    await expect(
+      defaultGitRunner(['-c', 'core.fsmonitor=sleep 2', 'status'], {
+        cwd: process.cwd(),
+        timeoutMs: 1,
+        allowExitCodes: [1],
+      }),
+    ).rejects.toThrow(/timed out.*killed/);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects with a real git and a hanging config read (FIFO include)',
+    async () => {
+      const repo = mkdtempSync(join(tmpdir(), 'book-fifo-runner-'));
+      const fifo = join(repo, 'fifo');
+      try {
+        execFileSync('mkfifo', [fifo]);
+        execFileSync('git', ['init', '-q', repo]);
+        execFileSync('git', ['-C', repo, 'config', 'include.path', fifo]);
+
+        await expect(
+          defaultGitRunner(['config', '--show-scope', '--get-regexp', '.*'], {
+            cwd: repo,
+            allowExitCodes: [1],
+            timeoutMs: 50,
+          }),
+        ).rejects.toThrow(/timed out.*killed/);
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('canonicalConfigKey and parseGitConfig', () => {

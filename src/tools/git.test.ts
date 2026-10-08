@@ -470,7 +470,7 @@ describe('hardening against a real git', () => {
     const result = await toolFor('GitStatus').execute({}, { workspaceRoot: repo, env: {} });
     expect(result.status).toBe('error');
     expect(result.structuredError?.message).toContain(
-      "the repository's configuration defines a filter or merge driver named a=b, which Book cannot neutralize, so it will not run git here",
+      'the repository\'s configuration defines a filter or merge driver named "a=b", which Book cannot neutralize, so it will not run git here',
     );
     expect(existsSync(filterMarker)).toBe(false);
   });
