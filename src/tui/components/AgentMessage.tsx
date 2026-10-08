@@ -349,7 +349,7 @@ function ThinkBlock({
  * Heading for a run of consecutive file mutations, laid out like a tool row so
  * its verb, target and churn land on the same columns as everything else.
  */
-function MutationGroupRow({
+export function MutationGroupRow({
   createdOnly,
   fileCount,
   addedLines,
@@ -385,14 +385,21 @@ function MutationGroupRow({
   }
   return (
     <Box height={1} marginLeft={CONTENT_COLUMN}>
+      {/* The row is one line by contract; it must truncate, never wrap, because a wrapped line is drawn outside the box and the render cull relies on rows drawing inside their own box. */}
       {/* The same mark as every other finished tool row: a mutation group is
           work that completed, not a list item. Grey, because success is the
           default and the exception is what takes colour. */}
-      <Text color={theme.inactive}>{'✓ '}</Text>
-      {row.label ? <Text color={theme.inactive}>{row.label} </Text> : null}
-      <TargetText target={row.target} failed={false} />
-      <Text>{row.gap}</Text>
-      <MetaText meta={row.meta} failed={false} />
+      <Text wrap="truncate-end" color={theme.inactive}>
+        {'✓ '}
+      </Text>
+      {row.label ? (
+        <Text wrap="truncate-end" color={theme.inactive}>
+          {row.label}{' '}
+        </Text>
+      ) : null}
+      <TargetText target={row.target} failed={false} wrap="truncate-end" />
+      <Text wrap="truncate-end">{row.gap}</Text>
+      <MetaText meta={row.meta} failed={false} wrap="truncate-end" />
     </Box>
   );
 }
