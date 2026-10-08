@@ -205,6 +205,36 @@ describe("culling rows against the walk's clips", () => {
     output.unclip();
   });
 
+  it("reports a node's real display when own getDisplay is the shared function but has no record", () => {
+    const output = new FakeOutput();
+    output.clip({ y1: 10, y2: 20 });
+    const registeredRow = row(0, 1, DISPLAY_FLEX);
+    cull.cullWhenOffscreen(registeredRow);
+    const sharedGetDisplay = registeredRow.yogaNode.getDisplay;
+
+    // Node without record and without REAL_DISPLAY (falls back to prototype):
+    const unrecordedNode = fakeYogaNode(0, 1, DISPLAY_FLEX);
+    unrecordedNode.getDisplay = sharedGetDisplay;
+    expect(unrecordedNode.getDisplay()).toBe(DISPLAY_FLEX);
+
+    // Node without record but with stored REAL_DISPLAY:
+    const cull2 = createInkRenderCull({
+      clip: fakeClip,
+      unclip: fakeUnclip,
+      displayNone: DISPLAY_NONE,
+    });
+    const row2 = row(0, 1, DISPLAY_FLEX);
+    cull2.cullWhenOffscreen(row2);
+    // cull2 marked row2 with REAL_DISPLAY; assigning cull's sharedGetDisplay has no record in cull:
+    Object.defineProperty(row2.yogaNode, 'getDisplay', {
+      value: sharedGetDisplay,
+      configurable: true,
+    });
+    expect(row2.yogaNode.getDisplay()).toBe(DISPLAY_FLEX);
+
+    output.unclip();
+  });
+
   it('registers a yoga node once', () => {
     const rowElement = row(0, 1);
     cull.cullWhenOffscreen(rowElement);
@@ -258,6 +288,82 @@ describe("culling rows against the walk's clips", () => {
     // Walk parent again: scans newly appended child:
     parent.yogaNode.getDisplay();
     expect(spy).toHaveBeenCalledTimes(6);
+    output.unclip();
+  });
+
+  it('re-scans a straddling parent and registers a new child when the first child changes with unchanged length', () => {
+    const output = new FakeOutput();
+    output.clip({ y1: 10, y2: 20 });
+    const parent = rowWithChildren(5, 10, [
+      { top: 0, height: 4 },
+      { top: 4, height: 4 },
+    ]);
+    const spy = vi.spyOn(cull, 'cullWhenOffscreen');
+    cull.cullWhenOffscreen(parent);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // Initial draw registers both children:
+    parent.yogaNode.getDisplay();
+    expect(spy).toHaveBeenCalledTimes(3);
+
+    // Parent whose children are unchanged is not re-scanned:
+    parent.yogaNode.getDisplay();
+    expect(spy).toHaveBeenCalledTimes(3);
+
+    // Replace the first child with a new child (length stays 2, last child unchanged):
+    const newFirstChild: FakeRowElement = {
+      yogaNode: fakeYogaNode(1, 4),
+      parentNode: parent,
+    };
+    parent.childNodes![0] = newFirstChild;
+
+    // Next draw: re-scans and registers the new child:
+    parent.yogaNode.getDisplay();
+    expect(spy).toHaveBeenCalledTimes(5);
+    expect(Object.prototype.hasOwnProperty.call(newFirstChild.yogaNode, 'getDisplay')).toBe(true);
+
+    // Next draw without changes: not re-scanned:
+    parent.yogaNode.getDisplay();
+    expect(spy).toHaveBeenCalledTimes(5);
+
+    output.unclip();
+  });
+
+  it('re-scans a straddling parent and registers a new child when the last child changes with unchanged length', () => {
+    const output = new FakeOutput();
+    output.clip({ y1: 10, y2: 20 });
+    const parent = rowWithChildren(5, 10, [
+      { top: 0, height: 4 },
+      { top: 4, height: 4 },
+    ]);
+    const spy = vi.spyOn(cull, 'cullWhenOffscreen');
+    cull.cullWhenOffscreen(parent);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // Initial draw registers both children:
+    parent.yogaNode.getDisplay();
+    expect(spy).toHaveBeenCalledTimes(3);
+
+    // Parent whose children are unchanged is not re-scanned:
+    parent.yogaNode.getDisplay();
+    expect(spy).toHaveBeenCalledTimes(3);
+
+    // Replace the last child with a new child (length stays 2, first child unchanged):
+    const newLastChild: FakeRowElement = {
+      yogaNode: fakeYogaNode(5, 4),
+      parentNode: parent,
+    };
+    parent.childNodes![1] = newLastChild;
+
+    // Next draw: re-scans and registers the new child:
+    parent.yogaNode.getDisplay();
+    expect(spy).toHaveBeenCalledTimes(5);
+    expect(Object.prototype.hasOwnProperty.call(newLastChild.yogaNode, 'getDisplay')).toBe(true);
+
+    // Next draw without changes: not re-scanned:
+    parent.yogaNode.getDisplay();
+    expect(spy).toHaveBeenCalledTimes(5);
+
     output.unclip();
   });
 

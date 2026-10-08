@@ -29,9 +29,10 @@ import { inkBuildDir } from './ink-renderer.js';
  * visits it. Newly mounted rows in a frame are therefore culled in that same frame.
  * When a registered node's `getDisplay` finds the node visible but straddling the innermost vertical
  * clip (its box crosses `y1` or `y2`), it registers each of its child elements (`childNodes` with a
- * `yogaNode`, text nodes included) through the same registrar, skipping the scan when neither the
- * `childNodes` array identity nor its length has changed. Because Ink's walk queries `getDisplay` on
- * a parent before walking its children, straddling children are culled in the exact same walk.
+ * `yogaNode`, text nodes included) through the same registrar, skipping the scan when the child
+ * count and the first and last child identities are unchanged. Because Ink's walk queries
+ * `getDisplay` on a parent before walking its children, straddling children are culled in the exact
+ * same walk.
  * Nodes wholly inside the clip register nothing (everything is visible), and culled nodes register
  * nothing.
  *
@@ -175,8 +176,15 @@ export function createInkRenderCull(options: InkRenderCullOptions): InkRenderCul
   let frame = 0;
   const absoluteTops = new WeakMap<CullableElement, { frame: number; top: number | undefined }>();
 
-  // Tracks the childNodes array identity and length last scanned per element.
-  const scannedChildren = new WeakMap<CullableElement, { childNodes: unknown; length: number }>();
+  // Tracks the childNodes length, first child, and last child last scanned per element.
+  const scannedChildren = new WeakMap<
+    CullableElement,
+    {
+      length: number;
+      firstChild: CullableElement | undefined;
+      lastChild: CullableElement | undefined;
+    }
+  >();
 
   // Maps each registered yogaNode to its element and realDisplay method for sharedGetDisplay.
   const nodeRecords = new WeakMap<
@@ -228,7 +236,13 @@ export function createInkRenderCull(options: InkRenderCullOptions): InkRenderCul
 
   function sharedGetDisplay(this: CullableYogaNode): number {
     const record = nodeRecords.get(this);
-    if (record === undefined) return displayNone;
+    if (record === undefined) {
+      const stored = (this as unknown as MarkedYogaNode)[REAL_DISPLAY];
+      if (typeof stored === 'function') return stored.call(this);
+      const proto = Object.getPrototypeOf(this) as CullableYogaNode | null;
+      if (typeof proto?.getDisplay === 'function') return proto.getDisplay.call(this);
+      return displayNone;
+    }
     const { element, realDisplay } = record;
     const display = realDisplay.call(this);
     if (display === displayNone) return display;
@@ -250,16 +264,39 @@ export function createInkRenderCull(options: InkRenderCullOptions): InkRenderCul
     const straddles = (top < y1 && bottom > y1) || (top < y2 && bottom > y2);
     if (straddles) {
       const currentChildren = element.childNodes;
-      const currentLength = Array.isArray(currentChildren)
-        ? currentChildren.length
-        : ((currentChildren as { length?: number } | null | undefined)?.length ?? 0);
+      let currentLength = 0;
+      let firstChild: CullableElement | undefined;
+      let lastChild: CullableElement | undefined;
+      if (Array.isArray(currentChildren)) {
+        currentLength = currentChildren.length;
+        if (currentLength > 0) {
+          firstChild = currentChildren[0];
+          lastChild = currentChildren[currentLength - 1];
+        }
+      } else if (
+        currentChildren &&
+        typeof (currentChildren as Iterable<CullableElement>)[Symbol.iterator] === 'function'
+      ) {
+        const items = Array.from(currentChildren as Iterable<CullableElement>);
+        currentLength = items.length;
+        if (currentLength > 0) {
+          firstChild = items[0];
+          lastChild = items[currentLength - 1];
+        }
+      }
+
       const lastScanned = scannedChildren.get(element);
       if (
         lastScanned === undefined ||
-        lastScanned.childNodes !== currentChildren ||
-        lastScanned.length !== currentLength
+        lastScanned.length !== currentLength ||
+        lastScanned.firstChild !== firstChild ||
+        lastScanned.lastChild !== lastChild
       ) {
-        scannedChildren.set(element, { childNodes: currentChildren, length: currentLength });
+        scannedChildren.set(element, {
+          length: currentLength,
+          firstChild,
+          lastChild,
+        });
         if (
           currentChildren &&
           typeof (currentChildren as Iterable<CullableElement>)[Symbol.iterator] === 'function'
