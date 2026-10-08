@@ -13,6 +13,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveReviewTarget } from './target.js';
+import {
+  defaultGitRunner,
+  type RepositoryProgramRunner,
+} from '../tools/git-repository-programs.js';
 
 const roots: string[] = [];
 
@@ -237,5 +241,34 @@ describe('resolveReviewTarget', () => {
 
     expect(target.changedFiles).toEqual([]);
     expect(target.diff).not.toContain('pipe');
+  });
+
+  it('leaves no marker when the repository configures a clean filter', async () => {
+    const marker = join(root, 'FILTER_RAN');
+    const filter = `sh -c "touch '${marker.replace(/\\/g, '/')}'"`;
+    git(root, 'config', 'filter.x.clean', filter);
+    git(root, 'config', 'filter.x.required', 'true');
+    writeFileSync(join(root, '.gitattributes'), '* filter=x\n', 'utf8');
+    git(root, 'add', '.gitattributes');
+    git(root, 'commit', '-qm', 'attributes');
+
+    // Make a file stat-dirty
+    writeFileSync(join(root, 'tracked.txt'), 'clean filter test\n', 'utf8');
+    rmSync(marker, { force: true });
+
+    const target = await resolveReviewTarget(root, scope());
+    expect(target.changedFiles).toContain('tracked.txt');
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('calls git runner with timeoutMs: 0 (no timeout) for all calls including pins read (Fix 3)', async () => {
+    const timeouts: (number | undefined)[] = [];
+    const runner: RepositoryProgramRunner = async (args, options) => {
+      timeouts.push(options.timeoutMs);
+      return defaultGitRunner(args, options);
+    };
+    await resolveReviewTarget(root, scope(), runner);
+    expect(timeouts.length).toBeGreaterThan(0);
+    expect(timeouts.every((t) => t === 0)).toBe(true);
   });
 });

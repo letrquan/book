@@ -6,6 +6,22 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Repository-local filters and merge drivers are disabled for Book's git calls, and lazy fetch is refused in git isolation** (#357).
+  A repository's own `.git/config` (or a file it includes) can no longer execute programs through
+  `filter.<name>.clean`, `filter.<name>.smudge`, `filter.<name>.process`, or `merge.<name>.driver`
+  during Book's git operations — repository-scope definitions are pinned to the operator's value when
+  the operator defines the same filter or driver, and to empty otherwise (with
+  `filter.<name>.required=false`), across git isolation, the read-only Git tools, `/review`, and the
+  status poll. If any repository-scope filter or merge driver name contains `=`, Book cannot
+  neutralize it and fails closed, refusing to run git calls there. Operator-configured filters and
+  merge drivers (such as from `~/.gitconfig` or system config) continue to run, so global git-lfs
+  remains functional. In git isolation, lazy object fetching in partial clones is refused
+  (`GIT_NO_LAZY_FETCH=1`, `GIT_ALLOW_PROTOCOL=`) to prevent unprompted execution of repository
+  transports (`core.sshCommand`, `credential.helper`), failing cleanly with an explanation on how to
+  fetch missing objects manually. Git's built-in `core.fsmonitor=true` daemon is honoured for the
+  read-only Git tools, `/review`, and the status poll, while git isolation keeps
+  `core.fsmonitor=false` to avoid leaving daemons behind in temporary worktrees; custom hook paths
+  remain disabled.
 - **A router-wrapped or direct 429 for a spent plan usage limit no longer burns the retry budget**
   (#400). A router-wrapped 429 that says a plan's weekly, daily, monthly, or N-hour usage limit is
   spent was treated as a transient rate limit: Book waited the router's cooldown hint up to

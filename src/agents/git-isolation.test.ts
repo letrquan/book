@@ -21,10 +21,15 @@ import {
   commitAgentWork,
   createAgentWorktree,
   createSyntheticSnapshot,
+  findGitRoot,
   removeAgentWorktree,
   removeSnapshotRef,
 } from './git-isolation.js';
-import { cherryPickFailureResult, gitForTest } from './git-isolation-internal.js';
+import {
+  cherryPickFailureResult,
+  gitForTest,
+  isolatedGitForTest,
+} from './git-isolation-internal.js';
 
 const roots: string[] = [];
 
@@ -500,6 +505,202 @@ describe('hooks and fsmonitor in the internal git flow (#348)', () => {
     expect(markersPresent(markers)).toEqual([]);
     expect(existsSync(markerFor('post-checkout'))).toBe(false);
     expect(existsSync(markerFor('fsmonitor'))).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'carries no core.fsmonitor=true in argv of an isolation call when repository sets it (Fix 5)',
+    async () => {
+      const root = repository();
+      git(root, 'config', 'core.fsmonitor', 'true');
+
+      const observer = argObserverGit();
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${observer.dir}${delimiter}${previousPath ?? ''}`;
+      try {
+        await isolatedGitForTest(root, ['rev-parse', 'HEAD']);
+      } finally {
+        process.env.PATH = previousPath;
+      }
+
+      const calls = observedArgLists(observer.argsFile);
+      expect(calls.length).toBeGreaterThan(0);
+      for (const callArgs of calls) {
+        expect(callArgs).not.toContain('core.fsmonitor=true');
+      }
+    },
+  );
+});
+
+describe('repository-local filters and merge drivers in the internal git flow (#357)', () => {
+  function armedFilterRepository(): {
+    root: string;
+    markers: string;
+    markerFor: (name: string) => string;
+  } {
+    const sandbox = mkdtempSync(join(tmpdir(), 'book-agent-filters-'));
+    roots.push(sandbox);
+    const root = repository(join(sandbox, 'repo'));
+    const markers = join(sandbox, 'markers');
+    mkdirSync(markers);
+    const markerFor = (name: string) => join(markers, name);
+    const sh = forwardSlashes;
+
+    // Global config sets an operator filter for filter=g
+    writeGlobalConfig(
+      [
+        '[filter "g"]',
+        `\tclean = "sh -c \\"touch '${sh(markerFor('global-clean'))}'; cat\\""`,
+        `\tsmudge = "sh -c \\"touch '${sh(markerFor('global-smudge'))}'; cat\\""`,
+        '\trequired = true',
+      ].join('\n'),
+    );
+
+    writeFileSync(
+      join(root, '.gitattributes'),
+      ['* filter=x merge=x', 'global.txt filter=g'].join('\n'),
+    );
+    writeFileSync(join(root, 'global.txt'), 'global content\n');
+    git(root, 'add', '.gitattributes', 'global.txt');
+    git(root, 'commit', '-m', 'add attributes and global file');
+
+    // Repository-local config arms filter x (clean, smudge, process, required) and merge driver x
+    git(root, 'config', 'filter.x.clean', `sh -c "touch '${sh(markerFor('clean'))}'; cat"`);
+    git(root, 'config', 'filter.x.smudge', `sh -c "touch '${sh(markerFor('smudge'))}'; cat"`);
+    git(root, 'config', 'filter.x.process', `sh -c "touch '${sh(markerFor('process'))}'; exit 1"`);
+    git(root, 'config', 'filter.x.required', 'true');
+    git(
+      root,
+      'config',
+      'merge.x.driver',
+      `sh -c "touch '${sh(markerFor('merge-driver'))}'; exit 1"`,
+    );
+
+    return { root, markers, markerFor };
+  }
+
+  it('runs no repository-local filter or merge driver across the whole flow on a dirty parent, while operator filter runs', async () => {
+    const { root, markerFor } = armedFilterRepository();
+
+    // 1. Dirty parent workspace:
+    writeFileSync(join(root, 'unstaged.txt'), 'parent dirty unstaged\n');
+    writeFileSync(join(root, 'global.txt'), 'parent modified global\n');
+
+    // Clear any markers from setup
+    for (const marker of [
+      'clean',
+      'smudge',
+      'process',
+      'merge-driver',
+      'global-clean',
+      'global-smudge',
+    ]) {
+      rmSync(markerFor(marker), { force: true });
+    }
+
+    // Step A: Take snapshot of dirty workspace
+    const dirtySnapshot = await createSyntheticSnapshot(root, true);
+    expect(dirtySnapshot.dirty).toBe(true);
+
+    // Step B: Create agent worktree
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-filter-wt-'));
+    roots.push(worktreeRoot);
+    const worktree = await createAgentWorktree(dirtySnapshot, 'filter-agent', worktreeRoot);
+
+    // Step C: Agent modifies staged.txt in worktree to create conflicting work
+    writeFileSync(join(worktree.path, 'staged.txt'), 'agent conflict value\n');
+    const candidate = await commitAgentWork(agentRecord('filter-agent', worktree), dirtySnapshot);
+    expect(candidate).toBeDefined();
+
+    // In parent: reset dirty state, commit conflicting change on parent so cherry-pick runs and conflicts
+    rmSync(join(root, 'unstaged.txt'), { force: true });
+    writeFileSync(join(root, 'global.txt'), 'global base\n');
+    writeFileSync(join(root, 'staged.txt'), 'parent conflict value\n');
+    git(
+      root,
+      '-c',
+      'filter.x.clean=',
+      '-c',
+      'filter.x.smudge=',
+      '-c',
+      'filter.x.process=',
+      '-c',
+      'filter.x.required=false',
+      'commit',
+      '-am',
+      'parent conflict commit',
+    );
+
+    // Clear any markers before apply
+    for (const marker of ['clean', 'smudge', 'process', 'merge-driver']) {
+      rmSync(markerFor(marker), { force: true });
+    }
+
+    // Step D: Apply candidate that conflicts on cherry-pick
+    const cleanSnapshot = await createSyntheticSnapshot(root, false);
+    const applied = await applyVerifiedCandidate(cleanSnapshot, {
+      ...candidate!,
+      baseCommit: cleanSnapshot.commit,
+    });
+
+    // Conflicting apply is reported as conflicted and rolled back
+    expect(applied.status).toBe('conflicted');
+    expect(applied.error).toContain('rolled back');
+
+    // Assert that repository-local filter/driver markers were NEVER created
+    expect(existsSync(markerFor('clean'))).toBe(false);
+    expect(existsSync(markerFor('smudge'))).toBe(false);
+    expect(existsSync(markerFor('process'))).toBe(false);
+    expect(existsSync(markerFor('merge-driver'))).toBe(false);
+
+    // Assert that operator filter in GIT_CONFIG_GLOBAL STILL ran
+    expect(existsSync(markerFor('global-clean')) || existsSync(markerFor('global-smudge'))).toBe(
+      true,
+    );
+  });
+});
+
+describe('partial clone lazy fetch in git isolation (#357)', () => {
+  it('refuses lazy fetch, leaves no marker, and explains partial clone', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'book-partial-clone-'));
+    roots.push(sandbox);
+    const bare = join(sandbox, 'bare.git');
+    const clone = join(sandbox, 'clone');
+    const marker = join(sandbox, 'SSH_RAN');
+    const sh = forwardSlashes;
+
+    // Bare repo with uploadpack.allowFilter = true
+    git(sandbox, 'init', '--bare', '-b', 'main', bare);
+    git(bare, 'config', 'uploadpack.allowFilter', 'true');
+
+    // Create a commit with a blob in bare repo
+    const work = join(sandbox, 'work');
+    git(sandbox, 'clone', bare, work);
+    git(work, 'config', 'user.name', 'Test');
+    git(work, 'config', 'user.email', 'test@example.com');
+    writeFileSync(join(work, 'blob.txt'), 'remote blob content\n');
+    git(work, 'add', 'blob.txt');
+    git(work, 'commit', '-m', 'add blob');
+    git(work, 'push', 'origin', 'main');
+
+    // Partial clone with blob:none and no checkout
+    git(sandbox, 'clone', '--filter=blob:none', '--no-checkout', `file://${sh(bare)}`, clone);
+    git(clone, 'config', 'user.name', 'Test');
+    git(clone, 'config', 'user.email', 'test@example.com');
+    git(clone, 'config', 'remote.origin.url', 'ssh://example.invalid/x.git');
+    git(clone, 'config', 'core.sshCommand', `sh -c "touch '${sh(marker)}'; exit 1"`);
+
+    // In clone, creating an agent worktree for the commit will need missing blob
+    const snapshot = await createSyntheticSnapshot(clone, false);
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-partial-wt-'));
+    roots.push(worktreeRoot);
+
+    await expect(
+      createAgentWorktree(snapshot, 'partial-agent', worktreeRoot, snapshot.baseHead),
+    ).rejects.toThrow(
+      /this repository is a partial clone; Book's agent isolation does not fetch missing objects/,
+    );
+
+    expect(existsSync(marker)).toBe(false);
   });
 });
 
@@ -1397,6 +1598,37 @@ describe('the internal git runner is bounded (#357)', () => {
   );
 });
 
+describe('how failures are described (#357)', () => {
+  it.skipIf(process.platform === 'win32')(
+    'reports stdout text when stderr is only a newline (Fix 6)',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'book-failing-git-'));
+      roots.push(dir);
+      const script = [
+        '#!/bin/sh',
+        'printf "\\n" >&2',
+        'printf "fatal: authentic reason from stdout\\n"',
+        'exit 1',
+        '',
+      ];
+      writeFileSync(join(dir, 'git'), script.join('\n'));
+      chmodSync(join(dir, 'git'), 0o755);
+
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${dir}${delimiter}${previousPath ?? ''}`;
+      try {
+        for (const input of [undefined, 'a patch\n']) {
+          await expect(
+            gitForTest(dir, ['status'], input !== undefined ? { input } : {}),
+          ).rejects.toThrow('fatal: authentic reason from stdout');
+        }
+      } finally {
+        process.env.PATH = previousPath;
+      }
+    },
+  );
+});
+
 describe('a worktree add that fails after creating its branch (#357)', () => {
   it('leaves no branch behind, so the retry succeeds', async () => {
     const root = repository();
@@ -1828,6 +2060,31 @@ function observerGit(): { dir: string; environmentsFile: string } {
   return { dir, environmentsFile };
 }
 
+function argObserverGit(): { dir: string; argsFile: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'book-observer-args-git-'));
+  roots.push(dir);
+  const real = execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim();
+  const argsFile = join(dir, 'args');
+  const script = [
+    '#!/bin/sh',
+    `for arg in "$@"; do printf '%s\\0' "$arg"; done >> ${JSON.stringify(argsFile)}`,
+    `printf '\\0\\0' >> ${JSON.stringify(argsFile)}`,
+    `exec ${JSON.stringify(join(real, 'git'))} "$@"`,
+    '',
+  ];
+  writeFileSync(join(dir, 'git'), script.join('\n'));
+  chmodSync(join(dir, 'git'), 0o755);
+  return { dir, argsFile };
+}
+
+function observedArgLists(argsFile: string): string[][] {
+  if (!existsSync(argsFile)) return [];
+  return readFileSync(argsFile, 'utf8')
+    .split('\0\0')
+    .filter((call) => call.length > 0)
+    .map((call) => call.split('\0').filter(Boolean));
+}
+
 /**
  * Every environment the observer saw, one per call, as the `NAME=VALUE` lines git was given.
  *
@@ -1940,4 +2197,19 @@ describe('removing a worktree the workspace no longer holds (#357)', () => {
     },
     20_000,
   );
+
+  it('rethrows refused pin read instead of saying repository requires a commit (Fix 5)', async () => {
+    const root = repository();
+    git(root, 'config', 'filter.a=b.clean', '/tmp/evil.sh');
+    await expect(createSyntheticSnapshot(root, true)).rejects.toThrow(
+      'the repository\'s configuration defines a filter or merge driver named "a=b", which Book cannot neutralize, so it will not run git here',
+    );
+  });
+
+  it('findGitRoot returns undefined only when directory is not a git repository or does not exist (Fix 5)', async () => {
+    const nonGit = mkdtempSync(join(tmpdir(), 'book-non-git-'));
+    roots.push(nonGit);
+    expect(await findGitRoot(nonGit)).toBeUndefined();
+    expect(await findGitRoot(join(nonGit, 'does-not-exist'))).toBeUndefined();
+  });
 });
