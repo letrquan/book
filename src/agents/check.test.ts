@@ -218,10 +218,10 @@ describe('Check and the sandbox', () => {
 
         expect(result.status).not.toBe('success');
         expect(result.structuredError?.message).toContain(
-          'the git directory is read-only inside the sandbox',
+          "the repository's git directory is read-only inside the sandbox",
         );
         expect(result.structuredError?.message).toContain(
-          'sandbox.filesystem.allowGitWrites=false',
+          'sandbox.filesystem.allowGitWrites is off',
         );
 
         // With allowGitWrites: true, git may write but .git/config is read-only:

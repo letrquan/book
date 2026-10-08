@@ -302,7 +302,10 @@ Work aimed at running an objective unattended for days rather than hours. All of
   directory of the workspace (`.git`, linked worktree admin directories, submodule git directories)
   is bound read-only, closing the pointer-file redirect gap where a sandboxed command could create
   `.git/commondir`. Sandboxed git writes (`commit`, `checkout`, `add`, `stash`, `fetch`) fail by
-  default with a note explaining the read-only git directory. The user-scope setting
+  default with a note explaining the repository's git directory is read-only inside the sandbox
+  (instructing the model to advise the user rather than retry or change settings itself). A sandboxed
+  `git worktree remove` deletes the work tree and fails on its read-only admin directory (`git worktree prune`
+  outside cleans up). The user-scope setting
   `sandbox.filesystem.allowGitWrites: true` opts out and restores the previous behaviour: git
   directories stay writable, their control files are protected per-file, and only the
   **workspace's own top-level git dir** is pinned with a read-write self-bind rather than made
@@ -327,10 +330,11 @@ Work aimed at running an objective unattended for days rather than hours. All of
   file. Control files are read through a bounded, regular-file-only path (`lstat` then `open`, so a
   FIFO or a device cannot block the mount build), a git config with a cap raised to 1 MiB and
   **refused** when it is larger (a truncated read is a `hooksPath` past the cut), a `hidden-file` mask
-  is emitted only for a regular file and re-emitted after every deferred `allowWrite` opt-in, and a
-  **symlinked** control path is refused outright — naming the path and saying the sandbox cannot
-  protect one — since binding the target read-only leaves the link itself in the writable workspace,
-  where `rm .book && mkdir .book` replaced it. Containment is decided on canonical paths.
+  is emitted only for a regular file and re-emitted after every deferred `allowWrite` opt-in (with an
+  opt-in on a git directory re-locking control paths strictly below it), and a **symlinked** control
+  path (including any workspace symlink in the path of a discovered git directory or pointer target)
+  is refused outright — naming the path and saying the sandbox cannot protect one — unless the link
+  itself lives inside a present read-only directory mount. Containment is decided on canonical paths.
 - The `sandbox.*` write guard is scoped to the two workspace layers. `blockedConfigWritePath` takes
   the scope it is writing to, and the sandbox value check runs only for `project` and `local`; the
   user-global layer takes every value, so `book config set sandbox.enabled false` — the default

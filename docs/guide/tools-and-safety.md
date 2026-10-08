@@ -721,16 +721,23 @@ next `git commit` runs, or repoint `core.hooksPath` / `core.fsmonitor` in `.git/
 A git dir is found by following a `.git` **file** (`gitdir: …`), a `commondir` file,
 `.git/worktrees/*`, and nested `.git/modules/*` — including a submodule path with several segments,
 whose git dir is at `.git/modules/libs/deep` under the container directory `libs` — so linked
-worktrees and submodules are covered as well as a plain repository. Every work tree inside the
-workspace has its own `.git` **pointer file** bound read-only, so a submodule's `sub/.git` cannot be
-rewritten to `gitdir: ../evil` and handed to the host's next `git -C sub` invocation.
+worktrees and submodules are covered as well as a plain repository. A `core.hooksPath` naming a path
+inside the workspace stays read-only in both modes, and a git directory outside the workspace is left alone.
+Every work tree inside the workspace has its own `.git` **pointer file** bound read-only, so a
+submodule's `sub/.git` cannot be rewritten to `gitdir: ../evil` and handed to the host's next `git -C sub`
+invocation.
 
 By default, every git directory of the workspace is bound read-only inside the namespace (issue 373).
 This closes the pointer-file redirect gap where a command could create `.git/commondir` naming a
-repository it built. Sandboxed git writes fail with an appended line explaining that the git directory
-is read-only. Setting `sandbox.filesystem.allowGitWrites: true` in `~/.book/settings.json` restores
-the previous behaviour: git directories stay writable, control files are protected per-file, and the
-workspace's own top-level git directory is pinned with a read-write self-bind so renaming it fails with
+repository it built. Sandboxed git writes fail with an appended line explaining that the repository's git directory
+is read-only inside the sandbox (`sandbox.filesystem.allowGitWrites` is off), advising the model not to retry the command
+or change settings itself, and directing the user to run it outside the sandbox or allow it in `~/.book/settings.json`
+(where `sandbox.excludedCommands` runs matching commands unsandboxed while `sandbox.allowUnsandboxedCommands` is true and
+`sandbox.filesystem.allowGitWrites` lets sandboxed git write again; workspace settings cannot change either).
+Caveat: a sandboxed `git worktree remove` deletes the work tree and then fails on its read-only admin directory;
+`git worktree prune` outside the sandbox cleans up. Setting `sandbox.filesystem.allowGitWrites: true` in
+`~/.book/settings.json` restores the previous behaviour: git directories stay writable, control files are protected
+per-file, and the workspace's own top-level git directory is pinned with a read-write self-bind so renaming it fails with
 `EBUSY`. In that mode, a git command that cannot write `.git/config` gets an appended line explaining
 the read-only config. A `git config --global` or `--system` write is left out of that note: it writes
 `~/.gitconfig` or the system config, not `.git/config`.
@@ -744,9 +751,12 @@ because a config that could add a `hooksPath` to a file the command may rewrite 
 command wrote. A git config is read with a **1 MiB** cap; a larger one is refused outright rather than
 truncated, since a truncated read is a `hooksPath` past the cut that the namespace never saw.
 
-**A symlinked control path is refused, not protected.** `.book`, `.git`, `.git/hooks` or
-`.bookrc.json` as a symlink can be bound read-only at its target, but the link itself sits in the
+**A symlinked control path is refused, not protected.** `.book`, `.git`, `.git/hooks`,
+`.bookrc.json`, or any path component strictly below the workspace root for a discovered git directory
+or pointer file target as a symlink can be bound read-only at its target, but the link itself sits in the
 writable workspace, so `rm .book && mkdir .book` replaced it and every protection went with it. A
+component that is a symlink is safe only if the link itself lives inside a present read-only directory
+mount (such as `.git/modules/x` inside a bound `.git` in read-only mode; refused in opt-out mode). A
 sandboxed command now fails with a message naming the path and saying the sandbox cannot protect a
 symlinked control path — refused before the command runs, not an aborted `bwrap` invocation.
 
@@ -774,9 +784,11 @@ Five consequences worth knowing:
   a directory, which bubblewrap rejects with "Is a directory" and which takes every command in the
   workspace down with it. `.book/settings.local.json` is the one file masked rather than bound
   read-only — with `/dev/null`, which hides the credentials in it as well as blocking the write.
-  Because a trusted `filesystem.allowWrite` entry is applied after these mounts, every `hidden-file`
-  mask is re-applied once more at the end: remounting `.book` writable would otherwise reopen
-  `settings.local.json` for both reading and writing.
+  Because a trusted `filesystem.allowWrite` entry is applied after these mounts, an opt-in on a git
+  dir reopens what it names, but keeps control paths strictly below it (`hooks/`, `config`, pointer files)
+  read-only unless an entry names that control path directly. Every `hidden-file` mask is re-applied once
+  more at the end: remounting `.book` writable would otherwise reopen `settings.local.json` for both reading
+  and writing.
 
 The permission layer already asked before any file tool touched `.book/`, but a permission prompt is
 one approval the user can be talked into — and a shell command is not a file tool, so the sandbox

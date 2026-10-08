@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -1437,6 +1438,32 @@ describe('buildSandboxExecution workspace control files', () => {
       expect(mountsFor(mounts(host), '/work/.husky').index).toBe(-1);
       expect(emitted.some((mount) => mount.path === '/work/.husky')).toBe(false);
     });
+
+    it('does not emit a tmpfs mask under a present read-only .book when core.hooksPath is .book/hooks and absent', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+        },
+        {
+          '/work/.git/config': '[core]\n\thooksPath = .book/hooks\n',
+        },
+      );
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        sandboxSettings(),
+        host,
+      );
+
+      expect(mountsFor(exec.args, '/work/.book').flag).toBe('--ro-bind');
+      expect(mountsFor(exec.args, '/work/.book/hooks').index).toBe(-1);
+    });
   });
 
   /**
@@ -1513,6 +1540,66 @@ describe('buildSandboxExecution workspace control files', () => {
       expect(refusalsFor(host)).toHaveLength(1);
       expect(refusalsFor(host)[0]).toMatchObject({
         path: '/work/.git/hooks',
+      });
+    });
+
+    it('refuses a git dir reached through a symlink in the workspace (gd shape) in both modes', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'file',
+          '/work/gd': 'symlink',
+          '/work/.git-real': 'dir',
+          '/work/.git-real/hooks': 'dir',
+          '/work/.git-real/config': 'file',
+        },
+        {
+          '/work/.git': 'gitdir: gd\n',
+        },
+        {
+          '/work/gd': '.git-real',
+        },
+      );
+
+      const roPaths = protectedWorkspacePaths(WORKSPACE, host);
+      expect(roPaths.refusals).toContainEqual({
+        path: '/work/gd',
+        reason: 'symlinked-control-path',
+      });
+
+      const optOutPaths = protectedWorkspacePaths(WORKSPACE, host, { allowGitWrites: true });
+      expect(optOutPaths.refusals).toContainEqual({
+        path: '/work/gd',
+        reason: 'symlinked-control-path',
+      });
+    });
+
+    it('refuses .git/modules/x symlink in opt-out mode, but binds it in read-only mode', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+          '/work/.git/modules': 'dir',
+          '/work/.git/modules/x': 'symlink',
+          '/work/.git-sub-real': 'dir',
+          '/work/.git-sub-real/hooks': 'dir',
+          '/work/.git-sub-real/config': 'file',
+        },
+        {},
+        { '/work/.git/modules/x': '../../.git-sub-real' },
+      );
+
+      const roPaths = protectedWorkspacePaths(WORKSPACE, host);
+      expect(roPaths.refusals).toEqual([]);
+
+      const optOutPaths = protectedWorkspacePaths(WORKSPACE, host, { allowGitWrites: true });
+      expect(optOutPaths.refusals).toContainEqual({
+        path: '/work/.git/modules/x',
+        reason: 'symlinked-control-path',
       });
     });
 
@@ -1763,6 +1850,42 @@ describe('buildSandboxExecution workspace control files', () => {
       const pin = mountsFor(exec.args, '/work/.git');
       expect(pin.flag).toBe('--bind');
       expect(mountsFor(exec.args, '/work/.git/objects').index).toBeGreaterThan(pin.index);
+    });
+
+    it('re-locks control paths strictly below an allowWrite opt-in on a git dir', () => {
+      const settings = sandboxSettings();
+      settings.filesystem.allowWrite = ['/work/.git'];
+
+      const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', WORKSPACE, settings, host());
+
+      const optIn = lastMountFor(exec.args, '/work/.git');
+      expect(optIn.flag).toBe('--bind');
+
+      const hooksMount = lastMountFor(exec.args, '/work/.git/hooks');
+      expect(hooksMount.flag).toBe('--ro-bind');
+      expect(hooksMount.index).toBeGreaterThan(optIn.index);
+
+      const configMount = lastMountFor(exec.args, '/work/.git/config');
+      expect(configMount.flag).toBe('--ro-bind');
+      expect(configMount.index).toBeGreaterThan(optIn.index);
+    });
+
+    it('does not re-lock a control path that is itself an allowWrite opt-in', () => {
+      const settings = sandboxSettings();
+      settings.filesystem.allowWrite = ['/work/.git/hooks'];
+
+      const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', WORKSPACE, settings, host());
+
+      const hooksMount = lastMountFor(exec.args, '/work/.git/hooks');
+      expect(hooksMount.flag).toBe('--bind');
+
+      const roBindsAfter: number[] = [];
+      for (let i = 0; i < exec.args.length; i++) {
+        if (exec.args[i] === '/work/.git/hooks' && exec.args[i - 2] === '--ro-bind') {
+          roBindsAfter.push(i);
+        }
+      }
+      expect(roBindsAfter.filter((idx) => idx > hooksMount.index)).toEqual([]);
     });
   });
 });
@@ -2381,11 +2504,25 @@ describe.skipIf(!sandboxBackendAvailable())(
           );
 
           expect(result.status).not.toBe('success');
-          expect(result.content).toContain('the git directory is read-only inside the sandbox');
+          expect(result.content).toContain(
+            "the repository's git directory is read-only inside the sandbox",
+          );
           // Said once, not once per stream the text appears in.
           expect(result.content.match(/read-only inside the sandbox/g)).toHaveLength(1);
           // And the repository did not gain the remote, on the host.
           expect(readFileSync(join(repo, '.git', 'config'), 'utf8')).not.toContain('example.test');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('appends read-only git dir note when git hash-object -w fails', async () => {
+        const repo = freshRepo();
+        try {
+          writeFileSync(join(repo, 'a.txt'), 'hello\n');
+          const result = await sandboxedBash('git hash-object -w a.txt', repo);
+          expect(result.status).not.toBe('success');
+          expect(result.content).toContain('read-only inside the sandbox');
         } finally {
           rmSync(repo, { recursive: true, force: true });
         }
@@ -2465,7 +2602,9 @@ describe.skipIf(!sandboxBackendAvailable())(
           );
 
           expect(result.status).not.toBe('success');
-          expect(result.content).toContain('the git directory is read-only inside the sandbox');
+          expect(result.content).toContain(
+            "the repository's git directory is read-only inside the sandbox",
+          );
           expect(
             execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
           ).toBe(headBefore);
@@ -2566,7 +2705,9 @@ describe.skipIf(!sandboxBackendAvailable())(
             await new Promise((resolve) => setTimeout(resolve, 25));
           }
 
-          expect(content).toContain('the git directory is read-only inside the sandbox');
+          expect(content).toContain(
+            "the repository's git directory is read-only inside the sandbox",
+          );
           expect(content.match(/read-only inside the sandbox/g)).toHaveLength(1);
           expect(readFileSync(join(repo, '.git', 'config'), 'utf8')).not.toContain('example.test');
         } finally {
@@ -2816,6 +2957,41 @@ describe.skipIf(!sandboxBackendAvailable())(
           rmSync(repo, { recursive: true, force: true });
         }
       });
+
+      it('refuses command when git dir is reached through a workspace symlink (gd shape) leaving host unchanged', async () => {
+        const repo = mkdtempSync(join(tmpdir(), 'book-sandbox-gd-'));
+        try {
+          execFileSync('git', ['init', '--quiet'], { cwd: repo });
+          const gitReal = join(repo, '.git-real');
+          renameSync(join(repo, '.git'), gitReal);
+          symlinkSync('.git-real', join(repo, 'gd'));
+          writeFileSync(join(repo, '.git'), 'gitdir: gd\n');
+
+          const result = await sandboxedBash('echo "touch" > test.txt', repo);
+          expect(result.status).not.toBe('success');
+          expect(result.content).toContain(
+            'symlink, and the sandbox cannot protect a symlinked control path',
+          );
+          expect(result.content).toContain(join(repo, 'gd'));
+          expect(existsSync(join(repo, 'test.txt'))).toBe(false);
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('runs commands without bwrap abort when core.hooksPath is in .book and hooks dir is absent', async () => {
+        const repo = freshRepo({ book: true });
+        try {
+          writeFileSync(join(repo, '.git', 'config'), '[core]\n\thooksPath = .book/hooks\n');
+          expect(existsSync(join(repo, '.book', 'hooks'))).toBe(false);
+
+          const result = await sandboxedBash('echo "success"', repo);
+          expect(result.status).toBe('success');
+          expect(result.content).toContain('success');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
     });
 
     describe('allowWrite over a protected path', () => {
@@ -2877,6 +3053,48 @@ describe.skipIf(!sandboxBackendAvailable())(
           expect(result.content).not.toContain('sk-secret');
           // The host still holds it: this is a mask inside the namespace.
           expect(readFileSync(local, 'utf8')).toContain('sk-secret');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('re-locks hooks and config under allowWrite: [<ws>/.git] while git commit succeeds', async () => {
+        const repo = freshRepo();
+        try {
+          const hookRes = await sandboxedBash(`printf 'evil\\n' > .git/hooks/post-commit`, repo, {
+            filesystem: { allowWrite: [join(repo, '.git')] },
+          });
+          expect(hookRes.status).not.toBe('success');
+
+          const configRes = await sandboxedBash(`printf 'evil\\n' >> .git/config`, repo, {
+            filesystem: { allowWrite: [join(repo, '.git')] },
+          });
+          expect(configRes.status).not.toBe('success');
+
+          const commitRes = await sandboxedBash(
+            `echo "change" >> file.txt && git add file.txt && git -c user.email=book@example.invalid -c user.name=book commit -m "sandboxed commit"`,
+            repo,
+            { filesystem: { allowWrite: [join(repo, '.git')] } },
+          );
+          expect(commitRes.status).toBe('success');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('allows writing hooks but not config under allowWrite: [<ws>/.git/hooks]', async () => {
+        const repo = freshRepo();
+        try {
+          const hookRes = await sandboxedBash(`printf 'custom\\n' > .git/hooks/post-commit`, repo, {
+            filesystem: { allowWrite: [join(repo, '.git', 'hooks')] },
+          });
+          expect(hookRes.status).toBe('success');
+          expect(readFileSync(join(repo, '.git', 'hooks', 'post-commit'), 'utf8')).toBe('custom\n');
+
+          const configRes = await sandboxedBash(`printf 'evil\\n' >> .git/config`, repo, {
+            filesystem: { allowWrite: [join(repo, '.git', 'hooks')] },
+          });
+          expect(configRes.status).not.toBe('success');
         } finally {
           rmSync(repo, { recursive: true, force: true });
         }
@@ -3160,9 +3378,9 @@ describe('withGitConfigReadOnlyNotice', () => {
       );
 
       expect(text).toContain(ABSOLUTE_INDEX_ERROR);
-      expect(text).toContain('the git directory is read-only inside the sandbox');
-      expect(text).toContain('sandbox.filesystem.allowGitWrites=false');
-      expect(text).toContain('sandbox.filesystem.allowGitWrites=true');
+      expect(text).toContain("the repository's git directory is read-only inside the sandbox");
+      expect(text).toContain('sandbox.filesystem.allowGitWrites is off');
+      expect(text).toContain('sandbox.filesystem.allowGitWrites lets sandboxed git write again');
       expect(text.match(/read-only inside the sandbox/g)).toHaveLength(1);
     });
 
@@ -3176,11 +3394,26 @@ describe('withGitConfigReadOnlyNotice', () => {
       );
 
       expect(text).toContain(RELATIVE_FETCH_ERROR);
-      expect(text).toContain('the git directory is read-only inside the sandbox');
-      expect(text).toContain('sandbox.filesystem.allowGitWrites=false');
+      expect(text).toContain("the repository's git directory is read-only inside the sandbox");
+      expect(text).toContain('sandbox.filesystem.allowGitWrites is off');
     });
 
-    it('adds the new note for an object database permission failure', () => {
+    it('adds the new note for an unable to create temporary file failure', () => {
+      const HASH_OBJECT_ERROR = 'error: unable to create temporary file: Read-only file system';
+      const text = withGitConfigReadOnlyNotice(
+        HASH_OBJECT_ERROR,
+        HASH_OBJECT_ERROR,
+        true,
+        'git hash-object -w a.txt',
+        true,
+      );
+
+      expect(text).toContain(HASH_OBJECT_ERROR);
+      expect(text).toContain("the repository's git directory is read-only inside the sandbox");
+      expect(text).toContain('sandbox.filesystem.allowGitWrites is off');
+    });
+
+    it('does not add the note for an object database permission failure', () => {
       const text = withGitConfigReadOnlyNotice(
         OBJECT_DB_ERROR,
         OBJECT_DB_ERROR,
@@ -3189,9 +3422,7 @@ describe('withGitConfigReadOnlyNotice', () => {
         true,
       );
 
-      expect(text).toContain(OBJECT_DB_ERROR);
-      expect(text).toContain('the git directory is read-only inside the sandbox');
-      expect(text).toContain('sandbox.filesystem.allowGitWrites=false');
+      expect(text).toBe(OBJECT_DB_ERROR);
     });
 
     it('adds the new note for a config file write failure', () => {
@@ -3204,8 +3435,8 @@ describe('withGitConfigReadOnlyNotice', () => {
       );
 
       expect(text).toContain(CONFIG_ERROR);
-      expect(text).toContain('the git directory is read-only inside the sandbox');
-      expect(text).toContain('sandbox.filesystem.allowGitWrites=false');
+      expect(text).toContain("the repository's git directory is read-only inside the sandbox");
+      expect(text).toContain('sandbox.filesystem.allowGitWrites is off');
     });
 
     it('says nothing for a stale-lock failure that is not read-only', () => {
@@ -3268,7 +3499,7 @@ describe('withGitConfigReadOnlyNotice', () => {
         true,
       );
       expect(text).toContain('check failed (exit 1)');
-      expect(text).toContain('the git directory is read-only inside the sandbox');
+      expect(text).toContain("the repository's git directory is read-only inside the sandbox");
     });
   });
 });
