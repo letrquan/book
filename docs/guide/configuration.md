@@ -321,6 +321,7 @@ after a failed run.
 | `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                                                   |
 | `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                                                 |
 | `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                                                   |
+| `BOOK_THINKING_STALL_TIMEOUT_MS` / `BOOK_FIRST_DELTA_STALL_TIMEOUT_MS`                            | Stall ceilings while a model thinks, and before a stream's first delta                     |
 | `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout (`Bash` included) and telemetry location                                      |
 | `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)                                   |
 | `BOOK_WEB_ALLOW_PRIVATE_NETWORK`                                                                  | Opt into local/private web destinations for every `WebFetch` (disabled by default)         |

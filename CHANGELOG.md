@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A model the provider no longer serves is no longer reported as a rejected credential** (#387).
+  9router wraps an upstream 403 in its own 503 (`[route] [403]: Model is no longer available`),
+  which `classifyApiError` read through the quoted status as `auth` — so the run parked as
+  `credentials_rejected` and the message told the user to check `BOOK_API_KEY` for a key that was
+  fine. A plain 403 with the same retirement wording read the same way. A 403 or 404 whose body says
+  the model itself is gone — a retirement notice, a "please select another model", an OpenAI
+  `model_not_found` code, Anthropic's 404 `not_found_error` naming `model:`, or the upstream message
+  OpenRouter forwards in `metadata.raw` — now classifies as `model_unavailable`: the message keeps
+  the upstream detail, gives no API-key advice, and points at `--model` or `/model`. The read stays
+  tight: a 401 is always `auth` whatever its body says, a 403 "Invalid API key provided" or
+  "Forbidden" and a 404 "Not Found" keep their old readings, and the #383 capacity outage (a quoted
+  404 "No endpoints found" with a `(reset after …)` cooldown) is still a retryable `server_error`.
 - **The delegation latency test re-measures a failing verdict before it fails the run** (#390). The
   Windows CI legs sometimes go through a few seconds in which every delegation cycle costs 0.6-3.9s while
   the probe beside it and the child's own timer stay normal, and a re-run of the same commit measures
@@ -13,6 +25,29 @@ All notable changes to this project are documented in this file.
   budget: a round that passes decides the run, and with no passing round any failed round fails it, so a
   regression still fails. Every other platform still decides on one round. Each printed sample also says
   where its time went: before the child started, or after it finished.
+
+### Changed
+
+- **`model_unavailable` is a new `AgentTerminalReason` and stream-json `stopReason` value** (#387). A
+  change for SDK and stream-json consumers that switch over the reason set. A stream that ends with
+  it fails under `model_unavailable` and parks like `credentials_rejected` — nothing is wrong with
+  the work, a supervisor can wait for an operator to pick another model, and it is never re-issued.
+  The park branch's Notification hook now sends its own `kind: "model_unavailable"` instead of the
+  hard-coded `credentials_rejected`, so a retirement alarm does not read as a rejected credential.
+  When auto-compaction fails because the session's own model is unavailable, the failure is treated
+  as shared so a model-free (summary-less) checkpoint does not wipe the history before resume; a
+  distinct compact model that is unavailable still lets the model-free fallback follow.
+- **A stream may wait longer for its first delta when nothing yet says what kind of stream it is**
+  (#379). `retry.firstDeltaStallTimeoutMs` (default 120 s, range 5 s–30 min,
+  `BOOK_FIRST_DELTA_STALL_TIMEOUT_MS`) bounds the pause before a stream's first non-empty content,
+  tool-call or reasoning delta — a role-only chunk, an empty content string and a usage-only chunk do
+  not count — but only when the request sends no `reasoning_effort` and the model's catalog entry
+  does not settle effort: no entry at all, or one without an `effort` key, such as `{}`. A router
+  that buffers the model's whole thinking block sends a role-only first chunk and then silence for up
+  to about 80 s, which the 20 s chat ceiling read as `stream_stall` on a healthy request. The first
+  meaningful delta hands the stream back to the per-phase ceilings unchanged. An `effort: false`
+  entry, an explicit `--effort`, and a catalogued effort range behave exactly as before, and the
+  Anthropic path is untouched.
 
 ## [0.3.0] - 2026-10-07
 

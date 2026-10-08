@@ -88,6 +88,16 @@ export interface RetryConfig {
   outputCapContinuations?: number;
   /** Stall ceiling while the model is thinking; absent falls back to the chat one. */
   thinkingStallTimeoutMs?: number;
+  /**
+   * First-delta ceiling for a model that may think silently (#379): how long a
+   * stream may stay quiet before its first content, tool-call or reasoning
+   * delta when the request sends no `reasoning_effort` and the model's catalog
+   * entry does not settle the question. A router that buffers the whole
+   * thinking block sends a role-only chunk and then nothing for up to about
+   * 80 s, past the chat ceiling. Optional, and absent falls back to the chat
+   * one, so a hand-built RetryConfig keeps the behavior it was written for.
+   */
+  firstDeltaStallTimeoutMs?: number;
 }
 
 export type AgentTaskStatus = 'pending' | 'in_progress' | 'completed' | 'deleted';

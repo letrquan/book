@@ -834,6 +834,154 @@ describe('stall ceiling chosen per stream', () => {
     );
     expect(ceilings).toEqual([50]);
   });
+
+  // The first-delta ceiling (#379 tail): a router that buffers the model's
+  // thinking sends a role-only first chunk and then nothing for up to about
+  // 80 s, so the chat ceiling cancels a healthy request before its first
+  // meaningful delta. Chat 50 ms / first-delta 400 ms / thinking 2000 ms here.
+  const chatCeilingPlusFirstDelta = { ...chatCeiling, firstDeltaStallTimeoutMs: 400 };
+
+  /** A role-only delta, an empty content string, and a usage-only chunk: none of them is an answer. */
+  const nonMeaningfulThenContentThenDone = () =>
+    timedStream([
+      { afterMs: 0, chunk: sse({ role: 'assistant' }) },
+      { afterMs: 10, chunk: sse({ content: '' }) },
+      {
+        afterMs: 20,
+        chunk:
+          'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+      },
+      { afterMs: 200, chunk: sse({ content: 'answer' }) },
+      { afterMs: 210, chunk: 'data: [DONE]\n\n' },
+    ]);
+  /** The first meaningful delta lands past the chat ceiling but inside the first-delta one. */
+  const roleOnlyThenContentThenDone = () =>
+    timedStream([
+      { afterMs: 0, chunk: sse({ role: 'assistant' }) },
+      { afterMs: 200, chunk: sse({ content: 'answer' }) },
+      { afterMs: 210, chunk: 'data: [DONE]\n\n' },
+    ]);
+
+  it('holds an uncatalogued model past the chat ceiling until its first delta (#379)', async () => {
+    // The router sends a role-only chunk, then buffers the thinking block: the
+    // pause outruns the chat ceiling but not the first-delta one, so the
+    // request completes instead of being cancelled as a stall.
+    const cfg = defaultConfig({
+      retry: { ...defaultConfig().retry, ...chatCeilingPlusFirstDelta },
+    });
+    const { events, ceilings, sent } = await read(cfg, nonMeaningfulThenContentThenDone());
+
+    expect(sent).not.toHaveProperty('reasoning_effort');
+    expect(events).toContainEqual({ type: 'text', content: 'answer' });
+    expect(ceilings).toEqual([]);
+    expect(events).not.toContainEqual(
+      expect.objectContaining({ type: 'error', errorCode: 'stream_stall' }),
+    );
+  });
+
+  it('holds a model whose catalog entry has no effort key the same way (#379)', async () => {
+    // An entry like `{}` says nothing about effort: the same unknown-model
+    // regime, and the same first-delta ceiling.
+    const cfg = defaultConfig({
+      retry: { ...defaultConfig().retry, ...chatCeilingPlusFirstDelta },
+      modelInfo: {},
+    });
+    const { events, ceilings } = await read(cfg, roleOnlyThenContentThenDone());
+
+    expect(events).toContainEqual({ type: 'text', content: 'answer' });
+    expect(ceilings).toEqual([]);
+    expect(events).not.toContainEqual(
+      expect.objectContaining({ type: 'error', errorCode: 'stream_stall' }),
+    );
+  });
+
+  it('still ends an answering stream at the chat ceiling (#379)', async () => {
+    // Content arrives first, so the first-delta ceiling is spent: the answer
+    // phase is judged by the chat ceiling, as it always was.
+    const cfg = defaultConfig({
+      retry: { ...defaultConfig().retry, ...chatCeilingPlusFirstDelta },
+    });
+    const { events, ceilings } = await read(cfg, contentThenPause());
+
+    expect(events).toContainEqual({
+      type: 'error',
+      error: 'Stream stalled: no data received for 50ms',
+      errorCode: 'stream_stall',
+    });
+    expect(ceilings).toEqual([50]);
+  });
+
+  it('stalls at the first-delta ceiling when even it is outlasted (#379)', async () => {
+    const cfg = defaultConfig({
+      retry: { ...defaultConfig().retry, ...chatCeilingPlusFirstDelta },
+    });
+    const { events, ceilings } = await read(cfg, roleOnlyThenContentThenDoneWithLongPause());
+
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'error', errorCode: 'stream_stall' }),
+    );
+    // The reported ceiling is the first-delta one, not the chat one.
+    expect(ceilings).toEqual([400]);
+    expect(events).toContainEqual({
+      type: 'error',
+      error: 'Stream stalled: no data received for 400ms',
+      errorCode: 'stream_stall',
+    });
+  });
+
+  it('keeps the chat ceiling for a model whose entry says effort false (#379)', async () => {
+    // The catalog entry is the evidence: a model that never reasons has no
+    // silent thinking to protect, so the chat ceiling applies from the start.
+    const cfg = defaultConfig({
+      retry: { ...defaultConfig().retry, ...chatCeilingPlusFirstDelta },
+      modelInfo: { effort: false },
+    });
+    const { events, ceilings } = await read(cfg, roleOnlyThenContentThenDone());
+
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'error', errorCode: 'stream_stall' }),
+    );
+    expect(ceilings).toEqual([50]);
+  });
+
+  it('ends first-delta grace on a reasoning delta and uses the thinking ceiling (#399)', async () => {
+    // When thinkingStallTimeoutMs (150 ms) is lower than firstDeltaStallTimeoutMs (400 ms),
+    // a reasoning delta must end the first-delta grace and set the thinking ceiling
+    // (max(chat, thinking) = 150 ms), not keep the 400 ms first-delta ceiling.
+    const cfg = defaultConfig({
+      retry: {
+        ...defaultConfig().retry,
+        streamStallTimeoutMs: 60,
+        thinkingStallTimeoutMs: 150,
+        firstDeltaStallTimeoutMs: 400,
+      },
+    });
+    const reasoningThenSilence = timedStream([
+      { afterMs: 0, chunk: sse({ role: 'assistant' }) },
+      { afterMs: 10, chunk: sse({ reasoning_content: 'thinking...' }) },
+      { afterMs: 260, chunk: sse({ content: 'answer' }) },
+      { afterMs: 270, chunk: 'data: [DONE]\n\n' },
+    ]);
+    const { events, ceilings } = await read(cfg, reasoningThenSilence);
+
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'error', errorCode: 'stream_stall' }),
+    );
+    expect(ceilings).toEqual([150]);
+    expect(events).toContainEqual({
+      type: 'error',
+      error: 'Stream stalled: no data received for 150ms',
+      errorCode: 'stream_stall',
+    });
+  });
+
+  function roleOnlyThenContentThenDoneWithLongPause() {
+    return timedStream([
+      { afterMs: 0, chunk: sse({ role: 'assistant' }) },
+      { afterMs: 500, chunk: sse({ content: 'answer' }) },
+      { afterMs: 510, chunk: 'data: [DONE]\n\n' },
+    ]);
+  }
 });
 
 describe('chatCompletionStream retry — edge cases', () => {

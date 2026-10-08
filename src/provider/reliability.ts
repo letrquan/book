@@ -18,6 +18,7 @@ export type ProviderErrorCode =
   | 'not_found'
   | 'unprocessable'
   | 'quota'
+  | 'model_unavailable'
   | 'unknown';
 
 export function classifyHttpStatus(status: number): {
@@ -103,6 +104,95 @@ const CONTEXT_OVERFLOW_ERROR_NAMES: ReadonlySet<string> = new Set([
   // llama.cpp's server.
   'exceed_context_size_error',
 ]);
+
+/**
+ * `error.code` or `error.type` values that name the model itself as gone (#387):
+ * OpenAI's `model_not_found`, and the spellings routers invent for the same
+ * verdict. Names, not statuses — a `model_not_found` code on a wrapped 403 is
+ * still about the model, not about the request or the key.
+ */
+const MODEL_UNAVAILABLE_ERROR_NAMES: ReadonlySet<string> = new Set([
+  'model_not_found',
+  'model_not_available',
+  'model_unavailable',
+]);
+
+/**
+ * The wordings a provider uses to say the model itself is gone or unusable
+ * (#387). An explicit "please pick another" instruction needs no corroboration;
+ * every other phrase is only believed when it shares a sentence with a model
+ * word, so a 403 that says an endpoint is "not available today" is not read as
+ * a retirement of the model named three sentences earlier.
+ */
+const MODEL_GONE_PHRASES = [
+  'no longer available',
+  'no longer supported',
+  'not found',
+  'does not exist',
+  'is not supported',
+  'not available',
+  'has been retired',
+  'has been removed',
+  'has been deprecated',
+];
+
+/** "Please pick another model" — the wordings that name their own remedy. */
+const CHOOSE_ANOTHER_MODEL =
+  /(?:select|choose)\s+(?:another|a\s+different)\s+model\b(?!\s+provider\b)/i;
+
+/** How far a gone-phrase may sit from a model word and still be about it. */
+const MODEL_GONE_PROXIMITY_CHARS = 60;
+
+/** Credential words: a sentence that names a credential is never about a model. */
+const CREDENTIAL_WORD = /\b(?:api\s+key|key|token|credential)s?\b/i;
+
+/**
+ * True when an error body says the model is gone or unusable, read from the
+ * same message parts every other body reading uses (`errorBodyParts`: the
+ * message, the `code` / `type` names, and OpenRouter's forwarded `raw`) —
+ * never from arbitrary text elsewhere in the body, which may echo the request
+ * or a model list.
+ *
+ * A match is either an explicit "select / choose another model" instruction, a
+ * gone-phrase within `MODEL_GONE_PROXIMITY_CHARS` after a model word in the same
+ * sentence, Anthropic's 404 `not_found_error` naming `model:`, or a `code` /
+ * `type` name that says so outright. A body that says only "Invalid API key
+ * provided", "Forbidden" or "Not Found" never matches, so a genuine credential
+ * problem keeps its own classification.
+ */
+function statesModelUnavailable(body: string, effectiveStatus?: number): boolean {
+  const { message, names, raw } = errorBodyParts(body);
+  if (names.some((name) => MODEL_UNAVAILABLE_ERROR_NAMES.has(name.toLowerCase()))) return true;
+  if (
+    effectiveStatus === 404 &&
+    names.some((name) => name.toLowerCase() === 'not_found_error') &&
+    message.trim().toLowerCase().startsWith('model:')
+  ) {
+    return true;
+  }
+  const saysIt = (text: string): boolean => {
+    // Sentence punctuation followed by whitespace or end of string, or newlines.
+    // Dotted model ids (gpt-4.1) and route colons stay within one sentence.
+    for (const sentence of text.split(/[.!?:;]+(?:\s+|$)|[\r\n]+/)) {
+      if (CREDENTIAL_WORD.test(sentence)) continue;
+      if (CHOOSE_ANOTHER_MODEL.test(sentence)) return true;
+      const lower = sentence.toLowerCase();
+      const modelWords = [...lower.matchAll(/\bmodels?\b/g)].map((m) => m.index);
+      if (modelWords.length === 0) continue;
+      for (const phrase of MODEL_GONE_PHRASES) {
+        let gone = lower.indexOf(phrase);
+        while (gone >= 0) {
+          if (modelWords.some((at) => at < gone && gone - at <= MODEL_GONE_PROXIMITY_CHARS)) {
+            return true;
+          }
+          gone = lower.indexOf(phrase, gone + 1);
+        }
+      }
+    }
+    return false;
+  };
+  return saysIt(message) || (raw !== undefined && statesModelUnavailable(raw, effectiveStatus));
+}
 
 /**
  * The message and the `code` / `type` names of a provider's error body. The
@@ -203,8 +293,25 @@ function statesContextOverflow(body: string): boolean {
   );
 }
 
+/**
+ * Classify a provider error response.
+ *
+ * The effective status is the upstream one a router quoted, else the response's
+ * own: a 503 that quotes `[403]` is the 403. On an effective 403 or 404 the body
+ * is read for a statement that the model itself is gone (#387) — a retirement
+ * notice, a `model_not_found` code — which is `model_unavailable`, not `auth`:
+ * nothing is wrong with the credential, and an operator must pick another
+ * model. A 401 is always `auth` and its body is never read for this; a 403 or
+ * 404 without such wording keeps the plain classification. The #383 capacity
+ * outage stays out of this path: its quote is suppressed by
+ * `quotedUpstreamStatus`, so the 503 classifies as a retryable server error.
+ */
 export function classifyApiError(status: number, body: string): ProviderErrorCode {
-  const code = classifyHttpStatus(wrappedUpstreamStatus(status, body) ?? status).code;
+  const effective = wrappedUpstreamStatus(status, body) ?? status;
+  const code = classifyHttpStatus(effective).code;
+  if ((effective === 403 || effective === 404) && statesModelUnavailable(body, effective)) {
+    return 'model_unavailable';
+  }
   return code === 'bad_request' && statesContextOverflow(body) ? 'context_overflow' : code;
 }
 
@@ -214,6 +321,23 @@ export function classifyProviderError(error: unknown): ProviderErrorCode {
   if (message.includes('timed out') || message.includes('timeout')) return 'timeout';
   if (isContextOverflowError(message)) return 'context_overflow';
   return 'network';
+}
+
+/**
+ * The message detail for model_unavailable errors. When OpenRouter forwarded
+ * an upstream error body in `error.metadata.raw`, its sanitized message is
+ * included so the retirement wording reaches the user.
+ */
+function safeModelUnavailableDetail(body: string): string {
+  const { raw } = errorBodyParts(body);
+  const main = safeErrorDetail(body);
+  if (raw) {
+    const rawDetail = safeErrorDetail(raw);
+    if (rawDetail && rawDetail !== main) {
+      return main ? `${main}: ${rawDetail}` : rawDetail;
+    }
+  }
+  return main || 'The provider did not describe why';
 }
 
 export function formatApiError(status: number, body: string): string {
@@ -235,6 +359,12 @@ export function formatApiError(status: number, body: string): string {
       return 'Request timed out. Check your network connection and try again.';
     case 'auth':
       return `${base} ${detail}. Check BOOK_API_KEY, or provider.<id>.apiKey in settings.`;
+    case 'model_unavailable': {
+      // Not a credential problem (#387): the key is fine, the model is not
+      // served here any more. Name the remedy, never the API key.
+      const modelDetail = safeModelUnavailableDetail(body);
+      return `${base} ${modelDetail}. This model is not available on this provider or route — choose another with --model or /model.`;
+    }
     case 'quota':
       return `${base} ${detail}. Check your usage/credits.`;
     default:
