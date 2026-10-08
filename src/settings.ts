@@ -181,6 +181,18 @@ export const retrySettingsSchema = z.object({
    * timeout to it cancels a healthy request and reports `stream_stall`.
    */
   thinkingStallTimeoutMs: z.number().int().min(10_000).max(1_800_000).default(900_000),
+  /**
+   * First-delta ceiling for a model that may think silently (#379).
+   *
+   * A router that buffers the model's whole thinking block sends a role-only
+   * first chunk and then nothing until the thinking is done — up to about 80 s —
+   * which the chat ceiling reads as a fault. While a stream has shown no
+   * content, tool call or reasoning delta yet, and neither `reasoning_effort`
+   * nor the model's catalog `effort` entry settles what it is, silence is
+   * judged by this ceiling instead. The first meaningful delta hands the stream
+   * back to the per-phase ceilings.
+   */
+  firstDeltaStallTimeoutMs: z.number().int().min(5_000).max(1_800_000).default(120_000),
   toolRetries: z.number().int().min(0).max(3).default(1),
   watchdog: z.boolean().default(false),
   /**
@@ -635,6 +647,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     requestTimeoutMs: 600000,
     streamStallTimeoutMs: 20000,
     thinkingStallTimeoutMs: 900_000,
+    firstDeltaStallTimeoutMs: 120_000,
     toolRetries: 1,
     watchdog: false,
     streamReissueAttempts: 3,
