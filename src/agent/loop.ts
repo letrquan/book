@@ -37,6 +37,7 @@ import {
 } from './compact.js';
 import { maskAtGate, maskBeforeCompacting } from './tool-output-masking.js';
 import { hasDeclaredContextWindow, resolveContextLimit, resolveModelKey } from '../models.js';
+import { compactsOnSessionModel } from '../config.js';
 import {
   createModelWindowStore,
   LEARNED_WINDOW_SAFETY_MARGIN,
@@ -898,14 +899,23 @@ export async function runAgentLoop(
     /**
      * Whether a failed model compaction may be followed by one without the model. Only a failure
      * of the reducer's own request qualifies: a cancel, a run budget that refuses any model call,
-     * or a failure the main request would share (a rejected key, an outage, a rate limit) leaves
-     * the history alone, since the request would fail after the degraded checkpoint anyway.
+     * or a failure the main request would share (a rejected key, an outage, a rate limit, or the
+     * session's own model being unavailable) leaves the history alone, since the request would
+     * fail after the degraded checkpoint anyway.
      */
+    const isSharedFailure = (providerCode?: string): boolean => {
+      if (!providerCode) return false;
+      if (SHARED_FAILURE_CODES.has(providerCode)) return true;
+      if (providerCode === 'model_unavailable') {
+        return compactsOnSessionModel(config);
+      }
+      return false;
+    };
     const modelFreeMayFollow = (result: CompactResult): boolean =>
       result.status === 'failed' &&
       result.reason !== 'aborted' &&
       result.reason !== 'budget-overflow' &&
-      !(result.providerCode !== undefined && SHARED_FAILURE_CODES.has(result.providerCode));
+      !isSharedFailure(result.providerCode);
     /**
      * Commit a prepared compaction against the history as it stands. Returns
      * true when history was replaced; false when there was nothing prepared,

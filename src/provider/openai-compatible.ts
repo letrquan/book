@@ -403,9 +403,9 @@ export async function* chatCompletionStream(
       if (reasoning) {
         // The model is reasoning, whatever the request could not say (#379), so
         // this phase waits out the thinking ceiling. Only this phase does.
-        if (retry.thinkingStallTimeoutMs) {
-          stallTimeoutMs = Math.max(stallTimeoutMs, retry.thinkingStallTimeoutMs);
-        }
+        stallTimeoutMs = retry.thinkingStallTimeoutMs
+          ? Math.max(startingStallTimeoutMs, retry.thinkingStallTimeoutMs)
+          : startingStallTimeoutMs;
         log.debug('stream reasoning', { len: reasoning.length });
         yield { type: 'reasoning', reasoning };
       }
@@ -505,10 +505,7 @@ export async function* chatCompletionStream(
     reasoningEnabled && retry.thinkingStallTimeoutMs
       ? Math.max(retry.streamStallTimeoutMs, retry.thinkingStallTimeoutMs)
       : retry.streamStallTimeoutMs;
-  const firstDeltaApplies =
-    !reasoningEnabled &&
-    typeof config.modelInfo?.effort !== 'object' &&
-    config.modelInfo?.effort !== false;
+  const firstDeltaApplies = !reasoningEnabled && config.modelInfo?.effort !== false;
   let stallTimeoutMs = firstDeltaApplies
     ? Math.max(startingStallTimeoutMs, retry.firstDeltaStallTimeoutMs ?? 0)
     : startingStallTimeoutMs;

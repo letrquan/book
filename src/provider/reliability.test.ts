@@ -1037,6 +1037,75 @@ describe('a model that is gone is not a credentials problem (#387)', () => {
     expect(message).not.toContain('BOOK_API_KEY');
     expect(message).toContain('no longer available');
   });
+
+  it('does not split sentences on dotted model ids or colon prefixes (#399)', () => {
+    const quotedDotted = '503 [openai/gpt-4.1] [403]: Model gpt-4.1 is no longer available.';
+    expect(classifyApiError(503, quotedDotted)).toBe('model_unavailable');
+
+    const plainDotted = JSON.stringify({
+      error: { message: 'The model gemini-2.5-pro is no longer available.' },
+    });
+    expect(classifyApiError(404, plainDotted)).toBe('model_unavailable');
+  });
+
+  it('matches models plural in model words (#399)', () => {
+    const googleUnknownModel = JSON.stringify({
+      error: {
+        message:
+          'models/gemini-1.0-pro is not found for API version v1beta, or is not supported for generateContent. Call ListModels to see the list of available models and their supported methods.',
+        status: 'NOT_FOUND',
+      },
+    });
+    expect(classifyApiError(404, googleUnknownModel)).toBe('model_unavailable');
+  });
+
+  it('never treats credential errors naming a key or token as model_unavailable (#399)', () => {
+    const keyNotFound = JSON.stringify({
+      error: { message: 'API key not found for this model provider' },
+    });
+    expect(classifyApiError(403, keyNotFound)).toBe('auth');
+
+    const selectModelProvider = JSON.stringify({
+      error: {
+        message: 'Access denied. Please select another model provider or check your key.',
+      },
+    });
+    expect(classifyApiError(403, selectModelProvider)).toBe('auth');
+  });
+
+  it('classifies Anthropic 404 for a retired or unknown model as model_unavailable (#399)', () => {
+    const anthropicNotFound = JSON.stringify({
+      type: 'error',
+      error: {
+        type: 'not_found_error',
+        message: 'model: claude-3-opus-20240229',
+      },
+    });
+    expect(classifyApiError(404, anthropicNotFound)).toBe('model_unavailable');
+  });
+
+  it('joins detail and advice with a period and includes OpenRouter raw message (#399)', () => {
+    const formatted9router = formatApiError(503, retiredRouterBody);
+    expect(formatted9router).toContain('(reset after 1m 43s). This model');
+
+    const openRouterRaw = JSON.stringify({
+      error: {
+        code: 403,
+        message: 'Provider returned error',
+        metadata: {
+          raw: JSON.stringify({
+            error: {
+              message: 'Space Bunny Alpha is no longer available. Please select another model.',
+            },
+          }),
+        },
+      },
+    });
+    const formattedOpenRouter = formatApiError(503, openRouterRaw);
+    expect(formattedOpenRouter).toContain(
+      'Space Bunny Alpha is no longer available. Please select another model.',
+    );
+  });
 });
 
 describe('error bodies read one way (#244 review)', () => {

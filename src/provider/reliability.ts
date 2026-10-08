@@ -137,10 +137,14 @@ const MODEL_GONE_PHRASES = [
 ];
 
 /** "Please pick another model" — the wordings that name their own remedy. */
-const CHOOSE_ANOTHER_MODEL = /(?:select|choose)\s+(?:another|a\s+different)\s+model/i;
+const CHOOSE_ANOTHER_MODEL =
+  /(?:select|choose)\s+(?:another|a\s+different)\s+model\b(?!\s+provider\b)/i;
 
 /** How far a gone-phrase may sit from a model word and still be about it. */
 const MODEL_GONE_PROXIMITY_CHARS = 60;
+
+/** Credential words: a sentence that names a credential is never about a model. */
+const CREDENTIAL_WORD = /\b(?:api\s+key|key|token|credential)s?\b/i;
 
 /**
  * True when an error body says the model is gone or unusable, read from the
@@ -150,34 +154,44 @@ const MODEL_GONE_PROXIMITY_CHARS = 60;
  * or a model list.
  *
  * A match is either an explicit "select / choose another model" instruction, a
- * gone-phrase within `MODEL_GONE_PROXIMITY_CHARS` of a model word in the same
- * sentence, or a `code` / `type` name that says so outright. A body that says
- * only "Invalid API key provided", "Forbidden" or "Not Found" never matches, so
- * a genuine credential problem keeps its own classification.
+ * gone-phrase within `MODEL_GONE_PROXIMITY_CHARS` after a model word in the same
+ * sentence, Anthropic's 404 `not_found_error` naming `model:`, or a `code` /
+ * `type` name that says so outright. A body that says only "Invalid API key
+ * provided", "Forbidden" or "Not Found" never matches, so a genuine credential
+ * problem keeps its own classification.
  */
-function statesModelUnavailable(body: string): boolean {
+function statesModelUnavailable(body: string, effectiveStatus?: number): boolean {
   const { message, names, raw } = errorBodyParts(body);
   if (names.some((name) => MODEL_UNAVAILABLE_ERROR_NAMES.has(name.toLowerCase()))) return true;
+  if (
+    effectiveStatus === 404 &&
+    names.some((name) => name.toLowerCase() === 'not_found_error') &&
+    message.trim().toLowerCase().startsWith('model:')
+  ) {
+    return true;
+  }
   const saysIt = (text: string): boolean => {
-    if (CHOOSE_ANOTHER_MODEL.test(text)) return true;
-    // Sentences, not the whole message: a gone-phrase about one thing must not
-    // reach a model word about another (`… denied. The model is fine. The
-    // endpoint is not available today.`).
-    for (const sentence of text.split(/[.!?:;\n]/)) {
+    // Sentence punctuation followed by whitespace or end of string, or newlines.
+    // Dotted model ids (gpt-4.1) and route colons stay within one sentence.
+    for (const sentence of text.split(/[.!?:;]+(?:\s+|$)|[\r\n]+/)) {
+      if (CREDENTIAL_WORD.test(sentence)) continue;
+      if (CHOOSE_ANOTHER_MODEL.test(sentence)) return true;
       const lower = sentence.toLowerCase();
-      const modelWords = [...lower.matchAll(/\bmodel\b/g)].map((m) => m.index);
+      const modelWords = [...lower.matchAll(/\bmodels?\b/g)].map((m) => m.index);
       if (modelWords.length === 0) continue;
       for (const phrase of MODEL_GONE_PHRASES) {
-        const gone = lower.indexOf(phrase);
-        if (gone < 0) continue;
-        if (modelWords.some((at) => Math.abs(gone - at) <= MODEL_GONE_PROXIMITY_CHARS)) {
-          return true;
+        let gone = lower.indexOf(phrase);
+        while (gone >= 0) {
+          if (modelWords.some((at) => at < gone && gone - at <= MODEL_GONE_PROXIMITY_CHARS)) {
+            return true;
+          }
+          gone = lower.indexOf(phrase, gone + 1);
         }
       }
     }
     return false;
   };
-  return saysIt(message) || (raw !== undefined && statesModelUnavailable(raw));
+  return saysIt(message) || (raw !== undefined && statesModelUnavailable(raw, effectiveStatus));
 }
 
 /**
@@ -295,7 +309,7 @@ function statesContextOverflow(body: string): boolean {
 export function classifyApiError(status: number, body: string): ProviderErrorCode {
   const effective = wrappedUpstreamStatus(status, body) ?? status;
   const code = classifyHttpStatus(effective).code;
-  if ((effective === 403 || effective === 404) && statesModelUnavailable(body)) {
+  if ((effective === 403 || effective === 404) && statesModelUnavailable(body, effective)) {
     return 'model_unavailable';
   }
   return code === 'bad_request' && statesContextOverflow(body) ? 'context_overflow' : code;
@@ -307,6 +321,23 @@ export function classifyProviderError(error: unknown): ProviderErrorCode {
   if (message.includes('timed out') || message.includes('timeout')) return 'timeout';
   if (isContextOverflowError(message)) return 'context_overflow';
   return 'network';
+}
+
+/**
+ * The message detail for model_unavailable errors. When OpenRouter forwarded
+ * an upstream error body in `error.metadata.raw`, its sanitized message is
+ * included so the retirement wording reaches the user.
+ */
+function safeModelUnavailableDetail(body: string): string {
+  const { raw } = errorBodyParts(body);
+  const main = safeErrorDetail(body);
+  if (raw) {
+    const rawDetail = safeErrorDetail(raw);
+    if (rawDetail && rawDetail !== main) {
+      return main ? `${main}: ${rawDetail}` : rawDetail;
+    }
+  }
+  return main || 'The provider did not describe why';
 }
 
 export function formatApiError(status: number, body: string): string {
@@ -328,10 +359,12 @@ export function formatApiError(status: number, body: string): string {
       return 'Request timed out. Check your network connection and try again.';
     case 'auth':
       return `${base} ${detail}. Check BOOK_API_KEY, or provider.<id>.apiKey in settings.`;
-    case 'model_unavailable':
+    case 'model_unavailable': {
       // Not a credential problem (#387): the key is fine, the model is not
       // served here any more. Name the remedy, never the API key.
-      return `${base} ${detail || 'The provider did not describe why.'} This model is not available on this provider or route — choose another with --model or /model.`;
+      const modelDetail = safeModelUnavailableDetail(body);
+      return `${base} ${modelDetail}. This model is not available on this provider or route — choose another with --model or /model.`;
+    }
     case 'quota':
       return `${base} ${detail}. Check your usage/credits.`;
     default:

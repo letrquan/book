@@ -146,7 +146,7 @@ A 408 or a 429 is retried like an outage. A 400 or a 422, plain or quoted, a 404
 mid-stream `invalid_request_error` and `not_found_error` end the run on the first answer, since
 re-sending the same request reproduces them. One 403/404 verdict is read from the body rather than
 the status: when the body says the model itself is gone — a retirement notice, an OpenAI
-`model_not_found`, a "please select another model" — the run ends `failed/model_unavailable` and
+`model_not_found`, Anthropic's 404 `not_found_error` naming `model:`, a "please select another model" — the run ends `failed/model_unavailable` and
 parks, like a rejected credential: nothing is wrong with the work, and the message carries no
 API-key advice, just the remedy (choose another with `--model` or `/model`). A 401 is always a
 credential, whatever its body says, and a plain "Forbidden" or "Not Found" keeps its old reading. A

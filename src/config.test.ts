@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   applyModelDefaults,
   clampEffortToCatalog,
+  compactsOnSessionModel,
   freezeAgentConfig,
   loadConfig,
   resolveCompactModelConfig,
@@ -961,6 +962,41 @@ describe('loadConfig provider registry', () => {
     // A level that was chosen still counts on the uncatalogued compact model.
     const chosen = resolveCompactModelConfig({ ...config, effortChosen: true });
     expect(chosen).toMatchObject({ effort: 'medium', effortExplicit: true, effortChosen: true });
+  });
+
+  it('determines whether compaction runs on the session model (#399)', () => {
+    const base = defaultConfig({
+      model: 'space-bunny-alpha',
+      modelSelection: '9router/commandcode/space-bunny-alpha',
+    });
+    // Unset compact model: session model
+    expect(compactsOnSessionModel(base)).toBe(true);
+
+    // Matches bare model name: session model
+    expect(compactsOnSessionModel({ ...base, compactModel: 'space-bunny-alpha' })).toBe(true);
+
+    // Matches provider-prefixed selection: session model
+    expect(
+      compactsOnSessionModel({
+        ...base,
+        compactModel: '9router/commandcode/space-bunny-alpha',
+      }),
+    ).toBe(true);
+
+    // Configured via settings.compactModel matching selection: session model
+    expect(
+      compactsOnSessionModel({
+        ...base,
+        compactModel: undefined,
+        settings: {
+          ...base.settings,
+          compactModel: '9router/commandcode/space-bunny-alpha',
+        },
+      }),
+    ).toBe(true);
+
+    // Distinct compact model: not session model
+    expect(compactsOnSessionModel({ ...base, compactModel: 'other/compact-model' })).toBe(false);
   });
 
   it('sends an effort only when a level was chosen or the catalog lists it', () => {

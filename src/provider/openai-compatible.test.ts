@@ -944,6 +944,37 @@ describe('stall ceiling chosen per stream', () => {
     expect(ceilings).toEqual([50]);
   });
 
+  it('ends first-delta grace on a reasoning delta and uses the thinking ceiling (#399)', async () => {
+    // When thinkingStallTimeoutMs (150 ms) is lower than firstDeltaStallTimeoutMs (400 ms),
+    // a reasoning delta must end the first-delta grace and set the thinking ceiling
+    // (max(chat, thinking) = 150 ms), not keep the 400 ms first-delta ceiling.
+    const cfg = defaultConfig({
+      retry: {
+        ...defaultConfig().retry,
+        streamStallTimeoutMs: 60,
+        thinkingStallTimeoutMs: 150,
+        firstDeltaStallTimeoutMs: 400,
+      },
+    });
+    const reasoningThenSilence = timedStream([
+      { afterMs: 0, chunk: sse({ role: 'assistant' }) },
+      { afterMs: 10, chunk: sse({ reasoning_content: 'thinking...' }) },
+      { afterMs: 260, chunk: sse({ content: 'answer' }) },
+      { afterMs: 270, chunk: 'data: [DONE]\n\n' },
+    ]);
+    const { events, ceilings } = await read(cfg, reasoningThenSilence);
+
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'error', errorCode: 'stream_stall' }),
+    );
+    expect(ceilings).toEqual([150]);
+    expect(events).toContainEqual({
+      type: 'error',
+      error: 'Stream stalled: no data received for 150ms',
+      errorCode: 'stream_stall',
+    });
+  });
+
   function roleOnlyThenContentThenDoneWithLongPause() {
     return timedStream([
       { afterMs: 0, chunk: sse({ role: 'assistant' }) },

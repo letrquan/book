@@ -471,6 +471,18 @@ export function resolveEffortExplicit(
 }
 
 /**
+ * True when compaction runs on the session's own model rather than a distinct
+ * compact model: no compact model is configured, or it matches the session's
+ * model selection or bare model name.
+ */
+export function compactsOnSessionModel(
+  config: Pick<AgentConfig, 'compactModel' | 'settings' | 'model' | 'modelSelection'>,
+): boolean {
+  const compactModel = config.compactModel?.trim() || config.settings?.compactModel?.trim();
+  return !compactModel || compactModel === config.modelSelection || compactModel === config.model;
+}
+
+/**
  * The compact model's config, for every request made on it: the compaction
  * reducer, the deferred-compaction judge and memory extraction. It is routed to
  * `compactModel` when one is set, without changing the active agent model, and
@@ -480,10 +492,9 @@ export function resolveEffortExplicit(
  */
 export function resolveCompactModelConfig(config: AgentConfig): AgentConfig {
   const compactModel = config.compactModel?.trim() || config.settings.compactModel?.trim();
-  const resolved =
-    !compactModel || compactModel === config.modelSelection || compactModel === config.model
-      ? config
-      : applyModelDefaults(resolveModelProviderConfig(config, compactModel));
+  const resolved = compactsOnSessionModel(config)
+    ? config
+    : applyModelDefaults(resolveModelProviderConfig(config, compactModel!));
   const effort = compactModelEffort(resolved);
   // A level was chosen by `compactEffort` or for the session. A level a managed child's catalog
   // merely listed is sent to the child's model, but is not a choice the compact model inherits.
