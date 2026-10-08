@@ -1,6 +1,6 @@
+import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { Box, Text, render } from 'ink';
@@ -136,6 +136,10 @@ describe('Ink renderer contract', () => {
       for (const offset of CULL_OFFSETS) {
         const baseline = baselines.get(offset)!;
         const culled = await drawTranscript(Output, offset, true);
+        expect(baseline.frame, `offset ${offset} baseline not empty`).not.toBe('');
+        expect(baseline.frame.split('\n')[0], `offset ${offset} first line`).toContain(
+          `row ${offset}`,
+        );
         // The cull decides against the clip Output.get replays, so every culled frame is byte-identical
         // to the frame Ink draws itself.
         expect(culled.frame, `offset ${offset}`).toBe(baseline.frame);
@@ -156,44 +160,60 @@ describe('Ink renderer contract', () => {
 
   it('keeps a DISPLAY_NONE node from drawing while its sibling holds its position', async () => {
     const outputPath = join(inkBuildDir(), 'output.js');
+    const outputModule = (await import(pathToFileURL(outputPath).href)) as {
+      default: ContractInkOutputConstructor;
+    };
+    const Output = outputModule.default;
     const yogaPath = createRequire(outputPath).resolve('yoga-layout');
     const yogaModule = (await import(pathToFileURL(yogaPath).href)) as {
       default?: { DISPLAY_NONE: number };
     };
     const displayNone = yogaModule.default?.DISPLAY_NONE ?? 1;
 
-    const stdoutWrites: string[] = [];
-    const stdout = makeStdout(stdoutWrites);
-    const stdin = makeStdin();
+    const originalGet = Output.prototype.get;
+    let lastOutput = '';
+    Output.prototype.get = function (this: InkOutput) {
+      const frame = originalGet.call(this);
+      lastOutput = frame.output;
+      return frame;
+    };
 
-    function App() {
-      return createElement(
-        Box,
-        { flexDirection: 'column' },
-        createElement(HiddenRow, { displayNone }, createElement(Text, null, 'hidden row')),
-        createElement(Box, { height: 1 }, createElement(Text, null, 'after')),
-      );
+    try {
+      const stdout = makeStdout();
+      const stdin = makeStdin();
+
+      function App() {
+        return createElement(
+          Box,
+          { flexDirection: 'column' },
+          createElement(HiddenRow, { displayNone }, createElement(Text, null, 'hidden row')),
+          createElement(Box, { height: 1 }, createElement(Text, null, 'after')),
+        );
+      }
+
+      const app = render(createElement(App), {
+        stdout,
+        stdin,
+        patchConsole: false,
+        interactive: true,
+        maxFps: 1000,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      lastOutput = '';
+      app.rerender(createElement(App));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const frame = lastOutput;
+      Output.prototype.get = originalGet;
+      app.unmount();
+      app.cleanup();
+
+      const lines = frame.split('\n');
+      expect(lines[0]).toBe('');
+      expect(lines[1]?.startsWith('after')).toBe(true);
+      expect(frame).not.toContain('hidden row');
+    } finally {
+      Output.prototype.get = originalGet;
     }
-
-    const app = render(createElement(App), {
-      stdout,
-      stdin,
-      patchConsole: false,
-      interactive: true,
-      maxFps: 1000,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    stdoutWrites.length = 0;
-    app.rerender(createElement(App));
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    app.unmount();
-    app.cleanup();
-
-    const frame = stdoutWrites.join('');
-    expect(frame).toContain('after');
-    expect(frame).not.toContain('hidden row');
-    // "after" kept its position at row 1 rather than moving up to row 0.
-    expect(frame).toMatch(/\n.*after/);
   });
 });
 
@@ -263,6 +283,8 @@ async function drawTranscript(
   const stdin = makeStdin();
   const recordedWrites: string[] = [];
   const originalWrite = Output.prototype.write;
+  const originalGet = Output.prototype.get;
+  let lastOutput = '';
   Output.prototype.write = function (
     this: InkOutput,
     x: number,
@@ -272,6 +294,11 @@ async function drawTranscript(
   ) {
     recordedWrites.push(text);
     return originalWrite.call(this, x, y, text, options);
+  };
+  Output.prototype.get = function (this: InkOutput) {
+    const frame = originalGet.call(this);
+    lastOutput = frame.output;
+    return frame;
   };
   try {
     const app = render(createElement(Transcript, { offset, culled }), {
@@ -284,11 +311,13 @@ async function drawTranscript(
     await new Promise((resolve) => setTimeout(resolve, 50));
     recordedWrites.length = 0;
     stdoutWrites.length = 0;
+    lastOutput = '';
     app.rerender(createElement(Transcript, { offset, culled }));
     await new Promise((resolve) => setTimeout(resolve, 50));
-    const frame = stdoutWrites.join('');
+    const frame = lastOutput;
     const rowsWritten = recordedWrites.filter((text) => text.startsWith('row '));
     Output.prototype.write = originalWrite;
+    Output.prototype.get = originalGet;
     app.unmount();
     app.cleanup();
     return {
@@ -297,6 +326,7 @@ async function drawTranscript(
     };
   } finally {
     Output.prototype.write = originalWrite;
+    Output.prototype.get = originalGet;
   }
 }
 
