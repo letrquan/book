@@ -71,12 +71,17 @@ export function useGitStatus(workspace: string): GitStatus {
       activeController = new AbortController();
 
       try {
+        const pins = await readRepositoryProgramPins(workspace, undefined, {
+          signal: activeController.signal,
+          timeoutMs: 5_000,
+        });
         const branch = await runGit(
           ['rev-parse', '--abbrev-ref', 'HEAD'],
           workspace,
           activeController.signal,
+          pins,
         );
-        const short = await runGit(['status', '--short'], workspace, activeController.signal);
+        const short = await runGit(['status', '--short'], workspace, activeController.signal, pins);
 
         if (!short) {
           if (!cancelled) update({ branch, status: '\u2713' });
@@ -129,8 +134,12 @@ export function useGitStatus(workspace: string): GitStatus {
  * call here is read-only, so the read-only hardening is the right one; the pager and the
  * credential prompt it cannot wait on come with it, as in `readOnlyGit`.
  */
-async function runGit(args: string[], cwd: string, signal: AbortSignal): Promise<string> {
-  const pins = await readRepositoryProgramPins(cwd, undefined, { signal });
+async function runGit(
+  args: string[],
+  cwd: string,
+  signal: AbortSignal,
+  pins: readonly string[] = [],
+): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       'git',

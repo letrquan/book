@@ -24,7 +24,11 @@ import {
   removeAgentWorktree,
   removeSnapshotRef,
 } from './git-isolation.js';
-import { cherryPickFailureResult, gitForTest } from './git-isolation-internal.js';
+import {
+  cherryPickFailureResult,
+  gitForTest,
+  isolatedGitForTest,
+} from './git-isolation-internal.js';
 
 const roots: string[] = [];
 
@@ -501,6 +505,29 @@ describe('hooks and fsmonitor in the internal git flow (#348)', () => {
     expect(existsSync(markerFor('post-checkout'))).toBe(false);
     expect(existsSync(markerFor('fsmonitor'))).toBe(false);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'carries no core.fsmonitor=true in argv of an isolation call when repository sets it (Fix 5)',
+    async () => {
+      const root = repository();
+      git(root, 'config', 'core.fsmonitor', 'true');
+
+      const observer = argObserverGit();
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${observer.dir}${delimiter}${previousPath ?? ''}`;
+      try {
+        await isolatedGitForTest(root, ['rev-parse', 'HEAD']);
+      } finally {
+        process.env.PATH = previousPath;
+      }
+
+      const calls = observedArgLists(observer.argsFile);
+      expect(calls.length).toBeGreaterThan(0);
+      for (const callArgs of calls) {
+        expect(callArgs).not.toContain('core.fsmonitor=true');
+      }
+    },
+  );
 });
 
 describe('repository-local filters and merge drivers in the internal git flow (#357)', () => {
@@ -1570,6 +1597,37 @@ describe('the internal git runner is bounded (#357)', () => {
   );
 });
 
+describe('how failures are described (#357)', () => {
+  it.skipIf(process.platform === 'win32')(
+    'reports stdout text when stderr is only a newline (Fix 6)',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'book-failing-git-'));
+      roots.push(dir);
+      const script = [
+        '#!/bin/sh',
+        'printf "\\n" >&2',
+        'printf "fatal: authentic reason from stdout\\n"',
+        'exit 1',
+        '',
+      ];
+      writeFileSync(join(dir, 'git'), script.join('\n'));
+      chmodSync(join(dir, 'git'), 0o755);
+
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${dir}${delimiter}${previousPath ?? ''}`;
+      try {
+        for (const input of [undefined, 'a patch\n']) {
+          await expect(
+            gitForTest(dir, ['status'], input !== undefined ? { input } : {}),
+          ).rejects.toThrow('fatal: authentic reason from stdout');
+        }
+      } finally {
+        process.env.PATH = previousPath;
+      }
+    },
+  );
+});
+
 describe('a worktree add that fails after creating its branch (#357)', () => {
   it('leaves no branch behind, so the retry succeeds', async () => {
     const root = repository();
@@ -1999,6 +2057,31 @@ function observerGit(): { dir: string; environmentsFile: string } {
   writeFileSync(join(dir, 'git'), script.join('\n'));
   chmodSync(join(dir, 'git'), 0o755);
   return { dir, environmentsFile };
+}
+
+function argObserverGit(): { dir: string; argsFile: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'book-observer-args-git-'));
+  roots.push(dir);
+  const real = execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim();
+  const argsFile = join(dir, 'args');
+  const script = [
+    '#!/bin/sh',
+    `for arg in "$@"; do printf '%s\\0' "$arg"; done >> ${JSON.stringify(argsFile)}`,
+    `printf '\\0\\0' >> ${JSON.stringify(argsFile)}`,
+    `exec ${JSON.stringify(join(real, 'git'))} "$@"`,
+    '',
+  ];
+  writeFileSync(join(dir, 'git'), script.join('\n'));
+  chmodSync(join(dir, 'git'), 0o755);
+  return { dir, argsFile };
+}
+
+function observedArgLists(argsFile: string): string[][] {
+  if (!existsSync(argsFile)) return [];
+  return readFileSync(argsFile, 'utf8')
+    .split('\0\0')
+    .filter((call) => call.length > 0)
+    .map((call) => call.split('\0').filter(Boolean));
 }
 
 /**

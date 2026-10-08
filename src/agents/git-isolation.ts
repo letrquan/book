@@ -47,7 +47,9 @@ import {
  *   the repository's configured transport (`core.sshCommand`, `credential.helper`) without a
  *   prompt. When missing objects are encountered, calls fail with a clear explanatory message.
  *   Read-only Git tools, `/review` and the TUI poll keep lazy fetch for now by owner decision.
- * - **`core.fsmonitor=true`** (git's built-in daemon) is honoured, while hook paths are disabled.
+ * - **`core.fsmonitor=false`** is kept, as #348 decided: git isolation creates temporary
+ *   worktrees, and on macOS/Windows a built-in fsmonitor daemon started there outlives the call
+ *   and the worktree. Read-only Git tools, `/review`, and the TUI poll allow `core.fsmonitor=true`.
  *
  * Three properties of a child are load-bearing for the reads this module makes, and all three
  * live here rather than at the call sites because each one has a way of failing *open*:
@@ -263,7 +265,7 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
               new Error(
                 failureDescription(
                   error,
-                  stderr || stdout,
+                  stderr.trim() || stdout.trim(),
                   command,
                   args,
                   timeoutMs,
@@ -283,7 +285,7 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
             new Error(
               failureDescription(
                 error,
-                stderr || stdout,
+                stderr.trim() || stdout.trim(),
                 command,
                 args,
                 timeoutMs,
@@ -546,7 +548,14 @@ function internalGitEnv(overrides: NodeJS.ProcessEnv | undefined): NodeJS.Proces
   };
 }
 
-/** git, with the argv hardening that belongs to git and not to {@link run}. */
+/**
+ * git, with the argv hardening that belongs to git and not to {@link run}.
+ *
+ * Repository program pins are read fresh on every call. Git isolation deliberately keeps one
+ * read per `git()` call rather than sharing pins across a multi-step flow, so a new call site
+ * cannot forget to pin repository programs. The measured cost of one config read is about 2 ms on
+ * Linux.
+ */
 async function git(
   cwd: string,
   args: string[],
@@ -558,9 +567,15 @@ async function git(
       run('git', pinArgs, {
         signal: options.signal,
         timeoutMs: options.timeoutMs,
+        env: options.env,
         ...pinOpts,
       }),
-    { signal: options.signal, timeoutMs: options.timeoutMs },
+    {
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+      env: options.env,
+      allowFsmonitor: false,
+    },
   );
   return run('git', hardenedGitArgs([...pins, ...args]), { ...options, cwd });
 }
@@ -578,6 +593,7 @@ function rawGit(
 }
 
 export const gitForTest = rawGit;
+export const isolatedGitForTest = git;
 
 /** The runner `git-signing.ts` reads the signing configuration through; see {@link HardenedRunner}. */
 const hardenedRunner: HardenedRunner = run;

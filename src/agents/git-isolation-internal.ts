@@ -9,4 +9,4 @@
  * of the module's surface: nothing under `src/` imports this file, so a caller reaching for either
  * one is reaching past the API rather than using it.
  */
-export { cherryPickFailureResult, gitForTest } from './git-isolation.js';
+export { cherryPickFailureResult, gitForTest, isolatedGitForTest } from './git-isolation.js';

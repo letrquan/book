@@ -60,6 +60,42 @@ describe('repositoryProgramPins (pure)', () => {
     ]);
   });
 
+  it('does not pin process when operator defines clean-only filter and repository overrides clean-only', () => {
+    const entries: GitConfigEntry[] = [
+      { scope: 'global', key: 'filter.cleanonly.clean', value: 'op-clean -- %f' },
+      { scope: 'local', key: 'filter.cleanonly.clean', value: '/tmp/evil-clean.sh' },
+    ];
+    const pins = repositoryProgramPins(entries);
+    expect(pins).toEqual([
+      '-c',
+      'filter.cleanonly.clean=op-clean -- %f',
+      '-c',
+      'filter.cleanonly.smudge=',
+      '-c',
+      'filter.cleanonly.required=false',
+    ]);
+    expect(pins.includes('filter.cleanonly.process=')).toBe(false);
+  });
+
+  it('pins process empty when operator defines filter without process but repository sets process', () => {
+    const entries: GitConfigEntry[] = [
+      { scope: 'global', key: 'filter.proc.clean', value: 'op-clean -- %f' },
+      { scope: 'local', key: 'filter.proc.clean', value: '/tmp/evil-clean.sh' },
+      { scope: 'local', key: 'filter.proc.process', value: '/tmp/evil-process.sh' },
+    ];
+    const pins = repositoryProgramPins(entries);
+    expect(pins).toEqual([
+      '-c',
+      'filter.proc.clean=op-clean -- %f',
+      '-c',
+      'filter.proc.smudge=',
+      '-c',
+      'filter.proc.process=',
+      '-c',
+      'filter.proc.required=false',
+    ]);
+  });
+
   it('pins a repository merge driver empty', () => {
     const entries: GitConfigEntry[] = [
       { scope: 'local', key: 'merge.custom.driver', value: '/tmp/evil-driver.sh %O %A %B' },
@@ -146,6 +182,62 @@ describe('repositoryProgramPins (pure)', () => {
       'filter.x.required=false',
     ]);
   });
+
+  it('fails closed when a repository-scope filter has = in its name (Fix 1)', () => {
+    const entries: GitConfigEntry[] = [
+      { scope: 'local', key: 'filter.a=b.clean', value: '/tmp/evil.sh' },
+    ];
+    expect(() => repositoryProgramPins(entries)).toThrow(
+      "the repository's configuration defines a filter or merge driver named a=b, which Book cannot neutralize, so it will not run git here",
+    );
+  });
+
+  it('fails closed when a repository-scope merge driver has = in its name (Fix 1)', () => {
+    const entries: GitConfigEntry[] = [
+      { scope: 'worktree', key: 'merge.custom=driver.driver', value: '/tmp/evil.sh' },
+    ];
+    expect(() => repositoryProgramPins(entries)).toThrow(
+      "the repository's configuration defines a filter or merge driver named custom=driver, which Book cannot neutralize, so it will not run git here",
+    );
+  });
+
+  it('does not throw when an operator-scope filter has = in its name (Fix 1)', () => {
+    const entries: GitConfigEntry[] = [
+      { scope: 'global', key: 'filter.a=b.clean', value: '/usr/bin/op.sh' },
+    ];
+    expect(() => repositoryProgramPins(entries)).not.toThrow();
+    expect(repositoryProgramPins(entries)).toEqual([]);
+  });
+
+  it('pins all four filter keys for an empty subsection filter (Fix 2)', () => {
+    const entries: GitConfigEntry[] = [
+      { scope: 'local', key: 'filter..clean', value: '/tmp/evil.sh' },
+    ];
+    const pins = repositoryProgramPins(entries);
+    expect(pins).toEqual([
+      '-c',
+      'filter..clean=',
+      '-c',
+      'filter..smudge=',
+      '-c',
+      'filter..process=',
+      '-c',
+      'filter..required=false',
+    ]);
+  });
+
+  it('pins an empty subsection merge driver (Fix 2)', () => {
+    const entries: GitConfigEntry[] = [
+      { scope: 'local', key: 'merge..driver', value: '/tmp/evil-merge.sh' },
+    ];
+    const pins = repositoryProgramPins(entries);
+    expect(pins).toEqual(['-c', 'merge..driver=']);
+  });
+
+  it('does not pin core.fsmonitor when allowFsmonitor is false (Fix 5)', () => {
+    const entries: GitConfigEntry[] = [{ scope: 'local', key: 'core.fsmonitor', value: 'true' }];
+    expect(repositoryProgramPins(entries, { allowFsmonitor: false })).toEqual([]);
+  });
 });
 
 describe('readRepositoryProgramPins', () => {
@@ -215,6 +307,65 @@ describe('readRepositoryProgramPins', () => {
     expect(calls.some((args) => args.includes('--worktree'))).toBe(true);
   });
 
+  it('reads system and global operator values in fallback so local overrides are pinned back to operator values (Fix 7)', async () => {
+    const runner: RepositoryProgramRunner = async (args) => {
+      if (args.includes('--show-scope')) {
+        // Test reachable unknown option when runner throws/rejects (Fix 7)
+        throw new Error('error: unknown option `show-scope`');
+      }
+      if (args.includes('--system')) {
+        return {
+          stdout: 'filter.sys.clean\nsystem-clean\0',
+          stderr: '',
+          code: 0,
+        };
+      }
+      if (args.includes('--global')) {
+        return {
+          stdout: 'filter.foo.clean\nglobal-clean\0filter.foo.required\ntrue\0',
+          stderr: '',
+          code: 0,
+        };
+      }
+      if (args.includes('--local')) {
+        return {
+          stdout:
+            'filter.foo.clean\nevil-clean\0filter.bar.clean\nevil-bar\0merge.driver1.driver\nevil-driver\0',
+          stderr: '',
+          code: 0,
+        };
+      }
+      if (args.includes('--worktree')) {
+        return { stdout: '', stderr: '', code: 1 };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    };
+
+    const pins = await readRepositoryProgramPins('/tmp/repo', runner);
+    // filter.foo was in global, so local override is pinned back to global values
+    // filter.bar was local only, so pinned empty
+    // merge.driver1 was local only, so pinned empty
+    // filter.sys was system only (not overridden locally), so not pinned
+    expect(pins).toEqual([
+      '-c',
+      'filter.foo.clean=global-clean',
+      '-c',
+      'filter.foo.smudge=',
+      '-c',
+      'filter.foo.required=true',
+      '-c',
+      'filter.bar.clean=',
+      '-c',
+      'filter.bar.smudge=',
+      '-c',
+      'filter.bar.process=',
+      '-c',
+      'filter.bar.required=false',
+      '-c',
+      'merge.driver1.driver=',
+    ]);
+  });
+
   it('throws and fails closed on unexpected exit code', async () => {
     const runner: RepositoryProgramRunner = async () => ({
       stdout: '',
@@ -239,6 +390,14 @@ describe('canonicalConfigKey and parseGitConfig', () => {
     expect(parseGitConfig(raw)).toEqual([
       { scope: 'local', key: 'filter.X.clean', value: 'clean-cmd' },
       { scope: 'global', key: 'core.fsmonitor', value: 'true' },
+    ]);
+  });
+
+  it('parseGitConfig parses unscoped NUL-delimited stream with a fixed scope (Fix 9)', () => {
+    const raw = 'FILTER.X.CLEAN\nclean-cmd\0CORE.FSMONITOR\0';
+    expect(parseGitConfig(raw, { scope: 'local' })).toEqual([
+      { scope: 'local', key: 'filter.X.clean', value: 'clean-cmd' },
+      { scope: 'local', key: 'core.fsmonitor', value: 'true' },
     ]);
   });
 });

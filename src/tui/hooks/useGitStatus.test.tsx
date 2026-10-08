@@ -8,7 +8,12 @@ const calls = vi.hoisted(
   () =>
     [] as Array<{
       args: string[];
-      options: { signal: AbortSignal; env: NodeJS.ProcessEnv };
+      options: {
+        signal?: AbortSignal;
+        env?: NodeJS.ProcessEnv;
+        timeout?: number;
+        windowsHide?: boolean;
+      };
       callback: (error: Error | null, stdout: string) => void;
     }>,
 );
@@ -17,7 +22,12 @@ vi.mock('node:child_process', () => ({
   execFile: (
     _file: string,
     args: string[],
-    options: { signal: AbortSignal; env: NodeJS.ProcessEnv },
+    options: {
+      signal?: AbortSignal;
+      env?: NodeJS.ProcessEnv;
+      timeout?: number;
+      windowsHide?: boolean;
+    },
     callback: (error: Error | null, stdout: string) => void,
   ) => calls.push({ args, options, callback }),
 }));
@@ -55,7 +65,7 @@ describe('useGitStatus', () => {
 
     const signal = calls[0].options.signal;
     view.unmount();
-    expect(signal.aborted).toBe(true);
+    expect(signal?.aborted).toBe(true);
   });
 });
 
@@ -135,6 +145,9 @@ describe('useGitStatus argv', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(calls.length).toBeGreaterThan(0);
+    expect(calls[0].options.timeout).toBe(5_000);
+    expect(calls[0].options.windowsHide).toBe(true);
+
     for (const call of calls) {
       // Hardened argv, the poll's own command last: one of the two it makes.
       expect([
@@ -148,9 +161,77 @@ describe('useGitStatus argv', () => {
         hardenedGitArgs(['rev-parse', '--abbrev-ref', 'HEAD']),
         hardenedGitArgs(['status', '--short']),
       ]).toContainEqual(call.args);
-      expect(call.options.env.GIT_PAGER).toBe('cat');
-      expect(call.options.env.GIT_TERMINAL_PROMPT).toBe('0');
+      expect(call.options.env?.GIT_PAGER).toBe('cat');
+      expect(call.options.env?.GIT_TERMINAL_PROMPT).toBe('0');
     }
+    view.unmount();
+  });
+
+  it('reads pins once per poll cycle and passes them to both git calls', async () => {
+    vi.useFakeTimers();
+    const workspace = mkdtempSync(join(tmpdir(), 'book-git-status-pins-'));
+    roots.push(workspace);
+    mkdirSync(join(workspace, '.git'));
+
+    const view = render(<Harness workspace={workspace} />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toEqual(
+      hardenedGitArgs([
+        'config',
+        '--show-scope',
+        '-z',
+        '--get-regexp',
+        REPOSITORY_PROGRAM_CONFIG_PATTERN,
+      ]),
+    );
+    expect(calls[0].options.timeout).toBe(5_000);
+    expect(calls[0].options.windowsHide).toBe(true);
+
+    // Resolve the config read with a repository filter
+    calls[0].callback(null, 'local\0filter.cleaner.clean\nclean-cmd\0');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Now rev-parse should have been called with the pins from that one read
+    expect(calls).toHaveLength(2);
+    expect(calls[1].args).toEqual(
+      hardenedGitArgs([
+        '-c',
+        'filter.cleaner.clean=',
+        '-c',
+        'filter.cleaner.smudge=',
+        '-c',
+        'filter.cleaner.process=',
+        '-c',
+        'filter.cleaner.required=false',
+        'rev-parse',
+        '--abbrev-ref',
+        'HEAD',
+      ]),
+    );
+
+    // Resolve rev-parse
+    calls[1].callback(null, 'main\n');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Now status --short should have been called with the same pins, and NO second config read
+    expect(calls).toHaveLength(3);
+    expect(calls[2].args).toEqual(
+      hardenedGitArgs([
+        '-c',
+        'filter.cleaner.clean=',
+        '-c',
+        'filter.cleaner.smudge=',
+        '-c',
+        'filter.cleaner.process=',
+        '-c',
+        'filter.cleaner.required=false',
+        'status',
+        '--short',
+      ]),
+    );
+
     view.unmount();
   });
 });

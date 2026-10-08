@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execFileSync, type execFile as ExecFile } from 'child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { WORKSPACE_READ_ONLY_GIT_TOOLS } from '../permissions.js';
@@ -443,5 +451,87 @@ describe('hardening against a real git', () => {
     git(['config', 'core.fsmonitor', 'true'], repo);
     const result = await toolFor('GitStatus').execute({}, { workspaceRoot: repo, env: {} });
     expect(result.status).toBe('success');
+  });
+
+  it('fails closed when repository filter contains = in its name (Fix 1)', async () => {
+    const filterMarker = join(root, 'EQUALS_FILTER_RAN');
+    const filterScript = join(root, 'equals-filter.sh');
+    writeFileSync(filterScript, `#!/bin/sh\ntouch '${filterMarker.replace(/\\/g, '/')}'\ncat\n`);
+    chmodSync(filterScript, 0o755);
+
+    git(['config', 'filter.a=b.clean', filterScript.replace(/\\/g, '/')], repo);
+    writeFileSync(join(repo, '.gitattributes'), '* filter=a=b\n');
+    git(['add', '.gitattributes'], repo);
+    git(['commit', '-qm', 'attributes'], repo);
+
+    writeFileSync(join(repo, 'a.txt'), 'changed for equals filter test\n');
+    rmSync(filterMarker, { force: true });
+
+    const result = await toolFor('GitStatus').execute({}, { workspaceRoot: repo, env: {} });
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toContain(
+      "the repository's configuration defines a filter or merge driver named a=b, which Book cannot neutralize, so it will not run git here",
+    );
+    expect(existsSync(filterMarker)).toBe(false);
+  });
+
+  it('leaves no marker for GitStatus with an empty subsection filter (Fix 2)', async () => {
+    const filterMarker = join(root, 'EMPTY_FILTER_RAN');
+    const filterScript = join(root, 'empty-filter.sh');
+    writeFileSync(filterScript, `#!/bin/sh\ntouch '${filterMarker.replace(/\\/g, '/')}'\ncat\n`);
+    chmodSync(filterScript, 0o755);
+
+    const configPath = join(repo, '.git', 'config');
+    const existingConfig = readFileSync(configPath, 'utf8');
+    writeFileSync(
+      configPath,
+      `${existingConfig}\n[filter ""]\n\tclean = "${filterScript.replace(/\\/g, '/')}"\n`,
+      'utf8',
+    );
+    writeFileSync(join(repo, '.gitattributes'), '* filter=\n');
+    git(['add', '.gitattributes'], repo);
+    git(['commit', '-qm', 'empty filter attributes'], repo);
+
+    writeFileSync(join(repo, 'a.txt'), 'changed for empty filter test\n');
+    rmSync(filterMarker, { force: true });
+
+    const result = await toolFor('GitStatus').execute({}, { workspaceRoot: repo, env: {} });
+    expect(result.status).toBe('success');
+    expect(existsSync(filterMarker)).toBe(false);
+  });
+
+  it('runs operator clean-only filter and suppresses repository override using ctx.env (Fix 3 & process pin)', async () => {
+    const opMarker = join(root, 'OPERATOR_FILTER_RAN');
+    const repoMarker = join(root, 'REPO_FILTER_RAN');
+    const opScript = join(root, 'op-filter.sh');
+    const repoScript = join(root, 'repo-filter.sh');
+    writeFileSync(opScript, `#!/bin/sh\ntouch '${opMarker.replace(/\\/g, '/')}'\ncat\n`);
+    writeFileSync(repoScript, `#!/bin/sh\ntouch '${repoMarker.replace(/\\/g, '/')}'\ncat\n`);
+    chmodSync(opScript, 0o755);
+    chmodSync(repoScript, 0o755);
+
+    const globalConfigFile = join(root, 'global.gitconfig');
+    writeFileSync(
+      globalConfigFile,
+      `[filter "x"]\n\tclean = "${opScript.replace(/\\/g, '/')}"\n`,
+      'utf8',
+    );
+
+    git(['config', 'filter.x.clean', repoScript.replace(/\\/g, '/')], repo);
+    writeFileSync(join(repo, '.gitattributes'), '* filter=x\n');
+    git(['add', '.gitattributes'], repo);
+    git(['commit', '-qm', 'filter x attributes'], repo);
+
+    writeFileSync(join(repo, 'a.txt'), 'changed for op filter test\n');
+    rmSync(opMarker, { force: true });
+    rmSync(repoMarker, { force: true });
+
+    const result = await toolFor('GitDiff').execute(
+      {},
+      { workspaceRoot: repo, env: { GIT_CONFIG_GLOBAL: globalConfigFile } },
+    );
+    expect(result.status).toBe('success');
+    expect(existsSync(opMarker)).toBe(true);
+    expect(existsSync(repoMarker)).toBe(false);
   });
 });

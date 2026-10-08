@@ -1,10 +1,8 @@
-import { execFile } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { ReviewScope } from './types.js';
-import { buildChildEnv } from '../child-env.js';
-import { hardenedGitArgs, hardenedGitEnv, HARDENED_DIFF_ARGS } from '../tools/git.js';
-import { readRepositoryProgramPins } from '../tools/git-repository-programs.js';
+import { hardenedGitArgs, HARDENED_DIFF_ARGS } from '../tools/git.js';
+import { defaultGitRunner, readRepositoryProgramPins } from '../tools/git-repository-programs.js';
 
 interface GitResult {
   stdout: string;
@@ -35,28 +33,12 @@ const MAX_REVIEW_DIFF_BYTES = 20 * 1024 * 1024;
 async function git(
   workspace: string,
   args: string[],
+  pins: readonly string[],
   allowExitCodes: number[] = [],
 ): Promise<GitResult> {
-  const pins = await readRepositoryProgramPins(workspace);
-  return new Promise((resolvePromise, reject) => {
-    execFile(
-      'git',
-      hardenedGitArgs([...pins, ...args]),
-      {
-        cwd: workspace,
-        encoding: 'utf8',
-        maxBuffer: 50 * 1024 * 1024,
-        env: buildChildEnv(process.env, hardenedGitEnv()),
-      },
-      (error, stdout, stderr) => {
-        const code = typeof error?.code === 'number' ? error.code : error ? 1 : 0;
-        if (!error || allowExitCodes.includes(code)) {
-          resolvePromise({ stdout, stderr, code });
-          return;
-        }
-        reject(new Error(stderr.trim() || stdout.trim() || error.message));
-      },
-    );
+  return defaultGitRunner(hardenedGitArgs([...pins, ...args]), {
+    cwd: workspace,
+    allowExitCodes,
   });
 }
 
@@ -80,8 +62,12 @@ function normalizePath(workspace: string, raw: string): string {
   return local || '.';
 }
 
-async function resolveCommit(workspace: string, ref: string): Promise<string> {
-  return (await git(workspace, ['rev-parse', '--verify', `${ref}^{commit}`])).stdout.trim();
+async function resolveCommit(
+  workspace: string,
+  ref: string,
+  pins: readonly string[],
+): Promise<string> {
+  return (await git(workspace, ['rev-parse', '--verify', `${ref}^{commit}`], pins)).stdout.trim();
 }
 
 /**
@@ -101,9 +87,13 @@ function targetPath(scope: ReviewScope): string | undefined {
   return scope.target;
 }
 
-async function validatePath(workspace: string, path: string): Promise<void> {
+async function validatePath(
+  workspace: string,
+  path: string,
+  pins: readonly string[],
+): Promise<void> {
   if (existsSync(resolve(workspace, path))) return;
-  const tracked = await git(workspace, ['ls-files', '--cached', '--', path]);
+  const tracked = await git(workspace, ['ls-files', '--cached', '--', path], pins);
   if (tracked.stdout.trim()) return;
   throw new Error(`Review path does not exist or is not tracked: ${path}`);
 }
@@ -170,7 +160,8 @@ export async function resolveReviewTarget(
   if (scope.base) gitRef(scope.base);
   const rawPath = targetPath(scope);
   const path = rawPath ? normalizePath(workspace, rawPath) : undefined;
-  if (path && path !== '.') await validatePath(workspace, path);
+  const pins = await readRepositoryProgramPins(workspace);
+  if (path && path !== '.') await validatePath(workspace, path, pins);
   const pathArgs = path ? ['--', path] : [];
 
   if (scope.target?.includes('...')) {
@@ -182,28 +173,28 @@ export async function resolveReviewTarget(
     const [baseRef, headRef] = parts as [string, string];
     const base = gitRef(baseRef);
     const head = gitRef(headRef);
-    const baseSha = (await git(workspace, ['merge-base', base, head])).stdout.trim();
-    const headSha = await resolveCommit(workspace, head);
+    const baseSha = (await git(workspace, ['merge-base', base, head], pins)).stdout.trim();
+    const headSha = await resolveCommit(workspace, head, pins);
     const [files, diff] = await Promise.all([
-      git(workspace, [
-        'diff',
-        ...HARDENED_DIFF_ARGS,
-        '--name-only',
-        '-z',
-        baseSha,
-        headSha,
-        ...pathArgs,
-      ]),
-      git(workspace, [
-        'diff',
-        ...HARDENED_DIFF_ARGS,
-        '--binary',
-        '--full-index',
-        '--unified=5',
-        baseSha,
-        headSha,
-        ...pathArgs,
-      ]),
+      git(
+        workspace,
+        ['diff', ...HARDENED_DIFF_ARGS, '--name-only', '-z', baseSha, headSha, ...pathArgs],
+        pins,
+      ),
+      git(
+        workspace,
+        [
+          'diff',
+          ...HARDENED_DIFF_ARGS,
+          '--binary',
+          '--full-index',
+          '--unified=5',
+          baseSha,
+          headSha,
+          ...pathArgs,
+        ],
+        pins,
+      ),
     ]);
     return {
       kind: 'committed-range',
@@ -220,20 +211,28 @@ export async function resolveReviewTarget(
   }
 
   const baseSha = scope.base
-    ? (await git(workspace, ['merge-base', 'HEAD', scope.base])).stdout.trim()
-    : await resolveCommit(workspace, 'HEAD');
+    ? (await git(workspace, ['merge-base', 'HEAD', scope.base], pins)).stdout.trim()
+    : await resolveCommit(workspace, 'HEAD', pins);
   const [trackedFiles, trackedDiff, untrackedFiles] = await Promise.all([
-    git(workspace, ['diff', ...HARDENED_DIFF_ARGS, '--name-only', '-z', baseSha, ...pathArgs]),
-    git(workspace, [
-      'diff',
-      ...HARDENED_DIFF_ARGS,
-      '--binary',
-      '--full-index',
-      '--unified=5',
-      baseSha,
-      ...pathArgs,
-    ]),
-    git(workspace, ['ls-files', '--others', '--exclude-standard', '-z', ...pathArgs]),
+    git(
+      workspace,
+      ['diff', ...HARDENED_DIFF_ARGS, '--name-only', '-z', baseSha, ...pathArgs],
+      pins,
+    ),
+    git(
+      workspace,
+      [
+        'diff',
+        ...HARDENED_DIFF_ARGS,
+        '--binary',
+        '--full-index',
+        '--unified=5',
+        baseSha,
+        ...pathArgs,
+      ],
+      pins,
+    ),
+    git(workspace, ['ls-files', '--others', '--exclude-standard', '-z', ...pathArgs], pins),
   ]);
 
   const untracked = splitZeroDelimited(untrackedFiles.stdout);
