@@ -6,7 +6,8 @@ import type { InkClip, InkOutput } from './ink-output-cache.js';
 import { inkBuildDir } from './ink-renderer.js';
 
 /**
- * Culls Ink's drawing of transcript rows that lie wholly outside the viewport's clip.
+ * Culls Ink's drawing of transcript rows and straddling descendants that lie wholly outside the
+ * viewport's clip.
  *
  * The row cache in `ink-output-cache.ts` took the per-frame string building out of Ink's frame, but
  * the walk that visits every mounted node every frame — Ink's private `renderNodeToOutput` — was
@@ -14,17 +15,34 @@ import { inkBuildDir } from './ink-renderer.js';
  * cull). The virtual transcript keeps about one viewport of rows mounted above and below the view,
  * so most of that walk is spent on rows nobody can see: for each text node it squashes the text,
  * measures `widestLine` and wraps it, then records a write that `Output.get` throws away when it
- * lies outside the clip.
+ * lies outside the clip. Even after culling wholly offscreen rows, rows that straddle the viewport
+ * edge (e.g. long diffs or tool outputs) still accounted for 54% of writes landing outside the clip.
  *
  * The walk checks `yogaNode.getDisplay() === Yoga.DISPLAY_NONE` first and returns at once when it
  * is, so the cull installs exactly that: a mounted transcript row's yoga node gets an own
  * `getDisplay` that reports `DISPLAY_NONE` while the row's box lies wholly outside the innermost
- * clip of the walk in progress, and the node's real display otherwise. The cull is exact — a node
- * wholly outside the innermost vertical clip writes nothing `Output.get` keeps, because every
- * write of its subtree lies inside its box: the transcript uses no absolute positioning, and its
- * only nested clip is `VirtualTranscriptRow`'s own hold. Yoga layout is untouched — Yoga reads
- * display from its native style, not from this JavaScript method — so a culled row is still laid
- * out exactly as before; only its drawing is skipped.
+ * clip of the walk in progress, and the node's real display otherwise. When a registered node's
+ * `getDisplay` finds the node visible but straddling the innermost vertical clip (its box crosses
+ * `y1` or `y2`), it registers each of its child elements (`childNodes` with a `yogaNode`, text
+ * nodes included) through the same registrar, idempotently. Because Ink's walk queries
+ * `getDisplay` on a parent before walking its children, straddling children are culled in the exact
+ * same walk. Nodes wholly inside the clip register nothing (everything is visible), and culled
+ * nodes register nothing.
+ *
+ * The cull remains exact — it only ever reaches descendants of registered transcript rows, inside
+ * which there is no absolute positioning and no negative margin, and the only nested clip is
+ * `VirtualTranscriptRow`'s own hold, which as the innermost clip is what both the cull and
+ * `Output.get` read. A node wholly outside the innermost vertical clip writes nothing `Output.get`
+ * keeps. Yoga layout is untouched — Yoga reads display from its native style, not from this
+ * JavaScript method — so a culled node is still laid out exactly as before; only its drawing is
+ * skipped.
+ *
+ * Absolute tops are memoized per frame in a `WeakMap` from element to `{ frame, top }` so sibling
+ * elements avoid re-summing `getComputedTop()` up the ancestor chain. A frame counter advances
+ * whenever `Output.prototype.clip` is called on a different `Output` instance than the previous
+ * call (Ink builds a new `Output` for every frame). An element's absolute top is its own computed
+ * top plus its parent's memoized absolute top (a missing parent is 0; a link with no readable top
+ * leaves the cull undecided). Tops are recomputed when the frame counter advances.
  *
  * The clip state comes from wrapping `Output.prototype.clip` and `unclip`, which the walk calls in
  * walk order: one stack per `Output` (a `WeakMap`) of clips pushed and not yet popped, and the
@@ -53,6 +71,7 @@ export interface CullableYogaNode {
 export interface CullableElement {
   yogaNode?: CullableYogaNode | null;
   parentNode?: CullableElement | null;
+  childNodes?: readonly CullableElement[] | Iterable<CullableElement> | null;
 }
 
 /** The pieces of Ink's `Output` the cull wraps: the walk's clip push and pop, beside its `get`. */
@@ -114,16 +133,21 @@ export function createInkRenderCull(options: InkRenderCullOptions): InkRenderCul
   // The clips each Output has pushed and not yet popped, and the Output the walk last clipped.
   const clips = new WeakMap<InkOutput, InkClip[]>();
   let clippedLast: InkOutput | null = null;
+  let frame = 0;
+  const absoluteTops = new WeakMap<CullableElement, { frame: number; top: number | undefined }>();
 
   const clip = function (this: InkOutput, pushed: InkClip): void {
+    if (this !== clippedLast) {
+      frame++;
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
+      clippedLast = this;
+    }
     let stack = clips.get(this);
     if (stack === undefined) {
       stack = [];
       clips.set(this, stack);
     }
     stack.push(pushed);
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    clippedLast = this;
     originalClip.call(this, pushed);
   };
   Object.defineProperty(clip, INSTALLED_MARK, { value: true });
@@ -133,28 +157,39 @@ export function createInkRenderCull(options: InkRenderCullOptions): InkRenderCul
     originalUnclip.call(this);
   };
 
+  const getAbsoluteTop = (node: CullableElement): number | undefined => {
+    const cached = absoluteTops.get(node);
+    if (cached !== undefined && cached.frame === frame) {
+      return cached.top;
+    }
+    const nodeTop = node.yogaNode?.getComputedTop();
+    if (typeof nodeTop !== 'number') {
+      absoluteTops.set(node, { frame, top: undefined });
+      return undefined;
+    }
+    let parentTop = 0;
+    if (node.parentNode != null) {
+      const parentAbsoluteTop = getAbsoluteTop(node.parentNode);
+      if (parentAbsoluteTop === undefined) {
+        absoluteTops.set(node, { frame, top: undefined });
+        return undefined;
+      }
+      parentTop = parentAbsoluteTop;
+    }
+    const totalTop = parentTop + nodeTop;
+    absoluteTops.set(node, { frame, top: totalTop });
+    return totalTop;
+  };
+
   const cullWhenOffscreen = (element: CullableElement | null): void => {
-    if (element === null) return;
+    if (element === null || typeof element !== 'object') return;
     const yogaNode = element.yogaNode;
     if (!isCullableYogaNode(yogaNode)) return;
     if ((yogaNode as MarkedYogaNode & CullableYogaNode)[CULL_MARK] === true) return;
     // Read before the own property shadows it: for a yoga node the cull has not touched, this is
     // the method that reports the node's real display.
     const realDisplay = yogaNode.getDisplay;
-    // The walk's absolute y of the node: its own computed top plus every ancestor's, up the DOM
-    // `parentNode` chain — the same sum the walk accumulates as offsetY. A link without a readable
-    // top leaves the cull undecided, which is the safe direction.
-    const absoluteTop = (): number | undefined => {
-      let top = 0;
-      let node: CullableElement | null | undefined = element;
-      while (node) {
-        const nodeTop = node.yogaNode?.getComputedTop();
-        if (typeof nodeTop !== 'number') return undefined;
-        top += nodeTop;
-        node = node.parentNode;
-      }
-      return top;
-    };
+
     Object.defineProperty(yogaNode, 'getDisplay', {
       value: function (): number {
         const display = realDisplay.call(yogaNode);
@@ -166,10 +201,21 @@ export function createInkRenderCull(options: InkRenderCullOptions): InkRenderCul
         const { y1, y2 } = innermost;
         // No clip, or one that clips horizontally only, never decides a cull.
         if (typeof y1 !== 'number' || typeof y2 !== 'number') return display;
-        const top = absoluteTop();
+        const top = getAbsoluteTop(element);
         if (top === undefined) return display;
         const bottom = top + yogaNode.getComputedHeight();
-        return bottom <= y1 || top >= y2 ? displayNone : display;
+        if (bottom <= y1 || top >= y2) return displayNone;
+        const straddles = (top < y1 && bottom > y1) || (top < y2 && bottom > y2);
+        if (
+          straddles &&
+          element.childNodes &&
+          typeof (element.childNodes as Iterable<CullableElement>)[Symbol.iterator] === 'function'
+        ) {
+          for (const child of element.childNodes) {
+            cullWhenOffscreen(child);
+          }
+        }
+        return display;
       },
       configurable: true,
     });

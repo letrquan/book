@@ -158,6 +158,44 @@ describe('Ink renderer contract', () => {
     }
   });
 
+  it('culls lines of a tall transcript row straddling the viewport clip', async () => {
+    const outputPath = join(inkBuildDir(), 'output.js');
+    const outputModule = (await import(pathToFileURL(outputPath).href)) as {
+      default: ContractInkOutputConstructor;
+    };
+    const Output = outputModule.default;
+    const originalClip = Output.prototype.clip;
+    const originalUnclip = Output.prototype.unclip;
+    try {
+      const baselines = new Map<number, DrawnTranscript>();
+      for (const offset of CULL_OFFSETS) {
+        baselines.set(offset, await drawTallRowTranscript(Output, offset, false));
+      }
+      expect(
+        await installInkRenderCull(),
+        "Ink's private Output changed shape; update ink-render-cull.ts before VERIFIED_INK_VERSION.",
+      ).toBe(true);
+      for (const offset of CULL_OFFSETS) {
+        const baseline = baselines.get(offset)!;
+        const culled = await drawTallRowTranscript(Output, offset, true);
+        expect(baseline.frame, `offset ${offset} baseline not empty`).not.toBe('');
+        expect(baseline.frame.split('\n')[0], `offset ${offset} first line`).toContain(
+          `line ${offset}`,
+        );
+        expect(culled.frame, `offset ${offset}`).toBe(baseline.frame);
+        expect(baseline.rowsWritten.length).toBe(CULL_ROWS);
+        const expectedVisible = Array.from(
+          { length: CULL_CONTENT_HEIGHT },
+          (_, index) => `line ${offset + index}`,
+        );
+        expect(culled.rowsWritten, `offset ${offset}`).toEqual(expectedVisible);
+      }
+    } finally {
+      Output.prototype.clip = originalClip;
+      Output.prototype.unclip = originalUnclip;
+    }
+  });
+
   it('keeps a DISPLAY_NONE node from drawing while its sibling holds its position', async () => {
     const outputPath = join(inkBuildDir(), 'output.js');
     const outputModule = (await import(pathToFileURL(outputPath).href)) as {
@@ -316,6 +354,89 @@ async function drawTranscript(
     await new Promise((resolve) => setTimeout(resolve, 50));
     const frame = lastOutput;
     const rowsWritten = recordedWrites.filter((text) => text.startsWith('row '));
+    Output.prototype.write = originalWrite;
+    Output.prototype.get = originalGet;
+    app.unmount();
+    app.cleanup();
+    return {
+      frame,
+      rowsWritten,
+    };
+  } finally {
+    Output.prototype.write = originalWrite;
+    Output.prototype.get = originalGet;
+  }
+}
+
+function TallRowTranscript({ offset, culled }: { offset: number; culled: boolean }): ReactNode {
+  const lines: ReactNode[] = [];
+  for (let index = 0; index < CULL_ROWS; index++) {
+    lines.push(createElement(Text, { key: index }, `line ${index}`));
+  }
+  return createElement(
+    Box,
+    { height: CULL_CONTENT_HEIGHT, overflowY: 'hidden' },
+    createElement(
+      Box,
+      { marginTop: -offset, flexDirection: 'column' },
+      createElement(
+        Box,
+        {
+          flexDirection: 'column',
+          flexShrink: 0,
+          ref: (node: CullableElement | null) => {
+            if (node && culled) cullWhenOffscreen(node);
+          },
+        },
+        lines,
+      ),
+    ),
+  );
+}
+
+async function drawTallRowTranscript(
+  Output: ContractInkOutputConstructor,
+  offset: number,
+  culled: boolean,
+): Promise<DrawnTranscript> {
+  const stdoutWrites: string[] = [];
+  const stdout = makeStdout(stdoutWrites);
+  const stdin = makeStdin();
+  const recordedWrites: string[] = [];
+  const originalWrite = Output.prototype.write;
+  const originalGet = Output.prototype.get;
+  let lastOutput = '';
+  Output.prototype.write = function (
+    this: InkOutput,
+    x: number,
+    y: number,
+    text: string,
+    options: { transformers: InkTransformer[] },
+  ) {
+    recordedWrites.push(text);
+    return originalWrite.call(this, x, y, text, options);
+  };
+  Output.prototype.get = function (this: InkOutput) {
+    const frame = originalGet.call(this);
+    lastOutput = frame.output;
+    return frame;
+  };
+  try {
+    const app = render(createElement(TallRowTranscript, { offset, culled }), {
+      stdout,
+      stdin,
+      patchConsole: false,
+      interactive: true,
+      maxFps: 1000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    recordedWrites.length = 0;
+    stdoutWrites.length = 0;
+    lastOutput = '';
+    app.rerender(createElement(TallRowTranscript, { offset, culled }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const frame = lastOutput;
+    const rowsWritten = recordedWrites.filter((text) => text.startsWith('line '));
     Output.prototype.write = originalWrite;
     Output.prototype.get = originalGet;
     app.unmount();

@@ -71,6 +71,7 @@ function fakeYogaNode(top: number, height: number, display = DISPLAY_FLEX): Cull
 interface FakeRowElement extends CullableElement {
   yogaNode: CullableYogaNode;
   parentNode: CullableElement | null;
+  childNodes?: FakeRowElement[];
 }
 
 /** A row under a root box whose own top is zero, so the row's top is its absolute top. */
@@ -79,6 +80,24 @@ function row(top: number, height: number, display = DISPLAY_FLEX): FakeRowElemen
     yogaNode: fakeYogaNode(top, height, display),
     parentNode: { yogaNode: fakeYogaNode(0, 1), parentNode: null },
   };
+}
+
+function rowWithChildren(
+  top: number,
+  height: number,
+  children: { top: number; height: number }[],
+  display = DISPLAY_FLEX,
+): FakeRowElement {
+  const parent: FakeRowElement = {
+    yogaNode: fakeYogaNode(top, height, display),
+    parentNode: { yogaNode: fakeYogaNode(0, 1), parentNode: null },
+    childNodes: [],
+  };
+  parent.childNodes = children.map((c) => ({
+    yogaNode: fakeYogaNode(c.top, c.height),
+    parentNode: parent,
+  }));
+  return parent;
 }
 
 describe("culling rows against the walk's clips", () => {
@@ -199,6 +218,120 @@ describe("culling rows against the walk's clips", () => {
     };
     expect(() => cull.cullWhenOffscreen(partial)).not.toThrow();
     expect(Object.prototype.hasOwnProperty.call(partial.yogaNode, 'getDisplay')).toBe(false);
+  });
+
+  it('registers children of a parent straddling y1, culling those wholly above and keeping those crossing into the clip', () => {
+    const output = new FakeOutput();
+    output.clip({ y1: 10, y2: 20 });
+    // Parent top: 5, height: 10 -> absolute top: 5, bottom: 15. Straddles y1 (5 < 10 && 15 > 10).
+    // Child 0: top 0, height 4 -> absolute top: 5, bottom: 9 <= 10 -> wholly above y1.
+    // Child 1: top 4, height 4 -> absolute top: 9, bottom: 13 -> crossing into clip (9 < 20 && 13 > 10).
+    const parent = rowWithChildren(5, 10, [
+      { top: 0, height: 4 },
+      { top: 4, height: 4 },
+    ]);
+    const [childAbove, childCrossing] = parent.childNodes!;
+    cull.cullWhenOffscreen(parent);
+    expect(Object.prototype.hasOwnProperty.call(childAbove.yogaNode, 'getDisplay')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(childCrossing.yogaNode, 'getDisplay')).toBe(false);
+    // Walking parent calls its getDisplay first:
+    expect(parent.yogaNode.getDisplay()).toBe(DISPLAY_FLEX);
+    // In the same walk, child getDisplay calls:
+    expect(childAbove.yogaNode.getDisplay()).toBe(DISPLAY_NONE);
+    expect(childCrossing.yogaNode.getDisplay()).toBe(DISPLAY_FLEX);
+    output.unclip();
+  });
+
+  it('registers children of a parent straddling y2, keeping those crossing into the clip and culling those wholly below', () => {
+    const output = new FakeOutput();
+    output.clip({ y1: 10, y2: 20 });
+    // Parent top: 15, height: 10 -> absolute top: 15, bottom: 25. Straddles y2 (15 < 20 && 25 > 20).
+    // Child 0: top 1, height 3 -> absolute top: 16, bottom: 19 -> crossing into clip (16 < 20 && 19 > 10).
+    // Child 1: top 5, height 3 -> absolute top: 20, bottom: 23 -> wholly below y2 (20 >= 20).
+    const parent = rowWithChildren(15, 10, [
+      { top: 1, height: 3 },
+      { top: 5, height: 3 },
+    ]);
+    const [childCrossing, childBelow] = parent.childNodes!;
+    cull.cullWhenOffscreen(parent);
+    expect(parent.yogaNode.getDisplay()).toBe(DISPLAY_FLEX);
+    expect(childCrossing.yogaNode.getDisplay()).toBe(DISPLAY_FLEX);
+    expect(childBelow.yogaNode.getDisplay()).toBe(DISPLAY_NONE);
+    output.unclip();
+  });
+
+  it('registers none of the children when the parent is wholly inside the clip', () => {
+    const output = new FakeOutput();
+    output.clip({ y1: 10, y2: 20 });
+    // Parent top: 12, height: 6 -> absolute top: 12, bottom: 18 (12 >= 10 && 18 <= 20).
+    const parent = rowWithChildren(12, 6, [
+      { top: 0, height: 2 },
+      { top: 2, height: 2 },
+    ]);
+    const [child1, child2] = parent.childNodes!;
+    cull.cullWhenOffscreen(parent);
+    expect(parent.yogaNode.getDisplay()).toBe(DISPLAY_FLEX);
+    expect(Object.prototype.hasOwnProperty.call(child1.yogaNode, 'getDisplay')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(child2.yogaNode, 'getDisplay')).toBe(false);
+    output.unclip();
+  });
+
+  it('registers none of the children when the parent is culled', () => {
+    const output = new FakeOutput();
+    output.clip({ y1: 10, y2: 20 });
+    // Parent top: 2, height: 5 -> absolute top: 2, bottom: 7 <= 10 (culled wholly above).
+    const parent = rowWithChildren(2, 5, [
+      { top: 0, height: 2 },
+      { top: 2, height: 2 },
+    ]);
+    const [child1, child2] = parent.childNodes!;
+    cull.cullWhenOffscreen(parent);
+    expect(parent.yogaNode.getDisplay()).toBe(DISPLAY_NONE);
+    expect(Object.prototype.hasOwnProperty.call(child1.yogaNode, 'getDisplay')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(child2.yogaNode, 'getDisplay')).toBe(false);
+    output.unclip();
+  });
+
+  it("memoizes ancestors' computed tops within a frame and recomputes across frames", () => {
+    let ancestorTopReads = 0;
+    const ancestorYoga = fakeYogaNode(0, 1);
+    ancestorYoga.getComputedTop = () => {
+      ancestorTopReads++;
+      return 0;
+    };
+    const ancestor: FakeRowElement = {
+      yogaNode: ancestorYoga,
+      parentNode: null,
+    };
+    const parent = rowWithChildren(5, 10, [
+      { top: 0, height: 4 },
+      { top: 4, height: 4 },
+    ]);
+    parent.parentNode = ancestor;
+    const [child1, child2] = parent.childNodes!;
+
+    const output1 = new FakeOutput();
+    output1.clip({ y1: 10, y2: 20 });
+    cull.cullWhenOffscreen(parent);
+    cull.cullWhenOffscreen(child1);
+    cull.cullWhenOffscreen(child2);
+
+    // Ink's walk calls getDisplay on parent, then child1, then child2:
+    parent.yogaNode.getDisplay();
+    child1.yogaNode.getDisplay();
+    child2.yogaNode.getDisplay();
+
+    expect(ancestorTopReads).toBe(1);
+
+    // A new frame: Output.prototype.clip is called on a new Output instance:
+    const output2 = new FakeOutput();
+    output2.clip({ y1: 10, y2: 20 });
+
+    parent.yogaNode.getDisplay();
+    child1.yogaNode.getDisplay();
+    child2.yogaNode.getDisplay();
+
+    expect(ancestorTopReads).toBe(2);
   });
 });
 
