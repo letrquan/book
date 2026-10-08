@@ -27,6 +27,76 @@ All notable changes to this project are documented in this file.
   (median draw 5.7 ms to 3.2 ms) and over the wheel-down phase from 374 ms to 209 ms (median draw
   4.3 ms to 2.3 ms), stalls over 40 ms during wheel-up fell from 1.6 to 1.0 per run, and the worst
   stall per run from 50 ms to 41 ms at the median.
+- **A model the provider no longer serves is no longer reported as a rejected credential** (#387).
+  9router wraps an upstream 403 in its own 503 (`[route] [403]: Model is no longer available`),
+  which `classifyApiError` read through the quoted status as `auth` — so the run parked as
+  `credentials_rejected` and the message told the user to check `BOOK_API_KEY` for a key that was
+  fine. A plain 403 with the same retirement wording read the same way. A 403 or 404 whose body says
+  the model itself is gone — a retirement notice, a "please select another model", an OpenAI
+  `model_not_found` code, Anthropic's 404 `not_found_error` naming `model:`, or the upstream message
+  OpenRouter forwards in `metadata.raw` — now classifies as `model_unavailable`: the message keeps
+  the upstream detail, gives no API-key advice, and points at `--model` or `/model`. The read stays
+  tight: a 401 is always `auth` whatever its body says, a 403 "Invalid API key provided" or
+  "Forbidden" and a 404 "Not Found" keep their old readings, and the #383 capacity outage (a quoted
+  404 "No endpoints found" with a `(reset after …)` cooldown) is still a retryable `server_error`.
+- **The delegation latency test re-measures a failing verdict before it fails the run** (#390). The
+  Windows CI legs sometimes go through a few seconds in which every delegation cycle costs 0.6-3.9s while
+  the probe beside it and the child's own timer stay normal, and a re-run of the same commit measures
+  47-92ms. On those legs a failing round is now measured again, up to three rounds 3s apart within a 60s
+  budget: a round that passes decides the run, and with no passing round any failed round fails it, so a
+  regression still fails. Every other platform still decides on one round. Each printed sample also says
+  where its time went: before the child started, or after it finished.
+
+### Changed
+
+- **`model_unavailable` is a new `AgentTerminalReason` and stream-json `stopReason` value** (#387). A
+  change for SDK and stream-json consumers that switch over the reason set. A stream that ends with
+  it fails under `model_unavailable` and parks like `credentials_rejected` — nothing is wrong with
+  the work, a supervisor can wait for an operator to pick another model, and it is never re-issued.
+  The park branch's Notification hook now sends its own `kind: "model_unavailable"` instead of the
+  hard-coded `credentials_rejected`, so a retirement alarm does not read as a rejected credential.
+  When auto-compaction fails because the session's own model is unavailable, the failure is treated
+  as shared so a model-free (summary-less) checkpoint does not wipe the history before resume; a
+  distinct compact model that is unavailable still lets the model-free fallback follow.
+- **A stream may wait longer for its first delta when nothing yet says what kind of stream it is**
+  (#379). `retry.firstDeltaStallTimeoutMs` (default 120 s, range 5 s–30 min,
+  `BOOK_FIRST_DELTA_STALL_TIMEOUT_MS`) bounds the pause before a stream's first non-empty content,
+  tool-call or reasoning delta — a role-only chunk, an empty content string and a usage-only chunk do
+  not count — but only when the request sends no `reasoning_effort` and the model's catalog entry
+  does not settle effort: no entry at all, or one without an `effort` key, such as `{}`. A router
+  that buffers the model's whole thinking block sends a role-only first chunk and then silence for up
+  to about 80 s, which the 20 s chat ceiling read as `stream_stall` on a healthy request. The first
+  meaningful delta hands the stream back to the per-phase ceilings unchanged. An `effort: false`
+  entry, an explicit `--effort`, and a catalogued effort range behave exactly as before, and the
+  Anthropic path is untouched.
+
+### Security
+
+- **The sandbox binds the workspace's git directories read-only by default, closing the pointer-file redirect** (issue 373).
+  Inside the namespace every git directory of the workspace (`.git`, linked worktree admin directories,
+  and submodule git directories) is now bound read-only by default, closing the gap where a sandboxed command
+  could create `.git/commondir` to redirect the host's next git invocation. Discovered via `.git` files,
+  `commondir` files, `.git/worktrees/*`, and nested `.git/modules/*` (including multi-segment submodule paths).
+  Candidates must look like a git directory (`HEAD` exists, and either an `objects` directory or a `commondir`
+  file exists); pointers naming the workspace root or plain directories do not bind them read-only, and a
+  candidate canonicalising to the workspace root is refused. In default read-only mode, each ancestor directory
+  strictly between the workspace root and every protected mount is pinned with a writable self-bind
+  (`--bind <dir> <dir>`), so a pinned directory cannot be renamed or removed inside the sandbox (`EBUSY`).
+  `core.hooksPath` inside the workspace stays read-only in both modes, and git directories outside the workspace
+  are left alone. Sandboxed git writes (`git commit`, `git checkout`, `git add`, `git fetch`) fail by default
+  (a breaking behaviour change) with a diagnostic note explaining that the repository's git directory is
+  read-only inside the sandbox and directing the user to run outside or opt out. `git stash` in read-only mode
+  fails silently with exit 1 and no output. The new `sandbox.filesystem.allowGitWrites` setting (default `false`)
+  restores the previous behaviour when set to `true`: git directories stay writable, control files stay
+  protected per-file, and the pointer-file gap reopens. Pinning work tree directories is omitted in opt-out
+  mode so in-workspace worktree removal does not fail halfway, which leaves the parent rename hole open there.
+  Only a trusted layer (`~/.book/settings.json`, `--settings`) may set `allowGitWrites`: workspace layers may
+  only tighten it to `false`. An `allowWrite` opt-in on a git dir reopens what it names, but keeps control paths
+  strictly below it (`hooks/`, `config`, pointer files) read-only unless directly opted into. Any component on
+  the way to a protected mount, discovered git directory, or pointer target reached through a symlink in the
+  workspace is refused unless the symlink itself lives inside a present read-only directory mount or inside a
+  `denyWrite` / `denyRead` directory. Note that a sandboxed `git worktree remove` deletes the work tree and then
+  fails on its read-only admin directory; `git worktree prune` outside the sandbox cleans up.
 
 ## [0.3.0] - 2026-10-07
 

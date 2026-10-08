@@ -403,9 +403,9 @@ export async function* chatCompletionStream(
       if (reasoning) {
         // The model is reasoning, whatever the request could not say (#379), so
         // this phase waits out the thinking ceiling. Only this phase does.
-        if (retry.thinkingStallTimeoutMs) {
-          stallTimeoutMs = Math.max(stallTimeoutMs, retry.thinkingStallTimeoutMs);
-        }
+        stallTimeoutMs = retry.thinkingStallTimeoutMs
+          ? Math.max(startingStallTimeoutMs, retry.thinkingStallTimeoutMs)
+          : startingStallTimeoutMs;
         log.debug('stream reasoning', { len: reasoning.length });
         yield { type: 'reasoning', reasoning };
       }
@@ -484,6 +484,16 @@ export async function* chatCompletionStream(
   // most common way a run "just stops". A reasoning delta is that evidence
   // arriving late, so it promotes that phase to the thinking ceiling.
   //
+  // For a model nothing settles the question for — no `reasoning_effort` on the
+  // request, no catalog `effort` entry, not an `effort: false` one — the stream
+  // opens on the first-delta ceiling instead (#379 tail): a router that buffers
+  // the whole thinking block sends a role-only chunk and then stays silent for
+  // as long as the model thinks, up to about 80 s, which the chat ceiling reads
+  // as a fault. The first meaningful delta — non-empty content, a tool call, or
+  // reasoning — spends that grace and hands the stream to the per-phase logic
+  // below; a role-only chunk, an empty content string and a usage-only chunk do
+  // not.
+  //
   // A content or tool-call delta ends the thinking phase, and the ceiling goes
   // back to where it started. Keeping the promotion for the rest of the stream
   // would apply fifteen minutes to the answer phase, where a dead socket is the
@@ -495,7 +505,10 @@ export async function* chatCompletionStream(
     reasoningEnabled && retry.thinkingStallTimeoutMs
       ? Math.max(retry.streamStallTimeoutMs, retry.thinkingStallTimeoutMs)
       : retry.streamStallTimeoutMs;
-  let stallTimeoutMs = startingStallTimeoutMs;
+  const firstDeltaApplies = !reasoningEnabled && config.modelInfo?.effort !== false;
+  let stallTimeoutMs = firstDeltaApplies
+    ? Math.max(startingStallTimeoutMs, retry.firstDeltaStallTimeoutMs ?? 0)
+    : startingStallTimeoutMs;
 
   try {
     while (true) {

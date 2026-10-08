@@ -442,6 +442,7 @@ export async function runDoctorCommand(
   console.log('  Excluded commands: ' + settings.sandbox.excludedCommands.length);
   console.log('  Unsandboxed commands: ' + policy.unsandboxedCommands);
   console.log('  Auto-allow Bash: ' + policy.autoAllowBash);
+  console.log('  Git directories: ' + policy.gitDirectories);
   // The loader drops every `sandbox.*` key a workspace layer supplied in order
   // to *loosen* the policy (#373), and a silently dropped key is
   // indistinguishable from a setting that does nothing. The list is computed

@@ -52,6 +52,7 @@ describe('settings schema defaults', () => {
       allowWrite: ['/tmp'],
       denyWrite: [],
       denyRead: [],
+      allowGitWrites: false,
     });
     expect(parsed.sandbox.network).toEqual({ allowedDomains: [], deniedDomains: [] });
     expect(parsed.memory.extraction).toEqual({
@@ -179,6 +180,17 @@ describe('settings schema rejection', () => {
       'hooks.SessionStart.0.command',
     ]);
     expect(issuePaths({ agents: { checks: { unit: [] } } })).toEqual(['agents.checks.unit']);
+  });
+
+  it('defaults and bounds the first-delta stall ceiling (#379)', () => {
+    expect(bookSettingsSchema.parse({}).retry.firstDeltaStallTimeoutMs).toBe(120_000);
+    expect(issuePaths({ retry: { firstDeltaStallTimeoutMs: 4_999 } })).toEqual([
+      'retry.firstDeltaStallTimeoutMs',
+    ]);
+    expect(issuePaths({ retry: { firstDeltaStallTimeoutMs: 1_800_001 } })).toEqual([
+      'retry.firstDeltaStallTimeoutMs',
+    ]);
+    expect(issuePaths({ retry: { firstDeltaStallTimeoutMs: 1_800_000 } })).toEqual([]);
   });
 
   it('validates record values under string keys', () => {

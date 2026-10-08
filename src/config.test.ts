@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   applyModelDefaults,
   clampEffortToCatalog,
+  compactsOnSessionModel,
   freezeAgentConfig,
   loadConfig,
   resolveCompactModelConfig,
@@ -64,11 +65,33 @@ describe('loadConfig retry defaults', () => {
     expect(config.retry.maxAttempts).toBe(10);
     expect(config.retry.requestTimeoutMs).toBe(600000);
     expect(config.retry.streamStallTimeoutMs).toBe(20000);
+    expect(config.retry.firstDeltaStallTimeoutMs).toBe(120000);
     expect(config.retry.toolRetries).toBe(1);
     expect(config.retry.watchdog).toBe(false);
     expect(config.retry.baseDelayMs).toBe(1000);
     expect(config.retry.maxDelayMs).toBe(30000);
     expect(config.retry.totalBudgetMs).toBe(0);
+  });
+
+  it('overrides and clamps firstDeltaStallTimeoutMs (#379)', () => {
+    process.env.BOOK_FIRST_DELTA_STALL_TIMEOUT_MS = '300000';
+    expect(loadConfig(workspace, { noSettings: true }).retry.firstDeltaStallTimeoutMs).toBe(300000);
+
+    // The same range the settings schema enforces: 5 s to 30 min.
+    process.env.BOOK_FIRST_DELTA_STALL_TIMEOUT_MS = '100';
+    expect(loadConfig(workspace, { noSettings: true }).retry.firstDeltaStallTimeoutMs).toBe(5000);
+    process.env.BOOK_FIRST_DELTA_STALL_TIMEOUT_MS = '99999999';
+    expect(loadConfig(workspace, { noSettings: true }).retry.firstDeltaStallTimeoutMs).toBe(
+      1_800_000,
+    );
+  });
+
+  it('loads firstDeltaStallTimeoutMs from settings.json (#379)', () => {
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ retry: { firstDeltaStallTimeoutMs: 240000 } }),
+    );
+    expect(loadConfig(workspace).retry.firstDeltaStallTimeoutMs).toBe(240000);
   });
 });
 
@@ -939,6 +962,41 @@ describe('loadConfig provider registry', () => {
     // A level that was chosen still counts on the uncatalogued compact model.
     const chosen = resolveCompactModelConfig({ ...config, effortChosen: true });
     expect(chosen).toMatchObject({ effort: 'medium', effortExplicit: true, effortChosen: true });
+  });
+
+  it('determines whether compaction runs on the session model (#399)', () => {
+    const base = defaultConfig({
+      model: 'space-bunny-alpha',
+      modelSelection: '9router/commandcode/space-bunny-alpha',
+    });
+    // Unset compact model: session model
+    expect(compactsOnSessionModel(base)).toBe(true);
+
+    // Matches bare model name: session model
+    expect(compactsOnSessionModel({ ...base, compactModel: 'space-bunny-alpha' })).toBe(true);
+
+    // Matches provider-prefixed selection: session model
+    expect(
+      compactsOnSessionModel({
+        ...base,
+        compactModel: '9router/commandcode/space-bunny-alpha',
+      }),
+    ).toBe(true);
+
+    // Configured via settings.compactModel matching selection: session model
+    expect(
+      compactsOnSessionModel({
+        ...base,
+        compactModel: undefined,
+        settings: {
+          ...base.settings,
+          compactModel: '9router/commandcode/space-bunny-alpha',
+        },
+      }),
+    ).toBe(true);
+
+    // Distinct compact model: not session model
+    expect(compactsOnSessionModel({ ...base, compactModel: 'other/compact-model' })).toBe(false);
   });
 
   it('sends an effort only when a level was chosen or the catalog lists it', () => {

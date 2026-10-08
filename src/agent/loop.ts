@@ -37,6 +37,7 @@ import {
 } from './compact.js';
 import { maskAtGate, maskBeforeCompacting } from './tool-output-masking.js';
 import { hasDeclaredContextWindow, resolveContextLimit, resolveModelKey } from '../models.js';
+import { compactsOnSessionModel } from '../config.js';
 import {
   createModelWindowStore,
   LEARNED_WINDOW_SAFETY_MARGIN,
@@ -898,14 +899,23 @@ export async function runAgentLoop(
     /**
      * Whether a failed model compaction may be followed by one without the model. Only a failure
      * of the reducer's own request qualifies: a cancel, a run budget that refuses any model call,
-     * or a failure the main request would share (a rejected key, an outage, a rate limit) leaves
-     * the history alone, since the request would fail after the degraded checkpoint anyway.
+     * or a failure the main request would share (a rejected key, an outage, a rate limit, or the
+     * session's own model being unavailable) leaves the history alone, since the request would
+     * fail after the degraded checkpoint anyway.
      */
+    const isSharedFailure = (providerCode?: string): boolean => {
+      if (!providerCode) return false;
+      if (SHARED_FAILURE_CODES.has(providerCode)) return true;
+      if (providerCode === 'model_unavailable') {
+        return compactsOnSessionModel(config);
+      }
+      return false;
+    };
     const modelFreeMayFollow = (result: CompactResult): boolean =>
       result.status === 'failed' &&
       result.reason !== 'aborted' &&
       result.reason !== 'budget-overflow' &&
-      !(result.providerCode !== undefined && SHARED_FAILURE_CODES.has(result.providerCode));
+      !isSharedFailure(result.providerCode);
     /**
      * Commit a prepared compaction against the history as it stands. Returns
      * true when history was replaced; false when there was nothing prepared,
@@ -2144,23 +2154,29 @@ export async function runAgentLoop(
                         message: streamError,
                         providerCode: streamErrorCode,
                       })
-                    : streamErrorCode === 'auth' || streamErrorCode === 'quota'
-                      ? createTerminalOutcome('failed', 'credentials_rejected', {
+                    : streamErrorCode === 'model_unavailable'
+                      ? createTerminalOutcome('failed', 'model_unavailable', {
                           partialOutput: hasPartialOutput(),
                           message: streamError,
                           providerCode: streamErrorCode,
                         })
-                      : streamErrorCode === 'output_cap'
-                        ? createTerminalOutcome('failed', 'output_cap', {
+                      : streamErrorCode === 'auth' || streamErrorCode === 'quota'
+                        ? createTerminalOutcome('failed', 'credentials_rejected', {
                             partialOutput: hasPartialOutput(),
                             message: streamError,
                             providerCode: streamErrorCode,
                           })
-                        : createTerminalOutcome('failed', 'provider_error', {
-                            partialOutput: hasPartialOutput(),
-                            message: streamError,
-                            providerCode: streamErrorCode,
-                          });
+                        : streamErrorCode === 'output_cap'
+                          ? createTerminalOutcome('failed', 'output_cap', {
+                              partialOutput: hasPartialOutput(),
+                              message: streamError,
+                              providerCode: streamErrorCode,
+                            })
+                          : createTerminalOutcome('failed', 'provider_error', {
+                              partialOutput: hasPartialOutput(),
+                              message: streamError,
+                              providerCode: streamErrorCode,
+                            });
 
         // A transport fault is not a failure of the work. Everything needed to send
         // the turn again is already committed: the partial assistant message was
@@ -2242,8 +2258,10 @@ export async function runAgentLoop(
         }
 
         // A parked run is not a failed one: nothing is wrong with the work, it
-        // needs an operator. Escalate so a supervisor can wait for a new key
-        // rather than tear the objective down.
+        // needs an operator. Escalate so a supervisor can wait for a new key —
+        // or, for a retired model (#387), for an operator to pick another —
+        // rather than tear the objective down. The kind is the reason itself,
+        // so a retirement alarm does not read as a rejected credential.
         if (terminalRecovery(streamOutcome) === 'park' && !options?.isSubagent) {
           runHooks(
             config.settings.hooks.Notification,
@@ -2252,7 +2270,7 @@ export async function runAgentLoop(
               workspace: config.workspace,
               event: 'Notification',
               severity: 'alarm',
-              kind: 'credentials_rejected',
+              kind: streamOutcome.reason,
               message: streamError,
             },
             { onHookEvent: callbacks.onHookEvent },

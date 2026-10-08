@@ -66,6 +66,12 @@ describe('terminalRecovery', () => {
     expect(recoveryFor('credentials_rejected')).toBe('park');
   });
 
+  it('parks on a retired or unknown model instead of re-issuing or ending', () => {
+    // Nothing is wrong with the work; an operator has to pick another model.
+    // Re-issuing would reproduce it, and the park lets a supervisor wait.
+    expect(recoveryFor('model_unavailable')).toBe('park');
+  });
+
   it('never re-issues a genuine end', () => {
     // Re-sending these either reproduces the same result or, for the budget,
     // spends past the cap that exists to stop it.

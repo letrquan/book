@@ -55,6 +55,12 @@ export interface ShellStartOptions {
   workdir: string;
   env: NodeJS.ProcessEnv;
   sandboxed: boolean;
+  /**
+   * The sandbox's git-dir mode (issue 373): true binds every git directory of the
+   * workspace read-only, which is what the failed `git` command's note describes.
+   * Persisted with the spec so a restored job still reports its own note.
+   */
+  gitDirReadOnly?: boolean;
   title?: string;
   notify?: BackgroundShellNotify;
   timeoutMs?: number;
@@ -80,6 +86,7 @@ export interface ShellAdoptOptions {
   effectiveCommand: string;
   workdir: string;
   sandboxed: boolean;
+  gitDirReadOnly?: boolean;
   title?: string;
   /** When the command really started, not when it was adopted. */
   startedAt?: number;
@@ -303,6 +310,7 @@ export class ShellJobManager {
       completionDeliveredSequence: 0,
       startedAt: Date.now(),
       sandboxed: options.sandboxed,
+      gitDirReadOnly: options.gitDirReadOnly,
       timeoutMs: options.timeoutMs,
       deadlineAt: options.timeoutMs ? Date.now() + options.timeoutMs : undefined,
       parentSessionId: options.parentSessionId,
@@ -387,6 +395,7 @@ export class ShellJobManager {
       // only visible difference, and an adopted command that claims to be new is a lie.
       startedAt: options.startedAt ?? Date.now(),
       sandboxed: options.sandboxed,
+      gitDirReadOnly: options.gitDirReadOnly,
       parentSessionId: options.parentSessionId,
       rootRunId: options.rootRunId,
       parentRunId: options.parentRunId,
@@ -586,6 +595,7 @@ export class ShellJobManager {
       workdir: options.workdir,
       env: options.envOverrides ?? {},
       sandboxed: options.sandboxed,
+      gitDirReadOnly: options.gitDirReadOnly,
       notify: options.notify ?? 'ui',
       timeoutMs: options.timeoutMs,
       parentSessionId: options.parentSessionId,
@@ -642,6 +652,7 @@ export class ShellJobManager {
       completionDeliveredSequence: 0,
       startedAt: Date.now(),
       sandboxed: options.sandboxed,
+      gitDirReadOnly: options.gitDirReadOnly,
       timeoutMs: options.timeoutMs,
       deadlineAt: options.timeoutMs ? Date.now() + options.timeoutMs : undefined,
       parentSessionId: options.parentSessionId,
@@ -827,6 +838,7 @@ export class ShellJobManager {
       status: state.status,
       notify: state.notify,
       sandboxed: state.sandboxed,
+      gitDirReadOnly: state.gitDirReadOnly,
       runnerPid: state.runnerPid,
       pid: state.childPid,
       startedAt: state.startedAt,

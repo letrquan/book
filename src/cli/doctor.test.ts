@@ -121,6 +121,21 @@ describe('runDoctorCommand sandbox policy', () => {
     expect(output).toMatch(/Auto-allow Bash: off/);
   });
 
+  it('reports git directories as read-only by default and writable when allowGitWrites is true in user settings', async () => {
+    writeSettings({ enabled: false });
+
+    let output = await doctorOutput();
+    expect(output).toContain(
+      'Git directories: read-only (sandbox.filesystem.allowGitWrites=false)',
+    );
+
+    writeUserSettings({ sandbox: { filesystem: { allowGitWrites: true } } });
+    output = await doctorOutput();
+    expect(output).toContain(
+      'Git directories: writable; hooks, config and pointer files read-only (sandbox.filesystem.allowGitWrites=true)',
+    );
+  });
+
   it('reports auto-allow as on when the sandbox is active and nothing is adjudicated', async () => {
     writeUserSettings({ sandbox: { enabled: true } });
 
@@ -234,6 +249,15 @@ describe('runDoctorCommand ignored workspace sandbox keys', () => {
     expect(output).toContain('set it in ~/.book/settings.json or pass --settings');
     // A key that is honoured is not reported as ignored.
     expect(output).not.toMatch(/Ignored from \S+ sandbox\.filesystem\.denyRead/);
+  });
+
+  it('reports allowGitWrites: true from a workspace file as ignored', async () => {
+    writeSettings({ filesystem: { allowGitWrites: true } });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('sandbox.filesystem.allowGitWrites=true');
+    expect(output).toContain('workspace settings may only tighten the sandbox');
   });
 
   /**

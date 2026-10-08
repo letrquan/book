@@ -8251,6 +8251,107 @@ describe('the last-resort compaction, review round 2 (#238, #244)', () => {
     expect(errors[0]).toContain('Request is too large for');
   });
 
+  it('does not compact without the model when the session model itself is unavailable (#399)', async () => {
+    const calls = { count: 0 };
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) =>
+        requestHints?.deterministic
+          ? { ...compactedForRetry(), replacementHistory: resultHistory(60, 6_000) }
+          : {
+              status: 'failed' as const,
+              reason: 'provider-error' as const,
+              error: 'API Error: 503 Space Bunny Alpha is no longer available.',
+              providerCode: 'model_unavailable',
+            },
+    );
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ ...smallWindow, model: 'space-bunny-alpha' }),
+      createRegistry(),
+      'continue',
+      resultHistory(60, 6_000),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    // Compaction ran on the session's own model; modelFreeMayFollow is false,
+    // so no second (deterministic) compaction is called.
+    expect(compact).toHaveBeenCalledOnce();
+    expect(calls.count).toBe(0);
+  });
+
+  it('does not compact without the model when compactModel matches modelSelection (#399)', async () => {
+    const calls = { count: 0 };
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) =>
+        requestHints?.deterministic
+          ? { ...compactedForRetry(), replacementHistory: resultHistory(60, 6_000) }
+          : {
+              status: 'failed' as const,
+              reason: 'provider-error' as const,
+              error: 'API Error: 503 Space Bunny Alpha is no longer available.',
+              providerCode: 'model_unavailable',
+            },
+    );
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig({
+        ...smallWindow,
+        model: 'space-bunny-alpha',
+        modelSelection: '9router/commandcode/space-bunny-alpha',
+        compactModel: '9router/commandcode/space-bunny-alpha',
+      }),
+      createRegistry(),
+      'continue',
+      resultHistory(60, 6_000),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    // compactModel matches modelSelection: same session model, so modelFreeMayFollow
+    // is false and no second (deterministic) compaction is called.
+    expect(compact).toHaveBeenCalledOnce();
+    expect(calls.count).toBe(0);
+  });
+
+  it('allows model-free compaction when a distinct compact model is unavailable (#399)', async () => {
+    const calls = { count: 0 };
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) =>
+        requestHints?.deterministic
+          ? { ...compactedForRetry(), replacementHistory: resultHistory(60, 6_000) }
+          : {
+              status: 'failed' as const,
+              reason: 'provider-error' as const,
+              error: 'API Error: 503 Compact model is no longer available.',
+              providerCode: 'model_unavailable',
+            },
+    );
+    const errors: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig({
+        ...smallWindow,
+        model: 'session-model',
+        compactModel: 'other-compact-model',
+      }),
+      createRegistry(),
+      'continue',
+      resultHistory(60, 6_000),
+      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+      'auto',
+      { provider: countingProvider(calls), isNewSession: false },
+    );
+
+    // Distinct compact model: modelFreeMayFollow is true, so deterministic
+    // compaction is attempted (compact called twice).
+    expect(compact).toHaveBeenCalledTimes(2);
+  });
+
   it('says the model-free checkpoint was still too large, not the reducer error', async () => {
     const calls = { count: 0 };
     const compact = vi.fn(
