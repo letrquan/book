@@ -28,9 +28,25 @@ import { AgentStore } from './store.js';
  * harness's own store does, timed on the same cycle, so a machine doing that work
  * slowly raises its own ceiling — while on a quiet machine the absolute ceiling is
  * still the binding one, which is where a regression is caught.
+ *
+ * A verdict that fails is measured again on fresh rounds only on the Windows CI legs, where the
+ * slow stretches were seen and where `overheadCeilingMs` already loosens its ceiling. On #390's run
+ * (main 16a3b52, Windows Node 24) every cycle cost 676-1608ms raw while the probe beside it read
+ * 15ms and the child's timer fired on time, and a re-run of the same job on the same commit measured
+ * 47-92ms; a PR-branch run on the same leg had two consecutive cycles cost 3902ms and 3440ms beside
+ * 11ms probes. So on those legs a run is up to three rounds settled apart in time: a round that
+ * passes decides, a run with no passing round fails if any round failed, and it is inconclusive
+ * only when no round could measure. New rounds stop at a 60s budget, so a long slow period ends in
+ * a verdict rather than a test timeout, and a regression fails every round so a quiet machine catches
+ * it as sharply as before.
  */
 
 const tempRoots: string[] = [];
+
+function removeTempRoots(): void {
+  for (const root of tempRoots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
+}
+
 /**
  * No lock back-off and no fsync. Every persisted write in a delegation fsyncs
  * its lock, its temp file and the directory, and what that costs is the disk's
@@ -52,7 +68,7 @@ function tempRoot(): string {
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  for (const root of tempRoots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
+  removeTempRoots();
 });
 
 /** Roughly a persisted agent record's size, so a probe writes about as much as the store does. */
@@ -92,13 +108,28 @@ function measureProbeMs(): number {
   }
 }
 
-/** Wall-clock breakdown of a single spawn -> run -> wait -> acknowledge cycle. */
-async function measureRoundTrip(childRunMs: number): Promise<{
-  roundTripMs: number;
+/**
+ * One cycle's numbers: what the delegation cost, what the machine was doing to the child's own
+ * timer while it ran, and what the machine's file work cost around it.
+ */
+interface DelegationSample {
   overheadMs: number;
   /** How late the child's own timer fired: the machine's stall, measured on the same cycle. */
   stallMs: number;
-}> {
+  /** The same-cycle cost of `measureProbeMs()`: this machine's speed, at this moment. */
+  probeMs: number;
+  /** From just before the spawn to the start of the child's own run. */
+  startupMs?: number;
+  /** From the end of the child's own run to the end of the round trip. */
+  wrapUpMs?: number;
+}
+
+/** Wall-clock breakdown of a single spawn -> run -> wait -> acknowledge cycle. */
+async function measureRoundTrip(childRunMs: number): Promise<
+  Pick<DelegationSample, 'overheadMs' | 'stallMs' | 'startupMs' | 'wrapUpMs'> & {
+    roundTripMs: number;
+  }
+> {
   const root = tempRoot();
   const bookHome = tempRoot();
   vi.stubEnv('BOOK_HOME', bookHome);
@@ -111,13 +142,17 @@ async function measureRoundTrip(childRunMs: number): Promise<{
     // Stands in for the sidekick's model turn. Fixed and known, so it subtracts
     // cleanly and what remains is attributable to the harness alone.
     runLoop: async (_childConfig, _registry, _prompt, history) => {
+      childRunStartedAtMs = Date.now();
       const startedAt = Date.now();
       await new Promise((resolve) => setTimeout(resolve, childRunMs));
       stallMs = Math.max(0, Date.now() - startedAt - childRunMs);
+      childRunEndedAtMs = Date.now();
       return history;
     },
   });
   let stallMs = 0;
+  let childRunStartedAtMs: number | undefined;
+  let childRunEndedAtMs: number | undefined;
 
   try {
     const startedAt = Date.now();
@@ -130,11 +165,28 @@ async function measureRoundTrip(childRunMs: number): Promise<{
     if (['completed', 'failed', 'stopped', 'interrupted'].includes(completed.status)) {
       await manager.acknowledgeCompletion(`${completed.id}:${completed.completionSequence ?? 0}`);
     }
-    const roundTripMs = Date.now() - startedAt;
-    return { roundTripMs, overheadMs: Math.max(0, roundTripMs - childRunMs), stallMs };
+    const endedAt = Date.now();
+    const roundTripMs = endedAt - startedAt;
+    // The child's run wraps the two ends of the cycle, so the split says where a slow round trip
+    // spent its time: before the child ran, or after it finished.
+    return {
+      roundTripMs,
+      overheadMs: Math.max(0, roundTripMs - childRunMs),
+      stallMs,
+      startupMs:
+        childRunStartedAtMs === undefined
+          ? undefined
+          : Math.max(0, childRunStartedAtMs - startedAt),
+      wrapUpMs:
+        childRunEndedAtMs === undefined ? undefined : Math.max(0, endedAt - childRunEndedAtMs),
+    };
   } finally {
     manager.dispose();
   }
+}
+
+function onWindowsCi(): boolean {
+  return process.platform === 'win32' && Boolean(process.env.CI);
 }
 
 /**
@@ -147,8 +199,7 @@ async function measureRoundTrip(childRunMs: number): Promise<{
  * which is what #367 was about, and a machine that is not slow keeps this one binding.
  */
 function overheadCeilingMs(childRunMs: number): number {
-  const windowsCi = process.platform === 'win32' && Boolean(process.env.CI);
-  return windowsCi ? childRunMs * 2.5 : childRunMs;
+  return onWindowsCi() ? childRunMs * 2.5 : childRunMs;
 }
 
 /**
@@ -173,18 +224,6 @@ const STALL_TOLERANCE_MS = 100;
  * one that binds, and the relative half only takes over on a machine whose file work has gone slow.
  */
 const PROBE_CEILING_RATIO = 5;
-
-/**
- * One cycle's numbers: what the delegation cost, what the machine was doing to the child's own
- * timer while it ran, and what the machine's file work cost around it.
- */
-interface DelegationSample {
-  overheadMs: number;
-  /** How late the child's own timer fired: the machine's stall, measured on the same cycle. */
-  stallMs: number;
-  /** The same-cycle cost of `measureProbeMs()`: this machine's speed, at this moment. */
-  probeMs: number;
-}
 
 /** The absolute half of the ceilings, so the judge can be exercised without measuring anything. */
 interface DelegationCeilings {
@@ -212,17 +251,28 @@ function ceilingFor(absoluteCeilingMs: number, probeMs: number): { ms: number; w
 
 /**
  * The samples as they were taken, each paired with the probe that ran beside it: `overheadMs@probeMs`,
- * and `~stallMs` when the child's own timer was late. Sorting the two numbers separately would lose
+ * and `~stallMs` when the child's own timer was late. A sample measured with the startup and wrap-up
+ * split carries it as `[startupMs+wrapUpMs]`, so a slow sample says which end of the round trip ate
+ * the time; samples without the split are unchanged. Sorting the two numbers separately would lose
  * the pairing, and the pairing is the whole finding — whether an expensive sample came with a slow
  * machine or with a slow harness.
  */
 function describeSamples(samples: DelegationSample[]): string {
   return samples
-    .map(
-      (sample) =>
-        `${sample.overheadMs}@${sample.probeMs}${sample.stallMs > 0 ? `~${sample.stallMs}` : ''}`,
-    )
+    .map((sample) => {
+      let breakdown = '';
+      if (sample.startupMs !== undefined) {
+        breakdown = `[${sample.startupMs}+${sample.wrapUpMs !== undefined ? sample.wrapUpMs : '?'}]`;
+      }
+      return `${sample.overheadMs}@${sample.probeMs}${sample.stallMs > 0 ? `~${sample.stallMs}` : ''}${breakdown}`;
+    })
     .join(' ');
+}
+
+/** What one round's judgement is: its verdict and the reason the judge gave for it. */
+interface DelegationVerdict {
+  verdict: 'pass' | 'fail' | 'inconclusive';
+  reason: string;
 }
 
 /**
@@ -239,7 +289,7 @@ function judgeDelegation(
   samples: DelegationSample[],
   childRunMs: number,
   ceilings: DelegationCeilings,
-): { verdict: 'pass' | 'fail' | 'inconclusive'; reason: string } {
+): DelegationVerdict {
   const context = describeSamples(samples);
 
   for (const sample of samples) {
@@ -277,6 +327,98 @@ function judgeDelegation(
     verdict: 'pass',
     reason: `best raw overhead ${best.overheadMs}ms under the ${bestCeiling.ms}ms ceiling from ${bestCeiling.why}, every sample under its ceiling (worst net ${worstNet}ms of ${ceilings.worstCeilingMs}ms absolute) (${context})`,
   };
+}
+
+/** What the rounds helper adds to a round so the run can print that round's own numbers. */
+interface RoundMeasurement extends DelegationVerdict {
+  line: string;
+}
+
+/** The knobs the loop's own tests turn, with the real defaults otherwise. */
+interface JudgeOverRoundsOptions {
+  /** Rounds allowed. */
+  limit?: number;
+  /** Pause before a fresh round. */
+  settleMs?: number;
+  /** No new round after this long since the first began. */
+  budgetMs?: number;
+  /** The timer, injectable for tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** The clock, injectable for tests. */
+  now?: () => number;
+  /** The printer, injectable for tests. */
+  log?: (message: string) => void;
+}
+
+/** How many rounds a run is allowed before a fail verdict is believed. */
+const MEASUREMENT_ROUNDS = onWindowsCi() ? 3 : 1;
+
+/** How long to let the machine settle between one failing round and the next fresh one. */
+const ROUND_SETTLE_MS = 3_000;
+
+/** Time limit from the start of the first round after which no new round may start. */
+const ROUNDS_BUDGET_MS = 60_000;
+
+/**
+ * Decide a run out of its rounds.
+ *
+ * If any round passed, the first passing round decides. Otherwise, if any round failed, the run
+ * fails and carries every round's reason. Only when every round was inconclusive does the run
+ * judge inconclusive.
+ */
+function judgeRounds(rounds: DelegationVerdict[], limit: number): DelegationVerdict {
+  const passingIndex = rounds.findIndex((judged) => judged.verdict === 'pass');
+  if (passingIndex >= 0) {
+    const judged = rounds[passingIndex];
+    return {
+      verdict: 'pass',
+      reason: `round ${passingIndex + 1}/${limit}: ${judged.reason}`,
+    };
+  }
+  const hasFailed = rounds.some((judged) => judged.verdict === 'fail');
+  const reasons = rounds.map((judged, round) => `round ${round + 1}: ${judged.reason}`).join('; ');
+  if (hasFailed) {
+    return {
+      verdict: 'fail',
+      reason: reasons,
+    };
+  }
+  return {
+    verdict: 'inconclusive',
+    reason: reasons,
+  };
+}
+
+/**
+ * The run the rounds are for: measure round by round, judge each one as it is taken, stop at the
+ * first round that passes, and settle between rounds so a slow period has time to end.
+ */
+async function judgeOverRounds(
+  measureRound: () => Promise<RoundMeasurement>,
+  options: JudgeOverRoundsOptions = {},
+): Promise<DelegationVerdict> {
+  const limit = options.limit ?? MEASUREMENT_ROUNDS;
+  const settleMs = options.settleMs ?? ROUND_SETTLE_MS;
+  const budgetMs = options.budgetMs ?? ROUNDS_BUDGET_MS;
+  const sleep =
+    options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const now = options.now ?? Date.now;
+  const log = options.log ?? console.log;
+
+  const rounds: DelegationVerdict[] = [];
+  const startedAt = now();
+  for (let round = 1; round <= limit; round += 1) {
+    const measured = await measureRound();
+    log(
+      `[delegation] round ${round}/${limit} · ${measured.line} · ${measured.verdict}: ${measured.reason}`,
+    );
+    rounds.push(measured);
+    if (measured.verdict === 'pass') break;
+    if (round >= limit || now() - startedAt >= budgetMs) break;
+    await sleep(settleMs);
+    if (now() - startedAt >= budgetMs) break;
+  }
+  return judgeRounds(rounds, limit);
 }
 
 /**
@@ -397,32 +539,355 @@ describe('judgeDelegation', () => {
   });
 });
 
-it('keeps foreground delegation overhead small relative to the delegated work', async () => {
-  const childRunMs = 200;
-  const samples: DelegationSample[] = [];
-  for (let run = 0; run < 5; run += 1) {
-    // The probe brackets the cycle and keeps its slower side, so the number is what this machine
-    // cost on *this* cycle rather than a lull between two of them.
-    const probeBefore = measureProbeMs();
-    const { overheadMs, stallMs } = await measureRoundTrip(childRunMs);
-    const probeAfter = measureProbeMs();
-    samples.push({ overheadMs, stallMs, probeMs: Math.max(probeBefore, probeAfter) });
-  }
-  const sorted = samples.map((sample) => sample.overheadMs).sort((left, right) => left - right);
-  const verdict = judgeDelegation(samples, childRunMs, {
-    bestCeilingMs: overheadCeilingMs(childRunMs),
-    worstCeilingMs: 2_000,
+/**
+ * The rounds on top of the judge, with #390's numbers hand-written. A verdict is re-measured on
+ * fresh rounds before it fails a run, and these pins hold the shape of that decision on the very
+ * runs whose failures caused it.
+ */
+describe('judgeRounds', () => {
+  const CHILD_RUN_MS = 200;
+  /** The Windows CI ceilings: child 200ms, best 500ms, worst net 2000ms. */
+  const WINDOWS_CI_CEILINGS: DelegationCeilings = { bestCeilingMs: 500, worstCeilingMs: 2_000 };
+  const LOCAL_CEILINGS: DelegationCeilings = { bestCeilingMs: 200, worstCeilingMs: 2_000 };
+  const QUIET_PROBE_MS = 27;
+  const sample = (overheadMs: number, probeMs: number, stallMs = 0): DelegationSample => ({
+    overheadMs,
+    stallMs,
+    probeMs,
+  });
+  const judgedRound = (
+    samples: DelegationSample[],
+    ceilings: DelegationCeilings,
+  ): DelegationVerdict => judgeDelegation(samples, CHILD_RUN_MS, ceilings);
+
+  it('passes the #390 main-branch run on a fresh round', () => {
+    // Main 16a3b52 on Windows Node 24: the samples that failed CI, then the re-run of the same
+    // job on the same commit, which measured 47-92ms and passed. One slow stretch must not decide.
+    const failedRound = judgedRound(
+      [
+        sample(1282, 15, 3),
+        sample(778, 15, 13),
+        sample(676, 15, 14),
+        sample(1608, 15),
+        sample(701, 15, 1),
+      ],
+      WINDOWS_CI_CEILINGS,
+    );
+    const healthyRound = judgedRound(
+      [sample(92, 15), sample(54, 13, 11), sample(47, 14, 3), sample(54, 14, 4), sample(55, 43, 4)],
+      WINDOWS_CI_CEILINGS,
+    );
+
+    expect(failedRound.verdict).toBe('fail');
+    expect(healthyRound.verdict).toBe('pass');
+
+    const verdict = judgeRounds([failedRound, healthyRound], 3);
+
+    expect(verdict.verdict).toBe('pass');
+    expect(verdict.reason).toContain('round 2/3: ');
   });
 
-  // Printed rather than only asserted: the absolute number is the finding, and a
-  // ceiling that passes tells you nothing about where the real cost sits. The verdict's own
-  // reason carries each sample beside the probe that ran with it, which is the pairing.
-  console.log(
-    `[delegation] child ${childRunMs}ms · overhead best ${sorted[0]}ms · median ${sorted[Math.floor(sorted.length / 2)]}ms · worst ${sorted[sorted.length - 1]}ms · timer stall ${Math.min(...samples.map((sample) => sample.stallMs))}ms · ${verdict.verdict}: ${verdict.reason}`,
-  );
+  it('passes the sweep9-provider run on a fresh round', () => {
+    // fix/sweep9-provider d762eae on Windows Node 24: two consecutive cycles cost 3902ms and
+    // 3440ms, the first 3901ms net of its own stall, which is over the 2000ms absolute ceiling.
+    // The healthy round is hand-written, not measured, shaped like that run's own healthy samples
+    // (50-70ms).
+    const failedRound = judgedRound(
+      [
+        sample(3902, 11, 1),
+        sample(3440, 11, 14),
+        sample(50, 14),
+        sample(55, 11),
+        sample(70, 11, 2),
+      ],
+      WINDOWS_CI_CEILINGS,
+    );
+    const healthyRound = judgedRound(
+      [sample(50, 11), sample(55, 11), sample(61, 11), sample(70, 11), sample(52, 11)],
+      WINDOWS_CI_CEILINGS,
+    );
 
+    expect(failedRound.verdict).toBe('fail');
+
+    const verdict = judgeRounds([failedRound, healthyRound], 3);
+
+    expect(verdict.verdict).toBe('pass');
+  });
+
+  it('fails a regression that fails every round', () => {
+    // A harness regression costs on every round whatever the machine is doing, so all three
+    // rounds fail and the run fails, with every round's own reason carried in the log.
+    const regressionRound = (probeMs: number): DelegationVerdict =>
+      judgeDelegation(
+        [740, 780, 890, 930, 1470].map((overheadMs) => sample(overheadMs, probeMs)),
+        CHILD_RUN_MS,
+        LOCAL_CEILINGS,
+      );
+    const verdict = judgeRounds(
+      [
+        regressionRound(QUIET_PROBE_MS),
+        regressionRound(QUIET_PROBE_MS),
+        regressionRound(QUIET_PROBE_MS),
+      ],
+      3,
+    );
+
+    expect(verdict.verdict).toBe('fail');
+    for (const roundNumber of [1, 2, 3]) {
+      expect(verdict.reason).toContain(`round ${roundNumber}: `);
+    }
+  });
+
+  it('does not let an inconclusive round override a failure', () => {
+    // An inconclusive round is not evidence of health, so any round that failed makes the run fail.
+    const failedRound = judgedRound(
+      [740, 780, 890, 930, 1470].map((overheadMs) => sample(overheadMs, QUIET_PROBE_MS)),
+      LOCAL_CEILINGS,
+    );
+    const stalledRound = judgedRound(
+      [529, 561, 600, 634, 667].map((overheadMs) => sample(overheadMs, QUIET_PROBE_MS, 300)),
+      LOCAL_CEILINGS,
+    );
+
+    expect(failedRound.verdict).toBe('fail');
+    expect(stalledRound.verdict).toBe('inconclusive');
+
+    const verdict = judgeRounds([failedRound, stalledRound], 3);
+
+    expect(verdict.verdict).toBe('fail');
+    expect(verdict.reason).toContain('round 1: ');
+    expect(verdict.reason).toContain('round 2: ');
+  });
+
+  it('lets a healthy round override an inconclusive one', () => {
+    // A machine that stalled on round 1 but fired cleanly on round 2 passes the run.
+    const stalledRound = judgedRound(
+      [529, 561, 600, 634, 667].map((overheadMs) => sample(overheadMs, QUIET_PROBE_MS, 300)),
+      LOCAL_CEILINGS,
+    );
+    const healthyRound = judgedRound(
+      [74, 81, 87, 94, 134].map((overheadMs) => sample(overheadMs, QUIET_PROBE_MS)),
+      LOCAL_CEILINGS,
+    );
+
+    expect(stalledRound.verdict).toBe('inconclusive');
+    expect(healthyRound.verdict).toBe('pass');
+
+    const verdict = judgeRounds([stalledRound, healthyRound], 3);
+
+    expect(verdict.verdict).toBe('pass');
+    expect(verdict.reason).toContain('round 2/3: ');
+  });
+});
+
+describe('judgeOverRounds', () => {
+  const mockRound = (
+    verdict: 'pass' | 'fail' | 'inconclusive',
+    step: number,
+  ): RoundMeasurement => ({
+    verdict,
+    reason: `${verdict} on round ${step}`,
+    line: `mock line ${step}`,
+  });
+
+  const scripted = (verdicts: Array<'pass' | 'fail' | 'inconclusive'>) => {
+    let call = 0;
+    return async () => {
+      call += 1;
+      const verdict = verdicts[call - 1] ?? 'fail';
+      return mockRound(verdict, call);
+    };
+  };
+
+  it('stops on a pass on round 2 with one sleep when limit is 3', async () => {
+    const sleeps: number[] = [];
+    const measure = scripted(['fail', 'pass']);
+    const verdict = await judgeOverRounds(measure, {
+      limit: 3,
+      settleMs: 3_000,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      log: () => {},
+    });
+
+    expect(verdict.verdict).toBe('pass');
+    expect(verdict.reason).toMatch(/^round 2\/3: /);
+    expect(sleeps).toEqual([3_000]);
+  });
+
+  it('stops on a first-round pass without sleeping', async () => {
+    const sleeps: number[] = [];
+    const measure = scripted(['pass']);
+    const verdict = await judgeOverRounds(measure, {
+      limit: 3,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      log: () => {},
+    });
+
+    expect(verdict.verdict).toBe('pass');
+    expect(verdict.reason).toMatch(/^round 1\/3: /);
+    expect(sleeps).toEqual([]);
+  });
+
+  it('fails after three failing rounds with two sleeps and reports every round', async () => {
+    const sleeps: number[] = [];
+    const measure = scripted(['fail', 'fail', 'fail']);
+    const verdict = await judgeOverRounds(measure, {
+      limit: 3,
+      settleMs: 3_000,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      log: () => {},
+    });
+
+    expect(verdict.verdict).toBe('fail');
+    expect(sleeps).toEqual([3_000, 3_000]);
+    expect(verdict.reason).toContain('round 1: ');
+    expect(verdict.reason).toContain('round 2: ');
+    expect(verdict.reason).toContain('round 3: ');
+  });
+
+  it('does not stop on an inconclusive round and decides on a later pass', async () => {
+    const measure = scripted(['inconclusive', 'pass']);
+    const verdict = await judgeOverRounds(measure, {
+      limit: 3,
+      sleep: async () => {},
+      log: () => {},
+    });
+
+    expect(verdict.verdict).toBe('pass');
+    expect(verdict.reason).toMatch(/^round 2\/3: /);
+  });
+
+  it('fails when any round failed and no round passed', async () => {
+    const measure = scripted(['fail', 'inconclusive', 'inconclusive']);
+    const verdict = await judgeOverRounds(measure, {
+      limit: 3,
+      sleep: async () => {},
+      log: () => {},
+    });
+
+    expect(verdict.verdict).toBe('fail');
+  });
+
+  it('is inconclusive when every round is inconclusive', async () => {
+    const measure = scripted(['inconclusive', 'inconclusive', 'inconclusive']);
+    const verdict = await judgeOverRounds(measure, {
+      limit: 3,
+      sleep: async () => {},
+      log: () => {},
+    });
+
+    expect(verdict.verdict).toBe('inconclusive');
+  });
+
+  it('stops when the time budget is exhausted during a round without sleeping', async () => {
+    let nowMs = 0;
+    const sleeps: number[] = [];
+    let measures = 0;
+    const measure = async () => {
+      measures += 1;
+      nowMs += 61_000;
+      return mockRound('fail', measures);
+    };
+
+    const verdict = await judgeOverRounds(measure, {
+      limit: 3,
+      budgetMs: 60_000,
+      now: () => nowMs,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      log: () => {},
+    });
+
+    expect(verdict.verdict).toBe('fail');
+    expect(measures).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it('runs only one round when the limit is 1', async () => {
+    let measures = 0;
+    const measure = async () => {
+      measures += 1;
+      return mockRound(measures === 1 ? 'fail' : 'pass', measures);
+    };
+    const sleeps: number[] = [];
+
+    const verdict = await judgeOverRounds(measure, {
+      limit: 1,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      log: () => {},
+    });
+
+    expect(verdict.verdict).toBe('fail');
+    expect(measures).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+});
+
+describe('describeSamples', () => {
+  it('reports where a slow sample’s time went when startup and wrap-up are known', () => {
+    expect(
+      describeSamples([
+        { overheadMs: 1282, probeMs: 15, stallMs: 3, startupMs: 1250, wrapUpMs: 29 },
+      ]),
+    ).toBe('1282@15~3[1250+29]');
+  });
+
+  it('reports startup with an unknown wrap-up when the cycle never finished', () => {
+    expect(describeSamples([{ overheadMs: 30012, probeMs: 15, stallMs: 0, startupMs: 25 }])).toBe(
+      '30012@15[25+?]',
+    );
+  });
+
+  it('leaves the breakdown off a sample that has neither startup nor wrap-up', () => {
+    expect(describeSamples([{ overheadMs: 1282, probeMs: 15, stallMs: 3 }])).toBe('1282@15~3');
+  });
+});
+
+// The 120s timeout lets a round that starts just inside the 60s budget finish.
+it('keeps foreground delegation overhead small relative to the delegated work', async () => {
+  const childRunMs = 200;
+  const verdict = await judgeOverRounds(async () => {
+    const samples: DelegationSample[] = [];
+    for (let run = 0; run < 5; run += 1) {
+      // The probe brackets the cycle and keeps its slower side, so the number is what this machine
+      // cost on *this* cycle rather than a lull between two of them.
+      const probeBefore = measureProbeMs();
+      const { overheadMs, stallMs, startupMs, wrapUpMs } = await measureRoundTrip(childRunMs);
+      const probeAfter = measureProbeMs();
+      samples.push({
+        overheadMs,
+        stallMs,
+        probeMs: Math.max(probeBefore, probeAfter),
+        startupMs,
+        wrapUpMs,
+      });
+    }
+    removeTempRoots();
+    const sorted = samples.map((sample) => sample.overheadMs).sort((left, right) => left - right);
+    const round = judgeDelegation(samples, childRunMs, {
+      bestCeilingMs: overheadCeilingMs(childRunMs),
+      worstCeilingMs: 2_000,
+    });
+    return {
+      ...round,
+      line: `child ${childRunMs}ms · overhead best ${sorted[0]}ms · median ${sorted[Math.floor(sorted.length / 2)]}ms · worst ${sorted[sorted.length - 1]}ms · timer stall ${Math.min(...samples.map((sample) => sample.stallMs))}ms`,
+    };
+  });
+
+  // Printed rather than only asserted: the absolute number is the finding, and a ceiling that
+  // passes tells you nothing about where the real cost sits. Each sample is printed beside the
+  // probe that ran with it — which is the pairing — and beside where its own time went.
   expect(verdict.verdict, verdict.reason).not.toBe('fail');
-}, 60_000);
+}, 120_000);
 
 /**
  * The harness's own cost for one child duration: the best of several cycles, for
@@ -439,6 +904,7 @@ async function bestHarnessOverheadMs(childRunMs: number, cycles = 3): Promise<nu
   return Math.min(...samples);
 }
 
+// The 120s timeout lets a round that starts just inside the 60s budget finish.
 it('reports overhead that does not scale with the delegated work', async () => {
   // If handoff cost tracked the child's run length, the pattern would be unusable
   // for long tasks — the case delegation is actually for. Two child durations an
@@ -449,13 +915,23 @@ it('reports overhead that does not scale with the delegated work', async () => {
   // the single short sample for a whole second (short=1179ms, long=62ms) and the
   // old two-sided check called that scaling. The bound is the extra work itself
   // (950ms): overhead that grew as fast as the work would reach it, and the
-  // harness's real cost is ~20x below it.
+  // harness's real cost is ~20x below it. The verdict is re-measured on fresh
+  // rounds, like the test above, so a slow stretch cannot decide it either.
   const shortChildMs = 50;
   const longChildMs = 1_000;
-  const short = await bestHarnessOverheadMs(shortChildMs);
-  const long = await bestHarnessOverheadMs(longChildMs);
-  console.log(
-    `[delegation] best overhead short(${shortChildMs}ms child)=${short}ms long(${longChildMs}ms child)=${long}ms`,
-  );
-  expect(long - short).toBeLessThan(longChildMs - shortChildMs);
-}, 60_000);
+  const extraWorkMs = longChildMs - shortChildMs;
+  const verdict = await judgeOverRounds(async () => {
+    const short = await bestHarnessOverheadMs(shortChildMs);
+    const long = await bestHarnessOverheadMs(longChildMs);
+    removeTempRoots();
+    const difference = long - short;
+    const line = `best overhead short(${shortChildMs}ms child)=${short}ms long(${longChildMs}ms child)=${long}ms`;
+    return {
+      verdict: difference < extraWorkMs ? 'pass' : 'fail',
+      reason: `overhead difference ${difference}ms is ${difference < extraWorkMs ? 'under' : 'over'} the ${extraWorkMs}ms of extra delegated work, short best ${short}ms and long best ${long}ms`,
+      line,
+    };
+  });
+
+  expect(verdict.verdict, verdict.reason).not.toBe('fail');
+}, 120_000);

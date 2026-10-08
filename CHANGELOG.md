@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The delegation latency test re-measures a failing verdict before it fails the run** (#390). The
+  Windows CI legs sometimes go through a few seconds in which every delegation cycle costs 0.6-3.9s while
+  the probe beside it and the child's own timer stay normal, and a re-run of the same commit measures
+  47-92ms. On those legs a failing round is now measured again, up to three rounds 3s apart within a 60s
+  budget: a round that passes decides the run, and with no passing round any failed round fails it, so a
+  regression still fails. Every other platform still decides on one round. Each printed sample also says
+  where its time went: before the child started, or after it finished.
+
 ## [0.3.0] - 2026-10-07
 
 ### Security
