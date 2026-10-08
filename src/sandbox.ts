@@ -32,7 +32,11 @@ export interface Sandbox {
    *
    * Returns null if the sandbox is unavailable.
    */
-  wrap(command: string, workspaceRoot: string): CommandExecution | null;
+  wrap(
+    command: string,
+    workspaceRoot: string,
+    protectedPaths?: ProtectedWorkspacePaths,
+  ): CommandExecution | null;
   /** One-line description of the policy actually enforced, for diagnostics. */
   describe(): string;
 }
@@ -474,7 +478,13 @@ function workspaceComponents(path: string, workspaceRoot: string, host: SandboxH
   const root = host.path.resolve(workspaceRoot);
   const resolved = host.path.resolve(path);
   const rel = host.path.relative(root, resolved);
-  if (isOutside(root, resolved, host.path) || !rel || rel.startsWith('..')) return [];
+  if (
+    isOutside(root, resolved, host.path) ||
+    !rel ||
+    rel === '..' ||
+    rel.startsWith('..' + host.path.sep)
+  )
+    return [];
   const segments = rel.split(host.path.sep).filter(Boolean);
   const components: string[] = [];
   let current = root;
@@ -499,6 +509,18 @@ interface GitDirRef {
 interface WorkspaceGitDirsResult {
   gitDirs: GitDirRef[];
   pointerPaths: string[];
+  refusals: ControlPathRefusal[];
+}
+
+function looksLikeGitDir(dir: string, host: SandboxHost): boolean {
+  if (!host.isDirectory(dir)) return false;
+  const head = host.path.join(dir, 'HEAD');
+  if (!host.exists(head)) return false;
+  const objects = host.path.join(dir, 'objects');
+  if (host.isDirectory(objects)) return true;
+  const commondir = host.path.join(dir, 'commondir');
+  if (host.exists(commondir)) return true;
+  return false;
 }
 
 /**
@@ -520,21 +542,30 @@ interface WorkspaceGitDirsResult {
  */
 function workspaceGitDirs(workspaceRoot: string, host: SandboxHost): WorkspaceGitDirsResult {
   const root = host.path.resolve(workspaceRoot);
+  const canonicalRoot = canonicalPath(root, host);
   const found: GitDirRef[] = [];
   const pointerPaths: string[] = [];
+  const refusals: ControlPathRefusal[] = [];
+  const dotGit = host.path.join(root, '.git');
   const add = (candidate: string, workTree: string): void => {
     const dir = host.path.resolve(candidate);
     if (found.some((entry) => entry.dir === dir)) return;
     if (!host.isDirectory(dir) || !insideWorkspace(dir, root, host)) return;
+    if (dir !== dotGit && !looksLikeGitDir(dir, host)) return;
+    if (canonicalPath(dir, host) === canonicalRoot) {
+      if (!refusals.some((r) => r.path === dir)) {
+        refusals.push({ path: dir, reason: 'workspace-root-is-git-dir' });
+      }
+      return;
+    }
     found.push({ dir, workTree: host.path.resolve(workTree) });
   };
-  const dotGit = host.path.join(root, '.git');
-  if (!host.exists(dotGit)) return { gitDirs: found, pointerPaths };
+  if (!host.exists(dotGit)) return { gitDirs: found, pointerPaths, refusals };
   if (host.isDirectory(dotGit)) {
     add(dotGit, root);
   } else {
     const target = /^gitdir:\s*(.+)$/m.exec(host.readFile(dotGit) ?? '')?.[1]?.trim();
-    if (!target) return { gitDirs: found, pointerPaths };
+    if (!target) return { gitDirs: found, pointerPaths, refusals };
     const resolvedTarget = host.path.isAbsolute(target) ? target : host.path.join(root, target);
     pointerPaths.push(resolvedTarget);
     add(resolvedTarget, root);
@@ -598,7 +629,7 @@ function workspaceGitDirs(workspaceRoot: string, host: SandboxHost): WorkspaceGi
     pointerPaths.push(resolvedTarget);
     add(resolvedTarget, workTree);
   }
-  return { gitDirs: found, pointerPaths };
+  return { gitDirs: found, pointerPaths, refusals };
 }
 
 /**
@@ -777,7 +808,8 @@ export interface ProtectedWorkspacePaths {
  * refused with the path named, because the fix — replace the link, trim the
  * config — is a change to the workspace, not to a Book setting.
  */
-export type ControlPathRefusalReason = 'symlinked-control-path' | 'oversized-git-config';
+export type ControlPathRefusalReason =
+  'symlinked-control-path' | 'oversized-git-config' | 'workspace-root-is-git-dir';
 
 export interface ControlPathRefusal {
   path: string;
@@ -792,6 +824,13 @@ export function describeControlPathRefusal(refusal: ControlPathRefusal): string 
       `${MAX_GIT_CONFIG_BYTES / 1024 / 1024} MiB read limit for a git config file, so the ` +
       'core.hooksPath it may declare cannot be found and the hooks directory it names cannot ' +
       'be made read-only. Trim the config, or run this command without the sandbox.'
+    );
+  }
+  if (refusal.reason === 'workspace-root-is-git-dir') {
+    return (
+      `Refused to run this command in the sandbox: ${refusal.path} is the workspace root and ` +
+      'a git directory, so the sandbox cannot make it read-only without making the whole ' +
+      'workspace read-only. Run this command without the sandbox.'
     );
   }
   return (
@@ -832,6 +871,7 @@ export interface ProtectedWorkspacePathsOptions {
    * layer may set it.
    */
   allowGitWrites?: boolean;
+  denyDirectories?: string[];
 }
 
 export function protectedWorkspacePaths(
@@ -849,6 +889,10 @@ export function protectedWorkspacePaths(
     gitDirControlMounts: [],
   };
   const seen = new Set<string>();
+
+  const safeDenyDirs = (options.denyDirectories ?? [])
+    .filter((d) => host.isDirectory(d))
+    .map((d) => canonicalPath(d, host));
 
   /**
    * The mount one control path needs, or null when it needs none.
@@ -873,7 +917,12 @@ export function protectedWorkspacePaths(
     };
     const first = host.entryKind(resolved);
     if (first === 'symlink') {
-      if (!result.refusals.some((entry) => entry.path === resolved)) {
+      const parentCanonical = canonicalPath(host.path.dirname(resolved), host);
+      const symlinkLivePath = host.path.join(parentCanonical, host.path.basename(resolved));
+      const isSafe = safeDenyDirs.some(
+        (dir) => !isOutside(dir, symlinkLivePath, host.path) && dir !== symlinkLivePath,
+      );
+      if (!isSafe && !result.refusals.some((entry) => entry.path === resolved)) {
         result.refusals.push({ path: resolved, reason: 'symlinked-control-path' });
       }
       return null;
@@ -907,7 +956,8 @@ export function protectedWorkspacePaths(
     if (mount) result.mounts.push(mount);
   };
 
-  const { gitDirs, pointerPaths } = workspaceGitDirs(root, host);
+  const { gitDirs, pointerPaths, refusals: gitDirRefusals } = workspaceGitDirs(root, host);
+  result.refusals.push(...gitDirRefusals);
   const boundCanonical: string[] = [];
   const gitDirMounts = new Set<ProtectedMount>();
 
@@ -1067,20 +1117,54 @@ export function protectedWorkspacePaths(
   result.mounts = filteredMounts;
   result.gitDirControlMounts = gitDirControlMounts;
 
-  // For every git dir the walk returns, and every path a pointer file names,
-  // look at each path component strictly below the workspace root. A component
-  // that is a symlink is safe only if the symlink itself lives inside a present
-  // read-only directory mount. Otherwise push a symlinked-control-path refusal.
-  const pointerCandidates = [...gitDirs.map((g) => g.dir), ...pointerPaths];
+  // In read-only mode, pin each ancestor directory strictly between the workspace root
+  // and every protected mount whose path lies strictly below the workspace root and is not
+  // inside a present read-only directory mount. A writable self-bind (--bind <dir> <dir>)
+  // makes renaming the ancestor fail with EBUSY instead of moving the protected mount away.
+  if (!allowGitWrites) {
+    for (const mount of result.mounts) {
+      const mountCanonical = canonicalPath(mount.path, host);
+      if (isOutside(canonicalRoot, mountCanonical, host.path) || mountCanonical === canonicalRoot) {
+        continue;
+      }
+      const isInsidePresentReadOnly = presentReadOnlyDirs.some(
+        (dir) => !isOutside(dir, mountCanonical, host.path) && dir !== mountCanonical,
+      );
+      if (isInsidePresentReadOnly) continue;
+
+      const ancestors = workspaceComponents(mount.path, root, host).slice(0, -1);
+      for (const anc of ancestors) {
+        if (!host.isDirectory(anc)) continue;
+        const ancCanonical = canonicalPath(anc, host);
+        if (presentReadOnlyDirs.some((dir) => !isOutside(dir, ancCanonical, host.path))) continue;
+        if (!result.pinnedDirectories.includes(anc)) {
+          result.pinnedDirectories.push(anc);
+        }
+      }
+    }
+  }
+
+  const safeDirs = [...presentReadOnlyDirs, ...safeDenyDirs];
+
+  // For every protected mount (pointer files, hooksPath directories, included config files),
+  // discovered git dir, and pointer target, check each component strictly below workspace root.
+  // A symlink is safe only if it lives inside a directory the host cannot see changed:
+  // a present read-only directory mount, or a denyWrite / denyRead directory.
+  const candidatesToCheck = new Set<string>([
+    ...gitDirs.map((g) => g.dir),
+    ...pointerPaths,
+    ...result.mounts.map((m) => m.path),
+    ...result.gitDirControlMounts.map((m) => m.path),
+  ]);
   const checkedComponents = new Set<string>();
-  for (const cand of pointerCandidates) {
+  for (const cand of candidatesToCheck) {
     for (const comp of workspaceComponents(cand, root, host)) {
       if (checkedComponents.has(comp)) continue;
       checkedComponents.add(comp);
       if (host.entryKind(comp) === 'symlink') {
         const parentCanonical = canonicalPath(host.path.dirname(comp), host);
         const symlinkLivePath = host.path.join(parentCanonical, host.path.basename(comp));
-        const isSafe = presentReadOnlyDirs.some(
+        const isSafe = safeDirs.some(
           (dir) => !isOutside(dir, symlinkLivePath, host.path) && dir !== symlinkLivePath,
         );
         if (!isSafe && !result.refusals.some((r) => r.path === comp)) {
@@ -1140,6 +1224,7 @@ export function buildSandboxExecution(
   workspaceRoot: string,
   settings: ResolvedSettings['sandbox'],
   host: SandboxHost = realSandboxHost,
+  protectedPaths?: ProtectedWorkspacePaths,
 ): CommandExecution {
   const args: string[] = [];
 
@@ -1180,12 +1265,17 @@ export function buildSandboxExecution(
   // its way down would not be an opt-in but the default back the protections
   // exist to remove. Only a trusted layer can hold one: a workspace layer's
   // `allowWrite` entries are dropped by the loader (#373).
-  const protectedPaths = protectedWorkspacePaths(workspaceRoot, host, {
-    allowGitWrites: settings.filesystem.allowGitWrites,
-  });
+  const paths =
+    protectedPaths ??
+    protectedWorkspacePaths(workspaceRoot, host, {
+      allowGitWrites: settings.filesystem.allowGitWrites,
+      denyDirectories: [...settings.filesystem.denyWrite, ...settings.filesystem.denyRead].map(
+        (p) => expandPath(p, host),
+      ),
+    });
   const isProtectedArea = (path: string): boolean => {
     const canonical = canonicalPath(expandPath(path, host), host);
-    return protectedPaths.mounts.some(
+    return paths.mounts.some(
       (mount) => !isOutside(canonicalPath(mount.path, host), canonical, host.path),
     );
   };
@@ -1200,14 +1290,14 @@ export function buildSandboxExecution(
   // is a protected mount, so an `allowWrite` entry naming it reopens what it names,
   // while control paths strictly below it (hooks, config, pointer files) stay
   // read-only unless an entry names them directly.
-  for (const dir of protectedPaths.pinnedDirectories) {
+  for (const dir of paths.pinnedDirectories) {
     args.push('--bind', host.path.resolve(dir), host.path.resolve(dir));
   }
   for (const path of settings.filesystem.allowWrite) {
     if (isProtectedArea(path)) continue;
     bindIfPresent(args, '--bind', path, host);
   }
-  for (const mount of protectedPaths.mounts) mountProtected(args, mount, host);
+  for (const mount of paths.mounts) mountProtected(args, mount, host);
   // ...and only now the opt-ins for the protected areas themselves.
   const deferredOptInCanonicals: string[] = [];
   for (const path of settings.filesystem.allowWrite) {
@@ -1223,7 +1313,7 @@ export function buildSandboxExecution(
   // paths strictly below it (hooks, config, pointer files). Emit each of those
   // control mounts whose canonical path is strictly below a deferred opt-in entry,
   // unless an entry exactly at that control path reopens it.
-  for (const mount of protectedPaths.gitDirControlMounts) {
+  for (const mount of paths.gitDirControlMounts) {
     const mountCanonical = canonicalPath(mount.path, host);
     const strictlyBelowDeferredOptIn = deferredOptInCanonicals.some(
       (optIn) => !isOutside(optIn, mountCanonical, host.path) && optIn !== mountCanonical,
@@ -1239,7 +1329,7 @@ export function buildSandboxExecution(
   // directory back in reach, provider credential included. The masks are
   // therefore emitted again after every opt-in, so the last mount of a masked
   // path is `/dev/null` whichever entry named its parent.
-  for (const mount of protectedPaths.mounts) {
+  for (const mount of paths.mounts) {
     if (mount.kind === 'hidden-file') mountProtected(args, mount, host);
   }
 
@@ -1364,13 +1454,21 @@ export function decideSandboxExecution(
   // and only once a sandbox is actually in hand: with none, the command runs
   // unsandboxed under the policy the settings author chose, which is not this
   // decision to tighten.
+  let protectedPaths: ProtectedWorkspacePaths | undefined;
   if (sandbox) {
-    const refusal = protectedWorkspacePaths(ctx.workspaceRoot, realSandboxHost, {
+    const denyDirectories = [
+      ...ctx.sandbox.filesystem.denyWrite,
+      ...ctx.sandbox.filesystem.denyRead,
+    ].map((p) => expandPath(p, realSandboxHost));
+
+    protectedPaths = protectedWorkspacePaths(ctx.workspaceRoot, realSandboxHost, {
       allowGitWrites: ctx.sandbox.filesystem.allowGitWrites,
-    }).refusals[0];
+      denyDirectories,
+    });
+    const refusal = protectedPaths.refusals[0];
     if (refusal) return { sandboxed: false, error: describeControlPathRefusal(refusal) };
   }
-  const exec = sandbox?.wrap(command, ctx.workspaceRoot);
+  const exec = sandbox?.wrap(command, ctx.workspaceRoot, protectedPaths);
   if (exec) {
     return {
       sandboxed: true,
@@ -1416,22 +1514,29 @@ export function withGitConfigReadOnlyNotice(
   gitDirReadOnly?: boolean,
 ): string {
   if (!sandboxed) return text;
-  if (writesAGlobalConfig(command)) return text;
 
-  if (gitDirReadOnly) {
-    const gitDirFailure =
-      /(?:^|\n)(?=[^\n]*\.git\/)(?=[^\n]*\bRead-only file system\b)/i.test(output) ||
-      /unable to create temporary file: Read-only file system/i.test(output) ||
-      /could not (?:write|lock) config file/.test(output);
-
-    if (gitDirFailure) {
-      return withReadOnlyGitDirNote(text);
-    }
-    return text;
+  const isConfigFileFailure = /could not (?:write|lock) config file/.test(output);
+  if (isConfigFileFailure) {
+    if (writesAGlobalConfig(command)) return text;
+    return gitDirReadOnly ? withReadOnlyGitDirNote(text) : withLegacyGitConfigNote(text);
   }
 
-  if (!/could not (?:write|lock) config file/.test(output)) return text;
-  return withLegacyGitConfigNote(text);
+  if (gitDirReadOnly) {
+    const linesWithRo = output
+      .split('\n')
+      .filter((line) => /\bRead-only file system\b/i.test(line));
+    const runsGit = /(?:^|[;&|(\s])git\b/.test(command);
+    const hasDotGitSegment = linesWithRo.some((line) =>
+      /(?:^|[/\s'"`])\.git(?=[/\\s'":`]|[\r\n]|$)/.test(line),
+    );
+    const roFailure = linesWithRo.length > 0 && (runsGit || hasDotGitSegment);
+
+    if (roFailure) {
+      return withReadOnlyGitDirNote(text);
+    }
+  }
+
+  return text;
 }
 
 function withLegacyGitConfigNote(text: string): string {
@@ -1451,13 +1556,13 @@ function withReadOnlyGitDirNote(text: string): string {
     'they can run it, or allow it in their own ~/.book/settings.json, where ' +
     'sandbox.excludedCommands runs matching commands unsandboxed while ' +
     'sandbox.allowUnsandboxedCommands is true and sandbox.filesystem.allowGitWrites lets sandboxed ' +
-    'git write again; workspace settings cannot change either.'
+    'git write again; workspace settings cannot enable either.'
   );
 }
 
 /** Whether a `git config` invocation targets the user's or the system's config. */
 function writesAGlobalConfig(command: string): boolean {
-  return /^\s*(?:\S+\s+)*git\s+config\b[^|;&]*\s--(?:global|system)\b/.test(command);
+  return /(?:^|[;&|(\s])git\s+[^|;&]*\bconfig\b[^|;&]*\s--(?:global|system)\b/.test(command);
 }
 
 /**
@@ -1510,8 +1615,19 @@ export function createSandbox(settings: ResolvedSettings['sandbox']): Sandbox | 
   }
 
   return {
-    wrap(command: string, workspaceRoot: string): CommandExecution {
-      return buildSandboxExecution(bwrap, command, workspaceRoot, settings);
+    wrap(
+      command: string,
+      workspaceRoot: string,
+      protectedPaths?: ProtectedWorkspacePaths,
+    ): CommandExecution {
+      return buildSandboxExecution(
+        bwrap,
+        command,
+        workspaceRoot,
+        settings,
+        realSandboxHost,
+        protectedPaths,
+      );
     },
     describe(): string {
       return [

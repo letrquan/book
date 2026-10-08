@@ -502,9 +502,13 @@ describe('buildSandboxExecution workspace control files', () => {
         '/work/.book': 'dir',
         '/work/.git': 'file',
         '/work/.git-data': 'dir',
+        '/work/.git-data/HEAD': 'file',
+        '/work/.git-data/commondir': 'file',
         '/work/.git-data/hooks': 'dir',
         '/work/.git-data/config.worktree': 'file',
         '/work/.git-shared': 'dir',
+        '/work/.git-shared/HEAD': 'file',
+        '/work/.git-shared/objects': 'dir',
         '/work/.git-shared/hooks': 'dir',
         '/work/.git-shared/config': 'file',
       },
@@ -587,6 +591,8 @@ describe('buildSandboxExecution workspace control files', () => {
         '/work/.book': 'dir',
         '/work/.git': 'file',
         '/work/nested/gitdir': 'dir',
+        '/work/nested/gitdir/HEAD': 'file',
+        '/work/nested/gitdir/objects': 'dir',
         '/work/nested/gitdir/hooks': 'dir',
       },
       { '/work/.git': 'gitdir: nested/gitdir' },
@@ -757,6 +763,7 @@ describe('buildSandboxExecution workspace control files', () => {
         '/work/.git/hooks': 'dir',
         '/work/.git/config': 'file',
         '/work/.git/worktrees/wt': 'dir',
+        '/work/.git/worktrees/wt/HEAD': 'file',
         '/work/.git/worktrees/wt/hooks': 'dir',
         '/work/.git/worktrees/wt/config.worktree': 'file',
         '/work/.git/worktrees/wt/commondir': 'file',
@@ -807,9 +814,13 @@ describe('buildSandboxExecution workspace control files', () => {
         '/work/.git': 'dir',
         '/work/.git/hooks': 'dir',
         '/work/.git/modules/sub': 'dir',
+        '/work/.git/modules/sub/HEAD': 'file',
+        '/work/.git/modules/sub/objects': 'dir',
         '/work/.git/modules/sub/hooks': 'dir',
         '/work/.git/modules/sub/config': 'file',
         '/work/.git/modules/sub/modules/deep': 'dir',
+        '/work/.git/modules/sub/modules/deep/HEAD': 'file',
+        '/work/.git/modules/sub/modules/deep/objects': 'dir',
         '/work/.git/modules/sub/modules/deep/hooks': 'dir',
         '/work/.git/modules/sub/modules/deep/config': 'file',
       });
@@ -860,11 +871,15 @@ describe('buildSandboxExecution workspace control files', () => {
           '/work/.git/hooks': 'dir',
           '/work/.git/config': 'file',
           '/work/.git/modules/sub': 'dir',
+          '/work/.git/modules/sub/HEAD': 'file',
+          '/work/.git/modules/sub/objects': 'dir',
           '/work/.git/modules/sub/hooks': 'dir',
           '/work/.git/modules/sub/config': 'file',
           '/work/sub': 'dir',
           '/work/sub/.git': 'file',
           '/work/.git/worktrees/wt': 'dir',
+          '/work/.git/worktrees/wt/HEAD': 'file',
+          '/work/.git/worktrees/wt/commondir': 'file',
           '/work/.git/worktrees/wt/gitdir': 'file',
           '/work/wt/.git': 'file',
         },
@@ -915,6 +930,8 @@ describe('buildSandboxExecution workspace control files', () => {
         // `modules/libs/deep`, and `modules/libs` has no HEAD and no config.
         '/work/.git/modules/libs': 'dir',
         '/work/.git/modules/libs/deep': 'dir',
+        '/work/.git/modules/libs/deep/HEAD': 'file',
+        '/work/.git/modules/libs/deep/objects': 'dir',
         '/work/.git/modules/libs/deep/hooks': 'dir',
         '/work/.git/modules/libs/deep/config': 'file',
         '/work/libs': 'dir',
@@ -989,6 +1006,136 @@ describe('buildSandboxExecution workspace control files', () => {
       expect(mountsFor(roExec.args, '/work/.git/modules/sub').index).toBe(-1);
     });
 
+    it('pins ancestor directories between root and protected mounts in read-only mode, and none in opt-out mode', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+          '/work/.git/modules/sub': 'dir',
+          '/work/.git/modules/sub/HEAD': 'file',
+          '/work/.git/modules/sub/objects': 'dir',
+          '/work/.git/modules/sub/hooks': 'dir',
+          '/work/.git/modules/sub/config': 'file',
+          '/work/sub': 'dir',
+          '/work/sub/.git': 'file',
+          '/work/.husky': 'dir',
+          '/work/.husky/_': 'dir',
+          '/work/config': 'dir',
+          '/work/config/gitconfig': 'file',
+        },
+        {
+          '/work/sub/.git': 'gitdir: ../.git/modules/sub\n',
+          '/work/.git/config':
+            '[core]\n\thooksPath = .husky/_\n[include]\n\tpath = ../config/gitconfig\n',
+          '/work/config/gitconfig': '# config\n',
+        },
+      );
+
+      // In read-only mode, ancestor directories strictly between root and protected mounts
+      // that are not inside a present read-only dir are pinned:
+      const roPaths = protectedWorkspacePaths(WORKSPACE, host);
+      expect(roPaths.pinnedDirectories).toContain('/work/sub');
+      expect(roPaths.pinnedDirectories).toContain('/work/.husky');
+      expect(roPaths.pinnedDirectories).toContain('/work/config');
+      expect(roPaths.pinnedDirectories).not.toContain('/work/.git');
+
+      const roExec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        sandboxSettings(),
+        host,
+      );
+
+      // Verify each pin is emitted before its corresponding protected mount
+      const pinSub = mountsFor(roExec.args, '/work/sub');
+      const mountSub = mountsFor(roExec.args, '/work/sub/.git');
+      expect(pinSub.flag).toBe('--bind');
+      expect(mountSub.flag).toBe('--ro-bind');
+      expect(pinSub.index).toBeLessThan(mountSub.index);
+
+      const pinHusky = mountsFor(roExec.args, '/work/.husky');
+      const mountHusky = mountsFor(roExec.args, '/work/.husky/_');
+      expect(pinHusky.flag).toBe('--bind');
+      expect(mountHusky.flag).toBe('--ro-bind');
+      expect(pinHusky.index).toBeLessThan(mountHusky.index);
+
+      const pinConfig = mountsFor(roExec.args, '/work/config');
+      const mountConfig = mountsFor(roExec.args, '/work/config/gitconfig');
+      expect(pinConfig.flag).toBe('--bind');
+      expect(mountConfig.flag).toBe('--ro-bind');
+      expect(pinConfig.index).toBeLessThan(mountConfig.index);
+
+      // In opt-out mode, none of these ancestors are pinned (only .git):
+      const optOutPaths = protectedWorkspacePaths(WORKSPACE, host, { allowGitWrites: true });
+      expect(optOutPaths.pinnedDirectories).toEqual(['/work/.git']);
+      expect(optOutPaths.pinnedDirectories).not.toContain('/work/sub');
+      expect(optOutPaths.pinnedDirectories).not.toContain('/work/.husky');
+      expect(optOutPaths.pinnedDirectories).not.toContain('/work/config');
+    });
+
+    it('does not bind workspace when gitdir: . is not a git directory', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'file',
+          '/work/src': 'dir',
+        },
+        {
+          '/work/.git': 'gitdir: .\n',
+        },
+      );
+      const roPaths = protectedWorkspacePaths(WORKSPACE, host);
+      expect(roPaths.mounts.some((m) => m.path === '/work')).toBe(false);
+      expect(roPaths.refusals).toEqual([]);
+    });
+
+    it('does not bind plain directory when gitdir: src is not a git directory', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'file',
+          '/work/src': 'dir',
+        },
+        {
+          '/work/.git': 'gitdir: src\n',
+        },
+      );
+      const roPaths = protectedWorkspacePaths(WORKSPACE, host);
+      expect(roPaths.mounts.some((m) => m.path === '/work/src')).toBe(false);
+      expect(roPaths.refusals).toEqual([]);
+    });
+
+    it('refuses the run when a candidate that looks like a git dir canonicalises to the workspace root', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'file',
+          '/work/HEAD': 'file',
+          '/work/objects': 'dir',
+        },
+        {
+          '/work/.git': 'gitdir: .\n',
+          '/work/HEAD': 'ref: refs/heads/main\n',
+        },
+      );
+      const roPaths = protectedWorkspacePaths(WORKSPACE, host);
+      expect(roPaths.refusals).toContainEqual({
+        path: '/work',
+        reason: 'workspace-root-is-git-dir',
+      });
+      const refusal = roPaths.refusals.find((r) => r.reason === 'workspace-root-is-git-dir')!;
+      expect(describeControlPathRefusal(refusal)).toMatch(
+        /is the workspace root and a git directory, so the sandbox cannot make it read-only without making the whole workspace read-only/,
+      );
+    });
+
     /**
      * A git dir a `gitdir:` pointer names is resolved against the work tree the
      * pointer sits in, which for a submodule is not the workspace root: `sub/.git`
@@ -1003,6 +1150,8 @@ describe('buildSandboxExecution workspace control files', () => {
           '/work/.git': 'dir',
           '/work/.git/hooks': 'dir',
           '/work/.git/modules/sub': 'dir',
+          '/work/.git/modules/sub/HEAD': 'file',
+          '/work/.git/modules/sub/objects': 'dir',
           '/work/.git/modules/sub/config': 'file',
           '/work/sub': 'dir',
           '/work/sub/.git': 'file',
@@ -1044,6 +1193,8 @@ describe('buildSandboxExecution workspace control files', () => {
           '/work/.git/modules': 'dir',
           '/work/.git/modules/sub': 'symlink',
           '/work/.git-sub-real': 'dir',
+          '/work/.git-sub-real/HEAD': 'file',
+          '/work/.git-sub-real/objects': 'dir',
           '/work/.git-sub-real/hooks': 'dir',
           '/work/.git-sub-real/config': 'file',
         },
@@ -1210,6 +1361,8 @@ describe('buildSandboxExecution workspace control files', () => {
           '/work/.book': 'dir',
           '/work/.git': 'file',
           '/work/.git-data': 'dir',
+          '/work/.git-data/HEAD': 'file',
+          '/work/.git-data/objects': 'dir',
           '/work/.git-data/hooks': 'dir',
           '/work/.git-data/config.worktree': 'file',
         },
@@ -1271,6 +1424,8 @@ describe('buildSandboxExecution workspace control files', () => {
           '/work/.book': 'dir',
           '/work/.git': 'file',
           '/work/..meta/gitdir': 'dir',
+          '/work/..meta/gitdir/HEAD': 'file',
+          '/work/..meta/gitdir/objects': 'dir',
           '/work/..meta/gitdir/hooks': 'dir',
         },
         { '/work/.git': 'gitdir: ..meta/gitdir\n' },
@@ -1586,6 +1741,8 @@ describe('buildSandboxExecution workspace control files', () => {
           '/work/.git/modules': 'dir',
           '/work/.git/modules/x': 'symlink',
           '/work/.git-sub-real': 'dir',
+          '/work/.git-sub-real/HEAD': 'file',
+          '/work/.git-sub-real/objects': 'dir',
           '/work/.git-sub-real/hooks': 'dir',
           '/work/.git-sub-real/config': 'file',
         },
@@ -1601,6 +1758,102 @@ describe('buildSandboxExecution workspace control files', () => {
         path: '/work/.git/modules/x',
         reason: 'symlinked-control-path',
       });
+    });
+
+    it('refuses core.hooksPath with a symlink in its path in both modes', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+          '/work/link': 'symlink',
+          '/work/real': 'dir',
+          '/work/real/hooks': 'dir',
+        },
+        {
+          '/work/.git/config': '[core]\n\thooksPath = link/hooks\n',
+        },
+        {
+          '/work/link': 'real',
+        },
+      );
+
+      const roPaths = protectedWorkspacePaths(WORKSPACE, host);
+      expect(roPaths.refusals).toContainEqual({
+        path: '/work/link',
+        reason: 'symlinked-control-path',
+      });
+
+      const optOutPaths = protectedWorkspacePaths(WORKSPACE, host, { allowGitWrites: true });
+      expect(optOutPaths.refusals).toContainEqual({
+        path: '/work/link',
+        reason: 'symlinked-control-path',
+      });
+    });
+
+    it('does not drop ..meta directory in workspaceComponents and checks its components', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+          '/work/..meta': 'dir',
+          '/work/..meta/link': 'symlink',
+          '/work/real': 'dir',
+          '/work/real/hooks': 'dir',
+        },
+        {
+          '/work/.git/config': '[core]\n\thooksPath = ..meta/link/hooks\n',
+        },
+        {
+          '/work/..meta/link': '../../real',
+        },
+      );
+
+      const roPaths = protectedWorkspacePaths(WORKSPACE, host);
+      expect(roPaths.refusals).toContainEqual({
+        path: '/work/..meta/link',
+        reason: 'symlinked-control-path',
+      });
+    });
+
+    it('exempts symlinks inside denyWrite or denyRead directories', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+          '/work/denied': 'dir',
+          '/work/denied/link': 'symlink',
+          '/work/denied/real': 'dir',
+          '/work/denied/real/hooks': 'dir',
+        },
+        {
+          '/work/.git/config': '[core]\n\thooksPath = denied/link/hooks\n',
+        },
+        {
+          '/work/denied/link': 'real',
+        },
+      );
+
+      // Without denyDirectories, refused:
+      const withoutExemption = protectedWorkspacePaths(WORKSPACE, host);
+      expect(withoutExemption.refusals).toContainEqual({
+        path: '/work/denied/link',
+        reason: 'symlinked-control-path',
+      });
+
+      // With denyDirectories, exempt:
+      const withExemption = protectedWorkspacePaths(WORKSPACE, host, {
+        denyDirectories: ['/work/denied'],
+      });
+      expect(withExemption.refusals.some((r) => r.path === '/work/denied/link')).toBe(false);
     });
 
     it('skips a control path that is neither a file nor a directory', () => {
@@ -1949,6 +2202,41 @@ describe('decideSandboxExecution refuses a workspace it cannot protect', () => {
 
       expect(decision.error).toBeUndefined();
       expect(decision.sandboxed).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('computes protectedWorkspacePaths once and passes it through wrap into buildSandboxExecution', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-sbx-once-'));
+    try {
+      let passedProtectedPaths: unknown;
+      const wrapSpy = vi.fn((_cmd: string, _ws: string, paths?: unknown) => {
+        passedProtectedPaths = paths;
+        return { file: '/bwrap', args: [] };
+      });
+
+      const decision = decideSandboxExecution(
+        {
+          workspaceRoot: dir,
+          sandbox: sandboxSettings({
+            filesystem: {
+              denyWrite: ['denied-dir'],
+              denyRead: ['masked-dir'],
+            },
+          }),
+          runtime: {
+            sandbox: () => ({ wrap: wrapSpy, describe: () => '' }),
+          },
+        },
+        'echo hi',
+        dir,
+      );
+
+      expect(decision.sandboxed).toBe(true);
+      expect(wrapSpy).toHaveBeenCalledTimes(1);
+      expect(passedProtectedPaths).toBeDefined();
+      expect(typeof passedProtectedPaths).toBe('object');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -2326,6 +2614,48 @@ describe.skipIf(!sandboxBackendAvailable())(
         } finally {
           rmSync(main, { recursive: true, force: true });
           rmSync(source, { recursive: true, force: true });
+        }
+      });
+
+      it('refuses to rename submodule parent directory (pinned ancestor fails with EBUSY)', async () => {
+        const { main, source, sub } = repoWithSubmodule();
+        try {
+          const pointer = join(main, sub, '.git');
+          const before = readFileSync(pointer, 'utf8');
+
+          const result = await sandboxedBash(
+            `mv ${sub} ${sub}2 && mkdir ${sub} && git init -q payload && printf 'gitdir: payload\\n' > ${sub}/.git`,
+            main,
+          );
+
+          expect(result.status).not.toBe('success');
+          expect(result.content).toMatch(/Device or resource busy|EBUSY/i);
+          expect(readFileSync(pointer, 'utf8')).toBe(before);
+          expect(existsSync(join(main, `${sub}2`))).toBe(false);
+        } finally {
+          rmSync(main, { recursive: true, force: true });
+          rmSync(source, { recursive: true, force: true });
+        }
+      });
+
+      it('refuses to rename core.hooksPath parent directory (pinned ancestor fails with EBUSY)', async () => {
+        const repo = freshRepo();
+        try {
+          mkdirSync(join(repo, '.husky', '_'), { recursive: true });
+          writeFileSync(join(repo, '.husky', '_', 'pre-commit'), '#!/bin/sh\nexit 0\n');
+          execFileSync('git', ['config', 'core.hooksPath', '.husky/_'], { cwd: repo });
+
+          const result = await sandboxedBash(
+            "mv .husky .husky2 && mkdir -p .husky/_ && printf '#!/bin/sh\\nexit 1\\n' > .husky/_/pre-commit",
+            repo,
+          );
+
+          expect(result.status).not.toBe('success');
+          expect(result.content).toMatch(/Device or resource busy|EBUSY/i);
+          expect(existsSync(join(repo, '.husky2'))).toBe(false);
+          expect(existsSync(join(repo, '.husky', '_', 'pre-commit'))).toBe(true);
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
         }
       });
 
@@ -3365,6 +3695,18 @@ describe('withGitConfigReadOnlyNotice', () => {
         ),
       ).toBe(CONFIG_ERROR);
     });
+
+    it('suppresses note for git -C repo config --global in opt-out mode', () => {
+      expect(
+        withGitConfigReadOnlyNotice(
+          CONFIG_ERROR,
+          CONFIG_ERROR,
+          true,
+          'git -C repo config --global user.name x',
+          false,
+        ),
+      ).toBe(CONFIG_ERROR);
+    });
   });
 
   describe('in read-only mode (gitDirReadOnly true)', () => {
@@ -3500,6 +3842,64 @@ describe('withGitConfigReadOnlyNotice', () => {
       );
       expect(text).toContain('check failed (exit 1)');
       expect(text).toContain("the repository's git directory is read-only inside the sandbox");
+    });
+
+    it('adds the note when output line says Read-only file system for separate git dir and command runs git', () => {
+      const sepDirError = "fatal: Unable to create '/w/gd/index.lock': Read-only file system";
+      const text = withGitConfigReadOnlyNotice(
+        sepDirError,
+        sepDirError,
+        true,
+        'git init --separate-git-dir gd',
+        true,
+      );
+      expect(text).toContain("the repository's git directory is read-only inside the sandbox");
+    });
+
+    it('adds the note when output line says Read-only file system with a .git path segment even if command is not git', () => {
+      const rmError = "rm: cannot remove '/w/.git/index.lock': Read-only file system";
+      const text = withGitConfigReadOnlyNotice(rmError, rmError, true, 'rm -rf /w/.git', true);
+      expect(text).toContain("the repository's git directory is read-only inside the sandbox");
+    });
+
+    it('does not add the note when output line says Read-only file system with repo.git/ and command does not run git', () => {
+      const rmError = "rm: cannot remove '/w/repo.git/index.lock': Read-only file system";
+      const text = withGitConfigReadOnlyNotice(rmError, rmError, true, 'rm -rf /w/repo.git', true);
+      expect(text).toBe(rmError);
+    });
+
+    it('adds note for git config --global ... && git commit when commit fails with index.lock error', () => {
+      const text = withGitConfigReadOnlyNotice(
+        ABSOLUTE_INDEX_ERROR,
+        ABSOLUTE_INDEX_ERROR,
+        true,
+        'git config --global user.name foo && git commit -m msg',
+        true,
+      );
+      expect(text).toContain("the repository's git directory is read-only inside the sandbox");
+    });
+
+    it('suppresses note for git -C repo config --global failing with config file error', () => {
+      expect(
+        withGitConfigReadOnlyNotice(
+          CONFIG_ERROR,
+          CONFIG_ERROR,
+          true,
+          'git -C repo config --global user.name x',
+          true,
+        ),
+      ).toBe(CONFIG_ERROR);
+    });
+
+    it('notes that workspace settings cannot enable either', () => {
+      const text = withGitConfigReadOnlyNotice(
+        ABSOLUTE_INDEX_ERROR,
+        ABSOLUTE_INDEX_ERROR,
+        true,
+        'git commit -m msg',
+        true,
+      );
+      expect(text).toContain('workspace settings cannot enable either');
     });
   });
 });

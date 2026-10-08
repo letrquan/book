@@ -190,22 +190,34 @@ a command exits:
   a `.git` file (`gitdir: …`), a `commondir` file, `.git/worktrees/*`, and nested `.git/modules/*` —
   including a multi-segment submodule path whose git dir is at `.git/modules/libs/deep` under the
   container directory `libs` — so linked worktrees and submodules are covered as well as a plain
-  repository. A `core.hooksPath` naming a path inside the workspace stays read-only in both modes,
-  and a git directory outside the workspace is left alone. This closes the pointer-file redirect gap
-  where a command could create a file like `.git/commondir`. Sandboxed git writes (`git commit`,
-  `git checkout`, `git add`, `git stash`, `git fetch`) fail with a note explaining that the repository's
-  git directory is read-only inside the sandbox (`sandbox.filesystem.allowGitWrites` is off), advising
-  the model not to retry the command or change settings itself, and directing the user to run it
-  outside the sandbox or allow it in `~/.book/settings.json` (where `sandbox.excludedCommands` runs
-  matching commands unsandboxed while `sandbox.allowUnsandboxedCommands` is true and
-  `sandbox.filesystem.allowGitWrites` lets sandboxed git write again; workspace settings cannot change
-  either). Caveat: a sandboxed `git worktree remove` deletes the work tree and then fails on its
-  read-only admin directory; `git worktree prune` outside the sandbox cleans up.
+  repository. Candidates must look like a git directory (`HEAD` exists and either an `objects` directory
+  or a `commondir` file exists); a pointer naming the workspace root or an ordinary directory does not
+  bind it read-only. If a candidate that passes canonicalises to the workspace root itself, the sandbox
+  refuses the run because the root cannot be made read-only without making the whole workspace read-only.
+  A `core.hooksPath` naming a path inside the workspace stays read-only in both modes, and a git directory
+  outside the workspace is left alone. This closes the pointer-file redirect gap where a command could
+  create a file like `.git/commondir`. In read-only mode, each ancestor directory strictly between the
+  workspace root and every protected mount is pinned with a writable self-bind (`--bind <dir> <dir>`).
+  A pinned directory cannot be renamed or removed inside the sandbox (failing with `EBUSY`), which prevents
+  renaming a parent directory to redirect a protected file or directory (such as `sub/.git`, `.husky/_`,
+  or an included config). Sandboxed git writes (`git commit`, `git checkout`, `git add`, `git fetch`)
+  fail with a note explaining that the repository's git directory is read-only inside the sandbox
+  (`sandbox.filesystem.allowGitWrites` is off), advising the model not to retry the command or change
+  settings itself, and directing the user to run it outside the sandbox or allow it in
+  `~/.book/settings.json` (where `sandbox.excludedCommands` runs matching commands unsandboxed while
+  `sandbox.allowUnsandboxedCommands` is true and `sandbox.filesystem.allowGitWrites` lets sandboxed git
+  write again; workspace settings cannot enable either). Caveat: `git stash` in read-only mode fails
+  silently with exit 1 and no output, so no note can match. A sandboxed `git worktree remove` deletes
+  the work tree and then fails on its read-only admin directory; `git worktree prune` outside the sandbox
+  cleans up.
 - When `sandbox.filesystem.allowGitWrites: true` is set (the opt-out), the previous behaviour applies:
   git directories stay writable, and their `hooks/`, `config`, `config.worktree`, `commondir`,
   `gitdir` and work tree `.git` pointer files are bound read-only (masked when absent). In this mode
   only the **workspace's own top-level git directory** is pinned, with a read-write self-bind, so
-  renaming or replacing it fails with `EBUSY` rather than redirecting the host's git.
+  renaming or replacing it fails with `EBUSY` rather than redirecting the host's git. Pinning work tree
+  directories is omitted here because doing so would make a sandboxed `git worktree remove` of an
+  in-workspace worktree fail halfway, which is the reason this mode exists. Consequently, the rename gap
+  remains open in opt-out mode: an ancestor directory holding a protected file can still be moved away.
 - An `allowWrite` entry at or below a protected path is applied after the protection — an explicit
   opt-in — while a broader one stays ahead of it and cannot reopen the path. An `allowWrite` entry on
   a git directory reopens what it names, but not the control paths strictly below it (`hooks/`,
@@ -215,12 +227,14 @@ a command exits:
   re-applied after every deferred opt-in so a trusted `allowWrite: ["<ws>/.book"]` cannot reopen
   `settings.local.json`.
 - A **symlinked** control path — `.book`, `.git`, `.git/hooks`, `.bookrc.json`, or any path component
-  strictly below the workspace root for a discovered git directory or pointer file target — is
+  strictly below the workspace root on the way to every protected mount (pointer files, hooksPath
+  directories, included config files), discovered git directory, or pointer target — is
   **refused**, naming the path and saying the sandbox cannot protect a symlinked control path. A component
   that is a symlink is safe only if the link itself lives inside a present read-only directory mount
-  (such as `.git/modules/x` inside a bound `.git` in read-only mode; refused in opt-out mode). Binding
-  the target read-only is not enough: the link sits in the writable workspace, so `rm .book && mkdir .book`
-  replaces it and every protection goes with it.
+  (such as `.git/modules/x` inside a bound `.git` in read-only mode; refused in opt-out mode) or inside a
+  `sandbox.filesystem.denyWrite` / `denyRead` directory (bound read-only or masked with tmpfs so changes
+  cannot reach the host). Binding the target read-only is not enough: the link sits in the writable
+  workspace, so `rm .book && mkdir .book` replaces it and every protection goes with it.
 - A git config is read with a **1 MiB** cap. A config larger than that is refused rather than
   truncated, because a truncated read is a `core.hooksPath` past the cut that the namespace never
   saw. `[include]` and `[includeIf]` files are followed, relative to the including file's directory,
