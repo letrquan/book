@@ -6,6 +6,21 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A router-wrapped or direct 429 for a spent plan usage limit no longer burns the retry budget**
+  (#400). A router-wrapped 429 that says a plan's weekly, daily, monthly, or N-hour usage limit is
+  spent was treated as a transient rate limit: Book waited the router's cooldown hint up to
+  `retry.maxDelayMs` on every attempt, then re-issued the turn and repeated the cycle for ~14
+  minutes and ~33 requests before claiming a temporary capacity issue for a limit resetting days
+  later. An effective 429 whose message states a usage, plan, quota, or subscription limit over a
+  long window was reached, exceeded, or spent — or carrying OpenAI's `insufficient_quota` code —
+  now classifies as `quota`: without `retry.watchdog`, `fetchWithRetry` answers with a single
+  request and the run parks like a 402 (`credentials_rejected`, provider code `quota`). The
+  formatted error names the stated reset time and remedy without temporary capacity advice, while
+  `insufficient_quota` keeps the credits advice. A short window anywhere in the message keeps the
+  error a rate limit. Under `retry.watchdog`, spent-limit 429s are still retried. On any retryable
+  429, an absolute `resets at <time>` within reach is waited for, up to `retry.maxDelayMs` per
+  attempt; a reset that falls beyond what the remaining attempts and retry budget can wait halts
+  retries immediately.
 - **Scrolling a long transcript no longer draws rows outside the viewport** (#353). The virtual
   transcript mounts about one viewport of rows above and below the view as overscan, and Ink's
   render walk visited every mounted node every frame: measuring `widestLine`, wrapping text, and

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_SETTINGS } from '../settings.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { createTerminalOutcome, terminalRecovery } from '../types/terminal.js';
 import {
@@ -1292,5 +1293,247 @@ describe('error bodies, review round 3 (#244)', () => {
       vi.unstubAllGlobals();
     }
     expect(calls).toBe(1);
+  });
+});
+
+describe('spent usage limit (#400)', () => {
+  const issueBody = JSON.stringify({
+    error: {
+      message:
+        "[commandcode/z-ai/glm-5.3-flash] [429]: You've reached your weekly usage limit for your plan. Your limit resets at 2026-10-10T03:40:20.972Z. Please wait for the window to reset or upgrade your plan to continue. (reset after 4m)",
+    },
+  });
+
+  it('classifies the issue body and equivalent plain 429 as quota', () => {
+    expect(classifyApiError(503, issueBody)).toBe('quota');
+    expect(classifyApiError(429, issueBody)).toBe('quota');
+  });
+
+  it('keeps short per-minute rate limits as rate_limited', () => {
+    const rpmBody =
+      '{"error":{"message":"Rate limit reached for requests per min (RPM): Limit 3, Used 3, Requested 1."}}';
+    expect(classifyApiError(429, rpmBody)).toBe('rate_limited');
+
+    const geminiBody =
+      '{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details. Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 10. Please retry in 41.6s.","status":"RESOURCE_EXHAUSTED"}}';
+    expect(classifyApiError(429, geminiBody)).toBe('rate_limited');
+
+    expect(
+      classifyApiError(429, 'You have exceeded the usage limit of 60 requests per minute.'),
+    ).toBe('rate_limited');
+  });
+
+  it('classifies long-window limits and insufficient_quota as quota', () => {
+    expect(
+      classifyApiError(
+        429,
+        '{"error":{"code":"insufficient_quota","message":"Billing limit reached"}}',
+      ),
+    ).toBe('quota');
+    expect(classifyApiError(429, 'Your daily quota is exhausted.')).toBe('quota');
+    expect(classifyApiError(429, "You've hit your 5-hour usage limit.")).toBe('quota');
+  });
+
+  it('answers the issue body with exactly one request and no retry', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return new Response(issueBody, { status: 503 });
+      }),
+    );
+    try {
+      const response = await fetchWithRetry('http://x/v1', {}, defaultConfig().retry);
+      expect(response.status).toBe(503);
+      expect(calls).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('stops retrying when an absolute reset is beyond the retry budget but retries when near', async () => {
+    const reset2hIso = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
+    const body2h = `Too many requests. Your limit resets at ${reset2hIso}.`;
+    let calls2h = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls2h++;
+        return new Response(body2h, { status: 429 });
+      }),
+    );
+    try {
+      const response = await fetchWithRetry('http://x/v1', {}, DEFAULT_SETTINGS.retry);
+      expect(response.status).toBe(429);
+      expect(calls2h).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    vi.useFakeTimers();
+    try {
+      const reset1sIso = new Date(Date.now() + 1000).toISOString();
+      const body1s = `Too many requests. Your limit resets at ${reset1sIso}.`;
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(body1s, { status: 429 }))
+        .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = fetchWithRetry('http://x/v1', {}, DEFAULT_SETTINGS.retry);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits up to maxDelayMs for an absolute reset within budget on retry', async () => {
+    vi.useFakeTimers();
+    try {
+      const reset4mIso = new Date(Date.now() + 4 * 60 * 1000).toISOString();
+      const body4m = `Too many requests. Your limit resets at ${reset4mIso}.`;
+      let firstRetryDelay: number | undefined;
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(body4m, { status: 429 }))
+        .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = fetchWithRetry(
+        'http://x/v1',
+        {},
+        DEFAULT_SETTINGS.retry,
+        undefined,
+        (attempt, _max, delayMs) => {
+          if (attempt === 1) firstRetryDelay = delayMs;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(firstRetryDelay).toBe(DEFAULT_SETTINGS.retry.maxDelayMs);
+      await vi.advanceTimersByTimeAsync(DEFAULT_SETTINGS.retry.maxDelayMs);
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('requires reached or spent wording for quota classification', () => {
+    expect(
+      classifyApiError(
+        429,
+        'Too many concurrent requests, slow down. Your daily quota is 10000 requests and resets every 24 hours.',
+      ),
+    ).toBe('rate_limited');
+  });
+
+  it('treats message with a short window anywhere as a rate limit', () => {
+    expect(
+      classifyApiError(429, 'Daily quota exceeded: limit 60 requests per minute, retry in 10s'),
+    ).toBe('rate_limited');
+  });
+
+  it('retries spent-limit 429 under watchdog', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(issueBody, { status: 503 }))
+        .mockResolvedValueOnce(new Response(issueBody, { status: 503 }))
+        .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = fetchWithRetry(
+        'http://x/v1',
+        {},
+        { ...DEFAULT_SETTINGS.retry, watchdog: true },
+      );
+      await vi.advanceTimersByTimeAsync(100_000);
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('formats insufficient_quota and 402 with credit advice without reset wording', () => {
+    const insufficientQuotaBody = JSON.stringify({
+      error: {
+        code: 'insufficient_quota',
+        message: 'You exceeded your current quota, please check your plan and billing details.',
+      },
+    });
+    expect(classifyApiError(429, insufficientQuotaBody)).toBe('quota');
+    const msg429 = formatApiError(429, insufficientQuotaBody);
+    expect(msg429).toContain('Check your usage/credits.');
+    expect(msg429).not.toContain('Wait for the reset');
+
+    const msg402 = formatApiError(402, 'Monthly usage limit exceeded.');
+    expect(msg402).toContain('Check your usage/credits.');
+    expect(msg402).not.toContain('Wait for the reset');
+  });
+
+  it('ignores absolute reset found only in non-message json fields', async () => {
+    const echoBody = JSON.stringify({
+      error: { message: 'Too many requests' },
+      echo: 'resets at 2099-01-01T00:00:00Z',
+    });
+    const formatted = formatApiError(429, echoBody);
+    expect(formatted).toContain('Try again in a moment');
+    expect(formatted).not.toContain('2099-01-01');
+
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(echoBody, { status: 429 }))
+        .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = fetchWithRetry('http://x/v1', {}, DEFAULT_SETTINGS.retry);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('formats error with reset time and remedy without temporary capacity wording', () => {
+    const message = formatApiError(503, issueBody);
+    expect(message).toContain('2026-10-10T03:40:20.972Z');
+    expect(message).toContain('--model');
+    expect(message).not.toContain('Try again in a moment');
+    expect(message).not.toContain('temporary capacity');
+
+    const quotaNoReset = formatApiError(429, 'Your daily quota is exhausted.');
+    expect(quotaNoReset).toContain(
+      'The usage limit for this plan is spent. Wait for the reset, or choose another model with --model or /model.',
+    );
+    expect(quotaNoReset).not.toContain('it resets at');
+
+    const plain402 = formatApiError(402, 'Payment required');
+    expect(plain402).toContain('Check your usage/credits.');
+  });
+
+  it('keeps temporary capacity wording for plain rate limits', () => {
+    const plainMsg = formatApiError(429, 'Rate limit reached for requests per min');
+    expect(plainMsg).toContain('Try again in a moment');
+
+    const futureIso = new Date(Date.now() + 600_000).toISOString();
+    const rateLimitWithFutureReset = formatApiError(
+      429,
+      `Too many requests. Limit resets at ${futureIso}.`,
+    );
+    expect(rateLimitWithFutureReset).toContain(`It resets at ${futureIso}.`);
+    expect(rateLimitWithFutureReset).not.toContain('Try again in a moment');
+    expect(rateLimitWithFutureReset).not.toContain('temporary capacity');
   });
 });
