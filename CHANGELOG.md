@@ -21,6 +21,32 @@ All notable changes to this project are documented in this file.
   429, an absolute `resets at <time>` within reach is waited for, up to `retry.maxDelayMs` per
   attempt; a reset that falls beyond what the remaining attempts and retry budget can wait halts
   retries immediately.
+- **Scrolling a long transcript no longer draws rows outside the viewport** (#353). The virtual
+  transcript mounts about one viewport of rows above and below the view as overscan, and Ink's
+  render walk visited every mounted node every frame: measuring `widestLine`, wrapping text, and
+  recording writes that `Output.get` discarded because they lay outside the clip. A profile of a
+  heavy session put that walk at 26% of the TUI's busy CPU while scrolling, with 54% of the
+  remaining offscreen writes coming from rows that straddled viewport edges (such as long diffs or
+  command output). `src/cli/` now installs `ink-render-cull.ts`, which tracks the walk's clip stack
+  and gives mounted transcript rows — and children of rows that straddle a viewport edge — an own
+  `getDisplay` reporting `DISPLAY_NONE` whenever a node's box lies wholly outside the innermost
+  vertical clip. Absolute tops are memoized per frame to avoid redundant ancestor traversals across
+  siblings. Yoga layout is untouched — Yoga reads display from its native style rather than the
+  JavaScript method — so layout positions are preserved while Ink skips the subtree walk entirely.
+  Set `BOOK_INK_RENDER_CULL=off` to restore the previous behavior. At very narrow widths a tool
+  summary row now truncates instead of wrapping onto the row below it. **Measured** on the shipped
+  code: every real frame was drawn twice in the same process, once with the cull and once without
+  it, from the same layout: 0 mismatches over 514 frames (Windows 248, Linux 266), and colour
+  screenshots are byte-identical with the cull on, off, and on main. The cull removes 68% (Windows)
+  and 66% (Linux) of the walk's writes (before it, 73% of the writes the walk made landed wholly
+  outside the clip; with it, 14% (Windows) and 20% (Linux)). Draw time fell from 475 ms to 303 ms
+  over wheel-up and 365 ms to 211 ms over wheel-down on Linux, and from 483 ms to 361 ms over wheel-up
+  and 355 ms to 200 ms over wheel-down on Windows. On Linux, stalls over 40 ms during wheel-up fell
+  from 1.5 to 0.3 per run (summed 66 ms to 15 ms), and the worst stall per run from 45 ms to 37 ms at
+  the median. Under load on Windows, stalls over 40 ms during wheel-up fell from 3.6 to 0.9 per run
+  (summed 182 ms to 40 ms), and the worst stall per run from 56 ms to 42 ms at the median. On a quiet
+  Windows box, stalls over 40 ms did not move (about one per run in either build): what remains there
+  is the React mount and Yoga layout of newly mounted heavy rows, which the cull does not touch.
 - **A model the provider no longer serves is no longer reported as a rejected credential** (#387).
   9router wraps an upstream 403 in its own 503 (`[route] [403]: Model is no longer available`),
   which `classifyApiError` read through the quoted status as `auth` — so the run parked as

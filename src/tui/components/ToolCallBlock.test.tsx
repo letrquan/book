@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
+import { Box } from 'ink';
 import { act } from 'react';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
@@ -606,5 +607,28 @@ describe('ToolCallBlock', () => {
     );
 
     expect(frame(view.lastFrame)).toContain('Built-in web search providers are unavailable');
+  });
+
+  it('renders summary as exactly one line ending in … at narrow width with long target', () => {
+    const width = 24;
+    const view = render(
+      withTheme(
+        <Box width={width}>
+          <ToolCallBlock
+            name="Bash"
+            args={{ command: 'git log --oneline --graph --all --decorate --stat' }}
+            result={successResult('call-narrow', 'ok')}
+            isExpanded={false}
+            terminalWidth={width}
+            reducedMotion
+          />
+        </Box>,
+      ),
+    );
+
+    const rendered = frame(view.lastFrame);
+    const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.trimEnd()).toMatch(/…$/);
   });
 });

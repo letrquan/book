@@ -1,8 +1,11 @@
 import chalk from 'chalk';
+import { Box } from 'ink';
 import { afterEach, describe, expect, it } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
-import { AgentMessage } from './AgentMessage.js';
+import { AgentMessage, MutationGroupRow } from './AgentMessage.js';
+import { QuietToolRun } from './QuietToolRun.js';
+import { transcriptGrid } from '../layout.js';
 import type { Message } from '../../types/messages.js';
 import type { ToolResult } from '../../types/tools.js';
 import type { PendingPermissionRequest } from '../../session/agent-interactions.js';
@@ -348,5 +351,55 @@ describe('AgentMessage work steps', () => {
 
     expect(frame).toContain(`${ink(DEFAULT_THEME.inactive)}✓`);
     expect(frame).not.toContain(`${ink(DEFAULT_THEME.success)}✓`);
+  });
+
+  it('renders quiet tool summary as exactly one line ending in … at narrow width with long target', () => {
+    const width = 24;
+    const grid = transcriptGrid(width);
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <Box width={width}>
+          <QuietToolRun
+            summary={{
+              title: 'Read',
+              target: 'src/components/very/deeply/nested/path/to/component/File.tsx',
+              metadata: ['42 lines'],
+              running: false,
+            }}
+            grid={grid}
+            reducedMotion
+          />
+        </Box>
+      </ThemeContext.Provider>,
+    );
+
+    const rendered = stripAnsi(view.lastFrame());
+    const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.trimEnd()).toMatch(/…$/);
+  });
+
+  it('renders mutation group summary as exactly one line ending in … at narrow width with long target', () => {
+    const width = 20;
+    const grid = transcriptGrid(width);
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <Box width={width}>
+          <MutationGroupRow
+            createdOnly={false}
+            fileCount={999999999}
+            addedLines={500}
+            removedLines={200}
+            grid={grid}
+            screenReader={false}
+          />
+        </Box>
+      </ThemeContext.Provider>,
+    );
+
+    const rendered = stripAnsi(view.lastFrame());
+    const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.trimEnd()).toMatch(/…$/);
   });
 });
