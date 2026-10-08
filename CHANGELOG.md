@@ -28,8 +28,8 @@ All notable changes to this project are documented in this file.
 - **The agent store no longer logs spurious write retry events for first-try writes** (#402).
   Atomic JSON writes incremented an attempt counter across both lock and rename steps, returning
   two attempts on clean writes and causing the agent store to log a retry event on every success.
-  Attempts now count the initial write plus only contended retries, and the store logs retry
-  successes only when a pending write or internal file operation actually retried.
+  Attempts now count the initial write plus only contended retries, a stale-lock reclaim is not
+  counted as a retry, and the store logs retry events only when a write actually retried.
 
 ### Changed
 

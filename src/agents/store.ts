@@ -587,7 +587,7 @@ export class AgentStore {
         this.safeLog('retry succeeded', {
           target: pending.targetType,
           attempts: result.attempts,
-          retries: pending.retryIndex,
+          scheduledRetries: pending.retryIndex,
         });
       }
       this.maybeRecover();

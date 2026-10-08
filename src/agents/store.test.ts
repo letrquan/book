@@ -10,7 +10,7 @@ import {
 import { open as openAsync, rename as renameAsync } from 'fs/promises';
 import type { FileHandle } from 'fs/promises';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, sep } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AtomicJsonWriter } from './atomic-json.js';
 import { AgentStore } from './store.js';
@@ -1156,6 +1156,7 @@ describe('AgentStore retry logging', () => {
 
     store.saveAgent(recordFixture('first-try'));
 
+    expect(writer.write).toHaveBeenCalled();
     const retrySucceeded = debugEvents.filter((e) => e.event === 'retry succeeded');
     expect(retrySucceeded).toEqual([]);
     store.dispose();
@@ -1173,7 +1174,7 @@ describe('AgentStore retry logging', () => {
         elapsedMs: 0,
       })),
       write: vi.fn((target: string) => {
-        if (!target.includes(join('records', ''))) {
+        if (!target.includes(`${sep}records${sep}`)) {
           return { status: 'ok' as const, target, attempts: 1, elapsedMs: 0 };
         }
         recordAttempts++;
@@ -1206,7 +1207,7 @@ describe('AgentStore retry logging', () => {
     const retrySucceeded = debugEvents.filter((e) => e.event === 'retry succeeded');
     expect(retrySucceeded).toHaveLength(1);
     expect(retrySucceeded[0]?.metadata).toMatchObject({
-      retries: 1,
+      scheduledRetries: 1,
       attempts: 1,
     });
     store.dispose();

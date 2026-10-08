@@ -8,6 +8,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import { rename as renameAsync } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -290,5 +291,158 @@ describe('AtomicJsonWriter', () => {
     expect(result.status).toBe('ok');
     expect(result.attempts).toBe(2);
     expect(renameCalls).toBe(2);
+  });
+
+  it('requests back-off ladder [10, 20] across two rename contentions after a clean lock', () => {
+    const { target } = fixture();
+    const requestedSleeps: number[] = [];
+    let renameCalls = 0;
+    const writer = new AtomicJsonWriter({
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 10,
+      hostname: 'test-host',
+      now: () => 0,
+      sleep: (milliseconds) => {
+        requestedSleeps.push(milliseconds);
+      },
+      fs: {
+        renameSync: (source, destination) => {
+          renameCalls++;
+          if (renameCalls <= 2) throw contention('EBUSY');
+          return renameSync(source, destination);
+        },
+      },
+    });
+
+    const result = writer.write(target, { version: 'retried' });
+    expect(result.status).toBe('ok');
+    expect(result.attempts).toBe(3);
+    expect(requestedSleeps).toEqual([10, 20]);
+    expect(renameCalls).toBe(3);
+  });
+
+  it('requests back-off ladder [5] and reports attempts === 2 on one lock contention from a live owner', () => {
+    const { target } = fixture();
+    const lock = `${target}.lock`;
+    writeFileSync(
+      lock,
+      JSON.stringify({
+        schemaVersion: 1,
+        instanceId: '22222222-2222-4222-8222-222222222222',
+        pid: 22,
+        hostname: 'test-host',
+        createdAt: 0,
+      }),
+    );
+    const requestedSleeps: number[] = [];
+    let now = 0;
+    const writer = new AtomicJsonWriter({
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 10,
+      hostname: 'test-host',
+      now: () => now,
+      isLockOwnerAlive: () => true,
+      sleep: (milliseconds) => {
+        requestedSleeps.push(milliseconds);
+        now += milliseconds;
+        if (existsSync(lock)) rmSync(lock);
+      },
+    });
+
+    const result = writer.write(target, { version: 'new' });
+    expect(result.status).toBe('ok');
+    expect(result.attempts).toBe(2);
+    expect(requestedSleeps).toEqual([5]);
+  });
+
+  it('returns attempts === 2 when writeAsync rename hits one contention error then succeeds', async () => {
+    const { target } = fixture();
+    let renameCalls = 0;
+    const writer = new AtomicJsonWriter({
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 10,
+      hostname: 'test-host',
+      fsAsync: {
+        rename: async (source, destination) => {
+          renameCalls++;
+          if (renameCalls === 1) throw contention('EBUSY');
+          return renameAsync(source, destination);
+        },
+      },
+    });
+
+    const result = await writer.writeAsync(target, { version: 'retried' });
+    expect(result.status).toBe('ok');
+    expect(result.attempts).toBe(2);
+    expect(renameCalls).toBe(2);
+  });
+
+  it('reports attempts === 1 after reclaiming a stale lock for write and writeAsync', async () => {
+    const { target } = fixture();
+    const lock = `${target}.lock`;
+    const makeStaleLock = () => {
+      writeFileSync(
+        lock,
+        JSON.stringify({
+          schemaVersion: 1,
+          instanceId: '22222222-2222-4222-8222-222222222222',
+          pid: 22,
+          hostname: 'test-host',
+          createdAt: 0,
+        }),
+      );
+      utimesSync(lock, new Date(0), new Date(0));
+    };
+
+    const writer = new AtomicJsonWriter({
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 10,
+      hostname: 'test-host',
+      now: () => 60_000,
+      isLockOwnerAlive: () => false,
+    });
+
+    makeStaleLock();
+    const syncResult = writer.write(target, { version: 'sync' });
+    expect(syncResult.status).toBe('ok');
+    expect(syncResult.attempts).toBe(1);
+
+    makeStaleLock();
+    const asyncResult = await writer.writeAsync(target, { version: 'async' });
+    expect(asyncResult.status).toBe('ok');
+    expect(asyncResult.attempts).toBe(1);
+  });
+
+  it('returns status cancelled and attempts === 2 when canCommit returns false on the second rename attempt', async () => {
+    const { target } = fixture();
+    let renameCalls = 0;
+    let canCommitCalls = 0;
+    const writer = new AtomicJsonWriter({
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 10,
+      hostname: 'test-host',
+      fsAsync: {
+        rename: async (source, destination) => {
+          renameCalls++;
+          if (renameCalls === 1) throw contention('EBUSY');
+          return renameAsync(source, destination);
+        },
+      },
+    });
+
+    const result = await writer.writeAsync(
+      target,
+      { version: 'cancelled' },
+      {
+        canCommit: () => {
+          canCommitCalls++;
+          return canCommitCalls === 1;
+        },
+      },
+    );
+
+    expect(result.status).toBe('cancelled');
+    expect(result.attempts).toBe(2);
+    expect(renameCalls).toBe(1);
   });
 });
