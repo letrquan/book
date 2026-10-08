@@ -123,6 +123,8 @@ interface EffectiveCommand {
    */
   exec?: CommandExecution;
   sandboxed: boolean;
+  /** Set along `sandboxed`, per `decideSandboxExecution`; read by the failure note. */
+  gitDirReadOnly?: boolean;
   error?: string;
 }
 
@@ -177,7 +179,14 @@ function buildEffectiveCommand(
   const decision = decideSandboxExecution(ctx, command, workdir);
   if (decision.error) return { ...plain, error: decision.error };
   if (decision.sandboxed) {
-    return { command, workdir, effectiveCommand: command, exec: decision.exec, sandboxed: true };
+    return {
+      command,
+      workdir,
+      effectiveCommand: command,
+      exec: decision.exec,
+      sandboxed: true,
+      gitDirReadOnly: decision.gitDirReadOnly,
+    };
   }
   return plain;
 }
@@ -312,6 +321,7 @@ async function bashForeground(
           effectiveCommand: built.effectiveCommand,
           workdir: built.workdir,
           sandboxed: built.sandboxed,
+          gitDirReadOnly: built.gitDirReadOnly,
           startedAt,
           // Raw, and in arrival order. The manager's buffer becomes the single stream the model
           // reads for the rest of this command's life, so what belongs in it is what the command
@@ -459,20 +469,23 @@ async function bashForeground(
       void finish(
         code === 0
           ? ok((built.sandboxed ? '[sandboxed] ' : '') + (stdout || '(no output)'))
-          : // The read-only `.git/config` is what stops a command repointing
-            // `core.hooksPath` (#373), and git reports the consequence in words
-            // that name no cause. Appended here, once, so the model learns the
-            // command has to run outside the sandbox instead of retrying it.
-            // Matched against both streams: a command that redirects stderr
-            // into stdout still gets the note, and the command is passed so a
-            // `git config --global` — which writes `~/.gitconfig`, a different
-            // file — is not told about `.git/config` at all.
+          : // The git directory is read-only in the sandbox by default (issue
+            // 373), and git reports the consequence in words that name no
+            // cause — an index lock, `FETCH_HEAD`, or, with
+            // `allowGitWrites` on, the repository config it cannot repoint.
+            // Appended here, once, so the model learns the command has to run
+            // outside the sandbox instead of retrying it. Matched against
+            // both streams: a command that redirects stderr into stdout
+            // still gets the note, and the command is passed so a
+            // `git config --global` — which writes `~/.gitconfig`, a
+            // different file — is not told about the repository at all.
             fail(
               withGitConfigReadOnlyNotice(
                 stderr || `Exit code: ${code}`,
                 `${stdout}\n${stderr}`,
                 built.sandboxed,
                 built.command,
+                built.gitDirReadOnly,
               ),
               stdout,
             ),
@@ -521,6 +534,7 @@ async function bashBackground(
       timeoutMs: requestedRuntime,
       workspace: ctx.workspaceRoot,
       envOverrides: persistentEnvironmentOverrides(ctx),
+      gitDirReadOnly: built.gitDirReadOnly,
       parentSessionId: ctx.parentSessionId,
       rootRunId: ctx.runContext?.rootRunId,
       parentRunId: ctx.runContext?.runId,
@@ -626,7 +640,7 @@ async function bashOutput(args: Record<string, unknown>, ctx: ToolContext): Prom
   }
   // The same note the foreground appends, for the same reason: a long build, a
   // `git checkout -b` behind a `&&`, or anything else the model backgrounded is
-  // exactly where the read-only `.git/config` error used to arrive unexplained.
+  // exactly where the read-only git dir's error used to arrive unexplained.
   // Without it the model reads "could not write config file" from a background
   // shell, retries it, and never learns the command needs the outside. Both
   // streams are the one buffer here, and the record carries the command that ran.
@@ -636,6 +650,7 @@ async function bashOutput(args: Record<string, unknown>, ctx: ToolContext): Prom
       result.output,
       result.shell.sandboxed === true,
       result.shell.effectiveCommand,
+      result.shell.gitDirReadOnly,
     ),
     result,
   );

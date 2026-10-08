@@ -113,14 +113,17 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
           return;
         }
         // A project check is run inside the same namespace a `Bash` command is,
-        // so a `git` command among them hits the same read-only `.git/config`
-        // (#373) and says so in words that name no cause. Appended here, once.
+        // so a `git` command among them hits the same read-only git dir
+        // (issue 373) and says so in words that name no cause. Appended here,
+        // once.
         resolve(
           fail(
             withGitConfigReadOnlyNotice(
               stderr || stdout || error.message,
               stderr || stdout,
               decision.sandboxed,
+              command,
+              decision.gitDirReadOnly,
             ),
           ),
         );

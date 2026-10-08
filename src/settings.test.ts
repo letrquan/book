@@ -52,6 +52,7 @@ describe('settings schema defaults', () => {
       allowWrite: ['/tmp'],
       denyWrite: [],
       denyRead: [],
+      allowGitWrites: false,
     });
     expect(parsed.sandbox.network).toEqual({ allowedDomains: [], deniedDomains: [] });
     expect(parsed.memory.extraction).toEqual({

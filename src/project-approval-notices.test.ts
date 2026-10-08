@@ -177,6 +177,17 @@ describe('an ignored sandbox key in a workspace layer is reported', () => {
     expect(reported).toContain(`declared by ${join(workspace, '.book', 'settings.json')}`);
     expect(reported).toContain(`declared by ${join(workspace, '.book', 'settings.local.json')}`);
   });
+
+  it('reports allowGitWrites: true as an ignored sandbox key from project and local layers', () => {
+    writeProject({ sandbox: { filesystem: { allowGitWrites: true } } });
+    writeLocal({ sandbox: { filesystem: { allowGitWrites: true } } });
+
+    const reported = notices(resolved()).join('\n');
+
+    expect(reported).toContain('sandbox.filesystem.allowGitWrites=true');
+    expect(reported).toContain(`declared by ${join(workspace, '.book', 'settings.json')}`);
+    expect(reported).toContain(`declared by ${join(workspace, '.book', 'settings.local.json')}`);
+  });
 });
 
 /**

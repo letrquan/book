@@ -199,6 +199,9 @@ const WORKSPACE_SANDBOX_ONLY_TIGHTENING: ReadonlyArray<readonly [readonly string
   [['sandbox', 'autoAllowBashIfSandboxed'], false],
   [['sandbox', 'excludedCommands'], null],
   [['sandbox', 'filesystem', 'allowWrite'], null],
+  // `false` (the loader default) is the read-only git dirs; a workspace layer may
+  // tighten to it and may never opt itself back out (#373).
+  [['sandbox', 'filesystem', 'allowGitWrites'], false],
   [['sandbox', 'network', 'allowedDomains'], null],
 ];
 

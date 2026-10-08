@@ -80,6 +80,16 @@ describe('guard order', () => {
     expect(guardSettingWrite('sandbox.enabled', true, 'local')).toBeUndefined();
     expect(guardSettingWrite('sandbox.filesystem.denyRead', ['~/.ssh'], 'local')).toBeUndefined();
     expect(guardSettingWrite('sandbox.filesystem.allowWrite', ['/'], 'local')).toContain('ignored');
+    expect(guardSettingWrite('sandbox.filesystem.allowGitWrites', true, 'local')).toContain(
+      'ignored',
+    );
+    expect(guardSettingWrite('sandbox.filesystem.allowGitWrites', true, 'project')).toContain(
+      'ignored',
+    );
+    expect(guardSettingWrite('sandbox.filesystem.allowGitWrites', false, 'local')).toBeUndefined();
+    expect(
+      guardSettingWrite('sandbox.filesystem.allowGitWrites', false, 'project'),
+    ).toBeUndefined();
     // A whole-object write is judged the same way, key by key.
     expect(
       guardSettingWrite('sandbox', { enabled: true, excludedCommands: ['*'] }, 'local'),
@@ -116,6 +126,7 @@ describe('guard order', () => {
       ['sandbox.allowUnsandboxedCommands', true],
       ['sandbox.excludedCommands', ['*']],
       ['sandbox.filesystem.allowWrite', ['/']],
+      ['sandbox.filesystem.allowGitWrites', true],
       ['sandbox', { enabled: true, excludedCommands: ['*'] }],
     ] as const) {
       expect(guardSettingWrite(key, value, 'user'), key).toBeUndefined();
@@ -141,6 +152,35 @@ describe('guard order', () => {
     expect(result.error).toContain('ignored');
     // Refused before the file was created, so there is nothing to leave behind.
     expect(existsSync(join(workspace, '.book', 'settings.json'))).toBe(false);
+  });
+
+  it('refuses allowGitWrites: true at project and local scope, but accepts it at user scope and accepts false at project scope', () => {
+    const projectTrue = write('sandbox.filesystem.allowGitWrites', true, 'project');
+    expect(projectTrue.ok).toBe(false);
+    if (projectTrue.ok) throw new Error('expected the write to be refused');
+    expect(projectTrue.error).toContain('ignored');
+    expect(existsSync(join(workspace, '.book', 'settings.json'))).toBe(false);
+
+    const localTrue = write('sandbox.filesystem.allowGitWrites', true, 'local');
+    expect(localTrue.ok).toBe(false);
+    if (localTrue.ok) throw new Error('expected the write to be refused');
+    expect(localTrue.error).toContain('ignored');
+    expect(existsSync(join(workspace, '.book', 'settings.local.json'))).toBe(false);
+
+    const userTrue = write('sandbox.filesystem.allowGitWrites', true, 'user');
+    expect(userTrue.ok).toBe(true);
+    if (!userTrue.ok) throw new Error(userTrue.error);
+    const writtenUser = JSON.parse(readFileSync(userTrue.path, 'utf8')) as Record<string, unknown>;
+    expect(writtenUser.sandbox).toEqual({ filesystem: { allowGitWrites: true } });
+
+    const projectFalse = write('sandbox.filesystem.allowGitWrites', false, 'project');
+    expect(projectFalse.ok).toBe(true);
+    if (!projectFalse.ok) throw new Error(projectFalse.error);
+    const writtenProject = JSON.parse(readFileSync(projectFalse.path, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(writtenProject.sandbox).toEqual({ filesystem: { allowGitWrites: false } });
   });
 
   /**

@@ -41,6 +41,19 @@ export const sandboxSchema = z.object({
       allowWrite: z.array(z.string()).default([]),
       denyWrite: z.array(z.string()).default([]),
       denyRead: z.array(z.string()).default([]),
+      /**
+       * Off (the default) binds every git directory of the workspace read-only inside
+       * the sandbox, which also closes the pointer-file redirect a writable git dir
+       * leaves open (issue 373): a sandboxed command can create `.git/commondir` in a
+       * plain repository, and the host's git reads it on its next command. Sandboxed
+       * git writes — commit, checkout, add, stash, fetch — fail while it is off, and
+       * the failed output names this setting among the remedies. On restores the
+       * previous shape (git directories writable, their hooks, config and pointer
+       * files read-only, the top-level `.git` pinned) and reopens the pointer-file
+       * gap. Only a trusted layer may set it: a workspace file may tighten it to
+       * `false` and never back to `true`.
+       */
+      allowGitWrites: z.boolean().default(false),
     })
     .prefault({}),
   network: z
@@ -603,7 +616,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     autoAllowBashIfSandboxed: true,
     excludedCommands: [],
     allowUnsandboxedCommands: true,
-    filesystem: { allowWrite: [], denyWrite: [], denyRead: [] },
+    filesystem: { allowWrite: [], denyWrite: [], denyRead: [], allowGitWrites: false },
     network: { allowedDomains: [], deniedDomains: [] },
   },
   hooks: {

@@ -109,17 +109,18 @@ and `ag/` routes report no caching at all, and `prompt_cache_key` changes nothin
 defaults to `false`, so nothing is sandboxed until you opt in. The rest of the family decides what
 that namespace looks like and what happens to a command that cannot get one:
 
-| key                        | default | meaning                                                                            |
-| -------------------------- | ------- | ---------------------------------------------------------------------------------- |
-| `failIfUnavailable`        | `false` | fail the command when no backend exists, instead of running it                     |
-| `allowUnsandboxedCommands` | `true`  | allow a command to run outside the sandbox when it cannot be wrapped               |
-| `autoAllowBashIfSandboxed` | `true`  | skip the default permission ask for a genuinely sandboxed `Bash`                   |
-| `excludedCommands`         | `[]`    | command patterns that run outside the sandbox on purpose                           |
-| `filesystem.allowWrite`    | `[]`    | extra paths bound read-write inside the namespace                                  |
-| `filesystem.denyWrite`     | `[]`    | paths bound read-only                                                              |
-| `filesystem.denyRead`      | `[]`    | paths masked entirely (directories) or unreadable (files)                          |
-| `network.allowedDomains`   | `[]`    | not enforceable in bubblewrap; declaring any domain policy disables network access |
-| `network.deniedDomains`    | `[]`    | not enforceable in bubblewrap; declaring any domain policy disables network access |
+| key                         | default | meaning                                                                            |
+| --------------------------- | ------- | ---------------------------------------------------------------------------------- |
+| `failIfUnavailable`         | `false` | fail the command when no backend exists, instead of running it                     |
+| `allowUnsandboxedCommands`  | `true`  | allow a command to run outside the sandbox when it cannot be wrapped               |
+| `autoAllowBashIfSandboxed`  | `true`  | skip the default permission ask for a genuinely sandboxed `Bash`                   |
+| `excludedCommands`          | `[]`    | command patterns that run outside the sandbox on purpose                           |
+| `filesystem.allowWrite`     | `[]`    | extra paths bound read-write inside the namespace                                  |
+| `filesystem.denyWrite`      | `[]`    | paths bound read-only                                                              |
+| `filesystem.denyRead`       | `[]`    | paths masked entirely (directories) or unreadable (files)                          |
+| `filesystem.allowGitWrites` | `false` | bind every git directory of the workspace read-only; true allows git writes        |
+| `network.allowedDomains`    | `[]`    | not enforceable in bubblewrap; declaring any domain policy disables network access |
+| `network.deniedDomains`     | `[]`    | not enforceable in bubblewrap; declaring any domain policy disables network access |
 
 `allowUnsandboxedCommands: false` is the setting that refuses a command outright — it names the
 setting and the reason rather than running the command anyway. Because `enabled` defaults to
@@ -140,6 +141,7 @@ the sandbox:
 | `autoAllowBashIfSandboxed`         | `false`                         | `true`    |
 | `excludedCommands`                 | —                               | any value |
 | `filesystem.allowWrite`            | —                               | any value |
+| `filesystem.allowGitWrites`        | `false`                         | `true`    |
 | `network.allowedDomains`           | —                               | any value |
 | `filesystem.denyWrite`, `denyRead` | adds entries                    | —         |
 | `network.deniedDomains`            | adds entries                    | —         |
@@ -183,41 +185,68 @@ a command exits:
   can hold is not merely unwritable inside the sandbox but unreadable.
 - `.bookrc.json` — read-only when it exists. An absent file is left alone, since bubblewrap cannot
   mount a tmpfs over a file path.
-- a git directory's `hooks/`, `config`, `config.worktree`, `commondir` and `gitdir`, and every
-  work tree's `.git` pointer file — read-only, and masked when absent. The directory is found by
-  following a `.git` file, a `commondir` file, `.git/worktrees/*` and nested `.git/modules/*`,
+- Every git directory of the workspace (`.git`, linked worktree admin directories, and submodule
+  git directories) — bound read-only by default (issue 373). The directory is found by following
+  a `.git` file (`gitdir: …`), a `commondir` file, `.git/worktrees/*`, and nested `.git/modules/*` —
   including a multi-segment submodule path whose git dir is at `.git/modules/libs/deep` under the
-  container directory `libs`, so a linked worktree or a submodule is covered as well as a plain
-  repository, and a `core.hooksPath` naming a path inside the workspace is protected the same way.
-  A git directory outside the workspace is left alone.
-- The git directory itself is **not** read-only, because a sandboxed `git commit`, `git checkout` or
-  `git fetch` has to keep working. Only the **workspace's own top-level git directory** is pinned,
-  with a read-write self-bind, so renaming or replacing it fails with `EBUSY` rather than redirecting
-  the host's git — pinning the discovered admin directories too would make a sandboxed
-  `git worktree remove` fail halfway with `EBUSY` on the very directories git is deleting. A
-  `sandbox.filesystem.allowWrite` entry at or below a protected path is applied after the protection —
-  an explicit opt-in — while a broader one stays ahead of it and cannot reopen the path, and a
-  `hidden-file` mask is re-applied after every deferred opt-in so a trusted
-  `allowWrite: ["<ws>/.book"]` cannot reopen `settings.local.json`.
-- A **symlinked** control path — `.book`, `.git`, `.git/hooks` or `.bookrc.json` — is **refused**,
-  naming the path and saying the sandbox cannot protect a symlinked control path. Binding the target
-  read-only is not enough: the link sits in the writable workspace, so `rm .book && mkdir .book`
-  replaces it and every protection goes with it.
+  container directory `libs` — so linked worktrees and submodules are covered as well as a plain
+  repository. Candidates must look like a git directory (`HEAD` exists and either an `objects` directory
+  or a `commondir` file exists); a pointer naming the workspace root or an ordinary directory does not
+  bind it read-only. If a candidate that passes canonicalises to the workspace root itself, the sandbox
+  refuses the run because the root cannot be made read-only without making the whole workspace read-only.
+  A `core.hooksPath` naming a path inside the workspace stays read-only in both modes, and a git directory
+  outside the workspace is left alone. This closes the pointer-file redirect gap where a command could
+  create a file like `.git/commondir`. In read-only mode, each ancestor directory strictly between the
+  workspace root and every protected mount is pinned with a writable self-bind (`--bind <dir> <dir>`).
+  A pinned directory cannot be renamed or removed inside the sandbox (failing with `EBUSY`), which prevents
+  renaming a parent directory to redirect a protected file or directory (such as `sub/.git`, `.husky/_`,
+  or an included config). Sandboxed git writes (`git commit`, `git checkout`, `git add`, `git fetch`)
+  fail with a note explaining that the repository's git directory is read-only inside the sandbox
+  (`sandbox.filesystem.allowGitWrites` is off), advising the model not to retry the command or change
+  settings itself, and directing the user to run it outside the sandbox or allow it in
+  `~/.book/settings.json` (where `sandbox.excludedCommands` runs matching commands unsandboxed while
+  `sandbox.allowUnsandboxedCommands` is true and `sandbox.filesystem.allowGitWrites` lets sandboxed git
+  write again; workspace settings cannot enable either). Caveat: `git stash` in read-only mode fails
+  silently with exit 1 and no output, so no note can match. A sandboxed `git worktree remove` deletes
+  the work tree and then fails on its read-only admin directory; `git worktree prune` outside the sandbox
+  cleans up.
+- When `sandbox.filesystem.allowGitWrites: true` is set (the opt-out), the previous behaviour applies:
+  git directories stay writable, and their `hooks/`, `config`, `config.worktree`, `commondir`,
+  `gitdir` and work tree `.git` pointer files are bound read-only (masked when absent). In this mode
+  only the **workspace's own top-level git directory** is pinned, with a read-write self-bind, so
+  renaming or replacing it fails with `EBUSY` rather than redirecting the host's git. Pinning work tree
+  directories is omitted here because doing so would make a sandboxed `git worktree remove` of an
+  in-workspace worktree fail halfway, which is the reason this mode exists. Consequently, the rename gap
+  remains open in opt-out mode: an ancestor directory holding a protected file can still be moved away.
+- An `allowWrite` entry at or below a protected path is applied after the protection — an explicit
+  opt-in — while a broader one stays ahead of it and cannot reopen the path. An `allowWrite` entry on
+  a git directory reopens what it names, but not the control paths strictly below it (`hooks/`,
+  `config`, `config.worktree`, `commondir`, `gitdir`, pointer files, or an included config or
+  `core.hooksPath` directory inside the git dir), which stay read-only; an entry directly naming that
+  control path (such as `<workspace>/.git/hooks`) still reopens it. A `hidden-file` mask is
+  re-applied after every deferred opt-in so a trusted `allowWrite: ["<ws>/.book"]` cannot reopen
+  `settings.local.json`.
+- A **symlinked** control path — `.book`, `.git`, `.git/hooks`, `.bookrc.json`, or any path component
+  strictly below the workspace root on the way to every protected mount (pointer files, hooksPath
+  directories, included config files), discovered git directory, or pointer target — is
+  **refused**, naming the path and saying the sandbox cannot protect a symlinked control path. A component
+  that is a symlink is safe only if the link itself lives inside a present read-only directory mount
+  (such as `.git/modules/x` inside a bound `.git` in read-only mode; refused in opt-out mode) or inside a
+  `sandbox.filesystem.denyWrite` / `denyRead` directory (bound read-only or masked with tmpfs so changes
+  cannot reach the host). Binding the target read-only is not enough: the link sits in the writable
+  workspace, so `rm .book && mkdir .book` replaces it and every protection goes with it.
 - A git config is read with a **1 MiB** cap. A config larger than that is refused rather than
   truncated, because a truncated read is a `core.hooksPath` past the cut that the namespace never
   saw. `[include]` and `[includeIf]` files are followed, relative to the including file's directory,
   and a followed file inside the workspace is bound read-only and parsed for `hooksPath` in turn.
 
-**What this does not cover.** Inside a plain repository a sandboxed command can still _create_ a
-pointer file the host's git reads next, such as `.git/commondir` naming a directory the command
-built, which redirects the host to a repository the sandbox chose and therefore runs code on the
-host. Closing that requires the whole git directory read-only inside the sandbox, which would also
-make sandboxed `git commit`, `git checkout` and `git fetch` fail; that trade-off is still open
-(issue 373). A nested repository that is not a
-submodule also stays writable, and a workspace with no `.git` can still have one created by a
-sandboxed command (`git init` succeeds); its hooks only become protected once Book sees the
-directory. An `[includeIf]` condition whose target does not exist when the mounts are built is not
-followed, so a file the sandbox creates later can carry a `core.hooksPath` the namespace never saw.
+**What this does not cover.** The pointer-file gap (`.git/commondir`) is closed by default because
+every git directory is bound read-only; opting into `sandbox.filesystem.allowGitWrites: true` reopens
+it. Still not covered: a nested repository that is not a submodule stays writable, a workspace with
+no `.git` can still have one created by a sandboxed command (`git init` succeeds; its hooks only
+become protected once Book sees the directory), a git directory outside the workspace is left alone,
+and an `[includeIf]` condition whose target does not exist when the mounts are built is not followed,
+so a file the sandbox creates later can carry a `core.hooksPath` the namespace never saw.
 
 `Check` runs under the same decision as `Bash`: a check is a project-supplied command, so it is
 sandboxed too, refused when unsandboxed commands are refused, and marked `[sandboxed]` in its

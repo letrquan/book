@@ -11,7 +11,7 @@ import {
   realpathSync,
   statSync,
 } from 'fs';
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { homedir, platform } from 'os';
 import type { ResolvedSettings } from './settings.js';
 import { isOutside, resolveWorkspacePath, type PathComparison } from './tools/path-utils.js';
@@ -32,7 +32,11 @@ export interface Sandbox {
    *
    * Returns null if the sandbox is unavailable.
    */
-  wrap(command: string, workspaceRoot: string): CommandExecution | null;
+  wrap(
+    command: string,
+    workspaceRoot: string,
+    protectedPaths?: ProtectedWorkspacePaths,
+  ): CommandExecution | null;
   /** One-line description of the policy actually enforced, for diagnostics. */
   describe(): string;
 }
@@ -203,7 +207,10 @@ export interface SandboxPolicyState {
 export function sandboxPolicySummary(
   settings: ResolvedSettings['sandbox'],
   state: SandboxPolicyState,
-): { unsandboxedCommands: string; autoAllowBash: string } {
+): { unsandboxedCommands: string; autoAllowBash: string; gitDirectories: string } {
+  const gitDirectories = settings.filesystem.allowGitWrites
+    ? 'writable; hooks, config and pointer files read-only (sandbox.filesystem.allowGitWrites=true)'
+    : 'read-only (sandbox.filesystem.allowGitWrites=false)';
   return {
     unsandboxedCommands: settings.allowUnsandboxedCommands
       ? 'allowed (sandbox.allowUnsandboxedCommands=true)'
@@ -215,6 +222,7 @@ export function sandboxPolicySummary(
         : state.adjudicationConfigured
           ? 'inert — permissions.deny/ask rules are configured, so every Bash call still goes through the normal permission path (sandbox.autoAllowBashIfSandboxed=true)'
           : 'on for genuinely sandboxed commands (sandbox.autoAllowBashIfSandboxed=true)',
+    gitDirectories,
   };
 }
 
@@ -235,6 +243,7 @@ export interface SandboxHost {
     resolve(...segments: string[]): string;
     join(...segments: string[]): string;
     dirname(path: string): string;
+    basename(path: string): string;
   };
   exists(path: string): boolean;
   isDirectory(path: string): boolean;
@@ -308,7 +317,7 @@ function entryKind(path: string): SandboxEntryKind | null {
  * inferred from the argv it happens to produce.
  */
 export const realSandboxHost: SandboxHost = {
-  path: { resolve, join, relative, isAbsolute, sep, dirname },
+  path: { resolve, join, relative, isAbsolute, sep, dirname, basename },
   exists: existsSync,
   // A path that vanished between the probe and the spawn is absent as far as the
   // mount list is concerned. `statSync` throws for it, and a throw here would
@@ -461,6 +470,31 @@ function insideWorkspace(candidate: string, workspaceRoot: string, host: Sandbox
   return !isOutside(canonicalPath(workspaceRoot, host), canonicalPath(candidate, host), host.path);
 }
 
+/**
+ * Path components of `path` strictly below `workspaceRoot`, in root-to-leaf order.
+ * Returns empty array when `path` is not inside `workspaceRoot` or is the root itself.
+ */
+function workspaceComponents(path: string, workspaceRoot: string, host: SandboxHost): string[] {
+  const root = host.path.resolve(workspaceRoot);
+  const resolved = host.path.resolve(path);
+  const rel = host.path.relative(root, resolved);
+  if (
+    isOutside(root, resolved, host.path) ||
+    !rel ||
+    rel === '..' ||
+    rel.startsWith('..' + host.path.sep)
+  )
+    return [];
+  const segments = rel.split(host.path.sep).filter(Boolean);
+  const components: string[] = [];
+  let current = root;
+  for (const segment of segments) {
+    current = host.path.join(current, segment);
+    components.push(current);
+  }
+  return components;
+}
+
 /** A git directory git itself would act on, and the work tree it serves. */
 interface GitDirRef {
   dir: string;
@@ -470,6 +504,23 @@ interface GitDirRef {
    * root and not the git dir.
    */
   workTree: string;
+}
+
+interface WorkspaceGitDirsResult {
+  gitDirs: GitDirRef[];
+  pointerPaths: string[];
+  refusals: ControlPathRefusal[];
+}
+
+function looksLikeGitDir(dir: string, host: SandboxHost): boolean {
+  if (!host.isDirectory(dir)) return false;
+  const head = host.path.join(dir, 'HEAD');
+  if (!host.exists(head)) return false;
+  const objects = host.path.join(dir, 'objects');
+  if (host.isDirectory(objects)) return true;
+  const commondir = host.path.join(dir, 'commondir');
+  if (host.exists(commondir)) return true;
+  return false;
 }
 
 /**
@@ -489,23 +540,35 @@ interface GitDirRef {
  * and can name a plain file, which `<dir>/hooks` is not a directory bubblewrap
  * can mount.
  */
-function workspaceGitDirs(workspaceRoot: string, host: SandboxHost): GitDirRef[] {
+function workspaceGitDirs(workspaceRoot: string, host: SandboxHost): WorkspaceGitDirsResult {
   const root = host.path.resolve(workspaceRoot);
+  const canonicalRoot = canonicalPath(root, host);
   const found: GitDirRef[] = [];
+  const pointerPaths: string[] = [];
+  const refusals: ControlPathRefusal[] = [];
+  const dotGit = host.path.join(root, '.git');
   const add = (candidate: string, workTree: string): void => {
     const dir = host.path.resolve(candidate);
     if (found.some((entry) => entry.dir === dir)) return;
     if (!host.isDirectory(dir) || !insideWorkspace(dir, root, host)) return;
+    if (dir !== dotGit && !looksLikeGitDir(dir, host)) return;
+    if (canonicalPath(dir, host) === canonicalRoot) {
+      if (!refusals.some((r) => r.path === dir)) {
+        refusals.push({ path: dir, reason: 'workspace-root-is-git-dir' });
+      }
+      return;
+    }
     found.push({ dir, workTree: host.path.resolve(workTree) });
   };
-  const dotGit = host.path.join(root, '.git');
-  if (!host.exists(dotGit)) return found;
+  if (!host.exists(dotGit)) return { gitDirs: found, pointerPaths, refusals };
   if (host.isDirectory(dotGit)) {
     add(dotGit, root);
   } else {
     const target = /^gitdir:\s*(.+)$/m.exec(host.readFile(dotGit) ?? '')?.[1]?.trim();
-    if (!target) return found;
-    add(host.path.isAbsolute(target) ? target : host.path.join(root, target), root);
+    if (!target) return { gitDirs: found, pointerPaths, refusals };
+    const resolvedTarget = host.path.isAbsolute(target) ? target : host.path.join(root, target);
+    pointerPaths.push(resolvedTarget);
+    add(resolvedTarget, root);
   }
   // A linked worktree's own dir holds only `config.worktree`, `HEAD` and the
   // `gitdir` naming its work tree; the hooks and the shared config live in the
@@ -513,13 +576,23 @@ function workspaceGitDirs(workspaceRoot: string, host: SandboxHost): GitDirRef[]
   for (let index = 0; index < found.length; index++) {
     const { dir, workTree } = found[index];
     const common = host.readFile(host.path.join(dir, 'commondir'))?.trim();
-    if (common) add(host.path.isAbsolute(common) ? common : host.path.join(dir, common), workTree);
+    if (common) {
+      const resolvedCommon = host.path.isAbsolute(common) ? common : host.path.join(dir, common);
+      pointerPaths.push(resolvedCommon);
+      add(resolvedCommon, workTree);
+    }
     for (const name of host.readDir(host.path.join(dir, 'worktrees'))) {
       const linked = host.path.join(dir, 'worktrees', name);
       // `gitdir` inside a linked worktree's dir names the work tree's own
       // `.git` file, so its directory is the work tree root — what a relative
       // `core.hooksPath` in that worktree's config is resolved against.
       const workTreeGitdir = host.readFile(host.path.join(linked, 'gitdir'))?.trim();
+      if (workTreeGitdir) {
+        const resolvedGitdir = host.path.isAbsolute(workTreeGitdir)
+          ? workTreeGitdir
+          : host.path.join(linked, workTreeGitdir);
+        pointerPaths.push(resolvedGitdir);
+      }
       add(linked, workTreeGitdir ? host.path.dirname(workTreeGitdir) : root);
     }
     // `<gitdir>/modules/<path>` holds the git dir of the submodule at `<path>`,
@@ -552,9 +625,11 @@ function workspaceGitDirs(workspaceRoot: string, host: SandboxHost): GitDirRef[]
     if (host.isDirectory(pointer)) continue;
     const target = /^gitdir:\s*(.+)$/m.exec(host.readFile(pointer) ?? '')?.[1]?.trim();
     if (!target) continue;
-    add(host.path.isAbsolute(target) ? target : host.path.join(workTree, target), workTree);
+    const resolvedTarget = host.path.isAbsolute(target) ? target : host.path.join(workTree, target);
+    pointerPaths.push(resolvedTarget);
+    add(resolvedTarget, workTree);
   }
-  return found;
+  return { gitDirs: found, pointerPaths, refusals };
 }
 
 /**
@@ -684,7 +759,10 @@ export function readGitConfigIncludes(configText: string): string[] {
 export type ProtectedMountKind = 'directory' | 'file' | 'hidden-file';
 
 export interface ProtectedMount {
-  /** Already resolved through a symlink: the path the host reads the control file at. */
+  /**
+   * The path the namespace mounts at, in the workspace's own spelling;
+   * containment is decided on canonical paths.
+   */
   path: string;
   kind: ProtectedMountKind;
   /** False when nothing exists at it, which for a directory becomes a mask. */
@@ -700,12 +778,12 @@ export interface ProtectedWorkspacePaths {
    * point succeeds. `--bind <dir> <dir>` pins it, which is what makes
    * `mv .git .git.old` fail with EBUSY instead of redirecting the host's git.
    *
-   * Only the workspace's own top-level `.git` is pinned. Pinning every git dir
-   * the walk found — a linked worktree's and a submodule's admin directory —
-   * pinned those too, and a sandboxed `git worktree remove` then failed with
-   * EBUSY halfway through, leaving the worktree gone and its admin directory
-   * behind. Their control files are read-only on their own, which is what this
-   * relies on instead.
+   * Only the workspace's own top-level `.git` is pinned, and only in the opt-out
+   * mode (`allowGitWrites: true`) where git directories stay writable. Read-only
+   * mode has no pin because the git directory is already a mount point through
+   * its own `--ro-bind`, and the half-done `git worktree remove` it describes
+   * (deleting the work tree and failing on the read-only admin directory) now
+   * happens by design in read-only mode.
    */
   pinnedDirectories: string[];
   mounts: ProtectedMount[];
@@ -716,6 +794,11 @@ export interface ProtectedWorkspacePaths {
    * reporting a sandbox.
    */
   refusals: ControlPathRefusal[];
+  /**
+   * Control mounts inside read-only git dirs (hooks, config, etc.), preserved in
+   * read-only mode so an allowWrite opt-in on a git dir can re-apply them.
+   */
+  gitDirControlMounts: ProtectedMount[];
 }
 
 /**
@@ -725,7 +808,8 @@ export interface ProtectedWorkspacePaths {
  * refused with the path named, because the fix — replace the link, trim the
  * config — is a change to the workspace, not to a Book setting.
  */
-export type ControlPathRefusalReason = 'symlinked-control-path' | 'oversized-git-config';
+export type ControlPathRefusalReason =
+  'symlinked-control-path' | 'oversized-git-config' | 'workspace-root-is-git-dir';
 
 export interface ControlPathRefusal {
   path: string;
@@ -740,6 +824,13 @@ export function describeControlPathRefusal(refusal: ControlPathRefusal): string 
       `${MAX_GIT_CONFIG_BYTES / 1024 / 1024} MiB read limit for a git config file, so the ` +
       'core.hooksPath it may declare cannot be found and the hooks directory it names cannot ' +
       'be made read-only. Trim the config, or run this command without the sandbox.'
+    );
+  }
+  if (refusal.reason === 'workspace-root-is-git-dir') {
+    return (
+      `Refused to run this command in the sandbox: ${refusal.path} is the workspace root and ` +
+      'a git directory, so the sandbox cannot make it read-only without making the whole ' +
+      'workspace read-only. Run this command without the sandbox.'
     );
   }
   return (
@@ -762,19 +853,46 @@ export function describeControlPathRefusal(refusal: ControlPathRefusal): string 
  * permission layer asks before a file tool touches `.book/`, but a prompt is one
  * approval the model can ask for — and a shell command is not a file tool (#373).
  *
- * What this cannot cover is stated in the docs rather than implied here: a
- * sandboxed command can still *create* a pointer file a plain repository has
- * none of (`.git/commondir`), because closing that needs the whole git
- * directory read-only, which would make sandboxed `git commit`, `checkout` and
- * `fetch` fail.
+ * What this cannot cover in the default mode is stated in the docs rather than
+ * implied here: a sandboxed command can still *create* a pointer file outside
+ * every git dir it found (`.git/commondir` in a workspace with no `.git`, an
+ * `[includeIf]` target that appears later), because the mounts are built from
+ * the files that are there.
  */
+export interface ProtectedWorkspacePathsOptions {
+  /**
+   * `false` (the default) binds every git directory the workspace names
+   * read-only, which is what closes the pointer-file redirect: a command that
+   * cannot write the git dir cannot create `.git/commondir` in it either
+   * (#373). Sandboxed git writes fail, and the user opts back out with
+   * `sandbox.filesystem.allowGitWrites`. `true` restores the previous shape —
+   * git dirs writable with their control files protected one by one and the
+   * top-level `.git` pinned — and reopens that gap, which is why only a trusted
+   * layer may set it.
+   */
+  allowGitWrites?: boolean;
+  denyDirectories?: string[];
+}
+
 export function protectedWorkspacePaths(
   workspaceRoot: string,
   host: SandboxHost = realSandboxHost,
+  options: ProtectedWorkspacePathsOptions = {},
 ): ProtectedWorkspacePaths {
   const root = host.path.resolve(workspaceRoot);
-  const result: ProtectedWorkspacePaths = { pinnedDirectories: [], mounts: [], refusals: [] };
+  const canonicalRoot = canonicalPath(root, host);
+  const allowGitWrites = options.allowGitWrites ?? false;
+  const result: ProtectedWorkspacePaths = {
+    pinnedDirectories: [],
+    mounts: [],
+    refusals: [],
+    gitDirControlMounts: [],
+  };
   const seen = new Set<string>();
+
+  const safeDenyDirs = (options.denyDirectories ?? [])
+    .filter((d) => host.isDirectory(d))
+    .map((d) => canonicalPath(d, host));
 
   /**
    * The mount one control path needs, or null when it needs none.
@@ -799,7 +917,12 @@ export function protectedWorkspacePaths(
     };
     const first = host.entryKind(resolved);
     if (first === 'symlink') {
-      if (!result.refusals.some((entry) => entry.path === resolved)) {
+      const parentCanonical = canonicalPath(host.path.dirname(resolved), host);
+      const symlinkLivePath = host.path.join(parentCanonical, host.path.basename(resolved));
+      const isSafe = safeDenyDirs.some(
+        (dir) => !isOutside(dir, symlinkLivePath, host.path) && dir !== symlinkLivePath,
+      );
+      if (!isSafe && !result.refusals.some((entry) => entry.path === resolved)) {
         result.refusals.push({ path: resolved, reason: 'symlinked-control-path' });
       }
       return null;
@@ -833,6 +956,39 @@ export function protectedWorkspacePaths(
     if (mount) result.mounts.push(mount);
   };
 
+  const { gitDirs, pointerPaths, refusals: gitDirRefusals } = workspaceGitDirs(root, host);
+  result.refusals.push(...gitDirRefusals);
+  const boundCanonical: string[] = [];
+  const gitDirMounts = new Set<ProtectedMount>();
+
+  // The read-only mode binds every git dir the walk found, ahead of the other
+  // mounts, at the path the sandbox sees: decide containment and dedupe on
+  // canonical paths, but emit each bind at
+  // `root + relative(canonicalPath(root), canonicalPath(dir))`.
+  // Outermost first, and a dir inside one already bound is skipped: the outer
+  // bind already covers it, and a second mount inside a mount point is noise.
+  // Deliberately not through `target()`: a nested git dir that is a symlink is
+  // bound at the path the sandbox sees rather than refused, because the whole
+  // directory is covered by the bind — there is no path left through the link for a
+  // replaced one to matter. A symlinked *top-level* `.git` is still refused, by
+  // the pointer check below.
+  if (!allowGitWrites) {
+    const canonicalDirs = [...new Set(gitDirs.map((gitDir) => canonicalPath(gitDir.dir, host)))];
+    canonicalDirs.sort(
+      (left, right) => left.split(host.path.sep).length - right.split(host.path.sep).length,
+    );
+    for (const canonicalDir of canonicalDirs) {
+      if (boundCanonical.some((outer) => !isOutside(outer, canonicalDir, host.path))) continue;
+      if (!host.exists(canonicalDir)) continue;
+      boundCanonical.push(canonicalDir);
+      const rel = host.path.relative(canonicalRoot, canonicalDir);
+      const bindPath = rel ? host.path.resolve(root, rel) : root;
+      const mount: ProtectedMount = { path: bindPath, kind: 'directory', present: true };
+      gitDirMounts.add(mount);
+      result.mounts.push(mount);
+    }
+  }
+
   // The settings directory, which holds both workspace layers plus the trust
   // store writes and `migrations.json`.
   addDirectory(host.path.join(root, '.book'));
@@ -845,17 +1001,22 @@ export function protectedWorkspacePaths(
   addFile(host.path.join(root, '.bookrc.json'));
 
   const dotGit = host.path.join(root, '.git');
-  // Only a real directory inside the workspace is pinned: a symlinked one is
-  // refused above, and a pin for anything else is a mount over a path the
-  // namespace cannot build one for.
+  // Only a real directory inside the workspace is pinned, and only in the
+  // opt-out mode where it stays writable: in the read-only mode the git dir is
+  // a mount point through its own `--ro-bind`, which fails `mv .git elsewhere`
+  // the same way, so `pinnedDirectories` stays empty there.
   if (host.entryKind(dotGit) === 'directory') {
-    // The git dir is bound onto itself, writable, so it is a mount point: the
-    // read-only children below can then be swapped for a fresh writable
-    // directory only by renaming this one away, which EBUSY refuses.
-    result.pinnedDirectories.push(dotGit);
+    if (allowGitWrites) {
+      result.pinnedDirectories.push(dotGit);
+    }
   } else {
     // A worktree's `.git` is a file naming its git dir. Read-only, so the
-    // pointer itself cannot be rewritten at another git directory.
+    // pointer itself cannot be rewritten at another git directory. In the
+    // read-only mode a real `.git` directory is already covered by the
+    // git-dir binds above; calling `addFile` on a directory would emit a second
+    // `--ro-bind` because `target()` describes any existing path when kind is
+    // `file`. A symlinked `.git` is not a directory, so it is passed to
+    // `addFile` and refused by `target()` in both modes.
     addFile(dotGit);
   }
 
@@ -891,16 +1052,20 @@ export function protectedWorkspacePaths(
     }
   };
 
-  for (const gitDir of workspaceGitDirs(root, host)) {
+  for (const gitDir of gitDirs) {
+    // The analysis runs in both modes so refusals (a symlinked `hooks/`,
+    // an oversized config) and a `core.hooksPath` outside the git dirs stay
+    // exact. In read-only mode, redundant mounts inside the bound git dirs are
+    // filtered out below.
     addDirectory(host.path.join(gitDir.dir, 'hooks'));
     for (const name of ['config', 'config.worktree', 'commondir', 'gitdir']) {
       addFile(host.path.join(gitDir.dir, name));
     }
     // The work tree's own `.git`: a directory is the git dir itself, already
-    // pinned, and a file is the pointer the host reads to find the git dir. It is
-    // read-only for the same reason as the one at the workspace root — rewriting
-    // it to `gitdir: ../evil` moves every control path above onto a repository
-    // the command built.
+    // covered by its own bind or pin, and a file is the pointer the host reads
+    // to find the git dir. It is read-only in both modes for the same reason —
+    // rewriting it to `gitdir: ../evil` moves every control path above onto a
+    // repository the command built.
     const workTreePointer = host.path.join(gitDir.workTree, '.git');
     if (host.entryKind(workTreePointer) === 'file') addFile(workTreePointer);
     // `core.hooksPath` moves the hook directory out of the git dir entirely —
@@ -909,6 +1074,103 @@ export function protectedWorkspacePaths(
     // part of that config, and is followed to the same depth.
     for (const name of ['config', 'config.worktree']) {
       readConfig(host.path.join(gitDir.dir, name), gitDir.workTree, 0);
+    }
+  }
+
+  // Drop every directory or file mount whose canonical path lies strictly inside
+  // a present read-only directory mount (a bound git dir, .book/, a protected
+  // hooksPath directory). Hiding a file's contents (hidden-file) is not redundant
+  // with a read-only parent, so keep every hidden-file mask.
+  // In read-only mode, keep the per-file control mounts that lie inside a bound
+  // git dir in gitDirControlMounts so an allowWrite opt-in on a git dir can
+  // re-apply them.
+  const presentReadOnlyDirs = result.mounts
+    .filter((mount) => mount.kind === 'directory' && mount.present)
+    .map((mount) => canonicalPath(mount.path, host));
+
+  const filteredMounts: ProtectedMount[] = [];
+  const gitDirControlMounts: ProtectedMount[] = [];
+
+  for (const mount of result.mounts) {
+    if (mount.kind === 'hidden-file') {
+      filteredMounts.push(mount);
+      continue;
+    }
+    const mountCanonical = canonicalPath(mount.path, host);
+    const strictlyInsidePresentReadOnlyDir = presentReadOnlyDirs.some(
+      (dir) => !isOutside(dir, mountCanonical, host.path) && dir !== mountCanonical,
+    );
+    if (strictlyInsidePresentReadOnlyDir) {
+      if (!allowGitWrites) {
+        const strictlyInsideBoundGitDir = boundCanonical.some(
+          (dir) => !isOutside(dir, mountCanonical, host.path) && dir !== mountCanonical,
+        );
+        if (strictlyInsideBoundGitDir) {
+          gitDirControlMounts.push(mount);
+        }
+      }
+    } else {
+      filteredMounts.push(mount);
+    }
+  }
+
+  result.mounts = filteredMounts;
+  result.gitDirControlMounts = gitDirControlMounts;
+
+  // In read-only mode, pin each ancestor directory strictly between the workspace root
+  // and every protected mount whose path lies strictly below the workspace root and is not
+  // inside a present read-only directory mount. A writable self-bind (--bind <dir> <dir>)
+  // makes renaming the ancestor fail with EBUSY instead of moving the protected mount away.
+  if (!allowGitWrites) {
+    for (const mount of result.mounts) {
+      const mountCanonical = canonicalPath(mount.path, host);
+      if (isOutside(canonicalRoot, mountCanonical, host.path) || mountCanonical === canonicalRoot) {
+        continue;
+      }
+      const isInsidePresentReadOnly = presentReadOnlyDirs.some(
+        (dir) => !isOutside(dir, mountCanonical, host.path) && dir !== mountCanonical,
+      );
+      if (isInsidePresentReadOnly) continue;
+
+      const ancestors = workspaceComponents(mount.path, root, host).slice(0, -1);
+      for (const anc of ancestors) {
+        if (!host.isDirectory(anc)) continue;
+        const ancCanonical = canonicalPath(anc, host);
+        if (presentReadOnlyDirs.some((dir) => !isOutside(dir, ancCanonical, host.path))) continue;
+        if (!result.pinnedDirectories.includes(anc)) {
+          result.pinnedDirectories.push(anc);
+        }
+      }
+    }
+  }
+
+  const safeDirs = [...presentReadOnlyDirs, ...safeDenyDirs];
+
+  // For every protected mount (pointer files, hooksPath directories, included config files),
+  // discovered git dir, and pointer target, check each component strictly below workspace root.
+  // A symlink is safe only if it lives inside a directory the host cannot see changed:
+  // a present read-only directory mount, or a denyWrite / denyRead directory.
+  const candidatesToCheck = new Set<string>([
+    ...gitDirs.map((g) => g.dir),
+    ...pointerPaths,
+    ...result.mounts.map((m) => m.path),
+    ...result.gitDirControlMounts.map((m) => m.path),
+  ]);
+  const checkedComponents = new Set<string>();
+  for (const cand of candidatesToCheck) {
+    for (const comp of workspaceComponents(cand, root, host)) {
+      if (checkedComponents.has(comp)) continue;
+      checkedComponents.add(comp);
+      if (host.entryKind(comp) === 'symlink') {
+        const parentCanonical = canonicalPath(host.path.dirname(comp), host);
+        const symlinkLivePath = host.path.join(parentCanonical, host.path.basename(comp));
+        const isSafe = safeDirs.some(
+          (dir) => !isOutside(dir, symlinkLivePath, host.path) && dir !== symlinkLivePath,
+        );
+        if (!isSafe && !result.refusals.some((r) => r.path === comp)) {
+          result.refusals.push({ path: comp, reason: 'symlinked-control-path' });
+        }
+      }
     }
   }
 
@@ -962,6 +1224,7 @@ export function buildSandboxExecution(
   workspaceRoot: string,
   settings: ResolvedSettings['sandbox'],
   host: SandboxHost = realSandboxHost,
+  protectedPaths?: ProtectedWorkspacePaths,
 ): CommandExecution {
   const args: string[] = [];
 
@@ -1002,10 +1265,17 @@ export function buildSandboxExecution(
   // its way down would not be an opt-in but the default back the protections
   // exist to remove. Only a trusted layer can hold one: a workspace layer's
   // `allowWrite` entries are dropped by the loader (#373).
-  const protectedPaths = protectedWorkspacePaths(workspaceRoot, host);
+  const paths =
+    protectedPaths ??
+    protectedWorkspacePaths(workspaceRoot, host, {
+      allowGitWrites: settings.filesystem.allowGitWrites,
+      denyDirectories: [...settings.filesystem.denyWrite, ...settings.filesystem.denyRead].map(
+        (p) => expandPath(p, host),
+      ),
+    });
   const isProtectedArea = (path: string): boolean => {
     const canonical = canonicalPath(expandPath(path, host), host);
-    return protectedPaths.mounts.some(
+    return paths.mounts.some(
       (mount) => !isOutside(canonicalPath(mount.path, host), canonical, host.path),
     );
   };
@@ -1016,26 +1286,50 @@ export function buildSandboxExecution(
   // The pins come before the opt-in binds as well: a pin is a writable self-bind
   // of the git dir, so an `allowWrite` entry *under* it emitted earlier is
   // shadowed by it and silently does nothing — the entry the user wrote, dropped
-  // without a word.
-  for (const dir of protectedPaths.pinnedDirectories) {
+  // without a word. In the read-only git-dirs mode there is no pin: the git dir
+  // is a protected mount, so an `allowWrite` entry naming it reopens what it names,
+  // while control paths strictly below it (hooks, config, pointer files) stay
+  // read-only unless an entry names them directly.
+  for (const dir of paths.pinnedDirectories) {
     args.push('--bind', host.path.resolve(dir), host.path.resolve(dir));
   }
   for (const path of settings.filesystem.allowWrite) {
     if (isProtectedArea(path)) continue;
     bindIfPresent(args, '--bind', path, host);
   }
-  for (const mount of protectedPaths.mounts) mountProtected(args, mount, host);
+  for (const mount of paths.mounts) mountProtected(args, mount, host);
   // ...and only now the opt-ins for the protected areas themselves.
+  const deferredOptInCanonicals: string[] = [];
   for (const path of settings.filesystem.allowWrite) {
     if (!isProtectedArea(path)) continue;
-    bindIfPresent(args, '--bind', path, host);
+    const target = expandPath(path, host);
+    if (host.exists(target)) {
+      args.push('--bind', target, target);
+      deferredOptInCanonicals.push(canonicalPath(target, host));
+    }
   }
+
+  // An allowWrite opt-in on a git dir reopens what it names, but not the control
+  // paths strictly below it (hooks, config, pointer files). Emit each of those
+  // control mounts whose canonical path is strictly below a deferred opt-in entry,
+  // unless an entry exactly at that control path reopens it.
+  for (const mount of paths.gitDirControlMounts) {
+    const mountCanonical = canonicalPath(mount.path, host);
+    const strictlyBelowDeferredOptIn = deferredOptInCanonicals.some(
+      (optIn) => !isOutside(optIn, mountCanonical, host.path) && optIn !== mountCanonical,
+    );
+    const explicitlyOptedIn = deferredOptInCanonicals.includes(mountCanonical);
+    if (strictlyBelowDeferredOptIn && !explicitlyOptedIn) {
+      mountProtected(args, mount, host);
+    }
+  }
+
   // A mask hides a file's *contents*, and an opt-in bind for the directory that
   // holds it undoes that: `allowWrite: ["<workspace>/.book"]` puts the whole
   // directory back in reach, provider credential included. The masks are
   // therefore emitted again after every opt-in, so the last mount of a masked
   // path is `/dev/null` whichever entry named its parent.
-  for (const mount of protectedPaths.mounts) {
+  for (const mount of paths.mounts) {
     if (mount.kind === 'hidden-file') mountProtected(args, mount, host);
   }
 
@@ -1091,6 +1385,7 @@ export interface SandboxDecision {
   exec?: CommandExecution;
   reason?: SandboxSkipReason;
   error?: string;
+  gitDirReadOnly?: boolean;
 }
 
 /**
@@ -1159,12 +1454,28 @@ export function decideSandboxExecution(
   // and only once a sandbox is actually in hand: with none, the command runs
   // unsandboxed under the policy the settings author chose, which is not this
   // decision to tighten.
+  let protectedPaths: ProtectedWorkspacePaths | undefined;
   if (sandbox) {
-    const refusal = protectedWorkspacePaths(ctx.workspaceRoot).refusals[0];
+    const denyDirectories = [
+      ...ctx.sandbox.filesystem.denyWrite,
+      ...ctx.sandbox.filesystem.denyRead,
+    ].map((p) => expandPath(p, realSandboxHost));
+
+    protectedPaths = protectedWorkspacePaths(ctx.workspaceRoot, realSandboxHost, {
+      allowGitWrites: ctx.sandbox.filesystem.allowGitWrites,
+      denyDirectories,
+    });
+    const refusal = protectedPaths.refusals[0];
     if (refusal) return { sandboxed: false, error: describeControlPathRefusal(refusal) };
   }
-  const exec = sandbox?.wrap(command, ctx.workspaceRoot);
-  if (exec) return { sandboxed: true, exec };
+  const exec = sandbox?.wrap(command, ctx.workspaceRoot, protectedPaths);
+  if (exec) {
+    return {
+      sandboxed: true,
+      exec,
+      gitDirReadOnly: !ctx.sandbox.filesystem.allowGitWrites,
+    };
+  }
   if (ctx.sandbox.failIfUnavailable) {
     return { sandboxed: false, error: 'Sandbox unavailable and failIfUnavailable is set' };
   }
@@ -1172,33 +1483,63 @@ export function decideSandboxExecution(
 }
 
 /**
- * The line a git command needs when it could not update the repository config.
+ * The line a sandboxed git command needs when it cannot write in the git dir.
  *
- * Inside the sandbox a git dir's `config` is bound read-only (#373), which is
- * what stops a sandboxed command from repointing `core.hooksPath` at a script it
- * plants. It is also why `git checkout -b`, `git push -u`, `git remote add`,
- * `git branch --set-upstream-to` and `git config` fail there with
- * "could not write config file" / "could not lock config file" — an error that
- * says nothing about the read-only bind, so the model retries the same command
- * or rewrites the command to avoid the config instead of running it outside.
+ * Which file is read-only depends on the mode. With
+ * `sandbox.filesystem.allowGitWrites=false` (the default) every git directory
+ * of the workspace is bound read-only (issue 373), so `git commit`, `git add`,
+ * `git stash`, `git checkout` and `git fetch` fail on the index lock, on
+ * `FETCH_HEAD`, on the object database — errors that say nothing about a
+ * read-only bind. With it true, only the git dir's `config` and the pointer
+ * files are, so `git commit` still works but `git remote add` and `git config`
+ * fail with "could not write config file" / "could not lock config file".
+ * Either way the error names no cause, so the model retries the same command or
+ * rewrites it to route around the file instead of running it outside.
  *
- * Returned as a line the caller appends to the output that carried the error, and
- * only for a sandboxed command: unsandboxed git has no read-only config, and an
- * unrelated file that happens to be called `config` is not this.
+ * Returned as a line the caller appends to the output that carried the error,
+ * and only for a sandboxed command: unsandboxed git has no read-only git dir,
+ * and an unrelated file that happens to be called `config` is not this. The
+ * note is appended once, however many streams the error reached the caller in.
  *
  * `command` is what rules out `git config --global`. That writes `~/.gitconfig`,
  * which the namespace binds read-only only if the user listed it in
- * `denyWrite` — a different remedy, and pointing this note at `.git/config` for
- * it would send the model after the wrong file.
+ * `denyWrite` — a different remedy, and pointing this note at the repository's
+ * git dir for it would send the model after the wrong file.
  */
 export function withGitConfigReadOnlyNotice(
   text: string,
   output: string,
   sandboxed: boolean,
   command = '',
+  gitDirReadOnly?: boolean,
 ): string {
-  if (!sandboxed || !/could not (?:write|lock) config file/.test(output)) return text;
-  if (writesAGlobalConfig(command)) return text;
+  if (!sandboxed) return text;
+
+  const isConfigFileFailure = /could not (?:write|lock) config file/.test(output);
+  if (isConfigFileFailure) {
+    if (writesAGlobalConfig(command)) return text;
+    return gitDirReadOnly ? withReadOnlyGitDirNote(text) : withLegacyGitConfigNote(text);
+  }
+
+  if (gitDirReadOnly) {
+    const linesWithRo = output
+      .split('\n')
+      .filter((line) => /\bRead-only file system\b/i.test(line));
+    const runsGit = /(?:^|[;&|(\s])git\b/.test(command);
+    const hasDotGitSegment = linesWithRo.some((line) =>
+      /(?:^|[/\s'"`])\.git(?=[/\\s'":`]|[\r\n]|$)/.test(line),
+    );
+    const roFailure = linesWithRo.length > 0 && (runsGit || hasDotGitSegment);
+
+    if (roFailure) {
+      return withReadOnlyGitDirNote(text);
+    }
+  }
+
+  return text;
+}
+
+function withLegacyGitConfigNote(text: string): string {
   return (
     `${text}\n` +
     'Note: .git/config is read-only inside the sandbox, so git cannot update repository ' +
@@ -1206,9 +1547,22 @@ export function withGitConfigReadOnlyNotice(
   );
 }
 
+function withReadOnlyGitDirNote(text: string): string {
+  return (
+    `${text}\n` +
+    "Note: the repository's git directory is read-only inside the sandbox " +
+    '(sandbox.filesystem.allowGitWrites is off), so git cannot write to it here. Do not retry the ' +
+    'command or change sandbox settings yourself; tell the user it has to run outside the sandbox: ' +
+    'they can run it, or allow it in their own ~/.book/settings.json, where ' +
+    'sandbox.excludedCommands runs matching commands unsandboxed while ' +
+    'sandbox.allowUnsandboxedCommands is true and sandbox.filesystem.allowGitWrites lets sandboxed ' +
+    'git write again; workspace settings cannot enable either.'
+  );
+}
+
 /** Whether a `git config` invocation targets the user's or the system's config. */
 function writesAGlobalConfig(command: string): boolean {
-  return /^\s*(?:\S+\s+)*git\s+config\b[^|;&]*\s--(?:global|system)\b/.test(command);
+  return /(?:^|[;&|(\s])git\s+[^|;&]*\bconfig\b[^|;&]*\s--(?:global|system)\b/.test(command);
 }
 
 /**
@@ -1261,13 +1615,27 @@ export function createSandbox(settings: ResolvedSettings['sandbox']): Sandbox | 
   }
 
   return {
-    wrap(command: string, workspaceRoot: string): CommandExecution {
-      return buildSandboxExecution(bwrap, command, workspaceRoot, settings);
+    wrap(
+      command: string,
+      workspaceRoot: string,
+      protectedPaths?: ProtectedWorkspacePaths,
+    ): CommandExecution {
+      return buildSandboxExecution(
+        bwrap,
+        command,
+        workspaceRoot,
+        settings,
+        realSandboxHost,
+        protectedPaths,
+      );
     },
     describe(): string {
       return [
         `bubblewrap (${bwrap})`,
         hasDomainPolicy(settings) ? 'network disabled' : 'host network shared',
+        settings.filesystem.allowGitWrites
+          ? 'git directories writable (hooks, config and pointer files read-only)'
+          : 'git directories read-only',
         `${settings.filesystem.allowWrite.length} extra writable path(s)`,
         `${settings.filesystem.denyWrite.length} read-only path(s)`,
         `${settings.filesystem.denyRead.length} masked path(s)`,

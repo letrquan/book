@@ -49,6 +49,34 @@ All notable changes to this project are documented in this file.
   entry, an explicit `--effort`, and a catalogued effort range behave exactly as before, and the
   Anthropic path is untouched.
 
+### Security
+
+- **The sandbox binds the workspace's git directories read-only by default, closing the pointer-file redirect** (issue 373).
+  Inside the namespace every git directory of the workspace (`.git`, linked worktree admin directories,
+  and submodule git directories) is now bound read-only by default, closing the gap where a sandboxed command
+  could create `.git/commondir` to redirect the host's next git invocation. Discovered via `.git` files,
+  `commondir` files, `.git/worktrees/*`, and nested `.git/modules/*` (including multi-segment submodule paths).
+  Candidates must look like a git directory (`HEAD` exists, and either an `objects` directory or a `commondir`
+  file exists); pointers naming the workspace root or plain directories do not bind them read-only, and a
+  candidate canonicalising to the workspace root is refused. In default read-only mode, each ancestor directory
+  strictly between the workspace root and every protected mount is pinned with a writable self-bind
+  (`--bind <dir> <dir>`), so a pinned directory cannot be renamed or removed inside the sandbox (`EBUSY`).
+  `core.hooksPath` inside the workspace stays read-only in both modes, and git directories outside the workspace
+  are left alone. Sandboxed git writes (`git commit`, `git checkout`, `git add`, `git fetch`) fail by default
+  (a breaking behaviour change) with a diagnostic note explaining that the repository's git directory is
+  read-only inside the sandbox and directing the user to run outside or opt out. `git stash` in read-only mode
+  fails silently with exit 1 and no output. The new `sandbox.filesystem.allowGitWrites` setting (default `false`)
+  restores the previous behaviour when set to `true`: git directories stay writable, control files stay
+  protected per-file, and the pointer-file gap reopens. Pinning work tree directories is omitted in opt-out
+  mode so in-workspace worktree removal does not fail halfway, which leaves the parent rename hole open there.
+  Only a trusted layer (`~/.book/settings.json`, `--settings`) may set `allowGitWrites`: workspace layers may
+  only tighten it to `false`. An `allowWrite` opt-in on a git dir reopens what it names, but keeps control paths
+  strictly below it (`hooks/`, `config`, pointer files) read-only unless directly opted into. Any component on
+  the way to a protected mount, discovered git directory, or pointer target reached through a symlink in the
+  workspace is refused unless the symlink itself lives inside a present read-only directory mount or inside a
+  `denyWrite` / `denyRead` directory. Note that a sandboxed `git worktree remove` deletes the work tree and then
+  fails on its read-only admin directory; `git worktree prune` outside the sandbox cleans up.
+
 ## [0.3.0] - 2026-10-07
 
 ### Security

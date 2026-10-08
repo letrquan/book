@@ -158,6 +158,8 @@ export interface BackgroundShellRecord {
   timer?: NodeJS.Timeout;
   retentionTimer?: NodeJS.Timeout;
   sandboxed?: boolean;
+  /** The sandbox's git-dir mode (issue 373): true = every git dir of the workspace read-only. */
+  gitDirReadOnly?: boolean;
 }
 
 export interface BackgroundShellStore {
