@@ -784,6 +784,48 @@ describe('ChatPanel Ink rendering', () => {
     expect(lines.slice(first + 1, second)).toEqual([]);
   });
 
+  it('dims a plan update that more work follows, and only that', () => {
+    // From a real session: the sentence before each TodoWrite stayed in full ink
+    // while every other step's narration was grey, so the turn's least useful
+    // lines were its brightest. The answer that closes the turn keeps full ink.
+    const planUpdate: Message = {
+      ...msg('a1', 'assistant', 'PLAN-NARRATION'),
+      toolCalls: [{ id: 'todo-1', name: 'TodoWrite', arguments: { todos: [] } }],
+      toolResults: [successResult('todo-1', 'ok')],
+    };
+    const step: Message = {
+      ...msg('a2', 'assistant', 'STEP-NARRATION'),
+      toolCalls: [{ id: 'bash-1', name: 'Bash', arguments: { command: 'git pull' } }],
+      toolResults: [successResult('bash-1', 'Already up to date.')],
+    };
+    const answer: Message = {
+      ...msg('a3', 'assistant', 'FINAL-ANSWER'),
+      toolCalls: [{ id: 'todo-2', name: 'TodoWrite', arguments: { todos: [] } }],
+      toolResults: [successResult('todo-2', 'ok')],
+    };
+    const level = chalk.level;
+    chalk.level = 3;
+    let raw: string;
+    try {
+      const view = render(
+        withTheme(
+          <ChatPanel
+            messages={[msg('u1', 'user', 'go'), planUpdate, step, answer]}
+            terminalWidth={100}
+            reducedMotion
+          />,
+        ),
+      );
+      raw = view.lastFrame() ?? '';
+    } finally {
+      chalk.level = level;
+    }
+
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)}PLAN-NARRATION`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)}STEP-NARRATION`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.text)}FINAL-ANSWER`);
+  });
+
   it('opens each of your turns after two blank rows, like a new section', () => {
     // Your turn is the landmark in a long transcript. One blank row left it
     // reading as another paragraph of the reply above it.

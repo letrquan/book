@@ -21,7 +21,7 @@ import { WelcomeScreen, type RecentChapter } from './WelcomeScreen.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount, useDebugRender } from '../debug.js';
 import { useDensity, type TuiDensity } from '../density.js';
-import { mergeAssistantMessages } from './transcript-messages.js';
+import { mergeAssistantMessages, messagesFollowedByWork } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
 import type { TranscriptMode } from '../tool-presentation.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
@@ -271,6 +271,15 @@ export function ChatPanelInner({
     [quietTools, showThinking, windowedTimeline],
   );
   const visibleTimeline = displayTimeline.entries;
+  // Which entries a step of work follows in the same turn: their prose is
+  // narration, not the answer. A merged entry keeps its first message's id, and
+  // a step folded into it makes the entry a step anyway, so the head's id is
+  // the one to look up.
+  const oldestVisibleId = visibleTimeline.find((entry): entry is Message => 'role' in entry)?.id;
+  const followedByWork = useMemo(
+    () => messagesFollowedByWork(messages, oldestVisibleId),
+    [messages, oldestVisibleId],
+  );
   const getTimelineKey = useCallback(
     (entry: Message | CompactBoundary) =>
       'transcriptOrdinal' in entry ? `boundary-${entry.id}` : entry.id,
@@ -455,6 +464,7 @@ export function ChatPanelInner({
                   showThinking={showThinking}
                   trimTrailingSpacing={nextEntryIsUser}
                   quietTools={quietTools}
+                  continuesTurn={followedByWork.has(message.id)}
                 />
               </Box>
             );

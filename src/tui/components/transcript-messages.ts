@@ -49,6 +49,50 @@ export function isWorkStep(message: Message): boolean {
   return (message.toolCalls ?? []).some((call) => !isNonStepTool(call.name));
 }
 
+/**
+ * Whether a message hands the conversation back to you (a question, a plan for
+ * approval) or saves a memory. Its sentence stays in full ink even when work
+ * follows it: the plan you approved and the question you answered are
+ * landmarks, like your own turns.
+ */
+export function handsBack(message: Message): boolean {
+  return (message.toolCalls ?? []).some((call) => HAND_BACK_TOOLS.has(call.name));
+}
+
+/**
+ * The assistant messages that more work follows in the same turn.
+ *
+ * {@link isWorkStep} reads one message, so a message whose only call updated
+ * the plan read as an answer even when the agent went on working: `I'll clone,
+ * install, and launch that repo` sat in full ink between dimmed steps, the
+ * brightest line of the turn and the least informative. An answer that ends by
+ * updating the plan is still the answer, but only when no step comes after it.
+ *
+ * A turn ends at any user-role message. That includes the subagent and
+ * background-shell notifications the transcript does not draw, which is why
+ * this reads the messages rather than the timeline. The scan walks back from
+ * the newest message and stops at `oldestId`, the first entry the transcript
+ * draws, so a streamed delta costs the visible window, not the whole session.
+ */
+export function messagesFollowedByWork(
+  messages: readonly Message[],
+  oldestId?: string,
+): ReadonlySet<string> {
+  const followed = new Set<string>();
+  let workFollows = false;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role === 'user') {
+      workFollows = false;
+    } else {
+      if (workFollows) followed.add(message.id);
+      if (isWorkStep(message)) workFollows = true;
+    }
+    if (message.id === oldestId) break;
+  }
+  return followed;
+}
+
 /** Merge completed tool-only assistant messages into the preceding assistant turn for display. */
 export function mergeAssistantMessages(
   messages: Message[],

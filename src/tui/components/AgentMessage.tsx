@@ -44,7 +44,7 @@ import {
   type QuietToolContext,
 } from '../quiet-tools.js';
 import { useDebugRender } from '../debug.js';
-import { isWorkStep } from './transcript-messages.js';
+import { handsBack, isWorkStep } from './transcript-messages.js';
 
 const renderLog = createRenderDebugLogger('tui:agentmsg');
 
@@ -82,6 +82,12 @@ interface AgentMessageProps {
    * detailed transcript and screen readers get every row.
    */
   quietTools?: QuietToolContext;
+  /**
+   * A step of work follows this entry before the turn ends, so its prose is
+   * narration even when its own calls were only bookkeeping. ChatPanel reads it
+   * from the messages (`messagesFollowedByWork`).
+   */
+  continuesTurn?: boolean;
 }
 
 const NO_EXPANSION_OVERRIDES = new Map<string, boolean>();
@@ -460,6 +466,7 @@ export function AgentMessageInner({
   showThinking = true,
   trimTrailingSpacing = false,
   quietTools,
+  continuesTurn = false,
 }: AgentMessageProps) {
   const theme = useTheme();
   const { toolRowGap, toolBlockGap } = useDensityMetrics();
@@ -589,12 +596,16 @@ export function AgentMessageInner({
   // output from running into the next call's header. Screen readers keep every
   // mark, since a spoken stream has no whitespace to carry the distinction. A
   // turn whose call waits for your approval is not a step either: that sentence
-  // is what you are being asked to judge.
+  // is what you are being asked to judge. Prose that a step follows in the same
+  // turn is narration whatever it called, unless it handed the turn back to you.
   const awaitsApproval = Boolean(
     pendingPermission && toolCalls.some((call) => call.id === pendingPermission.toolCall.id),
   );
   const workStep =
-    !screenReader && transcriptMode !== 'detailed' && !awaitsApproval && isWorkStep(message);
+    !screenReader &&
+    transcriptMode !== 'detailed' &&
+    !awaitsApproval &&
+    (isWorkStep(message) || (continuesTurn && !handsBack(message)));
   // A step's narration speaks in the secondary voice: every run of its prose
   // takes `subtle`, so the answer is the only full-ink text in a turn. Its
   // code blocks follow, keyword and string hues included — a snippet the step
@@ -961,6 +972,7 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
     prev.showThinking === next.showThinking &&
     prev.trimTrailingSpacing === next.trimTrailingSpacing &&
     prev.quietTools === next.quietTools &&
+    prev.continuesTurn === next.continuesTurn &&
     prev.reducedMotion === next.reducedMotion &&
     prev.screenReader === next.screenReader &&
     prev.terminalWidth === next.terminalWidth
