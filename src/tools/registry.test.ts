@@ -77,12 +77,29 @@ describe('createDefaultRegistry — canonical CC tool names', () => {
     expect(createDefaultRegistry().getTool('apply_patch')?.name).toBe('ApplyPatch');
   });
 
-  it.each(['parent:Glob', 'default:Glob', 'tool:Glob', 'glob_files'])(
-    'resolves provider-compatible name %s to Glob',
-    (name) => {
-      expect(createDefaultRegistry().getTool(name)?.name).toBe('Glob');
-    },
-  );
+  it.each([
+    'parent:Glob',
+    'default:Glob',
+    'tool:Glob',
+    'parent.Glob',
+    'default.Glob',
+    'tool.Glob',
+    'functions.Glob',
+    'glob_files',
+  ])('resolves provider-compatible name %s to Glob', (name) => {
+    expect(createDefaultRegistry().getTool(name)?.name).toBe('Glob');
+  });
+
+  it('canonicalizes a dotted namespace before the call is shown or run', () => {
+    // A model sent `default.Bash`; the row read `× default.Bash  Unknown tool`
+    // and the turn went to a ToolSearch for a tool that was already loaded.
+    const call = createDefaultRegistry().normalizeCall({
+      id: 'dotted',
+      name: 'default.Bash',
+      arguments: { command: 'echo ok' },
+    });
+    expect(call.name).toBe('Bash');
+  });
 
   it('preserves an exact registered name before unwrapping a provider prefix', () => {
     const registry = createRegistry();
@@ -102,17 +119,20 @@ describe('createDefaultRegistry — canonical CC tool names', () => {
     expect(registry.getTool('tool:Glob')?.description).toBe('exact');
   });
 
-  it('keeps non-equivalent namespaced commands unknown', async () => {
-    const result = await createDefaultRegistry().execute(
-      { id: 'unknown-pnpm', name: 'pnpm:list', arguments: {} },
-      ctx,
-    );
+  it.each(['pnpm:list', 'pnpm.list'])(
+    'keeps the non-equivalent namespaced command %s unknown',
+    async (name) => {
+      const result = await createDefaultRegistry().execute(
+        { id: 'unknown-pnpm', name, arguments: {} },
+        ctx,
+      );
 
-    expect(result).toMatchObject({
-      status: 'error',
-      structuredError: { code: 'unknown_tool' },
-    });
-  });
+      expect(result).toMatchObject({
+        status: 'error',
+        structuredError: { code: 'unknown_tool' },
+      });
+    },
+  );
 });
 
 describe('tool argument validation', () => {

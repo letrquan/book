@@ -6,6 +6,27 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The transcript's brightest lines are the answer again, not the agent's bookkeeping.** A sentence
+  whose only call updated the plan (TodoWrite) was read as an answer even when the agent went on
+  working, so `I'll clone, install, and launch that repo` sat in full ink between grey steps. A
+  message that more work follows in the same turn is now drawn as a step, unless it hands the turn
+  back to you (a question, plan approval, a memory save). Turns end at notifications too.
+- **A tool call the registry refused before it ran no longer draws a rose row.** An unknown tool
+  name, or arguments that did not parse or fit the schema, is the model's slip, and it usually
+  resends the call corrected. Its `×`, target and message are grey; a command that ran and failed
+  stays rose, since a non-zero exit is the transcript's only record of a red test run.
+- **A failure's message is no longer cut to the metadata column.** It was truncated to 64 columns
+  at the right edge of the row, as in
+  `Invalid arguments for TodoWrite: arguments.todos is required. A…`, which lost the part that
+  said what was wrong. It is now set under the row, wrapped to up to two lines.
+- **A TodoWrite row is marked with where the plan stands, not a check.** The row
+  `✓ Steps  Clone the repo   0 of 3 done` read as a finished step; it now takes the Steps sheet's
+  marks: `◌` set out, `◔` under way, `✓` finished.
+- **A tool call written with a dotted namespace runs.** `default.Bash` answered "Unknown tool" and
+  the model spent a turn on a ToolSearch for a tool it already had. `parent.`, `default.`, `tool.`
+  and OpenAI's `functions.` now unwrap the way `default:` always did, and the transcript shows the
+  call as the tool it ran as. The list stays explicit, so `pnpm.list` is still unknown.
+
 - **Repository-local filters and merge drivers are disabled for Book's git calls, and lazy fetch is refused in git isolation** (#357).
   A repository's own `.git/config` (or a file it includes) can no longer execute programs through
   `filter.<name>.clean`, `filter.<name>.smudge`, `filter.<name>.process`, or `merge.<name>.driver`

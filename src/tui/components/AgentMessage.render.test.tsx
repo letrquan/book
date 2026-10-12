@@ -270,6 +270,61 @@ describe('AgentMessage work steps', () => {
     expect(frame).not.toContain(`${ink(DEFAULT_THEME.subtle)}Which option?`);
   });
 
+  /** Render once as the last entry of its turn, then again once a step follows it. */
+  function framesAsStepArrives(message: Message): { before: string; after: string } {
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      const entry = (continuesTurn: boolean) => (
+        <ThemeContext.Provider value={DEFAULT_THEME}>
+          <AgentMessage
+            message={message}
+            isStreaming={false}
+            showThinking
+            reducedMotion
+            terminalWidth={80}
+            continuesTurn={continuesTurn}
+          />
+        </ThemeContext.Provider>
+      );
+      const view = render(entry(false));
+      const before = view.lastFrame() ?? '';
+      view.rerender(entry(true));
+      return { before, after: view.lastFrame() ?? '' };
+    } finally {
+      chalk.level = level;
+    }
+  }
+
+  it('speaks a plan update in the secondary voice once a step follows it', () => {
+    // `I'll clone, install, and launch that repo` + TodoWrite sat in full ink
+    // between dimmed steps: the turn's least informative line was its brightest.
+    // The same object re-renders, so this also holds the memo to the new prop.
+    const { before, after } = framesAsStepArrives({
+      ...assistant(NARRATION, [{ id: 'todo-1', name: 'TodoWrite', arguments: { todos: [] } }]),
+      toolResults: [
+        { version: 2, toolCallId: 'todo-1', status: 'success', content: 'ok' } as ToolResult,
+      ],
+    });
+
+    expect(before).toContain(`${ink(DEFAULT_THEME.text)}${NARRATION}`);
+    expect(after).toContain(`${ink(DEFAULT_THEME.subtle)}${NARRATION}`);
+    expect(after).not.toContain(`${ink(DEFAULT_THEME.text)}${NARRATION}`);
+  });
+
+  it('keeps a question in full ink after the work it led to', () => {
+    // A question you answered is a landmark, like your own turn.
+    const { after } = framesAsStepArrives({
+      ...assistant('Which option?', [{ id: 'ask-1', name: 'AskUserQuestion', arguments: {} }]),
+      toolResults: [
+        { version: 2, toolCallId: 'ask-1', status: 'success', content: 'ok' } as ToolResult,
+      ],
+    });
+
+    expect(after).toContain(`${ink(DEFAULT_THEME.text)}Which option?`);
+    expect(after).not.toContain(`${ink(DEFAULT_THEME.subtle)}Which option?`);
+  });
+
   it('keeps the blank row between a thought and the answer it leads to', () => {
     const frame = answerFrame({ content: 'The answer.', reasoningContent: 'think' });
     const lines = stripAnsi(frame).split('\n');

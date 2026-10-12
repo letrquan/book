@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ToolDefinition, ToolContext, ToolResult, ToolCall } from '../types/tools.js';
 import { escapeInvisibleCharacters } from '../control-characters.js';
-import { TOOL_ALIASES } from './aliases.js';
+import { TOOL_ALIASES, unwrapProviderPrefix } from './aliases.js';
 import { normalizeToolDefinition } from './catalog.js';
 import { repairToolArguments } from './json-repair.js';
 import { unparsedArgumentsText } from './unparsed-arguments.js';
@@ -11,7 +11,6 @@ import { MAX_SAFE_TIMEOUT_MS, resolveToolTimeoutMs, SELF_TIMEOUT_GRACE_MS } from
 
 const TOOL_ABORT_GRACE_MS = 250;
 const REPEATED_FAILURE_MEMORY_CAP = 32;
-const PROVIDER_TOOL_PREFIXES = ['parent:', 'default:', 'tool:'] as const;
 
 export interface PreparedToolCall {
   call: ToolCall;
@@ -35,9 +34,8 @@ function resolveRegisteredTool(
     if (tool) return tool;
   }
 
-  const prefix = PROVIDER_TOOL_PREFIXES.find((candidate) => name.startsWith(candidate));
-  if (!prefix) return undefined;
-  const unwrapped = name.slice(prefix.length);
+  const unwrapped = unwrapProviderPrefix(name);
+  if (unwrapped === name) return undefined;
   return tools.get(unwrapped) ?? tools.get(TOOL_ALIASES[unwrapped] ?? '');
 }
 

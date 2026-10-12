@@ -8,6 +8,19 @@ import {
   appendToolResultToMessage,
 } from './streaming-state.js';
 import type { Message } from '../../types/messages.js';
+import { displayToolName } from '../../tools/aliases.js';
+
+/**
+ * A streamed call under the name it runs as. The loop canonicalizes each call
+ * before it runs and persists it, but the transcript receives the call as the
+ * model streamed it: `default.Bash` would otherwise be a tool of its own to every
+ * check on a name (its row, its file-mutation summary, a delegation's narration),
+ * and read differently live than after a resume.
+ */
+function asDisplayed(call: ToolCall): ToolCall {
+  const name = displayToolName(call.name);
+  return name === call.name ? call : { ...call, name };
+}
 
 /**
  * A single queued streaming operation.
@@ -185,7 +198,7 @@ export function createMessageAccumulator(
 
   function addToolCall(call: ToolCall): void {
     if (state.stopped) return;
-    state.queue.push({ type: 'toolCall', call });
+    state.queue.push({ type: 'toolCall', call: asDisplayed(call) });
     scheduleNext();
   }
 
@@ -197,7 +210,11 @@ export function createMessageAccumulator(
 
   function addNestedToolCall(invocation: NestedToolInvocation): void {
     if (state.stopped) return;
-    state.queue.push({ type: 'nestedToolCall', invocation });
+    const call = asDisplayed(invocation.call);
+    state.queue.push({
+      type: 'nestedToolCall',
+      invocation: call === invocation.call ? invocation : { ...invocation, call },
+    });
     scheduleNext();
   }
 

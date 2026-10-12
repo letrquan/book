@@ -300,3 +300,35 @@ describe('message-accumulator', () => {
     expect(msg.nestedToolInvocations?.[0].result?.content).toBe('nested-v2');
   });
 });
+
+describe('message-accumulator tool names', () => {
+  it('records a namespaced call under the name it runs as', () => {
+    // The loop canonicalizes a call before it runs and persists it; the stream
+    // still carries the model's spelling. `default.Bash` read as a tool of its
+    // own live and as Bash after a resume, and every check on the name missed it.
+    const { acc, getMessages } = createTestAccumulator();
+    acc.start();
+
+    acc.addToolCall({ id: 'tc1', name: 'default.Bash', arguments: { command: 'ls' } });
+    acc.addNestedToolCall({
+      traceId: 'task/1:edit',
+      parentTraceId: 'task',
+      call: { id: 'edit', name: 'functions.Edit', arguments: { filePath: 'a.ts' } },
+    });
+    vi.advanceTimersByTime(20);
+
+    expect(getMessages()[0].toolCalls?.[0]).toMatchObject({ id: 'tc1', name: 'Bash' });
+    expect(getMessages()[0].nestedToolInvocations?.[0]?.call.name).toBe('Edit');
+  });
+
+  it('keeps a canonical call as the same object', () => {
+    const { acc, getMessages } = createTestAccumulator();
+    acc.start();
+    const call: ToolCall = { id: 'tc1', name: 'Read', arguments: { filePath: 'a.ts' } };
+
+    acc.addToolCall(call);
+    vi.advanceTimersByTime(20);
+
+    expect(getMessages()[0].toolCalls?.[0]).toBe(call);
+  });
+});

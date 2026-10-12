@@ -198,6 +198,17 @@ export function nestedGrid(grid: TranscriptGrid, depth = 1): TranscriptGrid {
 }
 
 /**
+ * Where a tool row's target starts, counted from the row's left edge: past the
+ * status gutter and, when the row lays its verb out in the label column, past
+ * that column and its one-column gap. Text set under a row (a failure's
+ * message) starts here to sit under what the row acted on; `labelColumn: false`
+ * puts it under the verb instead.
+ */
+export function toolRowTargetOffset(grid: TranscriptGrid, labelColumn: boolean): number {
+  return GUTTER_WIDTH + (labelColumn ? grid.label + 1 : 0);
+}
+
+/**
  * Narrow the label column to what a specific run of rows actually needs.
  *
  * The column is sized per message, not globally: a turn of `Bash` / `Read` /
