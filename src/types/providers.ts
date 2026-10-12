@@ -1,6 +1,7 @@
 import type { AgentRuntimeEvent } from '../agents/types.js';
 import type { Message, ProviderMessageMetadata, Usage } from './messages.js';
 import type { AgentTask, PermissionMode, RetryPhase } from './runtime.js';
+import type { GoalStatusEvent } from './goal.js';
 import type { CompactRequestHints, CompactResult, PreparedCompaction } from './sessions.js';
 import type { AgentTerminalOutcome, AgentTerminalReason } from './terminal.js';
 import type {
@@ -212,4 +213,12 @@ export interface AgentLoopCallbacks {
   onAgentEvent?: (event: AgentRuntimeEvent) => void;
   /** Called when a host or system notice should be surfaced (e.g. memory candidate saved). */
   onNotice?: (notice: string) => void;
+  /** Called when the session's `/goal` changes state at a stop (checked, met, failed, paused). */
+  onGoalStatus?: (event: GoalStatusEvent) => void;
+  /**
+   * Spend on a side request the loop or a tool made on another model -- a goal check, an
+   * `Advisor` consultation. Not the turn's own usage, so a host must not feed it to the
+   * context meter; it belongs on the session's bill, priced at `metadata`'s model.
+   */
+  onAuxiliaryUsage?: (usage: Usage, metadata: ProviderResponseMetadata, source: string) => void;
 }

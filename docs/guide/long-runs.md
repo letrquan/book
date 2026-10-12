@@ -69,7 +69,8 @@ so a supervisor can tell them apart — `blocked_plan` specifically means every 
 work, which is a stall, not a success. A deliberate stop is also no longer indistinguishable from
 success: handing an approved plan back reports `handoff_requested`, and a plan stop reports
 `plan_stop` and carries the approver's own message. Both keep the `completed` status, because
-neither is a failure.
+neither is a failure. A run whose `/goal` was judged impossible, or was still unmet at the
+eighth check, ends `failed` with `goal_unmet` (see "Goals and the advisor" in the commands guide).
 
 Thinking models get their own stall ceiling, on both provider paths. `retry.streamStallTimeoutMs`
 (20 s) is tuned for a chat, where that much silence means something broke; a long quiet stretch

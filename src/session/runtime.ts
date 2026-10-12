@@ -16,6 +16,7 @@ import { createSandbox, type Sandbox } from '../sandbox.js';
 import { SkillWatcher } from '../skill-watcher.js';
 import type { DiscoverSkillsOptions } from '../skills.js';
 import type { Message } from '../types/messages.js';
+import type { ActiveGoal } from '../types/goal.js';
 
 /**
  * Canonical names of the tools a conversation actually ran.
@@ -90,6 +91,12 @@ export class SessionRuntime {
    * Surfaced once in `<session-state>` so a dropped plan is a visible event.
    */
   planUnrestored = false;
+  /**
+   * The session's `/goal`, if one is set. Read by the root loop each time the agent
+   * stops without calling a tool; mutated there and by the host's `/goal` command.
+   * A runtime is replaced on `/clear`, which is what clears the goal with it.
+   */
+  activeGoal?: ActiveGoal;
   readonly backgroundShells: BackgroundShellStore;
   readonly fileObservationLedger: Map<string, FileObservation>;
   readonly toolDiscoveryState: ToolDiscoveryState;

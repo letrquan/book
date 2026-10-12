@@ -60,6 +60,8 @@ export type StreamJsonEvent =
   | { type: 'command_result'; command?: string; output?: string; data?: unknown }
   | { type: 'prompt_suggestions'; suggestions?: string[] }
   | { type: 'notice'; message?: string }
+  /** A `/goal` check: the fields of a `GoalStatusEvent` (`state`, `condition`, `reason`, …). */
+  | { type: 'goal_status'; state?: string; condition?: string; [key: string]: unknown }
   | { type: 'error'; error?: string }
   /**
    * The run's terminal record, and the last line of the stream.

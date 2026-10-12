@@ -16,6 +16,7 @@ import { checkTools } from '../agents/check.js';
 import { toolSearchTools } from './tool-search.js';
 import { memorySaveTools } from './memory-save.js';
 import { createRegistry, type ToolRegistry } from './registry-core.js';
+import { advisorTools } from './advisor.js';
 
 export { createRegistry } from './registry-core.js';
 export type { PreparedToolCall, ToolRegistry } from './registry-core.js';
@@ -39,6 +40,8 @@ export function createDefaultRegistry(capabilities?: {
     ...askUserQuestionTools,
     ...notebookTools,
     ...memorySaveTools,
+    // Offered only while an advisor model is configured (its catalog `available`).
+    ...advisorTools,
   ]);
   if (capabilities?.agents !== false) {
     registry.registerAll([...agentLifecycleTools, ...evidenceTools, ...taskTool, ...checkTools]);

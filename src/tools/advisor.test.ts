@@ -1,0 +1,218 @@
+import { describe, expect, it } from 'vitest';
+import { defaultConfig } from '../test/fixtures.js';
+import { advisorRank } from '../models.js';
+import type { Provider } from '../provider/index.js';
+import type { ProviderMessage } from '../types/providers.js';
+import type { Message } from '../types/messages.js';
+import type { ToolContext } from '../types/tools.js';
+import { SessionRuntime } from '../session/runtime.js';
+import { runAgentLoop } from '../agent/loop.js';
+import { createRegistry } from './registry.js';
+import { toolSuccess } from './result.js';
+import type { AgentLoopCallbacks } from '../types/providers.js';
+import { createAgentRunContext } from '../types/runs.js';
+import {
+  ADVISOR_SYSTEM,
+  ADVISOR_TOOL_DESCRIPTION,
+  buildAdvisorPrompt,
+  createAdvisorTools,
+  describeAdvisorChange,
+} from './advisor.js';
+
+function message(role: 'user' | 'assistant', content: string): Message {
+  return {
+    id: crypto.randomUUID(),
+    role,
+    content,
+    includeInContext: true,
+    kind: 'conversation',
+    timestamp: 0,
+  };
+}
+
+function replying(text: string) {
+  const requests: Array<{ model: string; messages: ProviderMessage[]; tools: unknown[] }> = [];
+  const provider = {
+    id: 'scripted',
+    stream: async function* (
+      config: { model: string },
+      messages: ProviderMessage[],
+      tools: unknown[],
+    ) {
+      requests.push({ model: config.model, messages, tools });
+      yield { type: 'text', content: text };
+      yield { type: 'done', usage: { promptTokens: 40, completionTokens: 12, totalTokens: 52 } };
+    },
+  } as unknown as Provider;
+  return { provider, requests };
+}
+
+function context(advisorModel: string | undefined, conversation: Message[]): ToolContext {
+  const config = defaultConfig({ model: 'claude-sonnet-5' });
+  config.advisorModel = advisorModel;
+  return {
+    workspaceRoot: process.cwd(),
+    env: {},
+    agentConfig: config,
+    conversation: () => conversation,
+  };
+}
+
+describe('Advisor tool', () => {
+  it('is offered only once an advisor model is configured', () => {
+    const [tool] = createAdvisorTools();
+    expect(tool.description).toBe(ADVISOR_TOOL_DESCRIPTION);
+    expect(tool.catalog?.exposure).toBe('core');
+    expect(tool.catalog?.available?.(context(undefined, []))).toBe(false);
+    expect(tool.catalog?.available?.(context('claude-opus-5-5', []))).toBe(true);
+  });
+
+  it('sends the whole conversation to the advisor model and returns its advice', async () => {
+    const { provider, requests } = replying('1. Read the failing test first.');
+    const [tool] = createAdvisorTools({ provider });
+    const result = await tool.execute(
+      {},
+      context('claude-opus-5-5', [
+        message('user', 'fix the flaky parser test'),
+        message('assistant', 'I will rewrite the tokenizer.'),
+      ]),
+    );
+
+    expect(result.status).toBe('success');
+    expect(result.content).toBe('1. Read the failing test first.');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].model).toBe('claude-opus-5-5');
+    expect(requests[0].tools).toEqual([]);
+    expect(requests[0].messages[0]).toEqual({ role: 'system', content: ADVISOR_SYSTEM });
+    const prompt = requests[0].messages[1].content as string;
+    expect(prompt).toContain('fix the flaky parser test');
+    expect(prompt).toContain('I will rewrite the tokenizer.');
+  });
+
+  it('charges the consultation to the run at the advisor model', async () => {
+    const { provider } = replying('Looks sound.');
+    const [tool] = createAdvisorTools({ provider });
+    const runtime = new SessionRuntime();
+    const runContext = createAgentRunContext({ sessionId: 's', source: 'tui' });
+    runtime.runAccounting.startRoot(runContext);
+    runtime.runAccounting.startExecution(runContext);
+    await tool.execute(
+      {},
+      { ...context('claude-opus-5-5', [message('user', 'x')]), runtime, runContext },
+    );
+    const snapshot = runtime.runAccounting.snapshotRoot(runContext.rootRunId);
+    expect(snapshot.inclusiveUsage?.completionTokens).toBe(12);
+    expect(runtime.runAccounting.modelsFor(runContext.rootRunId)).toContain('claude-opus-5-5');
+  });
+
+  it('reports an unconfigured advisor and a failed call as tool failures', async () => {
+    const [tool] = createAdvisorTools();
+    const unconfigured = await tool.execute({}, context(undefined, []));
+    expect(unconfigured.status).toBe('error');
+    expect(unconfigured.structuredError?.code).toBe('advisor_unconfigured');
+
+    const broken = {
+      id: 'broken',
+      stream: async function* () {
+        yield { type: 'error', error: 'upstream 529 overloaded' };
+      },
+    } as unknown as Provider;
+    const [failing] = createAdvisorTools({ provider: broken });
+    const result = await failing.execute({}, context('claude-opus-5-5', [message('user', 'x')]));
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toBe('Advisor unavailable (upstream 529 overloaded)');
+  });
+
+  it('drops the oldest turns to fit the window and says so', () => {
+    const history = Array.from({ length: 30 }, (_, index) =>
+      message(index % 2 ? 'assistant' : 'user', `step ${index} ${'detail '.repeat(150)}`),
+    );
+    const prompt = buildAdvisorPrompt(history, 1_500);
+    expect(prompt).toMatch(/\[The \d+ oldest messages were omitted/);
+    expect(prompt).toContain('step 29');
+  });
+});
+
+describe('Advisor in the loop', () => {
+  it('sees the calls the agent made earlier in the same turn', async () => {
+    const { provider: advisorProvider, requests } = replying('Ship it.');
+    const registry = createRegistry();
+    registry.registerAll([
+      {
+        name: 'Probe',
+        description: 'Returns a marker.',
+        parameters: { type: 'object', properties: {} },
+        catalog: { exposure: 'core' },
+        execute: async () => toolSuccess('PROBE-RESULT-7'),
+      },
+      ...createAdvisorTools({ provider: advisorProvider }),
+    ]);
+    let mainTurn = 0;
+    const main = {
+      id: 'scripted',
+      stream: async function* () {
+        mainTurn++;
+        if (mainTurn === 1) {
+          yield { type: 'text', content: 'Probing, then asking.' };
+          yield { type: 'tool_call', toolCall: { id: 'p1', name: 'Probe', arguments: {} } };
+          yield { type: 'tool_call', toolCall: { id: 'a1', name: 'Advisor', arguments: {} } };
+          yield { type: 'done' };
+          return;
+        }
+        yield { type: 'text', content: 'Done.' };
+        yield { type: 'done' };
+      },
+    } as unknown as Provider;
+    const config = defaultConfig({ model: 'claude-sonnet-5' });
+    config.advisorModel = 'claude-opus-5-5';
+    await runAgentLoop(
+      config,
+      registry,
+      'check the probe',
+      [],
+      {
+        onText: () => {},
+        onToolCall: () => {},
+        onToolResult: () => {},
+        onError: () => {},
+        onTurnStart: () => {},
+        onDone: () => {},
+      } as unknown as AgentLoopCallbacks,
+      'auto',
+      { provider: main, isNewSession: false, runtime: new SessionRuntime() },
+    );
+    expect(requests).toHaveLength(1);
+    const prompt = requests[0].messages[1].content as string;
+    expect(prompt).toContain('Probing, then asking.');
+    expect(prompt).toContain('PROBE-RESULT-7');
+  });
+});
+
+describe('advisor strength', () => {
+  it('ranks Claude models the way Claude Code does', () => {
+    expect(advisorRank('claude-fable-5-1')).toBe(9);
+    expect(advisorRank('claude-opus-5-5')).toBe(7);
+    expect(advisorRank('anthropic/claude-sonnet-5-5')).toBe(6);
+    expect(advisorRank('claude-sonnet-5')).toBe(4);
+    expect(advisorRank('claude-haiku-4-5')).toBe(1);
+    expect(advisorRank('claude-opus-5-20261001')).toBe(7);
+    expect(advisorRank('claude-opus-5-1')).toBeUndefined();
+    expect(advisorRank('9router/cmc/z-ai/glm-5.3-flash')).toBeUndefined();
+  });
+
+  it('notes a weaker or identical advisor, and says nothing about unranked models', () => {
+    expect(describeAdvisorChange(null, 'claude-sonnet-5')).toBe('Advisor disabled');
+    expect(describeAdvisorChange('claude-opus-5-5', 'claude-sonnet-5')).toBe(
+      'Advisor set to claude-opus-5-5',
+    );
+    expect(describeAdvisorChange('claude-haiku-4-5', 'claude-opus-5-5')).toContain(
+      'less capable than the current main model',
+    );
+    expect(describeAdvisorChange('claude-sonnet-5', 'claude-sonnet-5')).toContain(
+      'the advisor is the current main model',
+    );
+    expect(describeAdvisorChange('9router/gpt-6', 'claude-opus-5-5')).toBe(
+      'Advisor set to 9router/gpt-6',
+    );
+  });
+});

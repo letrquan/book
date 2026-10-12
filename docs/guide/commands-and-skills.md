@@ -135,6 +135,61 @@ stdin) and can be turned off with `expandSlashCommands: false` on `HeadlessOptio
 every prompt verbatim — appropriate for a host relaying untrusted end-user text. `query()` does not
 surface that option yet, so the SDK always expands.
 
+## Goals and the advisor
+
+Both are modelled on the Claude Code commands of the same names.
+
+**`/goal <condition>`** keeps the agent working until the condition holds. Setting a goal starts a
+turn toward it (mid-turn, it applies to that turn). From then on, each time the agent stops
+without calling a tool, a separate model reads the transcript and answers whether the condition is
+satisfied: the compact model (`compactModel`, else the session model) at `low` effort, with no
+tools and a 30-second limit, using Claude Code's evaluator prompt.
+
+- **Not met**: the evaluator's reason goes back to the agent as a host-authored turn
+  (`Stop hook feedback: [<condition>]: <reason>`), the transcript shows
+  `Goal not yet met… continuing`, and the run goes on.
+- **Met**: the goal clears itself and the transcript shows
+  `● Goal achieved (<time> · <turns> · <tokens>)`.
+- **Impossible** (the evaluator judges it can never hold): the goal clears with the reason.
+- **Eight unmet checks in a row** within one run end the run at the eighth with
+  `Goal paused · … · send a message to continue`; the goal stays set, and the next message
+  resumes checking.
+- **A check that fails** (provider error, timeout, unreadable answer) lets the run end and keeps
+  the goal. A broken evaluator never traps the agent.
+
+Only a stop the agent chose is checked: a plan stop or handoff, a cancel, `--max-turns`, and the
+continuation brakes (`no_progress`, `continuation_limit`, the wall-clock ceiling) all end the run
+as they would without a goal. A run whose goal was judged impossible, or is still unmet at the
+eighth check, ends with the outcome `failed / goal_unmet`, so `book -p "/goal …"` exits non-zero
+when it gives up; a met goal ends as a normal completion. The token figure counts what the agent
+and its goal checks spent while the goal was set.
+
+Write the condition so the transcript can prove it: "`npm test` exits 0 and the output is shown"
+is checkable; "the code is good" is not. `/goal` with no argument shows the goal, how many checks
+it has failed, and the last reason; `/goal clear` (or `stop`, `off`, `reset`, `none`, `cancel`)
+drops it early. A goal is recorded in the session file, so `--resume` and `/resume` bring back an
+unmet one; `/clear` drops it. Only the root agent is checked — subagents and managed agents work
+toward their own tasks. In print mode, `book -p "/goal <condition>"` runs the same loop, with each
+check on stderr as `goal: …` (or as a `goal_status` event under `--output-format stream-json`).
+
+**`/advisor <model>`** gives the agent an `Advisor` tool backed by a stronger model, which it is
+told to call before substantive work, when stuck, and before declaring a task done. The tool takes
+no arguments: Book sends the whole conversation — including the text the agent wrote just before
+calling it and any call it made earlier in the same turn — to the advisor model through that
+model's own provider, at the session's effort capped at `high`, and returns the advice as the
+tool's result (marked when it was cut off at the output limit). The advisor cannot run tools. `/advisor` alone shows the current advisor,
+`/advisor off` removes it, and the choice is saved to `~/.book/settings.json` as `advisorModel`
+(`BOOK_ADVISOR_MODEL` outranks it). The consultation is billed to the session at the advisor
+model's rates, and `/cost` lists it, and the goal checks, as their own lines. Advice is another
+model's text, so after a consultation a `MemorySave` goes to the memory inbox, as it does after
+`Task`. Like `TodoWrite`, the tool needs no permission prompt (an explicit `deny` or `ask`
+rule naming it still applies).
+
+Unlike Claude Code, whose advisor is a server-side tool available only on Anthropic's API, Book's
+runs client-side, so any provider and any model can be the advisor. For Claude models, `/advisor`
+notes when the advisor ranks below the main model (Claude Code's ranking); any other pairing is
+accepted as given.
+
 `/skills` opens the interactive skill manager. Select a skill with `↑`/`↓`, press `Space` to cycle its visibility (`auto`, `name-only`, `manual`, or `off`), press `E` to cycle execution consent (`inherit`, `ask`, or `deny`), and press `Enter` to prepare an explicit `$skill-name` request. `G` toggles the global emergency switch, `R` reloads the catalog, and `/reload-skills` performs the same reload from the command line. Overrides are saved in `.book/settings.local.json` under `skills.overrides`, `skills.execution`, and `skills.enabled`.
 
 ## Skills

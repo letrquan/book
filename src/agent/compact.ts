@@ -110,7 +110,7 @@ const CARRIED_TURN_CLIP_LADDER = [1_024, 512, 256] as const;
  * adaptive-thinking model the thinking is spent from this same cap.
  */
 const REDUCER_OUTPUT_HEADROOM = 3;
-const REDUCER_OUTPUT_MIN_MARGIN_TOKENS = 2_048;
+export const REDUCER_OUTPUT_MIN_MARGIN_TOKENS = 2_048;
 const MESSAGE_OVERHEAD_TOKENS = 6;
 const TOOL_OVERHEAD_TOKENS = 12;
 /** Floor per-tool-result token limit that scales with the retained tail. */
@@ -768,7 +768,10 @@ interface SummarizerInput {
  * The span as the summarizer reads it, within `budgetTokens`: the loosest rung
  * that fits, and past the last rung the newest messages that do.
  */
-function buildSummarizerInput(messages: readonly Message[], budgetTokens: number): SummarizerInput {
+export function buildSummarizerInput(
+  messages: readonly Message[],
+  budgetTokens: number,
+): SummarizerInput {
   const visible = messages.filter((message) => message.includeInContext);
   let parts: string[] = [];
   for (const level of SUMMARIZER_INPUT_LADDER) {
@@ -986,7 +989,7 @@ function renderLegacySummaryText(checkpoint: ConversationCheckpointV2): string {
   return sections.filter(Boolean).join('\n\n');
 }
 
-function parseJsonObject(text: string): unknown {
+export function parseJsonObject(text: string): unknown {
   const trimmed = text
     .trim()
     .replace(/^```(?:json)?\s*/i, '')
@@ -1755,7 +1758,7 @@ export function clipHistoryToolResults(
   });
 }
 
-async function generateCheckpoint(
+export async function generateCheckpoint(
   config: AgentConfig,
   prompt: string,
   maxOutputTokens: number,
@@ -2275,7 +2278,7 @@ function withoutReasoning(message: Message): Message {
  * is sent is decided as for any request on the compact model: where a level was
  * chosen, or the catalog lists it (`resolveEffortExplicit`).
  */
-function judgeEffort(config: AgentConfig): AgentConfig['effort'] | undefined {
+export function judgeEffort(config: AgentConfig): AgentConfig['effort'] | undefined {
   const catalog = config.modelInfo?.effort;
   if (catalog === false) return undefined;
   if (typeof catalog === 'object' && catalog.levels && !catalog.levels.includes('low')) {

@@ -19,6 +19,7 @@ import type {
   CompactBoundary,
   CompactRecordData,
   CompactResult,
+  GoalRecordData,
   PlanRecordData,
   PreparedCompaction,
   RewindSnapshotCaptureResult,
@@ -30,6 +31,8 @@ import type {
   UsageRecordData,
 } from '../types/sessions.js';
 import type { Message, Usage } from '../types/messages.js';
+import type { ActiveGoal } from '../types/goal.js';
+import { createGoal, restoreGoal } from '../agent/goal.js';
 import { createAgentRunContext, type AgentRunContext, type AgentRunSource } from '../types/runs.js';
 import {
   classifyAbortReason,
@@ -78,6 +81,7 @@ export interface AgentSessionRunCallbacks {
   onDone?: AgentLoopCallbacks['onDone'];
   onTerminal?: AgentLoopCallbacks['onTerminal'];
   onUsage?: AgentLoopCallbacks['onUsage'];
+  onAuxiliaryUsage?: AgentLoopCallbacks['onAuxiliaryUsage'];
   getMode?: AgentLoopCallbacks['getMode'];
   onModeChange?: AgentLoopCallbacks['onModeChange'];
   beforeToolExecution?: AgentLoopCallbacks['beforeToolExecution'];
@@ -118,6 +122,23 @@ export interface AgentSessionRunRequest {
   options?: Omit<AgentLoopOptions, 'signal'>;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
+}
+
+/** Where a `/goal` change is recorded. Without a store the goal lives for this process only. */
+export interface AgentSessionGoalTarget {
+  sessionId?: string;
+  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+}
+
+/** Append the goal as it now stands; the loader takes the last record. */
+function persistGoal(target: AgentSessionGoalTarget, goal: ActiveGoal | null): void {
+  if (!target.timelineStore || !target.sessionId) return;
+  const data: GoalRecordData = { version: 1, goal };
+  target.timelineStore.append(target.sessionId, {
+    type: 'goal',
+    timestamp: Date.now(),
+    data,
+  } satisfies SessionRecord);
 }
 
 export interface AgentSessionPrepareSendRequest {
@@ -526,6 +547,46 @@ export class AgentSession {
     return this.runtime;
   }
 
+  /** The session's `/goal`, if one is set. */
+  getGoal(): ActiveGoal | undefined {
+    return this.runtime.activeGoal;
+  }
+
+  /**
+   * Set the session's goal, replacing any earlier one. The next time the agent
+   * stops without calling a tool, the loop checks the condition (`agent/goal.ts`).
+   * Taking effect on the runtime means a goal set mid-run applies to that run.
+   */
+  setGoal(condition: string, target: AgentSessionGoalTarget = {}): ActiveGoal {
+    const goal = createGoal(condition);
+    this.runtime.activeGoal = goal;
+    persistGoal(target, goal);
+    return goal;
+  }
+
+  /**
+   * Carry a goal into a conversation that started fresh -- a plan handoff reseeds a new
+   * session to implement the plan the goal was guiding -- keeping its progress.
+   */
+  adoptGoal(goal: ActiveGoal, target: AgentSessionGoalTarget = {}): void {
+    this.runtime.activeGoal = { ...goal };
+    persistGoal(target, this.runtime.activeGoal);
+  }
+
+  /** Clear the session's goal. Returns the goal that was cleared, if there was one. */
+  clearGoal(target: AgentSessionGoalTarget = {}): ActiveGoal | undefined {
+    const goal = this.runtime.activeGoal;
+    if (!goal) return undefined;
+    this.runtime.activeGoal = undefined;
+    persistGoal(target, null);
+    return goal;
+  }
+
+  /** Put back an unmet goal a resumed session recorded. Call after the runtime it belongs on is installed. */
+  restoreGoal(record: GoalRecordData | undefined): void {
+    this.runtime.activeGoal = restoreGoal(record);
+  }
+
   /**
    * Stop the outgoing runtime, write what it spent, and install its replacement.
    *
@@ -842,6 +903,7 @@ export class AgentSession {
       // user who wrote a plan, switched away and came back resumed a half-finished
       // objective with an empty task list and no notice that it had been dropped.
       plan: loaded.plan,
+      goal: loaded.goal,
       source: 'resume',
       persisted: true,
       created: false,
@@ -1283,6 +1345,17 @@ export class AgentSession {
         onToolCall: (toolCall: ToolCall) => emit({ type: 'tool_use', toolCall }),
         onToolResult: (toolResult: ToolResult) => emit({ type: 'tool_result', toolResult }),
         onNotice: (message: string) => emit({ type: 'notice', message }),
+        onGoalStatus: (event) => {
+          // The loop has already moved the runtime's goal; record where it now stands.
+          if (request.isCurrent?.() !== false) {
+            persistGoal(
+              { sessionId: request.sessionId, timelineStore: request.timelineStore },
+              runtime.activeGoal ?? null,
+            );
+          }
+          emit({ type: 'goal_status', event });
+        },
+        onAuxiliaryUsage: callbacks.onAuxiliaryUsage,
         onError: (error: string) => {
           emittedError = error;
           emit({ type: 'error', error });

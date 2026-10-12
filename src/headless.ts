@@ -19,6 +19,7 @@ import {
   planStopDecision,
 } from './tools/plan-mode.js';
 import { resolvePrintCommand, type PrintCommandDispatch } from './commands/print-dispatch.js';
+import { formatGoalStatus } from './agent/goal.js';
 import type { CommandContext, HostCommandResult } from './types/commands.js';
 import type { AgentActivity, AgentCompletionNotification } from './agents/types.js';
 import {
@@ -213,6 +214,8 @@ export async function runHeadless(
   // ToolContext the loop seeds from.
   runtime.todos.push(...normalizePersistedTodos(opts.plan?.todos));
   if (opts.plan?.tasks?.length) runtime.tasks.push(...opts.plan.tasks);
+  // An unmet `/goal` the resumed session recorded keeps being checked at each stop.
+  agentSession.restoreGoal(opts.goal);
   // Resuming prior work with nothing to show for it is the case worth naming: an
   // empty list renders as no list at all, so without this the model cannot tell a
   // dropped plan from a task that never had one.
@@ -738,7 +741,20 @@ export async function runHeadless(
                 }),
               runContext,
             },
+            goal: {
+              get: () => agentSession.getGoal(),
+              set: (condition) => {
+                agentSession.setGoal(condition, goalTarget());
+              },
+              clear: () => agentSession.clearGoal(goalTarget()),
+            },
           });
+
+    /** Where a `/goal` change is recorded: the persisted session, when there is one. */
+    const goalTarget = () => ({
+      sessionId,
+      timelineStore: store && sessionId ? store : undefined,
+    });
 
     /**
      * Slash commands the host performed itself, in submission order. A run made
@@ -1346,6 +1362,17 @@ function emitAgentEvent(
   if (event.type === 'notice') {
     if (opts.outputFormat === 'stream-json') emit({ type: 'notice', message: event.message });
     else console.warn(event.message);
+    return;
+  }
+  // A `/goal` check: whether the run continues, and why. A progress line like any
+  // other under `text`, so `--quiet` (and the SDK, which owns its stderr) silences it.
+  if (event.type === 'goal_status') {
+    if (opts.outputFormat === 'stream-json') emit({ type: 'goal_status', ...event.event });
+    else if (opts.outputFormat === 'text' && opts.quiet !== true) {
+      process.stderr.write(
+        `goal: ${progressLine(formatGoalStatus(event.event), PROGRESS_NOTICE_MAX)}\n`,
+      );
+    }
     return;
   }
   // A managed child's own line for the operator (#305 item 4). A child runs unattended and its
