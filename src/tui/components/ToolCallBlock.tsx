@@ -410,7 +410,7 @@ function ToolCallBlockInner({
       {/* The message is hard-wrapped into one-line rows for the same reason the
           summary row truncates: every row draws inside its own box. */}
       {errorDetail ? (
-        <Box flexDirection="column" marginLeft={GUTTER_WIDTH + errorDetail.indent}>
+        <Box flexDirection="column" marginLeft={errorDetail.column}>
           {errorDetail.lines.map((line, index) => (
             <Box key={index} height={1}>
               <Text

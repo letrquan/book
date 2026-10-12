@@ -163,6 +163,20 @@ describe('messagesFollowedByWork', () => {
     expect(followed.has('aside')).toBe(true);
   });
 
+  it("keeps Book's own notes in full ink when work follows them", () => {
+    // A notice the host wrote mid-run is not the model's narration.
+    const notice = { ...assistant('notice', []), kind: 'local' } as Message;
+    const refused = { ...assistant('refused', []), hostNotice: true } as Message;
+    const followed = messagesFollowedByWork([
+      user('u1'),
+      notice,
+      refused,
+      assistant('step', ['Bash']),
+    ]);
+    expect(followed.has('notice')).toBe(false);
+    expect(followed.has('refused')).toBe(false);
+  });
+
   it('reads no further back than the oldest entry on screen', () => {
     const followed = messagesFollowedByWork(
       [

@@ -1,14 +1,20 @@
 import type { ToolResult } from '../types/tools.js';
 import { foldControlCharacters as foldShared } from '../control-characters.js';
-import { displayToolName } from '../tools/aliases.js';
+import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import { grepResultMetadata, readResultMetadata } from '../tools/result.js';
-import { normalizePersistedTodos } from '../tools/todo.js';
+import { refusedBeforeRun } from '../tools/pre-execution-codes.js';
+import { normalizePersistedTodos, type Todo } from '../tools/todo.js';
 import { stepProgress } from './steps.js';
 import { STATUS_INDICATORS } from './status-indicators.js';
 import { displayWidth, truncateDisplay, wordWrap } from './components/word-wrap.js';
-import { LABEL_COLUMN_WIDTH, MIN_TARGET_WIDTH, type TranscriptGrid } from './layout.js';
+import {
+  LABEL_COLUMN_WIDTH,
+  MIN_TARGET_WIDTH,
+  toolRowTargetOffset,
+  type TranscriptGrid,
+} from './layout.js';
 import { isRenderableFileMutationDiff } from './file-mutation-display.js';
 
 export type TranscriptMode = 'compact' | 'detailed';
@@ -224,19 +230,6 @@ function statusFor(result: ToolResult | undefined, isPending: boolean): ToolPres
   return result.status === 'success' ? 'success' : 'failure';
 }
 
-/**
- * The failure codes `src/tools/registry-core.ts` returns before a tool runs.
- * The model addressed the harness wrongly and, as a rule, resends the call
- * corrected on its next turn. A rose row for each one made the loudest marks on
- * screen the ones you could do nothing about. `tool_not_active` and
- * `arguments_not_allowed` are refusals (`blocked`) and already draw as skipped.
- */
-const REJECTED_BEFORE_RUN: ReadonlySet<string> = new Set([
-  'unknown_tool',
-  'invalid_json_arguments',
-  'invalid_arguments',
-]);
-
 function resultStatusMetadata(status: ToolPresentationStatus): string | undefined {
   if (status === 'failure') return 'failed';
   if (status === 'skipped') return 'skipped';
@@ -316,32 +309,28 @@ function domainFor(value: string | undefined): string | undefined {
 function todoWriteColumns(
   args: Record<string, unknown>,
   status: ToolPresentationStatus,
-): { target: string | undefined; metadata: string[] } {
+): { target: string | undefined; metadata: string[]; mark?: string } {
   if (status === 'failure' || status === 'skipped') return { target: undefined, metadata: [] };
   const todos = normalizePersistedTodos(
     Array.isArray(args.todos)
       ? (args.todos as Parameters<typeof normalizePersistedTodos>[0])
       : undefined,
   );
+  const mark = status === 'success' ? planMark(todos) : undefined;
   return {
     target: todos.find((todo) => todo.status === 'in_progress')?.content,
     metadata: todos.length > 0 ? [stepProgress(todos)] : [],
+    ...(mark ? { mark } : {}),
   };
 }
 
 /**
- * Where a TodoWrite call left the plan, as the Steps sheet marks it: `◌` set
- * out, `◔` under way, `✓` finished. The row used to carry the call's own `✓`,
- * so `✓ Steps  Clone the repo   0 of 3 done` read as a step done. Read from the
- * arguments, like the row's columns; `undefined` for an empty plan, which keeps
- * the status glyph.
+ * Where a plan stands, as the Steps sheet marks it: `◌` set out, `◔` under way,
+ * `✓` finished. A TodoWrite row used to carry the call's own `✓`, so
+ * `✓ Steps  Clone the repo   0 of 3 done` read as a step done. `undefined` for
+ * an empty plan, which keeps the status glyph.
  */
-export function todoWriteMark(args: Record<string, unknown>): string | undefined {
-  const todos = normalizePersistedTodos(
-    Array.isArray(args.todos)
-      ? (args.todos as Parameters<typeof normalizePersistedTodos>[0])
-      : undefined,
-  );
+export function planMark(todos: readonly Todo[]): string | undefined {
   if (todos.length === 0) return undefined;
   if (todos.every((todo) => todo.status === 'completed')) return STATUS_INDICATORS.completed.icon;
   if (todos.some((todo) => todo.status !== 'pending')) return STATUS_INDICATORS.in_progress.icon;
@@ -355,13 +344,17 @@ export function deriveToolPresentation(
   result?: ToolResult,
   options: ToolPresentationOptions = {},
 ): ToolPresentation {
-  const canonicalName = displayToolName(name);
+  const canonicalName = canonicalToolName(name);
   const status = statusFor(result, Boolean(options.isPending));
-  const rejected =
-    status === 'failure' && REJECTED_BEFORE_RUN.has(result?.structuredError?.code ?? '');
+  // A call the registry refused before it ran: the model addressed the harness
+  // wrongly and, as a rule, resends it corrected. A rose row for each one made
+  // the loudest marks on screen the ones you could do nothing about.
+  // `refusedBeforeRun` is the shared reading, because `invalid_arguments` is also
+  // what a tool that did run returns. Refusals (`blocked`) already draw as skipped.
+  const rejected = status === 'failure' && refusedBeforeRun(result);
   // TodoWrite's row comes from its arguments, in both paths below.
   const todoColumns = canonicalName === 'TodoWrite' ? todoWriteColumns(args, status) : undefined;
-  const mark = todoColumns && status === 'success' ? todoWriteMark(args) : undefined;
+  const mark = todoColumns?.mark;
   const primary = getPrimaryArg(args);
   const mcp = parseMcpToolName(name);
   let title = LABELS[canonicalName] ?? canonicalName;
@@ -611,7 +604,7 @@ export function toolRowLabel(name: string, result?: ToolResult): string {
   }
   const mcp = parseMcpToolName(name);
   if (mcp) return mcp.server;
-  const canonical = displayToolName(name);
+  const canonical = canonicalToolName(name);
   return shortLabel(LABELS[canonical] ?? canonical);
 }
 
@@ -711,12 +704,13 @@ export const TOOL_ERROR_MAX_LINES = 2;
 /** A failure's message as the lines it takes under its tool row. */
 export interface ToolErrorDetail {
   /**
-   * Columns from the row's text start (just after the status gutter) to the
-   * message: past the label column when the row has one and shows a target, so
-   * the message sits under the target it failed on. A row with no target has
-   * it under the verb, rather than hanging under an empty column.
+   * Columns from the row's left edge, status gutter included, to the message:
+   * under the target the row failed on when it has a label column and a target.
+   * A row with no target has it under the verb, rather than hanging under an
+   * empty column, and so does one too narrow to leave the message a readable
+   * measure there.
    */
-  indent: number;
+  column: number;
   /** The message, word-wrapped to the row's measure; the last line ends in `…` when more was cut. */
   lines: string[];
 }
@@ -738,17 +732,23 @@ export function composeToolErrorDetail(
   grid: TranscriptGrid,
   maxLines = TOOL_ERROR_MAX_LINES,
 ): ToolErrorDetail {
-  const underTarget = Boolean(row.target) && usesLabelColumn(shortLabel(row.title), grid);
+  const underTarget =
+    Boolean(row.target) &&
+    usesLabelColumn(shortLabel(row.title), grid) &&
+    grid.row - grid.label - 1 >= MIN_TARGET_WIDTH;
   const indent = underTarget ? grid.label + 1 : 0;
-  const width = Math.max(MIN_TARGET_WIDTH, grid.row - indent);
+  // Never wider than the row has room for: a line Ink cut at the box edge would
+  // lose the middle of the message, past the reach of the `…` below.
+  const width = Math.max(1, grid.row - indent);
+  const column = toolRowTargetOffset(grid, underTarget);
   const text = (foldControlCharacters(error) ?? '').trim();
   const wrapped = wordWrap(text, width).split('\n');
-  if (wrapped.length <= maxLines) return { indent, lines: wrapped };
+  if (wrapped.length <= maxLines) return { column, lines: wrapped };
   const lines = wrapped.slice(0, maxLines);
   // The last kept line carries the rest so `…` lands where the text was cut.
   lines[maxLines - 1] = truncateDisplay(
     `${lines[maxLines - 1]} ${wrapped.slice(maxLines).join(' ')}`,
     width,
   );
-  return { indent, lines };
+  return { column, lines };
 }

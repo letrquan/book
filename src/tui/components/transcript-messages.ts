@@ -1,6 +1,5 @@
 import type { Message } from '../../types/messages.js';
 import { splitReasoningParts } from '../../reasoning-tags.js';
-import { displayToolName } from '../../tools/aliases.js';
 import { categoryFor } from '../../tools/catalog.js';
 
 /**
@@ -35,8 +34,7 @@ const HAND_BACK_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode', 'MemorySave'
  * and the calls that hand the conversation back to you.
  */
 function isNonStepTool(name: string): boolean {
-  const tool = displayToolName(name);
-  return categoryFor(tool) === 'tasks' || HAND_BACK_TOOLS.has(tool);
+  return categoryFor(name) === 'tasks' || HAND_BACK_TOOLS.has(name);
 }
 
 /**
@@ -58,7 +56,21 @@ export function isWorkStep(message: Message): boolean {
  * landmarks, like your own turns.
  */
 export function handsBack(message: Message): boolean {
-  return (message.toolCalls ?? []).some((call) => HAND_BACK_TOOLS.has(displayToolName(call.name)));
+  return (message.toolCalls ?? []).some((call) => HAND_BACK_TOOLS.has(call.name));
+}
+
+/**
+ * Whether a message is the model's own prose, which a later step can turn into
+ * narration. Book's own notes in the transcript (a local notice, a slash
+ * command's output, a refused prompt or tool batch) are not, and keep their ink.
+ */
+function isModelProse(message: Message): boolean {
+  return (
+    message.role === 'assistant' &&
+    message.kind !== 'local' &&
+    !message.localCommand &&
+    !message.hostNotice
+  );
 }
 
 /**
@@ -87,7 +99,7 @@ export function messagesFollowedByWork(
     if (message.role === 'user') {
       workFollows = false;
     } else {
-      if (workFollows) followed.add(message.id);
+      if (workFollows && isModelProse(message)) followed.add(message.id);
       if (isWorkStep(message)) workFollows = true;
     }
     if (message.id === oldestId) break;

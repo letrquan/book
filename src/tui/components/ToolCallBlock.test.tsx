@@ -695,7 +695,7 @@ describe('ToolCallBlock failures', () => {
         name="TodoWrite"
         args={{}}
         result={enrichToolResultPresentation(
-          toolFailure(MESSAGE, { code: 'invalid_arguments' }),
+          toolFailure(MESSAGE, { code: 'invalid_arguments', details: { preExecution: true } }),
           'TodoWrite',
           {},
         )}

@@ -7,7 +7,7 @@ import {
   parseMcpToolName,
   shouldExpandTool,
 } from './tool-presentation.js';
-import { composeToolErrorDetail, composeToolRow, todoWriteMark } from './tool-presentation.js';
+import { composeToolErrorDetail, composeToolRow, planMark } from './tool-presentation.js';
 import { CONTROL_CHARACTERS } from '../control-characters.js';
 import {
   CONTENT_COLUMN,
@@ -378,6 +378,8 @@ describe('composeToolRow', () => {
 
 describe('composeToolErrorDetail', () => {
   const grid = transcriptGrid(100);
+  /** The columns a message has once it starts at `column`. */
+  const room = (g: typeof grid, column: number) => g.row - (column - GUTTER_WIDTH);
 
   it('sets the message under the target, past the label column', () => {
     // The message replaced the row's metadata and was cut to that column:
@@ -387,7 +389,7 @@ describe('composeToolErrorDetail', () => {
       'exit code 1',
       grid,
     );
-    expect(detail.indent).toBe(grid.label + 1);
+    expect(detail.column).toBe(GUTTER_WIDTH + grid.label + 1);
     expect(detail.lines).toEqual(['exit code 1']);
   });
 
@@ -395,14 +397,27 @@ describe('composeToolErrorDetail', () => {
     // `× Steps` names nothing to sit under; a message hung at the target column
     // floated away from its row.
     const detail = composeToolErrorDetail({ title: 'Steps', target: undefined }, 'bad plan', grid);
-    expect(detail.indent).toBe(0);
+    expect(detail.column).toBe(GUTTER_WIDTH);
   });
 
   it('starts under the verb when the label runs inline', () => {
     const narrow = transcriptGrid(40);
     expect(narrow.label).toBe(0);
     const row = { title: 'Bash', target: 'npm test' };
-    expect(composeToolErrorDetail(row, 'exit code 1', narrow).indent).toBe(0);
+    expect(composeToolErrorDetail(row, 'exit code 1', narrow).column).toBe(GUTTER_WIDTH);
+  });
+
+  it('starts under the verb, never past the row, when the target column is too narrow', () => {
+    // A wrap measure clamped up to a minimum ran past the row, and Ink cut every
+    // line at the box edge: the middle of the message never showed.
+    const tight = { ...grid, row: 20 };
+    const detail = composeToolErrorDetail(
+      { title: 'Bash', target: 'npm test' },
+      'Invalid arguments for Bash: arguments.description is not allowed.',
+      tight,
+    );
+    expect(detail.column).toBe(GUTTER_WIDTH);
+    for (const line of detail.lines) expect(displayWidth(line)).toBeLessThanOrEqual(tight.row);
   });
 
   it('wraps a long message to the row, keeping the words that say what was wrong', () => {
@@ -413,7 +428,7 @@ describe('composeToolErrorDetail', () => {
     expect(detail.lines.length).toBeGreaterThan(1);
     expect(detail.lines.join(' ')).toBe(message);
     for (const line of detail.lines) {
-      expect(displayWidth(line)).toBeLessThanOrEqual(narrow.row - detail.indent);
+      expect(displayWidth(line)).toBeLessThanOrEqual(room(narrow, detail.column));
     }
   });
 
@@ -426,7 +441,7 @@ describe('composeToolErrorDetail', () => {
     expect(detail.lines).toHaveLength(2);
     expect(detail.lines[1]!.endsWith('…')).toBe(true);
     for (const line of detail.lines) {
-      expect(displayWidth(line)).toBeLessThanOrEqual(grid.row - detail.indent);
+      expect(displayWidth(line)).toBeLessThanOrEqual(room(grid, detail.column));
     }
   });
 
@@ -437,31 +452,33 @@ describe('composeToolErrorDetail', () => {
       grid,
     );
     for (const line of detail.lines) {
-      expect(displayWidth(line)).toBeLessThanOrEqual(grid.row - detail.indent);
+      expect(displayWidth(line)).toBeLessThanOrEqual(room(grid, detail.column));
     }
   });
 });
 
-describe('todoWriteMark', () => {
-  const todo = (status: string) => ({ content: `step ${status}`, status, activeForm: 'doing' });
+describe('planMark', () => {
+  const todo = (status: 'pending' | 'in_progress' | 'completed') => ({
+    content: `step ${status}`,
+    status,
+  });
 
   it('marks a plan set out but not begun', () => {
-    expect(todoWriteMark({ todos: [todo('pending'), todo('pending')] })).toBe('◌');
+    expect(planMark([todo('pending'), todo('pending')])).toBe('◌');
   });
 
   it('marks a plan under way, not a step done', () => {
     // `✓ Steps  Clone the repo   0 of 3 done` read as the opposite of its own text.
-    expect(todoWriteMark({ todos: [todo('in_progress'), todo('pending')] })).toBe('◔');
-    expect(todoWriteMark({ todos: [todo('completed'), todo('pending')] })).toBe('◔');
+    expect(planMark([todo('in_progress'), todo('pending')])).toBe('◔');
+    expect(planMark([todo('completed'), todo('pending')])).toBe('◔');
   });
 
   it('checks a finished plan', () => {
-    expect(todoWriteMark({ todos: [todo('completed'), todo('completed')] })).toBe('✓');
+    expect(planMark([todo('completed'), todo('completed')])).toBe('✓');
   });
 
   it('leaves an empty plan to the status glyph', () => {
-    expect(todoWriteMark({ todos: [] })).toBeUndefined();
-    expect(todoWriteMark({})).toBeUndefined();
+    expect(planMark([])).toBeUndefined();
   });
 });
 
@@ -685,19 +702,39 @@ describe('TodoWrite row mark', () => {
 });
 
 describe('calls refused before they ran', () => {
-  it.each(['unknown_tool', 'invalid_json_arguments', 'invalid_arguments'])(
-    'reads %s as a rejection',
-    (code) => {
-      const failed = enrichToolResultPresentation(
-        toolFailure('Invalid arguments for TodoWrite: arguments.todos is required.', { code }),
-        'TodoWrite',
-        {},
-      );
-      const presentation = deriveToolPresentation('TodoWrite', {}, failed);
-      expect(presentation.status).toBe('failure');
-      expect(presentation.rejected).toBe(true);
-    },
-  );
+  it.each([
+    ['unknown_tool', undefined],
+    ['invalid_json_arguments', undefined],
+    ['invalid_arguments', { preExecution: true }],
+  ])('reads %s as a rejection', (code, details) => {
+    const failed = enrichToolResultPresentation(
+      toolFailure('Invalid arguments for TodoWrite: arguments.todos is required.', {
+        code,
+        details,
+      }),
+      'TodoWrite',
+      {},
+    );
+    const presentation = deriveToolPresentation('TodoWrite', {}, failed);
+    expect(presentation.status).toBe('failure');
+    expect(presentation.rejected).toBe(true);
+  });
+
+  it('keeps an argument refusal from a tool that ran a failure', () => {
+    // `Read {outline: true, offset}` reads the file, then refuses the pair with
+    // `invalid_arguments` and no pre-execution flag: the tool did run.
+    const failed = enrichToolResultPresentation(
+      toolFailure('outline and offset cannot be combined', { code: 'invalid_arguments' }),
+      'Read',
+      { filePath: 'a.ts', outline: true, offset: 10 },
+    );
+    const presentation = deriveToolPresentation(
+      'Read',
+      { filePath: 'a.ts', outline: true, offset: 10 },
+      failed,
+    );
+    expect(presentation.rejected).toBe(false);
+  });
 
   it('keeps a call that ran and failed a failure', () => {
     // A test run that exits 1 is the transcript's only record of a red suite.
@@ -717,15 +754,5 @@ describe('calls refused before they ran', () => {
     const presentation = deriveToolPresentation('WebFetch', { url: 'https://a.test' }, blocked);
     expect(presentation.status).toBe('skipped');
     expect(presentation.rejected).toBe(false);
-  });
-});
-
-describe('namespaced tool names', () => {
-  it('labels a call by the tool it runs as', () => {
-    // The row read `✓ default.Bash  echo ok` for a call the registry ran as Bash.
-    const presentation = deriveToolPresentation('default.Bash', { command: 'echo ok' });
-    expect(presentation.canonicalName).toBe('Bash');
-    expect(presentation.title).toBe('Bash');
-    expect(presentation.target).toBe('echo ok');
   });
 });

@@ -1,7 +1,7 @@
 import type { Message } from '../types/messages.js';
 import type { RetryPhase } from '../types/runtime.js';
 import type { ToolCall } from '../types/tools.js';
-import { displayToolName } from '../tools/aliases.js';
+import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { parseMcpToolName } from './tool-presentation.js';
 
@@ -211,7 +211,7 @@ function playfulTarget(call: ToolCall, phrases: readonly string[], target: strin
 }
 
 export function toolActivityText(call: ToolCall): string {
-  const canonicalName = displayToolName(call.name);
+  const canonicalName = canonicalToolName(call.name);
   const args = call.arguments;
   const primary = getPrimaryArg(args);
   const filePath = stringArg(args, 'filePath', 'file_path', 'path') ?? primary;
