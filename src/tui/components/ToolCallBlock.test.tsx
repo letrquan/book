@@ -1,3 +1,4 @@
+import chalk from 'chalk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { Box } from 'ink';
@@ -6,6 +7,7 @@ import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
 import { displayWidth } from './word-wrap.js';
 import type { FileMutationSummary, ToolResult } from '../../types/tools.js';
+import { enrichToolResultPresentation, toolFailure, toolSuccess } from '../../tools/result.js';
 
 function successResult(
   toolCallId: string,
@@ -630,5 +632,137 @@ describe('ToolCallBlock', () => {
     const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
     expect(lines).toHaveLength(1);
     expect(lines[0]!.trimEnd()).toMatch(/…$/);
+  });
+});
+
+/** The truecolor escape chalk writes for a `#RRGGBB` token. */
+function rgb(token: string): string {
+  const [r, g, b] = [1, 3, 5].map((offset) => parseInt(token.slice(offset, offset + 2), 16)) as [
+    number,
+    number,
+    number,
+  ];
+  return `\u001b[38;2;${r};${g};${b}m`;
+}
+
+/** Render with truecolor forced, so the ink each part is set in shows in the frame. */
+function colourFrame(element: React.ReactElement): string {
+  const level = chalk.level;
+  chalk.level = 3;
+  try {
+    return render(withTheme(element)).lastFrame() ?? '';
+  } finally {
+    chalk.level = level;
+  }
+}
+
+describe('ToolCallBlock failures', () => {
+  const MESSAGE =
+    'Invalid arguments for TodoWrite: arguments.todos is required. Allowed arguments: todos.';
+
+  it('lays the message out under the row, whole, instead of cutting it to the meta column', () => {
+    // The row used to read `× Steps   Invalid arguments for TodoWrite: arguments.todos is required. A…`.
+    const view = render(
+      withTheme(
+        <ToolCallBlock
+          name="Bash"
+          args={{ command: 'npm test' }}
+          result={failureResult('call-1', MESSAGE)}
+          isExpanded={false}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+    const lines = frame(view.lastFrame)
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+
+    expect(lines[0]).toMatch(/Bash\s+npm test/);
+    expect(lines[0]).not.toContain('Invalid arguments');
+    expect(
+      lines
+        .slice(1)
+        .map((line) => line.trim())
+        .join(' '),
+    ).toBe(MESSAGE);
+    for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(80);
+  });
+
+  it('greys a call the registry refused before it ran', () => {
+    const raw = colourFrame(
+      <ToolCallBlock
+        name="TodoWrite"
+        args={{}}
+        result={enrichToolResultPresentation(
+          toolFailure(MESSAGE, { code: 'invalid_arguments' }),
+          'TodoWrite',
+          {},
+        )}
+        isExpanded={false}
+        terminalWidth={100}
+        reducedMotion
+      />,
+    );
+
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}×`);
+    expect(raw).not.toContain(rgb(DEFAULT_THEME.error));
+    expect(stripAnsi(raw)).toContain('arguments.todos is required');
+  });
+
+  it('keeps a call that ran and failed in rose', () => {
+    // A test run that exits 1 is the transcript's only record of a red suite.
+    const raw = colourFrame(
+      <ToolCallBlock
+        name="Bash"
+        args={{ command: 'npm test' }}
+        result={failureResult('call-1', 'Exit code: 1')}
+        isExpanded={false}
+        terminalWidth={100}
+        reducedMotion
+      />,
+    );
+
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}×`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}Exit code: 1`);
+  });
+});
+
+describe('ToolCallBlock plan rows', () => {
+  function planFrame(statuses: string[]): string {
+    const todos = statuses.map((status, index) => ({
+      content: `Step ${index + 1}`,
+      status,
+      activeForm: `Doing step ${index + 1}`,
+    }));
+    return stripAnsi(
+      colourFrame(
+        <ToolCallBlock
+          name="TodoWrite"
+          args={{ todos }}
+          result={enrichToolResultPresentation(toolSuccess('Todos updated.'), 'TodoWrite', {
+            todos,
+          })}
+          isExpanded={false}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+  }
+
+  it('marks a plan under way rather than checking it', () => {
+    // `✓ Steps  Clone vibe-coding repo into workspace   0 of 3 done` read as a step done.
+    const rendered = planFrame(['in_progress', 'pending', 'pending']);
+    expect(rendered).toMatch(/◔ Steps\s+Step 1\s+0 of 3 done/);
+    expect(rendered).not.toContain('✓');
+  });
+
+  it('marks a plan set out and not begun', () => {
+    expect(planFrame(['pending', 'pending'])).toMatch(/◌ Steps/);
+  });
+
+  it('checks a finished plan', () => {
+    expect(planFrame(['completed', 'completed'])).toMatch(/✓ Steps\s+2 of 2 done/);
   });
 });

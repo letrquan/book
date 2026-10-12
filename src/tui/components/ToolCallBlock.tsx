@@ -12,9 +12,10 @@ import {
   isRenderableFileMutationDiff,
 } from '../file-mutation-display.js';
 import {
+  composeToolErrorDetail,
   composeToolRow,
   deriveToolPresentation,
-  type ToolPresentationStatus,
+  type ToolPresentation,
 } from '../tool-presentation.js';
 import {
   CONTENT_COLUMN,
@@ -101,17 +102,21 @@ function toolLabel(name: string): string {
   return labels[name] ?? name;
 }
 
-function statusColor(status: ToolPresentationStatus, theme: ReturnType<typeof useTheme>): string {
+function statusColor(
+  { status, rejected }: Pick<ToolPresentation, 'status' | 'rejected'>,
+  theme: ReturnType<typeof useTheme>,
+): string {
   // A column of green checks beside one rose `×` made every row shout. Success
   // is the default, so it is the exception — a failure or a pending row — that
-  // takes colour.
+  // takes colour. A call refused before it ran is the model's slip, not an
+  // event in your workspace: its `×` is grey.
   if (status === 'success') return theme.inactive;
-  if (status === 'failure') return theme.error;
+  if (status === 'failure') return rejected ? theme.inactive : theme.error;
   if (status === 'skipped' || status === 'pending') return theme.warning;
   return theme.brand;
 }
 
-function statusSymbol(status: ToolPresentationStatus): string {
+function statusSymbol(status: ToolPresentation['status']): string {
   if (status === 'success') return '✓';
   if (status === 'failure') return '×';
   if (status === 'skipped') return '–';
@@ -224,24 +229,17 @@ const CHURN_TOKEN = /^([+-])(\d+)$/;
  * Render right-aligned metadata, colouring churn counts.
  *
  * Everything else stays recessive — the figures a reader scans for are the
- * lines added and removed, and an error.
+ * lines added and removed. A failure's message is not metadata: it is laid out
+ * under the row.
  */
 export function MetaText({
   meta,
-  failed,
   wrap,
 }: {
   meta: string;
-  failed: boolean;
   wrap?: React.ComponentProps<typeof Text>['wrap'];
 }) {
   const theme = useTheme();
-  if (failed)
-    return (
-      <Text wrap={wrap} color={theme.error}>
-        {meta}
-      </Text>
-    );
   if (!CHURN_TOKEN.test(meta.split(' ')[0] ?? '')) {
     return (
       <Text wrap={wrap} color={theme.inactive}>
@@ -328,14 +326,24 @@ function ToolCallBlockInner({
           metadata: [`+${mutationSummary.addedLines}`, `-${mutationSummary.removedLines}`],
         },
         nestedGrid(rowGrid),
-        { error: inlineError },
       );
     }
     return composeToolRow(presentation, isFileChild ? nestedGrid(rowGrid) : rowGrid, {
       elapsed,
-      error: inlineError,
     });
-  }, [elapsed, rowGrid, inlineError, isFileChild, mutationSummary, presentation]);
+  }, [elapsed, rowGrid, isFileChild, mutationSummary, presentation]);
+  // A failure's message goes under the row, on the grid the row was laid out on.
+  const errorDetail = useMemo(() => {
+    if (!inlineError?.trim()) return undefined;
+    if (isFileChild) {
+      return composeToolErrorDetail(
+        { title: '', target: undefined },
+        inlineError,
+        nestedGrid(rowGrid),
+      );
+    }
+    return composeToolErrorDetail(presentation, inlineError, rowGrid);
+  }, [inlineError, isFileChild, presentation, rowGrid]);
 
   useLayoutEffect(() => {
     if (!registry || !toolId) return;
@@ -379,8 +387,8 @@ function ToolCallBlockInner({
             />
           </>
         ) : (
-          <Text wrap="truncate-end" color={statusColor(presentation.status, theme)}>
-            {statusSymbol(presentation.status)}{' '}
+          <Text wrap="truncate-end" color={statusColor(presentation, theme)}>
+            {presentation.mark ?? statusSymbol(presentation.status)}{' '}
           </Text>
         )}
         {/* Recessive, but never faint: SGR 2 on an already-muted grey left the
@@ -392,13 +400,29 @@ function ToolCallBlockInner({
         ) : null}
         <TargetText
           target={row.target}
-          failed={presentation.status === 'failure'}
+          failed={presentation.status === 'failure' && !presentation.rejected}
           path={Boolean(presentation.filePath) || isFileChild}
           wrap="truncate-end"
         />
         <Text wrap="truncate-end">{row.gap}</Text>
-        <MetaText meta={row.meta} failed={Boolean(inlineError)} wrap="truncate-end" />
+        <MetaText meta={row.meta} wrap="truncate-end" />
       </Box>
+      {/* The message is hard-wrapped into one-line rows for the same reason the
+          summary row truncates: every row draws inside its own box. */}
+      {errorDetail ? (
+        <Box flexDirection="column" marginLeft={GUTTER_WIDTH + errorDetail.indent}>
+          {errorDetail.lines.map((line, index) => (
+            <Box key={index} height={1}>
+              <Text
+                wrap="truncate-end"
+                color={presentation.rejected ? theme.inactive : theme.error}
+              >
+                {line}
+              </Text>
+            </Box>
+          ))}
+        </Box>
+      ) : null}
       {isExpanded && result && isDiffOutput(name, result) ? (
         <DiffBlock
           output={result.content}

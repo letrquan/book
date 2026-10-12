@@ -1,12 +1,13 @@
 import type { ToolResult } from '../types/tools.js';
 import { foldControlCharacters as foldShared } from '../control-characters.js';
-import { canonicalToolName } from '../tools/aliases.js';
+import { displayToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import { grepResultMetadata, readResultMetadata } from '../tools/result.js';
 import { normalizePersistedTodos } from '../tools/todo.js';
 import { stepProgress } from './steps.js';
-import { displayWidth, truncateDisplay } from './components/word-wrap.js';
+import { STATUS_INDICATORS } from './status-indicators.js';
+import { displayWidth, truncateDisplay, wordWrap } from './components/word-wrap.js';
 import { LABEL_COLUMN_WIDTH, MIN_TARGET_WIDTH, type TranscriptGrid } from './layout.js';
 import { isRenderableFileMutationDiff } from './file-mutation-display.js';
 
@@ -18,6 +19,14 @@ export type ToolPreviewType = 'none' | 'text' | 'markdown' | 'diff';
 export interface ToolPresentation {
   canonicalName: string;
   status: ToolPresentationStatus;
+  /**
+   * The registry refused the call before the tool ran: a name no tool answers
+   * to, or arguments that did not parse or that the schema refused. Nothing
+   * happened in the workspace, so the row reports it without alarm.
+   */
+  rejected: boolean;
+  /** The gutter mark, when it is not the status glyph: a TodoWrite row shows where the plan stands. */
+  mark?: string;
   title: string;
   target?: string;
   metadata: string[];
@@ -215,6 +224,19 @@ function statusFor(result: ToolResult | undefined, isPending: boolean): ToolPres
   return result.status === 'success' ? 'success' : 'failure';
 }
 
+/**
+ * The failure codes `src/tools/registry-core.ts` returns before a tool runs.
+ * The model addressed the harness wrongly and, as a rule, resends the call
+ * corrected on its next turn. A rose row for each one made the loudest marks on
+ * screen the ones you could do nothing about. `tool_not_active` and
+ * `arguments_not_allowed` are refusals (`blocked`) and already draw as skipped.
+ */
+const REJECTED_BEFORE_RUN: ReadonlySet<string> = new Set([
+  'unknown_tool',
+  'invalid_json_arguments',
+  'invalid_arguments',
+]);
+
 function resultStatusMetadata(status: ToolPresentationStatus): string | undefined {
   if (status === 'failure') return 'failed';
   if (status === 'skipped') return 'skipped';
@@ -307,6 +329,25 @@ function todoWriteColumns(
   };
 }
 
+/**
+ * Where a TodoWrite call left the plan, as the Steps sheet marks it: `◌` set
+ * out, `◔` under way, `✓` finished. The row used to carry the call's own `✓`,
+ * so `✓ Steps  Clone the repo   0 of 3 done` read as a step done. Read from the
+ * arguments, like the row's columns; `undefined` for an empty plan, which keeps
+ * the status glyph.
+ */
+export function todoWriteMark(args: Record<string, unknown>): string | undefined {
+  const todos = normalizePersistedTodos(
+    Array.isArray(args.todos)
+      ? (args.todos as Parameters<typeof normalizePersistedTodos>[0])
+      : undefined,
+  );
+  if (todos.length === 0) return undefined;
+  if (todos.every((todo) => todo.status === 'completed')) return STATUS_INDICATORS.completed.icon;
+  if (todos.some((todo) => todo.status !== 'pending')) return STATUS_INDICATORS.in_progress.icon;
+  return STATUS_INDICATORS.pending.icon;
+}
+
 /** Derive all concise tool-row text without depending on Ink rendering. */
 export function deriveToolPresentation(
   name: string,
@@ -314,10 +355,13 @@ export function deriveToolPresentation(
   result?: ToolResult,
   options: ToolPresentationOptions = {},
 ): ToolPresentation {
-  const canonicalName = canonicalToolName(name);
+  const canonicalName = displayToolName(name);
   const status = statusFor(result, Boolean(options.isPending));
+  const rejected =
+    status === 'failure' && REJECTED_BEFORE_RUN.has(result?.structuredError?.code ?? '');
   // TodoWrite's row comes from its arguments, in both paths below.
   const todoColumns = canonicalName === 'TodoWrite' ? todoWriteColumns(args, status) : undefined;
+  const mark = todoColumns && status === 'success' ? todoWriteMark(args) : undefined;
   const primary = getPrimaryArg(args);
   const mcp = parseMcpToolName(name);
   let title = LABELS[canonicalName] ?? canonicalName;
@@ -358,6 +402,8 @@ export function deriveToolPresentation(
     return {
       canonicalName,
       status,
+      rejected,
+      ...(mark ? { mark } : {}),
       title,
       target,
       metadata,
@@ -476,6 +522,8 @@ export function deriveToolPresentation(
   return {
     canonicalName,
     status,
+    rejected,
+    ...(mark ? { mark } : {}),
     title,
     target,
     metadata,
@@ -515,15 +563,6 @@ export function shouldExpandTool({
   if (override !== undefined) return override;
   return mode === 'detailed' || automaticToolId === toolId || defaultExpanded;
 }
-
-/**
- * Widest a failure message may grow the metadata column.
- *
- * Long enough for the shell errors that actually occur — `'tail' is not
- * recognized as an internal or external command` is 57 — without letting a
- * pathological message crowd out the target it failed on.
- */
-const ERROR_META_MAX = 64;
 
 /** MCP rows are titled `Called <server>` by {@link deriveToolPresentation}. */
 const MCP_TITLE_PREFIX = 'Called ';
@@ -572,7 +611,7 @@ export function toolRowLabel(name: string, result?: ToolResult): string {
   }
   const mcp = parseMcpToolName(name);
   if (mcp) return mcp.server;
-  const canonical = canonicalToolName(name);
+  const canonical = displayToolName(name);
   return shortLabel(LABELS[canonical] ?? canonical);
 }
 
@@ -606,8 +645,17 @@ export interface ToolRowColumns {
   target: string;
   /** Spaces that push `meta` flush against the right edge. */
   gap: string;
-  /** Right-aligned result metadata, or the error message on a failure. */
+  /** Right-aligned result metadata. A failure's message is laid out under the row instead. */
   meta: string;
+}
+
+/**
+ * Whether a row's verb takes the aligned label column. Never truncate the
+ * verb: a row whose label does not fit the column runs inline instead, because
+ * `Read sr…` is unreadable in a way `Read src/a.ts` is not.
+ */
+function usesLabelColumn(title: string, grid: TranscriptGrid): boolean {
+  return grid.label > 0 && displayWidth(title) <= grid.label;
 }
 
 /**
@@ -621,19 +669,11 @@ export interface ToolRowColumns {
 export function composeToolRow(
   presentation: Pick<ToolPresentation, 'title' | 'target' | 'metadata'>,
   grid: TranscriptGrid,
-  extra: { elapsed?: string; error?: string } = {},
+  extra: { elapsed?: string } = {},
 ): ToolRowColumns {
   const title = shortLabel(presentation.title);
-  // Never truncate the verb. A row whose label does not fit the column runs
-  // inline instead: `Read sr…` is unreadable in a way `Read src/a.ts` is not.
-  const useLabelColumn = grid.label > 0 && displayWidth(title) <= grid.label;
-  // Both strings reaching the layout are someone else's: the target is a
-  // tool argument, and the error is the model's own or a tool's — it may hold a
-  // newline, an ESC, or a bidi override, none of which survive a one-line row.
-  const error = foldControlCharacters(extra.error);
-  const metaSource = error
-    ? [error]
-    : [...presentation.metadata, ...(extra.elapsed ? [extra.elapsed] : [])];
+  const useLabelColumn = usesLabelColumn(title, grid);
+  const metaSource = [...presentation.metadata, ...(extra.elapsed ? [extra.elapsed] : [])];
 
   const label = useLabelColumn ? title.padEnd(grid.label) : '';
   const labelWidth = useLabelColumn ? grid.label + 1 : 0;
@@ -646,24 +686,14 @@ export function composeToolRow(
   // between. The bound lives on the grid so it narrows with nesting.
   const measure = grid.row;
 
-  // An error message outranks the target it failed on, so a failing row takes
-  // as much as the message needs — capped, and never so much that the target
-  // drops below a width worth reading.
-  const metaBudget = error
-    ? Math.max(
-        grid.meta,
-        Math.min(
-          ERROR_META_MAX,
-          measure - labelWidth - displayWidth(inlinePrefix) - MIN_TARGET_WIDTH - 1,
-        ),
-      )
-    : grid.meta;
-  const meta = metaBudget > 0 ? truncateDisplay(joinMetadata(metaSource), metaBudget) : '';
+  const meta = grid.meta > 0 ? truncateDisplay(joinMetadata(metaSource), grid.meta) : '';
 
   const metaWidth = displayWidth(meta);
   // The budget covers the whole truncated string, prefix included — subtracting
   // the prefix here as well clipped an inline-label row by exactly the width of
-  // its own verb, and `gap` then padded those columns back with spaces.
+  // its own verb, and `gap` then padded those columns back with spaces. The
+  // target is a tool argument: it may hold a newline, an ESC, or a bidi
+  // override, none of which survive a one-line row.
   const targetBudget = Math.max(4, measure - labelWidth - metaWidth - (metaWidth > 0 ? 1 : 0));
   const target = truncateDisplay(
     `${inlinePrefix}${foldControlCharacters(presentation.target) ?? ''}`,
@@ -673,4 +703,52 @@ export function composeToolRow(
   const used = labelWidth + displayWidth(target) + metaWidth;
   const gap = ' '.repeat(Math.max(metaWidth > 0 ? 1 : 0, measure - used));
   return { label, target, gap, meta };
+}
+
+/** Most rows a failure's message takes under its tool row. */
+export const TOOL_ERROR_MAX_LINES = 2;
+
+/** A failure's message as the lines it takes under its tool row. */
+export interface ToolErrorDetail {
+  /**
+   * Columns from the row's text start (just after the status gutter) to the
+   * message: past the label column when the row has one and shows a target, so
+   * the message sits under the target it failed on. A row with no target has
+   * it under the verb, rather than hanging under an empty column.
+   */
+  indent: number;
+  /** The message, word-wrapped to the row's measure; the last line ends in `…` when more was cut. */
+  lines: string[];
+}
+
+/**
+ * Lay a failure's message out under its row.
+ *
+ * The message used to replace the row's metadata and was cut to that column —
+ * `Invalid arguments for TodoWrite: arguments.todos is required. A…` — so the
+ * part that said what was wrong was the part that went. It now starts under
+ * the target, on the row's own grid, and wraps to the row's measure for up to
+ * {@link TOOL_ERROR_MAX_LINES} lines. The text is the model's own or a tool's,
+ * so its control characters are folded first: a newline, an ESC or a bidi
+ * override must not reach the screen.
+ */
+export function composeToolErrorDetail(
+  row: Pick<ToolPresentation, 'title' | 'target'>,
+  error: string,
+  grid: TranscriptGrid,
+  maxLines = TOOL_ERROR_MAX_LINES,
+): ToolErrorDetail {
+  const underTarget = Boolean(row.target) && usesLabelColumn(shortLabel(row.title), grid);
+  const indent = underTarget ? grid.label + 1 : 0;
+  const width = Math.max(MIN_TARGET_WIDTH, grid.row - indent);
+  const text = (foldControlCharacters(error) ?? '').trim();
+  const wrapped = wordWrap(text, width).split('\n');
+  if (wrapped.length <= maxLines) return { indent, lines: wrapped };
+  const lines = wrapped.slice(0, maxLines);
+  // The last kept line carries the rest so `…` lands where the text was cut.
+  lines[maxLines - 1] = truncateDisplay(
+    `${lines[maxLines - 1]} ${wrapped.slice(maxLines).join(' ')}`,
+    width,
+  );
+  return { indent, lines };
 }

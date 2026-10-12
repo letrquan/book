@@ -405,7 +405,7 @@ export function MutationGroupRow({
       ) : null}
       <TargetText target={row.target} failed={false} wrap="truncate-end" />
       <Text wrap="truncate-end">{row.gap}</Text>
-      <MetaText meta={row.meta} failed={false} wrap="truncate-end" />
+      <MetaText meta={row.meta} wrap="truncate-end" />
     </Box>
   );
 }

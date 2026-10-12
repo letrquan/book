@@ -1,6 +1,6 @@
 import { basename, isAbsolute, relative, resolve } from 'path';
 import { splitReasoningParts } from '../reasoning-tags.js';
-import { canonicalToolName } from '../tools/aliases.js';
+import { displayToolName } from '../tools/aliases.js';
 import type { Message } from '../types/messages.js';
 import type { ToolCall, ToolResult } from '../types/tools.js';
 
@@ -81,7 +81,7 @@ export function isQuietInvocation(
   message: Message,
   context: QuietToolContext,
 ): boolean {
-  if (!QUIET_TOOLS.has(canonicalToolName(call.name))) return false;
+  if (!QUIET_TOOLS.has(displayToolName(call.name))) return false;
   if (context.pinned.has(call.id) || context.pendingToolId === call.id) return false;
   if (reachesOutside(call, context.workspace)) return false;
   if (message.nestedToolInvocations?.some((nested) => nested.parentTraceId === call.id)) {
@@ -297,7 +297,7 @@ export function summarizeQuietRun(invocations: readonly QuietInvocation[]): Quie
   const patterns: string[] = [];
   const others: string[] = [];
   for (const { call } of invocations) {
-    const name = canonicalToolName(call.name);
+    const name = displayToolName(call.name);
     if (name === 'Read') {
       const path = argString(call.arguments, 'file_path', 'path', 'filePath');
       const shown = path ? basename(path.replace(/\\/g, '/')) : 'file';
