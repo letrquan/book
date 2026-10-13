@@ -134,6 +134,35 @@ describe('CommandPanel', () => {
     expect(writesOutput).not.toContain('cache 0');
   });
 
+  it('renders both tiers for a tiered model', () => {
+    const view = render(
+      withTheme(
+        <CommandPanel
+          display={{
+            ...usageDisplay,
+            model: 'claude-haiku-5-5',
+            rate: {
+              inputPerMillion: 0.1,
+              outputPerMillion: 0.5,
+              longPrompt: {
+                overPromptTokens: 100_000,
+                inputPerMillion: 0.5,
+                outputPerMillion: 2.5,
+              },
+            },
+          }}
+          fallback="Session usage"
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain(
+      '$0.1/M in, $0.5/M out; $0.5/M in, $2.5/M out over 100,000-token prompts',
+    );
+  });
+
   it('says the totals include delegated agents when they do (#370)', () => {
     // The sheet's numbers already counted the agents; without a line saying so,
     // a session that spawned agents read as if it had only ever run this model.

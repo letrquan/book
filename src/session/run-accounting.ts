@@ -375,7 +375,7 @@ export class RunAccounting {
     let dearest: string | undefined;
     let dearestCost: number | undefined;
     for (const model of models) {
-      const quote = estimateUsageCost(model, spend);
+      const quote = estimateUsageCost(model, spend, 'pool');
       if (quote.status !== 'known') continue;
       if (dearestCost === undefined || quote.costUsd > dearestCost) {
         dearest = model;
@@ -468,14 +468,14 @@ export class RunAccounting {
     this.roots.set(context.rootRunId, root);
     const execution = this.ensureExecution(root, context);
     const responseQuote = metadata.responseModel
-      ? estimateUsageCost(metadata.responseModel, usage)
+      ? estimateUsageCost(metadata.responseModel, usage, 'request')
       : undefined;
     // Providers commonly resolve aliases to dated model IDs. Prefer exact response pricing, but
     // retain the requested alias as the pricing fallback while preserving verified response identity.
     const quote =
       responseQuote?.status === 'known'
         ? responseQuote
-        : estimateUsageCost(metadata.requestedModel, usage);
+        : estimateUsageCost(metadata.requestedModel, usage, 'request');
     const identity = identityFor(metadata, quote);
     execution.usage = addUsage(execution.usage, usage);
     execution.costStatus = mergeCostStatus(execution.costStatus, quote, identity);

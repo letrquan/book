@@ -552,7 +552,9 @@ function UsagePanelBody({
             <Text color={step >= 8 ? theme.text : theme.subtle}>{data.model}</Text>
             <Text color={theme.subtle} dimColor>
               {data.rate
-                ? `$${data.rate.inputPerMillion}/M input · $${data.rate.outputPerMillion}/M output`
+                ? data.rate.longPrompt
+                  ? `$${data.rate.inputPerMillion}/M in, $${data.rate.outputPerMillion}/M out; $${data.rate.longPrompt.inputPerMillion}/M in, $${data.rate.longPrompt.outputPerMillion}/M out over ${data.rate.longPrompt.overPromptTokens.toLocaleString()}-token prompts`
+                  : `$${data.rate.inputPerMillion}/M input · $${data.rate.outputPerMillion}/M output`
                 : 'Pricing is not configured for this model.'}
             </Text>
           </Box>

@@ -68,7 +68,7 @@ import { createReaderFlush } from './reader-gone.js';
 function carriedCostUsd(usage: Usage, models: readonly string[]): number | null {
   let worst: number | null = null;
   for (const model of models) {
-    const quote = estimateUsageCost(model, usage);
+    const quote = estimateUsageCost(model, usage, 'pool');
     if (quote.status !== 'known') return null;
     worst = worst === null ? quote.costUsd : Math.max(worst, quote.costUsd);
   }
