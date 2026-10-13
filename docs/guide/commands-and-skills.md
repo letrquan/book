@@ -61,9 +61,13 @@ so both reports say the figure is counted from there — the persisted totals ar
 `book status <id>`. Both count the managed agents this session spawned, attributing each to the
 model it actually ran on and adding them to the headline figure, which names how many agents it
 includes; `/cost` appends the per-model breakdown once more than one model has run, and `/usage`
-prints the same alongside the turn, duration and tool-call counters. The USD figure is a local
-estimate from the price table; the lead session's tokens are priced at the currently active model,
-so a mid-session `/model` switch is not split out.
+prints the same alongside the turn, duration and tool-call counters.
+The USD figure is a local estimate from the price table. Each of the lead session's responses is
+priced at the model that served it, and at the rate for that request's size where a model charges
+by prompt length (`claude-haiku-5-5` charges more above 100,000 prompt tokens); the per-model
+breakdown still lists the lead's tokens under the active model, so a mid-session `/model` switch is
+not split out by row. A delegated agent reports only its summed tokens, so a model priced by prompt
+length is charged at its higher rate there, and the report says the figure is an upper bound.
 
 Commands say only what the screen does not already show. Switching the model or the effort writes
 nothing into the transcript, since the status line names the model and its effort. Other settings,

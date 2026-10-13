@@ -486,12 +486,12 @@ export function createMeteredProvider(config: AgentConfig, meter: Meter): Provid
           call.responseModel = event.responseModel;
           addUsage(meter.usage, usageTotals(event.usage));
           const responseQuote = event.responseModel
-            ? estimateUsageCost(event.responseModel, event.usage)
+            ? estimateUsageCost(event.responseModel, event.usage, 'request')
             : undefined;
           const quote =
             responseQuote?.status === 'known'
               ? responseQuote
-              : estimateUsageCost(currentConfig.model, event.usage);
+              : estimateUsageCost(currentConfig.model, event.usage, 'request');
           if (quote.status === 'known' && meter.costUsd !== null) meter.costUsd += quote.costUsd;
           else {
             meter.costUsd = null;

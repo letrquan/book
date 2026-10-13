@@ -76,7 +76,8 @@ EOF
 | `status` | Print whether the TUI process has exited, its exit code and the time, without sending a key: how a script tells "that press exited" from "that press only armed". |
 | `quit` | Ctrl-C twice and wait for exit. |
 
-Options: `--mock` (start the mock provider), `--mock-script <json>`, `--mock-port` (8919),
+Options: `--mock` (start the mock provider), `--mock-script <json>`, `--mock-port` (8919; `0`
+picks a free port, which the driver resolves before Book starts),
 `--mock-usage-from-estimate` (forwarded to the mock as `--usage-from-estimate`),
 `--chunk-delay-ms <n>` (forwarded, see below),
 `--mock-request-log <file>` (forwarded as `--request-log`: the request log lands on a path you

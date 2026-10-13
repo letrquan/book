@@ -30,13 +30,16 @@ const ANTHROPIC_LIST_PRICING: Record<
   'claude-opus-4-8': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
   'claude-opus-4-7': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
   'claude-opus-4-6': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
-  'claude-sonnet-5-5': { in: 2, out: 10, cacheRead: 0.2, cacheCreation: 2.5 },
+  'claude-opus-4-5': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
+  'claude-sonnet-5-5': { in: 2, out: 10, cacheRead: 0.1, cacheCreation: 2.5 },
   'claude-sonnet-5': { in: 2, out: 10, cacheRead: 0.2, cacheCreation: 2.5 },
   'claude-sonnet-4-6': { in: 3, out: 15, cacheRead: 0.3, cacheCreation: 3.75 },
+  'claude-sonnet-4-5': { in: 3, out: 15, cacheRead: 0.3, cacheCreation: 3.75 },
   'claude-fable-5-1': { in: 10, out: 50, cacheRead: 0.25, cacheCreation: 12.5 },
   'claude-fable-5': { in: 10, out: 50, cacheRead: 1, cacheCreation: 12.5 },
   'claude-mythos-5-1': { in: 10, out: 50, cacheRead: 0.25, cacheCreation: 12.5 },
   'claude-mythos-5': { in: 10, out: 50, cacheRead: 1, cacheCreation: 12.5 },
+  'claude-haiku-5-5': { in: 0.1, out: 0.5, cacheRead: 0.01, cacheCreation: 0.125 },
   'claude-haiku-4-5-20251001': { in: 1, out: 5, cacheRead: 0.1, cacheCreation: 1.25 },
 };
 
@@ -49,6 +52,14 @@ describe('published Claude rates (#370)', () => {
       expect(hasKnownPricing(model)).toBe(true);
     });
   }
+
+  it('prices claude-haiku-5-5 with a prompt-length tier', () => {
+    const resolved = resolveModelPricing('claude-haiku-5-5');
+    expect(resolved?.rate.longPrompt).toEqual({
+      overPromptTokens: 100_000,
+      rate: { in: 0.5, out: 2.5, cacheRead: 0.05, cacheCreation: 0.625 },
+    });
+  });
 
   it('leaves no current Claude model unpriced, so a USD budget does not refuse the run', () => {
     // `checkBeforeModelCall` refuses every call for a model with no rate, which
@@ -65,11 +76,11 @@ describe('published Claude rates (#370)', () => {
     }
   });
 
-  it('leaves the two models with no published rate here unpriced on purpose', () => {
-    // Named as intentionally absent above the table: our source has no verified
-    // rate for either, and a guessed one is an enforced wrong figure.
-    expect(hasKnownPricing('claude-opus-4-5')).toBe(false);
-    expect(hasKnownPricing('claude-sonnet-4-5')).toBe(false);
+  it('resolves dated 4.5 model ids to their family keys', () => {
+    expect(resolveModelPricing('claude-opus-4-5-20251101')?.key).toBe('claude-opus-4-5');
+    expect(resolveModelPricing('claude-sonnet-4-5-20250929')?.key).toBe('claude-sonnet-4-5');
+    expect(hasKnownPricing('claude-opus-4-5-20251101')).toBe(true);
+    expect(hasKnownPricing('claude-sonnet-4-5-20250929')).toBe(true);
   });
 });
 
@@ -79,11 +90,15 @@ describe('estimateUsageCost with cache tokens', () => {
     // path. With no cacheRead/cacheCreation rate this returned
     // 'cache-pricing-unavailable', which made checkBeforeModelCall refuse every
     // call after the first cached turn whenever a USD budget was set.
-    const quote = estimateUsageCost('claude-sonnet-5', {
-      ...NO_CACHE,
-      cacheReadInputTokens: 40_000,
-      cacheCreationInputTokens: 8_000,
-    });
+    const quote = estimateUsageCost(
+      'claude-sonnet-5',
+      {
+        ...NO_CACHE,
+        cacheReadInputTokens: 40_000,
+        cacheCreationInputTokens: 8_000,
+      },
+      'request',
+    );
     expect(quote.status).toBe('known');
     // (1000*2 + 500*10 + 40000*0.2 + 8000*2.5) / 1e6
     expect(quote.costUsd).toBeCloseTo(0.035, 6);
@@ -92,11 +107,15 @@ describe('estimateUsageCost with cache tokens', () => {
   it('prices every Claude entry when cache tokens are reported', () => {
     for (const [model, rate] of Object.entries(PRICING)) {
       if (!model.startsWith('claude-')) continue;
-      const quote = estimateUsageCost(model, {
-        ...NO_CACHE,
-        cacheReadInputTokens: 1_000,
-        cacheCreationInputTokens: 1_000,
-      });
+      const quote = estimateUsageCost(
+        model,
+        {
+          ...NO_CACHE,
+          cacheReadInputTokens: 1_000,
+          cacheCreationInputTokens: 1_000,
+        },
+        'request',
+      );
       expect(quote, model).toMatchObject({ status: 'known' });
       expect(rate.cacheRead, model).toBeGreaterThan(0);
       expect(rate.cacheCreation, model).toBeGreaterThan(0);
@@ -106,7 +125,7 @@ describe('estimateUsageCost with cache tokens', () => {
   it('prices cache reads at the input rate when the model has no cache-read rate', () => {
     // OpenAI-compatible providers report automatic cache reads. Refusing them would
     // make a USD budget refuse every gpt call; the input rate is an upper bound.
-    const quote = estimateUsageCost('gpt-5', { ...NO_CACHE, cacheReadInputTokens: 10 });
+    const quote = estimateUsageCost('gpt-5', { ...NO_CACHE, cacheReadInputTokens: 10 }, 'request');
     expect(quote.status).toBe('known');
     // (1000*5 + 500*15 + 10*5) / 1e6
     expect(quote.costUsd).toBeCloseTo(0.01255, 8);
@@ -115,19 +134,23 @@ describe('estimateUsageCost with cache tokens', () => {
   it('prices a missing cache-write rate at twice the input rate instead of refusing it', () => {
     // An unknown estimate stops a USD-budgeted run; twice the input rate is the highest
     // cache-write premium a provider charges, so the figure is an upper bound.
-    const quote = estimateUsageCost('gpt-5', { ...NO_CACHE, cacheCreationInputTokens: 10 });
+    const quote = estimateUsageCost(
+      'gpt-5',
+      { ...NO_CACHE, cacheCreationInputTokens: 10 },
+      'request',
+    );
     expect(quote.status).toBe('known');
     // (1000*5 + 500*15 + 10*5*2) / 1e6
     expect(quote.costUsd).toBeCloseTo(0.0126, 8);
     expect(
-      usageCostUsd(PRICING['gpt-5'], { ...NO_CACHE, cacheCreationInputTokens: 10 }),
+      usageCostUsd(PRICING['gpt-5'], { ...NO_CACHE, cacheCreationInputTokens: 10 }, 'request'),
     ).toBeCloseTo(0.0126, 8);
   });
 });
 
 describe('model family resolution', () => {
   it('prices a dated model id from its family key', () => {
-    const quote = estimateUsageCost('claude-sonnet-5-20260115', NO_CACHE);
+    const quote = estimateUsageCost('claude-sonnet-5-20260115', NO_CACHE, 'request');
     expect(quote).toMatchObject({ status: 'known', pricingKey: 'claude-sonnet-5' });
     expect(hasKnownPricing('claude-sonnet-5-20260115')).toBe(true);
   });
@@ -138,7 +161,9 @@ describe('model family resolution', () => {
   });
 
   it('omits pricingKey on an exact hit so the common case stays quiet', () => {
-    expect(estimateUsageCost('claude-sonnet-5', NO_CACHE)).not.toHaveProperty('pricingKey');
+    expect(estimateUsageCost('claude-sonnet-5', NO_CACHE, 'request')).not.toHaveProperty(
+      'pricingKey',
+    );
   });
 
   it('requires a separator boundary so a key cannot claim an unrelated id', () => {
@@ -205,7 +230,7 @@ describe('model family resolution', () => {
   });
 
   it('still reports genuinely unknown models as unknown', () => {
-    expect(estimateUsageCost('made-up-model', NO_CACHE)).toMatchObject({
+    expect(estimateUsageCost('made-up-model', NO_CACHE, 'request')).toMatchObject({
       status: 'unknown',
       reason: 'unknown-model',
     });
@@ -214,7 +239,7 @@ describe('model family resolution', () => {
 
 describe('pricing overrides', () => {
   it('lets an override supply a rate for a model absent from the table', () => {
-    const quote = estimateUsageCost('local/experiment', NO_CACHE, {
+    const quote = estimateUsageCost('local/experiment', NO_CACHE, 'request', {
       'local/experiment': { in: 1, out: 2 },
     });
     expect(quote).toMatchObject({ status: 'known' });
@@ -222,10 +247,179 @@ describe('pricing overrides', () => {
   });
 
   it('lets an override win over a built-in entry', () => {
-    const quote = estimateUsageCost('claude-sonnet-5', NO_CACHE, {
+    const quote = estimateUsageCost('claude-sonnet-5', NO_CACHE, 'request', {
       'claude-sonnet-5': { in: 30, out: 150 },
     });
     expect(quote.costUsd).toBeCloseTo(0.105, 6);
+  });
+});
+
+describe('prompt-length tiers (Haiku 5.5)', () => {
+  it('prices exactly 100,000 prompt tokens at the base rate under basis request', () => {
+    const quote = estimateUsageCost(
+      'claude-haiku-5-5',
+      {
+        promptTokens: 100_000,
+        completionTokens: 0,
+        totalTokens: 100_000,
+      },
+      'request',
+    );
+    expect(quote.status).toBe('known');
+    // 100,000 * 0.1 / 1e6 = 0.01
+    expect(quote.costUsd).toBeCloseTo(0.01, 8);
+  });
+
+  it('prices 100,001 prompt tokens at the long rate under basis request', () => {
+    const quote = estimateUsageCost(
+      'claude-haiku-5-5',
+      {
+        promptTokens: 100_001,
+        completionTokens: 0,
+        totalTokens: 100_001,
+      },
+      'request',
+    );
+    expect(quote.status).toBe('known');
+    // 100,001 * 0.5 / 1e6 = 0.0500005
+    expect(quote.costUsd).toBeCloseTo(0.0500005, 8);
+  });
+
+  it('crosses into the long rate due to cache reads counting towards prompt size', () => {
+    const quote = estimateUsageCost(
+      'claude-haiku-5-5',
+      {
+        promptTokens: 50_000,
+        completionTokens: 0,
+        totalTokens: 110_000,
+        cacheReadInputTokens: 60_000,
+      },
+      'request',
+    );
+    expect(quote.status).toBe('known');
+    // promptSize = 110,000 > 100,000 -> longPrompt rate applies:
+    // (50,000 * 0.5 + 60,000 * 0.05) / 1e6 = (25,000 + 3,000) / 1e6 = 0.028
+    expect(quote.costUsd).toBeCloseTo(0.028, 8);
+  });
+
+  it('basis pool always uses the long rate for Haiku 5.5', () => {
+    const quote = estimateUsageCost(
+      'claude-haiku-5-5',
+      {
+        promptTokens: 10_000,
+        completionTokens: 0,
+        totalTokens: 10_000,
+      },
+      'pool',
+    );
+    expect(quote.status).toBe('known');
+    // Pool always uses long rate: 10,000 * 0.5 / 1e6 = 0.005
+    expect(quote.costUsd).toBeCloseTo(0.005, 8);
+  });
+
+  it('basis pool changes nothing for an untiered model', () => {
+    const requestQuote = estimateUsageCost(
+      'claude-sonnet-5',
+      {
+        promptTokens: 200_000,
+        completionTokens: 10_000,
+        totalTokens: 210_000,
+      },
+      'request',
+    );
+    const poolQuote = estimateUsageCost(
+      'claude-sonnet-5',
+      {
+        promptTokens: 200_000,
+        completionTokens: 10_000,
+        totalTokens: 210_000,
+      },
+      'pool',
+    );
+    expect(requestQuote.costUsd).toBe(poolQuote.costUsd);
+  });
+});
+
+describe('reports with tiered models', () => {
+  it('costReport with lead cost shows base-rate total and no upper bound note', () => {
+    // Two 60k requests: 60k * 0.1 / 1e6 = 0.006 each -> 0.012 lead cost
+    const usage = {
+      promptTokens: 120_000,
+      completionTokens: 0,
+      totalTokens: 120_000,
+    };
+    const report = costReport('claude-haiku-5-5', usage, [], {}, 0.012);
+    expect(report).toContain('$0.0120 estimated');
+    expect(report).not.toContain('upper bound:');
+  });
+
+  it('costReport without lead cost shows long-rate total plus upper-bound note', () => {
+    const usage = {
+      promptTokens: 120_000,
+      completionTokens: 0,
+      totalTokens: 120_000,
+    };
+    const report = costReport('claude-haiku-5-5', usage);
+    // Pooled: 120,000 * 0.5 / 1e6 = 0.060
+    expect(report).toContain('$0.0600 estimated');
+    expect(report).toContain(
+      '(upper bound: claude-haiku-5-5 bills prompts over 100,000 tokens at a higher rate, and the request sizes behind this figure are not known)',
+    );
+  });
+
+  it('falls back to pool pricing when leadCostUsd is null', () => {
+    const usage = {
+      promptTokens: 120_000,
+      completionTokens: 0,
+      totalTokens: 120_000,
+    };
+    const sonnetReport = costReport('claude-sonnet-5-5', usage, [], {}, null);
+    expect(sonnetReport).toContain('$0.2400 estimated');
+
+    const haikuReport = costReport('claude-haiku-5-5', usage, [], {}, null);
+    expect(haikuReport).toContain('$0.0600 estimated');
+    expect(haikuReport).toContain(
+      '(upper bound: claude-haiku-5-5 bills prompts over 100,000 tokens at a higher rate, and the request sizes behind this figure are not known)',
+    );
+  });
+
+  it('skips the counterfactual when a tiered model is involved', () => {
+    const linesLeadTiered = modelBreakdownLines(
+      'claude-haiku-5-5',
+      { promptTokens: 1000, completionTokens: 100 },
+      [
+        {
+          label: 'explorer',
+          model: 'claude-sonnet-5',
+          usage: { promptTokens: 1000, completionTokens: 100, totalTokens: 1100 },
+        },
+      ],
+    );
+    expect(linesLeadTiered).toContain('Per model');
+    expect(linesLeadTiered.join('\n')).not.toContain('Same tokens entirely on');
+
+    const linesAgentTiered = modelBreakdownLines(
+      'claude-sonnet-5',
+      { promptTokens: 1000, completionTokens: 100 },
+      [
+        {
+          label: 'explorer',
+          model: 'claude-haiku-5-5',
+          usage: { promptTokens: 1000, completionTokens: 100, totalTokens: 1100 },
+        },
+      ],
+    );
+    expect(linesAgentTiered).toContain('Per model');
+    expect(linesAgentTiered.join('\n')).not.toContain('Same tokens entirely on');
+  });
+
+  it('shows both tiers in the rate line for a tiered model in usageReport', () => {
+    const r = usageReport(
+      'claude-haiku-5-5',
+      { promptTokens: 1000, completionTokens: 500, totalTokens: 1500 },
+      { currentTurn: 1, messageCount: 2, turnDurationMs: 0 },
+    );
+    expect(r).toContain('$0.1/M in, $0.5/M out; $0.5/M in, $2.5/M out over 100,000-token prompts');
   });
 });
 
@@ -509,5 +703,45 @@ describe('usageReport counts delegated agents', () => {
     expect(r).toContain('total 3,410');
     expect(r).toContain('prompt 3,000');
     expect(r).not.toContain('not yet wired');
+  });
+
+  it('explains the breakdown footnote without numeric lead cost', () => {
+    const r = usageReport(
+      'claude-sonnet-5',
+      { promptTokens: 3000, completionTokens: 300, totalTokens: 3300 },
+      { currentTurn: 2, messageCount: 4, turnDurationMs: 0 },
+      undefined,
+      [
+        {
+          label: 'explorer "map auth"',
+          model: 'claude-haiku-4-5-20251001',
+          usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+        },
+      ],
+    );
+    expect(r).toContain(
+      "(Delegated agents are included above, each priced at the model it ran on. The session's own turns are priced at the active model, so a mid-session model switch is not split out.)",
+    );
+  });
+
+  it('explains the breakdown footnote with numeric lead cost', () => {
+    const r = usageReport(
+      'claude-sonnet-5',
+      { promptTokens: 3000, completionTokens: 300, totalTokens: 3300 },
+      { currentTurn: 2, messageCount: 4, turnDurationMs: 0 },
+      undefined,
+      [
+        {
+          label: 'explorer "map auth"',
+          model: 'claude-haiku-4-5-20251001',
+          usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+        },
+      ],
+      {},
+      0.009,
+    );
+    expect(r).toContain(
+      "(Delegated agents are included above, each priced at the model it ran on. The session's own responses are each priced at the model that served them, but are listed under the active model.)",
+    );
   });
 });

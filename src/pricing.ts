@@ -9,7 +9,7 @@ import type { Usage } from './types/messages.js';
  * ponytail: ceiling = user-overridable pricing via settings.json (PRICING or
  * a pricing.<model> key); add when a model not in the table needs a custom rate.
  */
-export const PRICING_VERSION = 'book-local-2026-08-27';
+export const PRICING_VERSION = 'book-local-2026-10-13';
 
 export interface ModelPricing {
   in: number;
@@ -17,6 +17,10 @@ export interface ModelPricing {
   cacheRead?: number;
   cacheCreation?: number;
   reasoningOut?: number;
+  longPrompt?: {
+    overPromptTokens: number;
+    rate: Omit<ModelPricing, 'longPrompt'>;
+  };
 }
 
 /**
@@ -31,24 +35,33 @@ export interface ModelPricing {
  * every Anthropic request, so list real cache rates for Anthropic models.
  */
 export const PRICING: Record<string, ModelPricing> = {
-  // Anthropic — published price list, $ per million, cached 2026-09-25. `cacheCreation`
+  // Anthropic — published price list, $ per million, cached 2026-10-13. `cacheCreation`
   // is the 5-minute TTL write, the only TTL Book requests; cache reads are each
   // model's own published rate. Re-verify against the live list before a release.
-  // `claude-opus-4-5` and `claude-sonnet-4-5` are deliberately absent: our source
-  // publishes no verified rate for either, and they price as unknown rather than
-  // guess until one exists.
   'claude-opus-5-5': { in: 4, out: 20, cacheRead: 0.2, cacheCreation: 5 },
   'claude-opus-5': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
   'claude-opus-4-8': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
   'claude-opus-4-7': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
   'claude-opus-4-6': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
-  'claude-sonnet-5-5': { in: 2, out: 10, cacheRead: 0.2, cacheCreation: 2.5 },
+  'claude-opus-4-5': { in: 5, out: 25, cacheRead: 0.5, cacheCreation: 6.25 },
+  'claude-sonnet-5-5': { in: 2, out: 10, cacheRead: 0.1, cacheCreation: 2.5 },
   'claude-sonnet-5': { in: 2, out: 10, cacheRead: 0.2, cacheCreation: 2.5 },
   'claude-sonnet-4-6': { in: 3, out: 15, cacheRead: 0.3, cacheCreation: 3.75 },
+  'claude-sonnet-4-5': { in: 3, out: 15, cacheRead: 0.3, cacheCreation: 3.75 },
   'claude-fable-5-1': { in: 10, out: 50, cacheRead: 0.25, cacheCreation: 12.5 },
   'claude-fable-5': { in: 10, out: 50, cacheRead: 1, cacheCreation: 12.5 },
   'claude-mythos-5-1': { in: 10, out: 50, cacheRead: 0.25, cacheCreation: 12.5 },
   'claude-mythos-5': { in: 10, out: 50, cacheRead: 1, cacheCreation: 12.5 },
+  'claude-haiku-5-5': {
+    in: 0.1,
+    out: 0.5,
+    cacheRead: 0.01,
+    cacheCreation: 0.125,
+    longPrompt: {
+      overPromptTokens: 100_000,
+      rate: { in: 0.5, out: 2.5, cacheRead: 0.05, cacheCreation: 0.625 },
+    },
+  },
   'claude-haiku-4-5-20251001': { in: 1, out: 5, cacheRead: 0.1, cacheCreation: 1.25 },
   // OpenAI — no cache rates. OpenAI-compatible providers report automatic cache
   // reads (`prompt_tokens_details.cached_tokens`); without a `cacheRead` rate they
@@ -147,6 +160,8 @@ export type CostedUsage = Pick<Usage, 'promptTokens' | 'completionTokens'> &
  */
 const MAX_CACHE_WRITE_MULTIPLIER = 2;
 
+export type PricingBasis = 'request' | 'pool';
+
 /**
  * USD for one usage figure at `rate`.
  *
@@ -155,14 +170,20 @@ const MAX_CACHE_WRITE_MULTIPLIER = 2;
  * rate, so it is priced at `in` (the figure Book reported before it could see cached tokens), and a
  * cache write never above twice it (`MAX_CACHE_WRITE_MULTIPLIER`).
  */
-export function usageCostUsd(rate: ModelPricing, usage: CostedUsage): number {
+export function usageCostUsd(rate: ModelPricing, usage: CostedUsage, basis: PricingBasis): number {
+  const effectiveRate =
+    rate.longPrompt &&
+    (basis === 'pool' || promptSizeTokens(usage) > rate.longPrompt.overPromptTokens)
+      ? rate.longPrompt.rate
+      : rate;
   const cacheRead = usage.cacheReadInputTokens ?? 0;
   const cacheCreation = usage.cacheCreationInputTokens ?? 0;
   return (
-    (usage.promptTokens * rate.in +
-      usage.completionTokens * rate.out +
-      cacheRead * (rate.cacheRead ?? rate.in) +
-      cacheCreation * (rate.cacheCreation ?? rate.in * MAX_CACHE_WRITE_MULTIPLIER)) /
+    (usage.promptTokens * effectiveRate.in +
+      usage.completionTokens * effectiveRate.out +
+      cacheRead * (effectiveRate.cacheRead ?? effectiveRate.in) +
+      cacheCreation *
+        (effectiveRate.cacheCreation ?? effectiveRate.in * MAX_CACHE_WRITE_MULTIPLIER)) /
     1_000_000
   );
 }
@@ -213,9 +234,10 @@ export function trafficTokens(usage: CostedUsage & { totalTokens: number }): num
 export function usageCostForModel(
   model: string,
   usage: CostedUsage,
+  basis: PricingBasis,
 ): { rate: ModelPricing; costUsd: number } | undefined {
   const rate = resolveModelPricing(model)?.rate;
-  return rate ? { rate, costUsd: usageCostUsd(rate, usage) } : undefined;
+  return rate ? { rate, costUsd: usageCostUsd(rate, usage, basis) } : undefined;
 }
 
 export type UsageCostEstimate =
@@ -249,6 +271,7 @@ export function hasKnownPricing(
 export function estimateUsageCost(
   model: string,
   usage: Usage,
+  basis: PricingBasis,
   overrides?: Readonly<Record<string, ModelPricing>>,
 ): UsageCostEstimate {
   const resolved = resolveModelPricing(model, overrides);
@@ -263,7 +286,7 @@ export function estimateUsageCost(
   }
   const { key, rate } = resolved;
 
-  const costUsd = usageCostUsd(rate, usage);
+  const costUsd = usageCostUsd(rate, usage, basis);
   return {
     status: 'known',
     costUsd,
@@ -271,6 +294,13 @@ export function estimateUsageCost(
     pricingVersion: PRICING_VERSION,
     ...(key === model ? {} : { pricingKey: key }),
   };
+}
+
+/** Render a single model rate line, showing both tiers for a tiered model. */
+export function formatModelRate(rate: ModelPricing): string {
+  const base = `$${rate.in}/M in, $${rate.out}/M out`;
+  if (!rate.longPrompt) return base;
+  return `${base}; $${rate.longPrompt.rate.in}/M in, $${rate.longPrompt.rate.out}/M out over ${rate.longPrompt.overPromptTokens.toLocaleString()}-token prompts`;
 }
 
 /**
@@ -297,8 +327,8 @@ interface ModelTotal {
   usd: number | null;
 }
 
-function usdFor(model: string, usage: CostedUsage): number | null {
-  return usageCostForModel(model, usage)?.costUsd ?? null;
+function usdFor(model: string, usage: CostedUsage, basis: PricingBasis): number | null {
+  return usageCostForModel(model, usage, basis)?.costUsd ?? null;
 }
 
 /**
@@ -307,35 +337,84 @@ function usdFor(model: string, usage: CostedUsage): number | null {
  * A session that delegates spends against more than one price list, and a single
  * total attributed to the lead's model is wrong in both directions -- it bills
  * sidekick tokens at the lead's rate and hides that a second model ran at all.
+ * Each entry (the lead and each delegated agent) is priced on its own and summed
+ * per row, rather than pricing the row's summed tokens.
  */
 function modelTotals(
   leadModel: string,
   leadUsage: CostedUsage | null,
   delegated: readonly DelegatedUsage[],
+  leadCostUsd?: number | null,
 ): ModelTotal[] {
   const byModel = new Map<string, ModelTotal>();
-  const bump = (model: string, usage: CostedUsage, isAgent: boolean): void => {
-    const row = byModel.get(model) ?? {
-      model,
-      promptTokens: 0,
-      completionTokens: 0,
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
-      agents: 0,
-      usd: null,
-    };
+  const add = (model: string, usage: CostedUsage, usd: number | null, isAgent: boolean): void => {
+    let row = byModel.get(model);
+    if (!row) {
+      row = {
+        model,
+        promptTokens: 0,
+        completionTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        agents: 0,
+        usd: 0,
+      };
+      byModel.set(model, row);
+    }
     row.promptTokens += usage.promptTokens;
     row.completionTokens += usage.completionTokens;
     row.cacheReadInputTokens += usage.cacheReadInputTokens ?? 0;
     row.cacheCreationInputTokens += usage.cacheCreationInputTokens ?? 0;
     if (isAgent) row.agents += 1;
-    byModel.set(model, row);
+    if (row.usd !== null) {
+      if (usd === null) {
+        row.usd = null;
+      } else {
+        row.usd += usd;
+      }
+    }
   };
-  if (leadUsage) bump(leadModel, leadUsage, false);
-  for (const entry of delegated) {
-    bump(entry.model, entry.usage, true);
+  if (leadUsage) {
+    const leadUsd =
+      typeof leadCostUsd === 'number' ? leadCostUsd : usdFor(leadModel, leadUsage, 'pool');
+    add(leadModel, leadUsage, leadUsd, false);
   }
-  return [...byModel.values()].map((row) => ({ ...row, usd: usdFor(row.model, row) }));
+  for (const del of delegated) {
+    add(del.model, del.usage, usdFor(del.model, del.usage, 'pool'), true);
+  }
+  return [...byModel.values()];
+}
+
+function buildUpperBoundNote(
+  leadModel: string,
+  leadUsage: CostedUsage | null,
+  delegated: readonly DelegatedUsage[],
+  leadCostUsd?: number | null,
+): string | undefined {
+  const pooledTiered = new Map<string, ModelPricing>();
+
+  const check = (model: string, usage: CostedUsage | null, isPooled: boolean) => {
+    if (!isPooled || !usage) return;
+    if (promptSizeTokens(usage) === 0 && usage.completionTokens === 0) return;
+    const rate = resolveModelPricing(model)?.rate;
+    if (rate?.longPrompt && !pooledTiered.has(model)) {
+      pooledTiered.set(model, rate);
+    }
+  };
+
+  check(leadModel, leadUsage, typeof leadCostUsd !== 'number');
+  for (const del of delegated) {
+    check(del.model, del.usage, true);
+  }
+
+  if (pooledTiered.size === 0) return undefined;
+
+  const clauses = [...pooledTiered.entries()].map(([model, rate]) => {
+    const over = rate.longPrompt!.overPromptTokens.toLocaleString();
+    return `${model} bills prompts over ${over} tokens at a higher rate`;
+  });
+
+  return `(upper bound: ${clauses.join('; ')}, and the request sizes behind this figure are not known)`;
 }
 
 /**
@@ -352,8 +431,9 @@ export function modelBreakdownLines(
   leadModel: string,
   leadUsage: CostedUsage | null,
   delegated: readonly DelegatedUsage[],
+  leadCostUsd?: number | null,
 ): string[] {
-  const rows = modelTotals(leadModel, leadUsage, delegated);
+  const rows = modelTotals(leadModel, leadUsage, delegated, leadCostUsd);
   if (rows.length <= 1) return [];
 
   const lines = ['Per model'];
@@ -369,6 +449,12 @@ export function modelBreakdownLines(
   const actual = rows.reduce((sum, row) => sum + (row.usd ?? 0), 0);
   lines.push(`  Total - $${actual.toFixed(4)}`);
 
+  // Skip counterfactual when the lead or any row model is tiered: a saving computed
+  // against a bound is an artifact.
+  const isTiered = (model: string): boolean =>
+    resolveModelPricing(model)?.rate.longPrompt !== undefined;
+  if (isTiered(leadModel) || rows.some((row) => isTiered(row.model))) return lines;
+
   // A cache rate the lead does not list would be priced at its upper bound, and the "saving"
   // would then be an artifact of that bound, not a comparison.
   const leadRate = resolveModelPricing(leadModel)?.rate;
@@ -378,7 +464,10 @@ export function modelBreakdownLines(
       (row.cacheCreationInputTokens > 0 && leadRate?.cacheCreation === undefined),
   );
   if (boundedOnLead) return lines;
-  const allOnLead = rows.reduce((sum, row) => sum + (usdFor(leadModel, row) ?? Number.NaN), 0);
+  const allOnLead = rows.reduce(
+    (sum, row) => sum + (usdFor(leadModel, row, 'pool') ?? Number.NaN),
+    0,
+  );
   if (!Number.isFinite(allOnLead)) return lines;
   const delta = allOnLead - actual;
   const pct = allOnLead > 0 ? Math.round((delta / allOnLead) * 100) : 0;
@@ -436,6 +525,8 @@ export interface SessionTotals {
   models: string[];
   /** How many delegated entries the totals include. */
   delegatedAgents: number;
+  /** Note when any row's USD came from 'pool' pricing of a tiered model. */
+  upperBoundNote?: string;
 }
 
 /**
@@ -450,8 +541,9 @@ export function sessionTotals(
   leadModel: string,
   leadUsage: (CostedUsage & { totalTokens: number }) | null,
   delegated: readonly DelegatedUsage[] = [],
+  leadCostUsd?: number | null,
 ): SessionTotals {
-  const rows = modelTotals(leadModel, leadUsage, delegated);
+  const rows = modelTotals(leadModel, leadUsage, delegated, leadCostUsd);
   // Left as it was when there is nothing to add: a session that delegated nothing
   // reports its own usage verbatim rather than a re-summed copy of it.
   let usage: (CostedUsage & { totalTokens: number }) | null = leadUsage;
@@ -460,15 +552,17 @@ export function sessionTotals(
     if (leadUsage) usage = addUsage(usage, leadUsage);
     for (const entry of delegated) usage = addUsage(usage, entry.usage);
   }
-  const pricedRows = rows.map((row) => usdFor(row.model, row));
-  const pricedEveryRow = pricedRows.every((priced): priced is number => priced !== null);
+  const pricedEveryRow = rows.every((row): row is ModelTotal & { usd: number } => row.usd !== null);
+  const usd = pricedEveryRow ? rows.reduce((sum, row) => sum + row.usd, 0) : null;
+  const upperBoundNote = buildUpperBoundNote(leadModel, leadUsage, delegated, leadCostUsd);
   return {
     usage: usage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     // One row with no rate makes the whole sum unavailable: a partial total would
     // read as the bill, and it is smaller than what the session really spent.
-    usd: pricedEveryRow ? pricedRows.reduce((sum, priced) => sum + priced, 0) : null,
+    usd,
     models: rows.map((row) => row.model),
     delegatedAgents: delegated.length,
+    ...(upperBoundNote ? { upperBoundNote } : {}),
   };
 }
 
@@ -494,11 +588,12 @@ export function costReport(
   usage: (CostedUsage & { totalTokens: number }) | null,
   delegated: readonly DelegatedUsage[] = [],
   scope: BillScope = {},
+  leadCostUsd?: number | null,
 ): string {
   if (!usage && delegated.length === 0) {
     return 'No token usage recorded for this session yet.\n\n(USD estimate available after the first model response.)';
   }
-  const totals = sessionTotals(model, usage, delegated);
+  const totals = sessionTotals(model, usage, delegated, leadCostUsd);
   const bill = totals.usage;
   // One line: what it cost, what it used, on which model. It used to take
   // three labelled lines (Model, Tokens, Est. cost) to say the same thing.
@@ -509,11 +604,15 @@ export function costReport(
       ? `${tokens} · ${models} ${totals.models.length > 1 ? 'have' : 'has'} no price, so no dollar estimate`
       : `$${totals.usd.toFixed(4)} estimated · ${tokens} · ${models}`;
   const notes = headlineNotes(totals, scope);
-  const breakdown = modelBreakdownLines(model, usage, delegated);
-  return [
-    notes ? `${summary} · ${notes}` : summary,
-    ...(breakdown.length ? ['', ...breakdown] : []),
-  ].join('\n');
+  const breakdown = modelBreakdownLines(model, usage, delegated, leadCostUsd);
+  const lines = [notes ? `${summary} · ${notes}` : summary];
+  if (totals.upperBoundNote) {
+    lines.push(totals.upperBoundNote);
+  }
+  if (breakdown.length) {
+    lines.push('', ...breakdown);
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -542,6 +641,7 @@ export function usageReport(
   toolCallStats?: Array<{ tool: string; calls: number; failures: Record<string, number> }>,
   delegated: readonly DelegatedUsage[] = [],
   scope: BillScope = {},
+  leadCostUsd?: number | null,
 ): string {
   const lines: string[] = ['Session usage', ''];
   lines.push(`Model: ${model}`);
@@ -550,7 +650,7 @@ export function usageReport(
     lines.push(`Last turn duration: ${(session.turnDurationMs / 1000).toFixed(1)}s`);
   }
   lines.push('');
-  const totals = sessionTotals(model, usage, delegated);
+  const totals = sessionTotals(model, usage, delegated, leadCostUsd);
   if (!usage && totals.delegatedAgents === 0) {
     lines.push('Tokens: (no model response yet this session)');
     lines.push('');
@@ -574,12 +674,13 @@ export function usageReport(
     const rate = resolveModelPricing(totals.models[0])?.rate;
     lines.push(
       rate
-        ? `Est. cost: $${totals.usd.toFixed(4)}  (local estimate — $${rate.in}/M in, $${rate.out}/M out)`
+        ? `Est. cost: $${totals.usd.toFixed(4)}  (local estimate — ${formatModelRate(rate)})`
         : unpricedLine(totals.models[0] ?? model),
     );
   }
   const notes = headlineNotes(totals, scope);
   if (notes) lines.push(`(${notes})`);
+  if (totals.upperBoundNote) lines.push(totals.upperBoundNote);
   if (toolCallStats && toolCallStats.length > 0) {
     const totalCalls = toolCallStats.reduce((sum, entry) => sum + entry.calls, 0);
     const totalFailures = toolCallStats.reduce(
@@ -598,13 +699,15 @@ export function usageReport(
   lines.push('');
   // The same helper /cost uses, so a session that delegated reads identically in
   // both reports rather than one counting an agent and the other not (#370).
-  const breakdown = modelBreakdownLines(model, usage, delegated);
+  const breakdown = modelBreakdownLines(model, usage, delegated, leadCostUsd);
   if (breakdown.length) lines.push(...breakdown);
   // Only true when agents are actually on the report: a session that delegated
   // nothing says nothing about them (#370).
   if (totals.delegatedAgents > 0) {
     lines.push(
-      `(Delegated agents are included above, each priced at the model it ran on. The session's own turns are priced at the active model, so a mid-session model switch is not split out.)`,
+      typeof leadCostUsd === 'number'
+        ? `(Delegated agents are included above, each priced at the model it ran on. The session's own responses are each priced at the model that served them, but are listed under the active model.)`
+        : `(Delegated agents are included above, each priced at the model it ran on. The session's own turns are priced at the active model, so a mid-session model switch is not split out.)`,
     );
   }
   if (scope.sinceResume) {

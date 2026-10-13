@@ -37,6 +37,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { createServer } from 'node:net';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const UNIT_ROOT = resolve(HERE, '..', '..', '..'); // .claude/skills/run-book -> repo root
@@ -58,7 +59,21 @@ function opt(name, fallback) {
 const COLS = Number(opt('cols', '120'));
 const ROWS = Number(opt('rows', '40'));
 const SHOT_DIR = opt('shots', '/tmp/book-shots');
-const MOCK_PORT = Number(opt('mock-port', '8919'));
+// Book is spawned below, before the mock starts, with the mock's URL already in its
+// environment -- so `--mock-port 0` is resolved to a free port here rather than passed
+// through, where Book would have dialled port 0 and retried until a `wait` timed out.
+const MOCK_PORT = await resolveMockPort(Number(opt('mock-port', '8919')));
+function resolveMockPort(port) {
+  if (port !== 0) return port;
+  return new Promise((res, rej) => {
+    const probe = createServer();
+    probe.once('error', rej);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port: free } = probe.address();
+      probe.close(() => res(free));
+    });
+  });
+}
 const MOCK_SCRIPT = opt('mock-script', null);
 const USE_MOCK = flag('mock');
 const SCRIPT_FILE = opt('script', null);

@@ -84,7 +84,15 @@ export interface UsageCommandDisplay {
    * nothing has been spent yet, which is different from a zero total.
    */
   usage: Usage | null;
-  rate?: { inputPerMillion: number; outputPerMillion: number };
+  rate?: {
+    inputPerMillion: number;
+    outputPerMillion: number;
+    longPrompt?: {
+      overPromptTokens: number;
+      inputPerMillion: number;
+      outputPerMillion: number;
+    };
+  };
   estimatedCostUsd?: number;
   /** Delegated agents inside `usage`, so the sheet can say so (#370). */
   delegatedAgents?: number;

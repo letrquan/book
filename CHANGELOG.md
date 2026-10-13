@@ -27,6 +27,15 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Claude Haiku 5.5, Opus 4.5 and Sonnet 4.5 are priced, and Sonnet 5.5 cache reads cost what
+  Anthropic charges** (#415). The price table had no rate for the first three, so
+  `--max-budget-usd` refused every run on them and `/cost` showed no dollar figure. Sonnet 5.5's
+  cache reads counted at twice the published rate, which overstated `/cost` and stopped budgeted
+  runs early. Haiku 5.5 charges more for a request whose prompt is over 100,000 tokens: Book now
+  prices each request at its own rate, and where only a summed total is known (a delegated agent,
+  or spend carried over from an earlier run) it uses the higher rate as an upper bound. `/cost` and
+  `/usage` say when a delegated agent's figure is one; a carried budget does not, so a restarted
+  Haiku 5.5 run can stop short of its cap.
 - **The transcript's brightest lines are the answer again, not the agent's bookkeeping.** A sentence
   whose only call updated the plan (TodoWrite) was read as an answer even when the agent went on
   working, so `I'll clone, install, and launch that repo` sat in full ink between grey steps. A

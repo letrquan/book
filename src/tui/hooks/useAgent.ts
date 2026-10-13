@@ -31,10 +31,15 @@ import type {
   PlanRecordData,
 } from '../../types/sessions.js';
 import { compactionGate, usageAtGate, usagePressureTokens } from '../../agent/compact.js';
-import { addUsage, type DelegatedUsage } from '../../pricing.js';
+import { addUsage, estimateUsageCost, type DelegatedUsage } from '../../pricing.js';
 import { maskAtGate } from '../../agent/tool-output-masking.js';
 import { resolveContextLimit } from '../../models.js';
-import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
+import {
+  applyModelDefaults,
+  resolveCompactModelConfig,
+  resolveModelProviderConfig,
+} from '../../config.js';
+import type { ProviderResponseMetadata } from '../../types/providers.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types/runtime.js';
 import {
@@ -306,6 +311,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
    * keeps it: the spend before the rewind was really spent.
    */
   const [sessionUsage, setSessionUsage] = useState<Usage | null>(null);
+  const [sessionCostUsd, setSessionCostUsd] = useState<number | null>(0);
   /**
    * Side requests on other models -- `/goal` checks and `Advisor` consultations --
    * by source and model, so `/cost` prices each at its own model's rates instead of
@@ -571,6 +577,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       // must keep saying where the bill starts too (#370).
       if (newSession || opts.sinceResume) {
         setSessionUsage(null);
+        setSessionCostUsd(0);
         setAuxiliaryUsage([]);
         setSessionUsageSinceResume(opts.sinceResume === true);
       }
@@ -755,8 +762,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
    * `/cost` named a figure below what the session had actually spent. It reaches
    * the bill only: `usage` stays the context meter's per-request value.
    */
-  const recordCompactionUsage = useCallback((u: Usage) => {
+  const recordCompactionUsage = useCallback((u: Usage, model?: string) => {
     setSessionUsage((current) => addUsage(current, u));
+    const compactModel = model ?? resolveCompactModelConfig(liveConfigRef.current).model;
+    const quote = estimateUsageCost(compactModel, u, 'request');
+    setSessionCostUsd((current) => {
+      if (current === null) return null;
+      return quote.status === 'known' ? current + quote.costUsd : null;
+    });
   }, []);
 
   // Unconditional append, shared by the immediate and the deferred path so a
@@ -1124,12 +1137,25 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             uiLog.event('send:done', { durationMs: Date.now() - turnStartRef.current });
             setTurnDurationMs(Date.now() - turnStartRef.current);
           },
-          onUsage: (u: Usage) => {
+          onUsage: (u: Usage, response?: ProviderResponseMetadata) => {
             if (!stillCurrent()) return;
             hostUsageRef.current = u;
             lastHostCompactAttemptRef.current = null;
             setUsage(u);
             setSessionUsage((current) => addUsage(current, u));
+            const responseQuote = response?.responseModel
+              ? estimateUsageCost(response.responseModel, u, 'request')
+              : undefined;
+            const quote =
+              responseQuote?.status === 'known'
+                ? responseQuote
+                : response?.requestedModel
+                  ? estimateUsageCost(response.requestedModel, u, 'request')
+                  : estimateUsageCost(liveConfigRef.current.model, u, 'request');
+            setSessionCostUsd((current) => {
+              if (current === null) return null;
+              return quote.status === 'known' ? current + quote.costUsd : null;
+            });
           },
           onAuxiliaryUsage: (u, metadata, source) => {
             if (!stillCurrent()) return;
@@ -1895,6 +1921,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setCurrentTurn(0);
     setUsage(null);
     setSessionUsage(null);
+    setSessionCostUsd(0);
     setAuxiliaryUsage([]);
     setSessionUsageSinceResume(false);
     hostUsageRef.current = null;
@@ -2451,6 +2478,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     tokenCount: usage?.totalTokens ?? 0,
     usage,
     sessionUsage,
+    sessionCostUsd,
     sessionUsageSinceResume,
     auxiliaryUsage,
     mode,

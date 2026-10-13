@@ -163,13 +163,17 @@ export function buildSessionStatus(
   let costUsd: number | null = models.length > 0 && usage ? 0 : null;
   if (usage) {
     for (const model of models) {
-      const quote = estimateUsageCost(model, {
-        promptTokens: usage.promptTokens,
-        completionTokens: usage.completionTokens,
-        totalTokens: usage.totalTokens,
-        cacheReadInputTokens: usage.cacheReadInputTokens,
-        cacheCreationInputTokens: usage.cacheCreationInputTokens,
-      });
+      const quote = estimateUsageCost(
+        model,
+        {
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens,
+          cacheReadInputTokens: usage.cacheReadInputTokens,
+          cacheCreationInputTokens: usage.cacheCreationInputTokens,
+        },
+        'pool',
+      );
       if (quote.status !== 'known') {
         costUsd = null;
         break;

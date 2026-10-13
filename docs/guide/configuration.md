@@ -93,6 +93,9 @@ nothing for Book today. What Book does on that path is read the cache counts a p
 no listed cache-read rate is priced at its input rate, and a cache write with no listed rate at
 twice it, the highest write premium a provider charges: both are upper bounds, so
 `--max-budget-usd` keeps working.
+A model priced by prompt length, such as `claude-haiku-5-5` (more above 100,000 prompt tokens), is
+priced per request at that request's rate; where only summed tokens are known, it is priced at the
+higher rate, which is also an upper bound.
 
 **9router** (checked against 0.5.91): its Claude routes (`cc/claude-*`) do cache. 9router adds its
 own breakpoints on the system prompt, the last tool and the last message, and drops the ones a

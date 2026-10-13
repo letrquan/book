@@ -158,6 +158,31 @@ describe('RunAccounting', () => {
     });
   });
 
+  it('prices tiered models like Haiku 5.5 per request and allows budget checks', () => {
+    const accounting = new RunAccounting();
+    const root = context('root');
+    accounting.startRoot(root, 1);
+
+    const haikuMeta: ProviderResponseMetadata = {
+      provider: 'anthropic',
+      requestedModel: 'claude-haiku-5-5',
+      responseModel: 'claude-haiku-5-5',
+      responseId: 'turn-1',
+    };
+
+    // Two responses of 60,000 prompt tokens each: each request <= 100k, so base rate
+    // applies per request: (60,000 * 0.1) / 1e6 = 0.006 each -> total 0.012
+    accounting.record(root, usage(60_000, 0), haikuMeta);
+    accounting.record(root, usage(60_000, 0), { ...haikuMeta, responseId: 'turn-2' });
+
+    const snapshot = accounting.snapshotRoot(root.rootRunId);
+    expect(snapshot.costUsd).toBeCloseTo(0.012, 6);
+    expect(accounting.checkBeforeModelCall(root.rootRunId, 'claude-haiku-5-5')).toMatchObject({
+      allowed: true,
+      status: 'within',
+    });
+  });
+
   it('still fails closed when the model itself cannot be priced', () => {
     const accounting = new RunAccounting();
     const root = context('root');

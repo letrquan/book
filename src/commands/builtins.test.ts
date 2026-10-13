@@ -374,6 +374,77 @@ describe('built-in command contract', () => {
     }
   });
 
+  it('prices tiered Haiku 5.5 in /cost and /usage per request when sessionCostUsd is present (#415)', () => {
+    const registry = createBuiltinCommandRegistry();
+    // Two 60k requests: 60k * 0.1 / 1e6 = 0.006 each -> 0.012 sessionCostUsd
+    const commandContext: BuiltinCommandContext = {
+      ...context(),
+      runtimeConfig: defaultConfig({ model: 'claude-haiku-5-5' }),
+      sessionUsage: { promptTokens: 120_000, completionTokens: 0, totalTokens: 120_000 },
+      sessionCostUsd: 0.012,
+    };
+    const cost = registry.execute('cost', '', commandContext);
+    expect(cost).toEqual(
+      expect.objectContaining({
+        type: 'local-message',
+        content: expect.stringContaining('$0.0120 estimated'),
+      }),
+    );
+    expect((cost as { content: string }).content).not.toContain('upper bound:');
+
+    // Without sessionCostUsd (pooled), uses the higher tier and shows the upper bound note
+    const pooledContext: BuiltinCommandContext = {
+      ...context(),
+      runtimeConfig: defaultConfig({ model: 'claude-haiku-5-5' }),
+      sessionUsage: { promptTokens: 120_000, completionTokens: 0, totalTokens: 120_000 },
+    };
+    const pooledCost = registry.execute('cost', '', pooledContext);
+    expect(pooledCost).toEqual(
+      expect.objectContaining({
+        type: 'local-message',
+        content: expect.stringContaining('$0.0600 estimated'),
+      }),
+    );
+    expect((pooledCost as { content: string }).content).toContain('upper bound:');
+
+    const usage = registry.execute('usage', '', commandContext);
+    expect(usage).toEqual(
+      expect.objectContaining({
+        display: expect.objectContaining({
+          kind: 'usage',
+          rate: expect.objectContaining({
+            inputPerMillion: 0.1,
+            outputPerMillion: 0.5,
+            longPrompt: {
+              overPromptTokens: 100_000,
+              inputPerMillion: 0.5,
+              outputPerMillion: 2.5,
+            },
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('falls back to pricing usage when sessionUsage is null and sessionCostUsd is 0 (#415)', () => {
+    const registry = createBuiltinCommandRegistry();
+    const commandContext: BuiltinCommandContext = {
+      ...context(),
+      runtimeConfig: defaultConfig({ model: 'claude-sonnet-5-5' }),
+      sessionUsage: null,
+      usage: { promptTokens: 10_000, completionTokens: 1_000, totalTokens: 11_000 },
+      sessionCostUsd: 0,
+    };
+    const cost = registry.execute('cost', '', commandContext);
+    expect(cost).toEqual(
+      expect.objectContaining({
+        type: 'local-message',
+        content: expect.stringContaining('$0.0300 estimated'),
+      }),
+    );
+    expect((cost as { content: string }).content).not.toContain('$0.0000');
+  });
+
   it('carries the delegated totals into the /usage sheet the TUI renders (#370)', () => {
     // The sheet is built from `display`, not from `content`: the text included
     // the agents while the panel they both accompany did not, so the number on

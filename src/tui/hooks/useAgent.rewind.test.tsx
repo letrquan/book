@@ -588,6 +588,7 @@ describe('useAgent rewind integration', () => {
     await tick();
 
     expect(latest!.sessionUsage).toBeNull();
+    expect(latest!.sessionCostUsd).toBe(0);
     expect(latest!.sessionUsageSinceResume).toBe(false);
   });
 
@@ -612,6 +613,7 @@ describe('useAgent rewind integration', () => {
     // says that is what it did.
     expect(latest!.sessionId).toBe(otherId);
     expect(latest!.sessionUsage).toBeNull();
+    expect(latest!.sessionCostUsd).toBe(0);
     expect(latest!.sessionUsageSinceResume).toBe(true);
   });
 
