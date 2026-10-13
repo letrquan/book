@@ -785,6 +785,15 @@ describe('/advisor', () => {
     });
   });
 
+  it('reads every status word as a question, never as a model name', () => {
+    for (const word of ['version', 'about', 'show', '--help', '?']) {
+      expect(registry.execute('advisor', word, context())).toMatchObject({
+        type: 'local-message',
+        content: 'Advisor: off\nUsage: /advisor <model> | off',
+      });
+    }
+  });
+
   it('sets and clears the advisor model', () => {
     expect(registry.execute('advisor', 'claude-opus-5-5', context())).toEqual({
       type: 'set-advisor',

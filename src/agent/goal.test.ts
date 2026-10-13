@@ -41,9 +41,10 @@ function isGoalCheck(messages: ProviderMessage[]): boolean {
 
 /**
  * A provider that answers the main loop with `mainReplies` (the last repeats) and
- * the goal evaluator with `verdicts` in order.
+ * the goal evaluator with `verdicts` in order. A verdict given as a function runs
+ * while its check is in flight, the way a `/goal` typed during a check would.
  */
-function scripted(mainReplies: string[], verdicts: string[]) {
+function scripted(mainReplies: string[], verdicts: Array<string | (() => string)>) {
   const checks: ProviderMessage[][] = [];
   let mainTurn = 0;
   const provider = {
@@ -51,8 +52,9 @@ function scripted(mainReplies: string[], verdicts: string[]) {
     stream: async function* (_config: unknown, messages: ProviderMessage[]) {
       if (isGoalCheck(messages)) {
         checks.push(messages);
-        const verdict = verdicts.shift();
-        if (verdict === undefined) throw new Error('no verdict left');
+        const next = verdicts.shift();
+        if (next === undefined) throw new Error('no verdict left');
+        const verdict = typeof next === 'function' ? next() : next;
         yield { type: 'text', content: verdict };
         yield { type: 'done', usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
         return;
@@ -66,9 +68,9 @@ function scripted(mainReplies: string[], verdicts: string[]) {
   return { provider, checks, mainTurns: () => mainTurn };
 }
 
-async function runWithGoal(provider: Provider, runtime: SessionRuntime) {
+async function runWithGoal(provider: Provider, runtime: SessionRuntime, maxTurns = 0) {
   const config = defaultConfig();
-  config.maxTurns = 0;
+  config.maxTurns = maxTurns;
   const appended: Message[] = [];
   const statuses: GoalStatusEvent[] = [];
   let outcome: AgentTerminalOutcome | undefined;
@@ -159,6 +161,25 @@ describe('goal text', () => {
         tokens: 12_345,
       }),
     ).toBe('● Goal achieved (2m · 3 turns · 12.3k tokens)');
+  });
+
+  it('picks the token unit after rounding', () => {
+    const met = {
+      state: 'met',
+      condition: 'c',
+      reason: 'r',
+      iterations: 1,
+      durationMs: 0,
+    } as const;
+    expect(formatGoalStatus({ ...met, tokens: 999_949 })).toContain('999.9k tokens');
+    expect(formatGoalStatus({ ...met, tokens: 999_960 })).toContain('· 1M tokens');
+    expect(formatGoalStatus({ ...met, tokens: 999.6 })).toContain('· 1k tokens');
+  });
+
+  it('says when the turn limit paused the goal', () => {
+    expect(
+      formatGoalStatus({ state: 'paused', condition: 'c', cause: 'max_turns', detail: 'not yet' }),
+    ).toBe('Goal paused · the turn limit was reached · send a message to continue');
   });
 
   it('marks a dropped prefix in the evaluator prompt', () => {
@@ -268,21 +289,21 @@ describe('goal in the loop', () => {
     expect(outcome).toMatchObject({ status: 'failed', reason: 'goal_unmet' });
   });
 
-  it('pauses after the block cap and keeps the goal for the next message', async () => {
+  it('pauses past the block cap and keeps the goal for the next message', async () => {
     const runtime = new SessionRuntime();
     runtime.activeGoal = createGoal('never');
     const verdicts = Array.from(
-      { length: GOAL_DEFAULT_BLOCK_CAP },
+      { length: GOAL_DEFAULT_BLOCK_CAP + 1 },
       () => '{"ok": false, "reason": "not yet"}',
     );
     const { provider, checks, mainTurns } = scripted(['Still going.'], verdicts);
 
     const { statuses, appended, outcome } = await runWithGoal(provider, runtime);
 
-    // The eighth unmet check ends the run: no ninth turn is spent that no check would read.
-    expect(checks).toHaveLength(GOAL_DEFAULT_BLOCK_CAP);
-    expect(mainTurns()).toBe(GOAL_DEFAULT_BLOCK_CAP);
-    expect(appended).toHaveLength(GOAL_DEFAULT_BLOCK_CAP - 1);
+    // As in Claude Code: eight rounds of feedback, then the ninth unmet check ends the run.
+    expect(checks).toHaveLength(GOAL_DEFAULT_BLOCK_CAP + 1);
+    expect(mainTurns()).toBe(GOAL_DEFAULT_BLOCK_CAP + 1);
+    expect(appended).toHaveLength(GOAL_DEFAULT_BLOCK_CAP);
     expect(statuses.at(-1)).toMatchObject({
       state: 'paused',
       cause: 'block_cap',
@@ -291,7 +312,7 @@ describe('goal in the loop', () => {
     expect(outcome).toMatchObject({ status: 'failed', reason: 'goal_unmet' });
     expect(runtime.activeGoal).toMatchObject({
       condition: 'never',
-      iterations: GOAL_DEFAULT_BLOCK_CAP,
+      iterations: GOAL_DEFAULT_BLOCK_CAP + 1,
       lastReason: 'not yet',
     });
   });
@@ -300,36 +321,94 @@ describe('goal in the loop', () => {
     const runtime = new SessionRuntime();
     runtime.activeGoal = createGoal('c');
     const { provider } = scripted(['Done.'], ['not json']);
-    const { statuses, appended } = await runWithGoal(provider, runtime);
+    const { statuses, appended, outcome } = await runWithGoal(provider, runtime);
     expect(appended).toHaveLength(0);
     expect(statuses).toMatchObject([{ state: 'paused', cause: 'check_failed' }]);
     expect(runtime.activeGoal?.condition).toBe('c');
+    // Failing open lets the run end, but nothing confirmed the goal: not a success.
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'goal_unverified' });
+    expect(outcome?.message).toBeUndefined();
   });
 
-  it('skips the check when the turn budget is spent', async () => {
+  it('checks the goal on the last allowed turn, and a met goal still clears', async () => {
     const runtime = new SessionRuntime();
     runtime.activeGoal = createGoal('c');
-    const { provider, checks } = scripted(['Done.'], []);
-    const config = defaultConfig();
-    config.maxTurns = 1;
-    await runAgentLoop(
-      config,
-      createRegistry(),
-      'go',
-      [],
-      {
-        onText: () => {},
-        onToolCall: () => {},
-        onToolResult: () => {},
-        onError: () => {},
-        onTurnStart: () => {},
-        onDone: () => {},
-      } as unknown as AgentLoopCallbacks,
-      'auto',
-      { provider, isNewSession: false, runtime },
+    const { provider, checks } = scripted(['Done.'], ['{"ok": true, "reason": "done"}']);
+    const { statuses, outcome } = await runWithGoal(provider, runtime, 1);
+    expect(checks).toHaveLength(1);
+    expect(statuses).toMatchObject([{ state: 'met', iterations: 1 }]);
+    expect(runtime.activeGoal).toBeUndefined();
+    expect(outcome?.status).toBe('completed');
+  });
+
+  it('ends at the turn limit when the goal is still unmet on the last allowed turn', async () => {
+    const runtime = new SessionRuntime();
+    runtime.activeGoal = createGoal('c');
+    const { provider, checks, mainTurns } = scripted(['Done.'], ['{"ok": false, "reason": "no"}']);
+    const { statuses, appended, outcome } = await runWithGoal(provider, runtime, 1);
+    expect(checks).toHaveLength(1);
+    expect(mainTurns()).toBe(1);
+    // No turn is left to answer it, so no feedback is sent.
+    expect(appended).toHaveLength(0);
+    expect(statuses).toMatchObject([{ state: 'paused', cause: 'max_turns', detail: 'no' }]);
+    expect(outcome).toMatchObject({
+      status: 'failed',
+      reason: 'max_turns',
+      message: 'Reached max turns (1).',
+    });
+    expect(runtime.activeGoal).toMatchObject({ condition: 'c', iterations: 1, lastReason: 'no' });
+  });
+
+  it('checks a goal set while the previous one was being checked', async () => {
+    const runtime = new SessionRuntime();
+    runtime.activeGoal = createGoal('A');
+    const { provider, checks, mainTurns } = scripted(
+      ['Done.'],
+      [
+        () => {
+          runtime.activeGoal = createGoal('B');
+          return '{"ok": false, "reason": "A is not done"}';
+        },
+        '{"ok": true, "reason": "B holds"}',
+      ],
     );
-    expect(checks).toHaveLength(0);
-    expect(runtime.activeGoal?.condition).toBe('c');
+    const { statuses, appended, outcome } = await runWithGoal(provider, runtime);
+    expect(checks).toHaveLength(2);
+    expect(checks[1][1].content as string).toContain('Condition: B');
+    // A's verdict is discarded: it sent no feedback and reported nothing.
+    expect(appended).toHaveLength(0);
+    expect(statuses).toMatchObject([{ state: 'met', condition: 'B' }]);
+    expect(mainTurns()).toBe(1);
+    expect(runtime.activeGoal).toBeUndefined();
+    expect(outcome?.status).toBe('completed');
+  });
+
+  it('gives a goal set mid-run its own count of unmet checks', async () => {
+    const runtime = new SessionRuntime();
+    runtime.activeGoal = createGoal('A');
+    const unmetA = Array.from(
+      { length: GOAL_DEFAULT_BLOCK_CAP },
+      () => '{"ok": false, "reason": "A not yet"}',
+    );
+    const { provider, checks } = scripted(
+      ['Working.'],
+      [
+        ...unmetA,
+        // The check that would have tripped A's cap: B replaces A while it runs.
+        () => {
+          runtime.activeGoal = createGoal('B');
+          return '{"ok": false, "reason": "A not yet"}';
+        },
+        '{"ok": false, "reason": "B not yet"}',
+        '{"ok": true, "reason": "B holds"}',
+      ],
+    );
+    const { statuses, appended, outcome } = await runWithGoal(provider, runtime);
+    expect(checks).toHaveLength(GOAL_DEFAULT_BLOCK_CAP + 3);
+    // B's first unmet check is its first, so the agent is sent back rather than stopped.
+    expect(appended.at(-1)?.content).toBe('Stop hook feedback:\n[B]: B not yet');
+    expect(statuses.at(-1)).toMatchObject({ state: 'met', condition: 'B' });
+    expect(outcome?.status).toBe('completed');
   });
 
   it('does not override a continuation brake', async () => {

@@ -150,19 +150,24 @@ tools and a 30-second limit, using Claude Code's evaluator prompt.
   `Goal not yet met… continuing`, and the run goes on.
 - **Met**: the goal clears itself and the transcript shows
   `● Goal achieved (<time> · <turns> · <tokens>)`.
-- **Impossible** (the evaluator judges it can never hold): the goal clears with the reason.
-- **Eight unmet checks in a row** within one run end the run at the eighth with
+- **Impossible** (the evaluator judges it can never hold): the goal clears, and the transcript
+  shows `Goal could not be achieved: <reason>`.
+- **Still unmet after eight rounds of feedback**: as in Claude Code, the agent is sent back eight
+  times within one run, and a ninth unmet check ends the run with
   `Goal paused · … · send a message to continue`; the goal stays set, and the next message
-  resumes checking.
+  resumes checking with a fresh count.
 - **A check that fails** (provider error, timeout, unreadable answer) lets the run end and keeps
   the goal. A broken evaluator never traps the agent.
 
-Only a stop the agent chose is checked: a plan stop or handoff, a cancel, `--max-turns`, and the
-continuation brakes (`no_progress`, `continuation_limit`, the wall-clock ceiling) all end the run
-as they would without a goal. A run whose goal was judged impossible, or is still unmet at the
-eighth check, ends with the outcome `failed / goal_unmet`, so `book -p "/goal …"` exits non-zero
-when it gives up; a met goal ends as a normal completion. The token figure counts what the agent
-and its goal checks spent while the goal was set.
+Only a stop the agent chose is checked: a plan stop or handoff, a cancel, and the continuation
+brakes (`no_progress`, `continuation_limit`, the wall-clock ceiling) all end the run as they would
+without a goal. A stop on the last turn `--max-turns` allows is checked too: a met goal clears as
+usual, and an unmet one ends the run `failed / max_turns` with the goal kept. A run whose goal was
+judged impossible, or is still unmet after the eight rounds, ends `failed / goal_unmet`, and one
+whose last check could not run ends `failed / goal_unverified`, so `book -p "/goal …"` exits
+non-zero whenever nothing confirmed the goal; a met goal ends as a normal completion. A goal set
+while a check is running is checked in its place against the same stop, with its own count. The
+token figure counts the output tokens the agent and its goal checks spent while the goal was set.
 
 Write the condition so the transcript can prove it: "`npm test` exits 0 and the output is shown"
 is checkable; "the code is good" is not. `/goal` with no argument shows the goal, how many checks
@@ -171,14 +176,19 @@ drops it early. A goal is recorded in the session file, so `--resume` and `/resu
 unmet one; `/clear` drops it. Only the root agent is checked — subagents and managed agents work
 toward their own tasks. In print mode, `book -p "/goal <condition>"` runs the same loop, with each
 check on stderr as `goal: …` (or as a `goal_status` event under `--output-format stream-json`).
+`--quiet` hides those progress lines but still prints the paused or failed line that explains a
+non-zero exit.
 
 **`/advisor <model>`** gives the agent an `Advisor` tool backed by a stronger model, which it is
 told to call before substantive work, when stuck, and before declaring a task done. The tool takes
-no arguments: Book sends the whole conversation — including the text the agent wrote just before
-calling it and any call it made earlier in the same turn — to the advisor model through that
-model's own provider, at the session's effort capped at `high`, and returns the advice as the
-tool's result (marked when it was cut off at the output limit). The advisor cannot run tools. `/advisor` alone shows the current advisor,
-`/advisor off` removes it, and the choice is saved to `~/.book/settings.json` as `advisorModel`
+no arguments: Book sends the system prompt the agent works under (the project's `CLAUDE.md` and
+`AGENTS.md` rules among it) and the whole conversation — including the text the agent wrote just
+before calling it and any call it made earlier in the same turn, with tool results whole while
+they fit — to the advisor model through that model's own provider, at the session's effort capped
+at `high` and with its output capped at what that model accepts, and returns the advice as the
+tool's result (marked when it was cut off at the output limit). The advisor cannot run tools.
+`/advisor` alone (or `status`, `show`, `version`, and Claude Code's other status words) shows the
+current advisor, `/advisor off` removes it, and the choice is saved to `~/.book/settings.json` as `advisorModel`
 (`BOOK_ADVISOR_MODEL` outranks it). The consultation is billed to the session at the advisor
 model's rates, and `/cost` lists it, and the goal checks, as their own lines. Advice is another
 model's text, so after a consultation a `MemorySave` goes to the memory inbox, as it does after

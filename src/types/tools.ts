@@ -415,6 +415,8 @@ export interface ToolContext {
   runtime?: SessionRuntime;
   /** The conversation as the running loop holds it, for a tool that reads it whole (`Advisor`). */
   conversation?: () => readonly Message[];
+  /** The system prompt of the request the running loop last sent, for the same tool. */
+  systemPrompt?: () => string;
   /** Spend on a model the tool called itself (`AgentLoopCallbacks.onAuxiliaryUsage`). */
   onAuxiliaryUsage?: (usage: Usage, metadata: ProviderResponseMetadata, source: string) => void;
 }

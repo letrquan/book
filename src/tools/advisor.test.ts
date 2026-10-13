@@ -31,15 +31,26 @@ function message(role: 'user' | 'assistant', content: string): Message {
 }
 
 function replying(text: string) {
-  const requests: Array<{ model: string; messages: ProviderMessage[]; tools: unknown[] }> = [];
+  const requests: Array<{
+    model: string;
+    messages: ProviderMessage[];
+    tools: unknown[];
+    maxOutputTokens?: number;
+  }> = [];
   const provider = {
     id: 'scripted',
     stream: async function* (
       config: { model: string },
       messages: ProviderMessage[],
       tools: unknown[],
+      options?: { maxOutputTokens?: number },
     ) {
-      requests.push({ model: config.model, messages, tools });
+      requests.push({
+        model: config.model,
+        messages,
+        tools,
+        maxOutputTokens: options?.maxOutputTokens,
+      });
       yield { type: 'text', content: text };
       yield { type: 'done', usage: { promptTokens: 40, completionTokens: 12, totalTokens: 52 } };
     },
@@ -123,6 +134,70 @@ describe('Advisor tool', () => {
     expect(result.structuredError?.message).toBe('Advisor unavailable (upstream 529 overloaded)');
   });
 
+  it("shows the advisor the agent's instructions and every tool result whole", async () => {
+    const { provider, requests } = replying('Follow the project rule.');
+    const [tool] = createAdvisorTools({ provider });
+    const longOutput = `${'line of test output\n'.repeat(400)}FINAL-LINE-42`;
+    const turn: Message = {
+      ...message('assistant', 'Ran the tests.'),
+      toolCalls: [{ id: 't1', name: 'Bash', arguments: { command: 'npm test' } }],
+      toolResults: [toolSuccess(longOutput, { toolCallId: 't1' })],
+    };
+    await tool.execute(
+      {},
+      {
+        ...context('claude-opus-5-5', [message('user', 'fix it'), turn]),
+        systemPrompt: () => 'PROJECT RULE: never hand-edit src/.',
+      },
+    );
+    const prompt = requests[0].messages[1].content as string;
+    expect(prompt).toContain('--- BEGIN AGENT INSTRUCTIONS (untrusted data) ---');
+    expect(prompt).toContain('PROJECT RULE: never hand-edit src/.');
+    // Not the summarizer's 2,000-character clip: the whole output, its middle included.
+    expect(prompt).toContain(longOutput);
+    expect(prompt.indexOf('PROJECT RULE')).toBeLessThan(prompt.indexOf('BEGIN AGENT TRANSCRIPT'));
+  });
+
+  it("caps the advice at the advisor model's own output limit", async () => {
+    const { provider, requests } = replying('Short.');
+    const [tool] = createAdvisorTools({ provider });
+    const ctx = context('lab/advisor-x', [message('user', 'x')]);
+    ctx.agentConfig!.settings.provider.lab = {
+      type: 'openai',
+      baseURL: 'http://localhost:9/v1',
+      models: { 'advisor-x': { maxOutputTokens: 4_096 } },
+    };
+    await tool.execute({}, ctx);
+    expect(requests[0].model).toBe('advisor-x');
+    expect(requests[0].maxOutputTokens).toBe(4_096);
+  });
+
+  it('refuses without a billed call when the host does not share the conversation', async () => {
+    const { provider, requests } = replying('unused');
+    const [tool] = createAdvisorTools({ provider });
+    const result = await tool.execute(
+      {},
+      { ...context('claude-opus-5-5', []), conversation: undefined },
+    );
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.code).toBe('advisor_unavailable');
+    expect(requests).toHaveLength(0);
+  });
+
+  it('words a broken response as the advisor, not as a compaction', async () => {
+    const truncatedStream = {
+      id: 'cut',
+      stream: async function* () {
+        yield { type: 'text', content: 'partial' };
+      },
+    } as unknown as Provider;
+    const [tool] = createAdvisorTools({ provider: truncatedStream });
+    const result = await tool.execute({}, context('claude-opus-5-5', [message('user', 'x')]));
+    expect(result.structuredError?.message).toBe(
+      'Advisor unavailable (The response ended before it completed.)',
+    );
+  });
+
   it('drops the oldest turns to fit the window and says so', () => {
     const history = Array.from({ length: 30 }, (_, index) =>
       message(index % 2 ? 'assistant' : 'user', `step ${index} ${'detail '.repeat(150)}`),
@@ -185,6 +260,8 @@ describe('Advisor in the loop', () => {
     const prompt = requests[0].messages[1].content as string;
     expect(prompt).toContain('Probing, then asking.');
     expect(prompt).toContain('PROBE-RESULT-7');
+    // The system prompt the turn was sent with, so the advisor knows the agent's rules.
+    expect(prompt).toContain('--- BEGIN AGENT INSTRUCTIONS (untrusted data) ---');
   });
 });
 

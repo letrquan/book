@@ -704,6 +704,8 @@ const ADVISOR_STATUS_WORDS: ReadonlySet<string> = new Set([
   'check',
   'describe',
   'print',
+  'version',
+  'about',
   'status',
   '?',
 ]);

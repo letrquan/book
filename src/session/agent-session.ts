@@ -133,7 +133,9 @@ export interface AgentSessionGoalTarget {
 /** Append the goal as it now stands; the loader takes the last record. */
 function persistGoal(target: AgentSessionGoalTarget, goal: ActiveGoal | null): void {
   if (!target.timelineStore || !target.sessionId) return;
-  const data: GoalRecordData = { version: 1, goal };
+  // A copy: the store keeps the appended record in its cache, and the live goal's
+  // token count keeps growing in place after this write.
+  const data: GoalRecordData = { version: 1, goal: goal ? { ...goal } : null };
   target.timelineStore.append(target.sessionId, {
     type: 'goal',
     timestamp: Date.now(),
@@ -1328,6 +1330,20 @@ export class AgentSession {
           data,
         } satisfies SessionRecord);
       };
+      /**
+       * Append the `/goal` as it now stands, unless this run already wrote exactly that.
+       * Called at each goal status change and once more when the run ends: the goal's
+       * token count grows every turn, and a restart before the next check keeps it.
+       */
+      let lastGoalSignature = '';
+      const persistRunGoal = (): void => {
+        if (request.isCurrent?.() === false) return;
+        const goal = runtime.activeGoal ?? null;
+        const signature = JSON.stringify(goal);
+        if (signature === lastGoalSignature) return;
+        lastGoalSignature = signature;
+        persistGoal({ sessionId: request.sessionId, timelineStore: request.timelineStore }, goal);
+      };
 
       const baseLoopCallbacks: AgentLoopCallbacks = {
         onText: (content: string) => {
@@ -1347,12 +1363,7 @@ export class AgentSession {
         onNotice: (message: string) => emit({ type: 'notice', message }),
         onGoalStatus: (event) => {
           // The loop has already moved the runtime's goal; record where it now stands.
-          if (request.isCurrent?.() !== false) {
-            persistGoal(
-              { sessionId: request.sessionId, timelineStore: request.timelineStore },
-              runtime.activeGoal ?? null,
-            );
-          }
+          persistRunGoal();
           emit({ type: 'goal_status', event });
         },
         onAuxiliaryUsage: callbacks.onAuxiliaryUsage,
@@ -1530,6 +1541,7 @@ export class AgentSession {
         // charged after this point is the dispose flush's, which is why the two
         // write the same figure rather than one of them.
         this.flushRunUsage(runContext.rootRunId, true);
+        if (runtime.activeGoal) persistRunGoal();
       }
       const partialOutput =
         streamedAssistantText.length > 0 ||

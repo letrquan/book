@@ -1365,10 +1365,17 @@ function emitAgentEvent(
     return;
   }
   // A `/goal` check: whether the run continues, and why. A progress line like any
-  // other under `text`, so `--quiet` (and the SDK, which owns its stderr) silences it.
+  // other under `text`, so `--quiet` (and the SDK, which owns its stderr) silences it --
+  // except, under `--quiet`, a `failed` or `paused` goal: it ends the run failed with no
+  // outcome message, so it is the only line saying why the exit code is non-zero.
   if (event.type === 'goal_status') {
+    const endsRunFailed = event.event.state === 'failed' || event.event.state === 'paused';
     if (opts.outputFormat === 'stream-json') emit({ type: 'goal_status', ...event.event });
-    else if (opts.outputFormat === 'text' && opts.quiet !== true) {
+    else if (
+      opts.outputFormat === 'text' &&
+      opts.runSource !== 'sdk' &&
+      (opts.quiet !== true || endsRunFailed)
+    ) {
       process.stderr.write(
         `goal: ${progressLine(formatGoalStatus(event.event), PROGRESS_NOTICE_MAX)}\n`,
       );

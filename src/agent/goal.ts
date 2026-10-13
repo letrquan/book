@@ -13,6 +13,7 @@ import {
 import { resolveContextLimit } from '../models.js';
 import {
   REDUCER_OUTPUT_MIN_MARGIN_TOKENS,
+  boundedOutputCap,
   buildSummarizerInput,
   cleanSummaryText,
   estimateTextTokens,
@@ -48,8 +49,10 @@ const GOAL_CLEAR_WORDS: ReadonlySet<string> = new Set([
 /** How long one evaluation may take before the stop goes ahead unchecked. */
 const GOAL_CHECK_TIMEOUT_MS = 30_000;
 /**
- * Unmet verdicts in a row, within one run, before the run is allowed to end
- * anyway and the goal pauses until the next user message.
+ * Unmet verdicts in a row, within one run, that send the agent back to work. The
+ * next unmet verdict ends the run and the goal pauses until the next user message:
+ * eight rounds of feedback, then a ninth unmet check stops, as in Claude Code
+ * (`count > (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP ?? 8)`).
  */
 export const GOAL_DEFAULT_BLOCK_CAP = 8;
 /** Share of the evaluator's window the transcript may fill before older messages are dropped. */
@@ -129,9 +132,12 @@ function formatGoalDuration(durationMs: number): string {
 
 /** `950`, `12.3k`, `1.2M`. */
 function formatGoalTokens(tokens: number): string {
-  if (tokens < 1_000) return String(Math.max(0, Math.round(tokens)));
-  if (tokens < 1_000_000) return `${(tokens / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
-  return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  const whole = Math.max(0, Math.round(tokens));
+  if (whole < 1_000) return String(whole);
+  // Round first, then pick the unit: 999,950 is `1M`, not `1000k`.
+  const thousands = Math.round(whole / 100) / 10;
+  if (thousands < 1_000) return `${thousands.toFixed(1).replace(/\.0$/, '')}k`;
+  return `${(Math.round(whole / 100_000) / 10).toFixed(1).replace(/\.0$/, '')}M`;
 }
 
 /** `/goal` with no argument. */
@@ -156,9 +162,14 @@ export function formatGoalStatus(event: GoalStatusEvent): string {
     case 'failed':
       return `Goal could not be achieved: ${event.reason.trim()}`;
     case 'paused':
-      return event.cause === 'block_cap'
-        ? 'Goal paused · goal checks kept finding it unmet this turn · send a message to continue'
-        : `Goal paused · the goal check failed${event.detail ? ` (${event.detail})` : ''} · send a message to continue`;
+      switch (event.cause) {
+        case 'block_cap':
+          return 'Goal paused · goal checks kept finding it unmet this turn · send a message to continue';
+        case 'max_turns':
+          return 'Goal paused · the turn limit was reached · send a message to continue';
+        case 'check_failed':
+          return `Goal paused · the goal check failed${event.detail ? ` (${event.detail})` : ''} · send a message to continue`;
+      }
   }
 }
 
@@ -277,7 +288,7 @@ export async function evaluateGoal(
   const generated = await generateCheckpoint(
     requestConfig,
     prompt,
-    goalMaxOutputTokens(),
+    boundedOutputCap(judgeConfig, goalMaxOutputTokens(), GOAL_TRANSCRIPT_FRACTION),
     signal,
     provider,
     {
@@ -285,6 +296,7 @@ export async function evaluateGoal(
       onUsage: options.onUsage,
       onUsageMissing: options.onUsageMissing,
       system: GOAL_EVALUATOR_SYSTEM,
+      purpose: 'the goal check',
     },
   );
   if (!generated.ok) {

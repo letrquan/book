@@ -43,6 +43,6 @@ export type GoalStatusEvent =
   | {
       state: 'paused';
       condition: string;
-      cause: 'block_cap' | 'check_failed';
+      cause: 'block_cap' | 'check_failed' | 'max_turns';
       detail?: string;
     };
