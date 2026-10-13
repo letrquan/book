@@ -247,7 +247,10 @@ the outgoing run's managed workers are stopped. A worker that answers after the 
 `/review` the host performed itself, and a compaction's own model calls are written before the process
 exits, so nothing it paid is re-authorized by the next restart. Each flush writes one record for
 everything still unwritten, and every record names every model its run spent on — a cheap parent with a
-pricier managed worker is restored at the pricier rate rather than the cheaper one.
+pricier managed worker is restored at the pricier rate rather than the cheaper one. A record keeps
+summed tokens, not each request's size, so a model priced by prompt length (`claude-haiku-5-5`)
+restores at its higher rate: the carried spend is an upper bound, and a restarted run can stop short
+of its cap.
 
 Check on a run at any point, from any shell, with no provider configured:
 

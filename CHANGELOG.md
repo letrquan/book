@@ -12,8 +12,9 @@ All notable changes to this project are documented in this file.
   cache reads counted at twice the published rate, which overstated `/cost` and stopped budgeted
   runs early. Haiku 5.5 charges more for a request whose prompt is over 100,000 tokens: Book now
   prices each request at its own rate, and where only a summed total is known (a delegated agent,
-  or spend carried over from an earlier run) it uses the higher rate as an upper bound, which
-  `/cost` and `/usage` say.
+  or spend carried over from an earlier run) it uses the higher rate as an upper bound. `/cost` and
+  `/usage` say when a delegated agent's figure is one; a carried budget does not, so a restarted
+  Haiku 5.5 run can stop short of its cap.
 - **The transcript's brightest lines are the answer again, not the agent's bookkeeping.** A sentence
   whose only call updated the plan (TodoWrite) was read as an answer even when the agent went on
   working, so `I'll clone, install, and launch that repo` sat in full ink between grey steps. A
