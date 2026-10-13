@@ -21,6 +21,7 @@ import type {
   CompactBoundary,
   CompactRecordData,
   LoadedSession,
+  GoalRecordData,
   PlanRecordData,
   UsageRecordData,
   RewindRecordData,
@@ -486,6 +487,7 @@ export class SessionStore {
     const checkpointByUserEventId = new Map<string, string>();
     const snapshotIds = new Set<string>();
     let latestPlan: PlanRecordData | undefined;
+    let latestGoal: GoalRecordData | undefined;
     let carriedUsage: Usage | undefined;
     const carriedModels = new Set<string>();
     let count = 0;
@@ -544,6 +546,13 @@ export class SessionStore {
         // skipped rather than clearing a good earlier one.
         const plan = record.data as PlanRecordData;
         if (plan?.version === 1) latestPlan = plan;
+        continue;
+      }
+
+      if (record.type === 'goal') {
+        // Last record wins, as for `plan`: each write is the whole goal, or null once cleared.
+        const goal = record.data as GoalRecordData;
+        if (goal?.version === 1) latestGoal = goal;
         continue;
       }
 
@@ -778,6 +787,7 @@ export class SessionStore {
       activeEventIds,
       meta,
       plan: latestPlan,
+      goal: latestGoal,
       carriedUsage,
       carriedModels: [...carriedModels],
       history: contextHistory,
@@ -1011,6 +1021,9 @@ function cloneLoadedSession(session: LoadedSession): LoadedSession {
           todos: session.plan.todos?.map((todo) => ({ ...todo })),
           tasks: session.plan.tasks?.map((task) => ({ ...task })),
         }
+      : undefined,
+    goal: session.goal
+      ? { version: 1, goal: session.goal.goal ? { ...session.goal.goal } : null }
       : undefined,
     carriedUsage: session.carriedUsage ? { ...session.carriedUsage } : undefined,
     carriedModels: session.carriedModels ? [...session.carriedModels] : undefined,

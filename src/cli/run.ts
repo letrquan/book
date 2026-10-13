@@ -304,6 +304,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           transcript: bootstrap.transcript,
           compactBoundaries: bootstrap.compactBoundaries,
           plan: bootstrap.plan,
+          goal: bootstrap.goal,
           carriedUsage: bootstrap.carriedUsage,
           carriedModels: bootstrap.carriedModels,
           mode,

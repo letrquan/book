@@ -170,6 +170,8 @@ export async function* query(
         history: bootstrap.history,
         transcript: bootstrap.transcript,
         compactBoundaries: bootstrap.compactBoundaries,
+        // A resumed session's unmet `/goal` keeps being checked, and `/goal clear` can see it.
+        goal: bootstrap.goal,
         mode: resolvePermissionMode(config.settings, options.permissionMode),
         maxTurns: options.maxTurns,
         persistSession,

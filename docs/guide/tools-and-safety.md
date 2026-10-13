@@ -323,7 +323,9 @@ Modes differ only in what happens to calls that no `deny` rule matched:
 | `dontAsk`           | Refused except for the tools below that never prompt — the mode never prompts, and a user `allow` rule does not exempt a call |
 | `bypassPermissions` | Run without a prompt                                                                                                          |
 
-Some tools never prompt. `MemorySave` and `TodoWrite` (the agent's checklist) are always allowed,
+Some tools never prompt. `MemorySave`, `TodoWrite` (the agent's checklist) and `Advisor` (offered
+only once you choose a model with `/advisor`; it sends the conversation to that model) are always
+allowed,
 and `ToolSearch`, `EnterPlanMode` and the managed-agent lifecycle tools (every `Agent*` tool except
 `AgentApply`) never reach a prompt; `dontAsk` does not refuse any of them. A `permissions.deny` rule
 still blocks them in every mode. A `permissions.ask` rule that names one prompts in `default` and

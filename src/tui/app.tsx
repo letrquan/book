@@ -72,6 +72,7 @@ import {
   type BuiltinCommandContext,
   type BuiltinCommandEffect,
 } from '../commands/builtins.js';
+import { describeAdvisorChange } from '../tools/advisor.js';
 import { discoverSkills, type Skill } from '../skills.js';
 import { runGit } from '../tools/git.js';
 import { getMemoryIndex } from '../memory-display.js';
@@ -326,6 +327,7 @@ export function App({
     sessionUsage,
     sessionCostUsd,
     sessionUsageSinceResume,
+    auxiliaryUsage,
     mode,
     pendingPermission,
     pendingPlanApproval,
@@ -347,6 +349,8 @@ export function App({
     sendAgentCompletions,
     sendBackgroundShellCompletion,
     startHostRun,
+    setGoal,
+    clearGoal,
     clear,
     startNewConversation,
     resumeConversation,
@@ -367,6 +371,7 @@ export function App({
     setEffort,
     setAgentProfileModel,
     setCompactModel,
+    setAdvisorModel,
     setSkillActivation,
     setSkillExecution,
     setSkillsEnabled,
@@ -1989,6 +1994,7 @@ export function App({
           runtimeConfig: liveConfig,
           mode,
           usage,
+          activeGoal: runtime?.activeGoal,
           sessionUsage,
           sessionCostUsd,
           sessionUsageSinceResume,
@@ -2003,18 +2009,21 @@ export function App({
           // Records, not `summaries`: that list drops a terminal agent once its
           // completion has been delivered, which is right for the agent panel and
           // wrong for a bill. A finished agent's tokens were still spent.
-          delegatedUsage: [...managedAgents.records.values()].flatMap((record) => {
-            const usage = record.runUsage ?? record.usage;
-            return usage
-              ? [
-                  {
-                    label: `${record.profile ?? record.name} "${record.displayName ?? record.name}"`,
-                    model: record.resolvedModel ?? 'unknown',
-                    usage,
-                  },
-                ]
-              : [];
-          }),
+          delegatedUsage: [
+            ...(auxiliaryUsage ?? []),
+            ...[...managedAgents.records.values()].flatMap((record) => {
+              const usage = record.runUsage ?? record.usage;
+              return usage
+                ? [
+                    {
+                      label: `${record.profile ?? record.name} "${record.displayName ?? record.name}"`,
+                      model: record.resolvedModel ?? 'unknown',
+                      usage,
+                    },
+                  ]
+                : [];
+            }),
+          ],
           resolveAmbientContext: () => ({
             subagentCount: discoverAgents(config.workspace).length,
             hasMemoryIndex: Boolean(
@@ -2072,6 +2081,14 @@ export function App({
           void compact(effect.focus);
           return;
         }
+        if (effect?.type === 'set-goal') {
+          setGoal(effect.condition);
+          return;
+        }
+        if (effect?.type === 'clear-goal') {
+          clearGoal();
+          return;
+        }
         if (effect?.type === 'exit') {
           exitOnce();
           return;
@@ -2108,6 +2125,21 @@ export function App({
           const result = setCompactModel(effect.model);
           if (result.ok) flashNotice(`Compact model: ${stripProvider(effect.model)}`);
           else addLocalMessage(`✕ ${result.error}`);
+          return;
+        }
+        if (effect?.type === 'set-advisor') {
+          const result = setAdvisorModel(effect.model);
+          if (!result.ok) {
+            addLocalMessage(`✕ ${result.error}`);
+            return;
+          }
+          const envNote = process.env.BOOK_ADVISOR_MODEL
+            ? `\nNote: BOOK_ADVISOR_MODEL=${process.env.BOOK_ADVISOR_MODEL} overrides this at the next launch.`
+            : '';
+          addLocalMessage(
+            describeAdvisorChange(effect.model, liveConfig.modelSelection ?? liveConfig.model) +
+              envNote,
+          );
           return;
         }
         if (effect?.type === 'set-default-permission-mode') {

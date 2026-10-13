@@ -3,7 +3,12 @@ import type { StreamJsonEvent } from '../stream-json.js';
 import type { Message, Usage } from './messages.js';
 import type { PermissionMode } from './runtime.js';
 import type { HostCommandResult } from './commands.js';
-import type { CompactBoundary, PlanRecordData, SessionStoreInterface } from './sessions.js';
+import type {
+  CompactBoundary,
+  GoalRecordData,
+  PlanRecordData,
+  SessionStoreInterface,
+} from './sessions.js';
 import type { PlanNotAppliedReason, UserQuestionHandler } from './tools.js';
 import type { AgentTerminalOutcome } from './terminal.js';
 import type { AgentRunAccounting, AgentRunResult, AgentRunSource } from './runs.js';
@@ -24,6 +29,8 @@ export interface HeadlessOptions {
    * so a restart resumes the plan instead of silently starting from an empty one.
    */
   plan?: PlanRecordData;
+  /** `/goal` restored from a resumed session; an unmet goal keeps being checked. */
+  goal?: GoalRecordData;
   /**
    * Token totals from earlier processes of this session. Seeds the run budget so
    * `--max-budget-usd` bounds the objective rather than one process.

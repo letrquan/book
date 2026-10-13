@@ -25,6 +25,13 @@ export type AgentTerminalReason =
   | 'continuation_limit'
   | 'blocked_plan'
   | 'no_progress'
+  /** The run's `/goal` was judged impossible, or was still unmet at the check cap. */
+  | 'goal_unmet'
+  /**
+   * The run's `/goal` check could not run (provider error, timeout, unreadable
+   * answer). The run was let end rather than trapped, but nothing confirmed the goal.
+   */
+  | 'goal_unverified'
   | 'all_tools_blocked'
   | 'plan_stop'
   | 'handoff_requested'

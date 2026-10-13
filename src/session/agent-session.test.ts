@@ -11,6 +11,7 @@ import type { AgentEvent, AgentSessionSnapshot } from './agent-events.js';
 import { createAgentSessionSnapshot, reduceAgentSessionSnapshot } from './agent-events.js';
 import type {
   CompactResult,
+  GoalRecordData,
   RewindSnapshotCaptureResult,
   SessionRecord,
   TurnCheckpointRecordData,
@@ -2838,5 +2839,53 @@ describe('AgentSession.recordUserMessage — one pass over what the user typed',
 
     expect(message.contextContent).toContain('NOTE BODY');
     expect(message.fileObservations?.map((observation) => observation.path)).toEqual(['notes.md']);
+  });
+});
+
+describe('AgentSession — /goal records', () => {
+  const goalsIn = (records: SessionRecord[]) =>
+    records
+      .filter((record) => record.type === 'goal')
+      .map((record) => (record.data as GoalRecordData).goal);
+
+  it('writes a copy of the goal, so later spend does not rewrite the record', () => {
+    const records: SessionRecord[] = [];
+    const session = new AgentSession();
+    session.setGoal('tests pass', {
+      sessionId: 'session-1',
+      timelineStore: { append: (_id, record) => records.push(record) },
+    });
+    session.getGoal()!.outputTokens += 500;
+    expect(goalsIn(records)).toEqual([expect.objectContaining({ outputTokens: 0 })]);
+  });
+
+  it('writes the goal where it stands when a run ends, once', async () => {
+    const records: SessionRecord[] = [];
+    const session = new AgentSession({
+      runLoop: async (_config, _registry, _prompt, _history, _callbacks, _mode, options) => {
+        // The turns of this run spent tokens toward the goal; no check ran.
+        options!.runtime!.activeGoal!.outputTokens += 1_200;
+        return [];
+      },
+    });
+    const target = {
+      sessionId: 'session-1',
+      timelineStore: { append: (_id: string, record: SessionRecord) => records.push(record) },
+    };
+    session.setGoal('tests pass', target);
+
+    await session.run({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      prompt: 'prompt',
+      history: [],
+      ...target,
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+
+    expect(goalsIn(records)).toEqual([
+      expect.objectContaining({ outputTokens: 0 }),
+      expect.objectContaining({ condition: 'tests pass', outputTokens: 1_200 }),
+    ]);
   });
 });

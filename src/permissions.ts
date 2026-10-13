@@ -1033,8 +1033,9 @@ export function evaluatePermissionDetail(
 }
 
 /**
- * Tools that never prompt: the agent's own memory and its checklist. A `deny`
+ * Tools that never prompt: the agent's own memory, its checklist, and the advisor
+ * the user chose with `/advisor` (it reads the conversation and acts on nothing). A `deny`
  * rule still blocks them and an `ask` rule still asks, and `dontAsk` does not
  * refuse them, since it only refuses what it would have had to ask about.
  */
-export const ALWAYS_ALLOWED_TOOLS = new Set(['MemorySave', 'TodoWrite']);
+export const ALWAYS_ALLOWED_TOOLS = new Set(['MemorySave', 'TodoWrite', 'Advisor']);

@@ -517,6 +517,11 @@ export const bookSettingsSchema = z.object({
   compactModel: z.string().min(1).optional(),
   /** Reasoning effort for the compaction reducer; defaults to the session effort capped at medium. */
   compactEffort: effortLevelSchema.optional(),
+  /**
+   * A stronger model the agent may consult through the `Advisor` tool (`/advisor`).
+   * Unset, the tool is not offered.
+   */
+  advisorModel: z.string().min(1).optional(),
   /** Max agent turns per user message. Omit for unlimited. */
   maxTurns: unboundedInt().min(1).optional(),
   maxTokens: unboundedInt().min(1000).optional(),
@@ -579,6 +584,7 @@ export type ResolvedSettings = Required<
     | 'model'
     | 'compactModel'
     | 'compactEffort'
+    | 'advisorModel'
     | 'maxTurns'
     | 'maxTokens'
     | 'effort'
@@ -594,6 +600,7 @@ export type ResolvedSettings = Required<
     | 'model'
     | 'compactModel'
     | 'compactEffort'
+    | 'advisorModel'
     | 'maxTurns'
     | 'maxTokens'
     | 'effort'

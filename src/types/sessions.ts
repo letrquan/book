@@ -1,3 +1,4 @@
+import type { ActiveGoal } from './goal.js';
 import type { ImageAttachment, Message, Usage } from './messages.js';
 import type { AgentTask, SessionDriver } from './runtime.js';
 import type { FileObservation } from './tools.js';
@@ -226,7 +227,8 @@ export interface SessionRecord {
     | 'compact'
     | 'turn_checkpoint'
     | 'rewind'
-    | 'plan';
+    | 'plan'
+    | 'goal';
   eventId?: string;
   timestamp: number;
   data: unknown;
@@ -246,6 +248,18 @@ export interface PlanRecordData {
   version: 1;
   todos?: PersistedTodo[];
   tasks?: AgentTask[];
+}
+
+/**
+ * Payload stored in a SessionRecord of type `goal` — last record wins.
+ *
+ * Written whenever the session's `/goal` changes: set, checked unmet, met, failed
+ * or cleared. `goal: null` is a cleared goal, so a resume after a goal was met
+ * does not bring it back. Readers must tolerate absence, as for `plan`.
+ */
+export interface GoalRecordData {
+  version: 1;
+  goal: ActiveGoal | null;
 }
 
 export interface PersistedTodo {
@@ -576,6 +590,8 @@ export interface LoadedSession {
    * not survive the restart".
    */
   plan?: PlanRecordData;
+  /** The newest `goal` record; `goal: null` inside it is a goal that was cleared or reached. */
+  goal?: GoalRecordData;
   /**
    * Token totals recorded by earlier processes of this session, summed from the
    * `usage` records. USD is deliberately not stored: pricing changes between

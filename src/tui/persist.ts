@@ -152,6 +152,17 @@ export function persistUserSettingClearingLocal(
   return { ok: true };
 }
 
+/** Remove a user-global preference, and the workspace-local value that would outrank it. */
+export function removeUserSettingClearingLocal(
+  workspace: string,
+  key: string,
+): { ok: boolean; error?: string } {
+  const result = new SettingsRepository(globalSettingsPath()).remove([key]);
+  if (!result.ok) return { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+  clearLocalSettings(workspace, [key]);
+  return { ok: true };
+}
+
 /** Persist a profile model without treating dots in the profile name as path separators. */
 export function persistAgentProfileModel(
   workspace: string,
