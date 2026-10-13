@@ -31,6 +31,8 @@ import {
 import type { CommandRegistry } from './registry.js';
 import type { AgentManager } from '../agents/manager.js';
 import type { AgentRunContext } from '../types/runs.js';
+import type { ActiveGoal } from '../types/goal.js';
+import { formatGoalStatus, goalKickoffPrompt } from '../agent/goal.js';
 import { reviewRunnerFor } from '../review/runner.js';
 import { reviewReportJson, runHostReview } from '../review/host.js';
 
@@ -62,6 +64,15 @@ export interface PrintCommandEnvironment {
   agents?: {
     manager: () => AgentManager;
     runContext: AgentRunContext;
+  };
+  /**
+   * The session's `/goal`, for a host whose loop checks one (`AgentSession`). A
+   * host that omits it refuses `/goal` rather than accepting a goal nothing checks.
+   */
+  goal?: {
+    get(): ActiveGoal | undefined;
+    set(condition: string): void;
+    clear(): ActiveGoal | undefined;
   };
 }
 
@@ -255,8 +266,39 @@ export function createPrintEffectRegistry(): PrintEffectRegistry {
       if (effect.isError) throw new PrintCommandUsageError(command, effect.content);
       return { kind: 'handled', command, output: effect.content };
     })
-    .register('review', performPrintReview);
+    .register('review', performPrintReview)
+    .register('set-goal', (effect, env, command) => {
+      if (!env.goal) throw new UnsupportedPrintCommandError(command, GOAL_REFUSAL);
+      env.goal.set(effect.condition);
+      const kickoff = goalKickoffPrompt(effect.condition);
+      return {
+        kind: 'prompt',
+        prompt: kickoff,
+        commandContext: {
+          command: {
+            name: 'goal',
+            description: 'Set a goal Book checks before stopping',
+            body: kickoff,
+            source: 'project',
+          },
+          resolvedBody: kickoff,
+        },
+      };
+    })
+    .register('clear-goal', (_effect, env, command) => {
+      if (!env.goal) throw new UnsupportedPrintCommandError(command, GOAL_REFUSAL);
+      const cleared = env.goal.clear();
+      return {
+        kind: 'handled',
+        command,
+        output: cleared
+          ? formatGoalStatus({ state: 'cleared', condition: cleared.condition })
+          : 'No goal set',
+      };
+    });
 }
+
+const GOAL_REFUSAL = '✕ /goal needs a host that checks goals; this one does not.';
 
 export interface PrintCommandDeps {
   /** Defaults to the shared built-in registry the TUI uses. */
@@ -290,6 +332,7 @@ function printBuiltinContext(
     runtimeConfig: env.config,
     mode: env.mode,
     usage: null,
+    activeGoal: env.goal?.get(),
     turnDurationMs: 0,
     contextHistory: [],
     compactBoundaries: [],

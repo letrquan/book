@@ -260,3 +260,27 @@ export function hasDeclaredContextWindow(
   const declared = config.modelInfo?.contextWindow;
   return typeof declared === 'number' && declared > 0;
 }
+
+/**
+ * How capable a Claude model is as an advisor, higher is stronger: Claude Code's
+ * advisor ranking. Only models in this table are compared; for any other id the
+ * rank is unknown and `/advisor` says nothing about relative strength.
+ */
+// `(?!-\d(?!\d))` refuses a one-digit minor version after the major one, so
+// `opus-5` does not swallow `opus-5-1`, while a dated id (`opus-5-20261001`) still matches.
+const ADVISOR_RANKS: ReadonlyArray<[RegExp, number]> = [
+  [/(?:fable|mythos)-5-1\b/, 9],
+  [/(?:fable|mythos)-5(?!-\d(?!\d))\b/, 8],
+  [/opus-5(?:-5)?(?!-\d(?!\d))\b/, 7],
+  [/sonnet-5-5\b/, 6],
+  [/opus-4-[78]\b/, 5],
+  [/(?:haiku-5-5|sonnet-5(?!-\d(?!\d)))\b/, 4],
+  [/opus-4-6\b/, 3],
+  [/sonnet-4-6\b/, 2],
+  [/haiku-4-5\b/, 1],
+];
+
+export function advisorRank(model: string): number | undefined {
+  const id = model.toLowerCase();
+  return ADVISOR_RANKS.find(([pattern]) => pattern.test(id))?.[1];
+}

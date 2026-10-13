@@ -4,6 +4,8 @@ import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import type { CommandContext } from '../types/commands.js';
 import type { LocalCommandDisplay, Message, Usage } from '../types/messages.js';
 import type { CompactBoundary } from '../types/sessions.js';
+import type { ActiveGoal } from '../types/goal.js';
+import { formatGoalReport, GOAL_MAX_CHARS, isGoalClearWord } from '../agent/goal.js';
 import { buildInitPrompt } from './init-prompt.js';
 import { buildSecurityReviewPrompt, SECURITY_REVIEW_TOOLS } from './builtins-prompts.js';
 import { parseReviewScope, REVIEW_USAGE } from '../review/scope.js';
@@ -41,6 +43,7 @@ import type { McpHostSnapshot } from '../mcp-host.js';
 import { settingsScopeLabel, type SettingsScope } from '../settings-scope.js';
 import { applySettingWrite, describeSettingShadow, guardSettingWrite } from '../settings-write.js';
 import { normalizePermissionMode } from '../permission-mode.js';
+import { configuredAdvisorModel } from '../config.js';
 
 export interface BuiltinCommand {
   name: string;
@@ -64,6 +67,8 @@ export interface BuiltinCommandContext {
   runtimeConfig: AgentConfig;
   mode: string;
   usage: Usage | null;
+  /** The session's `/goal`, for `/goal` with no argument. */
+  activeGoal?: ActiveGoal;
   /**
    * Every response this session has spent, cumulatively.
    *
@@ -120,6 +125,10 @@ export type BuiltinCommandEffect =
   | { type: 'start-new-conversation'; previousName?: string }
   | { type: 'resume-conversation'; session?: string }
   | { type: 'compact'; focus?: string }
+  /** `/goal <condition>`: set the session goal and start a turn toward it. */
+  | { type: 'set-goal'; condition: string }
+  /** `/goal clear` (or stop, off, reset, none, cancel). */
+  | { type: 'clear-goal' }
   | { type: 'exit' }
   | {
       type: 'show-modal';
@@ -128,6 +137,8 @@ export type BuiltinCommandEffect =
   | { type: 'set-model'; selection: string }
   | { type: 'set-effort'; level: EffortLevel }
   | { type: 'set-compact-model'; model: string }
+  /** `/advisor <model>` sets the advisor model; `null` turns the advisor off. */
+  | { type: 'set-advisor'; model: string | null }
   | { type: 'set-default-permission-mode'; mode: PermissionMode }
   | { type: 'set-show-thinking'; enabled: boolean }
   | { type: 'set-startup-animation'; enabled: boolean }
@@ -657,6 +668,68 @@ function contextCommandEffect(context: BuiltinCommandContext): BuiltinCommandEff
   };
 }
 
+/**
+ * `/goal`: no argument reports the goal, a clear word clears it, anything else
+ * sets it. The condition is the agent's directive and the evaluator's question
+ * (`agent/goal.ts`), so it is kept exactly as typed.
+ */
+function goalCommandEffect(
+  rawArguments: string,
+  context: BuiltinCommandContext,
+): BuiltinCommandEffect {
+  const condition = rawArguments.trim();
+  if (!condition) return { type: 'local-message', content: formatGoalReport(context.activeGoal) };
+  if (isGoalClearWord(condition)) return { type: 'clear-goal' };
+  if (condition.length > GOAL_MAX_CHARS) {
+    return {
+      type: 'local-message',
+      content: `Goal condition is limited to ${GOAL_MAX_CHARS} characters (got ${condition.length})`,
+      isError: true,
+    };
+  }
+  return { type: 'set-goal', condition };
+}
+
+/** Arguments that ask `/advisor` what it is set to (Claude Code's list), rather than set it. */
+const ADVISOR_STATUS_WORDS: ReadonlySet<string> = new Set([
+  'help',
+  '-h',
+  '--help',
+  'list',
+  'show',
+  'display',
+  'current',
+  'view',
+  'get',
+  'check',
+  'describe',
+  'print',
+  'version',
+  'about',
+  'status',
+  '?',
+]);
+const ADVISOR_OFF_WORDS: ReadonlySet<string> = new Set(['off', 'unset', 'none', 'disable']);
+const ADVISOR_USAGE = 'Usage: /advisor <model> | off';
+
+/** `/advisor`: report, turn off, or choose the model the `Advisor` tool consults. */
+function advisorCommandEffect(
+  rawArguments: string,
+  context: BuiltinCommandContext,
+): BuiltinCommandEffect {
+  const argument = rawArguments.trim();
+  const word = argument.toLowerCase();
+  if (!argument || ADVISOR_STATUS_WORDS.has(word)) {
+    const current = configuredAdvisorModel(context.runtimeConfig);
+    return { type: 'local-message', content: `Advisor: ${current ?? 'off'}\n${ADVISOR_USAGE}` };
+  }
+  if (ADVISOR_OFF_WORDS.has(word)) return { type: 'set-advisor', model: null };
+  if (/\s/.test(argument)) {
+    return { type: 'local-message', content: ADVISOR_USAGE, isError: true };
+  }
+  return { type: 'set-advisor', model: argument };
+}
+
 export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   {
     name: 'clear',
@@ -698,6 +771,19 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     description: 'Summarize older turns',
     argumentHint: '[focus instructions]',
     execute: ({ rawArguments }) => ({ type: 'compact', focus: rawArguments || undefined }),
+  },
+  {
+    name: 'advisor',
+    description: 'Let Book consult a stronger model at key moments',
+    argumentHint: '[<model> | off]',
+    execute: ({ rawArguments }, context) => advisorCommandEffect(rawArguments, context),
+  },
+  {
+    name: 'goal',
+    description: 'Set a goal Book checks before stopping',
+    argumentHint: '[<condition> | clear]',
+    nonInteractive: true,
+    execute: ({ rawArguments }, context) => goalCommandEffect(rawArguments, context),
   },
   {
     name: 'rewind',

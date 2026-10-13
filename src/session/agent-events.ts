@@ -1,5 +1,6 @@
 import type { AgentRecord, AgentRuntimeEvent, EvidenceItem } from '../agents/types.js';
 import type { HostCommandResult } from '../types/commands.js';
+import type { GoalStatusEvent } from '../types/goal.js';
 import type { Message, Usage } from '../types/messages.js';
 import type { AgentRunAmbientSnapshot, AgentRunContext, AgentRunResult } from '../types/runs.js';
 import type { ShellJobEvent } from '../jobs/shell-manager.js';
@@ -45,6 +46,7 @@ export type AgentEvent =
   | { type: 'evidence_update'; evidence: EvidenceItem }
   | { type: 'attempt_discarded'; reason: 'empty_response' }
   | { type: 'notice'; message: string; title?: string }
+  | { type: 'goal_status'; event: GoalStatusEvent }
   | { type: 'error'; error: string }
   | {
       type: 'result';
@@ -176,6 +178,7 @@ export function reduceAgentSessionSnapshot(
     case 'agent_persistence':
     case 'skill_lifecycle':
     case 'notice':
+    case 'goal_status':
     case 'background_job_start':
     case 'background_job_update':
     case 'background_job_output':

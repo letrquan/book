@@ -342,3 +342,61 @@ describe('runHeadless — child progress labels (#248)', () => {
     expect(stderrWrites).toContain('  [explorer 2] [Read] src/b.ts\n');
   });
 });
+
+describe('runHeadless — a /goal that ends the run failed says so under --quiet', () => {
+  /** The main model answers in text; the goal evaluator answers with `verdicts` in order. */
+  function goalFetch(verdicts: string[]) {
+    return vi.fn(async (_url: unknown, init?: { body?: unknown }) => {
+      const body = typeof init?.body === 'string' ? init.body : '';
+      if (body.includes('You are evaluating a stop-condition hook')) {
+        return sse([textDelta(verdicts.shift() ?? 'unreadable')]);
+      }
+      return sse([textDelta('Still working on it.')]);
+    });
+  }
+
+  it('prints the failed goal line, and not the progress lines, under --quiet', async () => {
+    vi.stubGlobal(
+      'fetch',
+      goalFetch([
+        '{"ok": false, "reason": "no answer yet"}',
+        '{"ok": false, "impossible": true, "reason": "there is no such file"}',
+      ]),
+    );
+
+    const result = await runHeadless(makeConfig(), createDefaultRegistry(), {
+      prompt: '/goal the file exists',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      quiet: true,
+      history: [],
+      mode: 'bypassPermissions',
+      stdout: capture().stdout,
+    });
+
+    expect(result.outcome).toMatchObject({ status: 'failed', reason: 'goal_unmet' });
+    const stderr = stderrWrites.join('');
+    expect(stderr).toContain('goal: Goal could not be achieved: there is no such file');
+    expect(stderr).not.toContain('Goal not yet met');
+    expect(stderr).not.toContain('Goal set');
+  });
+
+  it('says a goal check that could not run left the goal unverified', async () => {
+    vi.stubGlobal('fetch', goalFetch(['not json at all']));
+
+    const result = await runHeadless(makeConfig(), createDefaultRegistry(), {
+      prompt: '/goal the file exists',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      quiet: true,
+      history: [],
+      mode: 'bypassPermissions',
+      stdout: capture().stdout,
+    });
+
+    expect(result.outcome).toMatchObject({ status: 'failed', reason: 'goal_unverified' });
+    expect(stderrWrites.join('')).toContain(
+      'goal: Goal paused · the goal check failed (unreadable answer)',
+    );
+  });
+});

@@ -343,7 +343,14 @@ describe('resolvePrintCommand — host effects fail loudly', () => {
 describe('PrintEffectRegistry', () => {
   it('handles exactly the effects a print host can perform itself', () => {
     const registry = createPrintEffectRegistry();
-    expect(registry.handledTypes()).toEqual(['send-prompt', 'local-message', 'review']);
+    expect(registry.handledTypes()).toEqual([
+      'send-prompt',
+      'local-message',
+      'review',
+      // Both refuse unless the host supplies `goal`, so they still fail closed there.
+      'set-goal',
+      'clear-goal',
+    ]);
     // Host-state effects stay unhandled, so they keep failing closed.
     expect(registry.has('start-new-conversation')).toBe(false);
     expect(registry.has('show-modal')).toBe(false);
@@ -394,5 +401,55 @@ describe('PrintEffectRegistry', () => {
     }));
     expect(first.has('review')).toBe(true);
     expect(new PrintEffectRegistry().has('review')).toBe(false);
+  });
+});
+
+describe('resolvePrintCommand — /goal', () => {
+  function goalEnv(workspace: string) {
+    let goal: { condition: string } | undefined;
+    const base = env(workspace);
+    return {
+      env: {
+        ...base,
+        goal: {
+          get: () => undefined,
+          set: (condition: string) => {
+            goal = { condition };
+          },
+          clear: () => {
+            const cleared = goal;
+            goal = undefined;
+            return cleared
+              ? { ...cleared, iterations: 0, setAt: 0, origin: 'user' as const, outputTokens: 0 }
+              : undefined;
+          },
+        },
+      } satisfies PrintCommandEnvironment,
+      current: () => goal,
+    };
+  }
+
+  it('sets the goal and runs the kickoff turn', async () => {
+    const { env: goalHost, current } = goalEnv(tempWorkspace());
+    const dispatch = await resolvePrintCommand('/goal npm test exits 0', goalHost);
+    expect(current()).toEqual({ condition: 'npm test exits 0' });
+    expect(dispatch.kind).toBe('prompt');
+    const prompt = (dispatch as Extract<PrintCommandDispatch, { kind: 'prompt' }>).prompt;
+    expect(prompt).toContain(
+      'A session-scoped Stop hook is now active with condition: "npm test exits 0"',
+    );
+  });
+
+  it('clears the goal without a model turn', async () => {
+    const { env: goalHost } = goalEnv(tempWorkspace());
+    await resolvePrintCommand('/goal tests pass', goalHost);
+    const dispatch = await resolvePrintCommand('/goal clear', goalHost);
+    expect(dispatch).toMatchObject({ kind: 'handled', output: 'Goal cleared: tests pass' });
+  });
+
+  it('refuses /goal in a host that does not check goals', async () => {
+    await expect(
+      resolvePrintCommand('/goal tests pass', env(tempWorkspace())),
+    ).rejects.toBeInstanceOf(UnsupportedPrintCommandError);
   });
 });

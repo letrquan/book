@@ -28,8 +28,9 @@ const EXTERNAL_CONTEXT_CATEGORIES = new Set<ToolCategory>(['web', 'mcp']);
  * The tools outside those categories that bring another agent's text into this
  * session: `Task` returns a subagent's answer; `AgentSpawn`/`AgentSend` get the
  * managed agent's result delivered back automatically; `AgentRead`/`AgentGet`/
- * `AgentWait` read it; `EvidenceList` returns evidence children published. The
- * rest of those categories is local — `Check` runs a command here, and
+ * `AgentWait` read it; `EvidenceList` returns evidence children published;
+ * `Advisor` returns another model's advice, written over the whole transcript,
+ * possibly by another provider. The rest of those categories is local — `Check` runs a command here, and
  * `AgentList`, `AgentStop`, `AgentPlan` report state this session owns.
  */
 const AGENT_TEXT_TOOLS = new Set([
@@ -40,6 +41,7 @@ const AGENT_TEXT_TOOLS = new Set([
   'AgentGet',
   'AgentWait',
   'EvidenceList',
+  'Advisor',
 ]);
 
 /** Whether a tool brings text this session did not author into the conversation. */

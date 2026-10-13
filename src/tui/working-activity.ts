@@ -146,6 +146,7 @@ const TOOL_PHRASES = {
     'Catching up on the lore',
     'Checking last episode',
   ],
+  advisor: ['Asking the editor', 'Getting a second read', 'Consulting the advisor'],
   agentPlan: ['Planning the handoff', 'Drawing up the roster', 'Casting the chapter'],
   agentSpawn: ['Commissioning:', 'Handing off:', 'Hiring a ghostwriter:'],
   agentList: ['Counting the ghostwriters', 'Taking attendance', 'Checking the writers room'],
@@ -314,6 +315,8 @@ export function toolActivityText(call: ToolCall): string {
       );
     case 'SessionHistoryRead':
       return pickPhrase(call, TOOL_PHRASES.sessionHistoryRead);
+    case 'Advisor':
+      return pickPhrase(call, TOOL_PHRASES.advisor);
     case 'AgentPlan':
       return pickPhrase(call, TOOL_PHRASES.agentPlan);
     case 'AgentSpawn':

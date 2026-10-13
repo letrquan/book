@@ -10,6 +10,8 @@ import type {
   ResolvedShell,
 } from './runtime.js';
 import type { AgentRunContext } from './runs.js';
+import type { Message, Usage } from './messages.js';
+import type { ProviderResponseMetadata } from './providers.js';
 
 export type PermissionResult = 'allow' | 'deny' | 'always';
 
@@ -411,6 +413,12 @@ export interface ToolContext {
   toolDiscovery?: ToolDiscoveryContext;
   /** Mutable resources owned by the current session, separate from configuration. */
   runtime?: SessionRuntime;
+  /** The conversation as the running loop holds it, for a tool that reads it whole (`Advisor`). */
+  conversation?: () => readonly Message[];
+  /** The system prompt of the request the running loop last sent, for the same tool. */
+  systemPrompt?: () => string;
+  /** Spend on a model the tool called itself (`AgentLoopCallbacks.onAuxiliaryUsage`). */
+  onAuxiliaryUsage?: (usage: Usage, metadata: ProviderResponseMetadata, source: string) => void;
 }
 
 export interface ToolSearchMatch {

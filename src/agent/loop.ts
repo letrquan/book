@@ -7,7 +7,7 @@ import type {
   ProviderMessageMetadata,
   Usage,
 } from '../types/messages.js';
-import type { ProviderResponseMetadata } from '../types/providers.js';
+import type { ProviderMessage, ProviderResponseMetadata } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
 import type {
   ReadOnlyRoot,
@@ -38,6 +38,8 @@ import {
 import { maskAtGate, maskBeforeCompacting } from './tool-output-masking.js';
 import { hasDeclaredContextWindow, resolveContextLimit, resolveModelKey } from '../models.js';
 import { compactsOnSessionModel } from '../config.js';
+import { GOAL_DEFAULT_BLOCK_CAP, evaluateGoal, goalFeedbackMessage } from './goal.js';
+import type { GoalVerdict } from '../types/goal.js';
 import {
   createModelWindowStore,
   LEARNED_WINDOW_SAFETY_MARGIN,
@@ -198,6 +200,17 @@ function childRefusalLabel(options: { isSubagent?: boolean; agentPath?: string[]
 /** Prefixes a notice with the child it came from, so a refused step names its author. */
 function labelNotice(childLabel: string | undefined, notice: string): string {
   return childLabel ? `[${childLabel}] ${notice}` : notice;
+}
+
+/** The system prompt of a built request as text, whichever shape its system message took. */
+function systemPromptText(messages: readonly ProviderMessage[]): string {
+  const content = messages.find((message) => message.role === 'system')?.content;
+  if (!content) return '';
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => (part.type === 'text' ? part.text : '')).join('');
+  }
+  return [content.cachedPrefix, content.dynamicSuffix].filter(Boolean).join('\n\n');
 }
 
 const AGENT_TERMINAL_STATUSES = new Set(['completed', 'failed', 'stopped', 'interrupted']);
@@ -651,6 +664,37 @@ export async function runAgentLoop(
    * in one, and keeps the per-call check a string comparison.
    */
   const homeGuardPaths = homeGuards();
+  /**
+   * The current turn while its tools run: the assistant message joins `newHistory`
+   * only after all of them, and a tool that reads the conversation whole (the
+   * `Advisor`) has to see the plan the model wrote just before calling it, and every
+   * call of the same turn that has already finished (`results` fills in place).
+   */
+  let pendingTurn:
+    | { text: string; toolCalls: ToolCall[]; results: ReadonlyArray<ToolResult | undefined> }
+    | undefined;
+  const pendingTurnMessage = (turnState: NonNullable<typeof pendingTurn>): Message => {
+    const finished = turnState.toolCalls.flatMap((call, index) => {
+      const result = turnState.results[index];
+      return result ? [{ call, result: { ...result, toolCallId: call.id } }] : [];
+    });
+    return {
+      id: 'pending-assistant-turn',
+      role: 'assistant',
+      content: turnState.text,
+      includeInContext: true,
+      kind: 'conversation',
+      toolCalls: finished.map((entry) => entry.call),
+      toolResults: finished.map((entry) => entry.result),
+      timestamp: Date.now(),
+    };
+  };
+  /**
+   * The system prompt of the request this turn sent -- the project's CLAUDE.md and
+   * AGENTS.md rules among it -- for the same tool: advice that never saw the rules
+   * the agent works under can recommend breaking them.
+   */
+  let sentSystemPrompt = '';
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
     readOnlyRoots,
@@ -686,6 +730,10 @@ export async function runAgentLoop(
     onNotice: callbacks.onNotice,
     usedToolNames: runtime.usedToolNames,
     runtime,
+    conversation: () =>
+      pendingTurn ? [...newHistory, pendingTurnMessage(pendingTurn)] : newHistory,
+    systemPrompt: () => sentSystemPrompt,
+    onAuxiliaryUsage: callbacks.onAuxiliaryUsage,
   };
   const toolSurface = createToolSurface({
     config: effectiveConfig,
@@ -984,6 +1032,19 @@ export async function runAgentLoop(
     let continuationCount = 0;
     const continuationWitnesses: string[] = [];
     let continuationStop: ContinuationStopReason | undefined;
+    /**
+     * Unmet `/goal` verdicts in a row this run, for the goal `goalBlocksKey` names. The
+     * first `GOAL_DEFAULT_BLOCK_CAP` send the agent back; the next ends the run and the
+     * goal pauses. A different goal starts its own count.
+     */
+    let goalBlocks = 0;
+    let goalBlocksKey: string | undefined;
+    /** Set when the run ends with its goal given up on, so the outcome is not a success. */
+    let goalGivenUp = false;
+    /** Set when the run ends because its goal check could not run: nothing confirmed the goal. */
+    let goalUnverified = false;
+    /** Set when the goal was still unmet on the last turn `--max-turns` allows. */
+    let goalOutOfTurns = false;
     /**
      * Tool calls that actually ran. The no-progress witness counts THIS, not every
      * attempted call: `toolCallStats` increments unconditionally, including for
@@ -1497,6 +1558,11 @@ export async function runAgentLoop(
         if (options?.runContext) {
           runtime.runAccounting.record(options.runContext, turnUsage, metadata);
         }
+        // A goal's cost is what the root agent spends while it is set, kept on the goal
+        // so it survives a rewind, a resume and a new process alike.
+        if (runtime.activeGoal && !options?.isSubagent && !options?.agentId) {
+          runtime.activeGoal.outputTokens += turnUsage.completionTokens;
+        }
         callbacks.onUsage?.(turnUsage, metadata);
       };
       if (options?.runContext) {
@@ -1515,6 +1581,7 @@ export async function runAgentLoop(
           return newHistory;
         }
       }
+      sentSystemPrompt = systemPromptText(messages);
       const stream = provider.stream(effectiveConfig, messages, activeDefinitions, {
         signal,
         onRetry: (attempt, max, delayMs) => {
@@ -1664,6 +1731,7 @@ export async function runAgentLoop(
           assistantContent = inline.content;
         }
       }
+      pendingTurn = { text: assistantContent, toolCalls: [], results: [] };
       recordTurnUsage();
       if (options?.runContext && !turnUsage) {
         runtime.runAccounting.markUsageUnknown(
@@ -2451,6 +2519,7 @@ export async function runAgentLoop(
       }
 
       const toolResults: Array<ToolResult | undefined> = new Array(toolCalls.length);
+      pendingTurn = { text: pendingTurn?.text ?? '', toolCalls, results: toolResults };
       /** A call that never started, settled the way any abort settles one. */
       const cancelledBeforeStart = (call: ToolCall): ToolResult =>
         toolFailure('CANCELLED: Agent execution was interrupted', {
@@ -3401,6 +3470,7 @@ export async function runAgentLoop(
         assistantOutputProduced = true;
       }
       newHistory.push(assistantMessage);
+      pendingTurn = undefined;
       callbacks.onAssistantMessageComplete?.(assistantMessage);
 
       log.info('turn complete', {
@@ -3579,6 +3649,138 @@ export async function runAgentLoop(
             continue;
           }
         }
+        // A `/goal` overrides the model's opinion that it is finished: an evaluator
+        // reads the transcript and, while the condition does not hold, the reason
+        // goes back as a host-authored turn. Gated on the goal alone, not on
+        // `continuation.enabled` -- setting one is the opt-in. Root loop only: a
+        // child works toward its parent's task, not toward the session's goal.
+        // Only a stop the model chose is checked. A plan stop or handoff, a cancel and the
+        // continuation brakes are the host's own ends, and a goal must not override them.
+        // `decideContinuation` answers `disabled` before it looks at any of those, so the
+        // external ones are tested here directly.
+        const modelChoseToStop =
+          (decision.reason === 'disabled' || decision.reason === 'objective_complete') &&
+          !handoffRequested &&
+          !planStopRequested &&
+          !signal?.aborted;
+        // With the turn budget spent the check still runs, so a goal reached on the last
+        // turn is met; an unmet one has no turn left to answer it and ends the run at the
+        // turn limit. Claude Code orders it the same way: the check, then `--max-turns`.
+        const turnBudgetSpent =
+          config.maxTurns != null && config.maxTurns > 0 && turn >= config.maxTurns;
+        let goal =
+          modelChoseToStop && !options?.isSubagent && !options?.agentId
+            ? runtime.activeGoal
+            : undefined;
+        let verdict: GoalVerdict | undefined;
+        // A new `/goal` while the check ran is checked in its place, against this same
+        // stop. `/goal clear` while it ran is not: that decision stands.
+        while (goal) {
+          const checked = goal;
+          const runContext = options?.runContext;
+          verdict = await evaluateGoal(config, newHistory, checked.condition, {
+            signal,
+            provider: options?.provider,
+            beforeModelCall: runContext
+              ? (model) => runtime.runAccounting.checkBeforeModelCall(runContext.rootRunId, model)
+              : undefined,
+            onUsage: (usage, metadata) => {
+              if (runContext) runtime.runAccounting.record(runContext, usage, metadata);
+              callbacks.onAuxiliaryUsage?.(usage, metadata, 'goal check');
+              checked.outputTokens += usage.completionTokens;
+            },
+            onUsageMissing: runContext
+              ? (metadata) =>
+                  runtime.runAccounting.markUsageUnknown(runContext, metadata, 'goal_check_usage')
+              : undefined,
+          });
+          if (signal?.aborted || runtime.activeGoal === checked) break;
+          goal = runtime.activeGoal;
+          verdict = undefined;
+        }
+        if (goal && verdict && !signal?.aborted) {
+          // An unmet verdict replaces the goal object, so the count follows the goal's identity.
+          const goalKey = `${goal.setAt}:${goal.condition}`;
+          if (goalKey !== goalBlocksKey) {
+            goalBlocks = 0;
+            goalBlocksKey = goalKey;
+          }
+          if (verdict.kind === 'unmet') {
+            goalBlocks++;
+            const iterations = goal.iterations + 1;
+            runtime.activeGoal = { ...goal, iterations, lastReason: verdict.reason };
+            if (turnBudgetSpent) {
+              // No turn left to answer it: the run ends at the turn limit (the max-turns
+              // ending below), and the goal stays for the next message.
+              goalOutOfTurns = true;
+              callbacks.onGoalStatus?.({
+                state: 'paused',
+                condition: goal.condition,
+                cause: 'max_turns',
+                detail: verdict.reason,
+              });
+              continuationStop = decision.reason;
+              break;
+            }
+            if (goalBlocks > GOAL_DEFAULT_BLOCK_CAP) {
+              // Eight rounds of feedback have not got there: end the run. The goal
+              // stays for the next message.
+              goalGivenUp = true;
+              callbacks.onGoalStatus?.({
+                state: 'paused',
+                condition: goal.condition,
+                cause: 'block_cap',
+                detail: verdict.reason,
+              });
+              continuationStop = decision.reason;
+              break;
+            }
+            callbacks.onGoalStatus?.({
+              state: 'unmet',
+              condition: goal.condition,
+              reason: verdict.reason,
+              iterations,
+            });
+            stopGateSatisfied = false;
+            const message: Message = {
+              id: crypto.randomUUID(),
+              role: 'user',
+              content: goalFeedbackMessage(goal.condition, verdict.reason),
+              includeInContext: true,
+              kind: 'conversation',
+              // Host-authored: neither the ledger nor Carried Turns may treat
+              // this as the user's own words.
+              derivedContent: true,
+              timestamp: Date.now(),
+            };
+            newHistory.push(message);
+            callbacks.onUserMessageAppended?.(message);
+            log.info('goal unmet; continuing', { turn, iterations });
+            continue;
+          }
+          if (verdict.kind === 'met' || verdict.kind === 'impossible') {
+            runtime.activeGoal = undefined;
+            goalGivenUp = verdict.kind === 'impossible';
+            callbacks.onGoalStatus?.({
+              state: verdict.kind === 'met' ? 'met' : 'failed',
+              condition: goal.condition,
+              reason: verdict.reason,
+              iterations: goal.iterations + 1,
+              durationMs: Date.now() - goal.setAt,
+              tokens: goal.outputTokens,
+            });
+          } else {
+            // Fail open: an evaluator that cannot answer must not trap the run. Nor may
+            // the run then read as a success: nothing confirmed the goal.
+            goalUnverified = true;
+            callbacks.onGoalStatus?.({
+              state: 'paused',
+              condition: goal.condition,
+              cause: 'check_failed',
+              detail: verdict.detail,
+            });
+          }
+        }
         continuationStop = decision.reason;
         break;
       }
@@ -3594,11 +3796,14 @@ export async function runAgentLoop(
 
     const finalMessage = newHistory.at(-1);
     if (
-      config.maxTurns != null &&
-      config.maxTurns > 0 &&
-      turn >= config.maxTurns &&
-      finalMessage?.role === 'assistant' &&
-      (finalMessage.toolCalls?.length ?? 0) > 0 &&
+      // A goal still unmet on the last allowed turn is out of turns too, though that
+      // turn ended in text: the agent was not finished, the budget was.
+      (goalOutOfTurns ||
+        (config.maxTurns != null &&
+          config.maxTurns > 0 &&
+          turn >= config.maxTurns &&
+          finalMessage?.role === 'assistant' &&
+          (finalMessage.toolCalls?.length ?? 0) > 0)) &&
       !signal?.aborted &&
       // A plan stop is a deliberate stop, not an exhausted budget: the last
       // turn ends with tool calls, but nothing was left to do.
@@ -3646,6 +3851,17 @@ export async function runAgentLoop(
                     partialOutput: false,
                   })
                 : undefined;
+      // A goal given up on -- judged impossible, or still unmet past the check cap -- is not
+      // a success, whatever the model said, and neither is one no check could confirm. No
+      // message: the goal status already explains it, and a second copy would read as a
+      // second failure.
+      const goalOutcome = goalGivenUp
+        ? createTerminalOutcome('failed', 'goal_unmet', { partialOutput: hasPartialOutput() })
+        : goalUnverified
+          ? createTerminalOutcome('failed', 'goal_unverified', {
+              partialOutput: hasPartialOutput(),
+            })
+          : undefined;
       // A plan stop and a handoff are both honest ends, but they are not the same
       // end as "the model finished". They used to be byte-identical to real
       // success, so a supervisor could not tell an objective that completed from
@@ -3666,7 +3882,8 @@ export async function runAgentLoop(
       finishTerminal(
         signal?.aborted
           ? classifyAbortReason(signal.reason, hasPartialOutput())
-          : (continuationOutcome ??
+          : (goalOutcome ??
+              continuationOutcome ??
               handoverOutcome ??
               createTerminalOutcome('completed', 'normal_completion', {
                 partialOutput: false,

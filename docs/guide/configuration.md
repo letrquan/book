@@ -259,6 +259,7 @@ output.
   "model": "claude-opus-4-6",
   "compactStrategy": "summary",
   "compactModel": "9router/ag/gemini-3.6-flash-high",
+  "advisorModel": "claude-opus-5-5",
   "effort": "high",
   "defaultMode": "default",
   "permissions": {
@@ -349,6 +350,7 @@ after a failed run.
 | `BOOK_WORKSPACE`                                                                                  | Default workspace                                                                          |
 | `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                                                   |
 | `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                                                 |
+| `BOOK_ADVISOR_MODEL`                                                                              | Model the `Advisor` tool consults (outranks `advisorModel`; see `/advisor`)                |
 | `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                                                   |
 | `BOOK_THINKING_STALL_TIMEOUT_MS` / `BOOK_FIRST_DELTA_STALL_TIMEOUT_MS`                            | Stall ceilings while a model thinks, and before a stream's first delta                     |
 | `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout (`Bash` included) and telemetry location                                      |

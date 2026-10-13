@@ -726,3 +726,82 @@ describe('built-in command contract', () => {
     });
   });
 });
+
+describe('/goal', () => {
+  const registry = createBuiltinCommandRegistry();
+
+  it('reports the goal with no argument', () => {
+    expect(registry.execute('goal', '', context())).toEqual({
+      type: 'local-message',
+      content: 'No goal set. Usage: `/goal <condition>`',
+    });
+    const activeGoal = {
+      condition: 'tests pass',
+      iterations: 1,
+      setAt: 0,
+      origin: 'user' as const,
+      outputTokens: 0,
+      lastReason: 'one failing',
+    };
+    expect(registry.execute('goal', '', context({ activeGoal }))).toMatchObject({
+      content: 'Goal active: tests pass (1 turn)\nLast check: one failing',
+    });
+  });
+
+  it('sets the condition exactly as typed', () => {
+    expect(registry.execute('goal', 'npm test exits 0', context())).toEqual({
+      type: 'set-goal',
+      condition: 'npm test exits 0',
+    });
+  });
+
+  it('clears on any clear word', () => {
+    for (const word of ['clear', 'stop', 'off', 'reset', 'none', 'cancel']) {
+      expect(registry.execute('goal', word, context())).toEqual({ type: 'clear-goal' });
+    }
+  });
+
+  it('rejects a condition over the limit', () => {
+    expect(registry.execute('goal', 'x'.repeat(4_001), context())).toMatchObject({
+      type: 'local-message',
+      isError: true,
+      content: 'Goal condition is limited to 4000 characters (got 4001)',
+    });
+  });
+});
+
+describe('/advisor', () => {
+  const registry = createBuiltinCommandRegistry();
+
+  it('reports the advisor and its usage', () => {
+    expect(registry.execute('advisor', '', context())).toEqual({
+      type: 'local-message',
+      content: 'Advisor: off\nUsage: /advisor <model> | off',
+    });
+    const runtimeConfig = defaultConfig();
+    runtimeConfig.advisorModel = 'claude-opus-5-5';
+    expect(registry.execute('advisor', 'status', context({ runtimeConfig }))).toMatchObject({
+      content: 'Advisor: claude-opus-5-5\nUsage: /advisor <model> | off',
+    });
+  });
+
+  it('reads every status word as a question, never as a model name', () => {
+    for (const word of ['version', 'about', 'show', '--help', '?']) {
+      expect(registry.execute('advisor', word, context())).toMatchObject({
+        type: 'local-message',
+        content: 'Advisor: off\nUsage: /advisor <model> | off',
+      });
+    }
+  });
+
+  it('sets and clears the advisor model', () => {
+    expect(registry.execute('advisor', 'claude-opus-5-5', context())).toEqual({
+      type: 'set-advisor',
+      model: 'claude-opus-5-5',
+    });
+    expect(registry.execute('advisor', 'off', context())).toEqual({
+      type: 'set-advisor',
+      model: null,
+    });
+  });
+});

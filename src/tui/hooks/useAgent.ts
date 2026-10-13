@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { planWasLost } from '../../agent/session-state.js';
+import { formatGoalStatus, goalKickoffPrompt, restoreGoal } from '../../agent/goal.js';
 import type { Message, Usage, LocalCommandDisplay } from '../../types/messages.js';
 import type {
   ElicitationHandler,
@@ -26,10 +27,11 @@ import type {
   RewindRecordData,
   RewindSnapshotStoreInterface,
   RewindTarget,
+  GoalRecordData,
   PlanRecordData,
 } from '../../types/sessions.js';
 import { compactionGate, usageAtGate, usagePressureTokens } from '../../agent/compact.js';
-import { addUsage } from '../../pricing.js';
+import { addUsage, type DelegatedUsage } from '../../pricing.js';
 import { maskAtGate } from '../../agent/tool-output-masking.js';
 import { resolveContextLimit } from '../../models.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
@@ -51,6 +53,7 @@ import {
   persistAgentProfileModel,
   persistSettingsGlobal,
   persistUserSettingClearingLocal,
+  removeUserSettingClearingLocal,
   persistPermissionRuleLocal,
   removePermissionRuleLocal,
   persistSkillActivationLocal,
@@ -215,6 +218,8 @@ function withoutRuntimeState(config: AgentConfig): AgentConfig {
 
 interface SendMessageOptions {
   contextMessage?: string;
+  /** The turn is Book's own text rather than the user's (a `/goal` kickoff), as a command body is. */
+  derived?: boolean;
   kind?: Message['kind'];
   agentNotifications?: Message['agentNotifications'];
   attachments?: Message['attachments'];
@@ -263,6 +268,7 @@ function createSeededRuntime(
     todos: runtime.todos.length,
     tasks: runtime.tasks.length,
   });
+  runtime.activeGoal = restoreGoal(session.goal);
   return runtime;
 }
 
@@ -300,6 +306,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
    * keeps it: the spend before the rewind was really spent.
    */
   const [sessionUsage, setSessionUsage] = useState<Usage | null>(null);
+  /**
+   * Side requests on other models -- `/goal` checks and `Advisor` consultations --
+   * by source and model, so `/cost` prices each at its own model's rates instead of
+   * folding it into the main model's bill. Reset with `sessionUsage`.
+   */
+  const [auxiliaryUsage, setAuxiliaryUsage] = useState<DelegatedUsage[]>([]);
   /**
    * The bill counts from a resume in this process rather than from the session's
    * first turn. The persisted carry is deliberately not seeded (it is
@@ -533,7 +545,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       boundaries: CompactBoundary[] = [],
       targets: RewindTarget[] = [],
       plan?: PlanRecordData,
-      opts: { sinceResume?: boolean } = {},
+      opts: { sinceResume?: boolean; goal?: GoalRecordData } = {},
     ) => {
       // A rewind reaches here with the same id it already had: the conversation
       // moved, the session did not, and its bill goes with it (#370).
@@ -559,6 +571,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       // must keep saying where the bill starts too (#370).
       if (newSession || opts.sinceResume) {
         setSessionUsage(null);
+        setAuxiliaryUsage([]);
         setSessionUsageSinceResume(opts.sinceResume === true);
       }
       hostUsageRef.current = null;
@@ -568,6 +581,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setRetryAttempt(0);
       setRetryMax(0);
       setRetryCountdownMs(0);
+      // A rewind stays in the same session and writes no `goal` record, so the goal it
+      // was working toward moves to the new runtime with it.
+      const carriedGoal = newSession ? undefined : agentSession.getGoal();
       const nextRuntime = agentSession.replaceRuntime(
         {
           fileObservationLedger: buildObservationLedger(transcript),
@@ -588,6 +604,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         todos: nextRuntime.todos.length,
         tasks: nextRuntime.tasks.length,
       });
+      nextRuntime.activeGoal = opts.goal ? restoreGoal(opts.goal) : carriedGoal;
       // The session the conversation is now in did not write this plan; the
       // first turn that reports a change to it is the one that earns the step.
       projectAgentPlan([...nextRuntime.todos]);
@@ -701,7 +718,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             bootstrap.compactBoundaries,
             bootstrap.rewindTargets,
             bootstrap.plan,
-            { sinceResume: true },
+            { sinceResume: true, goal: bootstrap.goal },
           );
         },
       });
@@ -945,7 +962,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         message.kind = messageOptions?.kind ?? 'conversation';
         // A command context means `userMessage` is a resolved command body -- which for a
         // project command is repository-authored text, and for a builtin is Book's own.
-        message.derivedContent = commandContext ? true : undefined;
+        message.derivedContent = commandContext || messageOptions?.derived ? true : undefined;
         message.agentNotifications = messageOptions?.agentNotifications;
         message.attachments = messageOptions?.attachments;
         activeUserMessage = message;
@@ -1051,6 +1068,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               case 'notice':
                 appendLocalMessage(event.message);
                 break;
+              case 'goal_status':
+                appendLocalMessage(formatGoalStatus(event.event));
+                break;
               case 'attempt_discarded': {
                 // Land anything still queued before clearing, or it would flush
                 // the abandoned attempt back in on top of the reset.
@@ -1110,6 +1130,19 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             lastHostCompactAttemptRef.current = null;
             setUsage(u);
             setSessionUsage((current) => addUsage(current, u));
+          },
+          onAuxiliaryUsage: (u, metadata, source) => {
+            if (!stillCurrent()) return;
+            const model = metadata.responseModel ?? metadata.requestedModel ?? 'unknown';
+            setAuxiliaryUsage((current) => {
+              const index = current.findIndex(
+                (entry) => entry.label === source && entry.model === model,
+              );
+              if (index < 0) return [...current, { label: source, model, usage: u }];
+              const next = [...current];
+              next[index] = { ...next[index], usage: addUsage(next[index].usage, u) as Usage };
+              return next;
+            });
           },
           getMode: () => modeRef.current,
           onModeChange: (newMode: PermissionMode) => {
@@ -1445,7 +1478,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     void (async () => {
       try {
         log.info('plan handoff: starting fresh conversation');
+        // The fresh conversation implements the plan the goal was guiding, so the goal
+        // goes with it; a new session would otherwise start without one, silently.
+        const goal = agentSession.getGoal();
         await startNewConversation();
+        if (goal) {
+          agentSession.adoptGoal(goal, { sessionId: sessionIdRef.current, timelineStore });
+        }
         modeRef.current = handoffMode;
         setMode(handoffMode);
         await sendMessage(HANDOFF_DISPLAY_MESSAGE, undefined, {
@@ -1856,6 +1895,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setCurrentTurn(0);
     setUsage(null);
     setSessionUsage(null);
+    setAuxiliaryUsage([]);
     setSessionUsageSinceResume(false);
     hostUsageRef.current = null;
     lastHostCompactAttemptRef.current = null;
@@ -1920,6 +1960,36 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     },
     [appendLocalMessage, isThinking, operations],
   );
+
+  /**
+   * `/goal <condition>`. Idle, it starts a turn toward the goal: the transcript shows
+   * "Goal set: …" and the model reads the kickoff prompt. Mid-turn, the goal lands on
+   * the runtime the running loop reads, so it applies at that turn's next stop.
+   */
+  const setGoal = useCallback(
+    (condition: string) => {
+      agentSession.setGoal(condition, { sessionId: sessionIdRef.current, timelineStore });
+      if (operations.isRunning('send') || isThinking) {
+        addLocalMessage(formatGoalStatus({ state: 'set', condition }));
+        return;
+      }
+      void sendMessage(formatGoalStatus({ state: 'set', condition }), undefined, {
+        contextMessage: goalKickoffPrompt(condition),
+        derived: true,
+      });
+    },
+    [addLocalMessage, agentSession, isThinking, operations, sendMessage, timelineStore],
+  );
+
+  /** `/goal clear`. */
+  const clearGoal = useCallback(() => {
+    const cleared = agentSession.clearGoal({ sessionId: sessionIdRef.current, timelineStore });
+    addLocalMessage(
+      cleared
+        ? formatGoalStatus({ state: 'cleared', condition: cleared.condition })
+        : 'No goal set',
+    );
+  }, [addLocalMessage, agentSession, timelineStore]);
 
   // Drain deferred local messages once the turn that blocked them is over.
   // Deliberately unconditional: the send lease is a plain object, not reactive
@@ -2133,6 +2203,23 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         ...current,
         compactModel: model,
         settings: { ...current.settings, compactModel: model },
+      }));
+      return { ok: true };
+    },
+    [config.workspace],
+  );
+
+  /** `/advisor <model>` or, with `null`, `/advisor off`. Saved to the user layer like the compact model. */
+  const setAdvisorModel = useCallback(
+    (model: string | null) => {
+      const result = model
+        ? persistUserSettingClearingLocal(config.workspace, 'advisorModel', model)
+        : removeUserSettingClearingLocal(config.workspace, 'advisorModel');
+      if (!result.ok) return result;
+      setLiveConfig((current) => ({
+        ...current,
+        advisorModel: model ?? undefined,
+        settings: { ...current.settings, advisorModel: model ?? undefined },
       }));
       return { ok: true };
     },
@@ -2365,6 +2452,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     usage,
     sessionUsage,
     sessionUsageSinceResume,
+    auxiliaryUsage,
     mode,
     pendingPermission,
     pendingPlanApproval,
@@ -2389,6 +2477,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     sendAgentCompletions,
     sendBackgroundShellCompletion,
     startHostRun,
+    setGoal,
+    clearGoal,
     clear,
     startNewConversation,
     resumeConversation,
@@ -2412,6 +2502,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setEffort,
     setAgentProfileModel,
     setCompactModel,
+    setAdvisorModel,
     setSkillActivation,
     setSkillExecution,
     setSkillsEnabled,

@@ -202,6 +202,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const rawModel =
     options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
+  const advisorModel = process.env.BOOK_ADVISOR_MODEL || settings.advisorModel;
   const compactEffort = settings.compactEffort;
   const compactStrategy: CompactStrategy = 'summary';
   // Resolved once here: the Bash tool, the system prompt, and `book doctor`
@@ -224,6 +225,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     model: rawModel,
     modelSelection: rawModel,
     compactModel,
+    advisorModel,
     compactEffort,
     compactStrategy,
     // Undefined = unlimited. Only set when env/settings/legacy explicitly provide a value.
@@ -499,6 +501,43 @@ export function resolveCompactModelConfig(config: AgentConfig): AgentConfig {
   // A level was chosen by `compactEffort` or for the session. A level a managed child's catalog
   // merely listed is sent to the child's model, but is not a choice the compact model inherits.
   const chosen = resolved.compactEffort !== undefined || isEffortChosen(resolved);
+  return {
+    ...resolved,
+    effort,
+    effortChosen: chosen,
+    effortExplicit: resolveEffortExplicit(resolved, effort, chosen),
+  };
+}
+
+/** The advisor model the session is configured with, if any. */
+export function configuredAdvisorModel(
+  config: Pick<AgentConfig, 'advisorModel' | 'settings'>,
+): string | undefined {
+  return config.advisorModel?.trim() || config.settings?.advisorModel?.trim() || undefined;
+}
+
+/**
+ * The config for a request on the advisor model (`tools/advisor.ts`), or
+ * `undefined` when none is configured. Routed like the compact model -- the
+ * selection may name another provider -- and it keeps the session's effort up to
+ * `high`, clamped to the advisor's catalog: the advisor is consulted for judgment,
+ * so it is not capped at `medium` the way the reducer is.
+ */
+export function resolveAdvisorModelConfig(config: AgentConfig): AgentConfig | undefined {
+  const advisorModel = configuredAdvisorModel(config);
+  if (!advisorModel) return undefined;
+  const resolved =
+    advisorModel === config.modelSelection || advisorModel === config.model
+      ? config
+      : applyModelDefaults(resolveModelProviderConfig(config, advisorModel));
+  // Up to `high`: at `xhigh` or `max` a thinking advisor can spend its whole output cap
+  // reasoning and hand back no advice at all.
+  const capped =
+    resolved.effort && EFFORT_LEVELS.indexOf(resolved.effort) > EFFORT_LEVELS.indexOf('high')
+      ? 'high'
+      : resolved.effort;
+  const effort = clampEffortToCatalog(resolved, capped);
+  const chosen = isEffortChosen(resolved);
   return {
     ...resolved,
     effort,

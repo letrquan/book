@@ -190,6 +190,8 @@ export interface AgentConfig {
   modelProviderWarning?: string;
   /** Optional provider/model used only for historical conversation compaction. */
   compactModel?: string;
+  /** Optional stronger provider/model the `Advisor` tool consults (`/advisor`). */
+  advisorModel?: string;
   compactEffort?: AgentConfig['effort'];
   /** Supported production context-reduction strategy. */
   compactStrategy: CompactStrategy;

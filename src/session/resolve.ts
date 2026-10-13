@@ -1,5 +1,6 @@
 import type {
   CompactBoundary,
+  GoalRecordData,
   PlanRecordData,
   RewindTarget,
   SessionMeta,
@@ -26,6 +27,8 @@ export interface SessionBootstrap {
    * that distinction to tell "no plan yet" from "the plan did not survive".
    */
   plan?: PlanRecordData;
+  /** The newest persisted `/goal` record, restored onto the runtime when it holds an unmet goal. */
+  goal?: GoalRecordData;
   /** Token totals from earlier processes of this session; cost is re-derived. */
   carriedUsage?: Usage;
   carriedModels?: string[];
@@ -189,6 +192,7 @@ export function resolveSessionBootstrap(
         rewindTargets: loaded.rewindTargets,
         activeEventIds: loaded.activeEventIds,
         plan: loaded.plan,
+        goal: loaded.goal,
         source: 'resume',
         persisted: true,
         created: true,
@@ -206,6 +210,7 @@ export function resolveSessionBootstrap(
       rewindTargets: loaded.rewindTargets,
       activeEventIds: loaded.activeEventIds,
       plan: loaded.plan,
+      goal: loaded.goal,
       carriedUsage: loaded.carriedUsage,
       carriedModels: loaded.carriedModels,
       source: 'resume',

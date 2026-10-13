@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`/goal <condition>`: keep working until a condition holds**, modelled on Claude Code's command.
+  Each time the agent stops without calling a tool, the compact model reads the transcript and
+  judges the condition with Claude Code's evaluator prompt. An unmet verdict returns its reason to
+  the agent as a host-authored turn and the run continues. A met goal clears itself
+  (`● Goal achieved (…)`); one judged impossible clears with `Goal could not be achieved: …` and
+  ends the run `failed / goal_unmet`, as does a goal still unmet after eight rounds of feedback (the
+  ninth unmet check, as in Claude Code), which stays set for the next message. A check that cannot
+  run fails open: the run ends, the goal stays, and the outcome is `failed / goal_unverified`. The
+  last turn `--max-turns` allows is checked too, and an unmet goal there ends `failed / max_turns`.
+  Plan stops, handoffs, cancels and the continuation brakes are never overridden by a goal. Goals
+  persist in the session file (a new `goal` record) and survive `--resume`; print mode supports
+  `/goal` and reports each check on stderr (under `--quiet`, only the line that explains a failure)
+  or as `goal_status` stream-json events.
+- **`/advisor <model>`: let the agent consult a stronger model**, modelled on Claude Code's
+  advisor. A configured `advisorModel` (or `BOOK_ADVISOR_MODEL`) adds an `Advisor` tool to the
+  core set; calling it sends the agent's system prompt and the whole conversation to the advisor
+  model through its own provider and returns the advice. It runs client-side, so it works on every
+  provider, and it is billed at the advisor model's rates.
+
 ### Fixed
 
 - **The transcript's brightest lines are the answer again, not the agent's bookkeeping.** A sentence

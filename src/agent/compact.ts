@@ -110,7 +110,7 @@ const CARRIED_TURN_CLIP_LADDER = [1_024, 512, 256] as const;
  * adaptive-thinking model the thinking is spent from this same cap.
  */
 const REDUCER_OUTPUT_HEADROOM = 3;
-const REDUCER_OUTPUT_MIN_MARGIN_TOKENS = 2_048;
+export const REDUCER_OUTPUT_MIN_MARGIN_TOKENS = 2_048;
 const MESSAGE_OVERHEAD_TOKENS = 6;
 const TOOL_OVERHEAD_TOKENS = 12;
 /** Floor per-tool-result token limit that scales with the retained tail. */
@@ -758,6 +758,20 @@ function serializeForSummary(
   return `[${messageLabel(message)}] ${lines.join('\n') || '(empty)'}`;
 }
 
+/**
+ * A rung above the ladder for a reader that reviews the transcript rather than
+ * condensing it -- the `Advisor`, which the agent is told sees every result: text,
+ * tool arguments and tool results whole. It gives way to the ladder when the
+ * transcript does not fit.
+ */
+const VERBATIM_LEVEL: SerializeLevel = {
+  toolChars: Number.POSITIVE_INFINITY,
+  errorChars: Number.POSITIVE_INFINITY,
+  argsChars: Number.POSITIVE_INFINITY,
+  reasoningChars: 2_000,
+  textChars: Number.POSITIVE_INFINITY,
+};
+
 interface SummarizerInput {
   text: string;
   included: Message[];
@@ -766,12 +780,20 @@ interface SummarizerInput {
 
 /**
  * The span as the summarizer reads it, within `budgetTokens`: the loosest rung
- * that fits, and past the last rung the newest messages that do.
+ * that fits, and past the last rung the newest messages that do. `verbatimFirst`
+ * tries the whole transcript, unclipped, before the first rung.
  */
-function buildSummarizerInput(messages: readonly Message[], budgetTokens: number): SummarizerInput {
+export function buildSummarizerInput(
+  messages: readonly Message[],
+  budgetTokens: number,
+  options: { verbatimFirst?: boolean } = {},
+): SummarizerInput {
   const visible = messages.filter((message) => message.includeInContext);
+  const ladder = options.verbatimFirst
+    ? [VERBATIM_LEVEL, ...SUMMARIZER_INPUT_LADDER]
+    : SUMMARIZER_INPUT_LADDER;
   let parts: string[] = [];
-  for (const level of SUMMARIZER_INPUT_LADDER) {
+  for (const level of ladder) {
     parts = visible.map((message) => serializeForSummary(message, level));
     const text = parts.join('\n\n');
     if (estimateTextTokens(text) <= budgetTokens) {
@@ -986,7 +1008,7 @@ function renderLegacySummaryText(checkpoint: ConversationCheckpointV2): string {
   return sections.filter(Boolean).join('\n\n');
 }
 
-function parseJsonObject(text: string): unknown {
+export function parseJsonObject(text: string): unknown {
   const trimmed = text
     .trim()
     .replace(/^```(?:json)?\s*/i, '')
@@ -1755,7 +1777,7 @@ export function clipHistoryToolResults(
   });
 }
 
-async function generateCheckpoint(
+export async function generateCheckpoint(
   config: AgentConfig,
   prompt: string,
   maxOutputTokens: number,
@@ -1763,8 +1785,14 @@ async function generateCheckpoint(
   provider: Provider = createProvider(config),
   options?: Pick<RunCompactOptions, 'beforeModelCall' | 'onUsage' | 'onUsageMissing' | 'effort'> & {
     system?: string;
+    /**
+     * What the request is for when it is not a compaction (`the advisor`, `the goal
+     * check`): its failures are then worded for that, not as a checkpoint's.
+     */
+    purpose?: string;
   },
 ): Promise<GenerateResult> {
+  const purpose = options?.purpose;
   const budget = options?.beforeModelCall?.(config.model);
   if (budget && !budget.allowed) {
     return {
@@ -1773,7 +1801,7 @@ async function generateCheckpoint(
       result: {
         status: 'failed',
         reason: 'budget-overflow',
-        error: budget.message ?? 'Run budget cannot be enforced for compaction.',
+        error: budget.message ?? `Run budget cannot be enforced for ${purpose ?? 'compaction'}.`,
       },
     };
   }
@@ -1812,7 +1840,11 @@ async function generateCheckpoint(
         return {
           ok: false,
           contextOverflow: false,
-          result: { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' },
+          result: {
+            status: 'failed',
+            reason: 'aborted',
+            error: purpose ? 'The request was aborted.' : 'Compaction aborted.',
+          },
         };
       }
       if (event.type === 'text' && event.content) text += event.content;
@@ -1833,7 +1865,8 @@ async function generateCheckpoint(
         }
       }
       if (event.type === 'error') {
-        const error = event.error ?? 'Checkpoint generation failed.';
+        const error =
+          event.error ?? (purpose ? 'The request failed.' : 'Checkpoint generation failed.');
         // Sized only here, where it decides an overflow, so a successful request
         // never pays for a copy of its whole prompt.
         const requestTokens = estimateTextTokens(system) + estimateTextTokens(prompt);
@@ -1872,11 +1905,29 @@ async function generateCheckpoint(
       result: {
         status: 'failed',
         reason: 'unexpected-stream',
-        error: 'Checkpoint stream ended without completion.',
+        error: purpose
+          ? 'The response ended before it completed.'
+          : 'Checkpoint stream ended without completion.',
       },
     };
   }
   return { ok: true, text, truncated };
+}
+
+/**
+ * The output cap for a one-shot request that is not a compaction (the goal check,
+ * the `Advisor`): `wanted`, bounded by what `config`'s model accepts and by the
+ * room an input of `inputFraction` of its window leaves. Neither provider clamps a
+ * requested cap, so a cap over the model's own is a refused request.
+ */
+export function boundedOutputCap(
+  config: AgentConfig,
+  wanted: number,
+  inputFraction: number,
+): number {
+  const windowCeiling = Math.floor(resolveContextLimit(config) * (1 - inputFraction));
+  const modelCeiling = config.modelInfo?.maxOutputTokens ?? Number.POSITIVE_INFINITY;
+  return Math.max(1, Math.min(wanted, windowCeiling, modelCeiling));
 }
 
 /**
@@ -2275,7 +2326,7 @@ function withoutReasoning(message: Message): Message {
  * is sent is decided as for any request on the compact model: where a level was
  * chosen, or the catalog lists it (`resolveEffortExplicit`).
  */
-function judgeEffort(config: AgentConfig): AgentConfig['effort'] | undefined {
+export function judgeEffort(config: AgentConfig): AgentConfig['effort'] | undefined {
   const catalog = config.modelInfo?.effort;
   if (catalog === false) return undefined;
   if (typeof catalog === 'object' && catalog.levels && !catalog.levels.includes('low')) {
