@@ -133,6 +133,10 @@ All notable changes to this project are documented in this file.
   budget: a round that passes decides the run, and with no passing round any failed round fails it, so a
   regression still fails. Every other platform still decides on one round. Each printed sample also says
   where its time went: before the child started, or after it finished.
+- **`~/.claude/CLAUDE.md` is injected once for a workspace under your home directory** (#430).
+  The instruction walk passes through your home directory, where it found the file a second time
+  as a project-level `.claude/CLAUDE.md`. Instruction files are now deduplicated by resolved path,
+  and the first, user-scoped entry is kept.
 - **The agent store no longer logs spurious write retry events for first-try writes** (#402).
   Atomic JSON writes incremented an attempt counter across both lock and rename steps, returning
   two attempts on clean writes and causing the agent store to log a retry event on every success.
