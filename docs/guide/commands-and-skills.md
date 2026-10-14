@@ -173,6 +173,12 @@ non-zero whenever nothing confirmed the goal; a met goal ends as a normal comple
 while a check is running is checked in its place against the same stop, with its own count. The
 token figure counts the output tokens the agent and its goal checks spent while the goal was set.
 
+While a goal is set, the status line shows `◎ /goal active (<elapsed>)`: the time since the goal
+was set, written as in `● Goal achieved (…)` (`45s`, `4m`, `1h 12m`) and left out for the first
+second. A goal brought back by `--resume` keeps its original start. The chip goes away when the
+goal is met, judged impossible, or cleared; a goal that paused after eight rounds is still set, so
+its chip stays.
+
 Write the condition so the transcript can prove it: "`npm test` exits 0 and the output is shown"
 is checkable; "the code is good" is not. `/goal` with no argument shows the goal, how many checks
 it has failed, and the last reason; `/goal clear` (or `stop`, `off`, `reset`, `none`, `cancel`)
@@ -191,9 +197,15 @@ before calling it and any call it made earlier in the same turn, with tool resul
 they fit — to the advisor model through that model's own provider, at the session's effort capped
 at `high` and with its output capped at what that model accepts, and returns the advice as the
 tool's result (marked when it was cut off at the output limit). The advisor cannot run tools.
-`/advisor` alone (or `status`, `show`, `version`, and Claude Code's other status words) shows the
-current advisor, `/advisor off` removes it, and the choice is saved to `~/.book/settings.json` as `advisorModel`
-(`BOOK_ADVISOR_MODEL` outranks it). The consultation is billed to the session at the advisor
+`/advisor` alone opens a picker of the models you have configured, followed by an **Off** row, with
+the cursor on the current choice, so no model id has to be typed from memory. It is the same picker
+as `/model`, aimed at the advisor, and the **Advisor** row of `/config` (shortcut `V`) opens it
+too; a saved advisor that matches no listed model, such as a mistyped id, is flagged in it.
+`/advisor status` (or `show`, `version`, and Claude Code's other status words) prints the current
+advisor instead, `/advisor <model>` sets one by id (with a note when the id is not in your model
+list), `/advisor off` removes it, and the choice is
+saved to `~/.book/settings.json` as `advisorModel` (`BOOK_ADVISOR_MODEL` outranks it, and the
+picker says so while it is set). The consultation is billed to the session at the advisor
 model's rates, and `/cost` lists it, and the goal checks, as their own lines. Advice is another
 model's text, so after a consultation a `MemorySave` goes to the memory inbox, as it does after
 `Task`. Like `TodoWrite`, the tool needs no permission prompt (an explicit `deny` or `ask`

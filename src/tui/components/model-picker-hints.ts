@@ -35,6 +35,13 @@ export interface ModelPickerHintState {
   /** The list can be typed at. */
   filterable: boolean;
   /**
+   * `Alt+S` — use the model for this session without saving it — is bound. Only
+   * the main model has a session-only choice: the compact, advisor and subagent
+   * pickers save whatever they pick, so advertising it there would be a lie.
+   * Absent means bound.
+   */
+  allowSessionOnly?: boolean;
+  /**
    * Columns a footer line may take. A line longer than this breaks between two
    * chords; left to the terminal it broke inside one (`Alt+M add` / `model`).
    */
@@ -53,7 +60,7 @@ export function modelPickerHints(state: ModelPickerHintState): string[] {
     '↑↓ select',
     state.filterable && !compact ? 'type filter' : undefined,
     'Enter save',
-    'Alt+S session',
+    state.allowSessionOnly === false ? undefined : 'Alt+S session',
     state.canSetEffort ? 'Alt+E effort' : undefined,
     'Esc cancel',
   ].filter(Boolean) as string[];

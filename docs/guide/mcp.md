@@ -88,8 +88,8 @@ Writes use an atomic sibling-file replacement, and malformed or non-object
 invalid setting path; provider secrets are redacted.
 
 Inside the TUI, `/config` opens a visual settings menu. Use it to change the main model, compact
-strategy, compact model, effort, model memory writes, startup fire, or the model assigned to
-each managed-agent profile. Choosing a row opens that setting's picker and returns to the menu on
+strategy, compact model, advisor model, effort, model memory writes, startup fire, or the model
+assigned to each managed-agent profile. Choosing a row opens that setting's picker and returns to the menu on
 the same row when it closes, so one `/config` covers as many settings as you want to change.
 
 `/config <key>=<value>` is the same command in typed form, and it runs the same guarded write as
@@ -115,8 +115,8 @@ from every settings layer, as `BOOK_MODEL` does for `model`, so a script that dr
 settings file of its own to switch it off.
 
 TUI preference changes are saved by whose choice they are. Preferences about how Book behaves for
-_you_ — model, effort, compact model, permission default mode, provider registries and API keys,
-thinking display, startup animation, model memory writes — are written to the user-global
+_you_ — model, effort, compact model, advisor model, permission default mode, provider registries
+and API keys, thinking display, startup animation, model memory writes — are written to the user-global
 `~/.book/settings.json` and follow you across projects. What is genuinely about _this_ repository
 stays in `.book/settings.local.json`: skill overrides, approved permission rules, and per-profile agent
 models. Set `ui.startupAnimation` to `false` in `~/.book/settings.json` to disable the

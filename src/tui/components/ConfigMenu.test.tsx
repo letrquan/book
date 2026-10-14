@@ -35,7 +35,7 @@ describe('ConfigMenu', () => {
     expect(view.lastFrame()).toContain('Subagent profiles');
     expect(view.lastFrame()).toContain('Compact model');
     view.stdin.write('a');
-    expect(onOpen).toHaveBeenCalledWith('agents', 6);
+    expect(onOpen).toHaveBeenCalledWith('agents', 7);
   });
 
   it('opens compact model settings from the keyboard shortcut', () => {
@@ -59,6 +59,60 @@ describe('ConfigMenu', () => {
 
     view.stdin.write('c');
     expect(onOpen).toHaveBeenCalledWith('compact-model', 1);
+  });
+
+  it('shows the advisor model and opens its picker from the keyboard shortcut', () => {
+    const onOpen = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          advisorModel="claude-opus-5-5"
+          memoryAutoSave={false}
+          showThinking
+          agentCount={3}
+          skillCount={4}
+          defaultPermissionMode="default"
+          onOpen={onOpen}
+          onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    expect(stripAnsi(view.lastFrame())).toMatch(/V {2}Advisor +claude-opus-5-5/);
+    view.stdin.write('v');
+    expect(onOpen).toHaveBeenCalledWith('advisor', 2);
+  });
+
+  it('reads off on the advisor row when no advisor is set', () => {
+    const onOpen = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          memoryAutoSave={false}
+          showThinking
+          agentCount={3}
+          skillCount={4}
+          defaultPermissionMode="default"
+          onOpen={onOpen}
+          onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    expect(stripAnsi(view.lastFrame())).toMatch(/V {2}Advisor +off/);
+    expect(stripAnsi(view.lastFrame())).toContain('Stronger model the agent can consult');
+
+    // Enter on the row, reached with the arrows, opens it just as the letter does.
+    view.stdin.write('\u001b[B');
+    view.stdin.write('\u001b[B');
+    view.stdin.write('\r');
+    expect(onOpen).toHaveBeenCalledWith('advisor', 2);
   });
 
   it('does not expose the experimental Zero-Mem strategy in normal settings', () => {
@@ -106,7 +160,7 @@ describe('ConfigMenu', () => {
     expect(view.lastFrame()).toContain('Default permissions');
     expect(view.lastFrame()).toContain('accept-edits');
     view.stdin.write('p');
-    expect(onOpen).toHaveBeenCalledWith('permission-mode', 5);
+    expect(onOpen).toHaveBeenCalledWith('permission-mode', 6);
   });
 
   it('starts on the row a sub-picker was opened from', () => {
@@ -123,7 +177,7 @@ describe('ConfigMenu', () => {
           agentCount={3}
           skillCount={4}
           defaultPermissionMode="default"
-          initialSelection={7}
+          initialSelection={8}
           onOpen={onOpen}
           onToggleMemory={() => {}}
           onToggleThinking={() => {}}
@@ -134,7 +188,7 @@ describe('ConfigMenu', () => {
 
     expect(stripAnsi(view.lastFrame())).toContain('› S  Skills');
     view.stdin.write('\r');
-    expect(onOpen).toHaveBeenCalledWith('skills', 7);
+    expect(onOpen).toHaveBeenCalledWith('skills', 8);
   });
 
   it('opens skill management from settings', () => {
@@ -158,7 +212,7 @@ describe('ConfigMenu', () => {
 
     expect(view.lastFrame()).toContain('4 discovered');
     view.stdin.write('s');
-    expect(onOpen).toHaveBeenCalledWith('skills', 7);
+    expect(onOpen).toHaveBeenCalledWith('skills', 8);
   });
 
   it('shows and toggles model thinking from the keyboard shortcut', () => {
@@ -235,6 +289,7 @@ describe('ConfigMenu', () => {
     for (const [letter, label] of [
       ['M', 'Model'],
       ['C', 'Compact model'],
+      ['V', 'Advisor'],
       ['E', 'Effort'],
       ['I', 'Show thinking'],
       ['F', 'Startup fire'],
@@ -329,8 +384,9 @@ describe('ConfigMenu', () => {
       </ThemeContext.Provider>,
     );
 
-    // Tab down twice to Effort, then back-tab once. Reading `key.tab` without
+    // Tab down twice, then back-tab once. Reading `key.tab` without
     // `key.shift` sent Shift+Tab forward instead, one row past the target.
+    // Down twice is Advisor, so one step back is Compact model.
     view.stdin.write('\t');
     view.stdin.write('\t');
     view.stdin.write('\u001b[Z');
@@ -414,10 +470,10 @@ describe('ConfigMenu', () => {
       // Setting rows: cursor or blank, the accelerator letter or blank, then the label.
       const rowPattern = /^ {2}[› ] [A-Z ] {2}\S/;
       const rows = lines.filter((line) => rowPattern.test(line));
-      expect(rows).toHaveLength(9);
+      expect(rows).toHaveLength(10);
       // Consecutive: an overflowing row wraps and puts its tail between two.
       const first = lines.findIndex((line) => rowPattern.test(line));
-      expect(lines.slice(first, first + 9).every((line) => rowPattern.test(line))).toBe(true);
+      expect(lines.slice(first, first + 10).every((line) => rowPattern.test(line))).toBe(true);
       for (const row of rows) expect(displayWidth(row)).toBeLessThanOrEqual(width);
       cleanup();
     }

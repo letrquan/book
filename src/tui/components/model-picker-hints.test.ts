@@ -49,6 +49,30 @@ describe('modelPickerHints', () => {
     expect(noRow).not.toContain('Alt+M');
   });
 
+  it('advertises Alt+S only where it is bound', () => {
+    // The compact, advisor and subagent pickers save whatever they pick, so a
+    // session-only chord there did nothing Enter did not.
+    expect(modelPickerHints(state()).join(' ')).toContain('Alt+S session');
+    expect(modelPickerHints(state({ allowSessionOnly: true })).join(' ')).toContain(
+      'Alt+S session',
+    );
+
+    const full = state({
+      allowSessionOnly: false,
+      hasRemovableProviders: true,
+      canSetEffort: true,
+      editableProviderId: 'gateway',
+    });
+    for (const compact of [false, true]) {
+      const text = modelPickerHints({ ...full, compact }).join(' ');
+      expect(text).not.toContain('Alt+S');
+      // Dropping one chord takes no other with it.
+      for (const key of ['Alt+E', 'Alt+A', 'Alt+D', 'Alt+R', 'Alt+M']) expect(text).toContain(key);
+      expect(text).toContain('Enter save');
+      expect(text).toContain('Esc cancel');
+    }
+  });
+
   it('drops descriptions rather than chords when compact', () => {
     const full = state({
       hasRemovableProviders: true,

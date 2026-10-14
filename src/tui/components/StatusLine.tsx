@@ -1,9 +1,10 @@
 import { Box, Text } from 'ink';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTimedFlash } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import type { PermissionMode } from '../../types/runtime.js';
 import type { ContextWindowSource } from '../../types/messages.js';
+import { formatGoalDuration } from '../../agent/goal.js';
 import { stripProvider } from '../../models.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
@@ -16,6 +17,9 @@ const renderLog = createRenderDebugLogger('tui:statusline');
 
 /** Marks the permission mode, the one safety-relevant fact in the footer. */
 const MODE_CHIP = '◆';
+
+/** Marks an active `/goal`: a condition the session is still working toward. */
+const GOAL_CHIP = '◎';
 
 /** `useGitStatus` reports a clean tree as a check mark. */
 const CLEAN_TREE = '✓';
@@ -50,6 +54,11 @@ interface StatusLineProps {
   agentCount?: number;
   activeAgentCount?: number;
   needsInputAgentCount?: number;
+  /**
+   * Epoch milliseconds at which the session's `/goal` was set, while one is active.
+   * Draws `◎ /goal active (<elapsed>)` after the permission mode and keeps it counting.
+   */
+  goalSetAt?: number;
   /** Turns written so far; drawn at the right edge as the page's folio. */
   turnCount?: number;
   /** The plan's place, `step 3/7`; drawn at the right edge before the folio. */
@@ -92,6 +101,50 @@ export function romanFolio(count: number): string {
   return romanNumeral(count);
 }
 
+const SECOND_MS = 1_000;
+const MINUTE_MS = 60_000;
+
+/**
+ * The goal chip's text. Elapsed time is cut to a whole second before it is formatted, so the
+ * text only changes on the ticks `useGoalChip` schedules, however often the row repaints.
+ * Under a second there is no duration to show.
+ */
+function goalChipText(elapsedMs: number): string {
+  const wholeSecondsMs = Math.floor(elapsedMs / SECOND_MS) * SECOND_MS;
+  const label = `${GOAL_CHIP} /goal active`;
+  return wholeSecondsMs === 0 ? label : `${label} (${formatGoalDuration(wholeSecondsMs)})`;
+}
+
+/**
+ * The goal chip's text while a goal is set, or undefined with none, repainting the row when
+ * the text is due to change: on each whole second for the first minute, on each whole
+ * minute after. The wait is measured from the goal's own start rather than counted in fixed
+ * steps, so a timer that fires early or late corrects itself. Nothing is scheduled without a
+ * goal. The clock lives here, in the one row that shows it, so a tick repaints this row and
+ * not the whole screen.
+ */
+function useGoalChip(goalSetAt: number | undefined): string | undefined {
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    if (goalSetAt === undefined) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const arm = () => {
+      const elapsed = Math.max(0, Date.now() - goalSetAt);
+      const step = elapsed < MINUTE_MS ? SECOND_MS : MINUTE_MS;
+      const untilNextStep = step - (elapsed % step);
+      timer = setTimeout(() => {
+        setTick((tick) => tick + 1);
+        arm();
+      }, untilNextStep);
+    };
+    arm();
+    return () => clearTimeout(timer);
+  }, [goalSetAt]);
+
+  return goalSetAt === undefined ? undefined : goalChipText(Math.max(0, Date.now() - goalSetAt));
+}
+
 /** Columns kept clear between the last segment and the folio. */
 const FOLIO_GAP = 3;
 
@@ -121,6 +174,7 @@ export function StatusLine({
   agentCount = 0,
   activeAgentCount = 0,
   needsInputAgentCount = 0,
+  goalSetAt,
   turnCount = 0,
   stepLabel,
   terminalWidth = 80,
@@ -146,6 +200,7 @@ export function StatusLine({
 
   const motionDisabled = reducedMotion || screenReader;
   const modeFlash = useTimedFlash(mode, 260, motionDisabled);
+  const goalChip = useGoalChip(goalSetAt);
 
   useDebugRender(renderLog, {
     width,
@@ -182,6 +237,10 @@ export function StatusLine({
     const segments: Array<{ text: string; color?: string }> = [
       { text: `${MODE_CHIP} ${modeLabel(mode)}`, color: activeModeColor },
     ];
+
+    // Beside the mode: both say how the session is running, so a goal outranks the branch
+    // and the model, which only say where and on what.
+    if (goalChip) segments.push({ text: goalChip, color: theme.brand });
 
     if (gitBranch && gitBranch !== '?') {
       const dirty = Boolean(gitStatus && gitStatus !== CLEAN_TREE);
@@ -227,6 +286,8 @@ export function StatusLine({
     effort,
     taskCount,
     needsInputAgentCount,
+    goalChip,
+    theme.brand,
     theme.inactive,
     theme.subtle,
     theme.warning,

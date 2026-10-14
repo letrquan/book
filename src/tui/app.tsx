@@ -72,6 +72,7 @@ import {
   type BuiltinCommandContext,
   type BuiltinCommandEffect,
 } from '../commands/builtins.js';
+import { configuredAdvisorModel } from '../config.js';
 import { describeAdvisorChange } from '../tools/advisor.js';
 import { discoverSkills, type Skill } from '../skills.js';
 import { runGit } from '../tools/git.js';
@@ -80,7 +81,7 @@ import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
-import { buildModelOptions } from './model-options.js';
+import { advisorPickerWarnings, buildModelOptions } from './model-options.js';
 import { createUiDebugLogger } from '../debug-log.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { getOrCreateAgentManager, type AgentManager } from '../agents/manager.js';
@@ -184,6 +185,17 @@ function containsDraftInput(input: string): boolean {
  * boolean each.
  */
 type ReferencePanel = 'help' | 'status' | 'permissions' | 'shortcuts' | 'steps' | 'tasks';
+
+/**
+ * Which setting the one model picker is choosing a model for.
+ *
+ * `/model`, `/config`'s Compact model row and `/advisor` all open the same
+ * picker, and it used to be told apart by a `selectingCompactModel` boolean — a
+ * second target would have meant a second boolean and a ladder of `!a && !b`
+ * guards in every prop. The subagent-profile flow is separate (it is named by
+ * `agentProfileForModel`) and does not use this.
+ */
+type ModelPickerTarget = 'main' | 'compact' | 'advisor';
 
 export function providerRemovalMessage(
   result: Extract<ProviderRemovalResult, { ok: true }>,
@@ -388,6 +400,7 @@ export function App({
     retryAttempt,
     retryMax,
     retryCountdownMs,
+    activeGoal,
   } = useAgent(config, {
     ...session,
     permissionMode,
@@ -457,7 +470,7 @@ export function App({
    * subagent profiles) can be found — and it used to close the moment a row was
    * chosen, so browsing it was impossible and changing two settings meant
    * opening it twice. Two rows already came back, but only because
-   * `selectingCompactModel` and `agentProfileForModel` happened to imply where
+   * `modelPickerTarget` and `agentProfileForModel` happened to imply where
    * the picker had been opened from. Recording the origin explicitly is what
    * lets the other five come back too, and it is a ref rather than state
    * because the close handlers read it back inside their own keypress batch.
@@ -483,7 +496,7 @@ export function App({
     configReturnRow.current = null;
   }, []);
   const [agentProfileForModel, setAgentProfileForModel] = useState<string>();
-  const [selectingCompactModel, setSelectingCompactModel] = useState(false);
+  const [modelPickerTarget, setModelPickerTarget] = useState<ModelPickerTarget>('main');
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [showRewindPicker, setShowRewindPicker] = useState(false);
   const [isResolvingCommand, setIsResolvingCommandState] = useState(false);
@@ -1010,17 +1023,23 @@ export function App({
   const activeAgentProfile = agentProfileForModel
     ? agentProfiles.find((profile) => profile.name === agentProfileForModel)
     : undefined;
-  const modelPickerSelection = selectingCompactModel
-    ? (liveConfig.compactModel ??
-      liveConfig.settings.compactModel ??
-      liveConfig.modelSelection ??
-      liveConfig.model)
-    : activeAgentProfile
-      ? (configuredAgentModels[activeAgentProfile.name] ??
-        activeAgentProfile.model ??
+  const modelPickerSelection =
+    modelPickerTarget === 'compact'
+      ? (liveConfig.compactModel ??
+        liveConfig.settings.compactModel ??
         liveConfig.modelSelection ??
         liveConfig.model)
-      : (liveConfig.modelSelection ?? liveConfig.model);
+      : modelPickerTarget === 'advisor'
+        ? (configuredAdvisorModel(liveConfig) ?? '')
+        : activeAgentProfile
+          ? (configuredAgentModels[activeAgentProfile.name] ??
+            activeAgentProfile.model ??
+            liveConfig.modelSelection ??
+            liveConfig.model)
+          : (liveConfig.modelSelection ?? liveConfig.model);
+  // Only the main model has an effort level, a session-only choice and a catalog to
+  // manage. The compact model, the advisor and a subagent profile just pick a model.
+  const pickingMainModel = modelPickerTarget === 'main' && !agentProfileForModel;
   const effortLevels = useMemo(() => getAvailableEffortLevels(liveConfig), [liveConfig.modelInfo]);
 
   const { stdout } = useStdout();
@@ -1871,6 +1890,38 @@ export function App({
     [focusTool, updateToolExpansionOverrides],
   );
 
+  /**
+   * Save the advisor model and say what the change means: the sentence
+   * `/advisor <model|off>` has always printed, plus the note that
+   * `BOOK_ADVISOR_MODEL` still wins at the next launch. The model picker that a
+   * bare `/advisor` and `/config` open ends in the same place, so both go through
+   * here rather than each carrying a copy of that note. A failed save is returned
+   * unreported: the command prints it, and the picker shows it in place.
+   */
+  const applyAdvisorModel = useCallback(
+    (model: string | null) => {
+      const result = setAdvisorModel(model);
+      if (result.ok) {
+        // A provider may serve ids nobody listed, so an unlisted id is still saved;
+        // it is only called out, since a typo otherwise fails silently on every call.
+        const unlistedNote =
+          model !== null && !modelOptions.some((option) => option.id === model)
+            ? `\nNote: ${model} is not in your model list. Run /advisor to pick one.`
+            : '';
+        const envNote = process.env.BOOK_ADVISOR_MODEL
+          ? `\nNote: BOOK_ADVISOR_MODEL=${process.env.BOOK_ADVISOR_MODEL} overrides this at the next launch.`
+          : '';
+        addLocalMessage(
+          describeAdvisorChange(model, liveConfig.modelSelection ?? liveConfig.model) +
+            unlistedNote +
+            envNote,
+        );
+      }
+      return result;
+    },
+    [addLocalMessage, liveConfig.model, liveConfig.modelSelection, modelOptions, setAdvisorModel],
+  );
+
   const handleSubmit = useCallback(
     async (value: string, attachments: ImageAttachment[] = []) => {
       // Nothing is submitted once an exit has started: SessionEnd is running.
@@ -2101,7 +2152,11 @@ export function App({
             setConfigInitialRow(0);
             setShowConfigPicker(true);
           } else if (effect.modal === 'model') {
-            setSelectingCompactModel(false);
+            setModelPickerTarget('main');
+            setShowModelPicker(true);
+          } else if (effect.modal === 'advisor') {
+            setModelPickerTarget('advisor');
+            setAgentProfileForModel(undefined);
             setShowModelPicker(true);
           } else if (effect.modal === 'rewind') setShowRewindPicker(true);
           else if (effect.modal === 'skills') setShowSkills(true);
@@ -2128,18 +2183,8 @@ export function App({
           return;
         }
         if (effect?.type === 'set-advisor') {
-          const result = setAdvisorModel(effect.model);
-          if (!result.ok) {
-            addLocalMessage(`✕ ${result.error}`);
-            return;
-          }
-          const envNote = process.env.BOOK_ADVISOR_MODEL
-            ? `\nNote: BOOK_ADVISOR_MODEL=${process.env.BOOK_ADVISOR_MODEL} overrides this at the next launch.`
-            : '';
-          addLocalMessage(
-            describeAdvisorChange(effect.model, liveConfig.modelSelection ?? liveConfig.model) +
-              envNote,
-          );
+          const result = applyAdvisorModel(effect.model);
+          if (!result.ok) addLocalMessage(`✕ ${result.error}`);
           return;
         }
         if (effect?.type === 'set-default-permission-mode') {
@@ -2364,6 +2409,7 @@ export function App({
       usage,
       liveConfig,
       addLocalMessage,
+      applyAdvisorModel,
       setModel,
       setEffort,
       messages,
@@ -2984,6 +3030,7 @@ export function App({
               <ConfigMenu
                 model={liveConfig.modelSelection ?? liveConfig.model}
                 compactModel={liveConfig.compactModel ?? liveConfig.settings.compactModel}
+                advisorModel={configuredAdvisorModel(liveConfig)}
                 effort={liveConfig.effort}
                 memoryAutoSave={liveConfig.settings.memory.autoSave}
                 showThinking={liveConfig.settings.ui.showThinking}
@@ -3004,11 +3051,15 @@ export function App({
                   configReturnRow.current = rowIndex;
                   setShowConfigPicker(false);
                   if (section === 'model') {
-                    setSelectingCompactModel(false);
+                    setModelPickerTarget('main');
                     setAgentProfileForModel(undefined);
                     setShowModelPicker(true);
                   } else if (section === 'compact-model') {
-                    setSelectingCompactModel(true);
+                    setModelPickerTarget('compact');
+                    setAgentProfileForModel(undefined);
+                    setShowModelPicker(true);
+                  } else if (section === 'advisor') {
+                    setModelPickerTarget('advisor');
                     setAgentProfileForModel(undefined);
                     setShowModelPicker(true);
                   } else if (section === 'effort') {
@@ -3049,7 +3100,7 @@ export function App({
                 configuredModels={configuredAgentModels}
                 terminalWidth={termWidth}
                 onSelect={(profile) => {
-                  setSelectingCompactModel(false);
+                  setModelPickerTarget('main');
                   setAgentProfileForModel(profile);
                   setShowAgentProfilePicker(false);
                   setShowModelPicker(true);
@@ -3068,37 +3119,57 @@ export function App({
             {showModelPicker ? (
               <ModelPicker
                 terminalWidth={termWidth}
-                title={selectingCompactModel ? 'Choose compact model' : undefined}
+                title={
+                  modelPickerTarget === 'compact'
+                    ? 'Choose compact model'
+                    : modelPickerTarget === 'advisor'
+                      ? 'Choose advisor model'
+                      : undefined
+                }
                 options={modelOptions}
                 currentModel={modelPickerSelection}
-                currentEffort={selectingCompactModel ? undefined : liveConfig.effort}
-                effortLevels={
-                  selectingCompactModel || agentProfileForModel ? [] : (effortLevels ?? [])
-                }
-                hasPriorOutput={
-                  !selectingCompactModel && !agentProfileForModel && messages.length > 0
-                }
+                currentEffort={modelPickerTarget === 'main' ? liveConfig.effort : undefined}
+                effortLevels={pickingMainModel ? (effortLevels ?? []) : []}
+                hasPriorOutput={pickingMainModel && messages.length > 0}
                 providers={liveConfig.settings.provider}
                 workspace={config.workspace}
                 retry={liveConfig.retry}
                 compact={isNarrow || isTiny}
                 maxVisibleModels={Math.max(3, Math.min(10, termHeight - 10))}
-                warnings={[
-                  process.env.BOOK_MODEL
-                    ? `BOOK_MODEL is set to "${process.env.BOOK_MODEL}" — it overrides settings.model on next startup.`
-                    : '',
-                  liveConfig.model.startsWith('claude-') &&
-                  config.model &&
-                  !config.model.startsWith('claude-')
-                    ? 'Switching to an Anthropic model may need a separate API key.'
-                    : '',
-                ].filter(Boolean)}
+                warnings={
+                  // BOOK_MODEL and the API-key note concern the main model. The advisor has
+                  // its own override variable, and can hold a saved id that is not listed.
+                  modelPickerTarget === 'advisor'
+                    ? advisorPickerWarnings(
+                        configuredAdvisorModel(liveConfig),
+                        modelOptions,
+                        process.env.BOOK_ADVISOR_MODEL,
+                      )
+                    : [
+                        process.env.BOOK_MODEL
+                          ? `BOOK_MODEL is set to "${process.env.BOOK_MODEL}" — it overrides settings.model on next startup.`
+                          : '',
+                        liveConfig.model.startsWith('claude-') &&
+                        config.model &&
+                        !config.model.startsWith('claude-')
+                          ? 'Switching to an Anthropic model may need a separate API key.'
+                          : '',
+                      ].filter(Boolean)
+                }
                 onPick={(model, saveDefault) => {
-                  if (selectingCompactModel) {
+                  if (modelPickerTarget === 'advisor') {
+                    const result = applyAdvisorModel(model);
+                    if (!result.ok) return result;
+                    setModelPickerTarget('main');
+                    setShowModelPicker(false);
+                    returnToConfig();
+                    return result;
+                  }
+                  if (modelPickerTarget === 'compact') {
                     const result = setCompactModel(model);
                     if (!result.ok) return result;
                     flashNotice(`Compact model: ${stripProvider(model)}`);
-                    setSelectingCompactModel(false);
+                    setModelPickerTarget('main');
                     setShowModelPicker(false);
                     returnToConfig();
                     return result;
@@ -3123,8 +3194,20 @@ export function App({
                   returnToConfig();
                   return result;
                 }}
+                offOption={
+                  modelPickerTarget === 'advisor' ? { label: 'Off — no advisor' } : undefined
+                }
+                onPickOff={() => {
+                  const result = applyAdvisorModel(null);
+                  if (!result.ok) return result;
+                  setModelPickerTarget('main');
+                  setShowModelPicker(false);
+                  returnToConfig();
+                  return result;
+                }}
                 onPickEffort={(level) => setEffort(level)}
-                allowProviderManagement={!selectingCompactModel && !agentProfileForModel}
+                allowProviderManagement={pickingMainModel}
+                allowSessionOnly={pickingMainModel}
                 onSaveProvider={upsertProviderAndSelect}
                 removableProviderIds={removableProviderIds}
                 removableProviderModelCounts={removableProviderModelCounts}
@@ -3149,7 +3232,7 @@ export function App({
                   // own cancel carries the user the rest of the way back, so the
                   // recorded `/config` row must survive this close.
                   const returnToAgents = Boolean(agentProfileForModel);
-                  setSelectingCompactModel(false);
+                  setModelPickerTarget('main');
                   setAgentProfileForModel(undefined);
                   setShowModelPicker(false);
                   if (returnToAgents) setShowAgentProfilePicker(true);
@@ -3460,6 +3543,7 @@ export function App({
                     ).length
                   : 0
               }
+              goalSetAt={activeGoal?.setAt}
               turnCount={turnCount}
               terminalWidth={termWidth}
               compact={compactStatus}

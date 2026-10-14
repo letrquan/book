@@ -5,11 +5,13 @@ import { floatingFrameMetrics, SoftPanel } from './chrome.js';
 import { displayWidth, padDisplay, truncateDisplay } from './word-wrap.js';
 
 export type ConfigSection =
-  'model' | 'compact-model' | 'effort' | 'agents' | 'skills' | 'permission-mode';
+  'model' | 'compact-model' | 'advisor' | 'effort' | 'agents' | 'skills' | 'permission-mode';
 
 interface ConfigMenuProps {
   model: string;
   compactModel?: string;
+  /** The model the `Advisor` tool consults. Absent means the advisor is off. */
+  advisorModel?: string;
   effort?: string;
   memoryAutoSave: boolean;
   showThinking: boolean;
@@ -55,6 +57,7 @@ interface ConfigMenuProps {
 const ROWS = [
   { row: 'model', key: 'm' },
   { row: 'compact-model', key: 'c' },
+  { row: 'advisor', key: 'v' },
   { row: 'effort', key: 'e' },
   { row: 'thinking', key: 'i' },
   { row: 'startup-animation', key: 'f' },
@@ -83,6 +86,7 @@ function rowPrefix(selected: boolean, key?: string): string {
 export function ConfigMenu({
   model,
   compactModel,
+  advisorModel,
   effort,
   memoryAutoSave,
   showThinking,
@@ -152,6 +156,11 @@ export function ConfigMenu({
       label: 'Compact model',
       value: compactModel ?? 'same as main',
       description: 'Reducer used only for conversation checkpoints',
+    },
+    advisor: {
+      label: 'Advisor',
+      value: advisorModel ?? 'off',
+      description: 'Stronger model the agent can consult',
     },
     effort: {
       label: 'Effort',

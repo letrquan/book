@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { planWasLost } from '../../agent/session-state.js';
 import { formatGoalStatus, goalKickoffPrompt, restoreGoal } from '../../agent/goal.js';
 import type { Message, Usage, LocalCommandDisplay } from '../../types/messages.js';
+import type { ActiveGoal } from '../../types/goal.js';
 import type {
   ElicitationHandler,
   ElicitationResponse,
@@ -277,6 +278,13 @@ function createSeededRuntime(
   return runtime;
 }
 
+/** What the status line shows of a goal: what it says, and when it was set. */
+type GoalSummary = Pick<ActiveGoal, 'condition' | 'setAt'>;
+
+function summarizeGoal(goal: ActiveGoal | undefined): GoalSummary | undefined {
+  return goal && { condition: goal.condition, setAt: goal.setAt };
+}
+
 export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const initialTranscript = session.transcript ?? session.history;
   const initialContext = session.contextHistory ?? session.history;
@@ -334,6 +342,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       additionalTools: session.additionalTools,
     }),
   );
+  // The session's `/goal` as the status line shows it. The runtime owns the goal and the loop
+  // moves it mid-turn, so this is a projection: `syncGoal` refreshes it wherever the goal can
+  // change, and it starts from the goal a resumed session restored.
+  const [activeGoal, setActiveGoal] = useState(() => summarizeGoal(agentSession.getGoal()));
+  // A verdict of "not yet" rewrites the runtime's goal (iterations, last reason) but not what
+  // is shown, so it keeps the state it has and the status line is not repainted for it.
+  const syncGoal = useCallback(() => {
+    const next = summarizeGoal(agentSession.getGoal());
+    setActiveGoal((current) =>
+      current?.condition === next?.condition && current?.setAt === next?.setAt ? current : next,
+    );
+  }, [agentSession]);
   // The plan a resumed session persisted is the plan on screen from the first
   // frame: the Steps sheet (Ctrl+T) and the working line both read this, and a
   // session that is halfway through step 3 must not look like one that has no
@@ -612,6 +632,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         tasks: nextRuntime.tasks.length,
       });
       nextRuntime.activeGoal = opts.goal ? restoreGoal(opts.goal) : carriedGoal;
+      syncGoal();
       // The session the conversation is now in did not write this plan; the
       // first turn that reports a change to it is the one that earns the step.
       projectAgentPlan([...nextRuntime.todos]);
@@ -623,7 +644,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           : undefined,
       }));
     },
-    [agentSession, projectAgentPlan],
+    [agentSession, projectAgentPlan, syncGoal],
   );
 
   const resetConversationState = useCallback(
@@ -1083,6 +1104,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 break;
               case 'goal_status':
                 appendLocalMessage(formatGoalStatus(event.event));
+                // The loop moved the runtime's goal before it reported: a goal that was met or
+                // judged impossible is already gone from it.
+                syncGoal();
                 break;
               case 'attempt_discarded': {
                 // Land anything still queued before clearing, or it would flush
@@ -1475,6 +1499,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       projectCompactResult,
       session.snapshotStore,
       agentSession,
+      syncGoal,
     ],
   );
 
@@ -1510,6 +1535,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         await startNewConversation();
         if (goal) {
           agentSession.adoptGoal(goal, { sessionId: sessionIdRef.current, timelineStore });
+          syncGoal();
         }
         modeRef.current = handoffMode;
         setMode(handoffMode);
@@ -1530,7 +1556,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         setHandoffInFlight(false);
       }
     })();
-  }, [pendingHandoff, handoffInFlight, startNewConversation, sendMessage]);
+  }, [pendingHandoff, handoffInFlight, startNewConversation, sendMessage, syncGoal]);
 
   const sendAgentCompletions = useCallback(
     async (notifications: AgentCompletionNotification[]): Promise<boolean> => {
@@ -1996,6 +2022,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const setGoal = useCallback(
     (condition: string) => {
       agentSession.setGoal(condition, { sessionId: sessionIdRef.current, timelineStore });
+      syncGoal();
       if (operations.isRunning('send') || isThinking) {
         addLocalMessage(formatGoalStatus({ state: 'set', condition }));
         return;
@@ -2005,18 +2032,19 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         derived: true,
       });
     },
-    [addLocalMessage, agentSession, isThinking, operations, sendMessage, timelineStore],
+    [addLocalMessage, agentSession, isThinking, operations, sendMessage, syncGoal, timelineStore],
   );
 
   /** `/goal clear`. */
   const clearGoal = useCallback(() => {
     const cleared = agentSession.clearGoal({ sessionId: sessionIdRef.current, timelineStore });
+    syncGoal();
     addLocalMessage(
       cleared
         ? formatGoalStatus({ state: 'cleared', condition: cleared.condition })
         : 'No goal set',
     );
-  }, [addLocalMessage, agentSession, timelineStore]);
+  }, [addLocalMessage, agentSession, syncGoal, timelineStore]);
 
   // Drain deferred local messages once the turn that blocked them is over.
   // Deliberately unconditional: the send lease is a plain object, not reactive
@@ -2495,6 +2523,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     retryAttempt,
     retryMax,
     retryCountdownMs,
+    activeGoal,
     liveConfig,
     runtime: agentSession.getRuntime(),
     removableProviderIds: ownedProviders.ids,
