@@ -50,6 +50,46 @@ describe('provider reliability transport', () => {
     expect(message).not.toContain('x'.repeat(201));
   });
 
+  it('names where a request went when the error body is empty (#424)', () => {
+    const request = {
+      url: 'https://api.example.test/v1/chat/completions?key=s3cret',
+      model: 'm-1',
+    };
+
+    expect(formatApiError(404, '', undefined, request)).toBe(
+      'API Error: 404 from api.example.test for model m-1 (empty response body). Check the base URL and model id.',
+    );
+    expect(formatApiError(404, '')).toBe(
+      'API Error: 404 (empty response body). Check the base URL and model id.',
+    );
+    expect(formatApiError(401, '  ', undefined, request)).toBe(
+      'API Error: 401 from api.example.test for model m-1 (empty response body). Check BOOK_API_KEY, or provider.<id>.apiKey in settings.',
+    );
+    expect(formatApiError(404, '', undefined, request)).not.toContain('s3cret');
+    expect(formatApiError(404, '', undefined, { url: 'not a url', model: 'm-1' })).toContain(
+      'API Error: 404 for model m-1 (empty response body).',
+    );
+  });
+
+  it('never doubles the period after a provider message that ends a sentence (#424)', () => {
+    const auth = formatApiError(
+      401,
+      JSON.stringify({
+        error: {
+          message: 'You can find your API key at https://platform.openai.com/account/api-keys.',
+        },
+      }),
+    );
+    expect(auth).toBe(
+      'API Error: 401 You can find your API key at https://platform.openai.com/account/api-keys. Check BOOK_API_KEY, or provider.<id>.apiKey in settings.',
+    );
+    expect(formatApiError(500, 'Upstream failed!')).toContain('Upstream failed! This is');
+    expect(formatApiError(402, 'Payment required')).toContain('Payment required. Check');
+    expect(formatApiError(400, 'invalid tool arguments')).toBe(
+      'API Error: 400 invalid tool arguments',
+    );
+  });
+
   it('classifies HTTP 413 and common provider messages as context overflow', () => {
     expect(classifyHttpStatus(413)).toEqual({ code: 'context_overflow', retryable: false });
     expect(isContextOverflowError('API Error: 413 request entity too large')).toBe(true);

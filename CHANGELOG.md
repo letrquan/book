@@ -52,6 +52,10 @@ All notable changes to this project are documented in this file.
 - **A TodoWrite row is marked with where the plan stands, not a check.** The row
   `✓ Steps  Clone the repo   0 of 3 done` read as a finished step; it now takes the Steps sheet's
   marks: `◌` set out, `◔` under way, `✓` finished.
+- **A provider error with an empty body says so** (#424). A 404 with no body read just
+  `API Error: 404`; it now names the host and the model the request was for, says
+  `(empty response body)`, and suggests checking the base URL and model id. A provider message
+  that already ends in a period no longer gets a second one (`…/account/api-keys..`).
 - **A tool call written with a dotted namespace runs.** `default.Bash` answered "Unknown tool" and
   the model spent a turn on a ToolSearch for a tool it already had. `parent.`, `default.`, `tool.`
   and OpenAI's `functions.` now unwrap the way `default:` always did, and the transcript shows the
