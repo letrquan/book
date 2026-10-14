@@ -41,6 +41,7 @@ stale-lock reclamation, foreign ownership, and shutdown flush failures. Logs con
 and target types only, never persisted JSON, prompts, transcripts, credentials, tokens, or environment
 values.
 
-Expired sessions and rotated debug-log backups are cleared after 30 days. Cleanup preserves the
-active session and the current debug log. Managed-agent history uses `agents.retentionDays` and only
+Expired sessions, rotated debug-log backups, and run records (`<BOOK_HOME>/runs/`) are cleared after
+30 days. Cleanup preserves the active session and the current debug log, and keeps a run record
+whose run is still alive. Managed-agent history uses `agents.retentionDays` and only
 ages out terminal records; live foreign agents are never removed as stale history.

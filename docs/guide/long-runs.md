@@ -27,7 +27,8 @@ spend, the current todo, the last tool, free disk, and — once it stops — the
 `crash` field if the process died without reaching one. It is rewritten at each turn boundary
 (temp-file then rename, so a reader never sees a torn record) and stays a fixed size however long the
 run lasts. This is the signal to watch for "is it stuck": the transcript's mtime advances identically
-whether a run is working or wedged.
+whether a run is working or wedged. Startup deletes the records not written in 30 days, as it does
+sessions, except that a live run's record is kept even when it is old.
 
 `--max-budget-usd` bounds the **objective**, not one process and not one prompt: spend is carried
 across restarts and across submitted prompts, and enforced against _inclusive_ cost, so work done by
