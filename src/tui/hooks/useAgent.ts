@@ -1573,7 +1573,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     async (shell: BackgroundShellRecord): Promise<boolean> => {
       const tail = agentSession.getRuntime().shellManager.readTail(shell.id, 4_000) ?? '';
       const exit = shell.exitCode !== undefined ? ` exit=${shell.exitCode ?? 'none'}` : '';
-      const display = `Background shell ${shell.title || shell.id} ${shell.status}${exit}.`;
+      // A retried command keeps its title; the id tells the two completions apart (#425).
+      const id = shell.title && shell.title !== shell.id ? ` (${shell.id})` : '';
+      const display = `Background shell ${shell.title || shell.id}${id} ${shell.status}${exit}.`;
       const context = [
         '<background-shell-completion>',
         `id: ${shell.id}`,
