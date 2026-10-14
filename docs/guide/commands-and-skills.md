@@ -176,7 +176,8 @@ token figure counts the output tokens the agent and its goal checks spent while 
 Write the condition so the transcript can prove it: "`npm test` exits 0 and the output is shown"
 is checkable; "the code is good" is not. `/goal` with no argument shows the goal, how many checks
 it has failed, and the last reason; `/goal clear` (or `stop`, `off`, `reset`, `none`, `cancel`)
-drops it early. A goal is recorded in the session file, so `--resume` and `/resume` bring back an
+drops it early. A new session started with `/goal` is named after the condition rather than the
+`Goal set:` line. A goal is recorded in the session file, so `--resume` and `/resume` bring back an
 unmet one; `/clear` drops it. Only the root agent is checked — subagents and managed agents work
 toward their own tasks. In print mode, `book -p "/goal <condition>"` runs the same loop, with each
 check on stderr as `goal: …` (or as a `goal_status` event under `--output-format stream-json`).

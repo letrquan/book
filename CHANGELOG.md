@@ -138,6 +138,9 @@ All notable changes to this project are documented in this file.
   two attempts on clean writes and causing the agent store to log a retry event on every success.
   Attempts now count the initial write plus only contended retries, a stale-lock reclaim is not
   counted as a retry, and the store logs retry events only when a write actually retried.
+- **A session started with `/goal` is named after its condition** (#431). The TUI named it after
+  the first transcript line, `Goal set: <condition>`, and print mode after the kickoff prompt Book
+  sends for the goal.
 
 ### Changed
 
