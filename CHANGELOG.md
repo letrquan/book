@@ -69,6 +69,13 @@ All notable changes to this project are documented in this file.
   at the right edge of the row, as in
   `Invalid arguments for TodoWrite: arguments.todos is required. A…`, which lost the part that
   said what was wrong. It is now set under the row, wrapped to up to two lines.
+- **`AgentWait` with a long `timeoutMs` returns the agent's status instead of timing out** (#423).
+  The wait ran under the registry's default 120-second tool deadline, so any `timeoutMs` of 120000
+  or more ended as a `tool_timeout` with no status in it. The wait is now the tool's own deadline,
+  bounded by the ceiling that `BashOutput`'s `wait_ms` has (`BOOK_TOOL_TIMEOUT_MS` where set,
+  600000 ms otherwise): a longer request is refused with that limit, and an omitted `timeoutMs`
+  waits until the agent finishes, up to it. A cancelled or disposed wait now clears its timer, so a
+  cancelled open-ended wait no longer keeps the process alive.
 - **A TodoWrite row is marked with where the plan stands, not a check.** The row
   `✓ Steps  Clone the repo   0 of 3 done` read as a finished step; it now takes the Steps sheet's
   marks: `◌` set out, `◔` under way, `✓` finished.
