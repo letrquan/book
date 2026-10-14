@@ -5251,6 +5251,7 @@ describe('runAgentLoop tool-call statistics', () => {
         provider,
         isNewSession: false,
         runtime,
+        sessionId: 'stored-session',
         toolTelemetryRoot: telemetryRoot,
       });
 
@@ -5262,6 +5263,8 @@ describe('runAgentLoop tool-call statistics', () => {
       }
       expect(records).toHaveLength(2);
       expect(records.every((r) => r.tool === 'Echo' && r.session === runtime.traceId)).toBe(true);
+      // The trace id is new each time a session is opened; this is the id its transcript has (#427).
+      expect(records.every((r) => r.sessionId === 'stored-session')).toBe(true);
       expect(records.every((r) => r.model === 'test-model')).toBe(true);
       const ok = records.find((r) => r.status === 'success');
       const failed = records.find((r) => r.isFailure);

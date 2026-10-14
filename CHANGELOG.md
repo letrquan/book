@@ -88,6 +88,10 @@ All notable changes to this project are documented in this file.
   429, an absolute `resets at <time>` within reach is waited for, up to `retry.maxDelayMs` per
   attempt; a reset that falls beyond what the remaining attempts and retry budget can wait halts
   retries immediately.
+- **Tool telemetry records the session a call ran in** (#427). The `session` field of
+  `tool-use.jsonl` holds the run's trace id, so `book tool-stats` counted every run as a session.
+  Records now carry `sessionId` too, and the session count uses it; older records still count by
+  trace.
 - **Scrolling a long transcript no longer draws rows outside the viewport** (#353). The virtual
   transcript mounts about one viewport of rows above and below the view as overscan, and Ink's
   render walk visited every mounted node every frame: measuring `widestLine`, wrapping text, and

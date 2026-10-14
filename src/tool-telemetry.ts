@@ -198,7 +198,9 @@ export function aggregateToolUse(records: ToolUseRecord[]): ToolUseAggregate {
   let lastTs: number | undefined;
 
   for (const record of records) {
-    if (record.session) sessions.add(record.session);
+    // A resumed session has a new trace id but the same session id, and is one session.
+    const session = record.sessionId ?? record.session;
+    if (session) sessions.add(session);
     if (typeof record.ts === 'number') {
       firstTs = firstTs === undefined ? record.ts : Math.min(firstTs, record.ts);
       lastTs = lastTs === undefined ? record.ts : Math.max(lastTs, record.ts);
