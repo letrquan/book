@@ -581,7 +581,7 @@ export async function* chatCompletionStream(
     const errorText = await readErrorBody(response, signal);
     yield {
       type: 'error',
-      error: formatApiError(response.status, errorText),
+      error: formatApiError(response.status, errorText, undefined, { url, model: config.model }),
       errorCode: classifyApiError(response.status, errorText),
       upstreamStatus: wrappedUpstreamStatus(response.status, errorText),
     };

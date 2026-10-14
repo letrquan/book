@@ -451,36 +451,76 @@ function safeModelUnavailableDetail(body: string): string {
   return main || 'The provider did not describe why';
 }
 
-export function formatApiError(status: number, body: string, quotedStatus?: number): string {
+/** Where a failed request went, for an error whose body cannot say. */
+export interface ApiErrorRequest {
+  /** The request URL. Only its host is shown, never a path or query string. */
+  url?: string;
+  model?: string;
+}
+
+function requestOrigin(request: ApiErrorRequest | undefined): string {
+  let host: string | undefined;
+  try {
+    host = request?.url ? new URL(request.url).host : undefined;
+  } catch {
+    host = undefined;
+  }
+  return [host && `from ${host}`, request?.model && `for model ${request.model}`]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/**
+ * The provider's message as one sentence for Book's advice to follow (#424). A
+ * message that already ends in `.`, `!`, or `?` gets no second period, and an
+ * empty body says so and names where the request went, since a bare status
+ * cannot tell a wrong base URL from a wrong model id.
+ */
+function detailSentence(detail: string, request?: ApiErrorRequest): string {
+  const text = detail.trim();
+  if (!text) {
+    const origin = requestOrigin(request);
+    return `${origin ? `${origin} ` : ''}(empty response body).`;
+  }
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
+export function formatApiError(
+  status: number,
+  body: string,
+  quotedStatus?: number,
+  request?: ApiErrorRequest,
+): string {
   const code = classifyApiError(status, body, quotedStatus);
   const detail = safeErrorDetail(body);
+  const said = detailSentence(detail, request);
   const base = `API Error: ${status}`;
   switch (code) {
     case 'context_overflow':
-      return `${base} ${detail || 'Input exceeds the model context window.'} Reduce the conversation or tool output and try again.`;
+      return `${base} ${detail.trim() ? said : 'Input exceeds the model context window.'} Reduce the conversation or tool output and try again.`;
     case 'rate_limited': {
       if (isOversizedForRateLimit(detail)) {
-        return `${base} ${detail}. The request is larger than the rate limit allows at once, so it has to shrink; waiting will not help.`;
+        return `${base} ${said} The request is larger than the rate limit allows at once, so it has to shrink; waiting will not help.`;
       }
       const reset = parseAbsoluteReset(body);
       if (reset !== undefined && reset.epochMs > Date.now()) {
-        return `${base} ${detail}. It resets at ${reset.iso}.`;
+        return `${base} ${said} It resets at ${reset.iso}.`;
       }
-      return `${base} ${detail}. This may be a temporary capacity issue. Try again in a moment.`;
+      return `${base} ${said} This may be a temporary capacity issue. Try again in a moment.`;
     }
     case 'overloaded':
       return `${base} Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment.`;
     case 'server_error':
-      return `${base} ${detail}. This is a server-side issue, usually temporary — try again in a moment.`;
+      return `${base} ${said} This is a server-side issue, usually temporary — try again in a moment.`;
     case 'timeout':
       return 'Request timed out. Check your network connection and try again.';
     case 'auth':
-      return `${base} ${detail}. Check BOOK_API_KEY, or provider.<id>.apiKey in settings.`;
+      return `${base} ${said} Check BOOK_API_KEY, or provider.<id>.apiKey in settings.`;
     case 'model_unavailable': {
       // Not a credential problem (#387): the key is fine, the model is not
       // served here any more. Name the remedy, never the API key.
-      const modelDetail = safeModelUnavailableDetail(body);
-      return `${base} ${modelDetail}. This model is not available on this provider or route — choose another with --model or /model.`;
+      const modelDetail = detailSentence(safeModelUnavailableDetail(body));
+      return `${base} ${modelDetail} This model is not available on this provider or route — choose another with --model or /model.`;
     }
     case 'quota': {
       const effective =
@@ -492,12 +532,15 @@ export function formatApiError(status: number, body: string, quotedStatus?: numb
       if (effective === 429 && statesSpentUsageLimit(body) && !hasInsufficientQuotaName(body)) {
         const reset = parseAbsoluteReset(body);
         const resetClause = reset !== undefined ? `; it resets at ${reset.iso}` : '';
-        return `${base} ${detail}. The usage limit for this plan is spent${resetClause}. Wait for the reset, or choose another model with --model or /model.`;
+        return `${base} ${said} The usage limit for this plan is spent${resetClause}. Wait for the reset, or choose another model with --model or /model.`;
       }
-      return `${base} ${detail}. Check your usage/credits.`;
+      return `${base} ${said} Check your usage/credits.`;
     }
     default:
-      return `${base} ${detail}`;
+      if (detail.trim()) return `${base} ${detail}`;
+      return code === 'not_found'
+        ? `${base} ${said} Check the base URL and model id.`
+        : `${base} ${said}`;
   }
 }
 
