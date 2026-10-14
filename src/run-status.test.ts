@@ -1,9 +1,10 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   RunStatusWriter,
+  cleanupRunStatus,
   clearRunStatus,
   freeDiskBytes,
   readRunStatus,
@@ -151,5 +152,40 @@ describe('the run status file', () => {
     }
     const bytes = readFileSync(runStatusPath('session-1', dir), 'utf8').length;
     expect(bytes).toBeLessThan(2_000);
+  });
+});
+
+describe('run record retention (#422)', () => {
+  const DAY = 86_400_000;
+
+  it('removes the records last written before the cutoff, and only those', () => {
+    const dir = home();
+    const now = Date.now();
+    const written = (sessionId: string, ageDays: number) => {
+      new RunStatusWriter({ sessionId, runId: sessionId, workspace: dir, startedAt: 1, home: dir });
+      const at = new Date(now - ageDays * DAY);
+      utimesSync(runStatusPath(sessionId, dir), at, at);
+    };
+    written('stale', 31);
+    written('older', 400);
+    written('recent', 29);
+
+    expect(cleanupRunStatus(30, dir, now)).toBe(2);
+    expect(existsSync(runStatusPath('stale', dir))).toBe(false);
+    expect(existsSync(runStatusPath('older', dir))).toBe(false);
+    expect(readRunStatus('recent', dir)?.sessionId).toBe('recent');
+  });
+
+  it('keeps a record its run is still writing, however old the run', () => {
+    const dir = home();
+    const w = writer(dir);
+    w.update({ turn: 1, openTodos: 0, costUsd: 0 }, 1_000 + 90 * DAY);
+    expect(cleanupRunStatus(30, dir)).toBe(0);
+    expect(readRunStatus('session-1', dir)?.turn).toBe(1);
+  });
+
+  it('is a no-op when no run has ever written a record', () => {
+    expect(cleanupRunStatus(30, home())).toBe(0);
+    expect(cleanupRunStatus(30, join(home(), 'missing'))).toBe(0);
   });
 });

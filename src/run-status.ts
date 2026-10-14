@@ -2,10 +2,13 @@ import {
   closeSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   statfsSync,
+  statSync,
+  unlinkSync,
   writeSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -133,6 +136,35 @@ export function clearRunStatus(sessionId: string, home = resolveBookHome()): voi
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * Remove run records last written more than `days` ago, so `runs/` follows the same
+ * retention as the sessions it describes instead of growing without bound (#422).
+ *
+ * Age alone is safe for a live run: it rewrites its record at every turn boundary, and
+ * a run that starts writes a fresh one at once. Best effort, like every startup sweep.
+ */
+export function cleanupRunStatus(days: number, home = resolveBookHome(), now = Date.now()): number {
+  const cutoff = now - Math.max(1, days) * 86_400_000;
+  const directory = runStatusDir(home);
+  let removed = 0;
+  try {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const path = join(directory, entry.name);
+      try {
+        if (statSync(path).mtimeMs >= cutoff) continue;
+        unlinkSync(path);
+        removed++;
+      } catch {
+        // Rewritten or removed by another process meanwhile.
+      }
+    }
+  } catch {
+    // No runs directory yet, or unreadable: nothing to sweep.
+  }
+  return removed;
 }
 
 export interface RunStatusSeed {

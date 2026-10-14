@@ -45,6 +45,9 @@ All notable changes to this project are documented in this file.
   name, or arguments that did not parse or fit the schema, is the model's slip, and it usually
   resends the call corrected. Its `×`, target and message are grey; a command that ran and failed
   stays rose, since a non-zero exit is the transcript's only record of a red test run.
+- **Run records are pruned** (#422). `<BOOK_HOME>/runs/` kept a record for every session ever run.
+  Startup now deletes the records not written in 30 days, the retention sessions and debug logs
+  already follow; as with sessions, an SDK caller that passes its own `sessionStore` is not swept.
 - **A failure's message is no longer cut to the metadata column.** It was truncated to 64 columns
   at the right edge of the row, as in
   `Invalid arguments for TodoWrite: arguments.todos is required. A…`, which lost the part that
