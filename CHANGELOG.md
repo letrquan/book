@@ -73,6 +73,10 @@ All notable changes to this project are documented in this file.
   read-only Git tools, `/review`, and the status poll, while git isolation keeps
   `core.fsmonitor=false` to avoid leaving daemons behind in temporary worktrees; custom hook paths
   remain disabled.
+- **Grep takes `-i`, and accepts `-n`** (#426). Claude Code's `-i` (or `i`) now searches
+  case-insensitively, with ripgrep and with the built-in fallback, and `-n` is accepted and
+  ignored, since results always carry line numbers. Both were refused as unknown arguments, which
+  cost the model a turn to resend the call.
 - **A router-wrapped or direct 429 for a spent plan usage limit no longer burns the retry budget**
   (#400). A router-wrapped 429 that says a plan's weekly, daily, monthly, or N-hour usage limit is
   spent was treated as a transient rate limit: Book waited the router's cooldown hint up to
