@@ -74,10 +74,21 @@ All notable changes to this project are documented in this file.
   name, or arguments that did not parse or fit the schema, is the model's slip, and it usually
   resends the call corrected. Its `×`, target and message are grey; a command that ran and failed
   stays rose, since a non-zero exit is the transcript's only record of a red test run.
+- **Run records are pruned** (#422). `<BOOK_HOME>/runs/` kept a record for every session ever run.
+  Startup now deletes the records not written in 30 days, the retention sessions and debug logs
+  already follow. Every CLI and SDK start sweeps it, whatever the session settings, and a record
+  whose run is still alive is kept.
 - **A failure's message is no longer cut to the metadata column.** It was truncated to 64 columns
   at the right edge of the row, as in
   `Invalid arguments for TodoWrite: arguments.todos is required. A…`, which lost the part that
   said what was wrong. It is now set under the row, wrapped to up to two lines.
+- **`AgentWait` with a long `timeoutMs` returns the agent's status instead of timing out** (#423).
+  The wait ran under the registry's default 120-second tool deadline, so any `timeoutMs` of 120000
+  or more ended as a `tool_timeout` with no status in it. The wait is now the tool's own deadline,
+  bounded by the ceiling that `BashOutput`'s `wait_ms` has (`BOOK_TOOL_TIMEOUT_MS` where set,
+  600000 ms otherwise): a longer request is refused with that limit, and an omitted `timeoutMs`
+  waits until the agent finishes, up to it. A cancelled or disposed wait now clears its timer, so a
+  cancelled open-ended wait no longer keeps the process alive.
 - **A TodoWrite row is marked with where the plan stands, not a check.** The row
   `✓ Steps  Clone the repo   0 of 3 done` read as a finished step; it now takes the Steps sheet's
   marks: `◌` set out, `◔` under way, `✓` finished.
@@ -158,6 +169,12 @@ All notable changes to this project are documented in this file.
   (summed 182 ms to 40 ms), and the worst stall per run from 56 ms to 42 ms at the median. On a quiet
   Windows box, stalls over 40 ms did not move (about one per run in either build): what remains there
   is the React mount and Yoga layout of newly mounted heavy rows, which the cull does not touch.
+- **A session nothing was sent in is no longer offered back** (#428). Opening Book and leaving
+  without a prompt left an empty session behind, which `--continue` and `book status` then picked
+  as the most recent here, and which `/resume` listed. All three now skip sessions with no
+  messages. `book status` also counts a session that has a run record, so a live print-mode run
+  of host-performed commands only (such as `/review`) is still the one it reports. The empty
+  session file itself is still left behind.
 - **A model the provider no longer serves is no longer reported as a rejected credential** (#387).
   9router wraps an upstream 403 in its own 503 (`[route] [403]: Model is no longer available`),
   which `classifyApiError` read through the quoted status as `auth` — so the run parked as

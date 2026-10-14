@@ -1,12 +1,23 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   RunStatusWriter,
+  cleanupRunStatus,
   clearRunStatus,
   freeDiskBytes,
   readRunStatus,
+  runStatusDir,
   runStatusPath,
 } from './run-status.js';
 
@@ -151,5 +162,138 @@ describe('the run status file', () => {
     }
     const bytes = readFileSync(runStatusPath('session-1', dir), 'utf8').length;
     expect(bytes).toBeLessThan(2_000);
+  });
+});
+
+describe('run record retention (#422)', () => {
+  const DAY = 86_400_000;
+
+  it('removes the records last written before the cutoff, and only those', () => {
+    const dir = home();
+    const now = Date.now();
+    const written = (sessionId: string, ageDays: number) => {
+      const w = new RunStatusWriter({
+        sessionId,
+        runId: sessionId,
+        workspace: dir,
+        startedAt: 1,
+        home: dir,
+      });
+      // Finished runs: age alone decides, whatever pid the record carries.
+      w.update(
+        {
+          turn: 1,
+          openTodos: 0,
+          costUsd: 0,
+          terminal: { status: 'completed', reason: 'normal_completion' },
+        },
+        2,
+      );
+      const at = new Date(now - ageDays * DAY);
+      utimesSync(runStatusPath(sessionId, dir), at, at);
+    };
+    written('stale', 31);
+    written('older', 400);
+    written('recent', 29);
+
+    expect(cleanupRunStatus(30, dir, now)).toBe(2);
+    expect(existsSync(runStatusPath('stale', dir))).toBe(false);
+    expect(existsSync(runStatusPath('older', dir))).toBe(false);
+    expect(readRunStatus('recent', dir)?.sessionId).toBe('recent');
+  });
+
+  it('keeps a record its run is still writing, however old the run', () => {
+    const dir = home();
+    const w = writer(dir);
+    w.update({ turn: 1, openTodos: 0, costUsd: 0 }, 1_000 + 90 * DAY);
+    expect(cleanupRunStatus(30, dir)).toBe(0);
+    expect(readRunStatus('session-1', dir)?.turn).toBe(1);
+  });
+
+  const old = (path: string, ageDays = 31) => {
+    const at = new Date(Date.now() - ageDays * DAY);
+    utimesSync(path, at, at);
+  };
+  const record = (dir: string, name: string, body: unknown): string => {
+    mkdirSync(runStatusDir(dir), { recursive: true });
+    const path = join(runStatusDir(dir), name);
+    writeFileSync(path, typeof body === 'string' ? body : JSON.stringify(body));
+    old(path);
+    return path;
+  };
+  const deadPid = (): Promise<number> =>
+    new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['-e', '']);
+      const pid = child.pid;
+      child.on('error', reject);
+      child.on('exit', () => resolve(pid as number));
+    });
+
+  it('keeps an old record whose run is still alive and has not finished', () => {
+    const dir = home();
+    const path = record(dir, 'live.json', { version: 1, pid: process.pid });
+    expect(cleanupRunStatus(30, dir)).toBe(0);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('removes an old record whose process is dead', async () => {
+    const dir = home();
+    const path = record(dir, 'dead.json', { version: 1, pid: await deadPid() });
+    expect(cleanupRunStatus(30, dir)).toBe(1);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('removes an old record with a live pid once it has a terminal or crash outcome', () => {
+    const dir = home();
+    const done = record(dir, 'done.json', {
+      version: 1,
+      pid: process.pid,
+      terminal: { status: 'completed', reason: 'normal_completion' },
+    });
+    const crashed = record(dir, 'crashed.json', {
+      version: 1,
+      pid: process.pid,
+      crash: { message: 'boom', at: 1 },
+    });
+    expect(cleanupRunStatus(30, dir)).toBe(2);
+    expect(existsSync(done)).toBe(false);
+    expect(existsSync(crashed)).toBe(false);
+  });
+
+  it('removes an old record that does not parse or has no usable pid', () => {
+    const dir = home();
+    const paths = [
+      record(dir, 'torn.json', '{"pid": '),
+      record(dir, 'nopid.json', { version: 1 }),
+      record(dir, 'zero.json', { version: 1, pid: 0 }),
+      record(dir, 'negative.json', { version: 1, pid: -1 }),
+      record(dir, 'fraction.json', { version: 1, pid: 1.5 }),
+      record(dir, 'text.json', { version: 1, pid: String(process.pid) }),
+    ];
+    expect(cleanupRunStatus(30, dir)).toBe(paths.length);
+    for (const path of paths) expect(existsSync(path)).toBe(false);
+  });
+
+  it('sweeps only run-record files, and one bad entry does not stop the rest', () => {
+    const dir = home();
+    const runs = runStatusDir(dir);
+    const notes = record(dir, 'notes.txt', 'keep me');
+    const subdir = join(runs, 'nested.json');
+    mkdirSync(subdir);
+    old(subdir);
+    // Leftover of an interrupted atomic write: `<target>.<pid>.tmp`.
+    const temp = record(dir, 'session-1.json.4242.tmp', '{');
+    const stale = record(dir, 'stale.json', { version: 1, pid: 0 });
+
+    expect(cleanupRunStatus(30, dir)).toBe(2);
+    expect(existsSync(notes)).toBe(true);
+    expect(existsSync(subdir)).toBe(true);
+    expect(existsSync(temp)).toBe(false);
+    expect(existsSync(stale)).toBe(false);
+  });
+
+  it('is a no-op when no run has ever written a record', () => {
+    expect(cleanupRunStatus(30, home())).toBe(0);
+    expect(cleanupRunStatus(30, join(home(), 'missing'))).toBe(0);
   });
 });

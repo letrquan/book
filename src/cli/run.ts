@@ -42,6 +42,7 @@ import { spawn } from 'node:child_process';
 import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 import { isReaderGoneError } from '../reader-gone.js';
+import { cleanupRunStatus } from '../run-status.js';
 
 const SESSION_ROOT = join(resolveBookHome(), 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
@@ -230,6 +231,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     createDebugLogger('memory').info('session driver', { ...sessionDriver });
     freezeAgentConfig(config);
     cleanupDebugLogs(DEFAULT_LOCAL_DATA_RETENTION_DAYS, getDebugLogPath());
+    cleanupRunStatus(DEFAULT_LOCAL_DATA_RETENTION_DAYS);
 
     // Headless / print mode.
     if (options.print !== undefined) {

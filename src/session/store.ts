@@ -961,9 +961,18 @@ export class SessionStore {
     return references;
   }
 
-  mostRecentInCwd(cwd: string): SessionMeta | undefined {
+  /**
+   * The newest session in `cwd` that holds a conversation. A launch that ends
+   * before its first prompt leaves a session with no messages, and that is never
+   * the conversation `--continue` means (#428). `accept` replaces that default test
+   * for a caller with a wider idea of a live session, such as `book status`.
+   */
+  mostRecentInCwd(
+    cwd: string,
+    accept: (meta: SessionMeta) => boolean = (meta) => meta.messageCount > 0,
+  ): SessionMeta | undefined {
     const normalized = normalizeWorkspace(cwd);
-    return this.list().find((meta) => meta.cwd === normalized);
+    return this.list().find((meta) => meta.cwd === normalized && accept(meta));
   }
 
   findByName(name: string): SessionMeta | undefined {

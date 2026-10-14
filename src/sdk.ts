@@ -22,6 +22,7 @@ import {
 } from './debug-log.js';
 import { resolvePermissionMode } from './permission-mode.js';
 import { resolveBookHome } from './book-home.js';
+import { cleanupRunStatus } from './run-status.js';
 import { resolveSessionDriver } from './session-driver.js';
 
 export type QueryEvent = AgentEvent;
@@ -125,6 +126,8 @@ export async function* query(
     cleanupDebugLogs(DEFAULT_LOCAL_DATA_RETENTION_DAYS, getDebugLogPath());
     sessionStore.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
   }
+  // headless.ts writes a run record on every query, whatever the session settings.
+  cleanupRunStatus(DEFAULT_LOCAL_DATA_RETENTION_DAYS);
   const queue = new AsyncEventQueue<QueryEvent>();
   let connections: Awaited<ReturnType<typeof connectMcpServers>>['connections'] = [];
 
