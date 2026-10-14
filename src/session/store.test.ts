@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SessionStore } from './store.js';
 import { appendFileSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -565,6 +565,25 @@ describe('SessionStore', () => {
     expect(s.mostRecentInCwd('/none')).toBeUndefined();
   });
 
+  it('continues the last conversation, not a newer session left empty (#428)', () => {
+    vi.useFakeTimers({ now: 1_000, toFake: ['Date'] });
+    try {
+      const s = new SessionStore(dir);
+      const conversation = s.create({ cwd: '/proj' });
+      s.append(conversation, { type: 'user', timestamp: 1, data: { content: 'hello' } });
+      vi.setSystemTime(2_000);
+      const empty = s.create({ cwd: '/proj' });
+      const onlyEmpty = s.create({ cwd: '/fresh' });
+
+      expect(s.list()[0]?.id).not.toBe(conversation);
+      expect([empty, onlyEmpty]).toContain(s.list()[0]?.id);
+      expect(s.mostRecentInCwd('/proj')?.id).toBe(conversation);
+      expect(s.mostRecentInCwd('/fresh')).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('looks up by name', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj', name: 'feature-x' });
@@ -716,6 +735,7 @@ describe('SessionStore', () => {
   it('normalizes workspace paths for continue lookup', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: join(dir, 'project', '..', 'project') });
+    s.append(id, { type: 'user', timestamp: 1, data: { content: 'hello' } });
     expect(s.mostRecentInCwd(join(dir, 'project'))?.id).toBe(id);
   });
 

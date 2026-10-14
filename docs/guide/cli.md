@@ -19,7 +19,7 @@ book -p "Run tests" --output-format stream-json
 
 # Resume a previous session
 book --resume <id-or-name>
-book --continue  # most recent session in current directory
+book --continue  # most recent session in current directory that has a message
 
 # Diagnose setup / edit settings from the shell (these run without a configured credential)
 book doctor
@@ -67,7 +67,7 @@ writing bad JSON.
 | `--max-budget-usd <amount>`           | Cap spend (print mode)                                                                                                          |
 | `--json-schema <schema>`              | Structured JSON output (print mode)                                                                                             |
 | `-r, --resume <id\|name>`             | Resume a named/id session                                                                                                       |
-| `-c, --continue`                      | Resume most recent session here                                                                                                 |
+| `-c, --continue`                      | Resume the most recent session here that has a message                                                                          |
 | `--session-id <uuid>`                 | Pin a session id                                                                                                                |
 | `-n, --name <name>`                   | Display name for the session                                                                                                    |
 | `--fork-session`                      | On resume, fork to a new session id                                                                                             |

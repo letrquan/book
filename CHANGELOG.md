@@ -114,6 +114,10 @@ All notable changes to this project are documented in this file.
   (summed 182 ms to 40 ms), and the worst stall per run from 56 ms to 42 ms at the median. On a quiet
   Windows box, stalls over 40 ms did not move (about one per run in either build): what remains there
   is the React mount and Yoga layout of newly mounted heavy rows, which the cull does not touch.
+- **A session nothing was sent in is no longer offered back** (#428). Opening Book and leaving
+  without a prompt left an empty session behind, which `--continue` and `book status` then picked
+  as the most recent here, and which `/resume` listed. All three now skip sessions with no
+  messages. The empty session file itself is still left behind.
 - **A model the provider no longer serves is no longer reported as a rejected credential** (#387).
   9router wraps an upstream 403 in its own 503 (`[route] [403]: Model is no longer available`),
   which `classifyApiError` read through the quoted status as `auth` — so the run parked as

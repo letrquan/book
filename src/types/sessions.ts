@@ -630,6 +630,7 @@ export interface SessionStoreInterface {
   list(): SessionMeta[];
   findByName(name: string): SessionMeta | undefined;
   findById(id: string): SessionMeta | undefined;
+  /** The newest session in `cwd` with at least one message; empty sessions are skipped. */
   mostRecentInCwd(cwd: string): SessionMeta | undefined;
   saveImageAttachment?(
     sessionId: string,

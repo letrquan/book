@@ -961,9 +961,14 @@ export class SessionStore {
     return references;
   }
 
+  /**
+   * The newest session in `cwd` that holds a conversation. A launch that ends
+   * before its first prompt leaves a session with no messages, and that is never
+   * the conversation `--continue` or `book status` means (#428).
+   */
   mostRecentInCwd(cwd: string): SessionMeta | undefined {
     const normalized = normalizeWorkspace(cwd);
-    return this.list().find((meta) => meta.cwd === normalized);
+    return this.list().find((meta) => meta.cwd === normalized && meta.messageCount > 0);
   }
 
   findByName(name: string): SessionMeta | undefined {
