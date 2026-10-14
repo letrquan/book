@@ -225,6 +225,8 @@ interface SendMessageOptions {
   contextMessage?: string;
   /** The turn is Book's own text rather than the user's (a `/goal` kickoff), as a command body is. */
   derived?: boolean;
+  /** What a session that has no name yet is named after, instead of the display text. */
+  sessionNameSource?: string;
   kind?: Message['kind'];
   agentNotifications?: Message['agentNotifications'];
   attachments?: Message['attachments'];
@@ -1049,6 +1051,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         parentRunId:
           messageOptions?.kind === 'agent-notification' ? messageOptions?.parentRunId : undefined,
         sessionName: sessionNameRef.current,
+        sessionNameSource: messageOptions?.sessionNameSource,
         snapshotStore: session.snapshotStore,
         timelineStore,
         registryStore: timelineStore,
@@ -2005,6 +2008,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       void sendMessage(formatGoalStatus({ state: 'set', condition }), undefined, {
         contextMessage: goalKickoffPrompt(condition),
         derived: true,
+        sessionNameSource: condition,
       });
     },
     [addLocalMessage, agentSession, isThinking, operations, sendMessage, timelineStore],
