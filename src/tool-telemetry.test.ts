@@ -118,6 +118,16 @@ describe('aggregateToolUse', () => {
     expect(agg.models.find((m) => m.model === 'opus')?.calls).toBe(2);
   });
 
+  // #427. Each open of a session has its own trace id; the session id is what they share.
+  it('counts a resumed session once, and an older record by its trace id', () => {
+    const agg = aggregateToolUse([
+      record({ session: 'trace-1', sessionId: 'stored' }),
+      record({ session: 'trace-2', sessionId: 'stored' }),
+      record({ session: 'trace-from-before' }),
+    ]);
+    expect(agg.sessions).toBe(2);
+  });
+
   it('keys a model by its provider, so a bad route is not hidden behind a shared model id', () => {
     const agg = aggregateToolUse([
       record({ model: 'cmc/x', provider: '9router' }),

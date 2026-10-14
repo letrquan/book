@@ -3428,6 +3428,8 @@ export async function runAgentLoop(
           records.push({
             ts: recordedAt,
             session: runtime.traceId,
+            // The id a failed call can be found under in the transcripts (#427).
+            sessionId: toolContext.sessionId,
             tool: canonicalToolName(toolCalls[index].name),
             status: result.status,
             isFailure,

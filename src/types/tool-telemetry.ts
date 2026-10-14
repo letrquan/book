@@ -12,8 +12,18 @@ import type { ToolResultStatus } from './tools.js';
 export interface ToolUseRecord {
   /** Wall-clock time the record was captured (ms since epoch). */
   ts: number;
-  /** Session trace id (`SessionRuntime.traceId`); distinct per logical session. */
+  /**
+   * Trace id of the process-local session runtime (`SessionRuntime.traceId`). Opening a
+   * session again, with `--resume` or `/resume`, gives it a new one, so this is not the
+   * id the transcript is stored under: that is {@link sessionId}.
+   */
   session: string;
+  /**
+   * The session-store id the call was made in (`sessions/<id>.jsonl`, `--resume <id>`),
+   * when the run has one; the parent's for a subagent. Absent from records written before
+   * it was recorded (#427).
+   */
+  sessionId?: string;
   /** Canonical tool name (PascalCase). */
   tool: string;
   /** Final result status the model observed. */
@@ -85,7 +95,10 @@ export interface ModelStatRow {
 export interface ToolUseAggregate {
   totalCalls: number;
   totalFailures: number;
-  /** Distinct session ids observed. */
+  /**
+   * Distinct sessions observed, by {@link ToolUseRecord.sessionId}, or by trace id for a
+   * record that has none.
+   */
   sessions: number;
   /** Earliest / latest record timestamps, if any records were present. */
   firstTs?: number;
