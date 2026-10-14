@@ -72,7 +72,7 @@ import {
   type BuiltinCommandContext,
   type BuiltinCommandEffect,
 } from '../commands/builtins.js';
-import { configuredAdvisorModel } from '../config.js';
+import { advisorModelRefusal, configuredAdvisorModel } from '../config.js';
 import { describeAdvisorChange } from '../tools/advisor.js';
 import { discoverSkills, type Skill } from '../skills.js';
 import { runGit } from '../tools/git.js';
@@ -1903,6 +1903,10 @@ export function App({
    */
   const applyAdvisorModel = useCallback(
     (model: string | null, notice?: string) => {
+      // The advisor fails closed on an id it would refuse (#419). `/advisor <id>`
+      // has already been refused by the command; the picker gets here directly.
+      const refusal = model !== null ? advisorModelRefusal(liveConfig, model) : undefined;
+      if (refusal) return { ok: false as const, error: refusal };
       const result = setAdvisorModel(model);
       if (result.ok) {
         // A provider may serve ids nobody listed, so an unlisted id is still saved;
@@ -1925,7 +1929,7 @@ export function App({
       }
       return result;
     },
-    [addLocalMessage, liveConfig.model, liveConfig.modelSelection, modelOptions, setAdvisorModel],
+    [addLocalMessage, liveConfig, modelOptions, setAdvisorModel],
   );
 
   const handleSubmit = useCallback(

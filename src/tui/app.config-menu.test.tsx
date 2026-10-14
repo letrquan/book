@@ -82,6 +82,29 @@ function config(): AgentConfig {
   };
 }
 
+/**
+ * A session whose main model is on Anthropic's endpoint, with one configured provider that lists
+ * `gateway/big`. A bare advisor id (`claude-opus-5`) would resolve against the default endpoint
+ * with the main key, so the advisor refuses it (#419); `gateway/<model>` is the way to name one.
+ */
+function advisorConfig(): AgentConfig {
+  const base = config();
+  return {
+    ...base,
+    apiKey: 'sk-ant-test',
+    defaultApiKey: 'sk-ant-test',
+    baseUrl: 'https://api.anthropic.com',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    defaultBaseUrlExplicit: false,
+    settings: {
+      ...base.settings,
+      provider: {
+        gateway: { type: 'anthropic', baseURL: 'https://gateway.example', models: { big: {} } },
+      },
+    },
+  };
+}
+
 function agentState(addLocalMessage: ReturnType<typeof vi.fn>) {
   return {
     messages: [],
@@ -380,21 +403,42 @@ describe('the /advisor model picker', () => {
   it('saves the model that is picked, reports it, and closes', async () => {
     const addLocalMessage = vi.fn();
     const setAdvisorModel = vi.fn(() => ({ ok: true }));
-    const view = startApp(addLocalMessage, { setAdvisorModel });
+    const view = startApp(addLocalMessage, { setAdvisorModel, liveConfig: advisorConfig() });
     await settle();
 
     await submit(view, '/advisor');
-    view.stdin.write('opus-5');
+    view.stdin.write('gateway/big');
     await settle();
     view.stdin.write('\r');
     await settle();
 
     expect(setAdvisorModel).toHaveBeenCalledTimes(1);
-    expect(setAdvisorModel).toHaveBeenCalledWith('claude-opus-5');
+    expect(setAdvisorModel).toHaveBeenCalledWith('gateway/big');
     expect(addLocalMessage).toHaveBeenCalledWith(
-      expect.stringContaining('Advisor set to claude-opus-5'),
+      expect.stringContaining('Advisor set to gateway/big'),
     );
     expect(frameOf(view)).not.toContain('Choose advisor model');
+  });
+
+  it('refuses a picked id the advisor would refuse, in the picker, and saves nothing (#419)', async () => {
+    const addLocalMessage = vi.fn();
+    const setAdvisorModel = vi.fn(() => ({ ok: true }));
+    const view = startApp(addLocalMessage, { setAdvisorModel, liveConfig: advisorConfig() });
+    await settle();
+
+    await submit(view, '/advisor');
+    // A built-in, bare id: listed, but its key and endpoint are ambiguous.
+    view.stdin.write('opus-5');
+    await settle();
+    view.stdin.write('\r');
+    await settle();
+
+    expect(setAdvisorModel).not.toHaveBeenCalled();
+    const frame = frameOf(view);
+    expect(frame).toContain('Choose advisor model');
+    expect(frame).toContain('advisor model "claude-opus-5-5" names no configured provider');
+    // The picker shows the refusal in place; the transcript says nothing.
+    expect(addLocalMessage).not.toHaveBeenCalled();
   });
 
   it('switches the advisor off from the Off row', async () => {
@@ -464,15 +508,15 @@ describe('the /advisor model picker', () => {
     process.env.BOOK_ADVISOR_MODEL = 'gateway/big';
     const addLocalMessage = vi.fn();
     const setAdvisorModel = vi.fn(() => ({ ok: true }));
-    const view = startApp(addLocalMessage, { setAdvisorModel });
+    const view = startApp(addLocalMessage, { setAdvisorModel, liveConfig: advisorConfig() });
     await settle();
 
-    await submit(view, '/advisor claude-opus-5');
+    await submit(view, '/advisor gateway/big');
     await settle();
 
-    expect(setAdvisorModel).toHaveBeenCalledWith('claude-opus-5');
+    expect(setAdvisorModel).toHaveBeenCalledWith('gateway/big');
     expect(addLocalMessage).toHaveBeenCalledWith(
-      expect.stringContaining('Advisor set to claude-opus-5'),
+      expect.stringContaining('Advisor set to gateway/big'),
     );
     expect(addLocalMessage).toHaveBeenCalledWith(
       expect.stringContaining('BOOK_ADVISOR_MODEL=gateway/big'),
@@ -484,31 +528,64 @@ describe('the /advisor model picker', () => {
     process.env.BOOK_ADVISOR_MODEL = 'gateway/big';
     const addLocalMessage = vi.fn();
     const setAdvisorModel = vi.fn(() => ({ ok: true }));
-    const view = startApp(addLocalMessage, { setAdvisorModel });
+    const view = startApp(addLocalMessage, { setAdvisorModel, liveConfig: advisorConfig() });
+    await settle();
+
+    // A configured provider may serve a model nobody listed.
+    await submit(view, '/advisor gateway/small');
+    await settle();
+
+    expect(setAdvisorModel).toHaveBeenCalledWith('gateway/small');
+    const message = String(addLocalMessage.mock.calls[0]?.[0]);
+    const note = 'Note: gateway/small is not in your model list. Run /advisor to pick one.';
+    expect(message).toContain(note);
+    expect(message.indexOf('Advisor set to gateway/small')).toBeLessThan(message.indexOf(note));
+    expect(message.indexOf(note)).toBeLessThan(message.indexOf('BOOK_ADVISOR_MODEL='));
+  });
+
+  it('refuses a typed /advisor id the advisor would refuse, saving nothing (#419)', async () => {
+    const addLocalMessage = vi.fn();
+    const setAdvisorModel = vi.fn(() => ({ ok: true }));
+    const view = startApp(addLocalMessage, { setAdvisorModel, liveConfig: advisorConfig() });
     await settle();
 
     await submit(view, '/advisor claude');
     await settle();
 
-    expect(setAdvisorModel).toHaveBeenCalledWith('claude');
+    expect(setAdvisorModel).not.toHaveBeenCalled();
+    expect(addLocalMessage).not.toHaveBeenCalledWith(expect.stringContaining('Advisor set to'));
+  });
+
+  it('shows the unknown-prefix warning once for a typed id, without the unlisted note', async () => {
+    const addLocalMessage = vi.fn();
+    const setAdvisorModel = vi.fn(() => ({ ok: true }));
+    // A session on the default endpoint with its own key: the bare resolution is its own.
+    const liveConfig = { ...advisorConfig(), baseUrl: 'https://api.openai.com/v1' };
+    const view = startApp(addLocalMessage, { setAdvisorModel, liveConfig });
+    await settle();
+
+    await submit(view, '/advisor antropic/x');
+    await settle();
+
+    expect(setAdvisorModel).toHaveBeenCalledWith('antropic/x');
     const message = String(addLocalMessage.mock.calls[0]?.[0]);
-    const note = 'Note: claude is not in your model list. Run /advisor to pick one.';
-    expect(message).toContain(note);
-    expect(message.indexOf('Advisor set to claude')).toBeLessThan(message.indexOf(note));
-    expect(message.indexOf(note)).toBeLessThan(message.indexOf('BOOK_ADVISOR_MODEL='));
+    expect(message).toContain('Advisor set to antropic/x');
+    expect(message.match(/⚠/g)).toHaveLength(1);
+    expect(message).toContain('names provider "antropic", which is not configured');
+    expect(message).not.toContain('not in your model list');
   });
 
   it('does not add the unlisted note for a listed /advisor id', async () => {
     const addLocalMessage = vi.fn();
     const setAdvisorModel = vi.fn(() => ({ ok: true }));
-    const view = startApp(addLocalMessage, { setAdvisorModel });
+    const view = startApp(addLocalMessage, { setAdvisorModel, liveConfig: advisorConfig() });
     await settle();
 
-    await submit(view, '/advisor claude-opus-5');
+    await submit(view, '/advisor gateway/big');
     await settle();
 
     expect(addLocalMessage).toHaveBeenCalledWith(
-      expect.stringContaining('Advisor set to claude-opus-5'),
+      expect.stringContaining('Advisor set to gateway/big'),
     );
     expect(String(addLocalMessage.mock.calls[0]?.[0])).not.toContain('not in your model list');
   });
@@ -516,10 +593,10 @@ describe('the /advisor model picker', () => {
   it('reports a failed /advisor <model> save in the transcript', async () => {
     const addLocalMessage = vi.fn();
     const setAdvisorModel = vi.fn(() => ({ ok: false, error: 'settings.json is read-only' }));
-    const view = startApp(addLocalMessage, { setAdvisorModel });
+    const view = startApp(addLocalMessage, { setAdvisorModel, liveConfig: advisorConfig() });
     await settle();
 
-    await submit(view, '/advisor claude-opus-5');
+    await submit(view, '/advisor gateway/big');
     await settle();
 
     expect(addLocalMessage).toHaveBeenCalledWith('✕ settings.json is read-only');

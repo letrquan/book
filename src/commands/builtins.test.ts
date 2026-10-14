@@ -986,7 +986,9 @@ describe('/advisor', () => {
         ),
       });
       config.advisorModel = 'anthropic/claude-opus-5-5';
-      expect(registry.execute('advisor', '', context({ runtimeConfig: config }))).toMatchObject({
+      expect(
+        registry.execute('advisor', 'status', context({ runtimeConfig: config })),
+      ).toMatchObject({
         content: 'Advisor: anthropic/claude-opus-5-5\nUsage: /advisor <model> | off',
       });
     });

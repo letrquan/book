@@ -29,8 +29,9 @@ All notable changes to this project are documented in this file.
   model picker, aimed at the advisor, with an **Off** row after the models, and `/config` has an
   **Advisor** row (`V`), so the advisor is chosen from a list instead of typed from memory (a
   mistyped `/advisor claude` was saved and matched no model). The picker flags a saved advisor
-  that is not in the list and a `BOOK_ADVISOR_MODEL` that outranks the choice, and a typed
-  `/advisor <id>` that names no listed model is still saved but says so. Every model picker
+  that is not in the list and a `BOOK_ADVISOR_MODEL` that outranks the choice. An id the advisor
+  would refuse (#419) is refused by both `/advisor <id>` and the picker, and any other id that
+  names no listed model is saved with a note. Every model picker
   (`/model` too) now opens with the cursor on the current choice, which a long list used to scroll
   out of view, and `Alt+S session` is offered only where it applies (the main model).
 
