@@ -50,7 +50,7 @@ import {
   partitionProjectAllowRules,
   persistProjectAllowRuleChoice,
 } from '../permission-approvals.js';
-import { loadSettingsFile, resolveSettings } from '../settings-loader.js';
+import { isUserSettingsFile, loadSettingsFile, resolveSettings } from '../settings-loader.js';
 import type { SlashCommand } from '../types/commands.js';
 import { exit } from './exit.js';
 
@@ -96,8 +96,10 @@ export async function runTrustCommand(
     );
   }
 
-  // Only the checked-in layer is gated, so only its declarations are decidable.
-  const projectSettings = loadSettingsFile(join(workspace, '.book', 'settings.json'));
+  // Only the checked-in layer is gated, so only its declarations are decidable. At `$HOME`
+  // that path is the user's own file, which is trusted and has nothing to decide (#429).
+  const projectPath = join(workspace, '.book', 'settings.json');
+  const projectSettings = isUserSettingsFile(projectPath) ? null : loadSettingsFile(projectPath);
 
   // A command decision carries the fingerprint of the shell it was made
   // against, so the body cannot change under an approval already on file.

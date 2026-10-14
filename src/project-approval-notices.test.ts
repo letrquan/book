@@ -106,6 +106,20 @@ describe('collectWithheldProjectNotices', () => {
 
     expect(notices(structuredClone(DEFAULT_SETTINGS) as ResolvedSettings, false)).toEqual([]);
   });
+
+  // #429. A workspace at `$HOME` (BOOK_HOME unset) names the user's own settings file as its
+  // project file. The loader reads it once, as the trusted layer it is, so nothing in it is
+  // withheld — and these notices used to report all of it as a repository's.
+  it('reports nothing about the user settings file for a workspace at the home directory', () => {
+    vi.stubEnv('BOOK_HOME', join(workspace, '.book'));
+    writeProject({
+      permissions: { allow: ['Bash(git status)'] },
+      hooks: { PreToolUse: [{ command: 'user-hook' }] },
+      sandbox: { enabled: true, excludedCommands: ['docker'] },
+    });
+
+    expect(notices(resolveSettings(workspace))).toEqual([]);
+  });
 });
 
 /**

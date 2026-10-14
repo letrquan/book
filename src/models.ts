@@ -24,6 +24,10 @@ export interface ModelOption {
 }
 
 export const AVAILABLE_MODELS: ModelOption[] = [
+  { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic', effort: true },
+  { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', effort: true },
+  { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5', provider: 'anthropic', effort: true },
+  { id: 'claude-fable-5-1', label: 'Claude Fable 5.1', provider: 'anthropic', effort: true },
   { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', provider: 'anthropic', effort: true },
   { id: 'claude-opus-5', label: 'Claude Opus 5', provider: 'anthropic', effort: true },
   { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', provider: 'anthropic', effort: true },
@@ -131,11 +135,23 @@ export const MODEL_FAMILY_CONTEXT_WINDOWS: ReadonlyArray<{
     pattern: /^gemini(?!.*-(?:image|tts)).*flash/,
     contextWindow: 1_048_576,
   },
-  // Anthropic Claude 3+ family: 200,000 tokens published standard context.
-  // Sonnet 3.5/5, Opus 3/4.x/5, Haiku 3.5/4.5, Fable 5.
+  // Anthropic Claude 4.6 and later: 1,000,000 tokens, the default with no beta header
+  // (`max_input_tokens` from /v1/models, #416). Opus/Sonnet 4.6+, and every 5.x tier:
+  // Opus 5/5.5, Sonnet 5/5.5, Haiku 5.5, Fable 5/5.1, Mythos 5/5.1. The minor version
+  // takes `-` or `.` (`claude-opus-4.6` on routers), and `(?!\d)` keeps a version
+  // from matching the front of a longer number. Must precede the 200k row below,
+  // which catches everything older.
+  {
+    family: 'claude-1m',
+    pattern:
+      /^claude-(?:(?:opus|sonnet|haiku|fable|mythos)-[5-9]|(?:opus|sonnet)-4[-.][6-9])(?!\d)/,
+    contextWindow: 1_000_000,
+  },
+  // Anthropic Claude 3 through 4.5: 200,000 tokens.
+  // Haiku 4.5, Sonnet/Opus 4.5, Opus 4.1, Opus/Sonnet 4, Claude 3.x, Mythos Preview.
   {
     family: 'claude',
-    pattern: /^claude-(?:[3-9]|opus|sonnet|haiku|fable)/,
+    pattern: /^claude-(?:[3-9]|opus|sonnet|haiku|fable|mythos)/,
     contextWindow: 200_000,
   },
   // OpenAI GPT-4o / GPT-4o-mini: 128,000 tokens.

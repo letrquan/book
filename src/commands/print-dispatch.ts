@@ -84,6 +84,8 @@ export type PrintCommandDispatch =
       prompt: string;
       /** Frontmatter enforcement (allowed-tools / model), as the TUI passes it. */
       commandContext?: CommandContext;
+      /** What an unnamed session is named after instead of `prompt` (a `/goal` condition). */
+      sessionNameSource?: string;
       /** Non-fatal shell-substitution failures, exactly as the TUI collects them. */
       shellErrors?: string[];
     }
@@ -283,6 +285,7 @@ export function createPrintEffectRegistry(): PrintEffectRegistry {
           },
           resolvedBody: kickoff,
         },
+        sessionNameSource: effect.condition,
       };
     })
     .register('clear-goal', (_effect, env, command) => {

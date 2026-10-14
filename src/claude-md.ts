@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, parse, resolve } from 'path';
 import { resolveBookHome } from './book-home.js';
@@ -18,6 +18,14 @@ function readSource(path: string, layer: ProjectInstructionLayer): ProjectInstru
     return body ? { path, layer, body } : null;
   } catch {
     return null;
+  }
+}
+
+function realPathOf(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return resolve(path);
   }
 }
 
@@ -43,9 +51,18 @@ export function discoverProjectInstructions(
   const workspaceRoot = resolve(workspace);
   const systemHome = homeDir ?? homedir();
   const bookHome = homeDir ? join(homeDir, '.book') : resolveBookHome();
+  const loaded = new Set<string>();
   const add = (path: string, layer: ProjectInstructionLayer) => {
     const source = readSource(path, layer);
-    if (source) sources.push(source);
+    if (!source) return;
+    // A file is loaded once, at its first scope. `$HOME` is an ancestor of almost every
+    // workspace, so the walk below meets `~/.claude/CLAUDE.md` again, and a workspace inside
+    // `BOOK_HOME` meets its `AGENTS.md`; both stay user instructions (#430). Real paths, so a
+    // linked home, or a CLAUDE.md linked to the AGENTS.md beside it, counts once too.
+    const key = realPathOf(path);
+    if (loaded.has(key)) return;
+    loaded.add(key);
+    sources.push(source);
   };
 
   add(join(systemHome, '.claude', 'CLAUDE.md'), 'user');
