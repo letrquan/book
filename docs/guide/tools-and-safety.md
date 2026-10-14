@@ -175,9 +175,10 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   applies one only when it matches a single location; the result notes the tolerance used.
   `replaceAll` always requires exact matches.
 - **Cross-harness argument aliases.** Claude Code-style spellings (`file_path`, `old_string`,
-  `new_string`, `replace_all`, Grep `glob`/`-A`/`-B`/`-C`, ApplyPatch `input`) are normalized to
-  Book's canonical arguments before validation, and `invalid_arguments` errors list the allowed
-  argument names.
+  `new_string`, `replace_all`, Grep `glob`/`-A`/`-B`/`-C`/`-i`, ApplyPatch `input`) are normalized
+  to Book's canonical arguments before validation, and `invalid_arguments` errors list the allowed
+  argument names. Grep's `-n` is accepted and ignored, since its results always carry line
+  numbers.
 - **Malformed-JSON arguments.** A call whose arguments are not valid JSON fails with
   `invalid_json_arguments`, and the error names the shape the text arrived in rather than reporting
   schema errors about arguments the model did send:

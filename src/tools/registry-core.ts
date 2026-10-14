@@ -58,6 +58,7 @@ function normalizeToolArguments(
   args: Record<string, unknown>,
 ): Record<string, unknown> {
   const normalized = applyAliasKeys(args, tool.argumentAliases ?? {});
+  for (const ignored of tool.ignoredArguments ?? []) delete normalized[ignored];
   for (const [argName, itemAliases] of Object.entries(tool.arrayItemArgumentAliases ?? {})) {
     const items = normalized[argName];
     if (!Array.isArray(items)) continue;
