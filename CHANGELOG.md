@@ -157,6 +157,13 @@ All notable changes to this project are documented in this file.
   tight: a 401 is always `auth` whatever its body says, a 403 "Invalid API key provided" or
   "Forbidden" and a 404 "Not Found" keep their old readings, and the #383 capacity outage (a quoted
   404 "No endpoints found" with a `(reset after …)` cooldown) is still a retryable `server_error`.
+- **A session started in your home directory reads `~/.book/settings.json` once** (#429). There
+  the user file is also the workspace's `.book/settings.json`, so it loaded a second time as the
+  repository's layer: its rules accumulated twice, and its hooks, allow rules and directories were
+  withheld as repository declarations awaiting `book trust`, then registered twice once approved.
+  The project layer is now skipped when it is the user file, in the loader, the withheld-declaration
+  notices, `book trust` and `book doctor`, and a skill found under both roots is listed once, as
+  yours.
 - **The delegation latency test re-measures a failing verdict before it fails the run** (#390). The
   Windows CI legs sometimes go through a few seconds in which every delegation cycle costs 0.6-3.9s while
   the probe beside it and the child's own timer stay normal, and a re-run of the same commit measures

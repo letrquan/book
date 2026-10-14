@@ -11,6 +11,10 @@ Settings are loaded in priority order (later wins):
 3. `.book/settings.local.json` (local, should be gitignored)
 4. `--settings <path>` CLI flag
 
+In a session started in your home directory with `BOOK_HOME` unset, the workspace's
+`.book/settings.json` is the user file itself: it is read once, as the user layer, and nothing in
+it is held back as a repository declaration.
+
 One family is not "later wins". `sandbox.*` is a boundary between a command and your machine, so
 a **workspace layer may only tighten it** — see [The sandbox](#the-sandbox).
 
