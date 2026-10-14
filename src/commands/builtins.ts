@@ -43,7 +43,7 @@ import type { McpHostSnapshot } from '../mcp-host.js';
 import { settingsScopeLabel, type SettingsScope } from '../settings-scope.js';
 import { applySettingWrite, describeSettingShadow, guardSettingWrite } from '../settings-write.js';
 import { normalizePermissionMode } from '../permission-mode.js';
-import { configuredAdvisorModel } from '../config.js';
+import { advisorModelRefusal, configuredAdvisorModel } from '../config.js';
 
 export interface BuiltinCommand {
   name: string;
@@ -758,6 +758,9 @@ function advisorCommandEffect(
   if (/\s/.test(argument)) {
     return { type: 'local-message', content: ADVISOR_USAGE, isError: true };
   }
+  // Nothing is saved for an id whose key and endpoint are ambiguous (#419).
+  const refusal = advisorModelRefusal(context.runtimeConfig, argument);
+  if (refusal) return { type: 'local-message', content: refusal, isError: true };
   return { type: 'set-advisor', model: argument };
 }
 

@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { loadConfig } from '../config.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { advisorRank } from '../models.js';
 import type { Provider } from '../provider/index.js';
@@ -187,6 +191,64 @@ describe('Advisor tool', () => {
     );
     expect(result.structuredError?.retryable).toBe(false);
     expect(requests).toHaveLength(0);
+  });
+
+  describe('from loadConfig, on the real provider path (#419)', () => {
+    const saved = Object.fromEntries(
+      ['BOOK_API_KEY', 'BOOK_BASE_URL', 'BOOK_HOME', 'BOOK_MODEL', 'BOOK_ADVISOR_MODEL'].map(
+        (name) => [name, process.env[name]],
+      ),
+    );
+    const dirs: string[] = [];
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('never sends BOOK_API_KEY to the default endpoint for a bare advisor id', async () => {
+      const home = mkdtempSync(join(tmpdir(), 'book-advisor-home-'));
+      const workspace = mkdtempSync(join(tmpdir(), 'book-advisor-ws-'));
+      dirs.push(home, workspace);
+      mkdirSync(join(workspace, '.book'));
+      writeFileSync(
+        join(workspace, '.book', 'settings.local.json'),
+        JSON.stringify({
+          model: 'anthropic/claude-sonnet-5-5',
+          advisorModel: 'claude',
+          provider: { anthropic: { type: 'anthropic', baseURL: 'https://api.anthropic.com' } },
+        }),
+      );
+      process.env.BOOK_HOME = home;
+      process.env.BOOK_API_KEY = 'sk-ant-test';
+      delete process.env.BOOK_BASE_URL;
+      delete process.env.BOOK_MODEL;
+      delete process.env.BOOK_ADVISOR_MODEL;
+      const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const config = loadConfig(workspace);
+      expect(config.baseUrl).toBe('https://api.anthropic.com');
+      const [tool] = createAdvisorTools();
+      const result = await tool.execute(
+        {},
+        {
+          workspaceRoot: workspace,
+          env: {},
+          agentConfig: config,
+          conversation: () => [message('user', 'x')],
+        },
+      );
+
+      expect(result.status).toBe('error');
+      expect(result.structuredError?.code).toBe('advisor_unconfigured');
+      expect(result.structuredError?.retryable).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 
   it('does not invite a retry of a consult the provider refused', async () => {

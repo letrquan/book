@@ -62,6 +62,27 @@ configured providers and the prefix matches none of them, Book says so — on st
 inline in `book doctor` — instead of leaving `Credentials: not resolved` as the only symptom of a
 misspelled provider id.
 
+**Which key a model gets.** A provider entry with its own `apiKey` uses it. An entry without one,
+and a bare id that goes to the default endpoint, gets `BOOK_API_KEY` when it is set. Otherwise it
+gets the key the session already sends, but only when its endpoint is the very one the session
+already sends that key to; any other endpoint gets no key. A key configured for one provider is
+never carried to another endpoint, so switching to a bare id cannot hand your Anthropic key to
+`https://api.openai.com/v1`. The default endpoint is `BOOK_BASE_URL` (or the legacy
+`.bookrc.json` `baseUrl`) when set, and `https://api.openai.com/v1` otherwise.
+
+**The advisor fails closed.** `advisorModel` (and `BOOK_ADVISOR_MODEL`, and `/advisor`) is a
+request you do not make yourself, so an id that is not `<provider>/<model>` for a provider in
+`provider` is refused, and nothing is sent, unless one of these holds:
+
+1. it is the main model;
+2. the base URL was set explicitly, with `BOOK_BASE_URL` or the legacy `baseUrl`;
+3. it resolves to exactly the endpoint and key the main session already uses, as a bare
+   `gpt-5` does next to a bare `gpt-4o` on the default endpoint with `BOOK_API_KEY`.
+
+`/advisor <id>` reports the refusal and saves nothing, and an `advisorModel` already in settings
+makes the `Advisor` tool fail with `advisor_unconfigured` instead of making a request. Name the
+provider: `anthropic/claude-opus-5-5`.
+
 Set `BOOK_HOME` to replace the default `~/.book` user-state root. This relocates user settings,
 sessions, memory, managed-agent state and worktrees, jobs, rewind snapshots, telemetry, tool output,
 learned context windows (`model-windows.json`), MCP configuration, and user-level skills, commands,

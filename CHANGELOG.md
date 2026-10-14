@@ -48,15 +48,19 @@ All notable changes to this project are documented in this file.
   or spend carried over from an earlier run) it uses the higher rate as an upper bound. `/cost` and
   `/usage` say when a delegated agent's figure is one; a carried budget does not, so a restarted
   Haiku 5.5 run can stop short of its cap.
-- **A bare `advisorModel` no longer sends your provider's key to another vendor** (#419). An id
-  that names no configured provider, such as `claude`, went to the default endpoint
-  (`https://api.openai.com/v1`) with the key of the provider the session used, so an Anthropic key
-  reached OpenAI on every consultation, and the 401 that came back was marked retryable. A key
-  inherited from configuration now goes only to the endpoint it was configured for, on every model
-  switch and not just the advisor's; any other endpoint gets `BOOK_API_KEY` or no key. With neither
-  a key nor a provider of its own, the `Advisor` tool refuses before sending anything
-  (`advisor_unconfigured`) and suggests `/advisor <provider>/<model>`, and a provider's verdict on
-  the key or the request (auth, quota, 400, 404, 422) is no longer retryable.
+- **A bare `advisorModel` no longer sends your key to another vendor** (#419). An id that names
+  no configured provider, such as `claude`, went to the default endpoint
+  (`https://api.openai.com/v1`) with a key meant for another one: the key of the provider the
+  session used, or `BOOK_API_KEY` when the main model was on a provider of its own, so an
+  Anthropic key reached OpenAI on every consultation, and the 401 that came back was marked
+  retryable. The advisor now fails closed. An id that is not `<provider>/<model>` for a configured
+  provider is refused, with nothing sent (`advisor_unconfigured`, not retryable, suggesting
+  `/advisor <provider>/<model>`), unless it is the main model, the base URL was set explicitly
+  (`BOOK_BASE_URL` or the legacy `baseUrl`), or it resolves to exactly the endpoint and key the
+  session already uses. `/advisor <id>` reports the same refusal and saves nothing. A key
+  inherited from configuration also goes only to the endpoint it was configured for, on every model
+  switch and not just the advisor's; any other endpoint gets `BOOK_API_KEY` or no key. A provider's
+  verdict on the key or the request (auth, quota, 400, 404, 422) is no longer retryable.
 - **The transcript's brightest lines are the answer again, not the agent's bookkeeping.** A sentence
   whose only call updated the plan (TodoWrite) was read as an answer even when the agent went on
   working, so `I'll clone, install, and launch that repo` sat in full ink between grey steps. A

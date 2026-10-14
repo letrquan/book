@@ -875,4 +875,56 @@ describe('/advisor', () => {
       model: null,
     });
   });
+
+  describe('with a main model on a configured provider and BOOK_API_KEY (#419)', () => {
+    const runtimeConfig = () => {
+      const config = defaultConfig({
+        apiKey: 'sk-ant-test',
+        defaultApiKey: 'sk-ant-test',
+        baseUrl: 'https://api.anthropic.com',
+        defaultBaseUrl: 'https://api.openai.com/v1',
+        defaultBaseUrlExplicit: false,
+        model: 'claude-sonnet-5-5',
+        modelSelection: 'anthropic/claude-sonnet-5-5',
+      });
+      config.settings.provider.anthropic = {
+        type: 'anthropic',
+        baseURL: 'https://api.anthropic.com',
+        models: {},
+      };
+      return config;
+    };
+
+    it('refuses a bare id, saving nothing', () => {
+      const effect = registry.execute(
+        'advisor',
+        'claude',
+        context({ runtimeConfig: runtimeConfig() }),
+      );
+      expect(effect).toMatchObject({ type: 'local-message', isError: true });
+      expect(effect).toHaveProperty('content', expect.stringContaining('use <provider>/<model>'));
+    });
+
+    it('still sets <provider>/<model> for a configured provider', () => {
+      expect(
+        registry.execute(
+          'advisor',
+          'anthropic/claude-opus-5-5',
+          context({ runtimeConfig: runtimeConfig() }),
+        ),
+      ).toEqual({ type: 'set-advisor', model: 'anthropic/claude-opus-5-5' });
+    });
+
+    it('still turns the advisor off and reports its status', () => {
+      expect(
+        registry.execute('advisor', 'off', context({ runtimeConfig: runtimeConfig() })),
+      ).toEqual({
+        type: 'set-advisor',
+        model: null,
+      });
+      expect(
+        registry.execute('advisor', 'status', context({ runtimeConfig: runtimeConfig() })),
+      ).toMatchObject({ type: 'local-message' });
+    });
+  });
 });

@@ -239,6 +239,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     defaultEffort,
     defaultApiKey,
     defaultBaseUrl,
+    defaultBaseUrlExplicit: Boolean(explicitBaseUrl),
     defaultProvider,
     autoCompactEnabled: settings.autoCompactEnabled ?? legacy?.autoCompactEnabled ?? true,
     workspace: resolvedWorkspace,
@@ -527,6 +528,43 @@ export function configuredAdvisorModel(
   config: Pick<AgentConfig, 'advisorModel' | 'settings'>,
 ): string | undefined {
   return config.advisorModel?.trim() || config.settings?.advisorModel?.trim() || undefined;
+}
+
+/**
+ * Why `advisorModel` may not be sent a request, or `undefined` when it may. The advisor
+ * is a request the user did not make this turn, so it fails closed: an id that is not
+ * `<provider>/<model>` for a provider in `settings.provider` resolves against the default
+ * endpoint with whichever key is lying around, and that was the user's Anthropic key
+ * going to api.openai.com on every consult (#419). Such an id is allowed only when:
+ *
+ * 1. it is the main model;
+ * 2. the base URL was set explicitly (BOOK_BASE_URL or the legacy `baseUrl`), so the
+ *    default endpoint is the one the user chose; or
+ * 3. it resolves to the very endpoint and key the main session already uses, so the
+ *    request reaches no host that is not already receiving that key every turn.
+ *
+ * `config` is the main session's config.
+ */
+export function advisorModelRefusal(config: AgentConfig, advisorModel: string): string | undefined {
+  const id = advisorModel.trim();
+  if (id === config.modelSelection || id === config.model) return undefined;
+  const slash = id.indexOf('/');
+  const providers = config.settings.provider;
+  if (slash > 0 && slash < id.length - 1 && Object.hasOwn(providers, id.slice(0, slash))) {
+    return undefined;
+  }
+  if (config.defaultBaseUrlExplicit) return undefined;
+  try {
+    const resolved = resolveModelProviderConfig(config, id);
+    if (resolved.baseUrl === config.baseUrl && resolved.apiKey === config.apiKey) return undefined;
+  } catch {
+    // `provider/` with no model is no model id at all; refuse it like any other.
+  }
+  const configured = Object.keys(providers).sort();
+  return (
+    `advisor model "${id}" names no configured provider, so its key and endpoint are ambiguous; ` +
+    `use <provider>/<model>${configured.length ? ` (configured: ${configured.join(', ')})` : ''}`
+  );
 }
 
 /**

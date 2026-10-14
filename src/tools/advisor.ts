@@ -2,7 +2,11 @@ import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js'
 import type { AgentConfig } from '../types/runtime.js';
 import { toolFailure, toolSuccess } from './result.js';
 import { createProvider, type Provider } from '../provider/index.js';
-import { configuredAdvisorModel, resolveAdvisorModelConfig } from '../config.js';
+import {
+  advisorModelRefusal,
+  configuredAdvisorModel,
+  resolveAdvisorModelConfig,
+} from '../config.js';
 import { advisorRank, resolveContextLimit, stripProvider } from '../models.js';
 import {
   REDUCER_OUTPUT_MIN_MARGIN_TOKENS,
@@ -142,8 +146,22 @@ function namesConfiguredProvider(config: AgentConfig, model: string): boolean {
   return slash > 0 && config.settings.provider[model.slice(0, slash)] !== undefined;
 }
 
+const ADVISOR_PROVIDER_REMEDIATION =
+  'The user can choose a model with its provider: /advisor <provider>/<model>.';
+
 async function consultAdvisor(ctx: ToolContext, options: AdvisorToolOptions): Promise<ToolResult> {
   const config = ctx.agentConfig;
+  // Before anything is resolved, let alone created or sent: an id that names no configured
+  // provider may not carry a key to an endpoint the user never paired it with (#419).
+  const configured = config ? configuredAdvisorModel(config) : undefined;
+  const refusal = config && configured ? advisorModelRefusal(config, configured) : undefined;
+  if (refusal) {
+    return toolFailure(`Advisor unavailable (${refusal})`, {
+      code: 'advisor_unconfigured',
+      retryable: false,
+      remediation: ADVISOR_PROVIDER_REMEDIATION,
+    });
+  }
   const advisorConfig = config ? resolveAdvisorModelConfig(config) : undefined;
   if (!advisorConfig) {
     return toolFailure('No advisor model is configured.', {
@@ -152,10 +170,10 @@ async function consultAdvisor(ctx: ToolContext, options: AdvisorToolOptions): Pr
     });
   }
   const model = configuredAdvisorModel(advisorConfig) ?? advisorConfig.model;
-  // An id that names no configured provider goes to the default endpoint, which has no
-  // key when BOOK_API_KEY is unset: the user never configured that endpoint at all.
-  // Refuse before sending anything, and say so -- the endpoint's 401 would blame a key
-  // that is fine (#419). A configured provider without a key (a local server) still runs.
+  // An id the refusal above let through (the main model, an explicit base URL, or the
+  // main session's own endpoint and key) can still have no key at all. Refuse that too,
+  // and say so -- the endpoint's 401 would blame a key that is fine (#419). A configured
+  // provider without a key (a local server) still runs.
   if (!advisorConfig.apiKey && !namesConfiguredProvider(advisorConfig, model)) {
     return toolFailure(
       `Advisor unavailable (advisor model "${model}" names no configured provider, and ` +
@@ -163,7 +181,7 @@ async function consultAdvisor(ctx: ToolContext, options: AdvisorToolOptions): Pr
       {
         code: 'advisor_unconfigured',
         retryable: false,
-        remediation: 'The user can choose a model with its provider: /advisor <provider>/<model>.',
+        remediation: ADVISOR_PROVIDER_REMEDIATION,
       },
     );
   }

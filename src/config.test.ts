@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
+  advisorModelRefusal,
   applyModelDefaults,
   clampEffortToCatalog,
   compactsOnSessionModel,
@@ -1076,6 +1077,82 @@ describe('loadConfig provider registry', () => {
     process.env.BOOK_MAX_TOKENS = '0';
     expect(() => loadConfig(workspace, { noSettings: true })).toThrow(
       /BOOK_MAX_TOKENS must be a positive integer/,
+    );
+  });
+});
+
+describe('advisorModelRefusal (#419)', () => {
+  function configure(settings: Record<string, unknown>): void {
+    writeFileSync(join(workspace, '.book', 'settings.local.json'), JSON.stringify(settings));
+  }
+  const anthropicProvider = {
+    anthropic: { type: 'anthropic', baseURL: 'https://api.anthropic.com' },
+  };
+
+  it('refuses a bare id when BOOK_API_KEY would be paired with the default endpoint', () => {
+    process.env.BOOK_API_KEY = 'sk-ant-test';
+    configure({ model: 'anthropic/claude-sonnet-5-5', provider: anthropicProvider });
+    const config = loadConfig(workspace);
+    // The main model is right: Anthropic's endpoint with the user's key.
+    expect(config.baseUrl).toBe('https://api.anthropic.com');
+    expect(config.apiKey).toBe('sk-ant-test');
+
+    expect(advisorModelRefusal(config, 'claude')).toBe(
+      'advisor model "claude" names no configured provider, so its key and endpoint are ' +
+        'ambiguous; use <provider>/<model> (configured: anthropic)',
+    );
+  });
+
+  it('omits the configured list when no provider is configured', () => {
+    process.env.BOOK_API_KEY = 'sk-test';
+    configure({ model: 'gpt-4o' });
+    // A session switched at runtime onto an endpoint of its own, with no provider registry.
+    const config = { ...loadConfig(workspace), baseUrl: 'http://localhost:9/v1', apiKey: 'other' };
+    const refusal = advisorModelRefusal(config, 'claude');
+    expect(refusal).toMatch(/use <provider>\/<model>$/);
+    expect(refusal).not.toContain('configured:');
+  });
+
+  it('allows a bare id that reaches only the endpoint and key the main session uses', () => {
+    process.env.BOOK_API_KEY = 'sk-test';
+    configure({ model: 'gpt-4o' });
+    expect(advisorModelRefusal(loadConfig(workspace), 'gpt-5')).toBeUndefined();
+  });
+
+  it('allows a bare id when the base URL was set explicitly', () => {
+    process.env.BOOK_API_KEY = 'sk-ant-test';
+    process.env.BOOK_BASE_URL = 'https://proxy.example/v1';
+    configure({ model: 'anthropic/claude-sonnet-5-5', provider: anthropicProvider });
+    const config = loadConfig(workspace);
+    expect(config.defaultBaseUrlExplicit).toBe(true);
+    expect(advisorModelRefusal(config, 'foo')).toBeUndefined();
+  });
+
+  it('records that the default base URL was not chosen', () => {
+    expect(loadConfig(workspace).defaultBaseUrlExplicit).toBe(false);
+  });
+
+  it('allows the main model, by selection or by bare name', () => {
+    process.env.BOOK_API_KEY = 'sk-ant-test';
+    configure({ model: 'anthropic/claude-sonnet-5-5', provider: anthropicProvider });
+    const config = loadConfig(workspace);
+    expect(advisorModelRefusal(config, 'anthropic/claude-sonnet-5-5')).toBeUndefined();
+    expect(advisorModelRefusal(config, 'claude-sonnet-5-5')).toBeUndefined();
+  });
+
+  it('allows <provider>/<model> for a configured provider', () => {
+    process.env.BOOK_API_KEY = 'sk-ant-test';
+    configure({ model: 'anthropic/claude-sonnet-5-5', provider: anthropicProvider });
+    const config = loadConfig(workspace);
+    expect(advisorModelRefusal(config, 'anthropic/claude-opus-5-5')).toBeUndefined();
+    expect(advisorModelRefusal(config, 'anthropic/')).toBeDefined();
+  });
+
+  it('refuses a prefix that names no configured provider', () => {
+    process.env.BOOK_API_KEY = 'sk-ant-test';
+    configure({ model: 'anthropic/claude-sonnet-5-5', provider: anthropicProvider });
+    expect(advisorModelRefusal(loadConfig(workspace), 'nope/x')).toContain(
+      'advisor model "nope/x" names no configured provider',
     );
   });
 });

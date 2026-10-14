@@ -221,6 +221,11 @@ export interface AgentConfig {
   /** Plain-model fallback values used after provider/model switches. */
   defaultApiKey?: string;
   defaultBaseUrl?: string;
+  /**
+   * Whether `defaultBaseUrl` was chosen (BOOK_BASE_URL or the legacy `.bookrc.json` `baseUrl`)
+   * rather than being the built-in OpenAI default. Recorded at load, never inferred from the URL.
+   */
+  defaultBaseUrlExplicit?: boolean;
   defaultProvider?: 'anthropic' | 'openai' | 'auto';
   autoCompactEnabled: boolean;
   /**
