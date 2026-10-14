@@ -10,6 +10,8 @@ import {
   startupAnimationEnvNote,
   ignoredWorkspaceSandboxKeys,
   formatIgnoredWorkspaceSandboxKey,
+  isUserSettingsFile,
+  settingsLayerPaths,
   workspaceLayerThatEnabledSandbox,
 } from './settings-loader.js';
 import { hookFingerprint } from './hook-approvals.js';
@@ -460,6 +462,62 @@ describe('resolveSettings — layered merging', () => {
       'project-notify',
       'local-notify',
     ]);
+  });
+
+  // A workspace at `$HOME` (BOOK_HOME unset) names the user file as its project file too.
+  // Read twice, the user's own hooks were withheld as a repository's, and once approved
+  // they ran twice (#429).
+  describe('a workspace at the home directory (#429)', () => {
+    function writeUserFileAndApprove(workspace: string): void {
+      mkdirSync(join(userDir, '.book'), { recursive: true });
+      writeFileSync(
+        join(userDir, '.book', 'settings.json'),
+        JSON.stringify({ hooks: { PreToolUse: [{ command: 'user-hook' }] } }),
+      );
+      // The decision `book trust hook --all-pending` recorded while the file passed for a
+      // repository's.
+      updateWorkspaceTrust(
+        workspace,
+        (trust) => {
+          trust.hookEntries[hookFingerprint('PreToolUse', { command: 'user-hook', env: {} })] =
+            'approved';
+        },
+        join(userDir, '.book', 'trust.json'),
+      );
+    }
+
+    it('reads the user settings file once, as the user layer', () => {
+      writeUserFileAndApprove(userDir);
+
+      const result = resolveSettings(userDir, undefined, { home: userDir });
+
+      expect(result.hooks.PreToolUse.map((hook) => hook.command)).toEqual(['user-hook']);
+      expect(settingsLayerPaths(userDir, undefined, { home: userDir })).toEqual([
+        join(userDir, '.book', 'settings.json'),
+        join(userDir, '.book', 'settings.local.json'),
+      ]);
+    });
+
+    it('sees through a link to the home directory', () => {
+      const linked = join(dir, 'home-link');
+      symlinkSync(userDir, linked, 'junction');
+      writeUserFileAndApprove(linked);
+
+      const result = resolveSettings(linked, undefined, { home: userDir });
+
+      expect(result.hooks.PreToolUse.map((hook) => hook.command)).toEqual(['user-hook']);
+      expect(settingsLayerPaths(linked, undefined, { home: userDir })).toHaveLength(2);
+      expect(isUserSettingsFile(join(linked, '.book', 'settings.json'), { home: userDir })).toBe(
+        true,
+      );
+    });
+
+    it('still reads a project file that is not the user file', () => {
+      expect(isUserSettingsFile(join(dir, '.book', 'settings.json'), { home: userDir })).toBe(
+        false,
+      );
+      expect(settingsLayerPaths(dir, undefined, { home: userDir })).toHaveLength(3);
+    });
   });
 
   it('additionalDirectories concatenate across scopes, minus the gated project layer', () => {

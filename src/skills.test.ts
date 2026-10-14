@@ -352,6 +352,23 @@ describe('discoverSkills', () => {
     expect(review.issues.map((issue) => issue.code)).toContain('resource_limit');
   });
 
+  // #429. A workspace at `$HOME` walks the user's own roots again as project roots, and a
+  // project skill asks before the model may run it.
+  it('keeps the user roots user-scoped for a workspace at the home directory', () => {
+    const roots = skillRoots(dir, { homeDir: dir, projectRoot: dir });
+    const at = (path: string) => roots.filter((root) => root.path === path);
+
+    for (const path of [
+      join(dir, '.claude', 'skills'),
+      join(dir, '.agents', 'skills'),
+      join(dir, '.book', 'skills'),
+    ]) {
+      expect(at(path).map((root) => root.source)).toEqual(['user']);
+    }
+    // The one project-only root at that directory is still a project root.
+    expect(at(join(dir, '.opencode', 'skills')).map((root) => root.source)).toEqual(['project']);
+  });
+
   it.skipIf(process.platform !== 'win32')(
     'treats Windows case-only root differences as the same project path',
     () => {
