@@ -27,6 +27,18 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Claude 4.6 and later get their 1M context window** (#416). Every Claude model resolved to a
+  200,000-token window, so Book compacted at about a fifth of what Opus 4.6–4.8, Sonnet 4.6, and
+  every 5.x model (Opus, Sonnet, Haiku, Fable, Mythos) accept. These now resolve to 1,000,000,
+  matching `max_input_tokens` from Anthropic's `/v1/models`; Haiku 4.5, the 4.5 models, and older
+  stay at 200,000. The window follows the model name on any route, so a router that caps a Claude
+  model lower is learned from its first overflow refusal, or can be declared with `contextWindow`.
+  A long Haiku 5.5 session now runs past 100,000 prompt tokens, where its per-token price is 5x.
+- **`/model` lists the current Claude models, and Haiku 5.5 takes an effort level.** The picker
+  gained Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1. Haiku 5.5 was missing from the
+  Anthropic provider's adaptive-thinking models, so a request to it carried neither `thinking` nor
+  `output_config.effort` and ran at the model's own `medium` whatever effort was set; it now gets
+  both, as the other 5.x models do.
 - **Claude Haiku 5.5, Opus 4.5 and Sonnet 4.5 are priced, and Sonnet 5.5 cache reads cost what
   Anthropic charges** (#415). The price table had no rate for the first three, so
   `--max-budget-usd` refused every run on them and `/cost` showed no dollar figure. Sonnet 5.5's

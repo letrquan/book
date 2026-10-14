@@ -251,6 +251,7 @@ const ADAPTIVE_THINKING_MODELS = new Set([
   'claude-opus-4-6',
   'claude-sonnet-5',
   'claude-sonnet-4-6',
+  'claude-haiku-5',
   'claude-fable-5',
   'claude-mythos-5',
 ]);
@@ -510,9 +511,9 @@ export async function* chatCompletionStream(
   // effort that resolved to none (a compact-model request on a catalog with no
   // level at or below its cap) sends neither field, so the model runs at its
   // own default — no thinking at all on Opus 4.6–4.8 and Sonnet 4.6, adaptive
-  // thinking at the model's default effort on Opus 5 and 5.5, Fable 5 and
-  // Sonnet 5. `{ type: 'disabled' }` is not sent instead: Fable 5 and Opus 5.5
-  // reject it with a 400.
+  // thinking at the model's default effort on Opus 5 and 5.5, Fable 5,
+  // Sonnet 5 and Haiku 5.5. `{ type: 'disabled' }` is not sent instead: Fable 5
+  // and Opus 5.5 reject it with a 400.
   //
   // Opus 4.5 straddles the two: it accepts `output_config.effort`
   // (low/medium/high) but not adaptive thinking, so it gets the effort alone,
