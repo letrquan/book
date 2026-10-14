@@ -193,11 +193,14 @@ at `high` and with its output capped at what that model accepts, and returns the
 tool's result (marked when it was cut off at the output limit). The advisor cannot run tools.
 `/advisor` alone (or `status`, `show`, `version`, and Claude Code's other status words) shows the
 current advisor, `/advisor off` removes it, and the choice is saved to `~/.book/settings.json` as `advisorModel`
-(`BOOK_ADVISOR_MODEL` outranks it). The consultation is billed to the session at the advisor
-model's rates, and `/cost` lists it, and the goal checks, as their own lines. Advice is another
-model's text, so after a consultation a `MemorySave` goes to the memory inbox, as it does after
-`Task`. Like `TodoWrite`, the tool needs no permission prompt (an explicit `deny` or `ask`
-rule naming it still applies).
+(`BOOK_ADVISOR_MODEL` outranks it). A model id that names no configured provider goes to the
+default endpoint with `BOOK_API_KEY`, or with a key the session already sends there, but never
+with a key configured for another endpoint; with neither, the tool refuses before sending anything
+(`advisor_unconfigured`), so name the provider: `/advisor <provider>/<model>`. The consultation is
+billed to the session at the advisor model's rates, and `/cost` lists it, and the goal checks, as
+their own lines. Advice is another model's text, so after a consultation a `MemorySave` goes to the
+memory inbox, as it does after `Task`. Like `TodoWrite`, the tool needs no permission prompt (an
+explicit `deny` or `ask` rule naming it still applies).
 
 Unlike Claude Code, whose advisor is a server-side tool available only on Anthropic's API, Book's
 runs client-side, so any provider and any model can be the advisor. For Claude models, `/advisor`

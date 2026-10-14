@@ -5,6 +5,7 @@ import {
   compactsOnSessionModel,
   freezeAgentConfig,
   loadConfig,
+  resolveAdvisorModelConfig,
   resolveCompactModelConfig,
   resolveEffortExplicit,
   resolveModelProviderConfig,
@@ -543,6 +544,58 @@ describe('loadConfig provider registry', () => {
     expect(switched.baseUrl).toBe('https://api.openai.com/v1');
     expect(switched.apiKey).toBe('test-key');
     expect(switched.modelInfo).toBeUndefined();
+  });
+
+  it("never carries a provider's key to another endpoint (#419)", () => {
+    delete process.env.BOOK_API_KEY;
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({
+        model: 'anthropic/claude-sonnet-5-5',
+        provider: {
+          anthropic: {
+            type: 'anthropic',
+            baseURL: 'https://api.anthropic.com',
+            apiKey: 'anthropic-key',
+          },
+          lab: { type: 'openai', baseURL: 'http://localhost:9/v1' },
+        },
+      }),
+    );
+    const config = loadConfig(workspace);
+    expect(config.apiKey).toBe('anthropic-key');
+
+    // An unprefixed id goes to the default endpoint, where that key does not belong.
+    const plain = resolveModelProviderConfig(config, 'claude');
+    expect(plain.baseUrl).toBe('https://api.openai.com/v1');
+    expect(plain.apiKey).toBe('');
+    const advisor = resolveAdvisorModelConfig({ ...config, advisorModel: 'claude' });
+    expect(advisor?.baseUrl).toBe('https://api.openai.com/v1');
+    expect(advisor?.apiKey).toBe('');
+    // Nor does a keyless provider entry elsewhere inherit it.
+    expect(resolveModelProviderConfig(config, 'lab/model').apiKey).toBe('');
+
+    // BOOK_API_KEY is the user's own key for anything without one, and still goes.
+    process.env.BOOK_API_KEY = 'default-key';
+    const withDefault = loadConfig(workspace);
+    expect(resolveModelProviderConfig(withDefault, 'claude').apiKey).toBe('default-key');
+    expect(resolveModelProviderConfig(withDefault, 'lab/model').apiKey).toBe('default-key');
+  });
+
+  it("keeps a provider's key on an unprefixed switch to the same endpoint", () => {
+    delete process.env.BOOK_API_KEY;
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({
+        model: 'openai/gpt-4o',
+        provider: { openai: { type: 'openai', apiKey: 'openai-key' } },
+      }),
+    );
+
+    // The entry names no baseURL, so it already sends its key to the default endpoint.
+    const switched = resolveModelProviderConfig(loadConfig(workspace), 'gpt-4o-mini');
+    expect(switched.baseUrl).toBe('https://api.openai.com/v1');
+    expect(switched.apiKey).toBe('openai-key');
   });
 
   it('rejects provider-prefixed models with an empty model name', () => {

@@ -172,6 +172,43 @@ describe('Advisor tool', () => {
     expect(requests[0].maxOutputTokens).toBe(4_096);
   });
 
+  it('refuses an advisor model with no provider and no key, sending nothing (#419)', async () => {
+    const { provider, requests } = replying('unused');
+    const [tool] = createAdvisorTools({ provider });
+    const ctx = context('claude-opus-5-5', [message('user', 'x')]);
+    // The main model's key came from its provider entry, and BOOK_API_KEY is unset.
+    ctx.agentConfig!.defaultApiKey = '';
+    ctx.agentConfig!.defaultBaseUrl = 'https://api.openai.com/v1';
+
+    const result = await tool.execute({}, ctx);
+    expect(result.structuredError?.code).toBe('advisor_unconfigured');
+    expect(result.structuredError?.message).toContain(
+      '"claude-opus-5-5" names no configured provider',
+    );
+    expect(result.structuredError?.retryable).toBe(false);
+    expect(requests).toHaveLength(0);
+  });
+
+  it('does not invite a retry of a consult the provider refused', async () => {
+    const refusing = (errorCode: string) =>
+      ({
+        id: 'refusing',
+        stream: async function* () {
+          yield { type: 'error', error: `API Error (${errorCode})`, errorCode };
+        },
+      }) as unknown as Provider;
+    for (const [code, retryable] of [
+      ['auth', false],
+      ['quota', false],
+      ['not_found', false],
+      ['overloaded', true],
+    ] as const) {
+      const [tool] = createAdvisorTools({ provider: refusing(code) });
+      const result = await tool.execute({}, context('claude-opus-5-5', [message('user', 'x')]));
+      expect(result.structuredError?.retryable, code).toBe(retryable);
+    }
+  });
+
   it('refuses without a billed call when the host does not share the conversation', async () => {
     const { provider, requests } = replying('unused');
     const [tool] = createAdvisorTools({ provider });

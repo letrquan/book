@@ -284,15 +284,29 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   return config;
 }
 
+/**
+ * The key for a request routed to `baseUrl` whose own configuration names none:
+ * BOOK_API_KEY, or else the key `config` already sends -- but only to the endpoint
+ * it already sends it to. A key from `provider.anthropic` carried to another
+ * provider's endpoint is the user's Anthropic key handed to another vendor: an
+ * unprefixed `advisorModel` sent it to api.openai.com on every consult (#419).
+ * With neither, the request goes out without a key, and fails as one.
+ */
+function inheritedApiKey(config: AgentConfig, baseUrl: string): string {
+  // `||`, not `??`: `defaultApiKey` is `''` when BOOK_API_KEY is unset, and an
+  // empty string is present as far as `??` is concerned. Switching models would
+  // then wipe a key that came from a provider entry and send every later request
+  // out with an empty credential.
+  if (config.defaultApiKey) return config.defaultApiKey;
+  return baseUrl === config.baseUrl ? config.apiKey : '';
+}
+
 function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
+  const baseUrl = config.defaultBaseUrl || config.baseUrl;
   return {
     ...config,
-    // `||`, not `??`: `defaultApiKey` is `''` when BOOK_API_KEY is unset, and
-    // an empty string is present as far as `??` is concerned. Switching to an
-    // unprefixed model would then wipe a key that came from a provider entry
-    // and send every later request out with an empty credential.
-    apiKey: config.defaultApiKey || config.apiKey,
-    baseUrl: config.defaultBaseUrl || config.baseUrl,
+    apiKey: inheritedApiKey(config, baseUrl),
+    baseUrl,
     model,
     modelSelection: model,
     modelInfo: undefined,
@@ -390,14 +404,13 @@ export function resolveModelProviderConfig(
   const provider = config.settings.provider[providerId];
   if (!provider) return plainModelConfig(config, rawModel);
 
-  // Same empty-string trap as `plainModelConfig`: an unset BOOK_API_KEY is `''`,
-  // which is defined, so a presence test would prefer it over a real key.
-  const fallbackApiKey = config.defaultApiKey || config.apiKey;
-  const apiKey = resolveSecret(provider.apiKey, config.workspace) ?? fallbackApiKey;
+  const baseUrl = provider.baseURL ?? provider.baseUrl ?? config.defaultBaseUrl ?? config.baseUrl;
+  const apiKey =
+    resolveSecret(provider.apiKey, config.workspace) ?? inheritedApiKey(config, baseUrl);
   return {
     ...config,
     apiKey,
-    baseUrl: provider.baseURL ?? provider.baseUrl ?? config.defaultBaseUrl ?? config.baseUrl,
+    baseUrl,
     model,
     modelSelection: rawModel,
     modelInfo: provider.models[model],
