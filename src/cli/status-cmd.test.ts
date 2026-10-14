@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -288,5 +288,46 @@ describe('book status run record', () => {
 
     const parsed = JSON.parse(out.text());
     expect(parsed.run).toMatchObject({ liveness: 'running', turn: 16, pid: process.pid });
+  });
+
+  it('reports a newer session with only a run record, and skips one with neither (#428)', () => {
+    // A print run of host-performed commands (`/review --deep`) records no user message,
+    // only usage, so `messageCount` stays 0 while the run record says it is live.
+    vi.useFakeTimers({ now: 1_000, toFake: ['Date'] });
+    try {
+      const home = mkdtempSync(join(tmpdir(), 'book-status-home-'));
+      dirs.push(home);
+      const s = new SessionStore(join(home, 'sessions'));
+      const conversation = s.create({ cwd: process.cwd() });
+      s.append(conversation, userRecord('an older conversation'));
+      const usageOnly = (id: string): void =>
+        s.append(id, {
+          type: 'usage',
+          timestamp: Date.now(),
+          data: {
+            version: 1,
+            usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+            responseModel: 'claude-sonnet-5',
+          },
+        });
+
+      vi.setSystemTime(2_000);
+      const neither = s.create({ cwd: process.cwd() });
+      usageOnly(neither);
+      const reported = (): string => {
+        const out = capture();
+        runStatusCommand({ workspace: process.cwd(), store: s, home, json: true, stdout: out });
+        return JSON.parse(out.text()).sessionId;
+      };
+      expect(reported()).toBe(conversation);
+
+      vi.setSystemTime(3_000);
+      const live = s.create({ cwd: process.cwd() });
+      usageOnly(live);
+      writeRunStatus({ ...record({ sessionId: live }), sessionId: live }, home);
+      expect(reported()).toBe(live);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

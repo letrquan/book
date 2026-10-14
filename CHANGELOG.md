@@ -148,7 +148,9 @@ All notable changes to this project are documented in this file.
 - **A session nothing was sent in is no longer offered back** (#428). Opening Book and leaving
   without a prompt left an empty session behind, which `--continue` and `book status` then picked
   as the most recent here, and which `/resume` listed. All three now skip sessions with no
-  messages. The empty session file itself is still left behind.
+  messages. `book status` also counts a session that has a run record, so a live print-mode run
+  of host-performed commands only (such as `/review`) is still the one it reports. The empty
+  session file itself is still left behind.
 - **A model the provider no longer serves is no longer reported as a rejected credential** (#387).
   9router wraps an upstream 403 in its own 503 (`[route] [403]: Model is no longer available`),
   which `classifyApiError` read through the quoted status as `auth` — so the run parked as

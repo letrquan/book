@@ -88,7 +88,7 @@ program
   .option('-q, --quiet', 'Print mode: no progress lines on stderr')
   .option('--json-schema <schema>', 'Return validated JSON matching a JSON Schema (print mode)')
   .option('-r, --resume <id|name>', 'Resume a session by id or name')
-  .option('-c, --continue', 'Resume the most recent session in this directory')
+  .option('-c, --continue', 'Resume the most recent session in this directory that has a message')
   .option('--session-id <uuid>', 'Use a specific session id')
   .option('-n, --name <name>', 'Set a display name for the session')
   .option('--no-session-persistence', 'Do not save the session to disk')
@@ -138,7 +138,10 @@ program
 program
   .command('status')
   .description('Report what a session is working on and what it has spent (no credentials needed)')
-  .argument('[session]', 'Session id or name (defaults to the most recent in this workspace)')
+  .argument(
+    '[session]',
+    'Session id or name (defaults to the most recent session in this workspace with a message or a run record)',
+  )
   .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
   .option('--json', 'Emit the status as JSON')
   .action((session: string | undefined, options: { workspace?: string; json?: boolean }) => {
