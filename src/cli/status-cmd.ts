@@ -133,7 +133,10 @@ export interface SessionStatus {
     todos: Array<{ content: string; status: string }>;
     tasks: Array<{ id: string; subject: string; status: string; blockedBy: string[] }>;
   };
-  /** Absent when no run of this session ever wrote a liveness record. */
+  /**
+   * Absent when no run of this session ever wrote a liveness record, or when the 30-day
+   * retention has removed it.
+   */
   run?: RunStatus;
 }
 

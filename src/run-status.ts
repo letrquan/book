@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { resolveBookHome } from './book-home.js';
+import { isProcessAlive } from './jobs/process-tree.js';
 
 /**
  * A small, always-current file saying what a run is doing right now.
@@ -138,12 +139,42 @@ export function clearRunStatus(sessionId: string, home = resolveBookHome()): voi
   }
 }
 
+/** `<session>.json`, or the `<session>.json.<pid>.tmp` an interrupted atomic write leaves. */
+const RUN_RECORD_NAME = /\.json$/;
+const RUN_TEMP_NAME = /\.json\..+\.tmp$/;
+
+/**
+ * True when `path` holds the record of a run that may still be going: a numeric pid
+ * naming a live process, and neither a terminal nor a crash outcome. Anything else
+ * (torn JSON, no pid, a dead process, a finished run) is not worth keeping.
+ */
+function recordsLiveRun(path: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (!parsed || typeof parsed !== 'object') return false;
+    const record = parsed as Partial<RunStatusRecord>;
+    if (record.terminal || record.crash) return false;
+    const pid = record.pid;
+    // `process.kill(0, 0)` signals the whole process group, so anything that is not
+    // a positive integer must never reach the liveness probe.
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
+    return isProcessAlive(pid);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Remove run records last written more than `days` ago, so `runs/` follows the same
  * retention as the sessions it describes instead of growing without bound (#422).
  *
- * Age alone is safe for a live run: it rewrites its record at every turn boundary, and
- * a run that starts writes a fresh one at once. Best effort, like every startup sweep.
+ * A run rewrites its record at each turn boundary, but a live run can still go that
+ * long without one (stream-json input waiting on stdin, a question handler that never
+ * returns, a wedged turn). So a record past the cutoff is kept while it names a live
+ * process and carries no terminal or crash outcome; a file is read only once it is
+ * past the cutoff. Only `*.json` records and leftover `*.json.*.tmp` write files are
+ * touched; directories, symlinks and every other file are left alone. Best effort,
+ * like every startup sweep: one entry that fails does not stop the rest.
  */
 export function cleanupRunStatus(days: number, home = resolveBookHome(), now = Date.now()): number {
   const cutoff = now - Math.max(1, days) * 86_400_000;
@@ -152,9 +183,12 @@ export function cleanupRunStatus(days: number, home = resolveBookHome(), now = D
   try {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       if (!entry.isFile()) continue;
+      const isRecord = RUN_RECORD_NAME.test(entry.name);
+      if (!isRecord && !RUN_TEMP_NAME.test(entry.name)) continue;
       const path = join(directory, entry.name);
       try {
         if (statSync(path).mtimeMs >= cutoff) continue;
+        if (isRecord && recordsLiveRun(path)) continue;
         unlinkSync(path);
         removed++;
       } catch {

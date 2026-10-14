@@ -39,7 +39,7 @@ Profile model precedence is invocation override, `agents.profiles.<name>.model`,
 
 > Snapshot privacy: non-ignored untracked files are written into the local Git object database so managed worktrees can reproduce the parent state. Ignore secrets and other sensitive local files before enabling agents. Dismissing or aging out an agent removes its managed worktree, branch, and orphaned snapshot ref. Agent telemetry stores metrics and hashes only, never prompts or file contents.
 
-Book clears sessions and rotated debug-log backups after 30 days. Startup resolves and preserves the active session before cleanup, and the current debug log is never removed by age-based retention.
+Book clears sessions, rotated debug-log backups, and run records (`<BOOK_HOME>/runs/`) after 30 days; a run record whose run is still alive is kept. Startup resolves and preserves the active session before cleanup, and the current debug log is never removed by age-based retention.
 
 ## Code review
 

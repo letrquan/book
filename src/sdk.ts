@@ -125,8 +125,9 @@ export async function* query(
   if (persistSession && !options.sessionStore && sessionStore) {
     cleanupDebugLogs(DEFAULT_LOCAL_DATA_RETENTION_DAYS, getDebugLogPath());
     sessionStore.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
-    cleanupRunStatus(DEFAULT_LOCAL_DATA_RETENTION_DAYS);
   }
+  // headless.ts writes a run record on every query, whatever the session settings.
+  cleanupRunStatus(DEFAULT_LOCAL_DATA_RETENTION_DAYS);
   const queue = new AsyncEventQueue<QueryEvent>();
   let connections: Awaited<ReturnType<typeof connectMcpServers>>['connections'] = [];
 

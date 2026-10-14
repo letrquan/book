@@ -63,7 +63,8 @@ All notable changes to this project are documented in this file.
   stays rose, since a non-zero exit is the transcript's only record of a red test run.
 - **Run records are pruned** (#422). `<BOOK_HOME>/runs/` kept a record for every session ever run.
   Startup now deletes the records not written in 30 days, the retention sessions and debug logs
-  already follow; as with sessions, an SDK caller that passes its own `sessionStore` is not swept.
+  already follow. Every CLI and SDK start sweeps it, whatever the session settings, and a record
+  whose run is still alive is kept.
 - **A failure's message is no longer cut to the metadata column.** It was truncated to 64 columns
   at the right edge of the row, as in
   `Invalid arguments for TodoWrite: arguments.todos is required. A…`, which lost the part that
