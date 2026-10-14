@@ -62,6 +62,39 @@ configured providers and the prefix matches none of them, Book says so — on st
 inline in `book doctor` — instead of leaving `Credentials: not resolved` as the only symptom of a
 misspelled provider id.
 
+**Which key a model gets.** A provider entry with its own `apiKey` uses it. An entry without one,
+and a bare id that goes to the default endpoint, gets `BOOK_API_KEY` when it is set. Otherwise it
+gets the key the session already sends, but only when its endpoint is the very one the session
+already sends that key to; any other endpoint gets no key. Endpoints are compared after
+normalisation, so a trailing slash or the case of the scheme and host does not make a different
+one, while another host, port, scheme or path does. A key configured for one provider is never
+carried to another endpoint, so switching to a bare id cannot hand your Anthropic key to
+`https://api.openai.com/v1`. The default endpoint is `BOOK_BASE_URL` (or the legacy
+`.bookrc.json` `baseUrl`) when set, and `https://api.openai.com/v1` otherwise.
+
+**The advisor fails closed.** `advisorModel` (and `BOOK_ADVISOR_MODEL`, and `/advisor`) is a
+request you do not make yourself, so an id that is not `<provider>/<model>` for a provider in
+`provider` is refused, and nothing is sent, unless one of these holds:
+
+1. it is the main model;
+2. `BOOK_BASE_URL` is set. Only that variable counts: the legacy `.bookrc.json` `baseUrl` still
+   sets the default endpoint, but a repository can ship that file, so it does not show that you
+   chose the endpoint;
+3. it resolves to exactly the endpoint and key the main session already uses, as a bare
+   `gpt-5` does next to a bare `gpt-4o` on the default endpoint with `BOOK_API_KEY`.
+
+An id that starts or ends with `/` is refused whatever the base URL. `/advisor <id>` reports the
+refusal and saves nothing, and an `advisorModel` already in settings makes the `Advisor` tool fail
+with `advisor_unconfigured` instead of making a request; `/advisor` alone shows such an id as
+`(refused: …)`. A provider prefix that matches no configured provider (`antropic/x`) is saved, as
+for `model`, and `/advisor` warns that it is probably a typo. Name the provider:
+`anthropic/claude-opus-5-5`.
+
+A consult that fails is marked retryable only when a repeat could succeed: rate limits, overload,
+server errors, network errors and timeouts. A rejected key or account, a retired or misspelled
+model, a transcript too long for the advisor's window, and any verdict on the request itself
+(400, 404, 422, a content filter) are not, so the agent does not send the same consult again.
+
 Set `BOOK_HOME` to replace the default `~/.book` user-state root. This relocates user settings,
 sessions, memory, managed-agent state and worktrees, jobs, rewind snapshots, telemetry, tool output,
 learned context windows (`model-windows.json`), MCP configuration, and user-level skills, commands,

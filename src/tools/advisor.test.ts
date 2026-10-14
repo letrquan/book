@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { loadConfig } from '../config.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { advisorRank } from '../models.js';
 import type { Provider } from '../provider/index.js';
@@ -170,6 +174,134 @@ describe('Advisor tool', () => {
     await tool.execute({}, ctx);
     expect(requests[0].model).toBe('advisor-x');
     expect(requests[0].maxOutputTokens).toBe(4_096);
+  });
+
+  it('refuses an advisor model with no provider and no key, sending nothing (#419)', async () => {
+    const { provider, requests } = replying('unused');
+    const [tool] = createAdvisorTools({ provider });
+    const ctx = context('claude-opus-5-5', [message('user', 'x')]);
+    // The main model's key came from its provider entry, and BOOK_API_KEY is unset.
+    ctx.agentConfig!.defaultApiKey = '';
+    ctx.agentConfig!.defaultBaseUrl = 'https://api.openai.com/v1';
+
+    const result = await tool.execute({}, ctx);
+    expect(result.structuredError?.code).toBe('advisor_unconfigured');
+    expect(result.structuredError?.message).toContain(
+      '"claude-opus-5-5" names no configured provider',
+    );
+    expect(result.structuredError?.retryable).toBe(false);
+    expect(requests).toHaveLength(0);
+  });
+
+  describe('from loadConfig, on the real provider path (#419)', () => {
+    const saved = Object.fromEntries(
+      ['BOOK_API_KEY', 'BOOK_BASE_URL', 'BOOK_HOME', 'BOOK_MODEL', 'BOOK_ADVISOR_MODEL'].map(
+        (name) => [name, process.env[name]],
+      ),
+    );
+    const dirs: string[] = [];
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('never sends BOOK_API_KEY to the default endpoint for a bare advisor id', async () => {
+      const home = mkdtempSync(join(tmpdir(), 'book-advisor-home-'));
+      const workspace = mkdtempSync(join(tmpdir(), 'book-advisor-ws-'));
+      dirs.push(home, workspace);
+      mkdirSync(join(workspace, '.book'));
+      writeFileSync(
+        join(workspace, '.book', 'settings.local.json'),
+        JSON.stringify({
+          model: 'anthropic/claude-sonnet-5-5',
+          advisorModel: 'claude',
+          provider: { anthropic: { type: 'anthropic', baseURL: 'https://api.anthropic.com' } },
+        }),
+      );
+      process.env.BOOK_HOME = home;
+      process.env.BOOK_API_KEY = 'sk-ant-test';
+      delete process.env.BOOK_BASE_URL;
+      delete process.env.BOOK_MODEL;
+      delete process.env.BOOK_ADVISOR_MODEL;
+      const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const config = loadConfig(workspace);
+      expect(config.baseUrl).toBe('https://api.anthropic.com');
+      const [tool] = createAdvisorTools();
+      const result = await tool.execute(
+        {},
+        {
+          workspaceRoot: workspace,
+          env: {},
+          agentConfig: config,
+          conversation: () => [message('user', 'x')],
+        },
+      );
+
+      expect(result.status).toBe('error');
+      expect(result.structuredError?.code).toBe('advisor_unconfigured');
+      expect(result.structuredError?.retryable).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('does not invite a retry of a consult the provider refused', async () => {
+    const refusing = (errorCode: string) =>
+      ({
+        id: 'refusing',
+        stream: async function* () {
+          yield { type: 'error', error: `API Error (${errorCode})`, errorCode };
+        },
+      }) as unknown as Provider;
+    for (const [code, retryable] of [
+      ['auth', false],
+      ['quota', false],
+      ['not_found', false],
+      // A retired or misspelled model, and every verdict on the request itself.
+      ['model_unavailable', false],
+      ['invalid_request_error', false],
+      ['context_overflow', false],
+      ['content_filter', false],
+      ['overloaded', true],
+      ['rate_limited', true],
+      ['server_error', true],
+    ] as const) {
+      const [tool] = createAdvisorTools({ provider: refusing(code) });
+      const result = await tool.execute({}, context('claude-opus-5-5', [message('user', 'x')]));
+      expect(result.structuredError?.retryable, code).toBe(retryable);
+    }
+  });
+
+  describe('a stored advisor id that cannot be resolved (#419)', () => {
+    it('is unconfigured, not a thrown exception, when it is malformed', async () => {
+      const { provider, requests } = replying('unused');
+      const [tool] = createAdvisorTools({ provider });
+      const ctx = context('foo/', [message('user', 'x')]);
+      ctx.agentConfig!.defaultBaseUrlExplicit = true;
+
+      const result = await tool.execute({}, ctx);
+      expect(result.structuredError?.code).toBe('advisor_unconfigured');
+      expect(result.structuredError?.retryable).toBe(false);
+      expect(requests).toHaveLength(0);
+    });
+
+    it('does not treat an inherited property name as a configured provider', async () => {
+      const { provider } = replying('advice');
+      const [tool] = createAdvisorTools({ provider });
+      const ctx = context('constructor/x', [message('user', 'x')]);
+      ctx.agentConfig!.defaultBaseUrlExplicit = true;
+      ctx.agentConfig!.defaultApiKey = 'sk-test';
+
+      const result = await tool.execute({}, ctx);
+      expect(result.structuredError?.code).not.toBe('tool_exception');
+      expect(result.status).toBe('success');
+    });
   });
 
   it('refuses without a billed call when the host does not share the conversation', async () => {

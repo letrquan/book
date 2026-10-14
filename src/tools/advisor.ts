@@ -1,7 +1,13 @@
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
+import type { AgentConfig } from '../types/runtime.js';
+import { NON_REISSUABLE_PROVIDER_CODES } from '../types/terminal.js';
 import { toolFailure, toolSuccess } from './result.js';
 import { createProvider, type Provider } from '../provider/index.js';
-import { configuredAdvisorModel, resolveAdvisorModelConfig } from '../config.js';
+import {
+  advisorModelRefusal,
+  configuredAdvisorModel,
+  resolveAdvisorModelConfig,
+} from '../config.js';
 import { advisorRank, resolveContextLimit, stripProvider } from '../models.js';
 import {
   REDUCER_OUTPUT_MIN_MARGIN_TOKENS,
@@ -122,14 +128,79 @@ export interface AdvisorToolOptions {
   provider?: Provider;
 }
 
+/**
+ * Provider verdicts a repeated consult would only reproduce: every verdict on the request
+ * itself (`NON_REISSUABLE_PROVIDER_CODES`: a 400, 404 or 422, a content filter), a rejected
+ * key or account (`auth`, `quota`), a retired or misspelled model (`model_unavailable`) and a
+ * transcript the advisor's window cannot hold (`context_overflow`). Marking them retryable
+ * invites the agent to send the same request, and the same key, again. `rate_limited`,
+ * `overloaded`, `server_error`, `network`, `timeout` and `unknown` stay retryable.
+ */
+const NON_RETRYABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
+  ...NON_REISSUABLE_PROVIDER_CODES,
+  'auth',
+  'quota',
+  'model_unavailable',
+  'context_overflow',
+]);
+
+/** Whether `model` is `<provider>/<model>` for a configured provider, which owns its key. */
+function namesConfiguredProvider(config: AgentConfig, model: string): boolean {
+  const slash = model.indexOf('/');
+  return slash > 0 && Object.hasOwn(config.settings.provider, model.slice(0, slash));
+}
+
+const ADVISOR_PROVIDER_REMEDIATION =
+  'The user can choose a model with its provider: /advisor <provider>/<model>.';
+
 async function consultAdvisor(ctx: ToolContext, options: AdvisorToolOptions): Promise<ToolResult> {
   const config = ctx.agentConfig;
-  const advisorConfig = config ? resolveAdvisorModelConfig(config) : undefined;
+  // Before anything is resolved, let alone created or sent: an id that names no configured
+  // provider may not carry a key to an endpoint the user never paired it with (#419).
+  const configured = config ? configuredAdvisorModel(config) : undefined;
+  const refusal = config && configured ? advisorModelRefusal(config, configured) : undefined;
+  if (refusal) {
+    return toolFailure(`Advisor unavailable (${refusal})`, {
+      code: 'advisor_unconfigured',
+      retryable: false,
+      remediation: ADVISOR_PROVIDER_REMEDIATION,
+    });
+  }
+  let advisorConfig: AgentConfig | undefined;
+  try {
+    advisorConfig = config ? resolveAdvisorModelConfig(config) : undefined;
+  } catch (error) {
+    // A stored id that cannot be resolved is a configuration fault, not a crashed tool.
+    return toolFailure(
+      `Advisor unavailable (${error instanceof Error ? error.message : String(error)})`,
+      {
+        code: 'advisor_unconfigured',
+        retryable: false,
+        remediation: ADVISOR_PROVIDER_REMEDIATION,
+      },
+    );
+  }
   if (!advisorConfig) {
     return toolFailure('No advisor model is configured.', {
       code: 'advisor_unconfigured',
       remediation: 'The user can choose one with /advisor <model>.',
     });
+  }
+  const model = configuredAdvisorModel(advisorConfig) ?? advisorConfig.model;
+  // An id the refusal above let through (the main model, an explicit base URL, or the
+  // main session's own endpoint and key) can still have no key at all. Refuse that too,
+  // and say so -- the endpoint's 401 would blame a key that is fine (#419). A configured
+  // provider without a key (a local server) still runs.
+  if (!advisorConfig.apiKey && !namesConfiguredProvider(advisorConfig, model)) {
+    return toolFailure(
+      `Advisor unavailable (advisor model "${model}" names no configured provider, and ` +
+        'BOOK_API_KEY is not set for the default endpoint)',
+      {
+        code: 'advisor_unconfigured',
+        retryable: false,
+        remediation: ADVISOR_PROVIDER_REMEDIATION,
+      },
+    );
   }
   // Without the conversation the call would bill a strong model for advice about nothing.
   const conversation = ctx.conversation?.();
@@ -139,7 +210,6 @@ async function consultAdvisor(ctx: ToolContext, options: AdvisorToolOptions): Pr
       retryable: false,
     });
   }
-  const model = configuredAdvisorModel(advisorConfig) ?? advisorConfig.model;
   const budget = Math.max(
     1_000,
     Math.floor(resolveContextLimit(advisorConfig) * ADVISOR_TRANSCRIPT_FRACTION) -
@@ -187,7 +257,13 @@ async function consultAdvisor(ctx: ToolContext, options: AdvisorToolOptions): Pr
         : failure.error;
     return toolFailure(`Advisor unavailable (${detail})`, {
       code: 'advisor_unavailable',
-      retryable: failure.reason !== 'aborted' && failure.reason !== 'budget-overflow',
+      retryable:
+        failure.reason !== 'aborted' &&
+        failure.reason !== 'budget-overflow' &&
+        !(
+          failure.providerCode !== undefined &&
+          NON_RETRYABLE_PROVIDER_CODES.has(failure.providerCode)
+        ),
     });
   }
   const cleaned = cleanSummaryText(generated.text);

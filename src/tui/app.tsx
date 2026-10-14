@@ -2139,8 +2139,10 @@ export function App({
           const envNote = process.env.BOOK_ADVISOR_MODEL
             ? `\nNote: BOOK_ADVISOR_MODEL=${process.env.BOOK_ADVISOR_MODEL} overrides this at the next launch.`
             : '';
+          const providerNote = effect.notice ? `\n⚠ ${effect.notice}` : '';
           addLocalMessage(
             describeAdvisorChange(effect.model, liveConfig.modelSelection ?? liveConfig.model) +
+              providerNote +
               envNote,
           );
           return;
