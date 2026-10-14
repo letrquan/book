@@ -1937,6 +1937,7 @@ async function grepSearchPortable(
   const outputMode = (args.output_mode as 'content' | 'files_with_matches' | 'count') ?? 'content';
   const { before: contextBefore, after: contextAfter } = grepContextWindow(args);
   const multiline = (args.multiline as boolean) ?? false;
+  const ignoreCase = (args.i as boolean) ?? false;
   const requestedHeadLimit = (args.head_limit as number) ?? GREP_MATCH_LIMIT;
   const headLimit = Math.min(
     GREP_MATCH_LIMIT,
@@ -2080,7 +2081,13 @@ async function grepSearchPortable(
       const budget = budgetForNextRun();
       const started = Date.now();
       const outcome = sandbox.run(
-        { pattern, flags: 'gms', limit: headLimit - totalMatches, multiline: true, text: content },
+        {
+          pattern,
+          flags: ignoreCase ? 'gmsi' : 'gms',
+          limit: headLimit - totalMatches,
+          multiline: true,
+          text: content,
+        },
         budget,
       );
       regexBudgetLeft -= Date.now() - started;
@@ -2130,7 +2137,7 @@ async function grepSearchPortable(
         const outcome = sandbox.run(
           {
             pattern,
-            flags: 'g',
+            flags: ignoreCase ? 'gi' : 'g',
             limit: headLimit - totalMatches,
             multiline: false,
             lines: batch,
@@ -2378,6 +2385,8 @@ export interface RipgrepArgOptions {
   contextBefore: number;
   contextAfter: number;
   multiline: boolean;
+  /** Match letters regardless of case (`--ignore-case`). */
+  ignoreCase?: boolean;
   /** The scope's path relative to the root ripgrep runs in; '' for the root itself. */
   relativePath: string;
 }
@@ -2411,6 +2420,7 @@ export function buildRipgrepArgs(options: RipgrepArgOptions): string[] {
   if (options.contextBefore > 0) argv.push('--before-context', String(options.contextBefore));
   if (options.contextAfter > 0) argv.push('--after-context', String(options.contextAfter));
   if (options.multiline) argv.push('--multiline', '--multiline-dotall');
+  if (options.ignoreCase) argv.push('--ignore-case');
   // A bare `-` is ripgrep's own spelling of stdin, separator or not, and this rg has stdin
   // ignored — so a workspace file named `-` would report no matches at all. `./-` is that file.
   argv.push('--', options.relativePath === '-' ? './-' : options.relativePath || '.');
@@ -2426,6 +2436,7 @@ async function grepSearchWithRipgrep(
   const outputMode = (args.output_mode as 'content' | 'files_with_matches' | 'count') ?? 'content';
   const { before: contextBefore, after: contextAfter } = grepContextWindow(args);
   const multiline = (args.multiline as boolean) ?? false;
+  const ignoreCase = (args.i as boolean) ?? false;
   const requestedHeadLimit = (args.head_limit as number) ?? GREP_MATCH_LIMIT;
   const headLimit = Math.min(
     GREP_MATCH_LIMIT,
@@ -2443,6 +2454,7 @@ async function grepSearchWithRipgrep(
     contextBefore,
     contextAfter,
     multiline,
+    ignoreCase,
     relativePath: scope.relativePath,
   });
 
@@ -2794,9 +2806,11 @@ export const fileTools: ToolDefinition[] = [
     name: 'Grep',
     idempotent: true,
     policy: { concurrency: 'parallel' },
-    argumentAliases: { glob: 'include', '-A': 'A', '-B': 'B', '-C': 'C' },
+    argumentAliases: { glob: 'include', '-A': 'A', '-B': 'B', '-C': 'C', '-i': 'i' },
+    // Claude Code's `-n` asks for line numbers, which content output always carries (#426).
+    ignoredArguments: ['n', '-n'],
     description:
-      'Search file contents for a regex pattern. Scope with path (directory or file), filter filenames with include. output_mode: content (default), files_with_matches, or count. Supports context lines (A/B/C), multiline, and head_limit. Respects .gitignore.',
+      'Search file contents for a regex pattern. Scope with path (directory or file), filter filenames with include. output_mode: content (default), files_with_matches, or count. Supports context lines (A/B/C), case-insensitive search (i), multiline, and head_limit. Respects .gitignore.',
     parameters: {
       type: 'object',
       properties: {
@@ -2821,6 +2835,7 @@ export const fileTools: ToolDefinition[] = [
           description: 'Lines of context before and after match',
           default: 0,
         },
+        i: { type: 'boolean', description: 'Case-insensitive search', default: false },
         multiline: {
           type: 'boolean',
           description: 'Match across newlines (dot matches newline)',

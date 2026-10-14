@@ -225,6 +225,8 @@ interface SendMessageOptions {
   contextMessage?: string;
   /** The turn is Book's own text rather than the user's (a `/goal` kickoff), as a command body is. */
   derived?: boolean;
+  /** What a session that has no name yet is named after, instead of the display text. */
+  sessionNameSource?: string;
   kind?: Message['kind'];
   agentNotifications?: Message['agentNotifications'];
   attachments?: Message['attachments'];
@@ -1049,6 +1051,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         parentRunId:
           messageOptions?.kind === 'agent-notification' ? messageOptions?.parentRunId : undefined,
         sessionName: sessionNameRef.current,
+        sessionNameSource: messageOptions?.sessionNameSource,
         snapshotStore: session.snapshotStore,
         timelineStore,
         registryStore: timelineStore,
@@ -1573,7 +1576,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     async (shell: BackgroundShellRecord): Promise<boolean> => {
       const tail = agentSession.getRuntime().shellManager.readTail(shell.id, 4_000) ?? '';
       const exit = shell.exitCode !== undefined ? ` exit=${shell.exitCode ?? 'none'}` : '';
-      const display = `Background shell ${shell.title || shell.id} ${shell.status}${exit}.`;
+      // A retried command keeps its title; the id tells the two completions apart (#425).
+      const id = shell.title && shell.title !== shell.id ? ` (${shell.id})` : '';
+      const display = `Background shell ${shell.title || shell.id}${id} ${shell.status}${exit}.`;
       const context = [
         '<background-shell-completion>',
         `id: ${shell.id}`,
@@ -2003,6 +2008,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       void sendMessage(formatGoalStatus({ state: 'set', condition }), undefined, {
         contextMessage: goalKickoffPrompt(condition),
         derived: true,
+        sessionNameSource: condition,
       });
     },
     [addLocalMessage, agentSession, isThinking, operations, sendMessage, timelineStore],

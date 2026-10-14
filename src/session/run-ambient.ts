@@ -132,6 +132,7 @@ function toolProjection(definition: ToolDefinition): Record<string, unknown> {
     inputSchema: definition.inputSchema ?? definition.parameters,
     argumentAliases: definition.argumentAliases,
     arrayItemArgumentAliases: definition.arrayItemArgumentAliases,
+    ignoredArguments: definition.ignoredArguments,
     catalog,
     policy: definition.policy,
     idempotent: definition.idempotent,

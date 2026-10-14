@@ -204,7 +204,7 @@ describe('background shell completion row', () => {
     const addLocalMessage = await announce(completed({ title: command, command }));
 
     expect(addLocalMessage).toHaveBeenCalledWith(
-      `✓ Background shell \`${command}\` exited (exit 0).`,
+      `✓ Background shell \`${command}\` (bash_1) exited (exit 0).`,
     );
   });
 
@@ -215,8 +215,29 @@ describe('background shell completion row', () => {
     expect(addLocalMessage).toHaveBeenCalledWith(
       // Padded because the command's own backtick would otherwise fuse with
       // the closing fence; CommonMark strips the padding back out.
-      '✓ Background shell `` echo `date` `` exited (exit 0).',
+      '✓ Background shell `` echo `date` `` (bash_1) exited (exit 0).',
     );
+  });
+
+  // #425: a retried command keeps its title, so without the id its two
+  // completions read as one completion announced twice.
+  it('names the job id so two jobs with one title read as two', async () => {
+    const first = await announce(completed({ id: 'shell_1', title: 'Install Spotify flatpak' }));
+    cleanup();
+    const second = await announce(completed({ id: 'shell_2', title: 'Install Spotify flatpak' }));
+
+    expect(first).toHaveBeenCalledWith(
+      '✓ Background shell `Install Spotify flatpak` (shell_1) exited (exit 0).',
+    );
+    expect(second).toHaveBeenCalledWith(
+      '✓ Background shell `Install Spotify flatpak` (shell_2) exited (exit 0).',
+    );
+  });
+
+  it('does not repeat an id that is already the title', async () => {
+    const addLocalMessage = await announce(completed({ id: 'bash_3', title: 'bash_3' }));
+
+    expect(addLocalMessage).toHaveBeenCalledWith('✓ Background shell `bash_3` exited (exit 0).');
   });
 
   it('quotes the id when the job has no title', async () => {

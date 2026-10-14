@@ -27,6 +27,18 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Claude 4.6 and later get their 1M context window** (#416). Every Claude model resolved to a
+  200,000-token window, so Book compacted at about a fifth of what Opus 4.6–4.8, Sonnet 4.6, and
+  every 5.x model (Opus, Sonnet, Haiku, Fable, Mythos) accept. These now resolve to 1,000,000,
+  matching `max_input_tokens` from Anthropic's `/v1/models`; Haiku 4.5, the 4.5 models, and older
+  stay at 200,000. The window follows the model name on any route, so a router that caps a Claude
+  model lower is learned from its first overflow refusal, or can be declared with `contextWindow`.
+  A long Haiku 5.5 session now runs past 100,000 prompt tokens, where its per-token price is 5x.
+- **`/model` lists the current Claude models, and Haiku 5.5 takes an effort level.** The picker
+  gained Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1. Haiku 5.5 was missing from the
+  Anthropic provider's adaptive-thinking models, so a request to it carried neither `thinking` nor
+  `output_config.effort` and ran at the model's own `medium` whatever effort was set; it now gets
+  both, as the other 5.x models do.
 - **Claude Haiku 5.5, Opus 4.5 and Sonnet 4.5 are priced, and Sonnet 5.5 cache reads cost what
   Anthropic charges** (#415). The price table had no rate for the first three, so
   `--max-budget-usd` refused every run on them and `/cost` showed no dollar figure. Sonnet 5.5's
@@ -41,6 +53,10 @@ All notable changes to this project are documented in this file.
   working, so `I'll clone, install, and launch that repo` sat in full ink between grey steps. A
   message that more work follows in the same turn is now drawn as a step, unless it hands the turn
   back to you (a question, plan approval, a memory save). Turns end at notifications too.
+- **The headless test suites no longer write run records into your own `~/.book`** (#421). Five
+  suites drove print mode against the real `BOOK_HOME` and left a `runs/<session-id>.json` behind
+  for every test session. Each now runs under a temporary `BOOK_HOME`, and a guard test fails any
+  suite that drives print mode or the SDK without pinning one.
 - **A tool call the registry refused before it ran no longer draws a rose row.** An unknown tool
   name, or arguments that did not parse or fit the schema, is the model's slip, and it usually
   resends the call corrected. Its `×`, target and message are grey; a command that ran and failed
@@ -58,11 +74,18 @@ All notable changes to this project are documented in this file.
 - **A TodoWrite row is marked with where the plan stands, not a check.** The row
   `✓ Steps  Clone the repo   0 of 3 done` read as a finished step; it now takes the Steps sheet's
   marks: `◌` set out, `◔` under way, `✓` finished.
+- **A provider error with an empty body says so** (#424). A 404 with no body read just
+  `API Error: 404`; it now names the host and the model the request was for, says
+  `(empty response body)`, and suggests checking the base URL and model id. A provider message
+  that already ends in a period no longer gets a second one (`…/account/api-keys..`).
 - **A tool call written with a dotted namespace runs.** `default.Bash` answered "Unknown tool" and
   the model spent a turn on a ToolSearch for a tool it already had. `parent.`, `default.`, `tool.`
   and OpenAI's `functions.` now unwrap the way `default:` always did, and the transcript shows the
   call as the tool it ran as. The list stays explicit, so `pnpm.list` is still unknown.
 
+- **A background shell's completion notice names the job** (#425). A command retried under the
+  same title finished as two identical notices, which read as one job announced twice; a titled
+  job's notice now carries its id after the title, as in `Install Spotify flatpak` (shell_2).
 - **Repository-local filters and merge drivers are disabled for Book's git calls, and lazy fetch is refused in git isolation** (#357).
   A repository's own `.git/config` (or a file it includes) can no longer execute programs through
   `filter.<name>.clean`, `filter.<name>.smudge`, `filter.<name>.process`, or `merge.<name>.driver`
@@ -79,6 +102,10 @@ All notable changes to this project are documented in this file.
   read-only Git tools, `/review`, and the status poll, while git isolation keeps
   `core.fsmonitor=false` to avoid leaving daemons behind in temporary worktrees; custom hook paths
   remain disabled.
+- **Grep takes `-i`, and accepts `-n`** (#426). Claude Code's `-i` (or `i`) now searches
+  case-insensitively, with ripgrep and with the built-in fallback, and `-n` is accepted and
+  ignored, since results always carry line numbers. Both were refused as unknown arguments, which
+  cost the model a turn to resend the call.
 - **A router-wrapped or direct 429 for a spent plan usage limit no longer burns the retry budget**
   (#400). A router-wrapped 429 that says a plan's weekly, daily, monthly, or N-hour usage limit is
   spent was treated as a transient rate limit: Book waited the router's cooldown hint up to
@@ -94,6 +121,10 @@ All notable changes to this project are documented in this file.
   429, an absolute `resets at <time>` within reach is waited for, up to `retry.maxDelayMs` per
   attempt; a reset that falls beyond what the remaining attempts and retry budget can wait halts
   retries immediately.
+- **Tool telemetry records the session a call ran in** (#427). The `session` field of
+  `tool-use.jsonl` holds the run's trace id, so `book tool-stats` counted every run as a session.
+  Records now carry `sessionId` too, and the session count uses it; older records still count by
+  trace.
 - **Scrolling a long transcript no longer draws rows outside the viewport** (#353). The virtual
   transcript mounts about one viewport of rows above and below the view as overscan, and Ink's
   render walk visited every mounted node every frame: measuring `widestLine`, wrapping text, and
@@ -132,6 +163,13 @@ All notable changes to this project are documented in this file.
   tight: a 401 is always `auth` whatever its body says, a 403 "Invalid API key provided" or
   "Forbidden" and a 404 "Not Found" keep their old readings, and the #383 capacity outage (a quoted
   404 "No endpoints found" with a `(reset after …)` cooldown) is still a retryable `server_error`.
+- **A session started in your home directory reads `~/.book/settings.json` once** (#429). There
+  the user file is also the workspace's `.book/settings.json`, so it loaded a second time as the
+  repository's layer: its rules accumulated twice, and its hooks, allow rules and directories were
+  withheld as repository declarations awaiting `book trust`, then registered twice once approved.
+  The project layer is now skipped when it is the user file, in the loader, the withheld-declaration
+  notices, `book trust` and `book doctor`, and a skill found under both roots is listed once, as
+  yours.
 - **The delegation latency test re-measures a failing verdict before it fails the run** (#390). The
   Windows CI legs sometimes go through a few seconds in which every delegation cycle costs 0.6-3.9s while
   the probe beside it and the child's own timer stay normal, and a re-run of the same commit measures
@@ -139,11 +177,18 @@ All notable changes to this project are documented in this file.
   budget: a round that passes decides the run, and with no passing round any failed round fails it, so a
   regression still fails. Every other platform still decides on one round. Each printed sample also says
   where its time went: before the child started, or after it finished.
+- **`~/.claude/CLAUDE.md` is injected once for a workspace under your home directory** (#430).
+  The instruction walk passes through your home directory, where it found the file a second time
+  as a project-level `.claude/CLAUDE.md`. Instruction files are now deduplicated by resolved path,
+  and the first, user-scoped entry is kept.
 - **The agent store no longer logs spurious write retry events for first-try writes** (#402).
   Atomic JSON writes incremented an attempt counter across both lock and rename steps, returning
   two attempts on clean writes and causing the agent store to log a retry event on every success.
   Attempts now count the initial write plus only contended retries, a stale-lock reclaim is not
   counted as a retry, and the store logs retry events only when a write actually retried.
+- **A session started with `/goal` is named after its condition** (#431). The TUI named it after
+  the first transcript line, `Goal set: <condition>`, and print mode after the kickoff prompt Book
+  sends for the goal.
 
 ### Changed
 

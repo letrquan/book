@@ -8,10 +8,12 @@ import { defaultConfig } from './test/fixtures.js';
 import { createRepeatingScriptedProvider, sseResponse } from './test/scripted-provider.js';
 import type { AgentConfig } from './types/runtime.js';
 import type { UserQuestionRequest, UserQuestionResponse } from './types/tools.js';
+import { isolateBookHome } from './test/isolated-book-home.js';
 
 const PLAN = 'Step 1: rename the module.\nStep 2: update every caller.';
 
 let tempDirs: string[] = [];
+isolateBookHome('book-headless-plan-home-');
 
 afterEach(() => {
   vi.unstubAllGlobals();

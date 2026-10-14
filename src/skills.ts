@@ -196,7 +196,14 @@ export function skillRoots(workspace: string, options: DiscoverSkillsOptions = {
     );
   }
   const byPath = new Map<string, SkillRoot>();
-  for (const root of roots) byPath.set(pathKey(root.path), root);
+  for (const root of roots) {
+    const key = pathKey(root.path);
+    // A workspace at `$HOME` walks the user's own roots again as project roots. They stay
+    // user roots: a project skill asks before the model may run it, and the user's own
+    // skills must not start asking because of where Book was launched (#429).
+    if (byPath.get(key)?.source === 'user') continue;
+    byPath.set(key, root);
+  }
   return [...byPath.values()];
 }
 

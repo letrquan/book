@@ -1300,9 +1300,12 @@ export function App({
     // The title defaults to the whole command, and this row is what a user
     // reads to confirm *which* command finished — so it has to survive the
     // prose renderer that the rest of this sentence is written for. Inline
-    // code also matches the `ToolCallBlock` that started the job.
+    // code also matches the `ToolCallBlock` that started the job. The id follows
+    // because a retried command keeps its title, and two completions that differ
+    // only by id otherwise read as one announced twice (#425).
+    const id = completed.title && completed.title !== completed.id ? ` (${completed.id})` : '';
     addLocalMessage(
-      `${completed.status === 'exited' ? '✓' : '✕'} Background shell ${inlineCode(completed.title || completed.id)} ${completed.status}${exit}.`,
+      `${completed.status === 'exited' ? '✓' : '✕'} Background shell ${inlineCode(completed.title || completed.id)}${id} ${completed.status}${exit}.`,
     );
     backgroundShells.acknowledge(completed.id);
     if (selectedShellId === completed.id) returnToMain();

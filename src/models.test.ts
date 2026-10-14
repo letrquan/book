@@ -116,12 +116,50 @@ describe('resolveFamilyContextWindow', () => {
     expect(resolveFamilyContextWindow('gemini-2.5-flash-preview-tts')).toBeUndefined();
   });
 
-  it('matches Claude models to 200,000 tokens', () => {
-    expect(resolveFamilyContextWindow('claude-sonnet-5')).toBe(200_000);
-    expect(resolveFamilyContextWindow('claude-opus-4-8')).toBe(200_000);
-    expect(resolveFamilyContextWindow('claude-haiku-4-5-20251001')).toBe(200_000);
-    expect(resolveFamilyContextWindow('claude-3-5-sonnet-20241022')).toBe(200_000);
-    expect(resolveFamilyContextWindow('9router/ag/claude-3.5-haiku')).toBe(200_000);
+  it('matches Claude 4.6 and later to 1,000,000 tokens', () => {
+    for (const model of [
+      'claude-opus-4-6',
+      'claude-opus-4-7',
+      'claude-opus-4-8',
+      'claude-sonnet-4-6',
+      'claude-sonnet-5',
+      'claude-sonnet-5-5',
+      'claude-opus-5',
+      'claude-opus-5-5',
+      'claude-haiku-5-5',
+      'claude-fable-5',
+      'claude-fable-5-1',
+      'claude-mythos-5',
+      'claude-mythos-5-1',
+      'claude-opus-4.6',
+      'anthropic/claude-opus-5-5',
+      'openrouter/anthropic/claude-sonnet-4.6',
+      '9router/ag/claude-opus-4-6-thinking',
+    ]) {
+      expect(resolveFamilyContextWindow(model), model).toBe(1_000_000);
+    }
+  });
+
+  it('matches Claude 4.5 and earlier to 200,000 tokens', () => {
+    for (const model of [
+      'claude-haiku-4-5',
+      'claude-haiku-4-5-20251001',
+      'claude-sonnet-4-5',
+      'claude-sonnet-4-5-20250929',
+      'claude-sonnet-4.5',
+      'claude-opus-4-5-20251101',
+      'claude-opus-4-1',
+      'claude-opus-4-1-20250805',
+      'claude-opus-4-0',
+      'claude-opus-4-20250514',
+      'claude-sonnet-4-0',
+      'claude-sonnet-4-20250514',
+      'claude-mythos-preview',
+      'claude-3-5-sonnet-20241022',
+      '9router/ag/claude-3.5-haiku',
+    ]) {
+      expect(resolveFamilyContextWindow(model), model).toBe(200_000);
+    }
   });
 
   it('excludes legacy Claude models from the 200,000 window', () => {
