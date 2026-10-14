@@ -2847,3 +2847,86 @@ describe("a plan's shared snapshot (#357)", () => {
     }
   });
 });
+
+describe('AgentManager.wait timers (#423)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A real manager whose one agent starts and then never finishes. */
+  async function runningAgent() {
+    vi.stubEnv('BOOK_HOME', tempRoot());
+    const config = defaultConfig({ workspace: tempRoot() });
+    config.settings.agents.persist = true;
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => (started = resolve));
+    const manager = new AgentManager(config, [], {
+      findGitRoot: async () => undefined,
+      createStore: (repoHash, requestedRoot, enabled) =>
+        new AgentStore(repoHash, requestedRoot, enabled, UNCONTENDED),
+      runLoop: async () => {
+        started();
+        return new Promise<Message[]>(() => {});
+      },
+    });
+    const record = await manager.spawn({ agent: 'explorer', prompt: 'wait forever' });
+    await running;
+    return { manager, id: record.id };
+  }
+
+  it('clears its timer and resolves with the current record when the signal aborts', async () => {
+    const { manager, id } = await runningAgent();
+    // Faked only once the agent runs: spawning itself waits on real timers.
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const before = vi.getTimerCount();
+      const pending = manager.wait(id, 600_000, controller.signal);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(before + 1);
+
+      controller.abort();
+      const record = await pending;
+
+      expect(record.status).toBe('running');
+      expect(vi.getTimerCount()).toBe(before);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('resolves at once, arming no timer, for a signal that is already aborted', async () => {
+    const { manager, id } = await runningAgent();
+    // Faked only once the agent runs: spawning itself waits on real timers.
+    vi.useFakeTimers();
+    try {
+      const before = vi.getTimerCount();
+      const record = await manager.wait(id, 600_000, AbortSignal.abort());
+
+      expect(record.status).toBe('running');
+      expect(vi.getTimerCount()).toBe(before);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('settles a pending wait and clears its timer when the manager is disposed', async () => {
+    const { manager, id } = await runningAgent();
+    // Faked only once the agent runs: spawning itself waits on real timers.
+    vi.useFakeTimers();
+    try {
+      const before = vi.getTimerCount();
+      const pending = manager.wait(id, 600_000);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(before + 1);
+
+      manager.dispose();
+      const record = await pending;
+
+      expect(record.status).toBe('interrupted');
+      expect(vi.getTimerCount()).toBe(before);
+    } finally {
+      manager.dispose();
+    }
+  });
+});

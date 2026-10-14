@@ -67,15 +67,17 @@ describe('AgentWait against the registry backstop (#423)', () => {
       updatedAt: 0,
     };
     const waits: number[] = [];
+    const signals: (AbortSignal | undefined)[] = [];
     const manager = {
       updateConfig: () => undefined,
       setPermissionMode: () => undefined,
       setEventSink: () => undefined,
       dispose: () => undefined,
       // As the real manager does, 0 arms no timer: only the agent finishing ends that wait.
-      wait: (_id: string, timeoutMs: number) =>
+      wait: (_id: string, timeoutMs: number, signal?: AbortSignal) =>
         new Promise((resolve) => {
           waits.push(timeoutMs);
+          signals.push(signal);
           if (timeoutMs > 0) setTimeout(() => resolve(running), timeoutMs);
         }),
     };
@@ -91,9 +93,12 @@ describe('AgentWait against the registry backstop (#423)', () => {
       currentMode: 'bypassPermissions',
       runtime,
     };
-    const wait = (args: Record<string, unknown>) =>
-      registry.execute({ id: 'wait-1', name: 'AgentWait', arguments: args }, context);
-    return { wait, waits, runtime };
+    const wait = (args: Record<string, unknown>, signal?: AbortSignal) =>
+      registry.execute(
+        { id: 'wait-1', name: 'AgentWait', arguments: args },
+        signal ? { ...context, signal } : context,
+      );
+    return { wait, waits, signals, runtime };
   }
 
   it('answers a wait longer than the default tool deadline with the agent status', async () => {
@@ -123,6 +128,25 @@ describe('AgentWait against the registry backstop (#423)', () => {
       expect(result.status).toBe('success');
       expect(result.content).toContain('"status": "running"');
       expect(waits).toEqual([60_000]);
+    } finally {
+      runtime.dispose();
+    }
+  });
+
+  it('passes the turn signal to the manager so a cancelled wait can clear its timer', async () => {
+    const { wait, signals, runtime } = waitHarness({ BOOK_TOOL_TIMEOUT_MS: '60000' });
+    try {
+      const controller = new AbortController();
+      const pending = wait({ agentId: 'agent-1', timeoutMs: 1_000 }, controller.signal);
+
+      // The registry hands the tool a signal derived from the turn's, so it is the abort that
+      // has to arrive, not the identity.
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      expect(signals[0]).toBeInstanceOf(AbortSignal);
+      expect(signals[0]?.aborted).toBe(false);
+      controller.abort();
+      expect(signals[0]?.aborted).toBe(true);
+      await pending;
     } finally {
       runtime.dispose();
     }

@@ -256,6 +256,7 @@ async function agentWait(args: Record<string, unknown>, ctx: ToolContext): Promi
       typeof args.agentId === 'string' ? args.agentId : '',
       // Omitted or 0 means "until it finishes", which the ceiling bounds.
       requested > 0 ? requested : ceiling,
+      ctx.signal,
     );
     if (['completed', 'failed', 'stopped', 'interrupted'].includes(waited.status)) {
       await managed.acknowledgeCompletion(`${waited.id}:${waited.completionSequence ?? 0}`);

@@ -70,7 +70,8 @@ All notable changes to this project are documented in this file.
   or more ended as a `tool_timeout` with no status in it. The wait is now the tool's own deadline,
   bounded by the ceiling that `BashOutput`'s `wait_ms` has (`BOOK_TOOL_TIMEOUT_MS` where set,
   600000 ms otherwise): a longer request is refused with that limit, and an omitted `timeoutMs`
-  waits until the agent finishes, up to it.
+  waits until the agent finishes, up to it. A cancelled or disposed wait now clears its timer, so a
+  cancelled open-ended wait no longer keeps the process alive.
 - **A TodoWrite row is marked with where the plan stands, not a check.** The row
   `✓ Steps  Clone the repo   0 of 3 done` read as a finished step; it now takes the Steps sheet's
   marks: `◌` set out, `◔` under way, `✓` finished.
