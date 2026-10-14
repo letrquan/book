@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
@@ -14,9 +14,11 @@ import { toolSuccess } from './tools/result.js';
 import type { AgentEvent } from './session/agent-events.js';
 import type { AgentManager } from './agents/manager.js';
 import type { AgentCompletionNotification } from './agents/types.js';
+import { isolateBookHome } from './test/isolated-book-home.js';
 
 const config = defaultConfig({ baseUrl: 'http://localhost/v1' });
 let tempDirs: string[] = [];
+const bookHome = isolateBookHome('book-headless-home-');
 
 /**
  * `debug-log.ts` reads `BOOK_DEBUG*` once, at module load, into module-level
@@ -1129,6 +1131,18 @@ describe('runHeadless — json-schema', () => {
 });
 
 describe('runHeadless — runtime stores', () => {
+  it("writes the run's record under BOOK_HOME, not the developer's home (#421)", async () => {
+    await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'say hi',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout: { write: () => true },
+    });
+    expect(readdirSync(join(bookHome(), 'runs'))).toHaveLength(1);
+  });
+
   it('retains discovered tools across stream-json prompts', async () => {
     const requestTools: string[][] = [];
     let fetchCalls = 0;

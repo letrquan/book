@@ -15,6 +15,7 @@ import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
 import { createRepeatingScriptedProvider, sseResponse } from './test/scripted-provider.js';
 import type { AgentConfig } from './types/runtime.js';
+import { isolateBookHome } from './test/isolated-book-home.js';
 
 const stub = vi.hoisted(() => ({ dispatch: undefined as PrintCommandDispatch | undefined }));
 
@@ -31,6 +32,7 @@ vi.mock('./commands/print-dispatch.js', async (importOriginal) => {
 const { runHeadless } = await import('./headless.js');
 
 let tempDirs: string[] = [];
+isolateBookHome('book-headless-effect-home-');
 
 afterEach(() => {
   vi.unstubAllGlobals();
