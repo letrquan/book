@@ -59,6 +59,21 @@ interface ModelPickerProps {
   onRemoveProvider: (providerId: string) => ProviderRemovalResult;
   onProviderSaved?: (request: ProviderSaveRequest) => void;
   allowProviderManagement?: boolean;
+  /**
+   * `Alt+S`: use the model for this session without saving it. Only the main
+   * model has that choice; the compact, advisor and subagent pickers save what
+   * they pick, so there the chord is ignored and the footer does not offer it.
+   */
+  allowSessionOnly?: boolean;
+  /**
+   * A last row for "none of these", for a setting that can be off (the advisor).
+   * It is the current choice when `currentModel` is empty. It takes the add row's
+   * slot, so it never appears beside provider management: asked for both, the
+   * picker offers provider management and no off row.
+   */
+  offOption?: { label: string };
+  /** Enter on the off row. Returns an error to show, as `onPick` does. */
+  onPickOff?: () => { ok: boolean; error?: string } | void;
   onCancel: () => void;
 }
 
@@ -91,12 +106,22 @@ export function ModelPicker({
   onRemoveProvider,
   onProviderSaved,
   allowProviderManagement = true,
+  allowSessionOnly = true,
+  offOption,
+  onPickOff,
   onCancel,
 }: ModelPickerProps) {
   const theme = useTheme();
   const sheetWidth = panelGrid(Math.max(20, Math.floor(terminalWidth))).width;
   const density = useDensityMetrics();
-  const [selected, setSelected, currentSelected] = useKeyState(0);
+  // Open on the current choice, which the windowed list would otherwise scroll
+  // out of view. The filter is empty on open, so an index in `options` is also
+  // its index in `filteredOptions`; the off row sits one past the last model.
+  const [selected, setSelected, currentSelected] = useKeyState(() => {
+    const index = options.findIndex((option) => option.id === currentModel);
+    if (index >= 0) return index;
+    return currentModel === '' && offOption && !allowProviderManagement ? options.length : 0;
+  });
   const [filter, setFilter] = useState('');
   const [onEffort, setOnEffort] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
@@ -120,7 +145,12 @@ export function ModelPicker({
         option.providerId?.toLowerCase().includes(query),
     );
   }, [filter, options]);
-  const itemCount = filteredOptions.length + (allowProviderManagement ? 1 : 0);
+  // At most one row follows the models: "+ Add BYOK provider…", or the caller's
+  // off row. Provider management wins, so the two share the slot at `addIndex`
+  // -- one past the last model, which is why a model row's index is always its
+  // index in `filteredOptions` and every `filteredOptions[selected]` lookup holds.
+  const hasOffRow = Boolean(offOption) && !allowProviderManagement;
+  const itemCount = filteredOptions.length + (allowProviderManagement || hasOffRow ? 1 : 0);
   const addIndex = filteredOptions.length;
 
   useEffect(() => {
@@ -163,6 +193,18 @@ export function ModelPicker({
     },
     [onPick],
   );
+
+  // Shares `handlePick`'s once-only latch: a second Enter in the same chunk must
+  // not switch the setting off after the first one has already closed the picker.
+  const handlePickOff = useCallback(() => {
+    if (pickedRef.current || !onPickOff) return;
+    const result = onPickOff();
+    if (result && !result.ok) {
+      setError(result.error ?? 'Could not save the selection.');
+      return;
+    }
+    pickedRef.current = true;
+  }, [onPickOff]);
 
   const refreshProvider = useCallback(
     async (providerId: string) => {
@@ -324,6 +366,7 @@ export function ModelPicker({
       }
       if (key.return) {
         if (allowProviderManagement && currentSelected() === addIndex) setShowWizard(true);
+        else if (hasOffRow && currentSelected() === addIndex) handlePickOff();
         else {
           const option = filteredOptions[currentSelected()];
           if (option) handlePick(option.id, true);
@@ -362,7 +405,7 @@ export function ModelPicker({
         setOnEffort(true);
         return;
       }
-      if (key.meta && input === 's' && currentSelected() !== addIndex) {
+      if (allowSessionOnly && key.meta && input === 's' && currentSelected() !== addIndex) {
         const option = filteredOptions[currentSelected()];
         if (option) handlePick(option.id, false);
         return;
@@ -487,6 +530,7 @@ export function ModelPicker({
   const rows = [
     ...filteredOptions.map((option) => ({ type: 'model' as const, option })),
     ...(allowProviderManagement ? [{ type: 'add' as const }] : []),
+    ...(hasOffRow && offOption ? [{ type: 'off' as const, label: offOption.label }] : []),
   ].slice(windowStart, windowStart + maxVisibleModels);
   const hasRemovableProviders = removableProviderIds.size > 0;
   // Catalog actions only mean something on a row that belongs to a provider, so
@@ -525,6 +569,17 @@ export function ModelPicker({
               </Text>
             );
           }
+          if (row.type === 'off') {
+            return (
+              <Text key="off">
+                <Text color={theme.brand}>{isSelected ? '› ' : '  '}</Text>
+                <Text color={isSelected ? theme.selectionText : theme.text} bold={isSelected}>
+                  {row.label}
+                </Text>
+                {currentModel === '' ? <Text color={theme.brand}>{'  ✓ current'}</Text> : null}
+              </Text>
+            );
+          }
           const option = row.option;
           const isCurrent = option.id === currentModel;
           return (
@@ -555,6 +610,7 @@ export function ModelPicker({
           editableProviderId: refreshing ? undefined : editableProviderId,
           compact: compact || !density.showOptionalHelp,
           filterable: true,
+          allowSessionOnly,
           width: sheetContentWidth(sheetWidth),
         }).map((line) => (
           <Text key={line} color={theme.inactive}>

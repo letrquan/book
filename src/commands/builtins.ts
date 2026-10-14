@@ -141,7 +141,7 @@ export type BuiltinCommandEffect =
   | { type: 'exit' }
   | {
       type: 'show-modal';
-      modal: 'config' | 'model' | 'rewind' | 'effort' | 'skills' | 'agents';
+      modal: 'config' | 'model' | 'advisor' | 'rewind' | 'effort' | 'skills' | 'agents';
     }
   | { type: 'set-model'; selection: string }
   | { type: 'set-effort'; level: EffortLevel }
@@ -747,14 +747,21 @@ const ADVISOR_STATUS_WORDS: ReadonlySet<string> = new Set([
 const ADVISOR_OFF_WORDS: ReadonlySet<string> = new Set(['off', 'unset', 'none', 'disable']);
 const ADVISOR_USAGE = 'Usage: /advisor <model> | off';
 
-/** `/advisor`: report, turn off, or choose the model the `Advisor` tool consults. */
+/**
+ * `/advisor`: pick, report, turn off, or name the model the `Advisor` tool consults.
+ *
+ * Bare, it opens the model picker. A model id typed from memory is how a saved
+ * advisor came to be `claude`, which names no model, so the picker is the way in
+ * and the status words are the way to just read what is set.
+ */
 function advisorCommandEffect(
   rawArguments: string,
   context: BuiltinCommandContext,
 ): BuiltinCommandEffect {
   const argument = rawArguments.trim();
   const word = argument.toLowerCase();
-  if (!argument || ADVISOR_STATUS_WORDS.has(word)) {
+  if (!argument) return { type: 'show-modal', modal: 'advisor' };
+  if (ADVISOR_STATUS_WORDS.has(word)) {
     const current = configuredAdvisorModel(context.runtimeConfig);
     // A stored id every consult would refuse is not working; say so rather than list it as set.
     const refusal = current ? advisorModelRefusal(context.runtimeConfig, current) : undefined;

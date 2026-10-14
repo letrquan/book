@@ -15,6 +15,7 @@ import {
   buildGoalCheckPrompt,
   createGoal,
   evaluateGoal,
+  formatGoalDuration,
   formatGoalReport,
   formatGoalStatus,
   goalFeedbackMessage,
@@ -199,6 +200,39 @@ describe('goal text', () => {
     expect(restoreGoal({ version: 1, goal: null })).toBeUndefined();
     const restored = restoreGoal({ version: 1, goal: createGoal('tests pass', 1_000) });
     expect(restored).toMatchObject({ condition: 'tests pass', origin: 'restored', setAt: 1_000 });
+  });
+});
+
+describe('formatGoalDuration', () => {
+  it('reads whole seconds under a minute', () => {
+    expect(formatGoalDuration(0)).toBe('0s');
+    expect(formatGoalDuration(1_000)).toBe('1s');
+    expect(formatGoalDuration(45_000)).toBe('45s');
+    expect(formatGoalDuration(59_000)).toBe('59s');
+  });
+
+  it('rounds to the nearest second, carrying into the next unit instead of printing 60s', () => {
+    expect(formatGoalDuration(1_499)).toBe('1s');
+    expect(formatGoalDuration(1_500)).toBe('2s');
+    expect(formatGoalDuration(59_500)).toBe('1m');
+    expect(formatGoalDuration(3_599_500)).toBe('1h');
+  });
+
+  it('drops the seconds once a minute has passed', () => {
+    expect(formatGoalDuration(60_000)).toBe('1m');
+    expect(formatGoalDuration(119_000)).toBe('1m');
+    expect(formatGoalDuration(240_000)).toBe('4m');
+    expect(formatGoalDuration(3_599_000)).toBe('59m');
+  });
+
+  it('adds hours, and leaves out a zero minute', () => {
+    expect(formatGoalDuration(3_600_000)).toBe('1h');
+    expect(formatGoalDuration(4_320_000)).toBe('1h 12m');
+    expect(formatGoalDuration(7_260_000)).toBe('2h 1m');
+  });
+
+  it('floors a span before the start at zero', () => {
+    expect(formatGoalDuration(-5_000)).toBe('0s');
   });
 });
 

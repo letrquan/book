@@ -844,8 +844,34 @@ describe('/goal', () => {
 describe('/advisor', () => {
   const registry = createBuiltinCommandRegistry();
 
-  it('reports the advisor and its usage', () => {
+  it('opens the advisor model picker when given no argument', () => {
     expect(registry.execute('advisor', '', context())).toEqual({
+      type: 'show-modal',
+      modal: 'advisor',
+    });
+    expect(registry.execute('advisor', '   ', context())).toEqual({
+      type: 'show-modal',
+      modal: 'advisor',
+    });
+  });
+
+  it('opens the picker whether or not an advisor is already set', () => {
+    const runtimeConfig = defaultConfig();
+    runtimeConfig.advisorModel = 'claude';
+    expect(registry.execute('advisor', '', context({ runtimeConfig }))).toEqual({
+      type: 'show-modal',
+      modal: 'advisor',
+    });
+  });
+
+  it('stays interactive-only, so print mode refuses it rather than opening a picker', () => {
+    const definition = BUILTIN_COMMAND_DEFINITIONS.find((command) => command.name === 'advisor');
+    expect(definition).toBeDefined();
+    expect(definition?.nonInteractive).toBeFalsy();
+  });
+
+  it('reports the advisor and its usage', () => {
+    expect(registry.execute('advisor', 'status', context())).toEqual({
       type: 'local-message',
       content: 'Advisor: off\nUsage: /advisor <model> | off',
     });
@@ -857,7 +883,17 @@ describe('/advisor', () => {
   });
 
   it('reads every status word as a question, never as a model name', () => {
-    for (const word of ['version', 'about', 'show', '--help', '?']) {
+    for (const word of [
+      'status',
+      'STATUS',
+      'list',
+      'help',
+      'version',
+      'about',
+      'show',
+      '--help',
+      '?',
+    ]) {
       expect(registry.execute('advisor', word, context())).toMatchObject({
         type: 'local-message',
         content: 'Advisor: off\nUsage: /advisor <model> | off',
@@ -950,7 +986,9 @@ describe('/advisor', () => {
         ),
       });
       config.advisorModel = 'anthropic/claude-opus-5-5';
-      expect(registry.execute('advisor', '', context({ runtimeConfig: config }))).toMatchObject({
+      expect(
+        registry.execute('advisor', 'status', context({ runtimeConfig: config })),
+      ).toMatchObject({
         content: 'Advisor: anthropic/claude-opus-5-5\nUsage: /advisor <model> | off',
       });
     });

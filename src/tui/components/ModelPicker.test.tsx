@@ -325,7 +325,7 @@ describe('ModelPicker', () => {
       },
     });
 
-    await write(view, '\x1b[B');
+    // The picker opens on the current model, which is already the BYOK row.
     await write(view, '\x1bd');
     await vi.waitFor(() => expect(view.lastFrame()).toContain('Remove BYOK provider?'));
 
@@ -425,5 +425,272 @@ describe('ModelPicker', () => {
 
     const compact = renderPicker({ compact: true });
     expect(compact.view.lastFrame()).toContain('Alt+D remove BYOK');
+  });
+
+  describe('initial cursor', () => {
+    it('opens on the current model when it is not the first option', async () => {
+      const { view, onPick } = renderPicker({ currentModel: 'gateway/custom' });
+      expect(view.lastFrame()).toContain('› Custom');
+
+      await write(view, '\r');
+      await vi.waitFor(() => expect(onPick).toHaveBeenCalledWith('gateway/custom', true));
+    });
+
+    it('scrolls the current model into the window when it is the last of many', () => {
+      const options = Array.from({ length: 25 }, (_, i) => ({
+        id: `model-${i}`,
+        label: `Model ${i}`,
+        custom: false,
+        effort: false,
+      }));
+      const { view } = renderPicker({ options, currentModel: 'model-24', maxVisibleModels: 10 });
+
+      expect(view.lastFrame()).toContain('› Model 24  ✓ current');
+      expect(view.lastFrame()).not.toContain('Model 0 ');
+    });
+
+    it('falls back to the first row when the current model matches nothing', async () => {
+      const { view, onPick } = renderPicker({ currentModel: 'not-listed' });
+      expect(view.lastFrame()).toContain('› Built In');
+
+      await write(view, '\r');
+      await vi.waitFor(() => expect(onPick).toHaveBeenCalledWith('built-in', true));
+    });
+  });
+
+  describe('with an off row', () => {
+    const offOption = { label: 'Off — no advisor' };
+
+    /** The advisor picker's shape: no catalog management, nothing selected yet. */
+    function renderOffPicker(overrides: Partial<React.ComponentProps<typeof ModelPicker>> = {}) {
+      const rendered = renderPicker({
+        title: 'Choose advisor model',
+        allowProviderManagement: false,
+        allowSessionOnly: false,
+        currentModel: '',
+        effortLevels: [],
+        currentEffort: undefined,
+        offOption,
+        onPickOff: vi.fn(() => ({ ok: true })),
+        ...overrides,
+      });
+      return { ...rendered, onPickOff: rendered.props.onPickOff };
+    }
+
+    it('renders the off row after every model, and no add-provider row', () => {
+      const { view } = renderOffPicker();
+      const frame = view.lastFrame() ?? '';
+
+      expect(frame).toContain('§ Choose advisor model');
+      expect(frame).toContain('Off — no advisor');
+      expect(frame).not.toContain('Add BYOK provider');
+      expect(frame.indexOf('Built In')).toBeLessThan(frame.indexOf('Custom'));
+      expect(frame.indexOf('Custom')).toBeLessThan(frame.indexOf('Off — no advisor'));
+      // The row is a choice, not a model: the meta line keeps counting models.
+      expect(frame).toContain('2 models');
+    });
+
+    it('picks off with Enter, once, and never as a model', async () => {
+      const { view, onPick, onPickOff } = renderOffPicker({ currentModel: 'built-in' });
+      await write(view, '\x1b[B');
+      await write(view, '\x1b[B');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('› Off — no advisor'));
+
+      await write(view, '\r');
+      await write(view, '\r');
+
+      expect(onPickOff).toHaveBeenCalledTimes(1);
+      expect(onPick).not.toHaveBeenCalled();
+    });
+
+    it('still picks the model rows above it', async () => {
+      const { view, onPick, onPickOff } = renderOffPicker({ currentModel: 'built-in' });
+      await write(view, '\x1b[B');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('› Custom'));
+      await write(view, '\r');
+
+      await vi.waitFor(() => expect(onPick).toHaveBeenCalledWith('gateway/custom', true));
+      expect(onPickOff).not.toHaveBeenCalled();
+    });
+
+    it('shows why turning it off failed and lets Enter try again', async () => {
+      const onPickOff = vi
+        .fn<() => { ok: boolean; error?: string }>()
+        .mockReturnValueOnce({ ok: false, error: 'settings are read-only' })
+        .mockReturnValue({ ok: true });
+      const { view } = renderOffPicker({ onPickOff, currentModel: 'built-in' });
+      await write(view, '\x1b[A');
+      await write(view, '\r');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('✕ settings are read-only'));
+      expect(onPickOff).toHaveBeenCalledTimes(1);
+
+      // A failed pick must not latch: the picker is still open to be retried.
+      await write(view, '\r');
+      await vi.waitFor(() => expect(onPickOff).toHaveBeenCalledTimes(2));
+    });
+
+    it('marks the off row current when the setting is off, and a model otherwise', () => {
+      const off = renderOffPicker({ currentModel: '' });
+      const offFrame = off.view.lastFrame() ?? '';
+      expect(offFrame).toMatch(/Off — no advisor {2}✓ current/);
+      expect(offFrame.match(/✓ current/g)).toHaveLength(1);
+      cleanup();
+
+      const on = renderOffPicker({ currentModel: 'built-in' });
+      const onFrame = on.view.lastFrame() ?? '';
+      expect(onFrame).toMatch(/Built In {2}✓ current/);
+      expect(onFrame).not.toMatch(/Off — no advisor {2}✓ current/);
+      expect(onFrame.match(/✓ current/g)).toHaveLength(1);
+    });
+
+    it('opens with the cursor on the off row when the setting is off', async () => {
+      const { view, onPick, onPickOff } = renderOffPicker({ currentModel: '' });
+      expect(view.lastFrame()).toContain('› Off — no advisor');
+
+      await write(view, '\r');
+      await vi.waitFor(() => expect(onPickOff).toHaveBeenCalledTimes(1));
+      expect(onPick).not.toHaveBeenCalled();
+    });
+
+    it('renders the off row on open even when the list is longer than the window', () => {
+      const options = Array.from({ length: 12 }, (_, i) => ({
+        id: `model-${i}`,
+        label: `Model ${i}`,
+        custom: false,
+        effort: false,
+      }));
+      const { view } = renderOffPicker({ options, currentModel: '', maxVisibleModels: 10 });
+      const frame = view.lastFrame() ?? '';
+
+      expect(frame).toContain('› Off — no advisor  ✓ current');
+      expect(frame).not.toContain('Model 0');
+      expect(frame).toContain('Model 11');
+    });
+
+    it('keeps the off row out of the cursor logic when provider management is on', () => {
+      const { view } = renderPicker({ currentModel: '', offOption });
+      expect(view.lastFrame()).toContain('› Built In');
+    });
+
+    it('keeps the off row when typing filters the models away', async () => {
+      const { view, onPickOff } = renderOffPicker();
+      await write(view, 'gateway');
+      await vi.waitFor(() => {
+        expect(view.lastFrame()).toContain('¶ gateway');
+        expect(view.lastFrame()).not.toContain('Built In');
+      });
+      expect(view.lastFrame()).toContain('Custom');
+      expect(view.lastFrame()).toContain('Off — no advisor');
+      expect(view.lastFrame()).toContain('1 model');
+
+      await write(view, '-nothing-matches');
+      await vi.waitFor(() => {
+        expect(view.lastFrame()).not.toContain('Custom');
+        expect(view.lastFrame()).toContain('0 models');
+      });
+      // With no model left it is the only row, and the cursor is on it.
+      expect(view.lastFrame()).toContain('› Off — no advisor');
+
+      await write(view, '\r');
+      await vi.waitFor(() => expect(onPickOff).toHaveBeenCalledTimes(1));
+    });
+
+    it('wraps the arrow keys through the off row', async () => {
+      const { view } = renderOffPicker({ currentModel: 'built-in' });
+      expect(view.lastFrame()).toContain('› Built In');
+
+      await write(view, '\x1b[A');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('› Off — no advisor'));
+
+      await write(view, '\x1b[B');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('› Built In'));
+
+      await write(view, '\x1b[B');
+      await write(view, '\x1b[B');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('› Off — no advisor'));
+    });
+
+    it('leaves the Alt chords inert on the off row', async () => {
+      const discover = vi.fn(async () => [{ id: 'custom' }]);
+      const { view, onPick, onPickOff, onSaveProvider, onRemoveProvider } = renderOffPicker({
+        // Alt+S and Alt+E are live elsewhere in this picker; only the row differs.
+        allowSessionOnly: true,
+        effortLevels: ['low', 'high'],
+        currentEffort: 'low',
+        currentModel: 'built-in',
+        discover,
+      });
+      await write(view, '\x1b[A');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('› Off — no advisor'));
+
+      for (const chord of ['\x1bs', '\x1be', '\x1br', '\x1bm', '\x1bd']) await write(view, chord);
+
+      expect(view.lastFrame()).not.toContain('Effort [');
+      expect(view.lastFrame()).not.toContain('✕');
+      expect(view.lastFrame()).toContain('¶ type to filter');
+      expect(discover).not.toHaveBeenCalled();
+      expect(onPick).not.toHaveBeenCalled();
+      expect(onSaveProvider).not.toHaveBeenCalled();
+      expect(onRemoveProvider).not.toHaveBeenCalled();
+      expect(onPickOff).not.toHaveBeenCalled();
+
+      // The row is still selected and still works afterwards.
+      await write(view, '\r');
+      await vi.waitFor(() => expect(onPickOff).toHaveBeenCalledTimes(1));
+    });
+
+    it('offers provider management and no off row when asked for both', async () => {
+      const onPickOff = vi.fn(() => ({ ok: true }));
+      const { view } = renderPicker({ offOption, onPickOff });
+      const frame = view.lastFrame() ?? '';
+      expect(frame).toContain('Add BYOK provider');
+      expect(frame).not.toContain('Off — no advisor');
+
+      // Down past the last model lands on the add row, not on a hidden off row.
+      await write(view, '\x1b[B');
+      await write(view, '\x1b[B');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('› + Add BYOK provider'));
+      await write(view, '\x1b[B');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('› Built In'));
+      expect(onPickOff).not.toHaveBeenCalled();
+    });
+
+    it('does nothing on Enter when no handler was given for the off row', async () => {
+      const { view, onPick } = renderOffPicker({ onPickOff: undefined, currentModel: 'built-in' });
+      await write(view, '\x1b[A');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('› Off — no advisor'));
+      await write(view, '\r');
+
+      expect(onPick).not.toHaveBeenCalled();
+      expect(view.lastFrame()).not.toContain('✕');
+    });
+  });
+
+  describe('allowSessionOnly', () => {
+    it('is on by default: Alt+S is advertised and picks for this session', () => {
+      const { view, onPick } = renderPicker();
+      expect(view.lastFrame()).toContain('Alt+S session');
+
+      view.stdin.write('\x1bs');
+      expect(onPick).toHaveBeenCalledWith('built-in', false);
+    });
+
+    it('ignores Alt+S and hides the hint when off', async () => {
+      const { view, onPick } = renderPicker({
+        allowProviderManagement: false,
+        allowSessionOnly: false,
+      });
+      expect(view.lastFrame()).not.toContain('Alt+S');
+      expect(view.lastFrame()).toContain('Enter save');
+
+      await write(view, '\x1bs');
+      // Alt+S is not typed into the filter either.
+      expect(view.lastFrame()).toContain('¶ type to filter');
+
+      // Had Alt+S picked, the latch would have swallowed this Enter's `true`.
+      await write(view, '\r');
+      await vi.waitFor(() => expect(onPick).toHaveBeenCalledTimes(1));
+      expect(onPick).toHaveBeenCalledWith('built-in', true);
+    });
   });
 });

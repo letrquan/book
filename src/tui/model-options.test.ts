@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from '../settings.js';
 import {
+  advisorPickerWarnings,
   buildModelOptions,
   parseModelIds,
   providerConfigFromDraft,
@@ -28,6 +29,34 @@ describe('buildModelOptions', () => {
       custom: true,
       providerId: 'gateway',
     });
+  });
+});
+
+describe('advisorPickerWarnings', () => {
+  const options = buildModelOptions(DEFAULT_SETTINGS);
+  const listed = options[0].id;
+
+  it('says nothing when the advisor is off or is a listed model', () => {
+    expect(advisorPickerWarnings(undefined, options, undefined)).toEqual([]);
+    expect(advisorPickerWarnings(listed, options, undefined)).toEqual([]);
+  });
+
+  it('flags a saved advisor that matches no model in the list', () => {
+    // The mistyped id that motivated the picker: `/advisor claude` saved verbatim.
+    expect(advisorPickerWarnings('claude', options, undefined)).toEqual([
+      'Current advisor "claude" is not in your model list.',
+    ]);
+  });
+
+  it('names BOOK_ADVISOR_MODEL when it will outrank the choice at the next launch', () => {
+    expect(advisorPickerWarnings(listed, options, 'gateway/big')).toEqual([
+      'BOOK_ADVISOR_MODEL is set to "gateway/big" — it overrides advisorModel on next startup.',
+    ]);
+    expect(advisorPickerWarnings('claude', options, 'gateway/big')).toHaveLength(2);
+  });
+
+  it('treats an empty override as unset', () => {
+    expect(advisorPickerWarnings(listed, options, '')).toEqual([]);
   });
 });
 

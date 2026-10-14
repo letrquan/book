@@ -120,7 +120,7 @@ function plural(count: number, noun: string): string {
 }
 
 /** `45s`, `4m`, `1h 12m`: the goal panel's and the status line's elapsed time. */
-function formatGoalDuration(durationMs: number): string {
+export function formatGoalDuration(durationMs: number): string {
   const seconds = Math.max(0, Math.round(durationMs / 1000));
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);

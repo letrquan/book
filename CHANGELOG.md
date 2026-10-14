@@ -18,12 +18,22 @@ All notable changes to this project are documented in this file.
   Plan stops, handoffs, cancels and the continuation brakes are never overridden by a goal. Goals
   persist in the session file (a new `goal` record) and survive `--resume`; print mode supports
   `/goal` and reports each check on stderr (under `--quiet`, only the line that explains a failure)
-  or as `goal_status` stream-json events.
+  or as `goal_status` stream-json events. While a goal is set, the status line shows
+  `◎ /goal active (<elapsed>)`, counting from when it was set, until the goal is met, judged
+  impossible, or cleared.
 - **`/advisor <model>`: let the agent consult a stronger model**, modelled on Claude Code's
   advisor. A configured `advisorModel` (or `BOOK_ADVISOR_MODEL`) adds an `Advisor` tool to the
   core set; calling it sends the agent's system prompt and the whole conversation to the advisor
   model through its own provider and returns the advice. It runs client-side, so it works on every
-  provider, and it is billed at the advisor model's rates.
+  provider, and it is billed at the advisor model's rates. `/advisor` with no argument opens the
+  model picker, aimed at the advisor, with an **Off** row after the models, and `/config` has an
+  **Advisor** row (`V`), so the advisor is chosen from a list instead of typed from memory (a
+  mistyped `/advisor claude` was saved and matched no model). The picker flags a saved advisor
+  that is not in the list and a `BOOK_ADVISOR_MODEL` that outranks the choice. An id the advisor
+  would refuse (#419) is refused by both `/advisor <id>` and the picker, and any other id that
+  names no listed model is saved with a note. Every model picker
+  (`/model` too) now opens with the cursor on the current choice, which a long list used to scroll
+  out of view, and `Alt+S session` is offered only where it applies (the main model).
 
 ### Fixed
 

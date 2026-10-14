@@ -66,6 +66,30 @@ export function buildModelOptions(settings: ResolvedSettings): ModelPickerOption
   return [...options.values()];
 }
 
+/**
+ * The notes under the advisor picker. It is the one picker whose current value
+ * can be text the user typed rather than a row they picked, so it says when that
+ * value names nothing in the list (a saved `"claude"` is the usual case), and,
+ * as the main picker does for `BOOK_MODEL`, when `BOOK_ADVISOR_MODEL` will
+ * outrank whatever is chosen here at the next launch.
+ */
+export function advisorPickerWarnings(
+  advisor: string | undefined,
+  options: ReadonlyArray<{ id: string }>,
+  envOverride: string | undefined,
+): string[] {
+  const warnings: string[] = [];
+  if (envOverride) {
+    warnings.push(
+      `BOOK_ADVISOR_MODEL is set to "${envOverride}" — it overrides advisorModel on next startup.`,
+    );
+  }
+  if (advisor && !options.some((option) => option.id === advisor)) {
+    warnings.push(`Current advisor "${advisor}" is not in your model list.`);
+  }
+  return warnings;
+}
+
 export function validateProviderId(raw: string): string {
   const value = raw.trim().toLowerCase();
   if (!/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(value)) {
