@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -74,6 +74,41 @@ describe('discoverProjectInstructions', () => {
       .map((s) => s.body);
 
     expect(bodies).toEqual(['project', 'local', 'rule a', 'rule b']);
+  });
+
+  // #430. `$HOME` is an ancestor of almost every workspace, so the walk met the user's own
+  // `~/.claude/CLAUDE.md` again and sent it twice, the second time as project instructions.
+  it('loads a user instruction file once, at user scope, for a workspace under home', () => {
+    const nested = join(home, 'code', 'app');
+    mkdirSync(nested, { recursive: true });
+    write(join(home, '.claude', 'CLAUDE.md'), 'user rules');
+
+    const sources = discoverProjectInstructions(nested, home).filter((s) => s.path.startsWith(dir));
+
+    expect(sources.map((s) => [s.body, s.layer])).toEqual([['user rules', 'user']]);
+  });
+
+  it('loads the BOOK_HOME AGENTS.md once, at user scope, for a workspace inside it', () => {
+    const inside = join(home, '.book', 'scratch');
+    mkdirSync(inside, { recursive: true });
+    write(join(home, '.book', 'AGENTS.md'), 'book user rules');
+
+    const sources = discoverProjectInstructions(inside, home).filter((s) => s.path.startsWith(dir));
+
+    expect(sources.map((s) => [s.body, s.layer])).toEqual([['book user rules', 'user']]);
+  });
+
+  it.skipIf(process.platform === 'win32')('loads a file linked under two names once', () => {
+    write(join(workspace, 'AGENTS.md'), 'shared rules');
+    symlinkSync('AGENTS.md', join(workspace, 'CLAUDE.md'));
+
+    const sources = discoverProjectInstructions(workspace, home).filter((s) =>
+      s.path.startsWith(dir),
+    );
+
+    expect(sources.map((s) => [s.path, s.body])).toEqual([
+      [join(workspace, 'AGENTS.md'), 'shared rules'],
+    ]);
   });
 });
 

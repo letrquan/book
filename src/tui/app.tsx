@@ -1319,9 +1319,12 @@ export function App({
     // The title defaults to the whole command, and this row is what a user
     // reads to confirm *which* command finished — so it has to survive the
     // prose renderer that the rest of this sentence is written for. Inline
-    // code also matches the `ToolCallBlock` that started the job.
+    // code also matches the `ToolCallBlock` that started the job. The id follows
+    // because a retried command keeps its title, and two completions that differ
+    // only by id otherwise read as one announced twice (#425).
+    const id = completed.title && completed.title !== completed.id ? ` (${completed.id})` : '';
     addLocalMessage(
-      `${completed.status === 'exited' ? '✓' : '✕'} Background shell ${inlineCode(completed.title || completed.id)} ${completed.status}${exit}.`,
+      `${completed.status === 'exited' ? '✓' : '✕'} Background shell ${inlineCode(completed.title || completed.id)}${id} ${completed.status}${exit}.`,
     );
     backgroundShells.acknowledge(completed.id);
     if (selectedShellId === completed.id) returnToMain();
@@ -1899,21 +1902,24 @@ export function App({
    * unreported: the command prints it, and the picker shows it in place.
    */
   const applyAdvisorModel = useCallback(
-    (model: string | null) => {
+    (model: string | null, notice?: string) => {
       const result = setAdvisorModel(model);
       if (result.ok) {
         // A provider may serve ids nobody listed, so an unlisted id is still saved;
         // it is only called out, since a typo otherwise fails silently on every call.
+        // A typed id's provider warning already says so, so the note would repeat it.
         const unlistedNote =
-          model !== null && !modelOptions.some((option) => option.id === model)
+          model !== null && !notice && !modelOptions.some((option) => option.id === model)
             ? `\nNote: ${model} is not in your model list. Run /advisor to pick one.`
             : '';
+        const providerNote = notice ? `\n⚠ ${notice}` : '';
         const envNote = process.env.BOOK_ADVISOR_MODEL
           ? `\nNote: BOOK_ADVISOR_MODEL=${process.env.BOOK_ADVISOR_MODEL} overrides this at the next launch.`
           : '';
         addLocalMessage(
           describeAdvisorChange(model, liveConfig.modelSelection ?? liveConfig.model) +
             unlistedNote +
+            providerNote +
             envNote,
         );
       }
@@ -2183,8 +2189,11 @@ export function App({
           return;
         }
         if (effect?.type === 'set-advisor') {
-          const result = applyAdvisorModel(effect.model);
-          if (!result.ok) addLocalMessage(`✕ ${result.error}`);
+          const result = applyAdvisorModel(effect.model, effect.notice);
+          if (!result.ok) {
+            addLocalMessage(`✕ ${result.error}`);
+            return;
+          }
           return;
         }
         if (effect?.type === 'set-default-permission-mode') {

@@ -36,6 +36,18 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Claude 4.6 and later get their 1M context window** (#416). Every Claude model resolved to a
+  200,000-token window, so Book compacted at about a fifth of what Opus 4.6–4.8, Sonnet 4.6, and
+  every 5.x model (Opus, Sonnet, Haiku, Fable, Mythos) accept. These now resolve to 1,000,000,
+  matching `max_input_tokens` from Anthropic's `/v1/models`; Haiku 4.5, the 4.5 models, and older
+  stay at 200,000. The window follows the model name on any route, so a router that caps a Claude
+  model lower is learned from its first overflow refusal, or can be declared with `contextWindow`.
+  A long Haiku 5.5 session now runs past 100,000 prompt tokens, where its per-token price is 5x.
+- **`/model` lists the current Claude models, and Haiku 5.5 takes an effort level.** The picker
+  gained Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1. Haiku 5.5 was missing from the
+  Anthropic provider's adaptive-thinking models, so a request to it carried neither `thinking` nor
+  `output_config.effort` and ran at the model's own `medium` whatever effort was set; it now gets
+  both, as the other 5.x models do.
 - **Claude Haiku 5.5, Opus 4.5 and Sonnet 4.5 are priced, and Sonnet 5.5 cache reads cost what
   Anthropic charges** (#415). The price table had no rate for the first three, so
   `--max-budget-usd` refused every run on them and `/cost` showed no dollar figure. Sonnet 5.5's
@@ -45,27 +57,72 @@ All notable changes to this project are documented in this file.
   or spend carried over from an earlier run) it uses the higher rate as an upper bound. `/cost` and
   `/usage` say when a delegated agent's figure is one; a carried budget does not, so a restarted
   Haiku 5.5 run can stop short of its cap.
+- **A bare `advisorModel` no longer sends your key to another vendor** (#419). An id that names
+  no configured provider, such as `claude`, went to the default endpoint
+  (`https://api.openai.com/v1`) with a key meant for another one: the key of the provider the
+  session used, or `BOOK_API_KEY` when the main model was on a provider of its own, so an
+  Anthropic key reached OpenAI on every consultation, and the 401 that came back was marked
+  retryable. The advisor now fails closed. An id that is not `<provider>/<model>` for a configured
+  provider is refused, with nothing sent (`advisor_unconfigured`, not retryable, suggesting
+  `/advisor <provider>/<model>`), unless it is the main model, `BOOK_BASE_URL` is set (the legacy
+  `.bookrc.json` `baseUrl` does not count: a repository can ship it), or it resolves to exactly
+  the endpoint and key the session already uses. An id that starts or ends with `/` is refused
+  whatever the base URL, and a stored one fails the consult as `advisor_unconfigured` instead of
+  throwing. `/advisor <id>` reports the same refusal and saves nothing; with a provider prefix
+  that matches no configured provider (`antropic/x`) it saves the id and warns, as the main model
+  does, and `/advisor` alone marks a stored id that every consult would refuse. A key inherited
+  from configuration also goes only to the endpoint it was configured for, on every model switch
+  and not just the advisor's; any other endpoint gets `BOOK_API_KEY` or no key. Endpoints are
+  compared after normalisation (a trailing slash, or the case of the scheme and host, does not
+  make a different one), and a provider name is looked up as an own key, so `constructor/x`
+  names no provider. A failure a repeat would only reproduce is no longer retryable: a rejected
+  key or account (auth, quota), a retired or misspelled model (`model_unavailable`), a transcript
+  too long for the advisor's window (`context_overflow`), and any verdict on the request itself
+  (400, 404, 422, `invalid_request_error`, a content filter). Rate limits, overload, server errors,
+  network errors and timeouts stay retryable.
 - **The transcript's brightest lines are the answer again, not the agent's bookkeeping.** A sentence
   whose only call updated the plan (TodoWrite) was read as an answer even when the agent went on
   working, so `I'll clone, install, and launch that repo` sat in full ink between grey steps. A
   message that more work follows in the same turn is now drawn as a step, unless it hands the turn
   back to you (a question, plan approval, a memory save). Turns end at notifications too.
+- **The headless test suites no longer write run records into your own `~/.book`** (#421). Five
+  suites drove print mode against the real `BOOK_HOME` and left a `runs/<session-id>.json` behind
+  for every test session. Each now runs under a temporary `BOOK_HOME`, and a guard test fails any
+  suite that drives print mode or the SDK without pinning one.
 - **A tool call the registry refused before it ran no longer draws a rose row.** An unknown tool
   name, or arguments that did not parse or fit the schema, is the model's slip, and it usually
   resends the call corrected. Its `×`, target and message are grey; a command that ran and failed
   stays rose, since a non-zero exit is the transcript's only record of a red test run.
+- **Run records are pruned** (#422). `<BOOK_HOME>/runs/` kept a record for every session ever run.
+  Startup now deletes the records not written in 30 days, the retention sessions and debug logs
+  already follow. Every CLI and SDK start sweeps it, whatever the session settings, and a record
+  whose run is still alive is kept.
 - **A failure's message is no longer cut to the metadata column.** It was truncated to 64 columns
   at the right edge of the row, as in
   `Invalid arguments for TodoWrite: arguments.todos is required. A…`, which lost the part that
   said what was wrong. It is now set under the row, wrapped to up to two lines.
+- **`AgentWait` with a long `timeoutMs` returns the agent's status instead of timing out** (#423).
+  The wait ran under the registry's default 120-second tool deadline, so any `timeoutMs` of 120000
+  or more ended as a `tool_timeout` with no status in it. The wait is now the tool's own deadline,
+  bounded by the ceiling that `BashOutput`'s `wait_ms` has (`BOOK_TOOL_TIMEOUT_MS` where set,
+  600000 ms otherwise): a longer request is refused with that limit, and an omitted `timeoutMs`
+  waits until the agent finishes, up to it. A cancelled or disposed wait now clears its timer, so a
+  cancelled open-ended wait no longer keeps the process alive.
 - **A TodoWrite row is marked with where the plan stands, not a check.** The row
   `✓ Steps  Clone the repo   0 of 3 done` read as a finished step; it now takes the Steps sheet's
   marks: `◌` set out, `◔` under way, `✓` finished.
+- **A provider error with an empty body says so** (#424). A 404 with no body read just
+  `API Error: 404`; it now names the host and the model the request was for, says
+  `(empty response body)`, and suggests checking the base URL and model id. A provider message
+  that already ends in a period no longer gets a second one (`…/account/api-keys..`).
 - **A tool call written with a dotted namespace runs.** `default.Bash` answered "Unknown tool" and
   the model spent a turn on a ToolSearch for a tool it already had. `parent.`, `default.`, `tool.`
   and OpenAI's `functions.` now unwrap the way `default:` always did, and the transcript shows the
   call as the tool it ran as. The list stays explicit, so `pnpm.list` is still unknown.
 
+- **A background shell's completion notice names the job** (#425). A command retried under the
+  same title finished as two identical notices, which read as one job announced twice; a titled
+  job's notice now carries its id after the title, as in `Install Spotify flatpak` (shell_2).
 - **Repository-local filters and merge drivers are disabled for Book's git calls, and lazy fetch is refused in git isolation** (#357).
   A repository's own `.git/config` (or a file it includes) can no longer execute programs through
   `filter.<name>.clean`, `filter.<name>.smudge`, `filter.<name>.process`, or `merge.<name>.driver`
@@ -82,6 +139,10 @@ All notable changes to this project are documented in this file.
   read-only Git tools, `/review`, and the status poll, while git isolation keeps
   `core.fsmonitor=false` to avoid leaving daemons behind in temporary worktrees; custom hook paths
   remain disabled.
+- **Grep takes `-i`, and accepts `-n`** (#426). Claude Code's `-i` (or `i`) now searches
+  case-insensitively, with ripgrep and with the built-in fallback, and `-n` is accepted and
+  ignored, since results always carry line numbers. Both were refused as unknown arguments, which
+  cost the model a turn to resend the call.
 - **A router-wrapped or direct 429 for a spent plan usage limit no longer burns the retry budget**
   (#400). A router-wrapped 429 that says a plan's weekly, daily, monthly, or N-hour usage limit is
   spent was treated as a transient rate limit: Book waited the router's cooldown hint up to
@@ -97,6 +158,10 @@ All notable changes to this project are documented in this file.
   429, an absolute `resets at <time>` within reach is waited for, up to `retry.maxDelayMs` per
   attempt; a reset that falls beyond what the remaining attempts and retry budget can wait halts
   retries immediately.
+- **Tool telemetry records the session a call ran in** (#427). The `session` field of
+  `tool-use.jsonl` holds the run's trace id, so `book tool-stats` counted every run as a session.
+  Records now carry `sessionId` too, and the session count uses it; older records still count by
+  trace.
 - **Scrolling a long transcript no longer draws rows outside the viewport** (#353). The virtual
   transcript mounts about one viewport of rows above and below the view as overscan, and Ink's
   render walk visited every mounted node every frame: measuring `widestLine`, wrapping text, and
@@ -123,6 +188,12 @@ All notable changes to this project are documented in this file.
   (summed 182 ms to 40 ms), and the worst stall per run from 56 ms to 42 ms at the median. On a quiet
   Windows box, stalls over 40 ms did not move (about one per run in either build): what remains there
   is the React mount and Yoga layout of newly mounted heavy rows, which the cull does not touch.
+- **A session nothing was sent in is no longer offered back** (#428). Opening Book and leaving
+  without a prompt left an empty session behind, which `--continue` and `book status` then picked
+  as the most recent here, and which `/resume` listed. All three now skip sessions with no
+  messages. `book status` also counts a session that has a run record, so a live print-mode run
+  of host-performed commands only (such as `/review`) is still the one it reports. The empty
+  session file itself is still left behind.
 - **A model the provider no longer serves is no longer reported as a rejected credential** (#387).
   9router wraps an upstream 403 in its own 503 (`[route] [403]: Model is no longer available`),
   which `classifyApiError` read through the quoted status as `auth` — so the run parked as
@@ -135,6 +206,13 @@ All notable changes to this project are documented in this file.
   tight: a 401 is always `auth` whatever its body says, a 403 "Invalid API key provided" or
   "Forbidden" and a 404 "Not Found" keep their old readings, and the #383 capacity outage (a quoted
   404 "No endpoints found" with a `(reset after …)` cooldown) is still a retryable `server_error`.
+- **A session started in your home directory reads `~/.book/settings.json` once** (#429). There
+  the user file is also the workspace's `.book/settings.json`, so it loaded a second time as the
+  repository's layer: its rules accumulated twice, and its hooks, allow rules and directories were
+  withheld as repository declarations awaiting `book trust`, then registered twice once approved.
+  The project layer is now skipped when it is the user file, in the loader, the withheld-declaration
+  notices, `book trust` and `book doctor`, and a skill found under both roots is listed once, as
+  yours.
 - **The delegation latency test re-measures a failing verdict before it fails the run** (#390). The
   Windows CI legs sometimes go through a few seconds in which every delegation cycle costs 0.6-3.9s while
   the probe beside it and the child's own timer stay normal, and a re-run of the same commit measures
@@ -142,11 +220,18 @@ All notable changes to this project are documented in this file.
   budget: a round that passes decides the run, and with no passing round any failed round fails it, so a
   regression still fails. Every other platform still decides on one round. Each printed sample also says
   where its time went: before the child started, or after it finished.
+- **`~/.claude/CLAUDE.md` is injected once for a workspace under your home directory** (#430).
+  The instruction walk passes through your home directory, where it found the file a second time
+  as a project-level `.claude/CLAUDE.md`. Instruction files are now deduplicated by resolved path,
+  and the first, user-scoped entry is kept.
 - **The agent store no longer logs spurious write retry events for first-try writes** (#402).
   Atomic JSON writes incremented an attempt counter across both lock and rename steps, returning
   two attempts on clean writes and causing the agent store to log a retry event on every success.
   Attempts now count the initial write plus only contended retries, a stale-lock reclaim is not
   counted as a retry, and the store logs retry events only when a write actually retried.
+- **A session started with `/goal` is named after its condition** (#431). The TUI named it after
+  the first transcript line, `Goal set: <condition>`, and print mode after the kickoff prompt Book
+  sends for the goal.
 
 ### Changed
 

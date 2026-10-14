@@ -73,7 +73,7 @@ export type TerminalRecovery = 'none' | 'reissue' | 'continue' | 'park';
  * next one, so the third re-send is the one that can succeed. A 423, a 425 and
  * Google's 499 are transient by definition.
  */
-const NON_REISSUABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
+export const NON_REISSUABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'bad_request',
   'not_found',
   'unprocessable',

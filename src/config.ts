@@ -239,6 +239,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     defaultEffort,
     defaultApiKey,
     defaultBaseUrl,
+    defaultBaseUrlExplicit: Boolean(process.env.BOOK_BASE_URL),
     defaultProvider,
     autoCompactEnabled: settings.autoCompactEnabled ?? legacy?.autoCompactEnabled ?? true,
     workspace: resolvedWorkspace,
@@ -284,15 +285,50 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   return config;
 }
 
+/**
+ * The key for a request routed to `baseUrl` whose own configuration names none:
+ * BOOK_API_KEY, or else the key `config` already sends -- but only to the endpoint
+ * it already sends it to. A key from `provider.anthropic` carried to another
+ * provider's endpoint is the user's Anthropic key handed to another vendor: an
+ * unprefixed `advisorModel` sent it to api.openai.com on every consult (#419).
+ * With neither, the request goes out without a key, and fails as one.
+ */
+function inheritedApiKey(config: AgentConfig, baseUrl: string): string {
+  // `||`, not `??`: `defaultApiKey` is `''` when BOOK_API_KEY is unset, and an
+  // empty string is present as far as `??` is concerned. Switching models would
+  // then wipe a key that came from a provider entry and send every later request
+  // out with an empty credential.
+  if (config.defaultApiKey) return config.defaultApiKey;
+  return sameEndpoint(baseUrl, config.baseUrl) ? config.apiKey : '';
+}
+
+/**
+ * Whether two base URLs name one endpoint: trailing slashes and the case of the scheme and
+ * host do not matter, while a different host, port, scheme or path does. A string `new URL()`
+ * rejects is compared as written, trimmed.
+ */
+function sameEndpoint(a: string, b: string): boolean {
+  const normalise = (raw: string): string => {
+    const trimmed = raw.trim();
+    try {
+      const url = new URL(trimmed);
+      // `URL` lowercases the scheme and host, and drops a default port; only the path's
+      // trailing slashes are ours to strip. Credentials stay: they are part of the endpoint.
+      const auth = url.username || url.password ? `${url.username}:${url.password}@` : '';
+      return `${url.protocol}//${auth}${url.host}${url.pathname.replace(/\/+$/, '')}${url.search}`;
+    } catch {
+      return trimmed.replace(/\/+$/, '');
+    }
+  };
+  return normalise(a) === normalise(b);
+}
+
 function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
+  const baseUrl = config.defaultBaseUrl || config.baseUrl;
   return {
     ...config,
-    // `||`, not `??`: `defaultApiKey` is `''` when BOOK_API_KEY is unset, and
-    // an empty string is present as far as `??` is concerned. Switching to an
-    // unprefixed model would then wipe a key that came from a provider entry
-    // and send every later request out with an empty credential.
-    apiKey: config.defaultApiKey || config.apiKey,
-    baseUrl: config.defaultBaseUrl || config.baseUrl,
+    apiKey: inheritedApiKey(config, baseUrl),
+    baseUrl,
     model,
     modelSelection: model,
     modelInfo: undefined,
@@ -387,17 +423,19 @@ export function resolveModelProviderConfig(
 
   const providerId = rawModel.slice(0, slash);
   const model = rawModel.slice(slash + 1);
+  // Own properties only: `constructor/x` names no provider, however `{}` answers for it.
+  if (!Object.hasOwn(config.settings.provider, providerId)) {
+    return plainModelConfig(config, rawModel);
+  }
   const provider = config.settings.provider[providerId];
-  if (!provider) return plainModelConfig(config, rawModel);
 
-  // Same empty-string trap as `plainModelConfig`: an unset BOOK_API_KEY is `''`,
-  // which is defined, so a presence test would prefer it over a real key.
-  const fallbackApiKey = config.defaultApiKey || config.apiKey;
-  const apiKey = resolveSecret(provider.apiKey, config.workspace) ?? fallbackApiKey;
+  const baseUrl = provider.baseURL ?? provider.baseUrl ?? config.defaultBaseUrl ?? config.baseUrl;
+  const apiKey =
+    resolveSecret(provider.apiKey, config.workspace) ?? inheritedApiKey(config, baseUrl);
   return {
     ...config,
     apiKey,
-    baseUrl: provider.baseURL ?? provider.baseUrl ?? config.defaultBaseUrl ?? config.baseUrl,
+    baseUrl,
     model,
     modelSelection: rawModel,
     modelInfo: provider.models[model],
@@ -514,6 +552,47 @@ export function configuredAdvisorModel(
   config: Pick<AgentConfig, 'advisorModel' | 'settings'>,
 ): string | undefined {
   return config.advisorModel?.trim() || config.settings?.advisorModel?.trim() || undefined;
+}
+
+/**
+ * Why `advisorModel` may not be sent a request, or `undefined` when it may. The advisor
+ * is a request the user did not make this turn, so it fails closed: an id that is not
+ * `<provider>/<model>` for a provider in `settings.provider` resolves against the default
+ * endpoint with whichever key is lying around, and that was the user's Anthropic key
+ * going to api.openai.com on every consult (#419). Such an id is allowed only when:
+ *
+ * 1. it is the main model;
+ * 2. BOOK_BASE_URL is set, so the default endpoint is the one the user chose. Only the
+ *    environment counts: the legacy `.bookrc.json` `baseUrl` ships with a repository and
+ *    does not say what the user chose; or
+ * 3. it resolves to the very endpoint (compared after `sameEndpoint` normalisation) and key
+ *    the main session already uses, so the request reaches no host that is not already
+ *    receiving that key every turn.
+ *
+ * An id that starts or ends with `/` is refused first, whatever the base URL: it is no model
+ * id, and resolving it throws.
+ *
+ * `config` is the main session's config.
+ */
+export function advisorModelRefusal(config: AgentConfig, advisorModel: string): string | undefined {
+  const id = advisorModel.trim();
+  if (id.startsWith('/') || id.endsWith('/')) {
+    return `advisor model "${id}" is not a model id; use <provider>/<model>`;
+  }
+  if (id === config.modelSelection || id === config.model) return undefined;
+  const slash = id.indexOf('/');
+  const providers = config.settings.provider;
+  if (slash > 0 && Object.hasOwn(providers, id.slice(0, slash))) return undefined;
+  if (config.defaultBaseUrlExplicit) return undefined;
+  const resolved = resolveModelProviderConfig(config, id);
+  if (sameEndpoint(resolved.baseUrl, config.baseUrl) && resolved.apiKey === config.apiKey) {
+    return undefined;
+  }
+  const configured = Object.keys(providers).sort();
+  return (
+    `advisor model "${id}" names no configured provider, so its key and endpoint are ambiguous; ` +
+    `use <provider>/<model>${configured.length ? ` (configured: ${configured.join(', ')})` : ''}`
+  );
 }
 
 /**

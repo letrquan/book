@@ -9,6 +9,7 @@ import type {
 } from '../agents/types.js';
 import { toolFailure, toolSuccess } from './result.js';
 import { projectAgentResult, projectAgentSummary } from '../agents/projections.js';
+import { MAX_TOOL_TIMEOUT_MS, toolTimeoutCeilingMs } from './timeouts.js';
 
 /**
  * What a spawn actually returns, said in words.
@@ -239,10 +240,23 @@ async function agentSend(args: Record<string, unknown>, ctx: ToolContext): Promi
 async function agentWait(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   try {
     requireRoot(ctx);
+    const requested = typeof args.timeoutMs === 'number' ? args.timeoutMs : 0;
+    // The wait must end before the registry's backstop does, or a long wait lands as a
+    // contentless tool_timeout instead of the agent's current status (#423). Refused rather
+    // than clamped above the ceiling, as BashOutput refuses an over-limit wait_ms.
+    const ceiling = toolTimeoutCeilingMs(ctx.env);
+    if (requested > ceiling) {
+      return toolFailure(
+        `timeoutMs ${requested}ms exceeds the ${ceiling}ms limit in force here (BOOK_TOOL_TIMEOUT_MS). ` +
+          `Re-run with a timeoutMs at or below ${ceiling}ms.`,
+      );
+    }
     const managed = manager(ctx);
     const waited = await managed.wait(
       typeof args.agentId === 'string' ? args.agentId : '',
-      typeof args.timeoutMs === 'number' ? args.timeoutMs : 0,
+      // Omitted or 0 means "until it finishes", which the ceiling bounds.
+      requested > 0 ? requested : ceiling,
+      ctx.signal,
     );
     if (['completed', 'failed', 'stopped', 'interrupted'].includes(waited.status)) {
       await managed.acknowledgeCompletion(`${waited.id}:${waited.completionSequence ?? 0}`);
@@ -469,9 +483,20 @@ export const agentLifecycleTools: ToolDefinition[] = [
     name: 'AgentWait',
     description:
       'Wait for a managed agent to finish or until timeoutMs elapses. Completion delivery is automatic; use this only as an explicit synchronization barrier.',
+    // The wait is this tool's own deadline, so the registry's backstop sits
+    // SELF_TIMEOUT_GRACE_MS behind it, as for BashOutput's wait_ms.
+    timeoutMs: MAX_TOOL_TIMEOUT_MS,
     parameters: {
       type: 'object',
-      properties: { agentId: agentIdParameter, timeoutMs: { type: 'number', minimum: 0 } },
+      properties: {
+        agentId: agentIdParameter,
+        timeoutMs: {
+          type: 'number',
+          minimum: 0,
+          maximum: MAX_TOOL_TIMEOUT_MS,
+          description: `How long to wait, in milliseconds (maximum ${MAX_TOOL_TIMEOUT_MS}). Omit it to wait until the agent finishes, up to that limit. A wait that ends before the agent does returns its current status.`,
+        },
+      },
       required: ['agentId'],
     },
     execute: agentWait,

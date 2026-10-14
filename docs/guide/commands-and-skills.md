@@ -182,7 +182,8 @@ its chip stays.
 Write the condition so the transcript can prove it: "`npm test` exits 0 and the output is shown"
 is checkable; "the code is good" is not. `/goal` with no argument shows the goal, how many checks
 it has failed, and the last reason; `/goal clear` (or `stop`, `off`, `reset`, `none`, `cancel`)
-drops it early. A goal is recorded in the session file, so `--resume` and `/resume` bring back an
+drops it early. A new session started with `/goal` is named after the condition rather than the
+`Goal set:` line. A goal is recorded in the session file, so `--resume` and `/resume` bring back an
 unmet one; `/clear` drops it. Only the root agent is checked — subagents and managed agents work
 toward their own tasks. In print mode, `book -p "/goal <condition>"` runs the same loop, with each
 check on stderr as `goal: …` (or as a `goal_status` event under `--output-format stream-json`).
@@ -202,14 +203,23 @@ the cursor on the current choice, so no model id has to be typed from memory. It
 as `/model`, aimed at the advisor, and the **Advisor** row of `/config` (shortcut `V`) opens it
 too; a saved advisor that matches no listed model, such as a mistyped id, is flagged in it.
 `/advisor status` (or `show`, `version`, and Claude Code's other status words) prints the current
-advisor instead, `/advisor <model>` sets one by id (with a note when the id is not in your model
-list), `/advisor off` removes it, and the choice is
-saved to `~/.book/settings.json` as `advisorModel` (`BOOK_ADVISOR_MODEL` outranks it, and the
-picker says so while it is set). The consultation is billed to the session at the advisor
-model's rates, and `/cost` lists it, and the goal checks, as their own lines. Advice is another
-model's text, so after a consultation a `MemorySave` goes to the memory inbox, as it does after
-`Task`. Like `TodoWrite`, the tool needs no permission prompt (an explicit `deny` or `ask`
-rule naming it still applies).
+advisor instead, and marks a stored id that would be refused. `/advisor <model>` sets one by id,
+`/advisor off` removes it, and the choice is saved to `~/.book/settings.json` as `advisorModel`
+(`BOOK_ADVISOR_MODEL` outranks it, and the picker says so while it is set). The advisor fails closed
+on an id that is not `<provider>/<model>` for a provider in `settings.provider`: such an id
+(`/advisor claude`) is refused with a message and saves nothing, whether it is typed as
+`/advisor <id>` or picked in the picker, and an `advisorModel` of that kind already in settings
+makes the tool fail (`advisor_unconfigured`, not retryable) before anything is sent. It is
+allowed only when it is the main model, when `BOOK_BASE_URL` is set (the legacy `baseUrl` does
+not count), or when it resolves to exactly the endpoint and key the main session already uses,
+so `/advisor claude` is refused in the common case. Even then, with no key at all the tool
+refuses. A prefix that matches no configured provider (`/advisor antropic/x`) is saved with a
+warning, and any other id that is not in your model list is saved with a note. So name the provider:
+`/advisor <provider>/<model>`. See "Model ids and provider prefixes" in the configuration guide. The
+consultation is billed to the session at the advisor model's rates, and `/cost` lists it, and the
+goal checks, as their own lines. Advice is another model's text, so after a consultation a
+`MemorySave` goes to the memory inbox, as it does after `Task`. Like `TodoWrite`, the tool needs no
+permission prompt (an explicit `deny` or `ask` rule naming it still applies).
 
 Unlike Claude Code, whose advisor is a server-side tool available only on Anthropic's API, Book's
 runs client-side, so any provider and any model can be the advisor. For Claude models, `/advisor`

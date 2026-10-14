@@ -1948,6 +1948,24 @@ describe('grep', () => {
     }
   });
 
+  it('matches regardless of case with i on both backends (#426)', async () => {
+    writeFileSync(join(dir, 'case.ts'), 'const Needle = 1;\nconst other = 2;');
+    for (const env of [{}, { BOOK_GREP_BACKEND: 'typescript' }] as Record<string, string>[]) {
+      const context = { ...ctx, env };
+      const exact = await grep.execute({ pattern: 'needle', include: '*.ts' }, context);
+      expect(exact.content).toBe('No matches found');
+
+      const folded = await grep.execute({ pattern: 'needle', include: '*.ts', i: true }, context);
+      expect(folded.content).toContain('case.ts:1: const Needle = 1;');
+
+      const across = await grep.execute(
+        { pattern: 'needle = 1;\\nconst OTHER', include: '*.ts', i: true, multiline: true },
+        context,
+      );
+      expect(across.content).toContain('case.ts:1');
+    }
+  });
+
   it('keeps timers responsive and observes abort during a broad scan', async () => {
     for (let index = 0; index < 160; index++) {
       writeFileSync(join(dir, `file-${index}.txt`), 'no match here\n'.repeat(10));
@@ -2008,6 +2026,15 @@ describe('buildRipgrepArgs', () => {
     expect(argv).toContain('--multiline');
     // The separator is last: everything after it is a path, whatever it looks like.
     expect(argv.slice(-2)).toEqual(['--', 'sub']);
+  });
+
+  it('adds --ignore-case ahead of the separator only when asked (#426)', () => {
+    expect(buildRipgrepArgs(base)).not.toContain('--ignore-case');
+
+    const argv = buildRipgrepArgs({ ...base, ignoreCase: true });
+
+    expect(argv).toContain('--ignore-case');
+    expect(argv.indexOf('--ignore-case')).toBeLessThan(argv.indexOf('--'));
   });
 
   // An inherited `RIPGREP_CONFIG_PATH` is a file of flags read before anything on the command

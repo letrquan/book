@@ -1,8 +1,9 @@
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { SessionStore } from '../session/store.js';
 import { resolveBookHome } from '../book-home.js';
 import { estimateUsageCost } from '../pricing.js';
-import { readRunStatus, type RunStatusRecord } from '../run-status.js';
+import { readRunStatus, runStatusPath, type RunStatusRecord } from '../run-status.js';
 import type { LoadedSession, SessionMeta } from '../types/sessions.js';
 import type { Message } from '../types/messages.js';
 
@@ -133,7 +134,10 @@ export interface SessionStatus {
     todos: Array<{ content: string; status: string }>;
     tasks: Array<{ id: string; subject: string; status: string; blockedBy: string[] }>;
   };
-  /** Absent when no run of this session ever wrote a liveness record. */
+  /**
+   * Absent when no run of this session ever wrote a liveness record, or when the 30-day
+   * retention has removed it.
+   */
   run?: RunStatus;
 }
 
@@ -378,7 +382,11 @@ export function runStatusCommand(options: StatusCommandOptions): number {
 
   const meta = options.session
     ? (store.findById(options.session) ?? store.findByName(options.session))
-    : store.mostRecentInCwd(options.workspace);
+    : // A print run of host-performed commands records no message, only a run record (#428).
+      store.mostRecentInCwd(
+        options.workspace,
+        (candidate) => candidate.messageCount > 0 || existsSync(runStatusPath(candidate.id, home)),
+      );
 
   if (!meta) {
     stdout.write(

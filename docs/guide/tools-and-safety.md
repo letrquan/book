@@ -175,9 +175,10 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   applies one only when it matches a single location; the result notes the tolerance used.
   `replaceAll` always requires exact matches.
 - **Cross-harness argument aliases.** Claude Code-style spellings (`file_path`, `old_string`,
-  `new_string`, `replace_all`, Grep `glob`/`-A`/`-B`/`-C`, ApplyPatch `input`) are normalized to
-  Book's canonical arguments before validation, and `invalid_arguments` errors list the allowed
-  argument names.
+  `new_string`, `replace_all`, Grep `glob`/`-A`/`-B`/`-C`/`-i`, ApplyPatch `input`) are normalized
+  to Book's canonical arguments before validation, and `invalid_arguments` errors list the allowed
+  argument names. Grep's `-n` is accepted and ignored, since its results always carry line
+  numbers.
 - **Malformed-JSON arguments.** A call whose arguments are not valid JSON fails with
   `invalid_json_arguments`, and the error names the shape the text arrived in rather than reporting
   schema errors about arguments the model did send:
@@ -620,13 +621,13 @@ call's `timeout` (bounded by that ceiling), then a deliberate per-tool setting s
 default. No source can resolve past 2147483647 ms (~24 days), the largest delay a timer can hold;
 beyond it Node silently fires after 1 ms.
 
-The same resolution governs every tool that enforces a deadline of its own — `Bash`, `Check`,
-`Task`, and `WebFetch`. Each declares its budget so the host's backstop outlasts it; when the two
-are equal the backstop fires first and replaces the tool's report, including its output, with a
-bare timeout. The backstop ranks a per-tool setting above `BOOK_TOOL_TIMEOUT_MS` exactly as the tool
-does, so a lower blanket override cannot fire it ahead of `Check` or `Task`. A `timeout` argument
-sets the host budget only for a tool that publishes one, so a stray value cannot pull the backstop
-underneath a tool that times itself.
+The same resolution governs every tool that enforces a deadline of its own — `Bash`, `BashOutput`,
+`Check`, `Task`, `AgentWait`, and `WebFetch`. Each declares its budget so the host's backstop
+outlasts it; when the two are equal the backstop fires first and replaces the tool's report,
+including its output, with a bare timeout. The backstop ranks a per-tool setting above
+`BOOK_TOOL_TIMEOUT_MS` exactly as the tool does, so a lower blanket override cannot fire it ahead
+of `Check` or `Task`. A `timeout` argument sets the host budget only for a tool that publishes
+one, so a stray value cannot pull the backstop underneath a tool that times itself.
 
 A command that had to be killed reports itself as killed rather than failed, and returns whatever
 it printed on stdout and stderr before the kill, so the failure names the deadline it hit and the

@@ -150,6 +150,7 @@ export interface AgentSessionPrepareSendRequest {
   contextMessage?: string;
   userMessage: Message;
   sessionName?: string;
+  sessionNameSource?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: SessionTimelineStore;
   signal?: AbortSignal;
@@ -165,6 +166,11 @@ export interface AgentSessionRecordUserRequest {
   contextMessage?: string;
   userMessage: Message;
   sessionName?: string;
+  /**
+   * What a session that has no name yet is named after; the display message when absent. A `/goal`
+   * turn passes its condition, so the session is not named after its "Goal set: …" line (#431).
+   */
+  sessionNameSource?: string;
   timelineStore?: SessionTimelineStore;
   expandShellInput?: boolean;
   runtime?: SessionRuntime;
@@ -189,6 +195,8 @@ export interface AgentSessionSendRequest {
   mode?: PermissionMode;
   sessionId: string;
   sessionName?: string;
+  /** See {@link AgentSessionRecordUserRequest.sessionNameSource}. */
+  sessionNameSource?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: SessionTimelineStore;
   registryStore?: SessionStoreInterface;
@@ -448,6 +456,7 @@ export class AgentSession {
           contextMessage: request.contextMessage,
           userMessage,
           sessionName: request.sessionName,
+          sessionNameSource: request.sessionNameSource,
           snapshotStore: request.snapshotStore,
           timelineStore: request.timelineStore,
           signal: control.signal,
@@ -1023,7 +1032,9 @@ export class AgentSession {
     } satisfies SessionRecord);
     if (request.timelineStore) request.onUserMessagePersisted?.();
 
-    const sessionName = request.sessionName?.trim() || deriveSessionName(request.displayMessage);
+    const sessionName =
+      request.sessionName?.trim() ||
+      deriveSessionName(request.sessionNameSource ?? request.displayMessage);
     if (!request.sessionName?.trim()) {
       request.timelineStore?.patchMeta?.(request.sessionId, { name: sessionName });
     }

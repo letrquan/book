@@ -21,7 +21,10 @@ export function SessionPicker({
   width,
 }: SessionPickerProps) {
   const choices = useMemo(
-    () => sessions.filter((session) => session.id !== currentSessionId),
+    () =>
+      // A launch that ended before its first prompt leaves an empty session behind; there
+      // is nothing in it to resume, so it is hidden here as on the title page (#428).
+      sessions.filter((session) => session.id !== currentSessionId && session.messageCount > 0),
     [currentSessionId, sessions],
   );
 

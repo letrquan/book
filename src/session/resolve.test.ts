@@ -107,6 +107,15 @@ describe('resolveSessionBootstrap', () => {
     expect(store.load(result.sessionId).history[0].content).toBe('copied');
   });
 
+  it('--continue starts fresh when every session in the folder is empty (#428)', () => {
+    const empties = [store.create({ cwd: '/proj' }), store.create({ cwd: '/proj' })];
+
+    const result = resolveSessionBootstrap(store, { cwd: '/proj', continue: true });
+
+    expect(result.created).toBe(true);
+    expect(empties).not.toContain(result.sessionId);
+  });
+
   it('uses an ephemeral id when persistence is disabled', () => {
     const result = resolveSessionBootstrap(undefined, { cwd: '/proj' });
     expect(result.persisted).toBe(false);

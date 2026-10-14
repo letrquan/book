@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HeadlessOptions } from './types/public-sdk.js';
 import { createSessionFixture, type SessionFixture } from './test/session-fixture.js';
@@ -232,6 +232,41 @@ describe('SDK runtime event bridge', () => {
     const report = warnings.join('\n');
     expect(report).toContain('Ignoring 1 project-declared hook(s) (PreToolUse x1)');
     expect(report).toContain('Run `book doctor` to approve them.');
+  });
+
+  // headless.ts writes a run record into the shared <BOOK_HOME>/runs on every query, so
+  // a service that keeps no sessions of its own must still sweep it (#422).
+  it('sweeps stale run records even when it persists no session', async () => {
+    sessionFixture = createSessionFixture('book-sdk-runs-');
+    const bookHome = join(sessionFixture.root, 'book-home');
+    const runs = join(bookHome, 'runs');
+    mkdirSync(runs, { recursive: true });
+    process.env.BOOK_HOME = bookHome;
+    const stale = join(runs, 'stale.json');
+    writeFileSync(
+      stale,
+      JSON.stringify({
+        version: 1,
+        sessionId: 'stale',
+        pid: 2 ** 22 + 12_345,
+        terminal: { status: 'completed', reason: 'normal_completion' },
+      }),
+    );
+    const old = new Date(Date.now() - 31 * 86_400_000);
+    utimesSync(stale, old, old);
+
+    state.release();
+    const types: string[] = [];
+    for await (const event of query('hello', {
+      workspace: sessionFixture.root,
+      noSettings: true,
+      persistSession: false,
+    })) {
+      types.push(event.type);
+    }
+
+    expect(types).toContain('result');
+    expect(existsSync(stale)).toBe(false);
   });
 
   // Progress lines are for a person watching `book -p` in a terminal. An SDK

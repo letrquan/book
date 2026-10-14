@@ -43,7 +43,11 @@ import type { McpHostSnapshot } from '../mcp-host.js';
 import { settingsScopeLabel, type SettingsScope } from '../settings-scope.js';
 import { applySettingWrite, describeSettingShadow, guardSettingWrite } from '../settings-write.js';
 import { normalizePermissionMode } from '../permission-mode.js';
-import { configuredAdvisorModel } from '../config.js';
+import {
+  advisorModelRefusal,
+  configuredAdvisorModel,
+  describeUnresolvedProviderPrefix,
+} from '../config.js';
 
 export interface BuiltinCommand {
   name: string;
@@ -143,7 +147,7 @@ export type BuiltinCommandEffect =
   | { type: 'set-effort'; level: EffortLevel }
   | { type: 'set-compact-model'; model: string }
   /** `/advisor <model>` sets the advisor model; `null` turns the advisor off. */
-  | { type: 'set-advisor'; model: string | null }
+  | { type: 'set-advisor'; model: string | null; notice?: string }
   | { type: 'set-default-permission-mode'; mode: PermissionMode }
   | { type: 'set-show-thinking'; enabled: boolean }
   | { type: 'set-startup-animation'; enabled: boolean }
@@ -759,13 +763,27 @@ function advisorCommandEffect(
   if (!argument) return { type: 'show-modal', modal: 'advisor' };
   if (ADVISOR_STATUS_WORDS.has(word)) {
     const current = configuredAdvisorModel(context.runtimeConfig);
-    return { type: 'local-message', content: `Advisor: ${current ?? 'off'}\n${ADVISOR_USAGE}` };
+    // A stored id every consult would refuse is not working; say so rather than list it as set.
+    const refusal = current ? advisorModelRefusal(context.runtimeConfig, current) : undefined;
+    const shown = current ? `${current}${refusal ? ` (refused: ${refusal})` : ''}` : 'off';
+    return { type: 'local-message', content: `Advisor: ${shown}\n${ADVISOR_USAGE}` };
   }
   if (ADVISOR_OFF_WORDS.has(word)) return { type: 'set-advisor', model: null };
   if (/\s/.test(argument)) {
     return { type: 'local-message', content: ADVISOR_USAGE, isError: true };
   }
-  return { type: 'set-advisor', model: argument };
+  // Nothing is saved for an id whose key and endpoint are ambiguous (#419).
+  const refusal = advisorModelRefusal(context.runtimeConfig, argument);
+  if (refusal) return { type: 'local-message', content: refusal, isError: true };
+  // A prefix that matches no configured provider is probably a typo; the id is saved all the
+  // same, as on the main-model path, since it may be one vendor-namespaced model id.
+  const notice = describeUnresolvedProviderPrefix(
+    context.runtimeConfig.settings.provider,
+    argument,
+  );
+  return notice
+    ? { type: 'set-advisor', model: argument, notice }
+    : { type: 'set-advisor', model: argument };
 }
 
 export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [

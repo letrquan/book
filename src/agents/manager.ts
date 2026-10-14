@@ -192,6 +192,8 @@ export class AgentManager {
   private readonly activities = new Map<string, Map<string, AgentActivity>>();
   private readonly waiters = new Map<string, Set<(record: AgentRecord) => void>>();
   private readonly idleWaiters = new Set<() => void>();
+  /** Settles each `wait` still pending, so a disposed manager leaves none of their timers armed. */
+  private readonly pendingWaits = new Set<() => void>();
   private active = 0;
   private interactivePermissions = false;
   private permissionMode: PermissionMode = 'default';
@@ -582,6 +584,7 @@ export class AgentManager {
       beginTerminalGeneration(record);
       this.store.saveAgent(record);
     }
+    for (const cancel of [...this.pendingWaits]) cancel();
     for (const controller of this.controllers.values()) controller.abort('manager_disposed');
     for (const timer of this.textTimers.values()) clearTimeout(timer);
     this.textTimers.clear();
@@ -1158,35 +1161,42 @@ export class AgentManager {
     return this.recordForReturn(record);
   }
 
-  async wait(agentId: string, timeoutMs = 0): Promise<AgentRecord> {
+  async wait(agentId: string, timeoutMs = 0, signal?: AbortSignal): Promise<AgentRecord> {
     await this.ensureInitialized();
     const current = this.hydrateAgent(agentId);
     if (!current) throw new Error(`Agent ${agentId} was not found.`);
-    if (TERMINAL_STATUSES.has(current.status)) return this.recordForReturn(current);
+    if (TERMINAL_STATUSES.has(current.status) || signal?.aborted) {
+      return this.recordForReturn(current);
+    }
 
     return new Promise((resolvePromise) => {
       let timer: NodeJS.Timeout | undefined;
       let settled = false;
-      const finish = (record: AgentRecord) => {
+      // Every way out of the wait comes through here, so none can leave the timer, the waiter or
+      // the abort listener behind: a timer left armed keeps the process alive after the run that
+      // asked for the wait has ended.
+      const settle = (record: AgentRecord) => {
         if (settled) return;
-        if (!TERMINAL_STATUSES.has(record.status)) return;
         settled = true;
         if (timer) clearTimeout(timer);
-        this.waiters.get(agentId)?.delete(finish);
+        signal?.removeEventListener('abort', cancel);
+        this.pendingWaits.delete(cancel);
+        const listeners = this.waiters.get(agentId);
+        listeners?.delete(finish);
+        if (listeners?.size === 0) this.waiters.delete(agentId);
         resolvePromise(this.recordForReturn(record));
       };
+      const finish = (record: AgentRecord) => {
+        if (TERMINAL_STATUSES.has(record.status)) settle(record);
+      };
+      // The turn was cancelled or the manager disposed: answer with the agent as it stands.
+      const cancel = () => settle(this.agents.get(agentId)!);
       const listeners = this.waiters.get(agentId) ?? new Set();
       listeners.add(finish);
       this.waiters.set(agentId, listeners);
-      if (timeoutMs > 0) {
-        timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          listeners.delete(finish);
-          if (listeners.size === 0) this.waiters.delete(agentId);
-          resolvePromise(this.recordForReturn(this.agents.get(agentId)!));
-        }, timeoutMs);
-      }
+      this.pendingWaits.add(cancel);
+      signal?.addEventListener('abort', cancel, { once: true });
+      if (timeoutMs > 0) timer = setTimeout(cancel, timeoutMs);
     });
   }
 

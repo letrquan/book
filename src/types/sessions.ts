@@ -630,7 +630,11 @@ export interface SessionStoreInterface {
   list(): SessionMeta[];
   findByName(name: string): SessionMeta | undefined;
   findById(id: string): SessionMeta | undefined;
-  mostRecentInCwd(cwd: string): SessionMeta | undefined;
+  /**
+   * The newest session in `cwd` with at least one message, or the newest one `accept` approves
+   * when given; empty sessions are skipped by default.
+   */
+  mostRecentInCwd(cwd: string, accept?: (meta: SessionMeta) => boolean): SessionMeta | undefined;
   saveImageAttachment?(
     sessionId: string,
     image: { bytes: Uint8Array; mediaType: ImageAttachment['mediaType']; displayName?: string },

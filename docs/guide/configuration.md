@@ -11,6 +11,10 @@ Settings are loaded in priority order (later wins):
 3. `.book/settings.local.json` (local, should be gitignored)
 4. `--settings <path>` CLI flag
 
+In a session started in your home directory with `BOOK_HOME` unset, the workspace's
+`.book/settings.json` is the user file itself: it is read once, as the user layer, and nothing in
+it is held back as a repository declaration.
+
 One family is not "later wins". `sandbox.*` is a boundary between a command and your machine, so
 a **workspace layer may only tighten it** — see [The sandbox](#the-sandbox).
 
@@ -57,6 +61,39 @@ That fallback is silent by design for the second form, but wrong for a typo. So 
 configured providers and the prefix matches none of them, Book says so — on stderr at startup and
 inline in `book doctor` — instead of leaving `Credentials: not resolved` as the only symptom of a
 misspelled provider id.
+
+**Which key a model gets.** A provider entry with its own `apiKey` uses it. An entry without one,
+and a bare id that goes to the default endpoint, gets `BOOK_API_KEY` when it is set. Otherwise it
+gets the key the session already sends, but only when its endpoint is the very one the session
+already sends that key to; any other endpoint gets no key. Endpoints are compared after
+normalisation, so a trailing slash or the case of the scheme and host does not make a different
+one, while another host, port, scheme or path does. A key configured for one provider is never
+carried to another endpoint, so switching to a bare id cannot hand your Anthropic key to
+`https://api.openai.com/v1`. The default endpoint is `BOOK_BASE_URL` (or the legacy
+`.bookrc.json` `baseUrl`) when set, and `https://api.openai.com/v1` otherwise.
+
+**The advisor fails closed.** `advisorModel` (and `BOOK_ADVISOR_MODEL`, and `/advisor`) is a
+request you do not make yourself, so an id that is not `<provider>/<model>` for a provider in
+`provider` is refused, and nothing is sent, unless one of these holds:
+
+1. it is the main model;
+2. `BOOK_BASE_URL` is set. Only that variable counts: the legacy `.bookrc.json` `baseUrl` still
+   sets the default endpoint, but a repository can ship that file, so it does not show that you
+   chose the endpoint;
+3. it resolves to exactly the endpoint and key the main session already uses, as a bare
+   `gpt-5` does next to a bare `gpt-4o` on the default endpoint with `BOOK_API_KEY`.
+
+An id that starts or ends with `/` is refused whatever the base URL. `/advisor <id>` reports the
+refusal and saves nothing, and an `advisorModel` already in settings makes the `Advisor` tool fail
+with `advisor_unconfigured` instead of making a request; `/advisor` alone shows such an id as
+`(refused: …)`. A provider prefix that matches no configured provider (`antropic/x`) is saved, as
+for `model`, and `/advisor` warns that it is probably a typo. Name the provider:
+`anthropic/claude-opus-5-5`.
+
+A consult that fails is marked retryable only when a repeat could succeed: rate limits, overload,
+server errors, network errors and timeouts. A rejected key or account, a retired or misspelled
+model, a transcript too long for the advisor's window, and any verdict on the request itself
+(400, 404, 422, a content filter) are not, so the agent does not send the same consult again.
 
 Set `BOOK_HOME` to replace the default `~/.book` user-state root. This relocates user settings,
 sessions, memory, managed-agent state and worktrees, jobs, rewind snapshots, telemetry, tool output,
@@ -444,7 +481,7 @@ A theme that sets `text` but not `userText` uses its `text` for your prompt too.
 
 ## Tool-use telemetry
 
-When `observability.toolTelemetry` is enabled (default), Book appends one JSON line per finalized tool call to `~/.book/telemetry/tool-use.jsonl` (override the directory with `BOOK_TOOL_TELEMETRY_DIR`). Each record captures the canonical tool, the final status the model saw, a derived `isFailure` flag (`error`/`timed_out` only — permission blocks, plan-mode blocks, user declines, and cancellations are never counted as failures), the error code, duration, retries, model, and subagent attribution. The write is best-effort and off the hot path; it never blocks or fails a session, and the active log is size-rotated into a single `.1` backup.
+When `observability.toolTelemetry` is enabled (default), Book appends one JSON line per finalized tool call to `~/.book/telemetry/tool-use.jsonl` (override the directory with `BOOK_TOOL_TELEMETRY_DIR`). Each record captures the canonical tool, the final status the model saw, a derived `isFailure` flag (`error`/`timed_out` only — permission blocks, plan-mode blocks, user declines, and cancellations are never counted as failures), the error code, duration, retries, model, the session it ran in (`sessionId`; `session` is the run's trace id), and subagent attribution. The write is best-effort and off the hot path; it never blocks or fails a session, and the active log is size-rotated into a single `.1` backup.
 
 `book tool-stats` reads this log and reports, per tool, calls / failures / fail rate / p50 / p95 duration / retry rate, plus a per-model split and the most frequent error codes:
 
