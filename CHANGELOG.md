@@ -77,6 +77,9 @@ All notable changes to this project are documented in this file.
   and OpenAI's `functions.` now unwrap the way `default:` always did, and the transcript shows the
   call as the tool it ran as. The list stays explicit, so `pnpm.list` is still unknown.
 
+- **A background shell's completion notice names the job** (#425). A command retried under the
+  same title finished as two identical notices, which read as one job announced twice; a titled
+  job's notice now carries its id after the title, as in `Install Spotify flatpak` (shell_2).
 - **Repository-local filters and merge drivers are disabled for Book's git calls, and lazy fetch is refused in git isolation** (#357).
   A repository's own `.git/config` (or a file it includes) can no longer execute programs through
   `filter.<name>.clean`, `filter.<name>.smudge`, `filter.<name>.process`, or `merge.<name>.driver`
