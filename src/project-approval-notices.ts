@@ -16,6 +16,7 @@ import { partitionProjectAllowRules } from './permission-approvals.js';
 import {
   formatIgnoredWorkspaceSandboxKey,
   ignoredWorkspaceSandboxKeys,
+  isUserSettingsFile,
   loadSettingsFile,
   settingsLayerPaths,
   workspaceLayerThatEnabledSandbox,
@@ -43,7 +44,9 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
   if (!input.settingsEnabled) return [];
 
   const projectPath = join(input.workspace, '.book', 'settings.json');
-  const projectSettings = loadSettingsFile(projectPath);
+  // At `$HOME` this is the user's own file, which the loader read as the user layer and
+  // withheld nothing from (#429).
+  const projectSettings = isUserSettingsFile(projectPath) ? null : loadSettingsFile(projectPath);
   const notices: string[] = [];
 
   const allow = partitionProjectAllowRules(

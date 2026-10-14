@@ -8,6 +8,7 @@ import { createRegistry } from './tools/registry.js';
 import { toolSuccess } from './tools/result.js';
 import { defaultConfig } from './test/fixtures.js';
 import type { HeadlessResult } from './types/public-sdk.js';
+import { isolateBookHome } from './test/isolated-book-home.js';
 
 /**
  * `book -p --output-format stream-json` into a reader that has gone (#340).
@@ -19,6 +20,7 @@ import type { HeadlessResult } from './types/public-sdk.js';
  * run at the tool boundary instead.
  */
 let tempDirs: string[] = [];
+isolateBookHome('book-reader-gone-home-');
 
 afterEach(() => {
   vi.unstubAllGlobals();

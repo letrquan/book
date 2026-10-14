@@ -1,5 +1,5 @@
-import { readFileSync, existsSync } from 'fs';
-import { join, normalize } from 'path';
+import { readFileSync, existsSync, realpathSync } from 'fs';
+import { join, normalize, resolve } from 'path';
 import {
   bookSettingsSchema,
   DEFAULT_SETTINGS,
@@ -491,18 +491,52 @@ export function settingsLayerPaths(
   overridePath?: string,
   paths: SettingsResolutionPaths = {},
 ): string[] {
-  const userPath =
-    paths.userSettingsPath ??
-    (paths.home
-      ? join(paths.home, '.book', 'settings.json')
-      : join(resolveBookHome(), 'settings.json'));
+  const userPath = userSettingsPath(paths);
+  const projectPath = paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json');
   const layers = [
     userPath,
-    paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json'),
+    ...(sameFile(projectPath, userPath) ? [] : [projectPath]),
     paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json'),
   ];
   if (overridePath) layers.push(overridePath);
   return layers;
+}
+
+function userSettingsPath(paths: SettingsResolutionPaths): string {
+  return (
+    paths.userSettingsPath ??
+    (paths.home
+      ? join(paths.home, '.book', 'settings.json')
+      : join(resolveBookHome(), 'settings.json'))
+  );
+}
+
+/**
+ * Whether two paths name one file. The lexical check covers a file that does not
+ * exist yet; a link to the file, or a workspace reached through a linked home
+ * directory, needs the real paths.
+ */
+function sameFile(left: string, right: string): boolean {
+  if (resolve(left) === resolve(right)) return true;
+  try {
+    return realpathSync.native(left) === realpathSync.native(right);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether `path` is the user settings file.
+ *
+ * A workspace at `$HOME` (with `BOOK_HOME` unset) has `~/.book/settings.json` as
+ * its project settings file too. Read a second time as the repository layer, the
+ * user's own file would add every accumulating rule twice, and its hooks, allow
+ * rules and directories would be withheld as if a repository had declared them,
+ * then registered twice once approved (#429). Every reader of the project layer
+ * skips a file this returns true for.
+ */
+export function isUserSettingsFile(path: string, paths: SettingsResolutionPaths = {}): boolean {
+  return sameFile(path, userSettingsPath(paths));
 }
 
 export function resolveSettings(
@@ -513,17 +547,14 @@ export function resolveSettings(
   let resolved = structuredClone(DEFAULT_SETTINGS);
 
   // Layer 1: User settings (~/.book/settings.json)
-  const userPath =
-    paths.userSettingsPath ??
-    (paths.home
-      ? join(paths.home, '.book', 'settings.json')
-      : join(resolveBookHome(), 'settings.json'));
+  const userPath = userSettingsPath(paths);
   const user = loadSettingsFile(userPath);
   if (user) resolved = mergeLayer(resolved, user, 'trusted');
 
-  // Layer 2: Project settings (<workspace>/.book/settings.json)
+  // Layer 2: Project settings (<workspace>/.book/settings.json). Skipped when it is
+  // the user file itself, as it is for a workspace at `$HOME` (#429).
   const projectPath = paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json');
-  const project = loadSettingsFile(projectPath);
+  const project = sameFile(projectPath, userPath) ? null : loadSettingsFile(projectPath);
   // `allow` rules from the repository layer are held back rather than merged:
   // they only widen authority, and the decisions that release them live in the
   // local layer, which has not been merged yet.

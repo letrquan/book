@@ -242,9 +242,13 @@ export async function runDoctorCommand(
   console.log('Settings layers:');
   const { existsSync } = await import('fs');
   const { join } = await import('path');
+  const { isUserSettingsFile } = await import('../settings-loader.js');
   for (const [label, path] of await settingsLayers(config.workspace)) {
     const marker = options.noSettings ? '[-]' : existsSync(path) ? '[x]' : '[ ]';
-    console.log('  ' + marker + ' ' + label + ': ' + path);
+    // At `$HOME` the project file is the user file, and the loader reads it once (#429).
+    const note =
+      label === 'Project' && isUserSettingsFile(path) ? ' (the User file; read once, as User)' : '';
+    console.log('  ' + marker + ' ' + label + ': ' + path + note);
   }
   // Everything below is resolved from defaults in this mode. Saying so once
   // stops the report reading as a description of the user's configuration.
@@ -265,7 +269,8 @@ export async function runDoctorCommand(
   // meant to be answered.
   const { loadSettingsFile } = await import('../settings-loader.js');
   const { partitionProjectAllowRules } = await import('../permission-approvals.js');
-  const projectSettings = loadSettingsFile(join(config.workspace, '.book', 'settings.json'));
+  const projectPath = join(config.workspace, '.book', 'settings.json');
+  const projectSettings = isUserSettingsFile(projectPath) ? null : loadSettingsFile(projectPath);
   const projectAllow = partitionProjectAllowRules(
     projectSettings?.permissions?.allow ?? [],
     perms.projectAllowRules,
@@ -463,7 +468,7 @@ export async function runDoctorCommand(
     const layers = (await settingsLayers(config.workspace)).map(([label, path]) => ({
       label,
       path,
-      document: loadSettingsFile(path),
+      document: label === 'Project' && isUserSettingsFile(path) ? null : loadSettingsFile(path),
     }));
     // The user-global layer is read here even though nothing about it is
     // reported: it is the baseline for what a workspace layer turned *on*, and

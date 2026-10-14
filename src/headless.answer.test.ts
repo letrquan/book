@@ -4,6 +4,7 @@ import { Readable } from 'stream';
 import { tmpdir } from 'os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runHeadless } from './headless.js';
+import { SessionStore } from './session/store.js';
 import { createDefaultRegistry, createRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
 import { toolSuccess } from './tools/result.js';
@@ -379,6 +380,24 @@ describe('runHeadless — a /goal that ends the run failed says so under --quiet
     expect(stderr).toContain('goal: Goal could not be achieved: there is no such file');
     expect(stderr).not.toContain('Goal not yet met');
     expect(stderr).not.toContain('Goal set');
+  });
+
+  it('names the session after the goal condition, not its kickoff prompt (#431)', async () => {
+    vi.stubGlobal('fetch', goalFetch(['{"ok": true, "reason": "it exists"}']));
+    const sessions = new SessionStore(tempDir('book-answer-sessions-'));
+
+    const result = await runHeadless(makeConfig(), createDefaultRegistry(), {
+      prompt: '/goal the file exists',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      quiet: true,
+      history: [],
+      mode: 'bypassPermissions',
+      stdout: capture().stdout,
+      sessionStore: sessions,
+    });
+
+    expect(sessions.load(result.sessionId!).meta.name).toBe('The file exists');
   });
 
   it('says a goal check that could not run left the goal unverified', async () => {

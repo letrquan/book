@@ -1006,6 +1006,7 @@ export async function runHeadless(
         displayMessage: prompt,
         userMessage,
         sessionName,
+        sessionNameSource: dispatch.kind === 'prompt' ? dispatch.sessionNameSource : undefined,
         timelineStore: store && sessionId ? store : undefined,
         expandShellInput: false,
         runtime,
