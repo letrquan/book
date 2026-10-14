@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentManager } from '../agents/manager.js';
 import { AgentStore } from '../agents/store.js';
 import type { AtomicJsonWriter } from '../agents/atomic-json.js';
@@ -11,7 +11,9 @@ import { deriveToolPresentation } from '../tui/tool-presentation.js';
 import type { ToolContext } from '../types/tools.js';
 import { toolSuccess } from './result.js';
 import { agentLifecycleTools, agentStatusPresentation } from './agent-tools.js';
+import { createRegistry } from './registry-core.js';
 import { taskTool } from './task-tool.js';
+import { MAX_TOOL_TIMEOUT_MS } from './timeouts.js';
 
 describe('managed-agent tool presentation', () => {
   it('uses semantic lifecycle text instead of serialized object prefixes', () => {
@@ -47,6 +49,104 @@ describe('managed-agent tool presentation', () => {
     );
     expect(row.summary).toBe('Spawned Atlas');
     expect(row.summary).not.toContain('{');
+  });
+});
+
+describe('AgentWait against the registry backstop (#423)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function waitHarness(env: Record<string, string> = {}) {
+    const running = {
+      id: 'agent-1',
+      name: 'explorer',
+      status: 'running',
+      transcript: [],
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const waits: number[] = [];
+    const manager = {
+      updateConfig: () => undefined,
+      setPermissionMode: () => undefined,
+      setEventSink: () => undefined,
+      dispose: () => undefined,
+      // As the real manager does, 0 arms no timer: only the agent finishing ends that wait.
+      wait: (_id: string, timeoutMs: number) =>
+        new Promise((resolve) => {
+          waits.push(timeoutMs);
+          if (timeoutMs > 0) setTimeout(() => resolve(running), timeoutMs);
+        }),
+    };
+    const runtime = new SessionRuntime();
+    runtime.agentManager = manager as unknown as AgentManager;
+    const registry = createRegistry();
+    registry.registerAll(agentLifecycleTools);
+    const context: ToolContext = {
+      workspaceRoot: '.',
+      env,
+      agentConfig: defaultConfig(),
+      availableTools: [],
+      currentMode: 'bypassPermissions',
+      runtime,
+    };
+    const wait = (args: Record<string, unknown>) =>
+      registry.execute({ id: 'wait-1', name: 'AgentWait', arguments: args }, context);
+    return { wait, waits, runtime };
+  }
+
+  it('answers a wait longer than the default tool deadline with the agent status', async () => {
+    vi.useFakeTimers();
+    const { wait, waits, runtime } = waitHarness();
+    try {
+      const pending = wait({ agentId: 'agent-1', timeoutMs: 240_000 });
+      await vi.advanceTimersByTimeAsync(240_000);
+      const result = await pending;
+
+      expect(result.status).toBe('success');
+      expect(result.content).toContain('"status": "running"');
+      expect(waits).toEqual([240_000]);
+    } finally {
+      runtime.dispose();
+    }
+  });
+
+  it('bounds an open-ended wait by the ceiling, so the backstop never answers it', async () => {
+    vi.useFakeTimers();
+    const { wait, waits, runtime } = waitHarness({ BOOK_TOOL_TIMEOUT_MS: '60000' });
+    try {
+      const pending = wait({ agentId: 'agent-1' });
+      await vi.advanceTimersByTimeAsync(60_000);
+      const result = await pending;
+
+      expect(result.status).toBe('success');
+      expect(result.content).toContain('"status": "running"');
+      expect(waits).toEqual([60_000]);
+    } finally {
+      runtime.dispose();
+    }
+  });
+
+  it('refuses a wait past the limit in force rather than shortening it silently', async () => {
+    const { wait, waits, runtime } = waitHarness({ BOOK_TOOL_TIMEOUT_MS: '60000' });
+    try {
+      const result = await wait({ agentId: 'agent-1', timeoutMs: 90_000 });
+
+      expect(result.status).toBe('error');
+      expect(result.structuredError?.message).toContain('exceeds the 60000ms limit');
+      expect(waits).toEqual([]);
+    } finally {
+      runtime.dispose();
+    }
+  });
+
+  it('publishes the maximum the schema validates against', () => {
+    const tool = agentLifecycleTools.find((candidate) => candidate.name === 'AgentWait')!;
+    expect(tool.timeoutMs).toBe(MAX_TOOL_TIMEOUT_MS);
+    expect(tool.parameters).toMatchObject({
+      properties: { timeoutMs: { maximum: MAX_TOOL_TIMEOUT_MS } },
+    });
   });
 });
 
