@@ -280,6 +280,7 @@ describe('Anthropic request body per model family (#371)', () => {
       'claude-opus-4-6-20260101',
       'claude-opus-5-5-20260101',
       'claude-sonnet-5-5',
+      'claude-haiku-5-5',
       'claude-fable-5-1',
     ]) {
       const body = await capturedBody(model, 'high');

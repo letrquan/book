@@ -11,6 +11,10 @@ Settings are loaded in priority order (later wins):
 3. `.book/settings.local.json` (local, should be gitignored)
 4. `--settings <path>` CLI flag
 
+In a session started in your home directory with `BOOK_HOME` unset, the workspace's
+`.book/settings.json` is the user file itself: it is read once, as the user layer, and nothing in
+it is held back as a repository declaration.
+
 One family is not "later wins". `sandbox.*` is a boundary between a command and your machine, so
 a **workspace layer may only tighten it** — see [The sandbox](#the-sandbox).
 
@@ -444,7 +448,7 @@ A theme that sets `text` but not `userText` uses its `text` for your prompt too.
 
 ## Tool-use telemetry
 
-When `observability.toolTelemetry` is enabled (default), Book appends one JSON line per finalized tool call to `~/.book/telemetry/tool-use.jsonl` (override the directory with `BOOK_TOOL_TELEMETRY_DIR`). Each record captures the canonical tool, the final status the model saw, a derived `isFailure` flag (`error`/`timed_out` only — permission blocks, plan-mode blocks, user declines, and cancellations are never counted as failures), the error code, duration, retries, model, and subagent attribution. The write is best-effort and off the hot path; it never blocks or fails a session, and the active log is size-rotated into a single `.1` backup.
+When `observability.toolTelemetry` is enabled (default), Book appends one JSON line per finalized tool call to `~/.book/telemetry/tool-use.jsonl` (override the directory with `BOOK_TOOL_TELEMETRY_DIR`). Each record captures the canonical tool, the final status the model saw, a derived `isFailure` flag (`error`/`timed_out` only — permission blocks, plan-mode blocks, user declines, and cancellations are never counted as failures), the error code, duration, retries, model, the session it ran in (`sessionId`; `session` is the run's trace id), and subagent attribution. The write is best-effort and off the hot path; it never blocks or fails a session, and the active log is size-rotated into a single `.1` backup.
 
 `book tool-stats` reads this log and reports, per tool, calls / failures / fail rate / p50 / p95 duration / retry rate, plus a per-model split and the most frequent error codes:
 

@@ -348,6 +348,58 @@ describe('AgentSession', () => {
     expect(session.operations.activeKind).toBeNull();
   });
 
+  it('names a new session after its name source, not the goal line it shows (#431)', async () => {
+    const message: Message = {
+      id: 'assistant-goal',
+      role: 'assistant',
+      content: 'On it.',
+      includeInContext: true,
+      timestamp: 20,
+    };
+    const session = new AgentSession({
+      runLoop: async (_config, _registry, _prompt, _history, callbacks) => {
+        callbacks.onAssistantMessageComplete?.(message);
+        return [message];
+      },
+    });
+    const records: SessionRecord[] = [];
+    const metaPatches: unknown[][] = [];
+    let preparedName: string | undefined;
+
+    const result = await session.send({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      displayMessage: 'Goal set: clean up issue for me',
+      contextMessage: 'A session-scoped Stop hook is now active',
+      sessionNameSource: 'clean up issue for me',
+      createUserMessage: () => ({
+        id: 'user-goal',
+        role: 'user',
+        content: 'Goal set: clean up issue for me',
+        derivedContent: true,
+        includeInContext: true,
+        timestamp: 10,
+      }),
+      history: [],
+      sessionId: 'session-1',
+      timelineStore: {
+        append: (_id, record) => records.push(record),
+        patchMeta: (id, patch) => metaPatches.push([id, patch]),
+      },
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+      onPrepared: (prepared) => {
+        preparedName = prepared.sessionName;
+      },
+    });
+
+    expect(result.status).toBe('completed');
+    expect(preparedName).toBe('Clean up issue for me');
+    expect(metaPatches).toEqual([['session-1', { name: 'Clean up issue for me' }]]);
+    // Only the name changes: the transcript still shows the goal line.
+    const user = records.find((record) => record.type === 'user');
+    expect((user?.data as { content?: string }).content).toBe('Goal set: clean up issue for me');
+  });
+
   it('marks preparation failures after the user timeline event as persisted', async () => {
     const error = new Error('metadata update failed');
     const session = new AgentSession();

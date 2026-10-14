@@ -307,6 +307,11 @@ export interface ToolDefinition {
   argumentAliases?: Record<string, string>;
   /** Per-item argument aliases for array arguments (argument name → alias → canonical). */
   arrayItemArgumentAliases?: Record<string, Record<string, string>>;
+  /**
+   * Cross-harness arguments with no effect here, dropped before validation rather than refused:
+   * another harness's spelling for something this tool always does (Grep's `-n`).
+   */
+  ignoredArguments?: readonly string[];
   catalog?: ToolCatalogMetadata;
   policy?: ToolPolicy;
   /** When true, the tool is safe to retry once on transient failure (Read, Grep, WebFetch, etc.). */

@@ -245,6 +245,29 @@ describe('tool argument validation', () => {
     });
     expect(output).toMatchObject({ status: 'success', data: { shell_id: 'shell_1' } });
   });
+
+  it('drops definition-declared ignored arguments before closed-schema validation', async () => {
+    const registry = createRegistry();
+    registry.register({
+      name: 'Search',
+      description: 'Search',
+      ignoredArguments: ['n', '-n'],
+      parameters: {
+        type: 'object',
+        properties: { pattern: { type: 'string' } },
+        required: ['pattern'],
+      },
+      execute: async (args) => toolSuccess('ok', { data: args }),
+    });
+
+    const result = await registry.execute(
+      { id: 'ignored', name: 'Search', arguments: { pattern: 'x', n: true, '-n': false } },
+      ctx,
+    );
+
+    expect(result.status).toBe('success');
+    expect(result.data).toEqual({ pattern: 'x' });
+  });
 });
 
 describe('cross-harness argument compatibility', () => {
@@ -315,6 +338,20 @@ describe('cross-harness argument compatibility', () => {
     await expect(
       r.execute({ id: 'c2', name: 'Read', arguments: { path: 'a.txt' } }, ctx),
     ).resolves.toMatchObject({ status: 'success' });
+  });
+
+  it("accepts Claude Code's Grep -i and -n (#426)", async () => {
+    const r = createDefaultRegistry();
+    writeFileSync(join(dir, 'a.txt'), 'Hello there');
+    const calls = [
+      { id: 'dashed', arguments: { pattern: 'hello', '-i': true, '-n': true } },
+      { id: 'bare', arguments: { pattern: 'hello', i: true, n: true } },
+    ];
+    for (const call of calls) {
+      const result = await r.execute({ ...call, name: 'Grep' }, ctx);
+      expect(result.status, call.id).toBe('success');
+      expect(result.content, call.id).toContain('a.txt:1: Hello there');
+    }
   });
 
   it('lists allowed arguments on invalid_arguments failures', async () => {

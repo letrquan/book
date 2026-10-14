@@ -438,6 +438,8 @@ describe('resolvePrintCommand — /goal', () => {
     expect(prompt).toContain(
       'A session-scoped Stop hook is now active with condition: "npm test exits 0"',
     );
+    // A new session is named after the condition, not the kickoff (#431).
+    expect(dispatch).toMatchObject({ sessionNameSource: 'npm test exits 0' });
   });
 
   it('clears the goal without a model turn', async () => {
