@@ -195,12 +195,14 @@ tool's result (marked when it was cut off at the output limit). The advisor cann
 `/advisor` alone (or `status`, `show`, `version`, and Claude Code's other status words) shows the
 current advisor, `/advisor off` removes it, and the choice is saved to `~/.book/settings.json` as `advisorModel`
 (`BOOK_ADVISOR_MODEL` outranks it). The advisor fails closed on an id that is not
-`<provider>/<model>` for a provider in `settings.provider`: `/advisor claude` is refused with a
-message and saves nothing, and an `advisorModel` of that kind already in settings makes the tool
-fail (`advisor_unconfigured`, not retryable) before anything is sent. Such a bare id is allowed
-only when it is the main model, when the base URL was set explicitly (`BOOK_BASE_URL` or the
-legacy `baseUrl`), or when it resolves to exactly the endpoint and key the main session already
-uses. Even then, with no key at all the tool refuses. So name the provider:
+`<provider>/<model>` for a provider in `settings.provider`: such an id (`/advisor claude`) is
+refused with a message and saves nothing, and an `advisorModel` of that kind already in settings
+makes the tool fail (`advisor_unconfigured`, not retryable) before anything is sent. It is
+allowed only when it is the main model, when `BOOK_BASE_URL` is set (the legacy `baseUrl` does
+not count), or when it resolves to exactly the endpoint and key the main session already uses,
+so `/advisor claude` is refused in the common case. Even then, with no key at all the tool
+refuses. A prefix that matches no configured provider (`/advisor antropic/x`) is saved with a
+warning, and a bare `/advisor` marks a stored id that would be refused. So name the provider:
 `/advisor <provider>/<model>`. See "Model ids and provider prefixes" in the configuration guide. The consultation is
 billed to the session at the advisor model's rates, and `/cost` lists it, and the goal checks, as
 their own lines. Advice is another model's text, so after a consultation a `MemorySave` goes to the

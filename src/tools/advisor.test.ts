@@ -263,12 +263,45 @@ describe('Advisor tool', () => {
       ['auth', false],
       ['quota', false],
       ['not_found', false],
+      // A retired or misspelled model, and every verdict on the request itself.
+      ['model_unavailable', false],
+      ['invalid_request_error', false],
+      ['context_overflow', false],
+      ['content_filter', false],
       ['overloaded', true],
+      ['rate_limited', true],
+      ['server_error', true],
     ] as const) {
       const [tool] = createAdvisorTools({ provider: refusing(code) });
       const result = await tool.execute({}, context('claude-opus-5-5', [message('user', 'x')]));
       expect(result.structuredError?.retryable, code).toBe(retryable);
     }
+  });
+
+  describe('a stored advisor id that cannot be resolved (#419)', () => {
+    it('is unconfigured, not a thrown exception, when it is malformed', async () => {
+      const { provider, requests } = replying('unused');
+      const [tool] = createAdvisorTools({ provider });
+      const ctx = context('foo/', [message('user', 'x')]);
+      ctx.agentConfig!.defaultBaseUrlExplicit = true;
+
+      const result = await tool.execute({}, ctx);
+      expect(result.structuredError?.code).toBe('advisor_unconfigured');
+      expect(result.structuredError?.retryable).toBe(false);
+      expect(requests).toHaveLength(0);
+    });
+
+    it('does not treat an inherited property name as a configured provider', async () => {
+      const { provider } = replying('advice');
+      const [tool] = createAdvisorTools({ provider });
+      const ctx = context('constructor/x', [message('user', 'x')]);
+      ctx.agentConfig!.defaultBaseUrlExplicit = true;
+      ctx.agentConfig!.defaultApiKey = 'sk-test';
+
+      const result = await tool.execute({}, ctx);
+      expect(result.structuredError?.code).not.toBe('tool_exception');
+      expect(result.status).toBe('success');
+    });
   });
 
   it('refuses without a billed call when the host does not share the conversation', async () => {

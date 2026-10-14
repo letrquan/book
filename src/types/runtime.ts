@@ -222,8 +222,9 @@ export interface AgentConfig {
   defaultApiKey?: string;
   defaultBaseUrl?: string;
   /**
-   * Whether `defaultBaseUrl` was chosen (BOOK_BASE_URL or the legacy `.bookrc.json` `baseUrl`)
-   * rather than being the built-in OpenAI default. Recorded at load, never inferred from the URL.
+   * Whether `defaultBaseUrl` was chosen with BOOK_BASE_URL rather than being the built-in OpenAI
+   * default or a legacy `.bookrc.json` `baseUrl` (a repository can ship that file, so it is no
+   * proof of the user's choice). Recorded at load, never inferred from the URL.
    */
   defaultBaseUrlExplicit?: boolean;
   defaultProvider?: 'anthropic' | 'openai' | 'auto';

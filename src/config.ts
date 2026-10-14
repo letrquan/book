@@ -239,7 +239,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     defaultEffort,
     defaultApiKey,
     defaultBaseUrl,
-    defaultBaseUrlExplicit: Boolean(explicitBaseUrl),
+    defaultBaseUrlExplicit: Boolean(process.env.BOOK_BASE_URL),
     defaultProvider,
     autoCompactEnabled: settings.autoCompactEnabled ?? legacy?.autoCompactEnabled ?? true,
     workspace: resolvedWorkspace,
@@ -299,7 +299,28 @@ function inheritedApiKey(config: AgentConfig, baseUrl: string): string {
   // then wipe a key that came from a provider entry and send every later request
   // out with an empty credential.
   if (config.defaultApiKey) return config.defaultApiKey;
-  return baseUrl === config.baseUrl ? config.apiKey : '';
+  return sameEndpoint(baseUrl, config.baseUrl) ? config.apiKey : '';
+}
+
+/**
+ * Whether two base URLs name one endpoint: trailing slashes and the case of the scheme and
+ * host do not matter, while a different host, port, scheme or path does. A string `new URL()`
+ * rejects is compared as written, trimmed.
+ */
+function sameEndpoint(a: string, b: string): boolean {
+  const normalise = (raw: string): string => {
+    const trimmed = raw.trim();
+    try {
+      const url = new URL(trimmed);
+      // `URL` lowercases the scheme and host, and drops a default port; only the path's
+      // trailing slashes are ours to strip. Credentials stay: they are part of the endpoint.
+      const auth = url.username || url.password ? `${url.username}:${url.password}@` : '';
+      return `${url.protocol}//${auth}${url.host}${url.pathname.replace(/\/+$/, '')}${url.search}`;
+    } catch {
+      return trimmed.replace(/\/+$/, '');
+    }
+  };
+  return normalise(a) === normalise(b);
 }
 
 function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
@@ -402,8 +423,11 @@ export function resolveModelProviderConfig(
 
   const providerId = rawModel.slice(0, slash);
   const model = rawModel.slice(slash + 1);
+  // Own properties only: `constructor/x` names no provider, however `{}` answers for it.
+  if (!Object.hasOwn(config.settings.provider, providerId)) {
+    return plainModelConfig(config, rawModel);
+  }
   const provider = config.settings.provider[providerId];
-  if (!provider) return plainModelConfig(config, rawModel);
 
   const baseUrl = provider.baseURL ?? provider.baseUrl ?? config.defaultBaseUrl ?? config.baseUrl;
   const apiKey =
@@ -538,27 +562,31 @@ export function configuredAdvisorModel(
  * going to api.openai.com on every consult (#419). Such an id is allowed only when:
  *
  * 1. it is the main model;
- * 2. the base URL was set explicitly (BOOK_BASE_URL or the legacy `baseUrl`), so the
- *    default endpoint is the one the user chose; or
- * 3. it resolves to the very endpoint and key the main session already uses, so the
- *    request reaches no host that is not already receiving that key every turn.
+ * 2. BOOK_BASE_URL is set, so the default endpoint is the one the user chose. Only the
+ *    environment counts: the legacy `.bookrc.json` `baseUrl` ships with a repository and
+ *    does not say what the user chose; or
+ * 3. it resolves to the very endpoint (compared after `sameEndpoint` normalisation) and key
+ *    the main session already uses, so the request reaches no host that is not already
+ *    receiving that key every turn.
+ *
+ * An id that starts or ends with `/` is refused first, whatever the base URL: it is no model
+ * id, and resolving it throws.
  *
  * `config` is the main session's config.
  */
 export function advisorModelRefusal(config: AgentConfig, advisorModel: string): string | undefined {
   const id = advisorModel.trim();
+  if (id.startsWith('/') || id.endsWith('/')) {
+    return `advisor model "${id}" is not a model id; use <provider>/<model>`;
+  }
   if (id === config.modelSelection || id === config.model) return undefined;
   const slash = id.indexOf('/');
   const providers = config.settings.provider;
-  if (slash > 0 && slash < id.length - 1 && Object.hasOwn(providers, id.slice(0, slash))) {
-    return undefined;
-  }
+  if (slash > 0 && Object.hasOwn(providers, id.slice(0, slash))) return undefined;
   if (config.defaultBaseUrlExplicit) return undefined;
-  try {
-    const resolved = resolveModelProviderConfig(config, id);
-    if (resolved.baseUrl === config.baseUrl && resolved.apiKey === config.apiKey) return undefined;
-  } catch {
-    // `provider/` with no model is no model id at all; refuse it like any other.
+  const resolved = resolveModelProviderConfig(config, id);
+  if (sameEndpoint(resolved.baseUrl, config.baseUrl) && resolved.apiKey === config.apiKey) {
+    return undefined;
   }
   const configured = Object.keys(providers).sort();
   return (

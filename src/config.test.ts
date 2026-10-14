@@ -583,6 +583,42 @@ describe('loadConfig provider registry', () => {
     expect(resolveModelProviderConfig(withDefault, 'lab/model').apiKey).toBe('default-key');
   });
 
+  it('inherits the session key across endpoints that differ only by a trailing slash', () => {
+    delete process.env.BOOK_API_KEY;
+    const write = (labBaseUrl: string) =>
+      writeFileSync(
+        join(workspace, '.book', 'settings.local.json'),
+        JSON.stringify({
+          model: 'openai/gpt-4o',
+          provider: {
+            openai: { type: 'openai', baseURL: 'https://api.openai.com/v1', apiKey: 'openai-key' },
+            lab: { type: 'openai', baseURL: labBaseUrl },
+          },
+        }),
+      );
+
+    write('https://API.openai.com/v1/');
+    expect(resolveModelProviderConfig(loadConfig(workspace), 'lab/m').apiKey).toBe('openai-key');
+    // A different port, scheme or path is another endpoint, and gets no key.
+    for (const other of [
+      'https://api.openai.com:8443/v1',
+      'http://api.openai.com/v1',
+      'https://api.openai.com/v2',
+    ]) {
+      write(other);
+      expect(resolveModelProviderConfig(loadConfig(workspace), 'lab/m').apiKey, other).toBe('');
+    }
+  });
+
+  it('treats an inherited property name as an unconfigured provider', () => {
+    const config = loadConfig(workspace);
+    for (const id of ['constructor/x', '__proto__/x', 'toString/x']) {
+      const resolved = resolveModelProviderConfig(config, id);
+      expect(resolved.model, id).toBe(id);
+      expect(resolved.baseUrl, id).toBe(config.defaultBaseUrl);
+    }
+  });
+
   it("keeps a provider's key on an unprefixed switch to the same endpoint", () => {
     delete process.env.BOOK_API_KEY;
     writeFileSync(
@@ -1130,6 +1166,41 @@ describe('advisorModelRefusal (#419)', () => {
 
   it('records that the default base URL was not chosen', () => {
     expect(loadConfig(workspace).defaultBaseUrlExplicit).toBe(false);
+  });
+
+  it('does not count a repository-shipped legacy baseUrl as an explicit choice', () => {
+    process.env.BOOK_API_KEY = 'sk-ant-test';
+    writeFileSync(
+      join(workspace, '.bookrc.json'),
+      JSON.stringify({ baseUrl: 'https://repo.example/v1' }),
+    );
+    configure({ model: 'anthropic/claude-sonnet-5-5', provider: anthropicProvider });
+    const config = loadConfig(workspace);
+    // The legacy URL still feeds the default endpoint ...
+    expect(config.defaultBaseUrl).toBe('https://repo.example/v1');
+    // ... but only BOOK_BASE_URL says the user chose it.
+    expect(config.defaultBaseUrlExplicit).toBe(false);
+    expect(config.baseUrl).toBe('https://api.anthropic.com');
+    expect(advisorModelRefusal(config, 'claude')).toContain('names no configured provider');
+  });
+
+  it('compares endpoints after normalisation when judging a bare id', () => {
+    process.env.BOOK_API_KEY = 'sk-test';
+    configure({ model: 'gpt-4o' });
+    const config = loadConfig(workspace);
+    const slashed = { ...config, baseUrl: `${config.baseUrl}/` };
+    expect(advisorModelRefusal(slashed, 'gpt-5')).toBeUndefined();
+    const otherPort = { ...config, baseUrl: 'https://api.openai.com:8443/v1' };
+    expect(advisorModelRefusal(otherPort, 'gpt-5')).toBeDefined();
+  });
+
+  it('refuses a malformed id even when the base URL was set explicitly', () => {
+    process.env.BOOK_BASE_URL = 'https://proxy.example/v1';
+    configure({ model: 'gpt-4o' });
+    const config = loadConfig(workspace);
+    expect(advisorModelRefusal(config, 'foo/')).toContain('foo/');
+    expect(advisorModelRefusal(config, '/foo')).toContain('/foo');
+    expect(advisorModelRefusal(config, 'foo')).toBeUndefined();
   });
 
   it('allows the main model, by selection or by bare name', () => {

@@ -55,12 +55,22 @@ All notable changes to this project are documented in this file.
   Anthropic key reached OpenAI on every consultation, and the 401 that came back was marked
   retryable. The advisor now fails closed. An id that is not `<provider>/<model>` for a configured
   provider is refused, with nothing sent (`advisor_unconfigured`, not retryable, suggesting
-  `/advisor <provider>/<model>`), unless it is the main model, the base URL was set explicitly
-  (`BOOK_BASE_URL` or the legacy `baseUrl`), or it resolves to exactly the endpoint and key the
-  session already uses. `/advisor <id>` reports the same refusal and saves nothing. A key
-  inherited from configuration also goes only to the endpoint it was configured for, on every model
-  switch and not just the advisor's; any other endpoint gets `BOOK_API_KEY` or no key. A provider's
-  verdict on the key or the request (auth, quota, 400, 404, 422) is no longer retryable.
+  `/advisor <provider>/<model>`), unless it is the main model, `BOOK_BASE_URL` is set (the legacy
+  `.bookrc.json` `baseUrl` does not count: a repository can ship it), or it resolves to exactly
+  the endpoint and key the session already uses. An id that starts or ends with `/` is refused
+  whatever the base URL, and a stored one fails the consult as `advisor_unconfigured` instead of
+  throwing. `/advisor <id>` reports the same refusal and saves nothing; with a provider prefix
+  that matches no configured provider (`antropic/x`) it saves the id and warns, as the main model
+  does, and `/advisor` alone marks a stored id that every consult would refuse. A key inherited
+  from configuration also goes only to the endpoint it was configured for, on every model switch
+  and not just the advisor's; any other endpoint gets `BOOK_API_KEY` or no key. Endpoints are
+  compared after normalisation (a trailing slash, or the case of the scheme and host, does not
+  make a different one), and a provider name is looked up as an own key, so `constructor/x`
+  names no provider. A failure a repeat would only reproduce is no longer retryable: a rejected
+  key or account (auth, quota), a retired or misspelled model (`model_unavailable`), a transcript
+  too long for the advisor's window (`context_overflow`), and any verdict on the request itself
+  (400, 404, 422, `invalid_request_error`, a content filter). Rate limits, overload, server errors,
+  network errors and timeouts stay retryable.
 - **The transcript's brightest lines are the answer again, not the agent's bookkeeping.** A sentence
   whose only call updated the plan (TodoWrite) was read as an answer even when the agent went on
   working, so `I'll clone, install, and launch that repo` sat in full ink between grey steps. A

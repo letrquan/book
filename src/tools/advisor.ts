@@ -1,5 +1,6 @@
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import type { AgentConfig } from '../types/runtime.js';
+import { NON_REISSUABLE_PROVIDER_CODES } from '../types/terminal.js';
 import { toolFailure, toolSuccess } from './result.js';
 import { createProvider, type Provider } from '../provider/index.js';
 import {
@@ -128,22 +129,25 @@ export interface AdvisorToolOptions {
 }
 
 /**
- * Provider verdicts a repeated consult would only reproduce: a rejected key or
- * account, or a verdict on the request itself (a 400, 404 or 422). Marking them
- * retryable invites the agent to send the same request, and the same key, again.
+ * Provider verdicts a repeated consult would only reproduce: every verdict on the request
+ * itself (`NON_REISSUABLE_PROVIDER_CODES`: a 400, 404 or 422, a content filter), a rejected
+ * key or account (`auth`, `quota`), a retired or misspelled model (`model_unavailable`) and a
+ * transcript the advisor's window cannot hold (`context_overflow`). Marking them retryable
+ * invites the agent to send the same request, and the same key, again. `rate_limited`,
+ * `overloaded`, `server_error`, `network`, `timeout` and `unknown` stay retryable.
  */
 const NON_RETRYABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
+  ...NON_REISSUABLE_PROVIDER_CODES,
   'auth',
   'quota',
-  'bad_request',
-  'not_found',
-  'unprocessable',
+  'model_unavailable',
+  'context_overflow',
 ]);
 
 /** Whether `model` is `<provider>/<model>` for a configured provider, which owns its key. */
 function namesConfiguredProvider(config: AgentConfig, model: string): boolean {
   const slash = model.indexOf('/');
-  return slash > 0 && config.settings.provider[model.slice(0, slash)] !== undefined;
+  return slash > 0 && Object.hasOwn(config.settings.provider, model.slice(0, slash));
 }
 
 const ADVISOR_PROVIDER_REMEDIATION =
@@ -162,7 +166,20 @@ async function consultAdvisor(ctx: ToolContext, options: AdvisorToolOptions): Pr
       remediation: ADVISOR_PROVIDER_REMEDIATION,
     });
   }
-  const advisorConfig = config ? resolveAdvisorModelConfig(config) : undefined;
+  let advisorConfig: AgentConfig | undefined;
+  try {
+    advisorConfig = config ? resolveAdvisorModelConfig(config) : undefined;
+  } catch (error) {
+    // A stored id that cannot be resolved is a configuration fault, not a crashed tool.
+    return toolFailure(
+      `Advisor unavailable (${error instanceof Error ? error.message : String(error)})`,
+      {
+        code: 'advisor_unconfigured',
+        retryable: false,
+        remediation: ADVISOR_PROVIDER_REMEDIATION,
+      },
+    );
+  }
   if (!advisorConfig) {
     return toolFailure('No advisor model is configured.', {
       code: 'advisor_unconfigured',
