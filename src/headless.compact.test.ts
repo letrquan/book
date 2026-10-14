@@ -15,8 +15,10 @@ import { runHeadless } from './headless.js';
 import { SessionStore } from './session/store.js';
 import { defaultConfig } from './test/fixtures.js';
 import { createDefaultRegistry } from './tools/registry.js';
+import { isolateBookHome } from './test/isolated-book-home.js';
 
 const tempDirs: string[] = [];
+isolateBookHome('book-compact-headless-home-');
 
 function makeTempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'book-compact-headless-'));

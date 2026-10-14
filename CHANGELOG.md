@@ -41,6 +41,10 @@ All notable changes to this project are documented in this file.
   working, so `I'll clone, install, and launch that repo` sat in full ink between grey steps. A
   message that more work follows in the same turn is now drawn as a step, unless it hands the turn
   back to you (a question, plan approval, a memory save). Turns end at notifications too.
+- **The headless test suites no longer write run records into your own `~/.book`** (#421). Five
+  suites drove print mode against the real `BOOK_HOME` and left a `runs/<session-id>.json` behind
+  for every test session. Each now runs under a temporary `BOOK_HOME`, and a guard test fails any
+  suite that drives print mode or the SDK without pinning one.
 - **A tool call the registry refused before it ran no longer draws a rose row.** An unknown tool
   name, or arguments that did not parse or fit the schema, is the model's slip, and it usually
   resends the call corrected. Its `×`, target and message are grey; a command that ran and failed
