@@ -53,4 +53,28 @@ describe('SessionPicker', () => {
     expect(view.lastFrame()).toContain('Untitled session');
     expect(view.lastFrame()).not.toContain('22222222');
   });
+
+  it('hides a session left empty by a launch that ended before its first prompt (#428)', () => {
+    const onPick = vi.fn();
+    const empty = {
+      id: '33333333-3333-3333-3333-333333333333',
+      name: 'never-started',
+      cwd: '/project',
+      createdAt: 1,
+      updatedAt: Date.now() + 1_000,
+      messageCount: 0,
+    };
+    const view = render(
+      <SessionPicker
+        sessions={[empty, ...sessions]}
+        currentSessionId="current"
+        onPick={onPick}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(view.lastFrame()).not.toContain('never-started');
+    expect(view.lastFrame()).not.toContain('0 messages');
+    view.stdin.write('\r');
+    expect(onPick).toHaveBeenCalledWith(sessions[0]);
+  });
 });

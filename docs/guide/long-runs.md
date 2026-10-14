@@ -257,7 +257,7 @@ of its cap.
 Check on a run at any point, from any shell, with no provider configured:
 
 ```sh
-book status                 # newest session in this workspace
+book status                 # newest session here with a message or a run record
 book status <id|name> --json
 ```
 
