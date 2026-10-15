@@ -2,7 +2,13 @@ import React from 'react';
 import { afterEach, describe, it, expect } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
-import { DiffBlock, inferDiffLanguage, isUnifiedDiffLike, parseDiffLines } from './Diff.js';
+import {
+  DiffBlock,
+  NEW_FILE_PREVIEW_ROWS,
+  inferDiffLanguage,
+  isUnifiedDiffLike,
+  parseDiffLines,
+} from './Diff.js';
 import { displayWidth } from './word-wrap.js';
 
 function stripAnsi(value: string | undefined): string {
@@ -90,6 +96,44 @@ describe('parseDiffLines', () => {
     expect(lines[2]).toMatchObject({ kind: 'add', content: '++new flag' });
   });
 
+  it('parses the second file header of a multi-file creation diff as a header', () => {
+    const output = [
+      '--- a.js',
+      '+++ a.js',
+      '@@ -0,0 +1,2 @@',
+      '+a1',
+      '+a2',
+      '--- b.js',
+      '+++ b.js',
+      '@@ -0,0 +1,1 @@',
+      '+b1',
+    ].join('\n');
+    const lines = parseDiffLines(output);
+
+    expect(lines.map((line) => line.kind)).toEqual([
+      'meta',
+      'meta',
+      'hunk',
+      'add',
+      'add',
+      'meta',
+      'meta',
+      'hunk',
+      'add',
+    ]);
+    // The second file's numbering restarts at its own hunk header.
+    expect(lines[8]).toMatchObject({ newLineNumber: 1 });
+  });
+
+  it('keeps a deleted line that starts with two dashes as a deletion without a following +++', () => {
+    const lines = parseDiffLines('@@ -1,2 +1,1 @@\n--- not a header\n keep');
+    expect(lines[1]).toMatchObject({ kind: 'del', content: '-- not a header' });
+
+    const withAdd = parseDiffLines('@@ -1,2 +1,2 @@\n--- not a header\n+replacement\n keep');
+    expect(withAdd[1]).toMatchObject({ kind: 'del' });
+    expect(withAdd[2]).toMatchObject({ kind: 'add' });
+  });
+
   it('calculates bounded token-level spans for adjacent replacements', () => {
     const lines = parseDiffLines(
       '@@ -1 +1 @@\n-const count = total + 1;\n+const count = subtotal + 2;',
@@ -130,7 +174,7 @@ describe('DiffBlock', () => {
     expect(rendered).toContain('@@ -1,8 +1,8 @@');
     expect(rendered).toContain('+ new 2');
     expect(rendered).toContain('- old 4');
-    expect(rendered).not.toContain('rows omitted');
+    expect(rendered).not.toContain('lines omitted');
   });
 
   it('keeps changes from every hunk while trimming low-value context', () => {
@@ -149,8 +193,165 @@ describe('DiffBlock', () => {
     expect(rendered).toContain('+ new value 2');
     expect(rendered).toContain('- old value 3');
     expect(rendered).not.toContain('context before 1-10');
-    expect(rendered).toContain('rows omitted');
-    expect(rendered).toContain('Ctrl+E shows all');
+    // Each gap counts content lines (the unit the footer uses), never hunk headers.
+    expect(rendered).toMatch(/⋮ \d+ lines omitted/);
+    expect(rendered).not.toContain('rows omitted');
+    expect(rendered).toMatch(/… \d+ lines hidden \(Ctrl\+E\)/);
+    expect(rendered).not.toContain('B omitted');
+  });
+
+  it('previews the head of a new file without a hunk header and counts hidden lines', () => {
+    const output = [
+      '@@ -0,0 +1,150 @@',
+      ...Array.from({ length: 150 }, (_, index) => `+line ${index + 1}`),
+    ].join('\n');
+    const view = render(
+      withTheme(
+        React.createElement(DiffBlock, {
+          output,
+          collapsed: true,
+          preview: 'head',
+          maxRows: NEW_FILE_PREVIEW_ROWS,
+        }),
+      ),
+    );
+    const rendered = frame(view.lastFrame);
+    const contentRows = rendered.split('\n').filter((row) => /\+ line \d+/.test(row));
+
+    expect(NEW_FILE_PREVIEW_ROWS).toBe(10);
+    expect(contentRows).toHaveLength(10);
+    expect(rendered).toContain('+ line 1');
+    expect(rendered).toContain('+ line 10');
+    expect(rendered).not.toContain('+ line 11');
+    expect(rendered).not.toContain('@@');
+    expect(rendered).not.toContain('omitted');
+    expect(rendered).toContain('… +140 lines (Ctrl+E)');
+  });
+
+  it('shows a whole new file in head mode when it is not collapsed', () => {
+    const output = [
+      '@@ -0,0 +1,150 @@',
+      ...Array.from({ length: 150 }, (_, index) => `+line ${index + 1}`),
+    ].join('\n');
+    const view = render(
+      withTheme(React.createElement(DiffBlock, { output, preview: 'head', maxRows: 10 })),
+    );
+    const rendered = frame(view.lastFrame);
+
+    expect(rendered).toContain('+ line 150');
+    expect(rendered).not.toContain('… +');
+  });
+
+  it('keeps each head-preview line on one terminal row, however long', () => {
+    const output = [
+      '@@ -0,0 +1,3 @@',
+      ...Array.from({ length: 3 }, (_, index) => `+${String(index + 1).repeat(5000)}`),
+    ].join('\n');
+    const view = render(
+      withTheme(
+        React.createElement(DiffBlock, {
+          output,
+          collapsed: true,
+          preview: 'head',
+          maxRows: NEW_FILE_PREVIEW_ROWS,
+          terminalWidth: 60,
+        }),
+      ),
+    );
+    const rows = frame(view.lastFrame)
+      .split('\n')
+      .filter((row) => row.trim().length > 0);
+
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(row).toContain('…');
+      expect(displayWidth(row)).toBeLessThanOrEqual(60);
+    }
+  });
+
+  it('shows a long new-file line whole when show-all leaves the preview off', () => {
+    const output = ['@@ -0,0 +1,1 @@', `+${'x'.repeat(300)}`].join('\n');
+    const view = render(
+      withTheme(React.createElement(DiffBlock, { output, preview: 'head', terminalWidth: 60 })),
+    );
+    const rows = frame(view.lastFrame)
+      .split('\n')
+      .filter((row) => row.trim().length > 0);
+
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows.join('').match(/x/g)).toHaveLength(300);
+  });
+
+  it('renders a 200,000-row pure-addition diff collapsed in head mode', () => {
+    const output = [
+      '@@ -0,0 +1,200000 @@',
+      ...Array.from({ length: 200000 }, (_, index) => `+line ${index + 1}`),
+    ].join('\n');
+    const view = render(
+      withTheme(
+        React.createElement(DiffBlock, {
+          output,
+          collapsed: true,
+          preview: 'head',
+          maxRows: NEW_FILE_PREVIEW_ROWS,
+        }),
+      ),
+    );
+    const rendered = frame(view.lastFrame);
+
+    expect(rendered).toContain('+ line 10');
+    expect(rendered).toContain('… +199990 lines (Ctrl+E)');
+  });
+
+  it('caps an edit diff longer than 80 rows with a line-count footer', () => {
+    const output = [
+      '@@ -1,200 +1,200 @@',
+      ...Array.from({ length: 100 }, (_, index) => `-old ${index + 1}`),
+      ...Array.from({ length: 100 }, (_, index) => `+new ${index + 1}`),
+    ].join('\n');
+    const view = render(withTheme(React.createElement(DiffBlock, { output, collapsed: true })));
+    const lines = frame(view.lastFrame).split('\n');
+    const footer = lines.filter((row) => row.includes('lines hidden'));
+
+    // 80 shown rows, of which one is the hunk header: 79 of 200 content lines.
+    expect(footer).toHaveLength(1);
+    expect(footer[0]).toContain('… 121 lines hidden (Ctrl+E)');
+    expect(lines.some((row) => row.includes('⋮ 121 lines omitted'))).toBe(true);
+    expect(lines.filter((row) => /[-+] (old|new) \d+/.test(row))).toHaveLength(79);
+  });
+
+  it('keeps an edit diff of 80 rows or fewer complete with no footer', () => {
+    const output = [
+      '@@ -1,40 +1,39 @@',
+      ...Array.from({ length: 40 }, (_, index) => `-old ${index + 1}`),
+      ...Array.from({ length: 39 }, (_, index) => `+new ${index + 1}`),
+    ].join('\n');
+    const view = render(withTheme(React.createElement(DiffBlock, { output, collapsed: true })));
+    const rendered = frame(view.lastFrame);
+
+    expect(rendered).toContain('- old 40');
+    expect(rendered).toContain('+ new 39');
+    expect(rendered).not.toContain('lines hidden');
+  });
+
+  it('uses the singular for one hidden line and drops the parentheses without a hint', () => {
+    const output = ['@@ -0,0 +1,4 @@', '+a', '+b', '+c', '+d'].join('\n');
+    const view = render(
+      withTheme(
+        React.createElement(DiffBlock, {
+          output,
+          collapsed: true,
+          preview: 'head',
+          maxRows: 3,
+          expandHint: '',
+        }),
+      ),
+    );
+    const rendered = frame(view.lastFrame);
+
+    expect(rendered).toContain('… +1 line');
+    expect(rendered).not.toContain('… +1 line (');
+    expect(rendered).not.toContain('lines');
   });
 
   it('renders word-level markers on one content row', () => {

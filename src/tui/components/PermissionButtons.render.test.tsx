@@ -428,6 +428,29 @@ describe('PermissionButtons payload', () => {
     expect(mentions(frame, 'notes.txt')).toBe(1);
   });
 
+  it('summarises a cut diff as N lines hidden with the D hint', async () => {
+    const root = makeWorkspace({});
+    const content = Array.from({ length: 60 }, (_, index) => `line ${index + 1}`).join('\n');
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{
+            id: 'write-long',
+            name: 'Write',
+            arguments: { filePath: 'big.txt', content },
+          }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+          terminalRows={80}
+          workspaceRoot={root}
+        />,
+      ),
+    );
+    const frame = await frameContaining(view, '+ line 1');
+    expect(frame).toMatch(/… \d+ lines hidden \(D shows more\)/);
+    expect(frame).not.toContain('B omitted');
+  });
+
   it('reports a height change when the diff preview lands, so the transcript re-measures', async () => {
     const root = makeWorkspace({ 'notes.txt': 'alpha\nbeta\ngamma\n' });
     const onLayoutChange = vi.fn();

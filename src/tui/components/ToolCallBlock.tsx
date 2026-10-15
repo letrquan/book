@@ -2,7 +2,7 @@ import { Text, Box, type DOMElement } from 'ink';
 import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Spinner } from './Spinner.js';
 import { useTheme } from '../theme.js';
-import { DiffBlock } from './Diff.js';
+import { DiffBlock, NEW_FILE_PREVIEW_ROWS } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { highlightCode } from './syntax-highlight.js';
 import { prepareToolOutputDisplay } from './tool-output.js';
@@ -315,6 +315,9 @@ function ToolCallBlockInner({
     () => getFileMutationDisplaySummary(name, args, result),
     [args, name, result],
   );
+  // Only one new file reads as a head preview; several joined files keep the change-focused one.
+  const previewsNewFileHead =
+    mutationSummary?.kind === 'create' && (mutationSummary.fileCount ?? 1) <= 1;
   const isFileChild = summaryVariant === 'file-child';
   // A child row sits under an aggregate heading that already named the verb, so
   // it drops the label column and renders on the nested grid.
@@ -449,6 +452,9 @@ function ToolCallBlockInner({
         <DiffBlock
           output={result.content}
           filePath={presentation.filePath}
+          collapsed={!showAllToolOutput}
+          preview={previewsNewFileHead ? 'head' : 'changes'}
+          maxRows={previewsNewFileHead ? NEW_FILE_PREVIEW_ROWS : undefined}
           terminalWidth={blockWidth}
         />
       ) : isExpanded && result?.content ? (
@@ -502,7 +508,7 @@ function OutputBlock({
       prepareToolOutputDisplay(output, {
         maxLines: showAllToolOutput ? 2000 : success ? 6 : 10,
         maxLineWidth: contentWidth,
-        hint: showAllToolOutput ? undefined : 'Ctrl+E shows all',
+        hint: showAllToolOutput ? undefined : 'Ctrl+E',
         strategy: showAllToolOutput ? 'head' : success ? 'head-tail' : 'tail',
       }),
     [contentWidth, output, showAllToolOutput, success],
