@@ -150,6 +150,7 @@ function NestedToolRows({
           })}
           reducedMotion={reducedMotion}
           screenReader={screenReader}
+          transcriptMode={transcriptMode}
           showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(invocation.traceId)}
           terminalWidth={terminalWidth ? Math.max(12, terminalWidth - depth * 2) : undefined}
         />
@@ -896,6 +897,7 @@ export function AgentMessageInner({
                 nestedActivityCount={countNestedToolInvocations(childrenByParent, tc.id)}
                 reducedMotion={reducedMotion}
                 screenReader={screenReader}
+                transcriptMode={transcriptMode}
                 showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(tc.id)}
                 summaryVariant={mutation ? 'file-child' : 'default'}
                 terminalWidth={terminalWidth}
