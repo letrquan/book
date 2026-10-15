@@ -15,6 +15,7 @@ import {
   composeToolErrorDetail,
   composeToolRow,
   deriveToolPresentation,
+  toolErrorDetailOptions,
   type ToolPresentation,
 } from '../tool-presentation.js';
 import {
@@ -335,15 +336,19 @@ function ToolCallBlockInner({
   // A failure's message goes under the row, on the grid the row was laid out on.
   const errorDetail = useMemo(() => {
     if (!inlineError?.trim()) return undefined;
-    if (isFileChild) {
-      return composeToolErrorDetail(
-        { title: '', target: undefined },
-        inlineError,
-        nestedGrid(rowGrid),
-      );
-    }
-    return composeToolErrorDetail(presentation, inlineError, rowGrid);
-  }, [inlineError, isFileChild, presentation, rowGrid]);
+    // A result with an exit code carries a command's output; its message keeps its lines.
+    const options = toolErrorDetailOptions(result);
+    const detail = isFileChild
+      ? composeToolErrorDetail(
+          { title: '', target: undefined },
+          inlineError,
+          nestedGrid(rowGrid),
+          options,
+        )
+      : composeToolErrorDetail(presentation, inlineError, rowGrid, options);
+    // A command that failed with no output has nothing to show: the row says `exit N`.
+    return detail.lines.length > 0 || detail.note ? detail : undefined;
+  }, [inlineError, isFileChild, presentation, result, rowGrid]);
 
   useLayoutEffect(() => {
     if (!registry || !toolId) return;
@@ -420,6 +425,16 @@ function ToolCallBlockInner({
           ) : null}
           {errorDetail.lines.map((line, index) => (
             <Box key={index} height={1}>
+              <Text
+                wrap="truncate-end"
+                color={presentation.rejected ? theme.inactive : theme.error}
+              >
+                {line}
+              </Text>
+            </Box>
+          ))}
+          {errorDetail.note?.map((line, index) => (
+            <Box key={`note-${index}`} height={1}>
               <Text
                 wrap="truncate-end"
                 color={presentation.rejected ? theme.inactive : theme.error}

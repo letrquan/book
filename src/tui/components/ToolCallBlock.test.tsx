@@ -766,6 +766,103 @@ describe('ToolCallBlock failures', () => {
     expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}… +36 lines`);
     expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}error: assertion 40`);
   });
+
+  it('shows the stdout verdict of a command that said nothing on stderr', () => {
+    const stdout = Array.from({ length: 12 }, (_, i) => `FAIL test/case_${i + 1}.test.js`).join(
+      '\n',
+    );
+    const result = enrichToolResultPresentation(
+      {
+        ...toolFailure('Exit code: 1', { content: stdout, details: { exitCode: 1 } }),
+        metrics: { durationMs: 7 },
+      },
+      'Bash',
+      { command: 'npm test' },
+    );
+    const raw = colourFrame(
+      <ToolCallBlock
+        name="Bash"
+        args={{ command: 'npm test' }}
+        result={result}
+        isExpanded={false}
+        terminalWidth={100}
+        reducedMotion
+      />,
+    );
+    const rendered = stripAnsi(raw);
+    const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
+
+    expect(lines[0]).toMatch(/failed · exit 1 · 7ms/);
+    expect(lines[0]).not.toMatch(/12 lines/);
+    expect(lines.slice(1).map((line) => line.trim())).toEqual([
+      '… +8 lines',
+      'FAIL test/case_9.test.js',
+      'FAIL test/case_10.test.js',
+      'FAIL test/case_11.test.js',
+      'FAIL test/case_12.test.js',
+    ]);
+    expect(lines.slice(1).join('\n')).not.toContain('Exit code: 1');
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}FAIL test/case_12`);
+  });
+
+  it('shows no detail rows for a command that failed with no output at all', () => {
+    const result = toolFailure('Exit code: 3', { details: { exitCode: 3 } });
+    const rendered = stripAnsi(
+      colourFrame(
+        <ToolCallBlock
+          name="Bash"
+          args={{ command: 'false' }}
+          result={result}
+          isExpanded={false}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+    const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/failed · exit 3/);
+  });
+
+  it('keeps the first line of a multi-line failure that is not command output', () => {
+    const message = 'MCP tool x failed: connection refused\n(stderr: dial tcp 127.0.0.1:1)';
+    const rendered = stripAnsi(
+      colourFrame(
+        <ToolCallBlock
+          name="mcp__x__search"
+          args={{}}
+          result={toolFailure(message)}
+          isExpanded={false}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+    expect(rendered).toContain('MCP tool x failed: connection refused');
+  });
+
+  it('draws the sandbox note after the tail, in the error colour', () => {
+    const message = `fatal: Unable to create index.lock\nNote: run it outside the sandbox.`;
+    const raw = colourFrame(
+      <ToolCallBlock
+        name="Bash"
+        args={{ command: 'git add .' }}
+        result={toolFailure(message, { details: { exitCode: 128 } })}
+        isExpanded={false}
+        terminalWidth={100}
+        reducedMotion
+      />,
+    );
+    const lines = stripAnsi(raw)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    expect(lines.slice(1)).toEqual([
+      'fatal: Unable to create index.lock',
+      'Note: run it outside the sandbox.',
+    ]);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}Note: run it outside`);
+  });
 });
 
 describe('ToolCallBlock plan rows', () => {

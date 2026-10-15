@@ -41,10 +41,14 @@ All notable changes to this project are documented in this file.
 
 - **A failed Bash call's error detail keeps its last lines and its exit code** (#457). The detail
   under the tool row folded stderr into one paragraph, kept its start, and stopped after two rows,
-  so a failing test run showed its first assertion and never its verdict. A multi-line failure now
-  shows one row per line, the last four, behind a dimmed `… +N lines` row for the rest, and the
-  row's metadata reads `failed · exit 1 · 7ms`. A one-line message wraps as before. What the model
-  reads is unchanged.
+  so a failing test run showed its first assertion and never its verdict. A failed command's
+  output (a result that carries an exit code) now shows one row per non-blank line, the last four,
+  behind a dimmed `… +N lines` row for the rest, and the row's metadata reads
+  `failed · exit 1 · 7ms`. Many test runners print the verdict on stdout and leave stderr empty;
+  for those the detail shows the tail of stdout, and a command with no output shows no detail rows.
+  Book's own sandbox note stays readable after the tail, in up to two rows. Any other failure (an
+  MCP error, a validation message) wraps as before, first line first. What the model reads is
+  unchanged.
 - **Claude 4.6 and later get their 1M context window** (#416). Every Claude model resolved to a
   200,000-token window, so Book compacted at about a fifth of what Opus 4.6–4.8, Sonnet 4.6, and
   every 5.x model (Opus, Sonnet, Haiku, Fable, Mythos) accept. These now resolve to 1,000,000,

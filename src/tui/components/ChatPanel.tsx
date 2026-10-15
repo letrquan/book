@@ -24,7 +24,8 @@ import { useDebugMount, useDebugRender } from '../debug.js';
 import { useDensity, type TuiDensity } from '../density.js';
 import { mergeAssistantMessages, messagesFollowedByWork } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
-import type { TranscriptMode } from '../tool-presentation.js';
+import { estimateToolErrorDetailRows, type TranscriptMode } from '../tool-presentation.js';
+import type { ToolResult } from '../../types/tools.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { useTranscriptHistoryLoader, useTranscriptLayoutChange } from '../transcript-layout.js';
@@ -71,16 +72,29 @@ function estimateWrappedRows(content: string, contentWidth: number): number {
   );
 }
 
+/** A tool call's row, and under it a failure's detail: a failed command draws up to seven. */
+function estimateToolCallRows(result: ToolResult | undefined): number {
+  return Math.max(2, estimateToolErrorDetailRows(result)) + (result ? 1 : 0);
+}
+
 function estimateToolRows(message: Message, quietTools: QuietToolContext | undefined): number {
   const calls = message.toolCalls ?? [];
-  if (!quietTools) return calls.length * 2 + (message.toolResults?.length ?? 0);
+  if (!quietTools) {
+    return calls.reduce(
+      (rows, call) =>
+        rows +
+        estimateToolCallRows(message.toolResults?.find((result) => result.toolCallId === call.id)),
+      0,
+    );
+  }
   const invocations = calls.map((call) => ({
     call,
     result: message.toolResults?.find((result) => result.toolCallId === call.id),
   }));
   // A folded run of quiet calls draws one summary row.
   return groupQuietInvocations(invocations, message, quietTools).reduce(
-    (rows, row) => rows + (row.kind === 'quiet' ? 1 : 2 + (invocations[row.index]!.result ? 1 : 0)),
+    (rows, row) =>
+      rows + (row.kind === 'quiet' ? 1 : estimateToolCallRows(invocations[row.index]!.result)),
     0,
   );
 }
