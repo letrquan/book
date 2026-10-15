@@ -1329,7 +1329,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('line 6');
     expect(output).toContain('line 8');
     expect(output).not.toContain('line 4');
-    expect(output).toContain('2 more lines hidden');
+    expect(output).toContain('… +2 lines (Ctrl+E)');
   });
 
   it('renders long tool output when show-all mode is enabled', () => {
@@ -1356,7 +1356,7 @@ describe('ChatPanel Ink rendering', () => {
 
     const output = frame(view.lastFrame);
     expect(output).toContain('line 8');
-    expect(output).not.toContain('more lines hidden');
+    expect(output).not.toContain('… +');
   });
 
   it('keeps compact tools concise and exposes results without parameters in detailed mode', () => {
@@ -1683,7 +1683,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('+ new marker');
   });
 
-  it('shows the complete diff for a default-expanded file mutation', () => {
+  it('caps a long default-expanded file mutation and shows it whole under show-all', () => {
     const changedRows = Array.from({ length: 100 }, (_, index) => `+new ${index + 1}`);
     const message: Message = {
       ...msg('a1', 'assistant', ''),
@@ -1705,10 +1705,19 @@ describe('ChatPanel Ink rendering', () => {
 
     expect(output).toMatch(/Edit\s+1 file\s+\+100 -1/);
     expect(output).toMatch(/└ src\/a\.ts\s+\+100 -1/);
-    expect(output).toContain('+ new 50');
+    expect(output).toContain('+ new 30');
     expect(output).toContain('+ new 100');
-    expect(output).not.toContain('rows omitted');
-    expect(output).not.toContain('Ctrl+E shows all');
+    expect(output).not.toContain('+ new 50');
+    expect(output).toContain('… 22 lines hidden (Ctrl+E)');
+
+    const all = render(
+      withTheme(
+        <ChatPanel messages={[message]} terminalWidth={100} reducedMotion showAllToolOutput />,
+      ),
+    );
+    const allOutput = frame(all.lastFrame);
+    expect(allOutput).toContain('+ new 100');
+    expect(allOutput).not.toContain('lines hidden');
   });
 
   it('groups adjacent mutations into a Codex-style changed-files summary', () => {
