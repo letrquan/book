@@ -91,30 +91,10 @@ export function isQuietInvocation(
 }
 
 /**
- * Whether a message shows any text of its own.
- *
- * Judged the way AgentMessage renders it, not by `content.trim()`: routers that
- * inline reasoning put `<think></think>` in the content of nearly every
- * tool-call turn, and that renders as nothing. Reasoning only counts when the
- * reader has thinking display on.
- *
- * This is not the rule for a quiet run, which only prose breaks: see
- * {@link hasProse}.
- */
-export function hasVisibleText(message: Message, showThinking: boolean): boolean {
-  const parts = splitReasoningParts(message.content ?? '', { concluded: false });
-  for (const part of parts) {
-    if (part.kind === 'markdown' && part.text.trim()) return true;
-    if (part.kind === 'think' && showThinking && part.text.trim()) return true;
-  }
-  return Boolean(showThinking && message.reasoningContent?.trim());
-}
-
-/**
  * Whether a message carries markdown prose: the one kind of text that breaks a
- * quiet run. Reasoning does not, whether it is a `<think>` part or provider-
- * native `reasoningContent`: a model that thinks before every read would
- * otherwise never fold, and the compact transcript hides the thoughts of a run.
+ * quiet run. Judged on `content`, the way AgentMessage splits it: routers that
+ * inline reasoning put `<think></think>` in the content of nearly every
+ * tool-call turn, and that is not prose. A step that speaks keeps its thought.
  */
 export function hasProse(message: Message): boolean {
   return splitReasoningParts(message.content ?? '', { concluded: false }).some(
@@ -123,28 +103,57 @@ export function hasProse(message: Message): boolean {
 }
 
 /**
- * An assistant message with no prose of its own whose first call is quiet: it
- * continues a run begun before it.
- *
- * Only the first call has to be quiet. Book already folds a tool-only turn with
- * blank content into the turn before it, so the turn that ends a run of reads
- * often carries the edit that follows them, as `[Read, Edit]`. Requiring every
- * call to be quiet would leave that last read stranded on its own row. The
- * message joins whole; the rows it draws still keep the edit apart (see
- * {@link groupQuietInvocations}).
+ * Whether a message carries a thought: a non-blank `<think>` part in its
+ * content, or non-blank provider-native `reasoningContent`.
  */
-export function continuesQuietRun(
-  message: Message,
-  context: QuietToolContext,
-  _showThinking = true,
-): boolean {
-  if (message.role !== 'assistant' || message.localCommand) return false;
+export function hasReasoning(message: Message): boolean {
+  if (message.reasoningContent?.trim()) return true;
+  return splitReasoningParts(message.content ?? '', { concluded: false }).some(
+    (part) => part.kind === 'think' && part.text.trim().length > 0,
+  );
+}
+
+/**
+ * Whether the message has at least one call and every one of them may fold into
+ * a summary. A pending, failed, pinned, outside-the-workspace, mutating, command
+ * or delegating call makes it false.
+ */
+export function allCallsQuiet(message: Message, context: QuietToolContext): boolean {
+  const calls = message.toolCalls ?? [];
+  return (
+    calls.length > 0 &&
+    calls.every((call) => isQuietInvocation(call, resultFor(message, call.id), message, context))
+  );
+}
+
+function isAssistantTurn(message: Message): boolean {
+  return message.role === 'assistant' && !message.localCommand;
+}
+
+/**
+ * An assistant message with no prose of its own that continues a run begun
+ * before it.
+ *
+ * Without reasoning only the first call has to be quiet. Book already folds a
+ * tool-only turn with blank content into the turn before it, so the turn that
+ * ends a run of reads often carries the edit that follows them, as
+ * `[Read, Edit]`. Requiring every call to be quiet would leave that last read
+ * stranded on its own row. The message joins whole; the rows it draws still keep
+ * the edit apart (see {@link groupQuietInvocations}).
+ *
+ * A message that reasons joins only when every call is quiet. Joining drops its
+ * thought into the run's summary, and a thought that leads to an edit, a command,
+ * a call awaiting permission or a failure is one the reader should see.
+ */
+export function continuesQuietRun(message: Message, context: QuietToolContext): boolean {
+  if (!isAssistantTurn(message)) return false;
   const first = message.toolCalls?.[0];
   if (!first) return false;
+  if (hasProse(message)) return false;
+  if (hasReasoning(message)) return allCallsQuiet(message, context);
   // Joining would put a spawn in the same entry as the narration before it,
   // and AgentMessage hides a delegating entry's narration.
   if (message.toolCalls!.some((call) => call.name === 'AgentSpawn')) return false;
-  if (hasProse(message)) return false;
   return isQuietInvocation(first, resultFor(message, first.id), message, context);
 }
 
@@ -159,6 +168,11 @@ export interface CollapsedTimeline<T> {
   entries: T[];
   /** For a merged entry, keyed by its (first) id: every message folded into it, in order. */
   sourceIds: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Ids of the entries whose thoughts are absorbed into a quiet summary row, so
+   * the compact transcript does not draw them.
+   */
+  absorbedThoughts: ReadonlySet<string>;
 }
 
 type TimelineEntry = Message | { transcriptOrdinal: unknown };
@@ -177,6 +191,13 @@ function isMessage(entry: TimelineEntry | undefined): entry is Message {
  * keeps the first message's id, so it holds its place in the virtual transcript
  * as the run grows.
  *
+ * The collapser also decides which thoughts the run absorbs, since it sees
+ * every member and its calls. A member that joins a run has no prose and, when it
+ * reasons, only quiet calls, so its thought is absorbed. The head keeps its own
+ * thought when it speaks or calls something that is not quiet: the merged entry
+ * then carries only the head's reasoning. A single message is absorbed when its
+ * quiet calls draw as one group row.
+ *
  * Merged entries are cached by the identity of the messages they were built
  * from, so a run that did not change keeps the same object and its row is not
  * re-rendered on every streamed delta elsewhere in the transcript.
@@ -184,13 +205,14 @@ function isMessage(entry: TimelineEntry | undefined): entry is Message {
 export function createQuietCollapser(): <T extends TimelineEntry>(
   timeline: readonly T[],
   context: QuietToolContext,
-  showThinking?: boolean,
 ) => CollapsedTimeline<T> {
-  let cache = new Map<string, { members: readonly Message[]; merged: Message }>();
+  let cache = new Map<
+    string,
+    { members: readonly Message[]; headAbsorbed: boolean; merged: Message }
+  >();
   return <T extends TimelineEntry>(
     timeline: readonly T[],
     context: QuietToolContext,
-    _showThinking?: boolean,
   ): CollapsedTimeline<T> => {
     const runs: Array<T | Message[]> = [];
     for (const entry of timeline) {
@@ -213,37 +235,62 @@ export function createQuietCollapser(): <T extends TimelineEntry>(
       runs.push(entry);
     }
 
-    const nextCache = new Map<string, { members: readonly Message[]; merged: Message }>();
+    const nextCache = new Map<
+      string,
+      { members: readonly Message[]; headAbsorbed: boolean; merged: Message }
+    >();
     const sourceIds = new Map<string, readonly string[]>();
+    const absorbedThoughts = new Set<string>();
     const entries = runs.map((run) => {
-      if (!Array.isArray(run)) return run;
+      if (!Array.isArray(run)) {
+        // A lone quiet call keeps its thought row; two or more draw as one group
+        // row, which takes the thought into it.
+        if (
+          isMessage(run) &&
+          isAssistantTurn(run) &&
+          hasReasoning(run) &&
+          !hasProse(run) &&
+          allCallsQuiet(run, context) &&
+          run.toolCalls!.length >= 2
+        ) {
+          absorbedThoughts.add(run.id);
+        }
+        return run;
+      }
       const head = run[0]!;
+      // Every later member joined without prose and, when it reasons, with only
+      // quiet calls, so the summary row takes its thought. The head's thought goes
+      // with it only when the head speaks no prose and calls nothing but quiet tools.
+      const headAbsorbed = !hasProse(head) && allCallsQuiet(head, context);
       const cached = cache.get(head.id);
       const merged =
         cached &&
+        cached.headAbsorbed === headAbsorbed &&
         cached.members.length === run.length &&
         cached.members.every((member, index) => member === run[index])
           ? cached.merged
           : {
               ...head,
-              reasoningContent:
-                run
-                  .map((message) => message.reasoningContent)
-                  .filter((value): value is string => Boolean(value))
-                  .join('\n\n') || undefined,
+              reasoningContent: headAbsorbed
+                ? run
+                    .map((message) => message.reasoningContent)
+                    .filter((value): value is string => Boolean(value))
+                    .join('\n\n') || undefined
+                : head.reasoningContent,
               toolCalls: run.flatMap((message) => message.toolCalls ?? []),
               toolResults: run.flatMap((message) => message.toolResults ?? []),
               nestedToolInvocations: run.flatMap((message) => message.nestedToolInvocations ?? []),
             };
-      nextCache.set(head.id, { members: run, merged });
+      nextCache.set(head.id, { members: run, headAbsorbed, merged });
       sourceIds.set(
         head.id,
         run.map((message) => message.id),
       );
+      if (headAbsorbed) absorbedThoughts.add(head.id);
       return merged as T;
     });
     cache = nextCache;
-    return { entries, sourceIds };
+    return { entries, sourceIds, absorbedThoughts };
   };
 }
 

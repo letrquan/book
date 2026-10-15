@@ -89,11 +89,11 @@ interface AgentMessageProps {
    */
   continuesTurn?: boolean;
   /**
-   * This entry is several messages folded into one quiet run (ChatPanel reads it
-   * from the collapser). Its reasoning belongs to the run's summary row, so the
-   * compact transcript does not draw it.
+   * The quiet collapser absorbed this entry's thoughts into a summary row
+   * (ChatPanel reads it from `absorbedThoughts`), so the compact transcript does
+   * not draw them.
    */
-  quietRun?: boolean;
+  absorbThoughts?: boolean;
 }
 
 const NO_EXPANSION_OVERRIDES = new Map<string, boolean>();
@@ -473,7 +473,7 @@ export function AgentMessageInner({
   trimTrailingSpacing = false,
   quietTools,
   continuesTurn = false,
-  quietRun = false,
+  absorbThoughts = false,
 }: AgentMessageProps) {
   const theme = useTheme();
   const { toolRowGap, toolBlockGap } = useDensityMetrics();
@@ -534,7 +534,6 @@ export function AgentMessageInner({
       }).filter((part) => part.kind !== 'think' || part.text.length > 0),
     [displayContent, isStreaming, toolCalls.length],
   );
-  const hasProse = contentParts.some((part) => part.kind === 'markdown' && part.text.trim());
   const renderAsUnifiedDiff = useMemo(
     () => displayContent.length > 0 && isUnifiedDiffLike(displayContent),
     [displayContent],
@@ -570,12 +569,10 @@ export function AgentMessageInner({
     }
     return byIndex.size > 0 ? byIndex : undefined;
   }, [message, quietTools, screenReader, topLevelInvocations]);
-  // A thought that belongs to a quiet run is absorbed into the run's summary
-  // row: the reasoning of a folded entry, and the reasoning that comes with
-  // parallel quiet calls drawn as one row. Prose between calls ends a run, so
-  // a turn that speaks keeps its own thought. A thought still streaming has no
-  // call yet, hence no folded row, and renders as it always has.
-  const foldsThoughts = Boolean(quietRows && (quietRun || (quietRows.has(0) && !hasProse)));
+  // The collapser decides which thoughts a summary row absorbs; it knows every
+  // member of a run and its calls. A thought still streaming has no call yet,
+  // hence no summary row, and renders as it always has.
+  const foldsThoughts = Boolean(quietRows && absorbThoughts);
   const thoughtsShown = showThinking && !foldsThoughts;
   // Whether the content box draws anything. An empty `<think></think>` draws
   // nothing, so it must not buy the tool block below it a blank row either.
@@ -999,7 +996,7 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
     prev.trimTrailingSpacing === next.trimTrailingSpacing &&
     prev.quietTools === next.quietTools &&
     prev.continuesTurn === next.continuesTurn &&
-    prev.quietRun === next.quietRun &&
+    prev.absorbThoughts === next.absorbThoughts &&
     prev.reducedMotion === next.reducedMotion &&
     prev.screenReader === next.screenReader &&
     prev.terminalWidth === next.terminalWidth

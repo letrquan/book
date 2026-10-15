@@ -34,6 +34,7 @@ const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
 const EMPTY_BOUNDARIES: CompactBoundary[] = [];
 const NO_SOURCE_IDS: ReadonlyMap<string, readonly string[]> = new Map();
+const NO_ABSORBED_THOUGHTS: ReadonlySet<string> = new Set();
 const STREAMING_TIMELINE_MIN_WINDOW = 16;
 const STREAMING_TIMELINE_MAX_WINDOW = 64;
 const COMPLETED_TIMELINE_MIN_WINDOW = 80;
@@ -268,7 +269,11 @@ export function ChatPanelInner({
     () =>
       quietTools
         ? quietCollapserRef.current!(windowedTimeline, quietTools)
-        : { entries: windowedTimeline, sourceIds: NO_SOURCE_IDS },
+        : {
+            entries: windowedTimeline,
+            sourceIds: NO_SOURCE_IDS,
+            absorbedThoughts: NO_ABSORBED_THOUGHTS,
+          },
     [quietTools, windowedTimeline],
   );
   const visibleTimeline = displayTimeline.entries;
@@ -478,7 +483,7 @@ export function ChatPanelInner({
                   trimTrailingSpacing={nextEntryIsUser}
                   quietTools={quietTools}
                   continuesTurn={followedByWork.has(message.id)}
-                  quietRun={(displayTimeline.sourceIds.get(message.id)?.length ?? 0) > 1}
+                  absorbThoughts={displayTimeline.absorbedThoughts.has(message.id)}
                 />
               </Box>
             );
