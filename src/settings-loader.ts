@@ -14,6 +14,18 @@ import { resolveBookHome } from './book-home.js';
 import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
 import { collectDeclaredHooks, partitionProjectHooks } from './hook-approvals.js';
+import {
+  droppedProviderOverrides,
+  partitionWorkspaceProviders,
+  providerIdsOf,
+  withheldModelSelections,
+  withoutWorkspaceProviderOverrides,
+  type DroppedProviderOverride,
+  type ModelSelectionLayer,
+  type ProviderLayer,
+  type WithheldModelSelection,
+  type WorkspaceProviderPartition,
+} from './provider-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { normalizeRemovedSettings } from './settings-removed.js';
 import { parseEnvBoolean } from './env-boolean.js';
@@ -152,6 +164,8 @@ const WORKSPACE_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
   ['hooks', 'projectEntries'],
   ['commands', 'projectCommands'],
   ['', 'projectDirectories'],
+  // The decisions about workspace-declared providers (#418), at the root for the same reason.
+  ['', 'workspaceProviders'],
 ];
 
 function stripPaths(
@@ -539,22 +553,86 @@ export function isUserSettingsFile(path: string, paths: SettingsResolutionPaths 
   return sameFile(path, userSettingsPath(paths));
 }
 
+/**
+ * What the provider gate did to one resolution (#418), for the config that carries it and for the
+ * hosts that report it. Computed from the layer files themselves, never read back from a settings
+ * key a workspace layer could write.
+ */
+export interface WorkspaceProviderGate {
+  /** Provider ids only workspace layers define: they never inherit a key. */
+  declared: string[];
+  /** The subset of {@link declared} that is withheld (pending or rejected). */
+  withheld: string[];
+  /** The same ids sorted by the user's decision on the declaration as written. */
+  partition: WorkspaceProviderPartition;
+  /** Origin and key overrides a workspace layer wrote for a trusted provider; all dropped. */
+  droppedOverrides: DroppedProviderOverride[];
+  /** Model selections that fell back to the trusted layers' value. */
+  withheldSelections: WithheldModelSelection[];
+}
+
+export function emptyWorkspaceProviderGate(): WorkspaceProviderGate {
+  return {
+    declared: [],
+    withheld: [],
+    partition: { approved: [], pending: [], rejected: [] },
+    droppedOverrides: [],
+    withheldSelections: [],
+  };
+}
+
 export function resolveSettings(
   workspace: string,
   overridePath?: string,
   paths: SettingsResolutionPaths = {},
 ): ResolvedSettings {
+  return resolveSettingsWithProviderGate(workspace, overridePath, paths).settings;
+}
+
+/** {@link resolveSettings}, plus what the provider gate withheld and dropped on the way. */
+export function resolveSettingsWithProviderGate(
+  workspace: string,
+  overridePath?: string,
+  paths: SettingsResolutionPaths = {},
+): { settings: ResolvedSettings; providerGate: WorkspaceProviderGate } {
   let resolved = structuredClone(DEFAULT_SETTINGS);
 
-  // Layer 1: User settings (~/.book/settings.json)
+  // Every layer is read before any is merged: whether a workspace layer may speak for a provider
+  // depends on which ids the *trusted* layers define, and the `--settings` layer merges last.
   const userPath = userSettingsPath(paths);
   const user = loadSettingsFile(userPath);
+  const projectPath = paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json');
+  // Skipped when it is the user file itself, as it is for a workspace at `$HOME` (#429).
+  const project = sameFile(projectPath, userPath) ? null : loadSettingsFile(projectPath);
+  const localPath = paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json');
+  const local = loadSettingsFile(localPath);
+  const override = overridePath ? loadSettingsFile(overridePath) : null;
+
+  const trustedProviderIds = providerIdsOf([
+    { providers: user?.provider },
+    { providers: override?.provider },
+  ]);
+  const workspaceProviderLayers: ProviderLayer[] = [
+    { path: projectPath, providers: project?.provider },
+    { path: localPath, providers: local?.provider },
+  ];
+  // A workspace layer reaches `provider` only for ids a trusted layer defines, and only with
+  // `models` and `type`. The rest is held back for the partition below.
+  const gateProviders = (layer: BookSettings): BookSettings =>
+    layer.provider
+      ? {
+          ...layer,
+          provider: withoutWorkspaceProviderOverrides(
+            layer.provider,
+            trustedProviderIds,
+          ) as BookSettings['provider'],
+        }
+      : layer;
+
+  // Layer 1: User settings (~/.book/settings.json)
   if (user) resolved = mergeLayer(resolved, user, 'trusted');
 
-  // Layer 2: Project settings (<workspace>/.book/settings.json). Skipped when it is
-  // the user file itself, as it is for a workspace at `$HOME` (#429).
-  const projectPath = paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json');
-  const project = sameFile(projectPath, userPath) ? null : loadSettingsFile(projectPath);
+  // Layer 2: Project settings (<workspace>/.book/settings.json).
   // `allow` rules from the repository layer are held back rather than merged:
   // they only widen authority, and the decisions that release them live in the
   // local layer, which has not been merged yet.
@@ -583,19 +661,14 @@ export function resolveSettings(
     if (declaredProjectHooks.length > 0) {
       withheld = { ...withheld, hooks: structuredClone(DEFAULT_SETTINGS.hooks) };
     }
-    resolved = mergeLayer(resolved, withheld, 'repository');
+    resolved = mergeLayer(resolved, gateProviders(withheld), 'repository');
   }
 
   // Layer 3: Local settings (<workspace>/.book/settings.local.json)
-  const localPath = paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json');
-  const local = loadSettingsFile(localPath);
-  if (local) resolved = mergeLayer(resolved, local, 'local');
+  if (local) resolved = mergeLayer(resolved, gateProviders(local), 'local');
 
   // Layer 4 (optional): Ad-hoc override (--settings flag)
-  if (overridePath) {
-    const override = loadSettingsFile(overridePath);
-    if (override) resolved = mergeLayer(resolved, override, 'trusted');
-  }
+  if (override) resolved = mergeLayer(resolved, override, 'trusted');
 
   // Trust decisions come from outside the workspace, so a repository cannot
   // ship its own. Layers the user controls may still carry them — the global
@@ -619,6 +692,37 @@ export function resolveSettings(
     ...resolved.projectDirectories,
     ...trust.projectDirectories,
   };
+  resolved.workspaceProviders = {
+    ...resolved.workspaceProviders,
+    ...trust.workspaceProviders,
+  };
+
+  // Providers only a workspace layer defines: approved ones join `provider`, the rest are absent.
+  // Their keys are never resolved here or anywhere downstream of an unapproved entry.
+  const providerPartition = partitionWorkspaceProviders(
+    workspaceProviderLayers,
+    trustedProviderIds,
+    resolved.workspaceProviders,
+  );
+  for (const { id, declaration } of providerPartition.approved) {
+    resolved.provider[id] = declaration as BookSettings['provider'][string];
+  }
+  const withheldProviders = [...providerPartition.pending, ...providerPartition.rejected].map(
+    (entry) => entry.id,
+  );
+  // A `model`, `compactModel` or `advisorModel` a workspace layer set for a withheld provider
+  // gives way to what the trusted layers alone say.
+  const selectionLayers: ModelSelectionLayer[] = [
+    { path: userPath, trusted: true, selections: user ?? {} },
+    { path: projectPath, trusted: false, selections: project ?? {} },
+    { path: localPath, trusted: false, selections: local ?? {} },
+    { path: overridePath ?? '', trusted: true, selections: override ?? {} },
+  ];
+  const withheldSelections = withheldModelSelections(selectionLayers, new Set(withheldProviders));
+  for (const { key, fallback } of withheldSelections) {
+    if (fallback === undefined) delete resolved[key];
+    else resolved[key] = fallback;
+  }
 
   // Every decision source is in place now, so the withheld repository rules can
   // be released — approved ones only.
@@ -670,7 +774,18 @@ export function resolveSettings(
   }
 
   const settings = bookSettingsSchema.parse(resolved) as ResolvedSettings;
-  return settings;
+  const providerGate: WorkspaceProviderGate = {
+    declared: [
+      ...providerPartition.approved,
+      ...providerPartition.pending,
+      ...providerPartition.rejected,
+    ].map((entry) => entry.id),
+    withheld: withheldProviders,
+    partition: providerPartition,
+    droppedOverrides: droppedProviderOverrides(workspaceProviderLayers, trustedProviderIds),
+    withheldSelections,
+  };
+  return { settings, providerGate };
 }
 
 /**

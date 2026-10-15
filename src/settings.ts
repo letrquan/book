@@ -472,6 +472,19 @@ export const projectDirectoryChoiceSchema = z.enum(['approved', 'rejected']);
 
 export type ProjectDirectoryChoice = z.infer<typeof projectDirectoryChoiceSchema>;
 
+/**
+ * One trust decision about a provider a workspace layer declared: where its requests go and which
+ * credential they carry. The fingerprint digests the declared type, origin and `apiKey` reference
+ * (see `provider-approvals.ts`), so changing either after the decision withholds the provider
+ * again.
+ */
+export const workspaceProviderChoiceSchema = z.object({
+  fingerprint: z.string().min(1),
+  choice: z.enum(['approved', 'rejected']),
+});
+
+export type WorkspaceProviderChoice = z.infer<typeof workspaceProviderChoiceSchema>;
+
 export const uiSettingsSchema = z.object({
   /** Show provider-native and embedded model reasoning in the interactive transcript. */
   showThinking: z.boolean().default(true),
@@ -557,6 +570,12 @@ export const bookSettingsSchema = z.object({
    * as a project allow rule with no entry is.
    */
   projectDirectories: z.record(z.string(), projectDirectoryChoiceSchema).default({}),
+  /**
+   * Decisions about providers only a workspace layer declares, keyed by provider id (and by
+   * `.bookrc.json` for its legacy `baseUrl`). A workspace-declared provider with no matching
+   * `approved` entry is withheld: it is absent from `provider`, and nothing it names is resolved.
+   */
+  workspaceProviders: z.record(z.string(), workspaceProviderChoiceSchema).default({}),
   env: z.record(z.string(), z.string()).default({}),
   provider: z.record(z.string(), providerConfigSchema).default({}),
   permissions: permissionsSchema.prefault({}),
@@ -642,6 +661,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   },
   additionalDirectories: [],
   projectDirectories: {},
+  workspaceProviders: {},
   env: {},
   provider: {},
   ui: { showThinking: true, startupAnimation: true },

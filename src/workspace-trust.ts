@@ -35,6 +35,7 @@ import {
   projectCommandChoiceSchema,
   projectDirectoryChoiceSchema,
   projectHookChoiceSchema,
+  workspaceProviderChoiceSchema,
 } from './settings.js';
 
 /**
@@ -55,8 +56,15 @@ import {
  * back to being withheld. Bumping the version is what makes that failure loud
  * instead of silent: an older build reads a v3 store as unreadable, withholds
  * every gated declaration, and declines to write until it is upgraded.
+ *
+ * v4 added `workspaceProviders`, for the same reason and with the same
+ * consequence: a v3 build that records any other decision for a workspace would
+ * write the store without that workspace's provider approvals, and a provider
+ * the user had approved would silently go back to being withheld. An older
+ * build reads a v4 store as unreadable, withholds every gated declaration, and
+ * declines to write until it is upgraded.
  */
-export const TRUST_STORE_VERSION = 3;
+export const TRUST_STORE_VERSION = 4;
 
 export const workspaceTrustSchema = z.object({
   /** Keyed by the exact rule text the project layer declared. */
@@ -73,6 +81,12 @@ export const workspaceTrustSchema = z.object({
    * so what the user is approving.
    */
   projectDirectories: z.record(z.string(), projectDirectoryChoiceSchema).default({}),
+  /**
+   * Keyed by provider id, carrying the fingerprint of the declared type, origin and `apiKey`
+   * reference the decision was made against. The id `.bookrc.json` holds the decision about a
+   * legacy `baseUrl`, which is not a provider but redirects the same credential.
+   */
+  workspaceProviders: z.record(z.string(), workspaceProviderChoiceSchema).default({}),
 });
 
 export type WorkspaceTrust = z.infer<typeof workspaceTrustSchema>;
@@ -84,6 +98,7 @@ export function emptyWorkspaceTrust(): WorkspaceTrust {
     hookEntries: {},
     projectCommands: {},
     projectDirectories: {},
+    workspaceProviders: {},
   };
 }
 

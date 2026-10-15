@@ -216,7 +216,7 @@ describe('Advisor tool', () => {
       dirs.push(home, workspace);
       mkdirSync(join(workspace, '.book'));
       writeFileSync(
-        join(workspace, '.book', 'settings.local.json'),
+        join(home, 'settings.json'),
         JSON.stringify({
           model: 'anthropic/claude-sonnet-5-5',
           advisorModel: 'claude',

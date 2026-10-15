@@ -4,6 +4,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveSettings } from '../settings-loader.js';
 import {
+  persistWorkspaceProviderChoice,
+  workspaceProviderFingerprint,
+} from '../provider-approvals.js';
+import {
   persistSettingLocal,
   persistSettingsLocal,
   persistPermissionRuleLocal,
@@ -359,11 +363,27 @@ describe('removeProviderLocal', () => {
     // An absent user layer, so the machine's own ~/.book/settings.json cannot take part.
     const restarted = resolveSettings(dir, undefined, {
       userSettingsPath: join(dir, 'no-user-settings.json'),
+      trustStorePath: join(dir, 'trust.json'),
     });
 
     expect(restarted.model).toBe('project-model');
-    expect(restarted.provider.gateway.apiKey).toBe('project-key');
-    expect(restarted.provider.gateway.models).toEqual({ inherited: { label: 'Inherited' } });
+    // A provider only the project layer declares stays withheld until approved (#418), so the
+    // revealed lower-layer entry is checked once its declaration has been approved.
+    expect(restarted.provider.gateway).toBeUndefined();
+    const declaration = { type: 'openai', apiKey: 'project-key' } as const;
+    persistWorkspaceProviderChoice(
+      dir,
+      'gateway',
+      workspaceProviderFingerprint(declaration),
+      'approved',
+      join(dir, 'trust.json'),
+    );
+    const approved = resolveSettings(dir, undefined, {
+      userSettingsPath: join(dir, 'no-user-settings.json'),
+      trustStorePath: join(dir, 'trust.json'),
+    });
+    expect(approved.provider.gateway.apiKey).toBe('project-key');
+    expect(approved.provider.gateway.models).toEqual({ inherited: { label: 'Inherited' } });
     expect(readSettingsLocal(dir)).toEqual({});
   });
 });

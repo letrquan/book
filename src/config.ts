@@ -4,11 +4,14 @@ import { isAbsolute, join, relative, resolve } from 'path';
 import { homedir } from 'os';
 import type { AgentConfig, RetryConfig } from './types/runtime.js';
 import {
-  resolveSettings,
+  emptyWorkspaceProviderGate,
+  resolveSettingsWithProviderGate,
   migrateLegacyPermissions,
   settingsLayerPaths,
   applySettingsEnvOverrides,
 } from './settings-loader.js';
+import { evaluateLegacyBaseUrl, workspaceProviderRefusal } from './provider-approvals.js';
+import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { hadRemovedAuthConfiguration } from './settings-removed.js';
 import type { SettingsResolutionPaths } from './settings-loader.js';
 import {
@@ -123,15 +126,19 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
 
   // Resolve layered settings.json from user/project/local scopes, or skip
   // entirely when --no-settings is set (useful for scripted/isolated runs).
-  let settings = noSettings
-    ? structuredClone(DEFAULT_SETTINGS)
-    : resolveSettings(resolvedWorkspace, settingsOverridePath, options?.settingsPaths);
+  const resolveLayers = () =>
+    noSettings
+      ? { settings: structuredClone(DEFAULT_SETTINGS), providerGate: emptyWorkspaceProviderGate() }
+      : resolveSettingsWithProviderGate(
+          resolvedWorkspace,
+          settingsOverridePath,
+          options?.settingsPaths,
+        );
+  let { settings, providerGate } = resolveLayers();
 
   if (!noSettings && options?.runMigrations) {
     const migrated = migrateLegacyPermissions(resolvedWorkspace, undefined, settings);
-    if (migrated) {
-      settings = resolveSettings(resolvedWorkspace, settingsOverridePath, options?.settingsPaths);
-    }
+    if (migrated) ({ settings, providerGate } = resolveLayers());
   }
 
   // The startup splash is on by default, so anything that drives Book rather
@@ -209,7 +216,24 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   // must all name the same shell for the whole session.
   const shell = resolveShell({ requested: settings.shell });
   const defaultApiKey = process.env.BOOK_API_KEY || '';
-  const explicitBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl;
+  // A `.bookrc.json` `baseUrl` receives BOOK_API_KEY, and the file ships with a repository, so it
+  // is honoured only once the user has approved that exact URL (#418). `--no-settings` reads no
+  // settings layer, but the decision lives in the trust store, so it is still consulted.
+  const legacyBaseUrl =
+    legacy?.baseUrl !== undefined &&
+    evaluateLegacyBaseUrl(
+      noSettings
+        ? loadWorkspaceTrust(
+            resolvedWorkspace,
+            options?.settingsPaths?.trustStorePath ??
+              defaultTrustStorePath(options?.settingsPaths?.home),
+          ).workspaceProviders
+        : settings.workspaceProviders,
+      legacy.baseUrl,
+    ) === 'approved'
+      ? legacy.baseUrl
+      : undefined;
+  const explicitBaseUrl = process.env.BOOK_BASE_URL || legacyBaseUrl;
   const defaultProviderOverride = validateProvider(process.env.BOOK_PROVIDER) || 'auto';
 
   const defaultBaseUrl = explicitBaseUrl || DEFAULT_OPENAI_BASE_URL;
@@ -240,6 +264,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     defaultApiKey,
     defaultBaseUrl,
     defaultBaseUrlExplicit: Boolean(process.env.BOOK_BASE_URL),
+    workspaceProviderGate: { declared: providerGate.declared, withheld: providerGate.withheld },
     defaultProvider,
     autoCompactEnabled: settings.autoCompactEnabled ?? legacy?.autoCompactEnabled ?? true,
     workspace: resolvedWorkspace,
@@ -410,6 +435,14 @@ export function describeUnresolvedProviderPrefix(
   );
 }
 
+/** Whether the workspace declared `providerId` and it is not in `settings.provider`. */
+function isWithheldWorkspaceProvider(config: AgentConfig, providerId: string): boolean {
+  return (
+    !Object.hasOwn(config.settings.provider, providerId) &&
+    (config.workspaceProviderGate?.withheld.includes(providerId) ?? false)
+  );
+}
+
 /** Resolve "provider/model" strings through settings.provider, OpenCode-style. */
 export function resolveModelProviderConfig(
   config: AgentConfig,
@@ -425,13 +458,21 @@ export function resolveModelProviderConfig(
   const model = rawModel.slice(slash + 1);
   // Own properties only: `constructor/x` names no provider, however `{}` answers for it.
   if (!Object.hasOwn(config.settings.provider, providerId)) {
+    // A provider the workspace declared and the user has not approved is not "no provider": the
+    // plain fallback would send the id to the default endpoint with BOOK_API_KEY (#418).
+    if (isWithheldWorkspaceProvider(config, providerId)) {
+      throw new Error(workspaceProviderRefusal(providerId, rawModel));
+    }
     return plainModelConfig(config, rawModel);
   }
   const provider = config.settings.provider[providerId];
 
   const baseUrl = provider.baseURL ?? provider.baseUrl ?? config.defaultBaseUrl ?? config.baseUrl;
-  const apiKey =
-    resolveSecret(provider.apiKey, config.workspace) ?? inheritedApiKey(config, baseUrl);
+  // A provider only the workspace declares sends its own key or none: the user's key does not
+  // follow an origin the repository named, however the user came to approve the entry (#418).
+  const apiKey = config.workspaceProviderGate?.declared.includes(providerId)
+    ? (resolveSecret(provider.apiKey, config.workspace) ?? '')
+    : (resolveSecret(provider.apiKey, config.workspace) ?? inheritedApiKey(config, baseUrl));
   return {
     ...config,
     apiKey,
@@ -579,8 +620,12 @@ export function advisorModelRefusal(config: AgentConfig, advisorModel: string): 
   if (id.startsWith('/') || id.endsWith('/')) {
     return `advisor model "${id}" is not a model id; use <provider>/<model>`;
   }
-  if (id === config.modelSelection || id === config.model) return undefined;
   const slash = id.indexOf('/');
+  // Refused, not thrown: the advisor reports why instead of failing the consult (#418).
+  if (slash > 0 && isWithheldWorkspaceProvider(config, id.slice(0, slash))) {
+    return workspaceProviderRefusal(id.slice(0, slash), id);
+  }
+  if (id === config.modelSelection || id === config.model) return undefined;
   const providers = config.settings.provider;
   if (slash > 0 && Object.hasOwn(providers, id.slice(0, slash))) return undefined;
   if (config.defaultBaseUrlExplicit) return undefined;

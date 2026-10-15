@@ -423,16 +423,19 @@ describe('runDoctorCommand model resolution', () => {
     // typo'd provider id was "not resolved", which sends the user looking for a
     // missing key instead of a misspelled prefix -- against a default endpoint
     // they never chose, for a vendor that has never heard of the model.
-    mkdirSync(join(workspace, '.book'), { recursive: true });
+    // The provider is the user's own: one a workspace file declares is withheld (#418).
     writeFileSync(
-      join(workspace, '.book', 'settings.json'),
+      join(bookHome, 'settings.json'),
       JSON.stringify({
-        model: 'qc/qwen3.7-max',
-        sandbox: { enabled: false },
         provider: {
           '9router': { baseURL: 'https://9router.example/v1', apiKey: 'k', models: {} },
         },
       }),
+    );
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ model: 'qc/qwen3.7-max', sandbox: { enabled: false } }),
     );
 
     const output = await doctorOutput();
@@ -443,16 +446,19 @@ describe('runDoctorCommand model resolution', () => {
   });
 
   it('says nothing when the prefix resolves', async () => {
-    mkdirSync(join(workspace, '.book'), { recursive: true });
+    // The provider is the user's own: one a workspace file declares is withheld (#418).
     writeFileSync(
-      join(workspace, '.book', 'settings.json'),
+      join(bookHome, 'settings.json'),
       JSON.stringify({
-        model: '9router/qc/qwen3.7-max',
-        sandbox: { enabled: false },
         provider: {
           '9router': { baseURL: 'https://9router.example/v1', apiKey: 'k', models: {} },
         },
       }),
+    );
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ model: '9router/qc/qwen3.7-max', sandbox: { enabled: false } }),
     );
 
     const output = await doctorOutput();

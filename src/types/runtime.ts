@@ -227,6 +227,17 @@ export interface AgentConfig {
    * proof of the user's choice). Recorded at load, never inferred from the URL.
    */
   defaultBaseUrlExplicit?: boolean;
+  /**
+   * Provider ids only a workspace layer declares, computed by the loader from the layer files
+   * themselves (#418) -- never from a settings key, which a workspace layer could write. A
+   * declared provider never inherits a key, `BOOK_API_KEY` and the session key included; and a
+   * withheld one (pending or rejected) is absent from `settings.provider`, so a model id naming it
+   * is refused instead of falling through to the default endpoint.
+   */
+  workspaceProviderGate?: {
+    declared: readonly string[];
+    withheld: readonly string[];
+  };
   defaultProvider?: 'anthropic' | 'openai' | 'auto';
   autoCompactEnabled: boolean;
   /**
