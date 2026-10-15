@@ -3,6 +3,7 @@ import type { ToolCategory, ToolContext, ToolDefinition, ToolResult } from '../t
 import {
   DEFAULT_MAX_INDEX_LINES,
   MAX_BODY_CHARS,
+  MAX_INDEX_BYTES,
   MEMORY_TYPES,
   type MemoryType,
   deleteMemoryEntry,
@@ -208,14 +209,22 @@ export async function memorySaveExecute(
   const replaces = result.retired ? ` (replaces ${result.retired})` : '';
   const notice = `memory saved: ${title}${replaces}`;
   context.onNotice?.(notice);
-  // Near the load limit, ask the model to consolidate: entries past the limit do not load.
+  // Near a load limit (lines or bytes), ask the model to consolidate: entries past it do not load.
   const lines = result.indexLineCount ?? 0;
-  const pressure =
+  const bytes = result.indexByteCount ?? 0;
+  const byLines =
     lines > DEFAULT_MAX_INDEX_LINES
       ? `\nMEMORY.md has ${lines} lines; only the first ${DEFAULT_MAX_INDEX_LINES} load in a new session. Consolidate now: merge related entries (update one, supersede the rest) and delete stale ones.`
       : lines >= Math.floor(DEFAULT_MAX_INDEX_LINES * 0.8)
         ? `\nMEMORY.md has ${lines} of ${DEFAULT_MAX_INDEX_LINES} loadable lines. Consolidate soon: merge related entries and delete stale ones.`
         : '';
+  const byBytes =
+    bytes > MAX_INDEX_BYTES
+      ? `\nMEMORY.md has ${bytes.toLocaleString('en-US')} bytes; only the first ${MAX_INDEX_BYTES.toLocaleString('en-US')} load in a new session. Consolidate now: merge related entries (update one, supersede the rest), delete stale ones, and keep each entry to one short line.`
+      : bytes >= Math.floor(MAX_INDEX_BYTES * 0.8)
+        ? `\nMEMORY.md has ${bytes.toLocaleString('en-US')} of ${MAX_INDEX_BYTES.toLocaleString('en-US')} loadable bytes. Consolidate soon: merge related entries and delete stale ones.`
+        : '';
+  const pressure = byLines + byBytes;
   const retired = result.retired
     ? `\nRetired ${result.retired}: kept as history, no longer loads.`
     : '';

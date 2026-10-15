@@ -1,16 +1,23 @@
 import {
+  constants,
+  copyFileSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
+  rmdirSync,
   statSync,
   unlinkSync,
   writeFileSync,
+  type Stats,
 } from 'fs';
 import { createHash } from 'crypto';
-import { basename, isAbsolute, join, relative, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
+import { createDebugLogger } from './debug-log.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { writeFileAtomic } from './settings-repository.js';
 import { permissionRuleMatchesCall } from './permissions.js';
@@ -148,8 +155,17 @@ export interface LoadedMemoryContext {
   dir: string;
   indexFile: string | null;
   indexLoaded: boolean;
+  /** Non-empty lines in MEMORY.md (the whole file, not only what loaded). */
   indexLineCount: number;
+  /** Non-empty lines that loaded, the cut marker excluded. */
   loadedLineCount: number;
+  /** UTF-8 size of the trimmed MEMORY.md. */
+  indexByteCount: number;
+  /** The index was cut at the line limit. */
+  wasLineTruncated: boolean;
+  /** The index was cut at the byte limit. */
+  wasByteTruncated: boolean;
+  /** The loaded index; ends with a warning marker when it was cut. */
   indexText: string;
   files: MemoryFileSummary[];
   candidates: MemoryFileSummary[];
@@ -211,6 +227,8 @@ export interface SaveMemoryResult {
   indexLine?: string;
   /** Lines in MEMORY.md after the write — the model is asked to consolidate near the load limit. */
   indexLineCount?: number;
+  /** Bytes in MEMORY.md after the write — the byte limit is the second load limit. */
+  indexByteCount?: number;
   /** File name of the memory this save retired (superseded). */
   retired?: string;
   status: MemoryStatus;
@@ -219,6 +237,7 @@ export interface SaveMemoryResult {
 }
 
 export const DEFAULT_MAX_INDEX_LINES = 200;
+export const MAX_INDEX_BYTES = 25_000;
 const INDEX_FILE = 'MEMORY.md';
 const INBOX_DIR = '.inbox';
 const DISCARDED_DIR = 'discarded';
@@ -236,8 +255,280 @@ function bookRoot(opts?: MemoryStoreOptions): string {
   return opts?.bookRoot ?? resolveBookHome();
 }
 
+const log = createDebugLogger('memory-store');
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code: unknown }).code)
+    : undefined;
+}
+
+/** The file-system path as the walk and the key see it: absolute, links followed when it exists. */
+function canonicalPath(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+/** `lstat` without following links; null when the path is absent. Other errors throw. */
+function lstatIfPresent(path: string): Stats | null {
+  try {
+    return lstatSync(path);
+  } catch (e) {
+    if (errorCode(e) === 'ENOENT' || errorCode(e) === 'ENOTDIR') return null;
+    throw e;
+  }
+}
+
+function statIfPresent(path: string): Stats | null {
+  try {
+    return statSync(path);
+  } catch (e) {
+    if (errorCode(e) === 'ENOENT' || errorCode(e) === 'ENOTDIR') return null;
+    throw e;
+  }
+}
+
+/** The git root `dir` itself marks with a `.git` entry; undefined when `dir` has none. Throws on a `.git` it cannot read. */
+function gitRootMarkedBy(dir: string): string | undefined {
+  const dotGit = join(dir, '.git');
+  const st = statIfPresent(dotGit);
+  if (!st) return undefined;
+  if (st.isDirectory()) return dir;
+  if (!st.isFile()) return undefined;
+
+  const pointer = /^gitdir:[ \t]*(\S.*?)[ \t]*$/.exec(
+    readFileSync(dotGit, 'utf-8').split(/\r?\n/, 1)[0],
+  );
+  if (!pointer) throw new Error(`unrecognized .git file: ${dotGit}`);
+  // A relative gitdir resolves against the directory holding the `.git` file.
+  const gitDir = resolve(dir, pointer[1]);
+  let commonDir: string;
+  try {
+    commonDir = readFileSync(join(gitDir, 'commondir'), 'utf-8').trim();
+  } catch (e) {
+    // A submodule or `--separate-git-dir` checkout has no commondir: it is its own root.
+    if (errorCode(e) === 'ENOENT' || errorCode(e) === 'ENOTDIR') return dir;
+    throw e;
+  }
+  const common = canonicalPath(resolve(gitDir, commonDir));
+  // A linked worktree's common dir is the main checkout's `.git`.
+  return basename(common) === '.git' ? dirname(common) : dir;
+}
+
+/**
+ * The directory memory is keyed by: the git repository root the workspace belongs to, so every
+ * subdirectory and every linked worktree of one repository shares one memory. Only reads files
+ * (never spawns git). Falls back to the resolved workspace when there is no repository, or when
+ * the walk meets anything it cannot read.
+ */
+export function findGitRoot(workspace: string): string {
+  const resolved = canonicalPath(workspace);
+  try {
+    for (let dir = resolved; ;) {
+      const root = gitRootMarkedBy(dir);
+      if (root !== undefined) return root;
+      const parent = dirname(dir);
+      if (parent === dir) return resolved;
+      dir = parent;
+    }
+  } catch {
+    return resolved;
+  }
+}
+
+function memoryDirIn(root: string, workspaceKey: string): string {
+  return join(root, 'projects', slugifyWorkspace(workspaceKey), 'memory');
+}
+
 export function getProjectMemoryDir(workspace: string, opts?: MemoryStoreOptions): string {
-  return join(bookRoot(opts), 'projects', slugifyWorkspace(workspace), 'memory');
+  return memoryDirIn(bookRoot(opts), findGitRoot(workspace));
+}
+
+/** Link `src` to `dst` without replacing `dst`, then drop `src`. A race lost to another process is not an error. */
+function moveFileNoClobber(src: string, dst: string): 'moved' | 'exists' | 'gone' {
+  try {
+    linkSync(src, dst);
+  } catch (e) {
+    if (errorCode(e) === 'EEXIST') return 'exists';
+    if (errorCode(e) === 'ENOENT' && !lstatIfPresent(src)) return 'gone';
+    // Hard links unsupported here (EPERM, EXDEV, ...): copy exclusively instead.
+    try {
+      copyFileSync(src, dst, constants.COPYFILE_EXCL);
+    } catch (copyError) {
+      if (errorCode(copyError) === 'EEXIST') return 'exists';
+      if (errorCode(copyError) === 'ENOENT' && !lstatIfPresent(src)) return 'gone';
+      throw copyError;
+    }
+  }
+  try {
+    unlinkSync(src);
+  } catch (e) {
+    if (errorCode(e) !== 'ENOENT') throw e;
+  }
+  return 'moved';
+}
+
+/** Move `dir/name` into `target`, suffixing `-2`, `-3`, … before `.md` on a collision. Returns the final name, or null when the source vanished. */
+function moveKeepingBoth(sourceDir: string, targetDir: string, name: string): string | null {
+  const stem = name.slice(0, -'.md'.length);
+  for (let n = 1; n <= 1000; n++) {
+    const candidate = n === 1 ? name : `${stem}-${n}.md`;
+    const outcome = moveFileNoClobber(join(sourceDir, name), join(targetDir, candidate));
+    if (outcome === 'moved') return candidate;
+    if (outcome === 'gone') return null;
+  }
+  throw new Error(`too many name collisions moving ${name}`);
+}
+
+/** True when `path` is a real directory (created when absent); a symlink or file there is never followed. */
+function ensureRealDir(path: string): boolean {
+  const st = lstatIfPresent(path);
+  if (!st) {
+    mkdirSync(path, { recursive: true });
+    return true;
+  }
+  return st.isDirectory();
+}
+
+function isMemoryTopicFile(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower.endsWith('.md') && lower !== INDEX_FILE.toLowerCase();
+}
+
+/** The regular `*.md` files directly in `dir` (symlinks excluded). */
+function regularMarkdownFiles(dir: string, accept: (name: string) => boolean): string[] {
+  const st = lstatIfPresent(dir);
+  if (!st?.isDirectory()) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && accept(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+/** Move the old index's entry lines into the new index, right after its header. */
+function mergeLegacyIndex(oldDir: string, newDir: string, renamed: Map<string, string>): void {
+  const oldIndex = join(oldDir, INDEX_FILE);
+  if (!lstatIfPresent(oldIndex)?.isFile()) return;
+  const newIndexStat = lstatIfPresent(join(newDir, INDEX_FILE));
+  if (newIndexStat && !newIndexStat.isFile()) return;
+
+  let oldText: string;
+  try {
+    oldText = readFileSync(oldIndex, 'utf-8');
+  } catch (e) {
+    if (errorCode(e) === 'ENOENT') return; // another process merged it
+    throw e;
+  }
+  const lines = readIndexLines(newDir);
+  const listed = new Set<string>();
+  for (const line of lines) {
+    const file = indexEntryFile(line);
+    if (file) listed.add(file.toLowerCase());
+  }
+  const additions: string[] = [];
+  for (const line of oldText.split('\n')) {
+    const file = indexEntryFile(line);
+    if (!file) continue;
+    const target = renamed.get(file) ?? file;
+    if (listed.has(target.toLowerCase())) continue;
+    listed.add(target.toLowerCase());
+    additions.push(target === file ? line : line.replace(`](${file})`, `](${target})`));
+  }
+  if (additions.length > 0) {
+    const merged =
+      lines.length === 0
+        ? ['# Book memory index', ...additions]
+        : lines[0].startsWith('#')
+          ? [lines[0], ...additions, ...lines.slice(1)]
+          : [...additions, ...lines];
+    writeIndexLines(newDir, merged);
+  }
+  try {
+    unlinkSync(oldIndex);
+  } catch (e) {
+    if (errorCode(e) !== 'ENOENT') throw e;
+  }
+}
+
+function mergeLegacyMemoryDir(oldDir: string, newDir: string): void {
+  const renamed = new Map<string, string>();
+  for (const name of regularMarkdownFiles(oldDir, isMemoryTopicFile)) {
+    const final = moveKeepingBoth(oldDir, newDir, name);
+    if (final && final !== name) renamed.set(name, final);
+  }
+  for (const sub of [INBOX_DIR, join(INBOX_DIR, DISCARDED_DIR)]) {
+    const files = regularMarkdownFiles(join(oldDir, sub), (name) =>
+      name.toLowerCase().endsWith('.md'),
+    );
+    if (files.length === 0) continue;
+    // `.inbox` and `.inbox/discarded` are checked one by one: neither may be a link.
+    const targetDir = join(newDir, sub);
+    if (!ensureRealDir(join(newDir, INBOX_DIR)) || !ensureRealDir(targetDir)) continue;
+    for (const name of files) moveKeepingBoth(join(oldDir, sub), targetDir, name);
+  }
+  mergeLegacyIndex(oldDir, newDir, renamed);
+  // Best effort: only an empty directory goes. `.extraction-state.json` and `.extraction.lock`
+  // stay, so the old directory is usually left holding just those.
+  for (const leftover of [
+    join(oldDir, INBOX_DIR, DISCARDED_DIR),
+    join(oldDir, INBOX_DIR),
+    oldDir,
+  ]) {
+    try {
+      if (lstatIfPresent(leftover)?.isDirectory()) rmdirSync(leftover);
+    } catch {
+      // not empty, or already gone
+    }
+  }
+}
+
+/** Best effort: remove the old `projects/<slug>/` directory when it is a real, empty directory. */
+function removeEmptyLegacyProjectDir(projectDir: string): void {
+  try {
+    if (lstatIfPresent(projectDir)?.isDirectory()) rmdirSync(projectDir);
+  } catch {
+    // not empty, or already gone
+  }
+}
+
+/**
+ * Memory used to be keyed by the workspace string as given. Move that directory to the git-root
+ * key: rename it when the new one is absent, otherwise merge (both copies of a colliding name are
+ * kept). Never follows a symlink; never throws — a failure is logged and the session continues
+ * with the new directory.
+ */
+export function migrateLegacyMemoryDir(workspace: string, opts?: MemoryStoreOptions): void {
+  try {
+    const legacySlug = slugifyWorkspace(workspace);
+    if (legacySlug === '.' || legacySlug === '..') return;
+    const oldDir = memoryDirIn(bookRoot(opts), workspace);
+    const newDir = getProjectMemoryDir(workspace, opts);
+    if (oldDir === newDir) return;
+    if (!lstatIfPresent(oldDir)?.isDirectory()) return; // absent, a file, or a symlink
+
+    if (!lstatIfPresent(newDir)) {
+      mkdirSync(dirname(newDir), { recursive: true });
+      try {
+        renameSync(oldDir, newDir);
+        removeEmptyLegacyProjectDir(dirname(oldDir));
+        return;
+      } catch (e) {
+        const code = errorCode(e);
+        if (code === 'ENOENT' && !lstatIfPresent(oldDir)) return; // another process moved it
+        // The new directory appeared meanwhile: merge into it below.
+        if (code !== 'EEXIST' && code !== 'ENOTEMPTY' && code !== 'ENOENT') throw e;
+      }
+    }
+    if (!lstatIfPresent(newDir)?.isDirectory()) return;
+    mergeLegacyMemoryDir(oldDir, newDir);
+    removeEmptyLegacyProjectDir(dirname(oldDir));
+  } catch (e) {
+    log.warn('memory move from the old directory failed', e);
+  }
 }
 
 export function getMemoryInboxDir(workspace: string, opts?: MemoryStoreOptions): string {
@@ -348,17 +639,77 @@ export function countMemoryCandidates(workspace: string, opts?: MemoryStoreOptio
   }
 }
 
-function readFirstLines(
-  path: string,
-  maxLines: number,
-): { text: string; totalLines: number; loadedLines: number } {
-  const raw = readFileSync(path, 'utf-8');
-  const lines = raw.split('\n');
-  const loaded = lines.slice(0, maxLines);
+interface IndexLoad {
+  /** What loads: the kept text, then a blank line and the warning marker when anything was cut. */
+  text: string;
+  /** Non-empty lines in the whole index. */
+  totalLines: number;
+  /** Non-empty lines kept. */
+  loadedLines: number;
+  /** UTF-8 size of the trimmed index. */
+  byteCount: number;
+  wasLineTruncated: boolean;
+  wasByteTruncated: boolean;
+}
+
+const formatCount = (n: number): string => n.toLocaleString('en-US');
+
+function countNonEmptyLines(text: string): number {
+  return text.split('\n').filter((line) => line.trim().length > 0).length;
+}
+
+/**
+ * What the model gets of MEMORY.md: the first `maxLines` lines, then cut again at the last
+ * newline within `MAX_INDEX_BYTES` (at the last whole character when line 1 alone is longer).
+ * The index is newest first, so the oldest entries are what a cut drops — and the marker says so
+ * instead of letting them vanish silently.
+ */
+function cutIndex(raw: string, maxLines: number): IndexLoad {
+  const trimmed = raw.trim();
+  const byteCount = Buffer.byteLength(trimmed);
+  const lines = trimmed.length > 0 ? trimmed.split('\n') : [];
+  const wasLineTruncated = lines.length > maxLines;
+  let kept = wasLineTruncated ? lines.slice(0, maxLines).join('\n') : trimmed;
+  let keptLineCount = Math.min(lines.length, maxLines);
+  let wasByteTruncated = false;
+  let bytesKeptOfLine1: number | undefined;
+
+  if (Buffer.byteLength(kept) > MAX_INDEX_BYTES) {
+    wasByteTruncated = true;
+    const bytes = Buffer.from(kept, 'utf-8');
+    const newline = bytes.lastIndexOf(0x0a, MAX_INDEX_BYTES);
+    if (newline > 0) {
+      kept = bytes.subarray(0, newline).toString('utf-8');
+      keptLineCount = kept.split('\n').length;
+    } else {
+      // No newline in range: cut inside line 1, backing up to a character boundary.
+      let end = MAX_INDEX_BYTES;
+      while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+      kept = bytes.subarray(0, end).toString('utf-8');
+      keptLineCount = 1;
+      bytesKeptOfLine1 = end;
+    }
+  }
+
+  let text = kept;
+  if (wasLineTruncated || wasByteTruncated) {
+    const detail =
+      bytesKeptOfLine1 !== undefined
+        ? `everything after the first ${formatCount(bytesKeptOfLine1)} bytes of line 1 was cut off`
+        : `${formatCount(lines.length - keptLineCount)} of ${formatCount(lines.length)} lines were cut off, starting at line ${formatCount(keptLineCount + 1)} ("${Array.from(lines[keptLineCount]).slice(0, 80).join('')}")`;
+    text =
+      `${kept}\n\n> WARNING: MEMORY.md is ${formatCount(lines.length)} lines and ${formatCount(byteCount)} bytes ` +
+      `(limits: ${formatCount(maxLines)} lines, ${formatCount(MAX_INDEX_BYTES)} bytes). ` +
+      `Only part of it was loaded: ${detail}. ` +
+      'Keep each entry to one line and move detail into the memory file.';
+  }
   return {
-    text: loaded.join('\n').trim(),
-    totalLines: lines.filter((line) => line.trim().length > 0).length,
-    loadedLines: loaded.filter((line) => line.trim().length > 0).length,
+    text,
+    totalLines: countNonEmptyLines(trimmed),
+    loadedLines: countNonEmptyLines(kept),
+    byteCount,
+    wasLineTruncated,
+    wasByteTruncated,
   };
 }
 
@@ -366,6 +717,8 @@ export function loadMemoryContext(
   workspace: string,
   opts?: MemoryStoreOptions,
 ): LoadedMemoryContext {
+  // Before anything is read: a directory keyed the old way moves to the git-root key first.
+  migrateLegacyMemoryDir(workspace, opts);
   const dir = getProjectMemoryDir(workspace, opts);
   const maxIndexLines = opts?.maxIndexLines ?? DEFAULT_MAX_INDEX_LINES;
   const result: LoadedMemoryContext = {
@@ -374,6 +727,9 @@ export function loadMemoryContext(
     indexLoaded: false,
     indexLineCount: 0,
     loadedLineCount: 0,
+    indexByteCount: 0,
+    wasLineTruncated: false,
+    wasByteTruncated: false,
     indexText: '',
     files: [],
     candidates: [],
@@ -386,11 +742,14 @@ export function loadMemoryContext(
     try {
       const st = statSync(indexFile);
       if (st.isFile()) {
-        const index = readFirstLines(indexFile, maxIndexLines);
+        const index = cutIndex(readFileSync(indexFile, 'utf-8'), maxIndexLines);
         result.indexFile = indexFile;
         result.indexLoaded = index.text.length > 0;
         result.indexLineCount = index.totalLines;
         result.loadedLineCount = index.loadedLines;
+        result.indexByteCount = index.byteCount;
+        result.wasLineTruncated = index.wasLineTruncated;
+        result.wasByteTruncated = index.wasByteTruncated;
         result.indexText = index.text;
       }
     } catch {
@@ -408,6 +767,12 @@ export interface MemoryHealth {
   supersededCount: number;
   inboxCount: number;
   indexLineCount: number;
+  /** UTF-8 size of the trimmed MEMORY.md. */
+  indexByteCount: number;
+  /** The index is over the line limit, so a session loads only part of it. */
+  wasLineTruncated: boolean;
+  /** The index is over the byte limit, so a session loads only part of it. */
+  wasByteTruncated: boolean;
   lastWrite: Date | null;
 }
 
@@ -494,8 +859,21 @@ export function getMemoryHealth(
 
   // Counted the way a save counts it, so Health and the pressure warning agree.
   let indexLineCount = 0;
+  let indexByteCount = 0;
+  let wasLineTruncated = false;
+  let wasByteTruncated = false;
   try {
     indexLineCount = readIndexLines(dir).length;
+    const indexPath = join(dir, INDEX_FILE);
+    if (existsSync(indexPath)) {
+      const cut = cutIndex(
+        readFileSync(indexPath, 'utf-8'),
+        opts?.maxIndexLines ?? DEFAULT_MAX_INDEX_LINES,
+      );
+      indexByteCount = cut.byteCount;
+      wasLineTruncated = cut.wasLineTruncated;
+      wasByteTruncated = cut.wasByteTruncated;
+    }
   } catch {
     // unreadable index
   }
@@ -506,6 +884,9 @@ export function getMemoryHealth(
     supersededCount,
     inboxCount,
     indexLineCount,
+    indexByteCount,
+    wasLineTruncated,
+    wasByteTruncated,
     lastWrite,
   };
 }
@@ -776,7 +1157,7 @@ function updateMemoryIndex(
   now: Date,
   body: string,
   supersedes?: string,
-): { entry: string; lineCount: number } {
+): { entry: string; lineCount: number; byteCount: number } {
   const hook = indexHook(body);
   const entry = `- [${title}](${filename}) — ${type} — ${now.toISOString().slice(0, 10)}${hook && hook !== title ? ` — ${hook}` : ''}`;
   const drop = supersedes ? [filename, supersedes] : [filename];
@@ -789,7 +1170,7 @@ function updateMemoryIndex(
     lines = [entry, ...lines];
   }
   writeIndexLines(dir, lines);
-  return { entry, lineCount: lines.length };
+  return { entry, lineCount: lines.length, byteCount: Buffer.byteLength(lines.join('\n')) };
 }
 
 /** Set frontmatter fields in place, leaving every other field, the headings and the body as they are. */
@@ -987,6 +1368,7 @@ export function saveMemory(
       path: target,
       indexLine: index.entry,
       indexLineCount: index.lineCount,
+      indexByteCount: index.byteCount,
       retired: memoryInput.supersedes,
       status: 'approved',
     };
