@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { shellArgument } from '../trust-command.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -109,9 +110,11 @@ describe('runMainAction — withheld-provider notices on the interactive launch 
 
     const notices = rendered.props?.startupNotices as string[] | undefined;
     // The commands name the launched workspace, which is not the current directory.
-    expect(notices?.join('\n')).toContain(`\`book trust provider evil --workspace ${workspace}\``);
     expect(notices?.join('\n')).toContain(
-      `\`book trust provider .bookrc.json --workspace ${workspace}\``,
+      `\`book trust provider evil --workspace ${shellArgument(workspace)}\``,
+    );
+    expect(notices?.join('\n')).toContain(
+      `\`book trust provider .bookrc.json --workspace ${shellArgument(workspace)}\``,
     );
     // Each line keeps its advice, and nothing is also written above the TUI.
     expect(stderr.join('\n')).not.toContain('book trust provider');
@@ -137,7 +140,9 @@ describe('runMainAction — withheld-provider notices on the interactive launch 
     await runMainAction(interactiveOptions(workspace, { scrollback: true }));
 
     expect(scrollback.runs).toBe(1);
-    expect(stderr.join('\n')).toContain(`\`book trust provider evil --workspace ${workspace}\``);
+    expect(stderr.join('\n')).toContain(
+      `\`book trust provider evil --workspace ${shellArgument(workspace)}\``,
+    );
     expect(rendered.props).toBeUndefined();
   });
 });

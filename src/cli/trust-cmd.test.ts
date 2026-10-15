@@ -11,6 +11,7 @@ import {
 } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
+import { shellArgument } from '../trust-command.js';
 import { runTrustCommand } from './trust-cmd.js';
 import { setExitFn } from './exit.js';
 import { hookFingerprint } from '../hook-approvals.js';
@@ -796,9 +797,15 @@ describe('book trust provider', () => {
 
     const result = await run('provider', undefined);
 
-    expect(result.out).toContain(`book trust provider "my prov" --workspace ${workspace}`);
-    expect(result.out).toContain(`book trust provider plain --workspace ${workspace}`);
-    expect(result.out).toContain(`book trust provider --all-pending --workspace ${workspace}`);
+    expect(result.out).toContain(
+      `book trust provider "my prov" --workspace ${shellArgument(workspace)}`,
+    );
+    expect(result.out).toContain(
+      `book trust provider plain --workspace ${shellArgument(workspace)}`,
+    );
+    expect(result.out).toContain(
+      `book trust provider --all-pending --workspace ${shellArgument(workspace)}`,
+    );
   });
 
   it('never prints an id a shell would interpret as part of a command', async () => {

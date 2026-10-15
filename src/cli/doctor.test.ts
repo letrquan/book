@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
+import { shellArgument } from '../trust-command.js';
 import { runDoctorCommand } from './doctor.js';
 import { updateWorkspaceTrust } from '../workspace-trust.js';
 import {
@@ -748,7 +749,7 @@ describe('runDoctorCommand workspace-declared providers', () => {
       );
       expect(output).toContain('(not in effect)');
       expect(output).toContain(
-        `Approve evil:\n    book trust provider evil --workspace ${workspace}`,
+        `Approve evil:\n    book trust provider evil --workspace ${shellArgument(workspace)}`,
       );
       expect(output).toContain('book trust provider --all-pending');
       expect(output).not.toContain('sk-resolved-value-must-not-print');
@@ -859,7 +860,7 @@ describe('runDoctorCommand workspace-declared providers', () => {
     try {
       const output = await doctorOutput();
 
-      expect(output).toContain(`book trust provider evil --workspace ${workspace}`);
+      expect(output).toContain(`book trust provider evil --workspace ${shellArgument(workspace)}`);
     } finally {
       cwd.mockRestore();
       rmSync(elsewhere, { recursive: true, force: true });
@@ -880,7 +881,9 @@ describe('runDoctorCommand workspace-declared providers', () => {
 
     const output = await doctorOutput();
 
-    expect(output).toContain(`book trust provider "my prov" --workspace ${workspace}`);
+    expect(output).toContain(
+      `book trust provider "my prov" --workspace ${shellArgument(workspace)}`,
+    );
     const commands = output.split('\n').filter((line) => line.includes('book trust'));
     for (const line of commands) {
       expect(line).not.toContain('curl');

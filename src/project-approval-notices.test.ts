@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
+import { shellArgument } from './trust-command.js';
 import { collectWithheldProjectNotices } from './project-approval-notices.js';
 import { hookFingerprint } from './hook-approvals.js';
 import { resolveSettings, resolveSettingsWithProviderGate } from './settings-loader.js';
@@ -387,7 +388,9 @@ describe('collectWithheldProjectNotices: workspace providers', () => {
     expect(lines[0]).toContain('(https://evil.example,');
     expect(lines[0]).toContain('environment variable EVIL_KEY');
     // The command carries --workspace: the notice is for a workspace that is not the cwd.
-    expect(lines[0]).toContain(`\`book trust provider evil --workspace ${workspace}\``);
+    expect(lines[0]).toContain(
+      `\`book trust provider evil --workspace ${shellArgument(workspace)}\``,
+    );
   });
 
   // Finding 1: a provider id is any JSON key the repository writes.
@@ -400,8 +403,10 @@ describe('collectWithheldProjectNotices: workspace providers', () => {
     expect(lines).toHaveLength(2);
     const commands = lines.map((line) => /`(book trust[^`]*)`/.exec(line)![1]);
     // A space is quoted; an id with `$` has no command that names it, so the listing is offered.
-    expect(commands).toContain(`book trust provider "my prov" --workspace ${workspace}`);
-    expect(commands).toContain(`book trust provider --workspace ${workspace}`);
+    expect(commands).toContain(
+      `book trust provider "my prov" --workspace ${shellArgument(workspace)}`,
+    );
+    expect(commands).toContain(`book trust provider --workspace ${shellArgument(workspace)}`);
     for (const command of commands) {
       expect(command).not.toContain('$(');
       expect(command).not.toContain('curl');
@@ -515,7 +520,7 @@ describe('collectWithheldProjectNotices: workspace providers', () => {
 
     const model = lines.find((line) => line.includes('model "evil/x"'));
     expect(model).toContain('"trusted-model"');
-    expect(model).toContain(`\`book trust provider evil --workspace ${workspace}\``);
+    expect(model).toContain(`\`book trust provider evil --workspace ${shellArgument(workspace)}\``);
     const advisor = lines.find((line) => line.includes('advisorModel "evil/adv"'));
     expect(advisor).toBeDefined();
     expect(advisor).toContain('none');
@@ -540,7 +545,9 @@ describe('collectWithheldProjectNotices: workspace providers', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('.bookrc.json');
     expect(lines[0]).toContain('https://legacy.example/v1');
-    expect(lines[0]).toContain(`\`book trust provider .bookrc.json --workspace ${workspace}\``);
+    expect(lines[0]).toContain(
+      `\`book trust provider .bookrc.json --workspace ${shellArgument(workspace)}\``,
+    );
     expect(providerNotices(gate('approved'))).toEqual([]);
     expect(providerNotices(gate('rejected'))).toEqual([]);
   });

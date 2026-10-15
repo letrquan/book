@@ -1,5 +1,5 @@
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { describe, expect, it } from 'vitest';
 import { parseSecretReference, resolveSecretFilePath } from './secret-reference.js';
 
@@ -23,11 +23,17 @@ describe('resolveSecretFilePath', () => {
   });
 
   it('normalises an absolute path', () => {
-    expect(resolveSecretFilePath('/a/b/../c', '/ws')).toEqual({ path: '/a/c', readable: true });
+    expect(resolveSecretFilePath('/a/b/../c', '/ws')).toEqual({
+      path: resolve('/a/c'),
+      readable: true,
+    });
   });
 
   it('roots a relative path at the workspace, and marks one that leaves it unreadable', () => {
-    expect(resolveSecretFilePath('k/key', '/ws')).toEqual({ path: '/ws/k/key', readable: true });
+    expect(resolveSecretFilePath('k/key', '/ws')).toEqual({
+      path: resolve('/ws', 'k', 'key'),
+      readable: true,
+    });
     expect(resolveSecretFilePath('../outside', '/ws').readable).toBe(false);
     expect(resolveSecretFilePath('a/../../outside', '/ws').readable).toBe(false);
   });

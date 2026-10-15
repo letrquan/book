@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { shellArgument } from './trust-command.js';
 import type { HeadlessOptions } from './types/public-sdk.js';
 import { createSessionFixture, type SessionFixture } from './test/session-fixture.js';
 
@@ -267,7 +268,9 @@ describe('SDK runtime event bridge', () => {
 
     const report = warnings.join('\n');
     expect(report).toContain('Ignoring workspace-declared provider "evil"');
-    expect(report).toContain(`\`book trust provider evil --workspace ${sessionFixture.root}\``);
+    expect(report).toContain(
+      `\`book trust provider evil --workspace ${shellArgument(sessionFixture.root)}\``,
+    );
   });
 
   // headless.ts writes a run record into the shared <BOOK_HOME>/runs on every query, so

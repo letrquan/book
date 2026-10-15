@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { homedir, tmpdir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import {
   createWorkspaceProviderGate,
   describeApiKeyDeclaration,
@@ -289,7 +289,7 @@ describe('describeApiKeyDeclaration', () => {
 
   it('resolves a relative path against the workspace and flags one that leaves it', () => {
     expect(describeApiKeyDeclaration('{file:secrets/key}', workspace)).toBe(
-      `file ${join(workspace, 'secrets', 'key')}`,
+      `file ${resolve(workspace, 'secrets', 'key')}`,
     );
     expect(describeApiKeyDeclaration('{file:../../etc/passwd}', workspace)).toContain(
       'outside the workspace',
@@ -297,7 +297,9 @@ describe('describeApiKeyDeclaration', () => {
   });
 
   it('shows an absolute path normalised, and never echoes a literal', () => {
-    expect(describeApiKeyDeclaration('{file:/a/b/../c}', workspace)).toBe('file /a/c');
+    expect(describeApiKeyDeclaration('{file:/a/b/../c}', workspace)).toBe(
+      `file ${resolve('/a/c')}`,
+    );
     expect(describeApiKeyDeclaration('sk-secret', workspace)).toBe('a literal key (not shown)');
     expect(describeApiKeyDeclaration(undefined, workspace)).toBe('none');
   });

@@ -2,6 +2,7 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { shellArgument } from '../trust-command.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   enterInteractiveScreen,
@@ -513,8 +514,12 @@ describe('runMainAction — print mode exit codes (#190)', () => {
     await runMainAction({ ...printOptions(workspace, 'say hi'), settings: undefined });
 
     const report = warnings.join('\n');
-    expect(report).toContain(`\`book trust provider evil --workspace ${workspace}\``);
-    expect(report).toContain(`\`book trust provider .bookrc.json --workspace ${workspace}\``);
+    expect(report).toContain(
+      `\`book trust provider evil --workspace ${shellArgument(workspace)}\``,
+    );
+    expect(report).toContain(
+      `\`book trust provider .bookrc.json --workspace ${shellArgument(workspace)}\``,
+    );
     // Neither origin was ever sent a request.
     expect(provider.requests.map((request) => String(request.input)).join(' ')).not.toContain(
       'example',

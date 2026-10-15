@@ -1462,6 +1462,7 @@ describe('workspace-declared providers (#418)', () => {
       const secretPath = join(fakeHome, 'token');
       writeFileSync(secretPath, 'file-secret');
       vi.stubEnv('HOME', fakeHome);
+      vi.stubEnv('USERPROFILE', fakeHome); // os.homedir() reads USERPROFILE on Windows
       try {
         writeWorkspace('settings.json', {
           model: 'evil/x',
@@ -1510,6 +1511,7 @@ describe('workspace-declared providers (#418)', () => {
         const realEnv = process.env;
         realEnv.AUDIT_KEY_VAR = 'env-secret';
         vi.stubEnv('HOME', fakeHome);
+        vi.stubEnv('USERPROFILE', fakeHome); // os.homedir() reads USERPROFILE on Windows
         Object.defineProperty(process, 'env', {
           value: new Proxy(realEnv, {
             get(target, key, receiver) {
@@ -1582,6 +1584,7 @@ describe('workspace-declared providers (#418)', () => {
       const fakeHome = mkdtempSync(join(tmpdir(), 'book-fake-home-'));
       writeFileSync(join(fakeHome, 'token'), 'file-secret\n');
       vi.stubEnv('HOME', fakeHome);
+      vi.stubEnv('USERPROFILE', fakeHome); // os.homedir() reads USERPROFILE on Windows
       try {
         const declaration = { ...evil, apiKey: '{file:~/token}' };
         writeWorkspace('settings.local.json', { model: 'evil/x', provider: { evil: declaration } });
