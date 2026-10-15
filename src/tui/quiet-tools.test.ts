@@ -4,6 +4,7 @@ import type { ToolCall, ToolResult } from '../types/tools.js';
 import {
   createQuietCollapser,
   groupQuietInvocations,
+  hasProse,
   hasVisibleText,
   isQuietInvocation,
   continuesQuietRun,
@@ -81,6 +82,16 @@ describe('hasVisibleText', () => {
     const reasoning = assistant('m', '<think>check the loader</think>', []);
     expect(hasVisibleText(reasoning, true)).toBe(true);
     expect(hasVisibleText(reasoning, false)).toBe(false);
+  });
+});
+
+describe('hasProse', () => {
+  it('counts markdown only, never reasoning', () => {
+    expect(hasProse(assistant('m', 'Reading the loader.', []))).toBe(true);
+    expect(hasProse(assistant('m', '<think>check the loader</think>', []))).toBe(false);
+    expect(hasProse(assistant('m', '<think></think>', []))).toBe(false);
+    expect(hasProse({ ...assistant('m', '', []), reasoningContent: 'check' })).toBe(false);
+    expect(hasProse(assistant('m', '<think>x</think>Then this.', []))).toBe(true);
   });
 });
 
@@ -167,6 +178,59 @@ describe('createQuietCollapser', () => {
     const grown = collapse([first, second, assistant('a3', '', [call('r3', 'Read')])], NONE, true)
       .entries[0];
     expect(grown).not.toBe(once);
+  });
+});
+
+describe('reasoning inside a quiet run (#455)', () => {
+  const reasoned = (
+    id: string,
+    toolCall: ToolCall,
+    how: 'think' | 'native',
+    extra = '',
+  ): Message => ({
+    ...assistant(id, how === 'think' ? `<think>weighing ${id}</think>${extra}` : extra, [toolCall]),
+    ...(how === 'native' ? { reasoningContent: `weighing ${id}` } : {}),
+  });
+
+  it.each(['think', 'native'] as const)(
+    'keeps one run whole when each call follows %s reasoning',
+    (how) => {
+      const collapse = createQuietCollapser();
+      const messages = [
+        reasoned('a1', call('r1', 'Read', { file_path: 'a.js' }), how),
+        reasoned('a2', call('r2', 'Read', { file_path: 'b.js' }), how),
+        reasoned('a3', call('r3', 'Read', { file_path: 'c.js' }), how),
+        reasoned('a4', call('g1', 'Grep', { pattern: 'TODO' }), how),
+      ];
+      const { entries, sourceIds } = collapse(messages, NONE, true);
+      expect(entries.map((entry) => entry.id)).toEqual(['a1']);
+      expect(entries[0]!.toolCalls!.map((c) => c.id)).toEqual(['r1', 'r2', 'r3', 'g1']);
+      expect(sourceIds.get('a1')).toEqual(['a1', 'a2', 'a3', 'a4']);
+      if (how === 'native') {
+        // Other consumers still get every thought, concatenated as before.
+        expect(entries[0]!.reasoningContent).toBe(
+          'weighing a1\n\nweighing a2\n\nweighing a3\n\nweighing a4',
+        );
+      }
+    },
+  );
+
+  it('does not let reasoning continue a run when thinking display is off either', () => {
+    const collapse = createQuietCollapser();
+    const messages = [
+      reasoned('a1', call('r1', 'Read'), 'think'),
+      reasoned('a2', call('r2', 'Read'), 'native'),
+    ];
+    expect(collapse(messages, NONE, false).entries).toHaveLength(1);
+  });
+
+  it('still starts a new entry for a message with markdown prose', () => {
+    const collapse = createQuietCollapser();
+    const messages = [
+      reasoned('a1', call('r1', 'Read'), 'think'),
+      reasoned('a2', call('r2', 'Read'), 'think', 'Now the config.'),
+    ];
+    expect(collapse(messages, NONE, true).entries.map((entry) => entry.id)).toEqual(['a1', 'a2']);
   });
 });
 

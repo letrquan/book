@@ -267,9 +267,9 @@ export function ChatPanelInner({
   const displayTimeline = useMemo(
     () =>
       quietTools
-        ? quietCollapserRef.current!(windowedTimeline, quietTools, showThinking)
+        ? quietCollapserRef.current!(windowedTimeline, quietTools)
         : { entries: windowedTimeline, sourceIds: NO_SOURCE_IDS },
-    [quietTools, showThinking, windowedTimeline],
+    [quietTools, windowedTimeline],
   );
   const visibleTimeline = displayTimeline.entries;
   // Which entries a step of work follows in the same turn: their prose is
@@ -478,6 +478,7 @@ export function ChatPanelInner({
                   trimTrailingSpacing={nextEntryIsUser}
                   quietTools={quietTools}
                   continuesTurn={followedByWork.has(message.id)}
+                  quietRun={(displayTimeline.sourceIds.get(message.id)?.length ?? 0) > 1}
                 />
               </Box>
             );

@@ -39,6 +39,11 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Reasoning no longer breaks the compact transcript's quiet-run summary** (#455). A model that
+  thought before every read (an inline `<think>` part or provider-native reasoning) drew a
+  `▸ thought` row and a tool row per call instead of one `✓ Read a.js, b.js, c.js` summary. Only
+  prose between calls ends a run now, and the thoughts of a folded run are absorbed into its
+  summary row; the detailed transcript (Ctrl+O) still shows every thought.
 - **Claude 4.6 and later get their 1M context window** (#416). Every Claude model resolved to a
   200,000-token window, so Book compacted at about a fifth of what Opus 4.6–4.8, Sonnet 4.6, and
   every 5.x model (Opus, Sonnet, Haiku, Fable, Mythos) accept. These now resolve to 1,000,000,

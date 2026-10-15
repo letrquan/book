@@ -88,6 +88,12 @@ interface AgentMessageProps {
    * from the messages (`messagesFollowedByWork`).
    */
   continuesTurn?: boolean;
+  /**
+   * This entry is several messages folded into one quiet run (ChatPanel reads it
+   * from the collapser). Its reasoning belongs to the run's summary row, so the
+   * compact transcript does not draw it.
+   */
+  quietRun?: boolean;
 }
 
 const NO_EXPANSION_OVERRIDES = new Map<string, boolean>();
@@ -467,6 +473,7 @@ export function AgentMessageInner({
   trimTrailingSpacing = false,
   quietTools,
   continuesTurn = false,
+  quietRun = false,
 }: AgentMessageProps) {
   const theme = useTheme();
   const { toolRowGap, toolBlockGap } = useDensityMetrics();
@@ -527,11 +534,7 @@ export function AgentMessageInner({
       }).filter((part) => part.kind !== 'think' || part.text.length > 0),
     [displayContent, isStreaming, toolCalls.length],
   );
-  // Whether the content box draws anything. An empty `<think></think>` draws
-  // nothing, so it must not buy the tool block below it a blank row either.
-  const showsContent = contentParts.some((part) =>
-    part.kind === 'markdown' ? part.text.trim().length > 0 : showThinking,
-  );
+  const hasProse = contentParts.some((part) => part.kind === 'markdown' && part.text.trim());
   const renderAsUnifiedDiff = useMemo(
     () => displayContent.length > 0 && isUnifiedDiffLike(displayContent),
     [displayContent],
@@ -567,6 +570,18 @@ export function AgentMessageInner({
     }
     return byIndex.size > 0 ? byIndex : undefined;
   }, [message, quietTools, screenReader, topLevelInvocations]);
+  // A thought that belongs to a quiet run is absorbed into the run's summary
+  // row: the reasoning of a folded entry, and the reasoning that comes with
+  // parallel quiet calls drawn as one row. Prose between calls ends a run, so
+  // a turn that speaks keeps its own thought. A thought still streaming has no
+  // call yet, hence no folded row, and renders as it always has.
+  const foldsThoughts = Boolean(quietRows && (quietRun || (quietRows.has(0) && !hasProse)));
+  const thoughtsShown = showThinking && !foldsThoughts;
+  // Whether the content box draws anything. An empty `<think></think>` draws
+  // nothing, so it must not buy the tool block below it a blank row either.
+  const showsContent = contentParts.some((part) =>
+    part.kind === 'markdown' ? part.text.trim().length > 0 : thoughtsShown,
+  );
   // Size the label column to this turn's own rows. A turn of `Bash` / `Read`
   // rows padded to fit a hypothetical `Git status` puts seven dead columns
   // between every verb and its target. Only rows actually drawn count: a call
@@ -686,7 +701,7 @@ export function AgentMessageInner({
       {isStreaming &&
       !hideStreamingSpinner &&
       !displayContent &&
-      !(showThinking && reasoningContent) &&
+      !(thoughtsShown && reasoningContent) &&
       !message.toolCalls?.length ? (
         <Box marginLeft={screenReader ? 0 : CONTENT_COLUMN}>
           {isRetrying && spinnerLabel ? (
@@ -700,7 +715,7 @@ export function AgentMessageInner({
         </Box>
       ) : null}
 
-      {showThinking && reasoningContent ? (
+      {thoughtsShown && reasoningContent ? (
         <Box marginLeft={screenReader ? 0 : CONTENT_COLUMN} flexDirection="column">
           <ThinkBlock
             text={reasoningContent}
@@ -716,7 +731,7 @@ export function AgentMessageInner({
       {/* Activity and content use separate rows so markdown keeps its full budget. */}
       {displayContent ? (
         <Box marginLeft={screenReader ? 0 : CONTENT_COLUMN} flexDirection="column">
-          {showThinking && reasoningContent && !embeddedThinking && !workStep ? (
+          {thoughtsShown && reasoningContent && !embeddedThinking && !workStep ? (
             <AnswerDivider screenReader={screenReader} />
           ) : null}
           {isStreaming && !hideStreamingSpinner && !isRetrying ? (
@@ -737,7 +752,7 @@ export function AgentMessageInner({
               <Box flexDirection="column">
                 {contentParts.map((part, i) => {
                   if (part.kind === 'think') {
-                    if (!showThinking) return null;
+                    if (!thoughtsShown) return null;
                     const answerHasStarted = contentParts
                       .slice(i + 1)
                       .some((candidate) => candidate.kind === 'markdown' && candidate.text.trim());
@@ -758,7 +773,7 @@ export function AgentMessageInner({
                     .some((candidate) => candidate.kind === 'think');
                   return (
                     <React.Fragment key={`md-${i}`}>
-                      {showThinking && hasEarlierThinking && !workStep ? (
+                      {thoughtsShown && hasEarlierThinking && !workStep ? (
                         <AnswerDivider screenReader={screenReader} />
                       ) : null}
                       <MarkdownBlock
@@ -787,7 +802,7 @@ export function AgentMessageInner({
           index === 0
             ? workStep
               ? 0
-              : showsContent || (showThinking && reasoningContent)
+              : showsContent || (thoughtsShown && reasoningContent)
                 ? toolBlockGap
                 : 0
             : transcriptMode === 'detailed' && !screenReader
@@ -984,6 +999,7 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
     prev.trimTrailingSpacing === next.trimTrailingSpacing &&
     prev.quietTools === next.quietTools &&
     prev.continuesTurn === next.continuesTurn &&
+    prev.quietRun === next.quietRun &&
     prev.reducedMotion === next.reducedMotion &&
     prev.screenReader === next.screenReader &&
     prev.terminalWidth === next.terminalWidth

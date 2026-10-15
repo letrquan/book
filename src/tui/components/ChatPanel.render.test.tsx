@@ -2013,6 +2013,114 @@ describe('ChatPanel quiet tool runs', () => {
   });
 });
 
+describe('ChatPanel quiet tool runs with reasoning (#455)', () => {
+  const reasonedTurn = (
+    id: string,
+    call: { name: string; arguments: Record<string, unknown> },
+    how: 'think' | 'native',
+  ): Message => ({
+    ...msg(id, 'assistant', how === 'think' ? '<think>first line\nsecond line</think>' : ''),
+    ...(how === 'native' ? { reasoningContent: 'first line\nsecond line' } : {}),
+    toolCalls: [{ id: `${id}-call`, ...call }],
+    toolResults: [successResult(`${id}-call`, 'contents')],
+  });
+  const scenario = (how: 'think' | 'native'): Message[] => [
+    msg('u1', 'user', 'look around'),
+    reasonedTurn('a1', { name: 'Read', arguments: { file_path: 'a.js' } }, how),
+    reasonedTurn('a2', { name: 'Read', arguments: { file_path: 'b.js' } }, how),
+    reasonedTurn('a3', { name: 'Read', arguments: { file_path: 'c.js' } }, how),
+    reasonedTurn('a4', { name: 'Grep', arguments: { pattern: 'TODO' } }, how),
+  ];
+
+  it.each(['think', 'native'] as const)(
+    'draws one summary row and no thought rows in the compact transcript (%s)',
+    (how) => {
+      const view = render(
+        withTheme(
+          <ChatPanel
+            messages={scenario(how)}
+            terminalWidth={100}
+            transcriptMode="compact"
+            showThinking
+            reducedMotion
+          />,
+        ),
+      );
+      const lines = frame(view.lastFrame).split('\n');
+      expect(lines.filter((line) => /Read\s+a\.js, b\.js, c\.js/.test(line))).toHaveLength(1);
+      expect(lines.join('\n')).toContain('3 files · 1 search');
+      expect(lines.some((line) => line.includes('thought'))).toBe(false);
+      expect(lines.some((line) => line.includes('Thought'))).toBe(false);
+    },
+  );
+
+  it('hides the reasoning of parallel quiet calls that group into one row', () => {
+    const turn: Message = {
+      ...msg('p1', 'assistant', '<think>weigh both files</think>'),
+      toolCalls: [
+        { id: 'p1-a', name: 'Read', arguments: { file_path: 'a.js' } },
+        { id: 'p1-b', name: 'Read', arguments: { file_path: 'b.js' } },
+      ],
+      toolResults: [successResult('p1-a', 'x'), successResult('p1-b', 'y')],
+    };
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[msg('u1', 'user', 'go'), turn]}
+          terminalWidth={100}
+          transcriptMode="compact"
+          showThinking
+          reducedMotion
+        />,
+      ),
+    );
+    const output = frame(view.lastFrame);
+    expect(output).toMatch(/Read\s+a\.js, b\.js/);
+    expect(output).not.toContain('thought');
+  });
+
+  it('keeps a finished thought that precedes a lone, unfolded call', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[
+            msg('u1', 'user', 'go'),
+            reasonedTurn('a1', { name: 'Read', arguments: { file_path: 'a.js' } }, 'think'),
+          ]}
+          terminalWidth={100}
+          transcriptMode="compact"
+          showThinking
+          reducedMotion
+        />,
+      ),
+    );
+    const output = frame(view.lastFrame);
+    expect(output).toContain('▸ thought · 2 lines');
+    expect(output).toMatch(/Read\s+a\.js/);
+  });
+
+  it('still shows every thought and tool row in the detailed transcript', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={scenario('think')}
+          terminalWidth={100}
+          transcriptMode="detailed"
+          showThinking
+          reducedMotion
+        />,
+      ),
+    );
+    const output = frame(view.lastFrame);
+    expect(output.match(/Thought - 2 lines/g)).toHaveLength(4);
+    for (const file of ['a.js', 'b.js', 'c.js']) {
+      expect(output).toMatch(new RegExp(`Read\\s+${file.replace('.', '\\.')}`));
+    }
+    expect(output).toContain('Grep');
+    expect(output).not.toMatch(/Read\s+a\.js, b\.js/);
+  });
+});
+
 describe('ChatPanel folding keeps delegation narration', () => {
   it('keeps the sentence before a read when the next turn delegates', () => {
     const messages: Message[] = [

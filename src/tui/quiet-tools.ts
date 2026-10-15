@@ -97,6 +97,9 @@ export function isQuietInvocation(
  * inline reasoning put `<think></think>` in the content of nearly every
  * tool-call turn, and that renders as nothing. Reasoning only counts when the
  * reader has thinking display on.
+ *
+ * This is not the rule for a quiet run, which only prose breaks: see
+ * {@link hasProse}.
  */
 export function hasVisibleText(message: Message, showThinking: boolean): boolean {
   const parts = splitReasoningParts(message.content ?? '', { concluded: false });
@@ -108,7 +111,19 @@ export function hasVisibleText(message: Message, showThinking: boolean): boolean
 }
 
 /**
- * An assistant message with no text of its own whose first call is quiet: it
+ * Whether a message carries markdown prose: the one kind of text that breaks a
+ * quiet run. Reasoning does not, whether it is a `<think>` part or provider-
+ * native `reasoningContent`: a model that thinks before every read would
+ * otherwise never fold, and the compact transcript hides the thoughts of a run.
+ */
+export function hasProse(message: Message): boolean {
+  return splitReasoningParts(message.content ?? '', { concluded: false }).some(
+    (part) => part.kind === 'markdown' && part.text.trim().length > 0,
+  );
+}
+
+/**
+ * An assistant message with no prose of its own whose first call is quiet: it
  * continues a run begun before it.
  *
  * Only the first call has to be quiet. Book already folds a tool-only turn with
@@ -121,7 +136,7 @@ export function hasVisibleText(message: Message, showThinking: boolean): boolean
 export function continuesQuietRun(
   message: Message,
   context: QuietToolContext,
-  showThinking: boolean,
+  _showThinking = true,
 ): boolean {
   if (message.role !== 'assistant' || message.localCommand) return false;
   const first = message.toolCalls?.[0];
@@ -129,7 +144,7 @@ export function continuesQuietRun(
   // Joining would put a spawn in the same entry as the narration before it,
   // and AgentMessage hides a delegating entry's narration.
   if (message.toolCalls!.some((call) => call.name === 'AgentSpawn')) return false;
-  if (hasVisibleText(message, showThinking)) return false;
+  if (hasProse(message)) return false;
   return isQuietInvocation(first, resultFor(message, first.id), message, context);
 }
 
@@ -169,13 +184,13 @@ function isMessage(entry: TimelineEntry | undefined): entry is Message {
 export function createQuietCollapser(): <T extends TimelineEntry>(
   timeline: readonly T[],
   context: QuietToolContext,
-  showThinking: boolean,
+  showThinking?: boolean,
 ) => CollapsedTimeline<T> {
   let cache = new Map<string, { members: readonly Message[]; merged: Message }>();
   return <T extends TimelineEntry>(
     timeline: readonly T[],
     context: QuietToolContext,
-    showThinking: boolean,
+    _showThinking?: boolean,
   ): CollapsedTimeline<T> => {
     const runs: Array<T | Message[]> = [];
     for (const entry of timeline) {
@@ -188,7 +203,7 @@ export function createQuietCollapser(): <T extends TimelineEntry>(
       if (
         isMessage(entry) &&
         previousMessage &&
-        continuesQuietRun(entry, context, showThinking) &&
+        continuesQuietRun(entry, context) &&
         endsWithQuietCall(previousMessage, context)
       ) {
         if (Array.isArray(previous)) previous.push(entry);
