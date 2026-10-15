@@ -375,7 +375,6 @@ export function createRunAmbientSnapshot(
           .map((file) => ({
             name: file.name,
             type: file.type,
-            status: file.status,
             size: file.size,
           }))
           .sort((left, right) => left.name.localeCompare(right.name)),

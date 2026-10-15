@@ -228,12 +228,14 @@ describe('evaluatePermission', () => {
     expect(evaluatePermission('mcp__gitlab__search', {}, s)).toBe('ask');
   });
 
-  it('auto-allows ALWAYS_ALLOWED_TOOLS like MemorySave by default but respects explicit deny', () => {
+  it('auto-allows ALWAYS_ALLOWED_TOOLS like TodoWrite by default but respects explicit deny', () => {
     const defaultS = settings({});
-    expect(evaluatePermission('MemorySave', { action: 'save' }, defaultS)).toBe('allow');
+    expect(evaluatePermission('TodoWrite', { todos: [] }, defaultS)).toBe('allow');
+    // The retired memory tool is no longer one of them.
+    expect(evaluatePermission('MemorySave', { action: 'save' }, defaultS)).toBe('ask');
 
-    const denyS = settings({ deny: ['MemorySave'] });
-    expect(evaluatePermission('MemorySave', { action: 'save' }, denyS)).toBe('deny');
+    const denyS = settings({ deny: ['TodoWrite'] });
+    expect(evaluatePermission('TodoWrite', { todos: [] }, denyS)).toBe('deny');
   });
 
   it('globstar matches across path separators', () => {
@@ -1010,36 +1012,39 @@ describe('workspace reads need no prompt (#264)', () => {
     );
   });
 
-  it("allows a Read of Book's memory directory, which the Read tool can open, but not its inbox", () => {
+  it("allows a Read of Book's memory directory, which the Read tool can open", () => {
     const { workspace } = setup();
     const memory = tempDir('book-perm-memory-');
     writeFileSync(join(memory, 'MEMORY.md'), '- a memory\n');
-    mkdirSync(join(memory, '.inbox'));
-    writeFileSync(join(memory, '.inbox', 'pending.md'), 'pending\n');
     const s = settings();
-    const withMemory = scope(workspace, { readOnlyRoots: [{ root: memory, exclude: ['.inbox'] }] });
+    const withMemory = scope(workspace, { readOnlyRoots: [memory] });
     expect(evaluatePermission('Read', { filePath: join(memory, 'MEMORY.md') }, s, withMemory)).toBe(
       'allow',
     );
-    // Refused, not asked (#305 item 3, PR #334): the tool refuses this path whatever the user
-    // said, so a prompt is a question with no possible answer — and `excludedPath` is what keeps
-    // the streak remedy from answering it with "add its directory to additionalDirectories",
-    // which would not reach inside an exclusion either.
-    expect(
-      evaluatePermissionDetail(
-        'Read',
-        { filePath: join(memory, '.inbox', 'pending.md') },
-        s,
-        withMemory,
-      ),
-    ).toEqual({ decision: 'refuse', source: 'default', excludedPath: true });
-    // The directory itself is excluded too — an exclusion names the subpath, not what is under
-    // it — and the rest of the memory directory is still served.
-    expect(
-      evaluatePermissionDetail('Read', { filePath: join(memory, '.inbox') }, s, withMemory),
-    ).toEqual({ decision: 'refuse', source: 'default', excludedPath: true });
+    // Read alone is not a search: Grep and Glob need the search root.
     expect(evaluatePermission('Grep', { pattern: 'x', path: memory }, s, withMemory)).toBe(
       'refuse',
+    );
+  });
+
+  it("allows Grep and Glob of Book's memory directory when it is a search root", () => {
+    const { workspace } = setup();
+    const memory = tempDir('book-perm-memory-');
+    writeFileSync(join(memory, 'fact.md'), '- a memory\n');
+    const s = settings();
+    const withMemory = scope(workspace, { memorySearchRoot: memory });
+    expect(evaluatePermission('Grep', { pattern: 'x', path: memory }, s, withMemory)).toBe('allow');
+    expect(evaluatePermission('Glob', { pattern: join(memory, '*.md') }, s, withMemory)).toBe(
+      'allow',
+    );
+    // A dot-entry is not served to a search, so the call is refused rather than asked about.
+    expect(
+      evaluatePermission('Grep', { pattern: 'x', path: join(memory, '.inbox') }, s, withMemory),
+    ).toBe('refuse');
+    // A user's ask rule still outranks it.
+    const asking = settings({ ask: ['Grep'] });
+    expect(evaluatePermission('Grep', { pattern: 'x', path: memory }, asking, withMemory)).toBe(
+      'ask',
     );
   });
 

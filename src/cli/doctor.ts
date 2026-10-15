@@ -627,15 +627,27 @@ export async function runDoctorCommand(
   console.log();
 
   // Memory.
-  const { DEFAULT_MAX_INDEX_LINES, MAX_INDEX_BYTES, getMemoryHealth, loadMemoryContext } =
-    await import('../memory-store.js');
-  // Loaded first so a directory keyed the old way is moved before it is counted, as at session start.
-  const memoryHealth = getMemoryHealth(loadMemoryContext(config.workspace));
+  const {
+    DEFAULT_MAX_INDEX_LINES,
+    MAX_INDEX_BYTES,
+    findLegacyMemoryBackup,
+    getMemoryHealth,
+    legacyBackupNotice,
+    loadMemoryContext,
+  } = await import('../memory-store.js');
+  // Loaded first so a directory keyed the old way is moved (and migrated) before it is counted,
+  // as at session start.
+  const memoryContext = loadMemoryContext(config.workspace);
+  const memoryHealth = getMemoryHealth(memoryContext);
+  const memoryBackup = findLegacyMemoryBackup(memoryContext.dir);
   const lastWrite = memoryHealth.lastWrite ? memoryHealth.lastWrite.toISOString() : 'never';
   console.log('Memory:');
-  console.log('  Approved memories: ' + memoryHealth.approvedCount);
-  console.log('  Superseded:        ' + memoryHealth.supersededCount);
-  console.log('  Inbox candidates:  ' + memoryHealth.inboxCount);
+  console.log('  Memories:          ' + memoryHealth.fileCount);
+  if (memoryHealth.legacySupersededCount > 0) {
+    console.log(
+      `  Legacy superseded: ${memoryHealth.legacySupersededCount} (retired by the old save tool; they load like any other)`,
+    );
+  }
   console.log(`  Index lines:       ${memoryHealth.indexLineCount} / ${DEFAULT_MAX_INDEX_LINES}`);
   console.log(
     `  Index bytes:       ${memoryHealth.indexByteCount.toLocaleString('en-US')} / ${MAX_INDEX_BYTES.toLocaleString('en-US')}`,
@@ -650,6 +662,7 @@ export async function runDoctorCommand(
     );
   }
   console.log('  Last write:        ' + lastWrite);
+  if (memoryBackup) console.log('  ' + legacyBackupNotice(memoryBackup));
   console.log();
 
   // Environment.

@@ -256,29 +256,24 @@ function writeFiles(root: string, files: Record<string, string>): void {
   }
 }
 
-/** Approved memory files and inbox candidates, as text. */
-function readStore(home: string): { approved: string[]; inbox: string[] } {
+/**
+ * The text of every memory file the teaching run left: each `*.md` in a project's memory directory
+ * but `MEMORY.md`, which is the index. The model writes these files itself, so there is nothing to
+ * filter out: no retired entry, no candidate waiting in an inbox.
+ */
+export function readStore(home: string): { approved: string[] } {
   const projects = join(home, '.book', 'projects');
   const approved: string[] = [];
-  const inbox: string[] = [];
-  if (!existsSync(projects)) return { approved, inbox };
+  if (!existsSync(projects)) return { approved };
   for (const project of readdirSync(projects)) {
     const dir = join(projects, project, 'memory');
     if (!existsSync(dir)) continue;
     for (const f of readdirSync(dir)) {
       if (!f.toLowerCase().endsWith('.md') || f === 'MEMORY.md') continue;
-      const raw = readFileSync(join(dir, f), 'utf8');
-      // A superseded memory is history, not something the model still remembers.
-      if (!/^status:\s*superseded\s*$/m.test(raw)) approved.push(raw);
-    }
-    const inboxDir = join(dir, '.inbox');
-    if (existsSync(inboxDir)) {
-      for (const f of readdirSync(inboxDir)) {
-        if (f.toLowerCase().endsWith('.md')) inbox.push(readFileSync(join(inboxDir, f), 'utf8'));
-      }
+      approved.push(readFileSync(join(dir, f), 'utf8'));
     }
   }
-  return { approved, inbox };
+  return { approved };
 }
 
 /**
@@ -321,9 +316,9 @@ export async function restoreBase(
 
 /**
  * Build the home the probe runs in: the arm's `settings.json` and a copy of the one memory
- * directory the probe workspace resolves to (keyed by the code under test), approved files and
- * `MEMORY.md` only. No inbox candidate, extraction state, lock or other dot-entry, no other
- * project's memory and no sessions come across, so the probe cannot read the teaching run.
+ * directory the probe workspace resolves to (keyed by the code under test): the memory files and
+ * `MEMORY.md` only. No dot-entry, no other project's memory and no sessions come across, so the
+ * probe cannot read the teaching run.
  */
 export function buildProbeHome(opts: {
   ws: string;
@@ -452,7 +447,6 @@ async function runItem(
     scenarioId: scenario.id,
     repeat,
     approved: [],
-    inbox: [],
     probeText: '',
     probeCommands: [],
     probeContamination: [],
@@ -506,7 +500,7 @@ async function runItem(
       Object.assign(obs, readStore(home));
 
       // The probe gets its own home holding only the memory the workspace resolves to; the teaching
-      // home (transcripts, inbox, other projects) is deleted so the temp root has nothing to find.
+      // home (transcripts, other projects) is deleted so the temp root has nothing to find.
       buildProbeHome({ ws, teachHome: home, probeHome: probeHomeDir, settings });
       rmSync(home, { recursive: true, force: true });
       probeHome = probeHomeDir;

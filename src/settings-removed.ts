@@ -41,6 +41,36 @@ const REMOVED_BLOCKS: ReadonlyArray<readonly [string, string]> = [
   ],
 ];
 
+/**
+ * Removed keys inside a surviving block, by their path below the document root. The auto-memory
+ * rework removed the approval inbox, the external-content quarantine and post-session extraction,
+ * so the three settings that tuned them are no longer read.
+ */
+const REMOVED_NESTED: ReadonlyArray<readonly [readonly string[], string]> = [
+  [
+    ['memory', 'requireApproval'],
+    'The memory inbox was removed: the model writes memory files directly. Delete memory.requireApproval; ' +
+      'set memory.autoSave to false to make memory read-only.',
+  ],
+  [
+    ['memory', 'quarantineExternal'],
+    'The external-content quarantine was removed: a session that read the web or an MCP server writes memory ' +
+      'like any other. Delete memory.quarantineExternal.',
+  ],
+  [
+    ['memory', 'extraction'],
+    'Post-session memory extraction was removed. Delete the memory.extraction block; it is no longer read.',
+  ],
+];
+
+/** The permission rule lists whose entries can name a tool that no longer exists. */
+const PERMISSION_RULE_LISTS = ['allow', 'ask', 'deny'] as const;
+
+/** A permission rule that names the removed `MemorySave` tool: bare, or with a pattern. */
+function namesMemorySave(rule: unknown): rule is string {
+  return typeof rule === 'string' && /^\s*MemorySave\s*(\(|$)/.test(rule);
+}
+
 /** The credential file `book auth login` used to write, which nothing reads any more. */
 export const REMOVED_AUTH_STORE_FILENAME = 'auth.json';
 
@@ -114,6 +144,27 @@ export function collectRemovedSettingNotices(document: unknown): RemovedSettingN
   const notices: RemovedSettingNotice[] = [];
   for (const [key, message] of REMOVED_BLOCKS) {
     if (document[key] !== undefined) notices.push({ key, message });
+  }
+  for (const [path, message] of REMOVED_NESTED) {
+    let node: unknown = document;
+    for (const segment of path) node = isRecord(node) ? node[segment] : undefined;
+    if (node !== undefined) notices.push({ key: path.join('.'), message });
+  }
+  const permissions = document.permissions;
+  if (isRecord(permissions)) {
+    for (const list of PERMISSION_RULE_LISTS) {
+      const rules = permissions[list];
+      if (!Array.isArray(rules)) continue;
+      for (const rule of rules.filter(namesMemorySave)) {
+        notices.push({
+          key: `permissions.${list}`,
+          message:
+            `The rule ${JSON.stringify(rule)} names MemorySave, which was removed: the model writes memory with ` +
+            'Write, Edit and ApplyPatch now, so it matches nothing. To restrict memory writes, ' +
+            'write a rule on those tools for the memory directory, or set memory.autoSave to false.',
+        });
+      }
+    }
   }
   // A removed *value* of a surviving key. `compactStrategy` still exists and is
   // now `"summary"` only, so the old Zero-Mem selector has to be named

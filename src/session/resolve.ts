@@ -49,8 +49,8 @@ export interface ResolveSessionOptions {
 }
 
 /**
- * Once another agent has driven a session, its later turns are that agent's too: background
- * extraction must not read the session as the user's, so the mark never goes back to human.
+ * Once another agent has driven a session, its later turns are that agent's too: a resume must
+ * not read the session as the user's, so the mark never goes back to human.
  */
 export function recordResumeDriver(
   store: Pick<SessionStoreInterface, 'patchMeta'>,

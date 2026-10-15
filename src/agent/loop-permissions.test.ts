@@ -101,7 +101,7 @@ function byId(results: ToolResult[], id: string): ToolResult | undefined {
   return results.find((result) => result.toolCallId === id);
 }
 
-/** The loop turns a memory context into the read-only root whose `.inbox` it excludes. */
+/** The loop turns a memory context into a read-only root and a Glob/Grep search root. */
 function loadedMemory(dir: string): LoadedMemoryContext {
   return {
     dir,
@@ -114,7 +114,6 @@ function loadedMemory(dir: string): LoadedMemoryContext {
     wasByteTruncated: false,
     indexText: '',
     files: [],
-    candidates: [],
   };
 }
 
@@ -546,20 +545,13 @@ describe('runAgentLoop workspace reads (#264)', () => {
     expect(result?.content).not.toContain('dontAsk mode refuses every call');
   });
 
-  /**
-   * #305 item 3, second half. `readToolTarget` already judged an excluded path — a read-only
-   * root's `exclude` list, which is how Book's memory inbox is kept closed — and reported
-   * `hidden`, but nothing consumed that verdict: the call fell through to the default `ask`, and
-   * the prompt could not be satisfied because the tool refuses the path either way. Refused
-   * before the prompt, with a message that says the path is excluded.
-   */
-  it('refuses a read of an excluded path, rather than asking about a call the tool refuses', async () => {
-    // The memory directory is the read-only root that carries an `exclude` in production: `Read`
-    // may cross it, and `.inbox` inside it is the one subpath the tool itself refuses.
+  it('searches the memory directory with Glob and Grep without a prompt, dot-entries left out', async () => {
     const memory = tempDir('book-loop-memory-');
+    writeFileSync(join(memory, 'build.md'), 'run pnpm install\n');
+    writeFileSync(join(memory, '.format'), 'run pnpm install\n');
     mkdirSync(join(memory, '.inbox'), { recursive: true });
-    writeFileSync(join(memory, '.inbox', 'pending.md'), 'pending\n');
-    const prompt = vi.fn(async () => 'allow' as const);
+    writeFileSync(join(memory, '.inbox', 'pending.md'), 'run pnpm install\n');
+    const prompt = vi.fn(async () => 'deny' as const);
     const results: ToolResult[] = [];
     await runAgentLoop(
       defaultConfig({
@@ -568,31 +560,27 @@ describe('runAgentLoop workspace reads (#264)', () => {
         memoryContext: loadedMemory(memory),
       }),
       createDefaultRegistry(),
-      'read it',
+      'search memory',
       [],
       noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
       'default',
       {
         provider: toolsThenText([
-          {
-            id: 'r1',
-            name: 'Read',
-            arguments: { filePath: join(memory, '.inbox', 'pending.md') },
-          },
+          { id: 'g1', name: 'Glob', arguments: { pattern: join(memory, '**', '*') } },
+          { id: 'g2', name: 'Grep', arguments: { pattern: 'pnpm', path: memory } },
         ]),
         isNewSession: false,
       },
     );
 
-    // The approver is not consulted: "always allow" would have saved a rule for a path the tool
-    // never opens, which is the same dead end #305 item 3 was about.
     expect(prompt).not.toHaveBeenCalled();
-    const result = byId(results, 'r1');
-    expect(result?.status).toBe('blocked');
-    expect(result?.structuredError?.code).toBe('path_excluded');
-    // Its own code, so the streak remedy does not answer an exclusion with "add its directory to
-    // additionalDirectories", which would not lift it either.
-    expect(result?.content).toContain('excluded');
+    for (const id of ['g1', 'g2']) {
+      const result = byId(results, id);
+      expect(result?.status, id).toBe('success');
+      expect(result?.content, id).toContain('build.md');
+      expect(result?.content, id).not.toContain('.format');
+      expect(result?.content, id).not.toContain('pending.md');
+    }
   });
 
   it('refuses what nobody can approve, says why, and tells the operator once', async () => {
@@ -1219,6 +1207,7 @@ describe('runAgentLoop memory writes', () => {
     options: {
       memoryContext?: LoadedMemoryContext;
       isSubagent?: boolean;
+      notices?: string[];
       configure?: (config: AgentConfig) => void;
     } = {},
   ) {
@@ -1235,7 +1224,11 @@ describe('runAgentLoop memory writes', () => {
       createDefaultRegistry(),
       'remember it',
       [],
-      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      noopCallbacks({
+        onPermissionRequired: prompt,
+        onToolResult: (r) => results.push(r),
+        onNotice: (notice) => options.notices?.push(notice),
+      }),
       mode,
       {
         provider: toolsThenText(calls),
@@ -1308,6 +1301,81 @@ describe('runAgentLoop memory writes', () => {
       { configure: (config) => (config.settings.memory.autoSave = false) },
     );
     expect(byId(results, 'w1')?.structuredError?.code).toBe('path_outside_workspace');
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it('announces a saved memory file with its name, and says nothing of an index edit', async () => {
+    const memory = tempDir('book-loop-memory-');
+    writeFileSync(join(memory, 'MEMORY.md'), '# Memory\n');
+    const notices: string[] = [];
+    const { results } = await run(
+      memory,
+      [
+        {
+          id: 'w1',
+          name: 'Write',
+          arguments: {
+            filePath: join(memory, 'fact.md'),
+            content:
+              '---\nname: fact\ndescription: A fact\nmetadata:\n  type: project\n---\nBody\n',
+          },
+        },
+        {
+          id: 'e1',
+          name: 'Edit',
+          arguments: {
+            filePath: join(memory, 'MEMORY.md'),
+            oldString: '# Memory',
+            newString: '# Memory\n- [Fact](fact.md) — a pointer',
+          },
+        },
+      ],
+      'default',
+      { notices, memoryContext: { ...loadedMemory(memory), indexLoaded: true } },
+    );
+    expect(byId(results, 'w1')?.status).toBe('success');
+    expect(byId(results, 'e1')?.status).toBe('success');
+    expect(notices).toEqual(['memory saved: fact.md']);
+    // The row names the file relative to the memory directory, and says it is a memory write.
+    expect(byId(results, 'w1')?.artifacts?.fileMutation).toMatchObject({
+      filePath: 'memory/fact.md',
+      memory: true,
+    });
+  });
+
+  it('announces an ApplyPatch delete of a memory file', async () => {
+    const memory = tempDir('book-loop-memory-');
+    writeFileSync(join(memory, 'stale.md'), 'old\n');
+    const notices: string[] = [];
+    const { results } = await run(
+      memory,
+      [
+        {
+          id: 'p1',
+          name: 'ApplyPatch',
+          arguments: {
+            patch:
+              '*** Begin Patch\n*** Delete File: ' + join(memory, 'stale.md') + '\n*** End Patch',
+          },
+        },
+      ],
+      'default',
+      { notices },
+    );
+    expect(byId(results, 'p1')?.status).toBe('success');
+    expect(existsSync(join(memory, 'stale.md'))).toBe(false);
+    expect(notices).toEqual(['memory deleted: stale.md']);
+  });
+
+  it('refuses a memory write in plan mode', async () => {
+    const memory = tempDir('book-loop-memory-');
+    const file = join(memory, 'fact.md');
+    const { results } = await run(
+      memory,
+      [{ id: 'w1', name: 'Write', arguments: { filePath: file, content: 'x\n' } }],
+      'plan' as 'default',
+    );
+    expect(byId(results, 'w1')?.status).not.toBe('success');
     expect(existsSync(file)).toBe(false);
   });
 

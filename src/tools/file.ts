@@ -11,9 +11,10 @@ import { buildChildEnv } from '../child-env.js';
 import { markdownContentStart } from '../frontmatter.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { findRelaxedMatch } from './fuzzy-match.js';
-import { checkMemoryWrite, withMemoryWarnings } from '../memory-write-guard.js';
+import { checkMemoryWrite, noticeMemoryWrite, withMemoryWarnings } from '../memory-write-guard.js';
 import {
   isBookLocalSettingsUnderRoots,
+  mutationDisplayPath,
   pathOutsideWorkspaceResult,
   resolveMutationPath,
   resolveReadablePath,
@@ -148,15 +149,19 @@ interface GrepScope {
 type GrepScopeResolution = { ok: true; scope: GrepScope } | { ok: false; failure: ToolResult };
 
 /**
- * The roots a Grep may search, which is `PathRoots` without the read-only ones.
+ * The roots a Glob or Grep may search, which is `PathRoots` without the read-only ones: those hold
+ * single files a `Read` was pointed at (a clipped result's full output), not a tree to walk.
  *
- * Grep is deliberately not given Book's memory directory: it walks a whole subtree and prints
- * matching lines, so a root that exists only so `Read` can open a file it remembers stays out of
- * it. An honored `additionalDirectory` is the user's own declaration and is the one root #300
- * adds, so it is included here.
+ * An honored `additionalDirectory` is the user's own declaration and is a root since #300. Book's
+ * memory directory is the other: `memorySearchRoot` serves the files in it, and none of its
+ * dot-entries (`.format`, a backup).
  */
 function grepRoots(ctx: ToolContext): PathRoots {
-  return { workspaceRoot: ctx.workspaceRoot, additionalRoots: ctx.additionalRoots };
+  return {
+    workspaceRoot: ctx.workspaceRoot,
+    additionalRoots: ctx.additionalRoots,
+    memorySearchRoot: ctx.memorySearchRoot,
+  };
 }
 
 /**
@@ -1470,13 +1475,15 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
       );
     }
     const observation = await observeFile(ctx, filePath, before.exists ? 'write' : 'create');
+    if (resolved.memory) noticeMemoryWrite(ctx, filePath, 'saved');
     const result = toolSuccess(
       withMemoryWarnings(diff || 'File written successfully', memoryWarnings),
       {
         artifacts: {
           fileMutation: {
             kind: before.exists ? 'update' : 'create',
-            filePath: relativePath,
+            filePath: mutationDisplayPath(resolved),
+            ...(resolved.memory ? { memory: true as const } : {}),
             addedLines: stats.addedLines,
             removedLines: stats.removedLines,
           },
@@ -1564,6 +1571,7 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
       );
     }
     const observation = await observeFile(ctx, filePath, 'edit');
+    if (resolved.memory) noticeMemoryWrite(ctx, filePath, 'saved');
     return toolSuccess(
       withMemoryWarnings(
         (diff || 'File edited successfully (no textual change)') + toleranceNote,
@@ -1573,7 +1581,8 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
         artifacts: {
           fileMutation: {
             kind: 'update',
-            filePath: relativePath,
+            filePath: mutationDisplayPath(resolved),
+            ...(resolved.memory ? { memory: true as const } : {}),
             addedLines: stats.addedLines,
             removedLines: stats.removedLines,
           },
@@ -1656,6 +1665,7 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
       );
     }
     const observation = await observeFile(ctx, filePath, 'edit');
+    if (resolved.memory) noticeMemoryWrite(ctx, filePath, 'saved');
     return toolSuccess(
       withMemoryWarnings(
         (diff || 'File edited successfully (no textual change)') + toleranceNote,
@@ -1665,7 +1675,8 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
         artifacts: {
           fileMutation: {
             kind: 'update',
-            filePath: relativePath,
+            filePath: mutationDisplayPath(resolved),
+            ...(resolved.memory ? { memory: true as const } : {}),
             addedLines: stats.addedLines,
             removedLines: stats.removedLines,
           },

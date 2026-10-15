@@ -299,7 +299,6 @@ function createSeededRuntime(
 ): SessionRuntime {
   const runtime = new SessionRuntime({
     fileObservationLedger: buildObservationLedger(initialTranscript),
-    history: initialTranscript,
   });
   runtime.todos.push(...normalizePersistedTodos(session.plan?.todos));
   if (session.plan?.tasks?.length) runtime.tasks.push(...session.plan.tasks);
@@ -653,9 +652,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const nextRuntime = agentSession.replaceRuntime(
         {
           fileObservationLedger: buildObservationLedger(transcript),
-          // The projected conversation is the runtime's: a resumed or rewound
-          // session keeps the tool history that memory quarantine reads.
-          history: transcript,
         },
         'session_transition',
       );

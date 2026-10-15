@@ -1,5 +1,5 @@
 import { lstatSync, readFileSync } from 'fs';
-import { relative, resolve, sep } from 'path';
+import { basename, relative, resolve, sep } from 'path';
 import type { ToolContext, ToolResult } from './types/tools.js';
 import { DEFAULT_MAX_INDEX_LINES, MAX_INDEX_BYTES } from './memory-limits.js';
 import { looksLikeSecretOrUnfit } from './secret-detect.js';
@@ -352,6 +352,20 @@ export function checkMemoryWrite(
   }
 
   return { ok: true, content, warnings };
+}
+
+/**
+ * Tell the host a memory file was saved or deleted (`memory saved: x.md`), as the retired
+ * `MemorySave` tool did. `MEMORY.md` is the model's own index, not a memory, and is not announced.
+ */
+export function noticeMemoryWrite(
+  ctx: ToolContext,
+  absPath: string,
+  change: 'saved' | 'deleted',
+): void {
+  const name = basename(absPath);
+  if (name.toLowerCase() === INDEX_FILE.toLowerCase()) return;
+  ctx.onNotice?.(`memory ${change}: ${name}`);
 }
 
 /** The tool result text with the guard's warnings appended. */

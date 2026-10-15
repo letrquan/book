@@ -919,12 +919,9 @@ export class AgentSession {
       persisted: true,
       created: false,
     };
-    // The resumed conversation's tool history lives on the runtime, so install
-    // it here rather than relying on `onTransition` to rebuild one: a host that
-    // projects the conversation without one would otherwise lose the record the
-    // next memory write reads to decide whether the session saw external content.
+    // The resumed conversation starts on a runtime of its own, not the outgoing one's.
     this.reset('session-resume');
-    this.replaceRuntime({ history: bootstrap.transcript ?? bootstrap.history }, 'session-resume');
+    this.replaceRuntime({}, 'session-resume');
     request.onTransition?.(bootstrap);
     await this.startLifecycle(request.config, selected.id, 'resume');
     return { status: 'transitioned', bootstrap };
@@ -1508,7 +1505,7 @@ export class AgentSession {
               kind: message.kind ?? 'conversation',
               includeInContext: message.includeInContext ?? true,
               // A host-appended prompt stays host-written across a reload: the ledger,
-              // Carried Turns and memory extraction all key on it.
+              // Carried Turns key on it.
               derivedContent: message.derivedContent,
             },
           } satisfies SessionRecord);

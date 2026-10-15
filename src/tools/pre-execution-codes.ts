@@ -23,8 +23,7 @@ const PRE_EXECUTION_ONLY_CODES: ReadonlySet<string> = new Set([
  * Did this result come from a call that never ran?
  *
  * A rejection made before the tool executes reads nothing, so it never counts as "ran":
- * for example toward memory quarantine in `toolNamesFromHistory`, or as progress for
- * the loop's no-progress witness. The codes above answer that on their own, so a
+ * for example as progress for the loop's no-progress witness. The codes above answer that on their own, so a
  * history written before the flag existed still reads right; a code a tool may also
  * return itself (`invalid_arguments`) is believed only when the refusal carries
  * `details.preExecution`, which every pre-execution rejection in the registry sets.

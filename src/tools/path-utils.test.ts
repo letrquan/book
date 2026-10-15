@@ -5,6 +5,7 @@ import { join, resolve } from 'path';
 import {
   canonicalizePath,
   isBookLocalSettingsPath,
+  mutationDisplayPath,
   realWorkspaceRoot,
   resolveMutationPath,
   resolveReadablePath,
@@ -85,26 +86,83 @@ describe('resolveReadablePathDetail', () => {
     expect('path' in detail).toBe(true);
   });
 
-  /**
-   * The distinction the single `null` used to hide. A path under a hidden subpath is a *prompt* —
-   * the user can approve it — while a path no root contains is a refusal whose remedy is to widen
-   * the roots. Reporting both as "outside" would tell the model to ask for something no approval
-   * can reach.
-   */
-  it('distinguishes an excluded path from an unreachable one', () => {
-    const inbox = tempDir('book-pathutils-inbox-');
-    const rootsWithInbox = roots({
-      readOnlyRoots: [{ root: inbox, exclude: ['inbox'] }],
-      additionalRoots: [extra],
+  describe('the memory search root', () => {
+    let memory: string;
+    beforeEach(() => {
+      memory = tempDir('book-pathutils-memory-');
+      writeFileSync(join(memory, 'fact.md'), 'fact\n');
+      writeFileSync(join(memory, '.format'), '2\n');
+      mkdirSync(join(memory, '.inbox'), { recursive: true });
+      writeFileSync(join(memory, '.inbox', 'pending.md'), 'pending\n');
+      mkdirSync(join(memory, 'sub'), { recursive: true });
+      writeFileSync(join(memory, 'sub', 'deep.md'), 'deep\n');
     });
-    mkdirSync(join(inbox, 'inbox'), { recursive: true });
-    writeFileSync(join(inbox, 'inbox', 'note.md'), 'private\n');
 
-    expect(resolveReadablePathDetail(rootsWithInbox, join(inbox, 'inbox', 'note.md'))).toEqual({
-      reason: 'excluded',
+    it('serves a file under the root, naming the root that served it', () => {
+      const detail = resolveReadablePathDetail(
+        roots({ memorySearchRoot: memory }),
+        join(memory, 'fact.md'),
+      );
+      expect('path' in detail && detail.path).toMatchObject({
+        filePath: join(memory, 'fact.md'),
+        root: memory,
+        inWorkspace: false,
+      });
+      expect(
+        'path' in
+          resolveReadablePathDetail(
+            roots({ memorySearchRoot: memory }),
+            join(memory, 'sub', 'deep.md'),
+          ),
+      ).toBe(true);
+      // The root itself is a valid scope for a search.
+      expect('path' in resolveReadablePathDetail(roots({ memorySearchRoot: memory }), memory)).toBe(
+        true,
+      );
     });
-    expect(resolveReadablePathDetail(rootsWithInbox, join(outside, 'secret.txt'))).toEqual({
-      reason: 'unreachable',
+
+    it('leaves a dot-entry out, wherever it sits below the root', () => {
+      const withMemory = roots({ memorySearchRoot: memory });
+      for (const hidden of [
+        join(memory, '.format'),
+        join(memory, '.inbox'),
+        join(memory, '.inbox', 'pending.md'),
+      ]) {
+        expect(resolveReadablePathDetail(withMemory, hidden), hidden).toEqual({
+          reason: 'unreachable',
+        });
+      }
+    });
+
+    it('leaves out a path reached through a link into a dot-directory', () => {
+      symlinkSync(join(memory, '.inbox'), join(memory, 'link'), 'junction');
+      expect(
+        resolveReadablePathDetail(
+          roots({ memorySearchRoot: memory }),
+          join(memory, 'link', 'pending.md'),
+        ),
+      ).toEqual({ reason: 'unreachable' });
+    });
+
+    it('is not a root without the field, and a relative path never anchors to it', () => {
+      expect(resolveReadablePathDetail(roots(), join(memory, 'fact.md'))).toEqual({
+        reason: 'unreachable',
+      });
+      // `fact.md` is the workspace's (which may not have one), never the memory directory's.
+      const relativeDetail = resolveReadablePathDetail(
+        roots({ memorySearchRoot: memory }),
+        'fact.md',
+      );
+      expect('path' in relativeDetail && relativeDetail.path).toMatchObject({
+        inWorkspace: true,
+        filePath: join(workspace, 'fact.md'),
+      });
+    });
+
+    it('refuses what lies outside every root', () => {
+      expect(
+        resolveReadablePathDetail(roots({ memorySearchRoot: memory }), join(outside, 'secret.txt')),
+      ).toEqual({ reason: 'unreachable' });
     });
   });
 
@@ -131,20 +189,6 @@ describe('resolveReadablePathDetail', () => {
     expect(resolveReadablePathDetail(roots(), join(workspace, 'escape', 'secret.txt'))).toEqual({
       reason: 'unreachable',
     });
-  });
-
-  it('excludes a path by its real name, not by the spelling used to reach it', () => {
-    const inbox = tempDir('book-pathutils-inbox2-');
-    mkdirSync(join(inbox, 'inbox'), { recursive: true });
-    writeFileSync(join(inbox, 'inbox', 'note.md'), 'private\n');
-    symlinkSync(join(inbox, 'inbox'), join(inbox, 'link'), 'junction');
-
-    expect(
-      resolveReadablePathDetail(
-        roots({ readOnlyRoots: [{ root: inbox, exclude: ['inbox'] }] }),
-        join(inbox, 'link', 'note.md'),
-      ),
-    ).toEqual({ reason: 'excluded' });
   });
 
   it('keeps resolveReadablePath as the null-returning form of the same decision', () => {
@@ -261,6 +305,33 @@ describe('resolveMutationPath with a memory write root', () => {
     // A nested file and a case-insensitive extension are served too.
     expect(resolveMutationPath(withMemory(), join(memory, 'sub', 'a.MD'))?.memory).toBe(true);
     expect(resolveMutationPath(withMemory(), join(memory, 'MEMORY.md'))?.memory).toBe(true);
+  });
+
+  it('names a memory file memory/<name>.md in a mutation summary, and any other path as it is', () => {
+    const withRoot = withMemory();
+    const topic = resolveMutationPath(withRoot, join(memory, 'topic.md'))!;
+    expect(mutationDisplayPath(topic)).toBe('memory/topic.md');
+    const nested = resolveMutationPath(withRoot, join(memory, 'sub', 'deep.md'))!;
+    expect(mutationDisplayPath(nested)).toBe('memory/sub/deep.md');
+
+    // A workspace file keeps its workspace-relative path, even one that happens to say memory/.
+    mkdirSync(join(workspace, 'memory'));
+    const plain = resolveMutationPath(withRoot, 'memory/notes.md')!;
+    expect(plain.memory).toBeUndefined();
+    expect(mutationDisplayPath(plain)).toBe('memory/notes.md');
+    const other = resolveMutationPath(withRoot, 'src/a.ts')!;
+    expect(mutationDisplayPath(other)).toBe('src/a.ts');
+  });
+
+  it('names a memory file relative to the memory root when the workspace holds it', () => {
+    const inside = join(workspace, 'mem');
+    mkdirSync(inside);
+    const resolved = resolveMutationPath(
+      roots({ memoryWrite: { root: inside } }),
+      join(inside, 'topic.md'),
+    )!;
+    expect(resolved.relativePath).toBe('mem/topic.md');
+    expect(mutationDisplayPath(resolved)).toBe('memory/topic.md');
   });
 
   it('refuses everything the rules exclude', () => {

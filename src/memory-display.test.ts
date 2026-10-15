@@ -3,14 +3,8 @@ import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { marked } from 'marked';
-import { buildMemoryInboxReport, buildMemoryReport, getMemoryIndex } from './memory-display.js';
-import {
-  getMemoryInboxDir,
-  getProjectMemoryDir,
-  loadMemoryContext,
-  saveMemory,
-  writeMemoryCandidate,
-} from './memory-store.js';
+import { buildMemoryReport, getMemoryIndex } from './memory-display.js';
+import { getProjectMemoryDir, loadMemoryContext } from './memory-store.js';
 import { DEFAULT_SETTINGS } from './settings.js';
 
 let bookRoot: string;
@@ -24,30 +18,66 @@ afterEach(() => {
   rmSync(bookRoot, { recursive: true, force: true });
 });
 
+/**
+ * The memory directory of `workspace`, created and marked as already in the current layout, so
+ * loading it leaves the legacy-layout files these tests list as they are.
+ */
+function memoryDir(): string {
+  const dir = getProjectMemoryDir(workspace, { bookRoot });
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, '.format'), '2\n');
+  return dir;
+}
+
+/** A memory file as the model writes it: its own `name`, `description` and `metadata` block. */
+function memoryFile(name: string, type: string, extra = ''): string {
+  return `---\nname: ${name}\ndescription: About ${name}\nmetadata:\n  type: ${type}\n${extra}---\nBody of ${name}.\n`;
+}
+
 describe('buildMemoryReport', () => {
-  it('reports no approved memory when the memory dir is absent', () => {
+  it('reports no memories when the memory dir is absent', () => {
     const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
     expect(report).not.toContain('Index:');
-    expect(report).toMatch(/Health: 0 approved, 0 superseded, 0 inbox/);
-    expect(report).toContain('No approved memories yet.');
-    expect(report).toContain(
-      'model writes enabled (direct to store; to inbox after external content)',
+    expect(report).toMatch(/Health: 0 memories, 0\/200 index lines/);
+    expect(report).toContain('No memories yet.');
+    expect(report).toContain('model writes enabled (files in the memory directory)');
+    // The inbox, its approval and the supersede history are gone from the report.
+    expect(report).not.toMatch(/inbox|approve|discard|superseded/i);
+  });
+
+  it('lists a memory from its frontmatter: metadata.type, or the legacy top-level type', () => {
+    const dir = memoryDir();
+    writeFileSync(join(dir, 'new-style.md'), memoryFile('new-style', 'feedback'));
+    writeFileSync(
+      join(dir, 'old-style.md'),
+      '---\ntype: project\nstatus: approved\n---\n# Old style rule\nBody',
     );
+    const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
+    expect(report).toContain('- About new-style (feedback) — new-style.md');
+    expect(report).toContain('- Old style rule (project) — old-style.md');
+    expect(report).toMatch(/Health: 2 memories,/);
+  });
+
+  it('titles a memory from its MEMORY.md line, else its description, not its slug', () => {
+    const dir = memoryDir();
+    writeFileSync(
+      join(dir, 'MEMORY.md'),
+      '- [Prefer pnpm over npm](prefer-pnpm.md) — lockfile rule\n',
+    );
+    writeFileSync(join(dir, 'prefer-pnpm.md'), memoryFile('prefer-pnpm', 'feedback'));
+    writeFileSync(join(dir, 'unlisted.md'), memoryFile('unlisted', 'project'));
+    const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
+    expect(report).toContain('- Prefer pnpm over npm (feedback) — prefer-pnpm.md');
+    expect(report).toContain('- About unlisted (project) — unlisted.md');
+    expect(report).not.toContain('- prefer-pnpm (');
   });
 
   it('says a delegated session keeps learnings only, and marks what delegated runs saved', () => {
-    saveMemory(
-      workspace,
-      {
-        type: 'project',
-        title: 'Build needs a bigger heap',
-        body: 'Use NODE_OPTIONS=--max-old-space-size=4096.',
-        origin: 'model-tool',
-        externalContext: false,
-        driver: 'agent',
-      },
-      { bookRoot },
-    );
+    const dir = memoryDir();
+    writeFileSync(join(dir, 'heap.md'), memoryFile('heap', 'project', '  driver: agent\n'));
+    // The legacy layout marks it with a top-level `driver`.
+    writeFileSync(join(dir, 'legacy.md'), '---\ntype: project\ndriver: agent\n---\n# Legacy\nBody');
+    writeFileSync(join(dir, 'mine.md'), memoryFile('mine', 'user'));
     const report = buildMemoryReport({
       workspace,
       bookRoot,
@@ -55,12 +85,37 @@ describe('buildMemoryReport', () => {
       sessionDriver: 'agent',
     });
     expect(report).toContain('model writes learnings only (session driven by another agent');
-    expect(report).toContain('(project · from a delegated run)');
+    expect(report).toContain('About heap (project · from a delegated run)');
+    expect(report).toContain('Legacy (project · from a delegated run)');
+    expect(report).toContain('About mine (user) — mine.md');
   });
 
-  it('lists approved memory and reports the line cap', () => {
-    const dir = getProjectMemoryDir(workspace, { bookRoot });
-    mkdirSync(dir, { recursive: true });
+  it('lists a legacy superseded file as legacy, without hiding it', () => {
+    const dir = memoryDir();
+    writeFileSync(
+      join(dir, 'old.md'),
+      '---\ntype: project\nstatus: superseded\nsupersededBy: new.md\n---\n# Old\nBody',
+    );
+    const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
+    expect(report).toContain('Old (project · legacy, superseded) — old.md');
+    expect(report).toMatch(/Health: 1 memory,/);
+  });
+
+  it('leaves dot-entries and the index out of the listing', () => {
+    const dir = memoryDir();
+    writeFileSync(join(dir, 'MEMORY.md'), '- [A](a.md) — hook\n');
+    writeFileSync(join(dir, 'a.md'), memoryFile('a', 'project'));
+    writeFileSync(join(dir, '.hidden.md'), memoryFile('hidden', 'project'));
+    mkdirSync(join(dir, '.inbox'));
+    writeFileSync(join(dir, '.inbox', 'pending.md'), memoryFile('pending', 'user'));
+    const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
+    expect(report).toMatch(/Health: 1 memory,/);
+    expect(report).not.toContain('hidden');
+    expect(report).not.toContain('pending');
+  });
+
+  it('lists memory and reports the line cap', () => {
+    const dir = memoryDir();
     writeFileSync(
       join(dir, 'MEMORY.md'),
       Array.from({ length: 205 }, (_, i) => `line ${i + 1}`).join('\n'),
@@ -78,8 +133,7 @@ describe('buildMemoryReport', () => {
   });
 
   it('reports lines and bytes against both limits when the index fits', () => {
-    const dir = getProjectMemoryDir(workspace, { bookRoot });
-    mkdirSync(dir, { recursive: true });
+    const dir = memoryDir();
     writeFileSync(join(dir, 'MEMORY.md'), '- [A](a.md) — hook\n', 'utf-8');
     const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
     expect(report).toContain('Index: 1/200 lines, 20/25,000 bytes\n');
@@ -87,8 +141,7 @@ describe('buildMemoryReport', () => {
   });
 
   it('says when the line limit cut the index', () => {
-    const dir = getProjectMemoryDir(workspace, { bookRoot });
-    mkdirSync(dir, { recursive: true });
+    const dir = memoryDir();
     writeFileSync(
       join(dir, 'MEMORY.md'),
       Array.from({ length: 205 }, (_, i) => `line ${i + 1}`).join('\n'),
@@ -100,8 +153,7 @@ describe('buildMemoryReport', () => {
   });
 
   it('says when the byte limit cut the index', () => {
-    const dir = getProjectMemoryDir(workspace, { bookRoot });
-    mkdirSync(dir, { recursive: true });
+    const dir = memoryDir();
     writeFileSync(
       join(dir, 'MEMORY.md'),
       Array.from({ length: 100 }, () => 'z'.repeat(300)).join('\n'),
@@ -114,123 +166,45 @@ describe('buildMemoryReport', () => {
     expect(report).not.toContain('-line limit');
   });
 
-  it('shows disabled model writes and pending inbox candidates', () => {
+  it('shows disabled model writes when autoSave is off', () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.memory.autoSave = false;
-    writeMemoryCandidate(
-      workspace,
-      {
-        type: 'user',
-        title: 'User likes short answers',
-        body: 'User likes short answers.',
-        source: 'auto',
-      },
-      { bookRoot },
-    );
 
     const report = buildMemoryReport({ workspace, bookRoot, settings });
     expect(report).toContain('model writes disabled');
-    expect(report).toMatch(/Health: .*1 inbox/);
-    expect(report).toContain('Inbox: `');
-    expect(buildMemoryInboxReport({ workspace, bookRoot })).toContain('User likes short answers');
-  });
-
-  it('shows what approving an inbox candidate would do', () => {
-    writeMemoryCandidate(
-      workspace,
-      {
-        type: 'project',
-        title: 'Build command',
-        body: 'Run ./setup.sh --trust before building.',
-        externalContext: true,
-        targetSlug: 'build-cmd.md',
-      },
-      { bookRoot },
-    );
-    const inbox = buildMemoryInboxReport({ workspace, bookRoot });
-    expect(inbox).toContain('read external content');
-    expect(inbox).toContain('replaces existing: `build-cmd.md`');
-    expect(inbox).toContain('Run ./setup.sh --trust before building.');
-  });
-
-  it('shows which approved memory a candidate would retire', () => {
-    saveMemory(
-      workspace,
-      {
-        type: 'project',
-        title: 'Old',
-        body: 'Use tabs.',
-        origin: 'model-tool',
-        externalContext: false,
-      },
-      { bookRoot, slug: 'style' },
-    );
-    writeMemoryCandidate(
-      workspace,
-      { type: 'project', title: 'New', body: 'Use spaces.', supersedes: 'style.md' },
-      { bookRoot },
-    );
-    expect(buildMemoryInboxReport({ workspace, bookRoot })).toContain(
-      'retires existing: `style.md`',
-    );
   });
 
   it('keeps getMemoryIndex compatibility', () => {
-    const dir = getProjectMemoryDir(workspace, { bookRoot });
-    mkdirSync(dir, { recursive: true });
+    const dir = memoryDir();
     writeFileSync(join(dir, 'MEMORY.md'), '- [A](a.md) — hook\n', 'utf-8');
     const idx = getMemoryIndex(workspace, { bookRoot });
     expect(idx.indexFile).toBe(join(dir, 'MEMORY.md'));
     expect(idx.indexLineCount).toBe(1);
-    expect(getMemoryInboxDir(workspace, { bookRoot })).toContain('.inbox');
   });
 
-  it('reports memory health line with approved, inbox, index line counts, and last write', () => {
-    const dir = getProjectMemoryDir(workspace, { bookRoot });
-    mkdirSync(dir, { recursive: true });
+  it('reports memory health line with the memory and index line counts, and last write', () => {
+    const dir = memoryDir();
     writeFileSync(join(dir, 'MEMORY.md'), '- [Rule](rule.md) — project rule\n', 'utf-8');
     writeFileSync(
       join(dir, 'rule.md'),
       '---\ntype: project\nstatus: approved\n---\n# Rule\nUse TypeScript.',
       'utf-8',
     );
-    writeMemoryCandidate(
-      workspace,
-      {
-        type: 'user',
-        title: 'User prefers concise answers',
-        body: 'User prefers concise answers.',
-        source: 'auto',
-      },
-      { bookRoot },
-    );
 
     const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
-    expect(report).toMatch(
-      /Health: 1 approved, 0 superseded, 1 inbox, 1\/200 index lines, last write: \d{4}-\d{2}-\d{2}T/,
-    );
+    expect(report).toMatch(/Health: 1 memory, 1\/200 index lines, last write: \d{4}-\d{2}-\d{2}T/);
   });
 
-  it('reads the store from disk so a memory saved in-session shows up at once', () => {
+  it('reads the store from disk so a memory written in-session shows up at once', () => {
     // The session-start snapshot, taken before anything was written.
     const sessionStart = loadMemoryContext(workspace, { bookRoot });
     expect(sessionStart.files).toHaveLength(0);
 
-    saveMemory(
-      workspace,
-      {
-        type: 'project',
-        title: 'Fresh fact',
-        body: 'Fresh fact body.',
-        origin: 'model-tool',
-        externalContext: false,
-      },
-      { bookRoot, slug: 'fresh-fact.md' },
-    );
+    writeFileSync(join(memoryDir(), 'fresh-fact.md'), memoryFile('fresh-fact', 'project'));
 
     const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
-    expect(report).toContain('Fresh fact (project)');
-    expect(report).toMatch(/Health: 1 approved, 0 superseded, 0 inbox/);
+    expect(report).toContain('fresh-fact (project)');
+    expect(report).toMatch(/Health: 1 memory,/);
   });
 
   it('renders paths in inline code spans so marked preserves backslashes', () => {
@@ -240,26 +214,14 @@ describe('buildMemoryReport', () => {
       bookRoot: winBookRoot,
       settings: DEFAULT_SETTINGS,
     });
-    const inboxReport = buildMemoryInboxReport({ workspace, bookRoot: winBookRoot });
 
-    // Both reports wrap paths in inline code spans (`...`)
+    // The report wraps its path in an inline code span (`...`)
     expect(report).toContain(`Location: \`${winBookRoot}`);
     // The directory is printed once; it used to repeat as `Path:` at the end.
     expect(report.split(winBookRoot).length - 1).toBe(1);
-    expect(inboxReport).toContain(`Inbox: \`${winBookRoot}`);
 
     // When processed through marked, the backslashes survive inside <code> blocks
     const parsed = marked.parse(report);
     expect(parsed).toContain(`<code>${winBookRoot}`);
-  });
-
-  it('reflects requireApproval setting in report', () => {
-    const defaultReport = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
-    expect(defaultReport).not.toContain('needs approval');
-
-    const approvalSettings = structuredClone(DEFAULT_SETTINGS);
-    approvalSettings.memory.requireApproval = true;
-    const approvalReport = buildMemoryReport({ workspace, bookRoot, settings: approvalSettings });
-    expect(approvalReport).toContain('model writes enabled (to inbox, needs approval)');
   });
 });
