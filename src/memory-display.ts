@@ -1,7 +1,9 @@
 import type { ResolvedSettings } from './settings.js';
 import type { SessionDriver } from './types/runtime.js';
 import {
+  type LoadedMemoryContext,
   DEFAULT_MAX_INDEX_LINES,
+  MAX_INDEX_BYTES,
   getMemoryHealth,
   getMemoryInboxDir,
   memoryWriteScope,
@@ -73,6 +75,33 @@ export function buildMemoryInboxReport(input: MemoryReportInput): string {
   return lines.join('\n');
 }
 
+const formatCount = (n: number): string => n.toLocaleString('en-US');
+
+/** `MEMORY.md` against both load limits, saying so when a session loads only part of it. */
+export function describeIndexLoad(
+  ctx: Pick<
+    LoadedMemoryContext,
+    | 'indexLineCount'
+    | 'loadedLineCount'
+    | 'indexByteCount'
+    | 'wasLineTruncated'
+    | 'wasByteTruncated'
+  >,
+): string {
+  const sizes = `${formatCount(ctx.indexLineCount)}/${DEFAULT_MAX_INDEX_LINES} lines, ${formatCount(ctx.indexByteCount)}/${formatCount(MAX_INDEX_BYTES)} bytes`;
+  if (!ctx.wasLineTruncated && !ctx.wasByteTruncated) return sizes;
+  const cuts: string[] = [];
+  if (ctx.wasLineTruncated) {
+    cuts.push(
+      `over the ${DEFAULT_MAX_INDEX_LINES}-line limit, first ${ctx.loadedLineCount} of ${ctx.indexLineCount} non-empty lines loaded`,
+    );
+  }
+  if (ctx.wasByteTruncated) {
+    cuts.push(`over the ${formatCount(MAX_INDEX_BYTES)}-byte limit`);
+  }
+  return `${sizes} — cut (${cuts.join('; ')}); the model sees a warning where it stops`;
+}
+
 export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string): string {
   const input: MemoryReportInput =
     typeof inputOrWorkspace === 'string' ? { workspace: inputOrWorkspace } : inputOrWorkspace;
@@ -106,11 +135,7 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
     `Health: ${health.approvedCount} approved, ${health.supersededCount} superseded, ${health.inboxCount} inbox, ${health.indexLineCount}/${DEFAULT_MAX_INDEX_LINES} index lines, last write: ${lastWrite}`,
   ];
   if (ctx.indexFile) {
-    const cap =
-      ctx.loadedLineCount < ctx.indexLineCount
-        ? `first ${ctx.loadedLineCount} of ${ctx.indexLineCount} non-empty lines`
-        : `${ctx.loadedLineCount} non-empty lines`;
-    lines.push(`Index: ${cap}`);
+    lines.push(`Index: ${describeIndexLoad(ctx)}`);
   }
   lines.push(`Location: \`${ctx.dir}\``);
   if (health.inboxCount > 0 || ctx.candidates.length > 0) {

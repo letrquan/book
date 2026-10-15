@@ -1,21 +1,27 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { basename, join } from 'path';
+import { basename, dirname, isAbsolute, join, relative } from 'path';
 import {
   MAX_BODY_CHARS,
+  MAX_INDEX_BYTES,
   approveMemoryCandidate,
   countMemoryCandidates,
   deleteMemoryEntry,
   discardMemoryCandidate,
+  findGitRoot,
   getMemoryHealth,
   getMemoryInboxDir,
   getNewestMemoryWriteTime,
@@ -23,6 +29,7 @@ import {
   listMemoryCandidates,
   listMemoryFiles,
   loadMemoryContext,
+  migrateLegacyMemoryDir,
   readMemoryFile,
   sanitizeMemorySlug,
   sanitizeMemoryTitle,
@@ -50,13 +57,437 @@ describe('memory store paths', () => {
   });
 
   it('resolves memory and inbox directories under injected book root', () => {
-    const ws = 'C:\\fake\\book-test-ws';
+    const ws = makeGitRepo('book-test-ws');
     expect(getProjectMemoryDir(ws, { bookRoot })).toBe(
-      join(bookRoot, 'projects', 'C-fake-book-test-ws', 'memory'),
+      join(bookRoot, 'projects', slugifyWorkspace(ws), 'memory'),
     );
     expect(getMemoryInboxDir(ws, { bookRoot })).toBe(
-      join(bookRoot, 'projects', 'C-fake-book-test-ws', 'memory', '.inbox'),
+      join(bookRoot, 'projects', slugifyWorkspace(ws), 'memory', '.inbox'),
     );
+  });
+});
+
+/** A scratch tree for fake repositories; removed after each test. */
+let scratch: string;
+beforeEach(() => {
+  scratch = realpathSync(mkdtempSync(join(tmpdir(), 'book-memory-root-')));
+});
+afterEach(() => {
+  rmSync(scratch, { recursive: true, force: true });
+});
+
+/** `<scratch>/<name>` with a `.git` directory. */
+function makeGitRepo(name: string): string {
+  const root = join(scratch, name);
+  mkdirSync(join(root, '.git'), { recursive: true });
+  return root;
+}
+
+/** A linked worktree of `main`: `.git` is a file pointing into `main/.git/worktrees/<name>`. */
+function makeLinkedWorktree(main: string, name: string): string {
+  const gitDir = join(main, '.git', 'worktrees', name);
+  mkdirSync(gitDir, { recursive: true });
+  writeFileSync(join(gitDir, 'commondir'), '../..\n');
+  const worktree = join(scratch, name);
+  mkdirSync(worktree, { recursive: true });
+  writeFileSync(join(worktree, '.git'), `gitdir: ${gitDir}\n`);
+  return worktree;
+}
+
+describe('findGitRoot', () => {
+  it('is the repository root for a checkout', () => {
+    const repo = makeGitRepo('repo');
+    expect(findGitRoot(repo)).toBe(repo);
+  });
+
+  it('is the repository root for a subdirectory, existing or not', () => {
+    const repo = makeGitRepo('repo');
+    mkdirSync(join(repo, 'src', 'deep'), { recursive: true });
+    expect(findGitRoot(join(repo, 'src', 'deep'))).toBe(repo);
+    expect(findGitRoot(join(repo, 'not', 'created'))).toBe(repo);
+  });
+
+  it('maps a linked worktree to its main checkout', () => {
+    const main = makeGitRepo('main');
+    const worktree = makeLinkedWorktree(main, 'wt');
+    mkdirSync(join(worktree, 'pkg'));
+    expect(findGitRoot(worktree)).toBe(main);
+    expect(findGitRoot(join(worktree, 'pkg'))).toBe(main);
+    expect(getProjectMemoryDir(worktree, { bookRoot })).toBe(
+      getProjectMemoryDir(main, { bookRoot }),
+    );
+  });
+
+  it('resolves a relative gitdir against the directory holding the .git file', () => {
+    const main = makeGitRepo('main');
+    mkdirSync(join(main, '.git', 'worktrees', 'rel'), { recursive: true });
+    writeFileSync(join(main, '.git', 'worktrees', 'rel', 'commondir'), '../..');
+    const worktree = join(scratch, 'rel');
+    mkdirSync(worktree);
+    writeFileSync(join(worktree, '.git'), 'gitdir: ../main/.git/worktrees/rel');
+    expect(findGitRoot(worktree)).toBe(main);
+  });
+
+  it('is its own root for a .git file without commondir (submodule, separate git dir)', () => {
+    const sub = join(scratch, 'sub');
+    mkdirSync(join(sub, 'inner'), { recursive: true });
+    mkdirSync(join(scratch, 'elsewhere', 'modules', 'sub'), { recursive: true });
+    writeFileSync(join(sub, '.git'), `gitdir: ${join(scratch, 'elsewhere', 'modules', 'sub')}\n`);
+    expect(findGitRoot(sub)).toBe(sub);
+    expect(findGitRoot(join(sub, 'inner'))).toBe(sub);
+  });
+
+  it('is its own root when a commondir does not end in .git', () => {
+    const odd = join(scratch, 'odd');
+    mkdirSync(odd);
+    const gitDir = join(scratch, 'store', 'odd');
+    mkdirSync(gitDir, { recursive: true });
+    writeFileSync(join(gitDir, 'commondir'), '.');
+    writeFileSync(join(odd, '.git'), `gitdir: ${gitDir}`);
+    expect(findGitRoot(odd)).toBe(odd);
+  });
+
+  it('is the workspace itself outside any repository', () => {
+    const plain = join(scratch, 'plain', 'dir');
+    mkdirSync(plain, { recursive: true });
+    expect(findGitRoot(plain)).toBe(plain);
+  });
+
+  it('gives a relative workspace the key of the absolute one', () => {
+    const repo = makeGitRepo('repo');
+    mkdirSync(join(repo, 'src'));
+    const relativeWorkspace = relative(process.cwd(), join(repo, 'src'));
+    expect(isAbsolute(relativeWorkspace)).toBe(false);
+    expect(findGitRoot(relativeWorkspace)).toBe(repo);
+    expect(getProjectMemoryDir(relativeWorkspace, { bookRoot })).toBe(
+      getProjectMemoryDir(join(repo, 'src'), { bookRoot }),
+    );
+  });
+
+  it('follows a symlinked workspace', () => {
+    const repo = makeGitRepo('repo');
+    mkdirSync(join(repo, 'src'));
+    const link = join(scratch, 'link');
+    symlinkSync(join(repo, 'src'), link);
+    expect(findGitRoot(link)).toBe(repo);
+  });
+
+  it('falls back to the workspace on a garbage .git file', () => {
+    const repo = makeGitRepo('repo');
+    const inner = join(repo, 'inner');
+    mkdirSync(inner);
+    writeFileSync(join(inner, '.git'), 'this is not a gitdir pointer\n');
+    expect(findGitRoot(inner)).toBe(inner);
+    writeFileSync(join(inner, '.git'), '');
+    expect(findGitRoot(inner)).toBe(inner);
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'falls back to the workspace on an unreadable .git file',
+    () => {
+      const repo = makeGitRepo('repo');
+      const inner = join(repo, 'inner');
+      mkdirSync(inner);
+      writeFileSync(join(inner, '.git'), `gitdir: ${join(repo, '.git')}\n`);
+      chmodSync(join(inner, '.git'), 0o000);
+      try {
+        expect(findGitRoot(inner)).toBe(inner);
+      } finally {
+        chmodSync(join(inner, '.git'), 0o600);
+      }
+    },
+  );
+});
+
+describe('moving the old workspace-keyed directory', () => {
+  /** The directory the old key named: the workspace string as given. */
+  const oldDirOf = (ws: string) => join(bookRoot, 'projects', slugifyWorkspace(ws), 'memory');
+  const topic = (title: string) => `---\ntype: project\nstatus: approved\n---\n# ${title}\nBody`;
+
+  function setup() {
+    const repo = makeGitRepo('repo');
+    const ws = join(repo, 'src');
+    mkdirSync(ws);
+    return { repo, ws, oldDir: oldDirOf(ws), newDir: getProjectMemoryDir(ws, { bookRoot }) };
+  }
+
+  it('renames the old directory when the new one is missing', () => {
+    const { ws, oldDir, newDir } = setup();
+    mkdirSync(join(oldDir, '.inbox'), { recursive: true });
+    writeFileSync(join(oldDir, 'MEMORY.md'), '# Book memory index\n- [A](a.md) — project\n');
+    writeFileSync(join(oldDir, 'a.md'), topic('A'));
+    writeFileSync(join(oldDir, '.extraction-state.json'), '{}');
+    writeFileSync(join(oldDir, '.inbox', 'c.md'), topic('C'));
+
+    const ctx = loadMemoryContext(ws, { bookRoot });
+
+    expect(existsSync(oldDir)).toBe(false);
+    expect(ctx.dir).toBe(newDir);
+    expect(ctx.files.map((f) => f.name)).toEqual(['a.md']);
+    expect(ctx.indexText).toContain('[A](a.md)');
+    expect(ctx.candidates.map((c) => c.name)).toEqual(['c.md']);
+    expect(existsSync(join(newDir, '.extraction-state.json'))).toBe(true);
+  });
+
+  it('does nothing when the old and new keys are the same', () => {
+    const repo = makeGitRepo('same');
+    const dir = getProjectMemoryDir(repo, { bookRoot });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'a.md'), topic('A'));
+    migrateLegacyMemoryDir(repo, { bookRoot });
+    expect(readdirSync(dir)).toEqual(['a.md']);
+  });
+
+  it('merges when both exist, keeping both files of a colliding name', () => {
+    const { ws, oldDir, newDir } = setup();
+    mkdirSync(join(oldDir, '.inbox', 'discarded'), { recursive: true });
+    mkdirSync(join(newDir, '.inbox'), { recursive: true });
+    writeFileSync(join(oldDir, 'a.md'), topic('Old A'));
+    writeFileSync(join(oldDir, 'b.md'), topic('Old B'));
+    writeFileSync(join(oldDir, 'note.txt'), 'not markdown');
+    writeFileSync(join(oldDir, '.inbox', 'x.md'), topic('Old X'));
+    writeFileSync(join(oldDir, '.inbox', 'discarded', 'd.md'), topic('Old D'));
+    writeFileSync(join(oldDir, '.extraction-state.json'), '{"old":true}');
+    writeFileSync(join(oldDir, '.extraction.lock'), '');
+    writeFileSync(
+      join(oldDir, 'MEMORY.md'),
+      '# Old header\n- [Old A](a.md) — project — 2026-01-01\n- [Old B](b.md) — project — 2026-01-02\n',
+    );
+    writeFileSync(join(newDir, 'a.md'), topic('New A'));
+    writeFileSync(join(newDir, 'a-2.md'), topic('Already -2'));
+    writeFileSync(join(newDir, '.inbox', 'x.md'), topic('New X'));
+    writeFileSync(
+      join(newDir, 'MEMORY.md'),
+      '# Book memory index\n- [New A](a.md) — project — 2026-02-01\nhand-written note\n',
+    );
+
+    loadMemoryContext(ws, { bookRoot });
+
+    // Both copies of the collision survive; the first free suffix is -3 because -2 is taken.
+    expect(readFileSync(join(newDir, 'a.md'), 'utf-8')).toContain('New A');
+    expect(readFileSync(join(newDir, 'a-2.md'), 'utf-8')).toContain('Already -2');
+    expect(readFileSync(join(newDir, 'a-3.md'), 'utf-8')).toContain('Old A');
+    expect(readFileSync(join(newDir, 'b.md'), 'utf-8')).toContain('Old B');
+    expect(readFileSync(join(newDir, '.inbox', 'x.md'), 'utf-8')).toContain('New X');
+    expect(readFileSync(join(newDir, '.inbox', 'x-2.md'), 'utf-8')).toContain('Old X');
+    expect(existsSync(join(newDir, '.inbox', 'discarded', 'd.md'))).toBe(true);
+
+    // The old entries follow the new header, point at the suffixed name, and nothing repeats.
+    expect(readFileSync(join(newDir, 'MEMORY.md'), 'utf-8').split('\n')).toEqual([
+      '# Book memory index',
+      '- [Old A](a-3.md) — project — 2026-01-01',
+      '- [Old B](b.md) — project — 2026-01-02',
+      '- [New A](a.md) — project — 2026-02-01',
+      'hand-written note',
+      '',
+    ]);
+
+    // What stays behind: the extraction files and what is not markdown.
+    expect(readdirSync(oldDir).sort()).toEqual([
+      '.extraction-state.json',
+      '.extraction.lock',
+      'note.txt',
+    ]);
+    expect(existsSync(join(newDir, '.extraction-state.json'))).toBe(false);
+  });
+
+  it('adds no duplicate entry, and removes the old directory once it is empty', () => {
+    const { ws, oldDir, newDir } = setup();
+    mkdirSync(oldDir, { recursive: true });
+    mkdirSync(newDir, { recursive: true });
+    writeFileSync(join(oldDir, 'MEMORY.md'), '- [Shared](shared.md) — project\n');
+    writeFileSync(join(newDir, 'MEMORY.md'), '# Book memory index\n- [Shared](shared.md) — new\n');
+    writeFileSync(join(newDir, 'shared.md'), topic('Shared'));
+
+    loadMemoryContext(ws, { bookRoot });
+    loadMemoryContext(ws, { bookRoot }); // a second session changes nothing
+
+    expect(readFileSync(join(newDir, 'MEMORY.md'), 'utf-8')).toBe(
+      '# Book memory index\n- [Shared](shared.md) — new\n',
+    );
+    expect(existsSync(oldDir)).toBe(false);
+  });
+
+  it('removes the empty old project directory after a rename', () => {
+    const { ws, oldDir } = setup();
+    mkdirSync(oldDir, { recursive: true });
+    writeFileSync(join(oldDir, 'a.md'), topic('A'));
+
+    loadMemoryContext(ws, { bookRoot });
+
+    expect(existsSync(dirname(oldDir))).toBe(false);
+  });
+
+  it('removes the old project directory after a merge that empties the old memory directory', () => {
+    const { ws, oldDir, newDir } = setup();
+    mkdirSync(oldDir, { recursive: true });
+    mkdirSync(newDir, { recursive: true });
+    writeFileSync(join(oldDir, 'a.md'), topic('A'));
+
+    loadMemoryContext(ws, { bookRoot });
+
+    expect(existsSync(join(newDir, 'a.md'))).toBe(true);
+    expect(existsSync(dirname(oldDir))).toBe(false);
+  });
+
+  it('keeps the old project directory while the old memory directory holds extraction state', () => {
+    const { ws, oldDir, newDir } = setup();
+    mkdirSync(oldDir, { recursive: true });
+    mkdirSync(newDir, { recursive: true });
+    writeFileSync(join(oldDir, 'a.md'), topic('A'));
+    writeFileSync(join(oldDir, '.extraction-state.json'), '{}');
+
+    loadMemoryContext(ws, { bookRoot });
+
+    expect(readdirSync(oldDir)).toEqual(['.extraction-state.json']);
+  });
+
+  it('creates the index header when only the old directory had an index', () => {
+    const { ws, oldDir, newDir } = setup();
+    mkdirSync(oldDir, { recursive: true });
+    mkdirSync(newDir, { recursive: true });
+    writeFileSync(join(oldDir, 'MEMORY.md'), '- [Solo](solo.md) — project\n');
+    writeFileSync(join(oldDir, 'solo.md'), topic('Solo'));
+    loadMemoryContext(ws, { bookRoot });
+    expect(readFileSync(join(newDir, 'MEMORY.md'), 'utf-8')).toBe(
+      '# Book memory index\n- [Solo](solo.md) — project\n',
+    );
+  });
+
+  it('skips an old directory that is a symlink', () => {
+    const { ws, oldDir, newDir } = setup();
+    const target = join(scratch, 'elsewhere');
+    mkdirSync(target);
+    writeFileSync(join(target, 'a.md'), topic('A'));
+    mkdirSync(dirname(oldDir), { recursive: true });
+    symlinkSync(target, oldDir);
+
+    const ctx = loadMemoryContext(ws, { bookRoot });
+
+    expect(ctx.files).toEqual([]);
+    expect(readdirSync(target)).toEqual(['a.md']);
+    expect(lstatSync(oldDir).isSymbolicLink()).toBe(true);
+    expect(existsSync(newDir)).toBe(false);
+  });
+
+  it('skips a symlinked entry inside the old directory', () => {
+    const { ws, oldDir, newDir } = setup();
+    mkdirSync(oldDir, { recursive: true });
+    mkdirSync(newDir, { recursive: true });
+    const outside = join(scratch, 'outside.md');
+    writeFileSync(outside, topic('Outside'));
+    symlinkSync(outside, join(oldDir, 'link.md'));
+    writeFileSync(join(oldDir, 'real.md'), topic('Real'));
+
+    loadMemoryContext(ws, { bookRoot });
+
+    expect(existsSync(join(newDir, 'real.md'))).toBe(true);
+    expect(existsSync(join(newDir, 'link.md'))).toBe(false);
+    expect(lstatSync(join(oldDir, 'link.md')).isSymbolicLink()).toBe(true);
+  });
+
+  it('does not throw when the move fails, and still loads the new directory', () => {
+    const { ws, oldDir, newDir } = setup();
+    mkdirSync(oldDir, { recursive: true });
+    writeFileSync(join(oldDir, 'a.md'), topic('A'));
+    // The new key's parent is a file, so neither the rename nor the mkdir can succeed.
+    mkdirSync(dirname(dirname(newDir)), { recursive: true });
+    writeFileSync(dirname(newDir), 'in the way');
+
+    expect(() => migrateLegacyMemoryDir(ws, { bookRoot })).not.toThrow();
+    const ctx = loadMemoryContext(ws, { bookRoot });
+    expect(ctx.dir).toBe(newDir);
+    expect(ctx.files).toEqual([]);
+    expect(existsSync(join(oldDir, 'a.md'))).toBe(true);
+  });
+});
+
+describe('index cut', () => {
+  const writeIndex = (ws: string, text: string) => {
+    const dir = getProjectMemoryDir(ws, { bookRoot });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'MEMORY.md'), text, 'utf-8');
+  };
+
+  it('loads an index under both limits whole, with no marker', () => {
+    const ws = makeGitRepo('under');
+    const text = Array.from({ length: 200 }, (_, i) => `line ${i + 1}`).join('\n');
+    writeIndex(ws, `${text}\n`);
+    const ctx = loadMemoryContext(ws, { bookRoot });
+    expect(ctx.indexText).toBe(text);
+    expect(ctx.wasLineTruncated).toBe(false);
+    expect(ctx.wasByteTruncated).toBe(false);
+    expect(ctx.indexByteCount).toBe(Buffer.byteLength(text));
+  });
+
+  it('cuts at 200 lines and says where, with the exact marker', () => {
+    const ws = makeGitRepo('lines');
+    const lines = Array.from({ length: 205 }, (_, i) => `line ${i + 1}`);
+    writeIndex(ws, lines.join('\n'));
+    const ctx = loadMemoryContext(ws, { bookRoot });
+    expect(ctx.wasLineTruncated).toBe(true);
+    expect(ctx.wasByteTruncated).toBe(false);
+    expect(ctx.indexLineCount).toBe(205);
+    expect(ctx.loadedLineCount).toBe(200);
+    expect(ctx.indexText).toBe(
+      `${lines.slice(0, 200).join('\n')}\n\n> WARNING: MEMORY.md is 205 lines and 1,736 bytes (limits: 200 lines, 25,000 bytes). ` +
+        'Only part of it was loaded: 5 of 205 lines were cut off, starting at line 201 ("line 201"). ' +
+        'Keep each entry to one line and move detail into the memory file.',
+    );
+  });
+
+  it('cuts at the last newline within 25,000 bytes when lines are long', () => {
+    const ws = makeGitRepo('bytes');
+    // 100 lines of 300 bytes + newline: line 83 ends at byte 24,982, line 84 would cross 25,000.
+    const lines = Array.from(
+      { length: 100 },
+      (_, i) => `${String(i + 1).padStart(3, '0')}${'x'.repeat(297)}`,
+    );
+    writeIndex(ws, lines.join('\n'));
+    const ctx = loadMemoryContext(ws, { bookRoot });
+    expect(ctx.wasByteTruncated).toBe(true);
+    expect(ctx.wasLineTruncated).toBe(false);
+    expect(ctx.loadedLineCount).toBe(83);
+    expect(ctx.indexText.startsWith(`${lines.slice(0, 83).join('\n')}\n\n> WARNING:`)).toBe(true);
+    expect(ctx.indexText).toContain('MEMORY.md is 100 lines and 30,099 bytes');
+    expect(ctx.indexText).toContain(
+      `17 of 100 lines were cut off, starting at line 84 ("084${'x'.repeat(77)}")`,
+    );
+    const kept = ctx.indexText.slice(0, ctx.indexText.indexOf('\n\n> WARNING'));
+    expect(Buffer.byteLength(kept)).toBeLessThanOrEqual(MAX_INDEX_BYTES);
+  });
+
+  it('cuts inside line 1 on a character boundary when it alone is over the limit', () => {
+    const ws = makeGitRepo('line1');
+    // '€' is 3 bytes; byte 25,000 falls inside a character, so the cut backs up to 24,999.
+    writeIndex(ws, '€'.repeat(10_000));
+    const ctx = loadMemoryContext(ws, { bookRoot });
+    expect(ctx.wasByteTruncated).toBe(true);
+    const kept = ctx.indexText.slice(0, ctx.indexText.indexOf('\n\n> WARNING'));
+    expect(Buffer.byteLength(kept)).toBe(24_999);
+    expect(kept).toBe('€'.repeat(8333));
+    expect(ctx.indexText).toContain(
+      'Only part of it was loaded: everything after the first 24,999 bytes of line 1 was cut off. ',
+    );
+    expect(ctx.indexText).toContain('MEMORY.md is 1 lines and 30,000 bytes');
+  });
+
+  it('reports a line cut and a byte cut together', () => {
+    const ws = makeGitRepo('both');
+    writeIndex(ws, Array.from({ length: 300 }, () => 'y'.repeat(200)).join('\n'));
+    const ctx = loadMemoryContext(ws, { bookRoot });
+    expect(ctx.wasLineTruncated).toBe(true);
+    expect(ctx.wasByteTruncated).toBe(true);
+    expect(ctx.indexText).toContain('MEMORY.md is 300 lines');
+  });
+
+  it('feeds health the same byte count and cut flags', () => {
+    const ws = makeGitRepo('health');
+    writeIndex(ws, Array.from({ length: 205 }, (_, i) => `line ${i + 1}`).join('\n'));
+    const health = getMemoryHealth(ws, { bookRoot });
+    expect(health.indexByteCount).toBe(1736);
+    expect(health.wasLineTruncated).toBe(true);
+    expect(health.wasByteTruncated).toBe(false);
   });
 });
 
@@ -82,8 +513,9 @@ describe('loadMemoryContext', () => {
     expect(ctx.indexLoaded).toBe(true);
     expect(ctx.indexLineCount).toBe(205);
     expect(ctx.loadedLineCount).toBe(200);
-    expect(ctx.indexText).toContain('line 200');
-    expect(ctx.indexText).not.toContain('line 201');
+    expect(ctx.indexText).toContain('line 200\n');
+    // Line 201 survives only inside the warning marker that names it.
+    expect(ctx.indexText.split('\n').filter((l) => l === 'line 201')).toEqual([]);
   });
 
   it('lists approved files and excludes inbox files from active memory', () => {
